@@ -4,7 +4,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { syncMemberBefore, syncMemberAfter } from '../fleet-sprint/runner.js';
-import { GitSyncError } from '../fleet-sprint/errors.mjs';
 // apra-fleet-3swo.5.7: the doer's retry flag is policy data now, not a literal
 // at a runner.js call site.
 import { policyFor, ROLE_NAMES } from '../fleet-sprint/role-policies.mjs';
@@ -36,6 +35,10 @@ function makeCommandMock(script) {
 }
 
 const OK = { ok: true, output: '', error: null };
+const SHA_A = 'a'.repeat(40);
+const SHA_B = 'b'.repeat(40);
+const SHA_S = 'c'.repeat(40);
+const lines = (...l) => l.map((x) => `${x}\n`).join('');
 const fail = (error) => ({ ok: false, output: '', error });
 
 // =============================================================================
@@ -53,6 +56,10 @@ test('retried doer dispatch: pre-dispatch sync resets onto the remote tip (fetch
         'git fetch': [OK, OK],
         'git merge --ff-only': [OK],
         [`git reset --hard origin/${branch}`]: [OK],
+        // Retry salvage (GitHub #716): HEAD equals the remote tip and the
+        // tree is clean, so there is nothing to pin and no side ref is made.
+        [`git rev-parse HEAD origin/${branch}`]: [{ ok: true, output: lines(SHA_A, SHA_A), error: null }],
+        'stash create': [OK],
         'git push': [OK, OK],
     });
 
@@ -85,6 +92,17 @@ test('retried doer dispatch: pre-dispatch sync resets onto the remote tip (fetch
     const resetIdx = calls.findIndex((c) => /git reset --hard/.test(c.cmd));
     check(resetIdx !== -1 && resetIdx >= commit2IdxBefore && resetIdx < commit2Idx, `reset must occur inside the retry's pre-dispatch sync, before the retry's commit step (resetIdx=${resetIdx}, commit2Idx=${commit2Idx})`);
 
+    // The new retry sequence: fetch, salvage reads (HEAD/remote tip, stash
+    // snapshot), then the reset. Nothing to save here, so no side ref.
+    const retryCmds = calls.slice(commit2IdxBefore, commit2Idx).map((c) => c.cmd);
+    assert.deepEqual(retryCmds, [
+        `git fetch origin ${branch}`,
+        `git rev-parse HEAD origin/${branch}`,
+        'git -c user.name=fleet-salvage -c user.email=fleet-salvage.invalid stash create',
+        `git reset --hard origin/${branch}`,
+    ], 'retry pre-dispatch sync must salvage-check before the reset, in this exact order');
+    check(calls.every((c) => !/git branch -f/.test(c.cmd)), 'a clean, up-to-date checkout must not get a salvage side ref');
+
     // The retry must NOT re-issue a plain ff-only merge (that was the
     // pre-fix behaviour under skipPreDispatchSync's absence -- exactly what
     // let the retry diverge from an already-published commit).
@@ -101,6 +119,59 @@ test('retried doer dispatch: pre-dispatch sync resets onto the remote tip (fetch
     check(pushCalls.length === 2, `expected exactly one push per attempt (2 total), saw ${pushCalls.length}`);
     const fetchCalls = calls.filter((c) => /^git fetch/.test(c.cmd));
     check(fetchCalls.length === 2, `expected one pre-dispatch fetch per attempt (2 total), saw ${fetchCalls.length}`);
+});
+
+test('retry reset with unpublished commits and tracked WIP: a fleet-salvage side ref pins the stash commit BEFORE the reset, the sprint branch is never committed on, and the log names the ref and recovery commands', async () => {
+    const branch = 'feat/salvage-x';
+    const logs = [];
+    const { command, calls } = makeCommandMock({
+        'git fetch': [OK],
+        [`git rev-parse HEAD origin/${branch}`]: [{ ok: true, output: lines(SHA_A, SHA_B), error: null }],
+        'git rev-list --count': [{ ok: true, output: lines('2'), error: null }],
+        'stash create': [{ ok: true, output: lines(SHA_S), error: null }],
+    });
+    const res = await syncMemberBefore('doer-x', { command, branch, resetToRemoteTip: true, log: (m) => logs.push(m) });
+    const ref = `fleet-salvage/feat-salvage-x/${SHA_S.slice(0, 12)}`;
+    assert.equal(res.salvageRef, ref);
+    const cmds = calls.map((c) => c.cmd);
+    assert.deepEqual(cmds, [
+        `git fetch origin ${branch}`,
+        `git rev-parse HEAD origin/${branch}`,
+        `git rev-list --count ${SHA_A} --not ${SHA_B}`,
+        'git -c user.name=fleet-salvage -c user.email=fleet-salvage.invalid stash create',
+        `git branch -f ${ref} ${SHA_S}`,
+        `git reset --hard origin/${branch}`,
+    ]);
+    check(cmds.every((c) => !/git add|git commit|git push|git stash (push|save)/.test(c)), 'salvage must never stage, commit, push or move WIP off the work tree');
+    check(calls.every((c) => c.opts.member_name === 'doer-x'), 'every salvage command carries the explicit member_name');
+    const line = logs.find((l) => l.includes(ref)) || '';
+    check(line.includes(`git stash apply ${SHA_S}`) && line.includes(`git cherry-pick ${SHA_B}..${SHA_A}`) && line.includes(`git log ${ref}`), `log must name the ref and the recovery commands, got: ${line}`);
+});
+
+test('retry reset fails closed: an unreadable HEAD, a failed stash snapshot, or a conflicting side-ref name throws GitSyncError and never runs the reset', async () => {
+    const branch = 'b1';
+    const scenarios = [
+        { name: 'unparseable rev-parse', script: { [`git rev-parse HEAD origin/${branch}`]: [{ ok: true, output: 'ok (mocked)', error: null }] }, re: /Retry salvage .* failed/ },
+        { name: 'stash create fails', script: { [`git rev-parse HEAD origin/${branch}`]: [{ ok: true, output: lines(SHA_A, SHA_A), error: null }], 'stash create': [fail('fatal: boom')] }, re: /NOT resetting/ },
+        {
+            name: 'D/F ref conflict',
+            script: {
+                [`git rev-parse HEAD origin/${branch}`]: [{ ok: true, output: lines(SHA_A, SHA_A), error: null }],
+                'stash create': [{ ok: true, output: lines(SHA_S), error: null }],
+                'git branch -f': [fail("error: 'refs/heads/fleet-salvage/b1' exists; cannot create 'refs/heads/fleet-salvage/b1/cccccccccccc'")],
+            },
+            re: /existing ref 'fleet-salvage\/b1'.*git branch -D fleet-salvage\/b1/,
+        },
+    ];
+    for (const sc of scenarios) {
+        const { command, calls } = makeCommandMock({ 'git fetch': [OK], ...sc.script });
+        await assert.rejects(
+            syncMemberBefore('m1', { command, branch, resetToRemoteTip: true }),
+            (err) => err.name === 'GitSyncError' && sc.re.test(err.message),
+            sc.name,
+        );
+        check(calls.every((c) => !/git reset --hard/.test(c.cmd)), `${sc.name}: the reset must not run`);
+    }
 });
 
 test('syncMemberBefore: resetToRemoteTip defaults false, so a non-retry (or non-mutating-retry) call keeps the exact prior ff-only-merge behaviour, never resetting', async () => {
@@ -172,129 +243,4 @@ test('guard: withGitSync source still has a skipPreDispatchSync short-circuit di
             .map((r) => policyFor(r).ladder))].join(',') === 'doer',
         'the doer streak is the only ladder that resumes a retry onto the branch remote tip'
     );
-});
-
-// =============================================================================
-// Salvage before the resume reset. A retry after a killed doer used to
-// hard-reset straight onto the remote tip, silently destroying the killed
-// attempt's unpublished commits and uncommitted changes. The reset is now
-// preceded by a salvage step; these pin its command shape and ordering (the
-// real-repo behaviour is pinned in git-sync-real-repo.test.mjs).
-// =============================================================================
-const SALVAGE_BRANCH = 'feat/salvage-shape';
-
-function salvageScript(overrides = {}) {
-    return {
-        'git fetch': [OK],
-        'git status --porcelain': [{ ok: true, output: ' M README.md\n?? wip/new.txt\n', error: null }],
-        'git log --oneline': [{ ok: true, output: 'abc1234 fleet-salvage-uncommitted-work\ndef5678 killed attempt test commit\n', error: null }],
-        ...overrides,
-    };
-}
-
-test('salvage: a dirty tree is committed with an explicit -c identity, then a local fleet-salvage/<branch>/<short sha> branch is created, all BEFORE the hard reset', async () => {
-    const { command, calls } = makeCommandMock(salvageScript());
-    const logs = [];
-    const res = await syncMemberBefore('doer-s', { command, branch: SALVAGE_BRANCH, resetToRemoteTip: true, log: (m) => logs.push(String(m)) });
-    check(res.ok, 'salvage + reset must succeed');
-
-    const idx = (re) => calls.findIndex((c) => re.test(c.cmd));
-    const statusIdx = idx(/^git status --porcelain/);
-    const addIdx = idx(/^git add -A/);
-    const commitIdx = idx(/^git -c user\.name=\S+ -c user\.email=\S+ .*\bcommit\b/);
-    const logIdx = idx(/^git log --oneline/);
-    const branchIdx = idx(/^git branch -f fleet-salvage\//);
-    const resetIdx = idx(/^git reset --hard/);
-    check([statusIdx, addIdx, commitIdx, logIdx, branchIdx, resetIdx].every((i) => i !== -1), `every salvage step must be issued; got ${JSON.stringify(calls.map((c) => c.cmd))}`);
-    check(statusIdx < addIdx && addIdx < commitIdx && commitIdx < logIdx && logIdx < branchIdx && branchIdx < resetIdx, `order must be status < add < commit < log < branch < reset; got ${JSON.stringify(calls.map((c) => c.cmd))}`);
-
-    check(calls[logIdx].cmd.includes(`origin/${SALVAGE_BRANCH}..HEAD`), `the ahead-check must compare HEAD against the remote tip, got '${calls[logIdx].cmd}'`);
-    check(calls[branchIdx].cmd === `git branch -f fleet-salvage/${SALVAGE_BRANCH}/abc1234 HEAD`, `salvage branch must be named after the short HEAD sha and created idempotently with -f, got '${calls[branchIdx].cmd}'`);
-    check(calls.every((c) => c.opts.member_name === 'doer-s'), 'every salvage command carries the explicit member_name');
-    check(calls.every((c) => !/^git push/.test(c.cmd)), 'salvage never pushes anything');
-
-    const salvageLog = logs.find((l) => l.includes(`fleet-salvage/${SALVAGE_BRANCH}/abc1234`));
-    check(salvageLog && salvageLog.includes('killed attempt test commit') && salvageLog.includes('def5678'), `the log must name the ref and its commits; logs: ${JSON.stringify(logs)}`);
-});
-
-test('salvage: every salvage command is shell-neutral -- no shell expansion, no home-relative path, no quoting a PowerShell member would read differently', async () => {
-    const { command, calls } = makeCommandMock(salvageScript());
-    await syncMemberBefore('doer-s', { command, branch: SALVAGE_BRANCH, resetToRemoteTip: true });
-    const salvageCalls = calls.filter((c) => !/^git (fetch|reset)/.test(c.cmd));
-    check(salvageCalls.length >= 5, `expected the salvage commands, got ${JSON.stringify(salvageCalls.map((c) => c.cmd))}`);
-    for (const { cmd } of salvageCalls) {
-        check(!/[$`'"~;|&<>(){}]/.test(cmd), `salvage command must carry no shell metacharacter, quote or expansion: '${cmd}'`);
-    }
-});
-
-test('salvage: a clean tree with nothing ahead of the remote makes no commit and no branch, and still resets', async () => {
-    const { command, calls } = makeCommandMock(salvageScript({
-        'git status --porcelain': [OK],
-        'git log --oneline': [OK],
-    }));
-    const res = await syncMemberBefore('doer-s', { command, branch: SALVAGE_BRANCH, resetToRemoteTip: true });
-    check(res.ok, 'must succeed');
-    check(calls.every((c) => !/\bcommit\b|^git add|^git branch/.test(c.cmd)), `nothing to salvage -> no add/commit/branch, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
-    check(calls.some((c) => /^git reset --hard/.test(c.cmd)), 'the reset still runs');
-});
-
-for (const [step, key] of [['status read', 'git status --porcelain'], ['salvage commit', 'user.email='], ['ahead check', 'git log --oneline'], ['salvage branch', 'git branch -f']]) {
-    test(`salvage: a failed ${step} throws GitSyncError and never issues the hard reset`, async () => {
-        const { command, calls } = makeCommandMock(salvageScript({ [key]: [fail('fatal: simulated salvage failure')] }));
-        const err = await syncMemberBefore('doer-s', { command, branch: SALVAGE_BRANCH, resetToRemoteTip: true }).then(() => null, (e) => e);
-        check(err instanceof GitSyncError, `expected GitSyncError, got ${err && err.constructor.name}: ${err && err.message}`);
-        check(/salvage/i.test(err.message), `the error must name the salvage step, got: ${err.message}`);
-        check(calls.every((c) => !/^git reset --hard/.test(c.cmd)), `no reset after a failed salvage, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
-    });
-}
-
-test('salvage: a submodule whose only change is its own dirty working tree is ignored -- no salvage commit, and the reset proceeds', async () => {
-    // Without --ignore-submodules=dirty git reports ` M sub` for such a
-    // submodule, `git add -A` stages nothing, and the commit would fail on
-    // every retry. The flagged key is listed first so the substring mock
-    // answers the flagged status read with a clean tree, and the bare read
-    // (which the salvage must not use) with the dirty-submodule line.
-    const { command, calls } = makeCommandMock({
-        'git fetch': [OK],
-        'git status --porcelain --ignore-submodules=dirty': [OK],
-        'git status --porcelain': [{ ok: true, output: ' M sub\n', error: null }],
-        'git log --oneline': [OK],
-    });
-    const res = await syncMemberBefore('doer-s', { command, branch: SALVAGE_BRANCH, resetToRemoteTip: true });
-    check(res.ok, 'must succeed');
-    const statusCalls = calls.filter((c) => /^git status/.test(c.cmd));
-    check(statusCalls.length === 1 && statusCalls[0].cmd.includes('--ignore-submodules=dirty'), `the dirty check must ignore dirty submodules, got ${JSON.stringify(statusCalls.map((c) => c.cmd))}`);
-    check(calls.every((c) => !/\bcommit\b|^git add/.test(c.cmd)), `a dirty-submodule-only tree -> no add/commit, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
-    check(calls.some((c) => /^git reset --hard/.test(c.cmd)), 'the reset still runs');
-});
-
-test('salvage: porcelain output with its leading whitespace trimmed still counts as dirty', async () => {
-    const { command, calls } = makeCommandMock(salvageScript({
-        'git status --porcelain': [{ ok: true, output: 'M README.md\r\n  ?? wip/new.txt\n', error: null }],
-    }));
-    const res = await syncMemberBefore('doer-s', { command, branch: SALVAGE_BRANCH, resetToRemoteTip: true });
-    check(res.ok, 'must succeed');
-    check(calls.some((c) => /^git add -A/.test(c.cmd)) && calls.some((c) => /\bcommit\b/.test(c.cmd)), `trimmed porcelain lines must still trigger the salvage commit, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
-});
-
-test('salvage: non-porcelain noise on the status channel (e.g. a mocked "ok" reply) is not mistaken for uncommitted work', async () => {
-    const { command, calls } = makeCommandMock(salvageScript({
-        'git status --porcelain': [{ ok: true, output: 'ok (mocked -- no real git remote in this mock sprint)\n', error: null }],
-        'git log --oneline': [OK],
-    }));
-    const res = await syncMemberBefore('doer-s', { command, branch: SALVAGE_BRANCH, resetToRemoteTip: true });
-    check(res.ok, 'must succeed');
-    check(calls.every((c) => !/\bcommit\b|^git add/.test(c.cmd)), `noise -> no add/commit, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
-});
-
-test('salvage: a commit that finds nothing staged ("nothing to commit") is a no-op, not a salvage failure, and the reset proceeds', async () => {
-    const { command, calls } = makeCommandMock(salvageScript({
-        'user.email=': [fail('nothing to commit, working tree clean')],
-        'git log --oneline': [OK],
-    }));
-    const logs = [];
-    const res = await syncMemberBefore('doer-s', { command, branch: SALVAGE_BRANCH, resetToRemoteTip: true, log: (m) => logs.push(String(m)) });
-    check(res.ok, 'must succeed');
-    check(calls.some((c) => /^git reset --hard/.test(c.cmd)), 'the reset still runs');
-    check(calls.every((c) => !/^git branch -f/.test(c.cmd)), 'nothing ahead -> no salvage branch');
 });

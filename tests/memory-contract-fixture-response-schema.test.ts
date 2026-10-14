@@ -93,10 +93,10 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    // Non-vacuous: the 32-fixture population the original ajv sweep measured
-    // (48 committed fixtures total, 16 carry `error` instead), plus
-    // kb_query/happy-confirmed-only (trust filters).
-    expect(keys.length).toBe(33);
+    // Non-vacuous: 49 of the 89 committed fixtures carry a `response` (the
+    // other 40 record a thrown refusal). Update this count, and the 89 in
+    // tests/memory-contract-roundtrip.test.ts, whenever the corpus changes.
+    expect(keys.length).toBe(49); // 49 response fixtures of 89 committed (40 are thrown refusals)
     expect(failures).toEqual([]);
   });
 
@@ -123,7 +123,7 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    expect(keys.length).toBe(33);
+    expect(keys.length).toBe(49); // 49 response fixtures of 89 committed (40 are thrown refusals)
     expect(failures).toEqual([]);
   });
 
@@ -157,5 +157,26 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
     const decoded = decodeEnvelope(real.response);
     const badParsed = { ...decoded, parsed: { unexpected_key: 'nope' } };
     expect(validate(badParsed)).toBe(false);
+  });
+
+  // kb_bible_commit's skip reason is a closed enum. no_source_files (a
+  // CONFIRMED entry citing no source file) has no recorded fixture: no MCP
+  // path can mint such an entry (capture and import refuse it, promote refuses
+  // directives), so the recorded basis-mismatch envelope is reused with only
+  // the reason swapped -- a scratch copy, never a committed fixture.
+  it('kb_bible_commit: every documented skip reason validates; an undocumented one does not', () => {
+    const real = loadFixture('kb_bible_commit', 'basis-mismatch');
+    const validate = compileAll(['kb_bible_commit/basis-mismatch'])('kb_bible_commit');
+    const decoded = decodeEnvelope(real.response);
+    expect(decoded.parsed.skipped[0].reason).toBe('basis_mismatch');
+    const withReason = (reason: string) => {
+      const copy = JSON.parse(JSON.stringify(decoded));
+      copy.parsed.skipped[0].reason = reason;
+      return copy;
+    };
+    for (const reason of ['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch']) {
+      expect(validate(withReason(reason)), reason).toBe(true);
+    }
+    expect(validate(withReason('not_a_documented_reason'))).toBe(false);
   });
 });

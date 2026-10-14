@@ -288,6 +288,22 @@ export function createGitRepoFixture(opts = {}) {
             return sha;
         },
 
+        /** A mutation at an arbitrary relative path in the PEER's clone (the
+         *  peer first fast-forwards onto origin), published to the shared
+         *  origin -- a concurrent change to a file the member also edits. */
+        peerPublishFile(relPath, body, message) {
+            gitOrThrow(['pull', '--ff-only', originDir, branch], peerPath);
+            const sha = commitFileAt(peerPath, relPath, body, message);
+            gitOrThrow(['push', originDir, `refs/heads/${branch}:refs/heads/${branch}`], peerPath);
+            return sha;
+        },
+
+        /** Publish `sha` (reachable in the peer clone) as another branch on
+         *  origin -- e.g. the sprint's target base branch. */
+        peerPublishRef(sha, ref) {
+            gitOrThrow(['push', originDir, `${sha}:refs/heads/${ref}`], peerPath);
+        },
+
         /** What actually landed on origin -- read straight from the bare repo,
          *  never through the injected command(). */
         originTip() {
@@ -319,40 +335,6 @@ export function createGitRepoFixture(opts = {}) {
         localMergeSubjects() {
             const res = git(['rev-list', '--merges', '--format=%s', 'HEAD'], clonePath);
             return res.ok ? res.stdout.split('\n').filter((l) => l && !l.startsWith('commit ')) : [];
-        },
-        /** Any ref resolved in the member clone, or null if it does not exist. */
-        localRev(ref) {
-            return revParse(clonePath, ref);
-        },
-        /** Commit subjects reachable from `ref` in the member clone, newest first. */
-        localSubjectsOf(ref) {
-            return subjects(clonePath, ref);
-        },
-        /** Local branch names in the member clone under `prefix` (e.g. 'fleet-salvage/'). */
-        localBranchesUnder(prefix) {
-            const res = git(['for-each-ref', '--format=%(refname:short)', `refs/heads/${prefix}`], clonePath);
-            return res.ok ? res.stdout.split('\n').filter(Boolean).sort() : [];
-        },
-        /** The content of `relPath` at `ref` in the member clone, or null. */
-        localFileAt(ref, relPath) {
-            const res = git(['show', `${ref}:${relPath}`], clonePath);
-            return res.ok ? res.stdout : null;
-        },
-        /** Every ref name in the bare origin -- read straight from it. */
-        originRefNames() {
-            const res = git(['for-each-ref', '--format=%(refname)'], originDir);
-            return res.ok ? res.stdout.split('\n').filter(Boolean).sort() : [];
-        },
-        /** Write (or overwrite) a file in the member clone WITHOUT committing it
-         *  -- an uncommitted working-tree change a killed attempt left behind. */
-        memberWriteFile(relPath, body) {
-            const abs = path.join(clonePath, relPath);
-            fs.mkdirSync(path.dirname(abs), { recursive: true });
-            fs.writeFileSync(abs, `${body == null ? relPath : body}\n`, 'utf-8');
-        },
-        /** Create a local branch in the member clone at `ref` (test setup only). */
-        memberCreateBranch(name, ref) {
-            gitOrThrow(['branch', name, ref || 'HEAD'], clonePath);
         },
         /** The member clone's remote-tracking ref for the shared branch. */
         localRemoteTrackingTip() {

@@ -173,7 +173,8 @@ test('mock sprint: beads-reading member with no beads DB -> set up from the expe
             members: ['orch', 'm2'],
             taskSpecs: [{ title: 'Task: member beads set-up' }],
             reviewerHandler: approvedReviewer,
-            expectBeads: JSON.stringify({ beadsDir: '', prefix: 'mock', syncRemote: remote, repoRemote: remote }),
+            // The DB's own prefix: 'mock' under replay, template-derived on the real-bd lane (#634 function form).
+            expectBeads: ({ prefix }) => JSON.stringify({ beadsDir: '', prefix: prefix ?? 'mock', syncRemote: remote, repoRemote: remote }),
             onCommand: noDbMemberOnCommand({ remote, setupLog }),
         });
         check(r.error === null, `expected the sprint to proceed, got error: ${r.error && (r.error.constructor.name + ': ' + r.error.message)}`);
@@ -203,7 +204,8 @@ test('mock sprint: beads set-up failure on a member -> typed BEADS_SETUP_FAILED 
             members: ['orch', 'm2'],
             taskSpecs: [{ title: 'Task: member beads set-up failure' }],
             reviewerHandler: approvedReviewer,
-            expectBeads: JSON.stringify({ beadsDir: '', prefix: 'mock', syncRemote: remote, repoRemote: remote }),
+            // The DB's own prefix: 'mock' under replay, template-derived on the real-bd lane (#634 function form).
+            expectBeads: ({ prefix }) => JSON.stringify({ beadsDir: '', prefix: prefix ?? 'mock', syncRemote: remote, repoRemote: remote }),
             onCommand: noDbMemberOnCommand({ remote, setupLog, bootstrapResult: () => mockCmdResult(1, '', 'fatal: Authentication failed') }),
         });
         check(r.error instanceof BeadsIdentityError, `expected a BeadsIdentityError abort, got: ${r.error && (r.error.constructor.name + ': ' + r.error.message)}`);

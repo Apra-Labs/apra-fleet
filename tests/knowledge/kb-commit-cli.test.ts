@@ -50,7 +50,7 @@ describe('kbCommitCmd', () => {
     );
     const code = await kbCommitCmd(exportFn, []);
     expect(code).toBe(0);
-    expect(exportFn).toHaveBeenCalledWith({ repo_path: undefined, scope: 'project' });
+    expect(exportFn).toHaveBeenCalledWith({ scope: 'project' }, undefined);
     const output = logSpy.mock.calls.flat().join('\n');
     expect(output).toContain('Exported 5 entries');
     expect(output).toContain('.fleet/kb-canonical.json');
@@ -64,19 +64,19 @@ describe('kbCommitCmd', () => {
     );
     const code = await kbCommitCmd(exportFn, ['--global']);
     expect(code).toBe(0);
-    expect(exportFn).toHaveBeenCalledWith({ repo_path: undefined, scope: 'global' });
+    expect(exportFn).toHaveBeenCalledWith({ scope: 'global' }, undefined);
     const output = logSpy.mock.calls.flat().join('\n');
     expect(output).toContain('scope=global');
     expect(output).toContain('Not committed');
   });
 
-  it('passes --repo through as repo_path', async () => {
+  it('passes --repo through as the explicit anchor folder', async () => {
     const exportFn: KbExportFn = vi.fn(async () =>
       JSON.stringify({ exported: 0, path: '.fleet/kb-canonical.json', scope: 'project', committed: false })
     );
     const code = await kbCommitCmd(exportFn, ['--repo', '/tmp/some-repo']);
     expect(code).toBe(0);
-    expect(exportFn).toHaveBeenCalledWith({ repo_path: '/tmp/some-repo', scope: 'project' });
+    expect(exportFn).toHaveBeenCalledWith({ scope: 'project' }, { folder: '/tmp/some-repo' });
   });
 
   it('reports "Not committed" wording for a no-op export (no change / autoCommit off / not a git repo)', async () => {

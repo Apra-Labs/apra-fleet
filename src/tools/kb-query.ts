@@ -1,13 +1,11 @@
 import { z } from 'zod';
-import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
+import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 const L2_CONTENT_CAP = 3200;
 
 export const kbQuerySchema = z.object({
-  ...kbScopeFields,
-  repo_path: z.string().optional()
-    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   query: z.string().min(1).optional().describe('Free-text search string. Required unless flagged_only is true or tag is provided.'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook']).optional()
     .describe('Filter by content type'),
@@ -27,9 +25,12 @@ export const kbQuerySchema = z.object({
   // min_confidence threshold so the contract does not bake in a tier ordering and
   // matches kb_list's `confidence` naming.
   confidence: z.array(z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED'])).min(1).optional()
-    .describe('Only return entries whose confidence tier is in this list (e.g. ["CONFIRMED"]). Applies to l1_results, l2_expanded and related_claims alike. Omit for every tier. Ignored when flagged_only is true.'),
+    .describe('Only return entries whose confidence tier is in this list (e.g. ["CONFIRMED"]). Applies to l1_results, l2_expanded and related_claims alike. Default when omitted: ["CONFIRMED"] -- INFERRED and UNVERIFIED entries are returned only when listed explicitly. Ignored when flagged_only is true.'),
   exclude_disputed: z.boolean().optional()
-    .describe('Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default false. Ignored when flagged_only is true.'),
+    .describe('Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default true when confidence is omitted (CONFIRMED-undisputed default); default false when confidence is given explicitly. Ignored when flagged_only is true.'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbQueryInput = z.infer<typeof kbQuerySchema>;
@@ -39,15 +40,17 @@ export type KbQueryInput = z.infer<typeof kbQuerySchema>;
 // does not (a remote KB server predating the filter ignores unknown params),
 // so the filter is a guarantee of this tool, not of whichever store answered.
 function passesTrustFilter(
-  e: { confidence?: string; flagged_for_review?: boolean; contradiction_of?: string | null },
+  e: { confidence?: string; flagged_for_review?: boolean; contradiction_of?: string | null; tags?: string[] },
   input: KbQueryInput,
+  ownerTag?: string,
 ): boolean {
+  if (ownerTag !== undefined && !(e.tags ?? []).includes(ownerTag)) return false;
   if (input.confidence?.length && !input.confidence.includes(e.confidence as NonNullable<KbQueryInput['confidence']>[number])) return false;
   if (input.exclude_disputed && (e.flagged_for_review || e.contradiction_of)) return false;
   return true;
 }
 
-export async function kbQuery(input: KbQueryInput): Promise<string> {
+export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<string> {
   // Tag-only calls are valid (HIGH-1 fix): the provider's plain (non-FTS)
   // branch supports a queryless listing, so `kb_query({ tag })` lists all
   // entries carrying the tag -- the KB Agent curator's Step 2 depends on it.
@@ -55,7 +58,13 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
     throw new Error('Provide query (free-text search), tag (exact-match tag listing), or flagged_only: true (list contradictions)');
   }
 
-  const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
+  // A MEMBER session reads its checkout bible view unless it explicitly asks
+  // for INFERRED/UNVERIFIED (kb-self.ts getSelfReadKb); flagged_only ignores
+  // the confidence filter, so it is answered from the view too.
+  // An explicit INFERRED/UNVERIFIED request in a MEMBER session goes to the
+  // per-repo DB and sees only the caller's own captures (ownerTag).
+  const { providers, ownerTag } = await getSelfReadKb(anchor, input.flagged_only ? undefined : input.confidence);
+  if (ownerTag !== undefined) requireSqliteProject(providers.project, 'kb_query');
 
   if (input.flagged_only) {
     const flaggedOpts = {
@@ -86,6 +95,15 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
     });
   }
 
+  // Default-trusted reads: with no confidence filter only CONFIRMED, undisputed
+  // entries come back. An explicit confidence list opts into other tiers, and
+  // then disputed entries are only dropped if exclude_disputed says so.
+  input = {
+    ...input,
+    confidence: input.confidence?.length ? input.confidence : ['CONFIRMED'],
+    exclude_disputed: input.exclude_disputed ?? !input.confidence?.length,
+  };
+
   const queryOpts = {
     query: input.query,
     type: input.type,
@@ -96,23 +114,24 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
     include_superseded: input.include_stale ?? false,
     confidence: input.confidence,
     exclude_disputed: input.exclude_disputed,
+    owner_tag: ownerTag,
   };
 
   // The trust filter runs PER PROVIDER, before the title de-dup below: filtering
   // after the merge would let an excluded project entry shadow an admissible
   // global entry of the same title and then vanish, taking both with it.
-  const filtering = Boolean(input.confidence?.length || input.exclude_disputed);
+  const filtering = Boolean(input.confidence?.length || input.exclude_disputed || ownerTag);
   const trustedL1 = async (provider: typeof providers.project) => {
     const first = await provider.query(queryOpts);
     if (!filtering) return first.results;
-    let kept = first.results.filter(e => passesTrustFilter(e, input));
+    let kept = first.results.filter(e => passesTrustFilter(e, input, ownerTag));
     // A provider that ignored the filter may have spent its whole limit on
     // entries just dropped here. A full page that filtered short is the only
     // signal of that (the sqlite provider filters in SQL, so it never trips
     // this); re-ask once with a wider window and trim back to the limit.
     if (kept.length < queryOpts.limit && first.results.length >= queryOpts.limit) {
       const wider = await provider.query({ ...queryOpts, limit: queryOpts.limit * 4 });
-      kept = wider.results.filter(e => passesTrustFilter(e, input));
+      kept = wider.results.filter(e => passesTrustFilter(e, input, ownerTag));
     }
     return kept.slice(0, queryOpts.limit);
   };
@@ -158,7 +177,8 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
       relatedClaims = (await providers.project.relatedClaims(top5Ids, undefined, {
         confidence: input.confidence,
         exclude_disputed: input.exclude_disputed,
-      })).filter(e => passesTrustFilter(e, input));
+        owner_tag: ownerTag,
+      })).filter(e => passesTrustFilter(e, input, ownerTag));
     } catch {
       relatedClaims = [];
     }

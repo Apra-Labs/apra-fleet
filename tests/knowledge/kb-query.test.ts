@@ -247,7 +247,7 @@ describe('kb_query tool', () => {
       symbols: ['symToolQueryUntagged'],
     }));
 
-    const parsed = JSON.parse(await kbQuery({ query: 'registry', tag: 'sprint:kb-inflight-capture' }));
+    const parsed = JSON.parse(await kbQuery({ query: 'registry', tag: 'sprint:kb-inflight-capture', confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }));
     const titles = parsed.l1_results.map((e: any) => e.title);
     expect(titles).toContain('Tool tagged registry entry');
     expect(titles).not.toContain('Tool untagged registry entry');
@@ -256,7 +256,7 @@ describe('kb_query tool', () => {
   it('no tag -> unchanged behavior', async () => {
     await provider.capture(makeInput({ title: 'Tool no-tag alpha', symbols: ['symToolQueryAlpha'] }));
 
-    const parsed = JSON.parse(await kbQuery({ query: 'registry' }));
+    const parsed = JSON.parse(await kbQuery({ query: 'registry', confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }));
     const titles = parsed.l1_results.map((e: any) => e.title);
     expect(titles).toContain('Tool no-tag alpha');
   });
@@ -271,7 +271,7 @@ describe('kb_query tool', () => {
       symbols: ['symToolQueryComposeO'],
     }));
 
-    const parsed = JSON.parse(await kbQuery({ query: 'registry', type: 'knowledge', tag: 'sprint:z' }));
+    const parsed = JSON.parse(await kbQuery({ query: 'registry', type: 'knowledge', tag: 'sprint:z', confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }));
     const titles = parsed.l1_results.map((e: any) => e.title);
     expect(titles).toContain('Tool compose knowledge registry');
     expect(titles).not.toContain('Tool compose other-tag knowledge registry');
@@ -290,7 +290,7 @@ describe('kb_query tool', () => {
       symbols: ['symTagOnlyB'],
     }));
 
-    const parsed = JSON.parse(await kbQuery({ tag: 'phase:1' }));
+    const parsed = JSON.parse(await kbQuery({ tag: 'phase:1', confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }));
     const titles = parsed.l1_results.map((e: any) => e.title);
     expect(titles).toContain('Tag-only phase capture');
     expect(titles).not.toContain('Tag-only unrelated entry');

@@ -89,6 +89,18 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'success' });
     });
 
+    test('executeCommand passes a multi-line heredoc command through byte-for-byte', async () => {
+        // The server hands the command to its POSIX wrapper as data, so the
+        // client must not trim, join or re-quote it (a trailing heredoc
+        // terminator, CRLF or trailing `&` must all arrive intact).
+        let calledArgs;
+        const mockClient = { async callTool(_name, args) { calledArgs = args; return {}; } };
+        const command = "cat <<'EOF'\r\nit's $HOME\r\nEOF\r\nsleep 1 &";
+        await new ApraFleet(mockClient).executeCommand({ command, timeoutMs: 5000 });
+        assert.strictEqual(calledArgs.command, command);
+        assert.strictEqual('timeoutMs' in calledArgs, false);
+    });
+
     test('listMembers', async () => {
         let calledName, calledArgs;
         const mockClient = {
@@ -212,7 +224,7 @@ describe('ApraFleet', () => {
         };
 
         const fleet = new ApraFleet(mockClient);
-        const options = { member_name: 'alice' };
+        const options = { member_name: 'alice', force_oauth_copy: true };
         const result = await fleet.provisionLlmAuth(options);
 
         assert.strictEqual(calledName, 'provision_llm_auth');
@@ -391,5 +403,16 @@ describe('ApraFleet', () => {
         await fleet.shutdownServer({ timeoutMs: 2000 });
 
         assert.deepStrictEqual(calledOpts, { timeoutMs: 2000 });
+    });
+
+    test('exports code_reindex and code_status wrappers that call the tools with no arguments', async () => {
+        const calls = [];
+        const mockClient = { async callTool(name, args) { calls.push([name, args]); return { ok: true }; } };
+        const fleet = new ApraFleet(mockClient);
+        assert.strictEqual(typeof fleet.codeReindex, 'function');
+        assert.strictEqual(typeof fleet.codeStatus, 'function');
+        await fleet.codeReindex();
+        await fleet.codeStatus();
+        assert.deepStrictEqual(calls, [['code_reindex', {}], ['code_status', {}]]);
     });
 });

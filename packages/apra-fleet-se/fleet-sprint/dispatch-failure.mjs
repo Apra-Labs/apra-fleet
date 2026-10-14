@@ -99,6 +99,12 @@ function agentRan(details) {
 //     command() throw it from inside the dispatch closure BEFORE any dispatch
 //     is issued (packages/apra-fleet-workflow/src/workflow/errors.mjs), so it
 //     alone provably mutated nothing.
+//
+// NOT a guarantee the member checkout is untouched: a transport drop can sever
+// the channel while the member keeps working. The doer retry ladder therefore
+// does not trust this predicate for its reset-onto-remote-tip decision; that
+// reset salvages local work to a fleet-salvage/ side ref first (see the comment
+// at retryFollowsPossibleMutation in dispatch-role.mjs).
 export function isNoMutationDispatchFailure(err) {
     if (!err) return false;
     if (err instanceof AgentOutputError) return false;

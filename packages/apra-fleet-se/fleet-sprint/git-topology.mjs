@@ -244,10 +244,13 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
             identities,
             message:
                 '[Topology] Refusing to start the multi-member sprint in legacy mode: the configured members disagree on ' +
-                'their identity signals (are on differing HEADs). Re-run with --sync to enable cross-member sync mode, which ' +
-                'tolerates differing HEADs and uses orchestrator-bracketed git sync to reconcile them. Per-member signals: ' +
+                'their identity signals (are on differing HEADs) even after launch alignment moved every member to the ' +
+                'sprint branch. Members that were merely on other commits are aligned automatically, so a residual ' +
+                'difference means a member keeps local-only commits on the sprint branch (reused rather than reset so they ' +
+                'are not lost): push or reconcile that member\'s local sprint branch, then relaunch. Per-member signals: ' +
                 identities.map((i) => `${i.member}=${i.signal}`).join(', ') +
-                '. See docs/architecture.md "Multi-member topology (fleet-sprint)" for details.',
+                '. (Members that are intended to diverge between dispatches belong in --sync mode instead.) ' +
+                'See docs/architecture.md "Multi-member topology (fleet-sprint)" for details.',
         };
     }
 

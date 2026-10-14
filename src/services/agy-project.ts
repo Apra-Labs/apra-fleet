@@ -18,7 +18,7 @@ import { getStrategy } from './strategy.js';
 import { updateAgent } from './registry.js';
 import { buildAgyNodeCommand, AGY_MODEL_FOR_TIER } from '../providers/agy.js';
 import { getModelOverride } from './user-config.js';
-import { decryptPassword } from '../utils/crypto.js';
+import { stageAuthEnv, removeMemberSecretFile } from './member-secret-env.js';
 import { logLine, logWarn } from '../utils/log-helpers.js';
 
 export type AgyExecFn = (command: string, timeoutMs?: number) => Promise<SSHExecResult>;
@@ -87,7 +87,8 @@ export interface NewProjectScriptOptions {
   workFolder: string;
   model: string;
   home?: string | null;
-  /** Extra environment for the agy process (the member's stored auth env vars). */
+  /** Extra NON-SECRET environment for the agy process. The script text is part of
+   *  the member command line -- credentials go through stageAuthEnv instead. */
   env?: Record<string, string>;
   /** Test seam: run this executable (plus leading args) instead of `agy`. */
   agyCommand?: { file: string; args: string[] };
@@ -255,19 +256,6 @@ export function parseAgyNewProjectResult(result: SSHExecResult): string {
   return id;
 }
 
-/** Stored auth env vars for the member (e.g. ANTIGRAVITY_API_KEY), passed to
- *  the agy process through node's spawn env rather than a shell prefix. */
-function memberAuthEnv(agent: Agent): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [name, encrypted] of Object.entries(agent.encryptedEnvVars ?? {})) {
-    try {
-      out[name] = decryptPassword(encrypted);
-    } catch {
-      // an undecryptable entry is skipped; agy then falls back to its own auth
-    }
-  }
-  return out;
-}
 
 function defaultExec(agent: Agent): AgyExecFn {
   const strategy = getStrategy(agent);
@@ -346,15 +334,25 @@ export async function provisionAgyProject(
     agyCommand = { file: process.execPath, args: ['-e', 'process.exit(97)', '--'] };
   }
   const model = getModelOverride('agy', 'cheap') ?? AGY_MODEL_FOR_TIER.cheap;
+  // Stored auth env vars reach agy through the staged env file the command
+  // loads (inherited by node, then by the agy spawn) -- never embedded in the
+  // script text, which is part of the member command line for the whole run.
   const script = buildAgyNewProjectScript({
     workFolder: agent.workFolder,
     model,
     home: homeFor(agent),
-    env: memberAuthEnv(agent),
     agyCommand,
   });
   const cmd = buildAgyNodeCommand(script, memberOs(agent), 'FLEET_AGY_NEW_PROJECT_EOF');
-  return withMachineLock(agent, async () => parseAgyNewProjectResult(await exec(cmd, NEW_PROJECT_EXEC_TIMEOUT_MS)));
+  return withMachineLock(agent, async () => {
+    const staged = await stageAuthEnv(agent);
+    try {
+      return parseAgyNewProjectResult(await exec(staged.prefix + cmd, NEW_PROJECT_EXEC_TIMEOUT_MS));
+    } catch (err) {
+      if (staged.path) await removeMemberSecretFile(agent, staged.path);
+      throw err;
+    }
+  });
 }
 
 export interface EnsureAgyProjectResult {

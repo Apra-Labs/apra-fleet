@@ -973,9 +973,11 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         memberGitState = null,
         // Optional ({ command, member_name }) => result|undefined hook, called
         // for every executeCommand() before anything else. A test uses it to
-        // answer one member's commands (e.g. a member beads set-up sequence)
-        // and to observe their order: a returned non-undefined value is the
-        // command's result.
+        // observe the ORDER of member commands (e.g. a G-pull's `git fetch`)
+        // relative to its own callTool events, to answer one member's
+        // commands (e.g. a member beads set-up sequence), and to fail one
+        // member's command: a returned non-undefined value is the command's
+        // result.
         onCommand = null,
         // apra-fleet-unw2.9 (N11): injectable git/gh failure. Optional
         // (cmd: string) => boolean predicate, tested ONLY against `git `/
@@ -1068,6 +1070,8 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
     let planRound = 0;
     let reviewRound = 0;
     let extraTaskAdded = false;
+    /** member name -> the branch the engine last put it on (`git checkout [-B] <b>`), for `git rev-parse --abbrev-ref HEAD`. */
+    const mockCheckedOut = new Map();
     // apra-fleet-02s.3: a schema-repair re-ask RESUMES the session that just
     // failed and sends a lean reminder prompt (no longer a self-contained
     // echo of the original prompt) -- so opts.prompt.startsWith('Final review
@@ -1165,6 +1169,19 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 } else {
                     const coMatch = opts.command.match(/^git checkout (\S+)\s*$/);
                     if (coMatch) st.checkedOut = coMatch[1];
+                }
+            }
+
+            // The KB write path reads the maintainer's checked-out branch before
+            // every git command it runs there. Answer with the branch the member
+            // was last put on (`git checkout -B/<b>`), independent of the
+            // optional memberGitState model; unknown falls through below.
+            {
+                const mName = opts.member_name || '(none)';
+                const co = opts.command.match(/git checkout (?:-B )?([^\s-]\S*)/);
+                if (co) mockCheckedOut.set(mName, co[1]);
+                if (/^git rev-parse --abbrev-ref HEAD\s*$/.test(opts.command) && mockCheckedOut.has(mName)) {
+                    return mockCmdResult(0, mockCheckedOut.get(mName), '');
                 }
             }
 
@@ -1385,6 +1402,21 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 // non-hosted).
                 if (/^git remote get-url origin\b/.test(opts.command)) {
                     return mockCmdResult(0, originUrl, '');
+                }
+
+                // Retry salvage (GitHub #716): a retried doer's reset onto the
+                // remote tip first reads `git rev-parse HEAD <remote>/<branch>`
+                // and runs `git stash create`, parsing both outputs and failing
+                // closed on anything unparseable. This mock has no real
+                // checkout, so answer them as a clean, up-to-date one: HEAD
+                // equals the remote tip and there is no tracked WIP (empty
+                // stash output), i.e. nothing to salvage.
+                if (/^git rev-parse HEAD \S+\s*$/.test(opts.command)) {
+                    const sha = '0'.repeat(40);
+                    return mockCmdResult(0, `${sha}\n${sha}\n`, '');
+                }
+                if (/^git (?:-c \S+ )*stash create\s*$/.test(opts.command)) {
+                    return mockCmdResult(0, '', '');
                 }
 
                 return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');

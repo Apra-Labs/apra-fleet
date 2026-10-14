@@ -143,4 +143,13 @@ export class McpClient {
     async callTool(name, args, opts = {}) {
         return this.request("tools/call", { name: name, arguments: args }, opts);
     }
+
+    /**
+     * MCP tools/list for this session. A MEMBER session (?member=<uuid>) gets
+     * the member allowlist; a full session gets every registered tool.
+     * @returns {Promise<{ tools: Array<{ name: string }> }>}
+     */
+    async listTools(opts = {}) {
+        return this.request("tools/list", {}, opts);
+    }
 }

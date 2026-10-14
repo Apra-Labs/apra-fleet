@@ -446,9 +446,21 @@ inferred) when the sprint starts:
 enforces the precondition for whichever mode is selected, and refuses to
 start rather than silently degrading:
 
-- **`legacy` mode precondition** -- compares an identity signal
-  (`git rev-parse HEAD`) across every configured member and refuses to start
-  on a mismatch. Single-member sprints trivially pass (nothing to compare). A
+- **`legacy` mode precondition** -- first aligns every member to the
+  sprint base (`fleet-sprint/member-align.mjs`, `prepareLaunchTopology()`):
+  pass 1 checks every member read-only (reachable, same `origin` URL, base
+  fetchable, sprint branch not diverged, working-tree status readable) and
+  refuses -- naming member, cause and fix -- before ANY member is moved if
+  one fails; pass 2 preserves uncommitted work in a named
+  `fleet-sprint[<branch>] auto-stash ...` stash and checks out the sprint
+  branch (`origin/<branch>` when it exists, else cut from `origin/<base>`,
+  via the same `decideEnsureBranchAction()` the Ensure Sprint Branch phase
+  uses), logging one `[Align] member '<m>': <from> -> <to>` line per member.
+  Members that were merely on other commits therefore no longer block the
+  launch, and nobody aligns members by hand. It then compares an identity
+  signal (`git rev-parse HEAD`) across every configured member and refuses to
+  start on a residual mismatch (a member keeping local-only commits on the
+  sprint branch). Single-member sprints trivially pass (nothing to compare). A
   member whose signal cannot be obtained is treated as a refusal, not a
   silent skip. This is a best-effort heuristic checked once at start, not an
   ongoing guarantee: two independent checkouts that merely happen to sit on
@@ -1038,7 +1050,8 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
    same cost block is rendered by the engine in the PR body (`### Cost`).
 3. **Publish PR** -- pushes the sprint branch (`git push -u origin
    <branch>`), then raises (never merges) a PR via `gh pr create`, whose
-   title (`Auto-sprint [PASS|FAIL]: <branch>`) and body state the final
+   title (`fleet-sprint [PASS|FAIL]: <branch>`; PRs from before the
+   rename carry `Auto-sprint [...]`) and body state the final
    verdict plainly, with the reviewer's (sanitized) notes appended. PR
    creation is idempotent: a `gh pr create` failure whose message matches
    `/already exists/i` is treated as success (the desired end state -- a PR

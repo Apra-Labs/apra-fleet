@@ -46,11 +46,14 @@ async function getAuthStatus(agent: Agent): Promise<string> {
   }
 
   let apiKeyExists = false;
-  if (provider.authEnvVar) {
+  // Every credential kind counts (e.g. CLAUDE_CODE_OAUTH_TOKEN as well as ANTHROPIC_API_KEY).
+  const authVars = provider.authEnvVarNames?.() ?? (provider.authEnvVar ? [provider.authEnvVar] : []);
+  for (const envVar of authVars) {
     try {
-      const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(provider.authEnvVar), 5000);
+      const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(envVar), 5000);
       if (apiKeyResult.stdout.trim().length > 5) {
         apiKeyExists = true;
+        break;
       }
     } catch { /* ignore */ }
   }

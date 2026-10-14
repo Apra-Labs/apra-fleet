@@ -272,14 +272,22 @@ describe('execute_prompt -- Claude permission_denied', () => {
   it('strict permission_denied keeps the session, usage and budget bookkeeping of a dispatch that ran', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-bookkeeping', llmProvider: 'claude', tokenUsage: { input: 0, output: 0 } });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(run(RESULT));
+    // The CLI honors the minted --session-id (a differing id is a mismatch,
+    // which is not persisted -- see the mismatch tests below).
+    let minted = '';
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      const m = cmd.match(/--session-id "?([0-9a-f-]{36})"?/);
+      if (!m) return run('');
+      minted = m[1];
+      return run(RESULT.replaceAll(SESSION, minted));
+    });
     const result: any = await executePrompt({ member_id: member.id, prompt: 'review the plan', resume: false, timeout_s: 5, fail_on_permission_denial: true });
     expect(result.structuredContent.reason).toBe('permission_denied');
     const after = getAgent(member.id)!;
     // The stored session advanced, so a later resume:true continues this turn.
-    expect(after.sessionId).toBe(SESSION);
+    expect(after.sessionId).toBe(minted);
     expect(after.tokenUsage!.input).toBe(1840);
-    expect(isKnownSession(member.id, SESSION)).toBe(true);
+    expect(isKnownSession(member.id, minted)).toBe(true);
     expect(getStoredPid(member.id)).toBeUndefined();
   });
 

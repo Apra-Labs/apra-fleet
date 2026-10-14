@@ -208,11 +208,23 @@ MCP tools that ship with the KB:
 | `kb_query` | Two-level FTS retrieval (L1: title+summary, L2: full content) |
 | `kb_list` | Audit-list entries by confidence/type/module/symbol (read-only, no use_count bump) |
 | `kb_context` | Batch file freshness check (single git call for N files) |
-| `kb_invalidate` | Mark files stale immediately (also called by the git hook) |
-| `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |
+| `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` |
+| `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED (FULL session, or the sprint's kb_maintainer member session only) |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
-| `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible |
-| `kb_setup` | Install git hook, write provider config, store remote token encrypted |
+| `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible (FULL session only) |
+| `kb_bible_commit` | Merge confirmed entry ids into the bible (format v3, per-entry file hashes), remove superseded or invalidated entries, and commit locally with base-branch provenance (used by the sprint kb_maintainer) |
+| `kb_setup` | Install git hook, write provider config, store remote token encrypted (FULL session only) |
+
+`code_*` tools resolve the calling session's own folder, refuse with typed
+`E-CODE-INDEX-NOT-READY` / `E-CODE-INTEL-DISABLED` errors when the index is not
+usable, and report `indexedCommit` on every result; `code_reindex` and
+`code_status` drive and inspect the index (see
+[docs/code-index-readiness.md](docs/code-index-readiness.md)). Registering a
+remote member also installs a member-mode apra-fleet on it and wires a
+per-folder MCP entry, recorded as `fleetMcp` (see
+[docs/member-fleet-mcp-wiring.md](docs/member-fleet-mcp-wiring.md)).
+`session_stats` reports each member's `kb_*` / `code_*` call counts, which
+fleet-sprint shows per dispatch in its Knowledge & Code Intel viewer tab.
 
 `kb_setup --remote <url> --token <key>` takes effect immediately: the next
 KB tool call resolves its project provider from this config, so a stock build
@@ -225,22 +237,30 @@ for the exact selection rule and its fallback-construction invariant.
 **The provider config is install-wide, not per repo.** There is one
 `knowledge/config.json` per fleet install, so pointing it at a remote KB
 points EVERY repo that install serves -- every member, every project -- at
-that server. `kb_setup`'s `repo_path` only chooses which repo gets the git
-post-commit hook; it does not scope the config. On a shared fleet server,
+that server. `kb_setup` only places the git post-commit hook (in the calling
+session's own repo); it does not scope the config. On a shared fleet server,
 treat `kb_setup --remote` as a change for all of its users.
 
-Every KB tool call is scoped to the repo it is about -- a fleet server
-handling many members across many repos never lets one repo's learnings land
-in another repo's KB. Scope is normally derived from the caller's repo path;
-tools also accept an explicit `repo_remote_url` so a remote member (whose
-work folder is a path on another host, unreachable from the fleet server's
-filesystem) resolves to the same project KB as a local clone of that repo
-instead of a shared fallback database. The automatic post-prompt harvest and
-the `code_context` KB enrichment path both forward this URL too, and an
-unreachable work-folder path is never silently swapped for the fleet
-server's own working directory -- see
+Every KB tool call is scoped to the calling session's own repo -- a fleet
+server handling many members across many repos never lets one repo's
+learnings land in another repo's KB. No `kb_*` tool takes a scope argument:
+a member session uses its registered work folder and any other session uses
+the fleet server's working folder, and a folder that is not a git repository
+with an origin remote is refused with a typed error that names the fix:
+`E-SELF-NO-WORKFOLDER` (create the folder or re-register the member),
+`E-SELF-NOT-A-REPO` (`git init` or clone there) or `E-SELF-NO-REMOTE`
+(`git remote add origin <url>`; for a remote member, record its origin with
+`update_member git_repos`). Member sessions get a reduced, explicit tool list:
+the `code_*` tools, a few self-reporting tools and the `kb_*` tools except
+`kb_setup` and `kb_export` (never served to a member) and `kb_promote` /
+`kb_resolve_contradiction` (served only to the sprint engine's kb_maintainer
+session, which applies the reviewer's promotions). The `apra-fleet call` verb
+lets a process call tools as a member. KB reads default to CONFIRMED,
+undisputed entries. See
 [Per-repo KB isolation](docs/knowledge-layer.md#per-repo-kb-isolation) for
-the full anchor and cache-keying rules.
+the resolution, anchor and cache-keying rules, and
+[Member-session tool calls](docs/knowledge-layer.md#member-session-tool-calls)
+for the member tool model.
 
 The backend is swappable: start with local SQLite, add a central HTTP server for
 a team, or plug in Postgres later -- all via a one-line config change.
@@ -332,7 +352,10 @@ transits an orchestrator-readable output. Permission
 composition verifies its own delivery: a grant is read back off the target
 member and structurally compared against what was intended before it is
 reported as applied, so a failed or partial write is surfaced as an
-explicit failure rather than a false success.
+explicit failure rather than a false success. Dropped or unmappable permission
+tokens are surfaced explicitly in composition warnings, and shell pipeline
+stages are decomposed into constituent command grants to provide precise
+permission suggestions across providers.
 
 ## Email Configuration
 
@@ -442,6 +465,7 @@ third-party verticals.
 | Codebase wiki (architecture, internals, AI Q&A) | [DeepWiki](https://deepwiki.com/Apra-Labs/apra-fleet) |
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
 | Choosing a provider (roles, gotchas, mixing providers, OpenCode/local models) | [docs/provider-guide.md](docs/provider-guide.md) |
+| Antigravity (agy) provider (project binding, permission mapping, model resolution, Windows parity) | [docs/agy-provider.md](docs/agy-provider.md) |
 | Transport, service mode, and supported interfaces | [docs/transport-and-service-mode.md](docs/transport-and-service-mode.md) |
 | Cost model (tiering, shell-over-prompts, measured token spend) | [docs/cost-model.md](docs/cost-model.md) |
 | The PM skill (doer-reviewer sprints, `/pm` commands) | [docs/pm-skill-overview.md](docs/pm-skill-overview.md) |
@@ -472,10 +496,10 @@ third-party verticals.
 | Authoring a SEA-embedded `apra-fleet workflow` (manifest, entry contract, launcher env vars) | [docs/authoring-workflows.md](docs/authoring-workflows.md) |
 | Workflow launcher fleet-server resolution order (HTTP singleton vs. stdio) | [docs/adr-workflow-server-resolution.md](docs/adr-workflow-server-resolution.md) |
 | Running fleet-sprint (full flag reference; identical for npm-install, standalone binary, and git-clone dev checkout) | [packages/apra-fleet-se/fleet-sprint/docs/README.md](packages/apra-fleet-se/fleet-sprint/docs/README.md) |
-| Auto-sprint overview (autonomous plan-develop-review-publish loop) | [packages/apra-fleet-se/docs/overview.md](packages/apra-fleet-se/docs/overview.md) |
-| Auto-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
-| Auto-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
-| Auto-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
+| fleet-sprint overview (autonomous plan-develop-review-publish loop) | [packages/apra-fleet-se/docs/overview.md](packages/apra-fleet-se/docs/overview.md) |
+| fleet-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
+| fleet-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
+| fleet-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
 | fleet-supervisor skill (start/stop/restart/auto-start-on-boot, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
 | Scoped in-cycle replan findings threading, and the wrapper-injection role KB contract | [docs/scoped-replan-and-planner-kb-contract.md](docs/scoped-replan-and-planner-kb-contract.md) |
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
@@ -773,13 +797,13 @@ Two topology modes are supported, selected explicitly when a sprint starts:
 Guards enforcing whichever mode is selected:
 
 1. **Branch-ensure everywhere** (both modes): before the first doer round, the runner git-ensures the sprint branch (`fetch` + `checkout -B`) on **every** member in the union of the backlog/doer/reviewer pools -- not just the backlog member -- and non-destructively re-checks-out the branch on each member at the start of later cycles (it never resets to base once work is committed).
-2. **Topology precondition**: `bin/cli.mjs` calls `checkMemberTopology()` before starting a multi-member sprint. In `legacy` mode it compares an identity signal (`git rev-parse HEAD`) across the configured members and **refuses to start with a clear error** if they disagree (or if a member's signal can't be obtained); in `synced` mode HEADs are allowed to differ, but every member must share the same git remote origin and pass a live beads-Dolt-pull probe. Single-member sprints trivially pass either check.
+2. **Topology precondition**: `bin/cli.mjs` calls `checkMemberTopology()` before starting a multi-member sprint. In `legacy` mode it first **aligns every member to the sprint base** (`packages/apra-fleet-se/fleet-sprint/member-align.mjs`): it checks every member's preconditions (same origin URL, base fetchable, sprint branch not diverged, member reachable) and refuses before moving any member if one fails, then preserves uncommitted work in a named `fleet-sprint[<branch>]` stash and checks out the sprint branch (`origin/<branch>` if it exists, else cut from `origin/<base>`), logging one `[Align]` line per member. It then compares an identity signal (`git rev-parse HEAD`) across the aligned members and **refuses to start with a clear error** if they still disagree (a member keeping local-only sprint-branch commits) or if a member's signal can't be obtained; in `synced` mode HEADs are allowed to differ, but every member must share the same git remote origin and pass a live beads-Dolt-pull probe. Single-member sprints trivially pass either check.
 
 See `packages/apra-fleet-se/docs/architecture.md` for the full internals of both modes, including the escalation ladders and the always-on supervisor service that launches and tracks sprints.
 
 **Beads identity is verified, not overridden.** The supervisor discovers its own `.beads` by walking up from its cwd (exactly like `bd`) and passes that identity to every sprint it launches (`--expect-beads`, env `FLEET_SPRINT_EXPECT_BEADS`); the engine then probes each member's own `bd where`/`sync.remote`/git origin and aborts before any `bd` mutation on a mismatch. Severity is deliberate: a **mismatch** (a field that resolved on both sides and differs) is fatal, because mutating the wrong tracker is data corruption; a **probe failure** (no `.beads` found, `bd` not installed, `sync.remote` unset, no git origin) is a visible warning that names the fix -- the supervisor still starts (health `beads: null` + `beadsWarning`, amber dashboard line, no `--expect-beads` handed down until `GET /api/health?refresh=1` recovers it; a nonexistent `--beads-dir` is still a startup error), and the engine leaves the unresolved field out of the comparison and proceeds (the first real `bd` on a broken member surfaces it). `BEADS_DIR` is deliberately never set on a member: `bd` ignores an invalid `BEADS_DIR` silently and falls back to cwd discovery, so setting it would look authoritative while doing nothing -- verification against the member's real, independently-discovered identity is the only way to catch a member pointed at the wrong project.
 
-**Permission refusals during a dispatch.** A member CLI that refuses tool calls for lack of a grant makes `execute_prompt` fail with reason `permission_denied` and a `permissionDenied` block (`actions`, `denials` with per-call `suggestedGrants`, `suggestedGrants`, `hint`, `signals`, and for Claude `permissionMode` and `healable`). AGY reports refusals in its JSON envelope/stderr/transcript (`detectAgyPermissionDenial`). Claude reports them as a non-empty `permission_denials` on its result event while `is_error` stays false (`detectClaudePermissionDenial`, `src/providers/claude-permission-denial.ts`). For a Claude session the permission mode decides what a refusal means (`claudePermissionMode` in `src/providers/claude.ts`, the one function both the CLI flag and the denial handling read): `unattended: 'auto'` runs `--permission-mode auto` only on a model that supports it, and falls back to `acceptEdits` on Haiku and pre-4.6 Sonnet/Opus, which would otherwise start in the stricter Manual mode. In auto or bypass mode a refusal is the safety classifier or a deny rule, never a missing grant: it is marked `healable: false`, and a complete reply comes back as a success carrying the denials in `permissionWarning` (logged) instead of a failure; an incomplete one fails `permission_denied` with `healable: false`. For AGY, and for a Claude caller that passes `fail_on_permission_denial: true` (fleet-sprint does), a refusal is a `permission_denied` failure even when the reply looks complete: the reply was produced without the refused tool's real output, so no role may treat it as its result. Any partial reply is kept in `response`, and the session, usage, budget and PID bookkeeping of a completed dispatch still runs. Without the flag a complete Claude reply stands (v0.4.3 semantics) and carries the refusals in `permissionWarning`. Classification order: a max_turns, auth, server, overloaded or workspace_not_trusted result keeps its own reason, with the refusals attached as `permissionDenied`. In fleet-sprint the dispatch engine (`dispatchRole`, `packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs`) treats this reason as a missing-permission failure for every role. It is never degraded into a verdict, so a plan-reviewer refusal can no longer charge a plan-review round. It is healed progressively through `createPermissionDenialHeal` (`member-provisioning.mjs`): each refusal gets the missing grant, checked against the member's composed allow list (`compose_permissions` `dry_run` for the compose role of all its sprint roles, so stack commands such as npm count), and the attempt is re-run without being charged to the ladder; a different tool refused next is healed the same way. Only the member's first heal re-composes its config from the role profile; later heals only add grants, since a proactive compose rewrites the allow list. Grants are recorded in a per-member ledger folder (`project_folder`, under the fleet data dir) that every proactive compose of the member passes, so the next sprint keeps them. The heal stops with `MemberPermissionDeniedError` (naming the member, the denied actions and the fix) when no progress is possible: `not_healable` (auto/bypass refusal), `no_progress` (refused again after a grant that covers it, a grant outside the composed policy or refused as NEVER_AUTO_GRANT, or a call no grant maps to), `cap` (3 heals per member per sprint, 2 per dispatch), or `heal` (compose_permissions failed, or no heal is wired).
+**Permission refusals during a dispatch.** A member CLI that refuses tool calls for lack of a grant makes `execute_prompt` fail with reason `permission_denied` and a `permissionDenied` block (`actions`, `denials` with per-call `suggestedGrants`, `suggestedGrants`, `hint`, `signals`, and for Claude `permissionMode` and `healable`). AGY reports refusals in its JSON envelope/stderr/transcript (`detectAgyPermissionDenial`). An AGY refusal of a fleet tool outside the member allowlist (a transcript target matching `agyMemberDenyRules()`) is marked `healable: false`, `cause: 'policy_deny'` with no suggested grants, like Claude's. Claude reports them as a non-empty `permission_denials` on its result event while `is_error` stays false (`detectClaudePermissionDenial`, `src/providers/claude-permission-denial.ts`). For a Claude session the permission mode decides what a refusal means (`claudePermissionMode` in `src/providers/claude.ts`, the one function both the CLI flag and the denial handling read): `unattended: 'auto'` runs `--permission-mode auto` only on a model that supports it, and falls back to `acceptEdits` on Haiku and pre-4.6 Sonnet/Opus, which would otherwise start in the stricter Manual mode. In auto or bypass mode a refusal is the safety classifier or a deny rule, never a missing grant: it is marked `healable: false`, and a complete reply comes back as a success carrying the denials in `permissionWarning` (logged) instead of a failure; an incomplete one fails `permission_denied` with `healable: false` only when the caller passed `fail_on_permission_denial: true` (or the member is AGY); otherwise it keeps its ordinary classification (e.g. `empty_response`) with the refusals attached as `permissionDenied`. In any mode, a refusal of a fleet tool outside the member allowlist (one of the `claudeMemberDenyRules()` deny rules compose writes into the member's `.claude/settings.local.json` on purpose) is the member tool policy, not a missing grant: the whole denial is marked `healable: false` with `cause: 'policy_deny'` and no suggested grants, so it is handled exactly like an auto-mode refusal (a warning on a complete reply, `not_healable` in the heal) and the denied admin tool is never granted. Conversely, compose adds an allow rule for every member-allowlisted fleet tool (`memberMcpAllowRules()`), so a kb_*/code_* call in an acceptEdits session (Haiku, pre-4.6 models) is never refused for lack of one. For AGY, and for a Claude caller that passes `fail_on_permission_denial: true` (fleet-sprint does), a refusal is a `permission_denied` failure even when the reply looks complete: the reply was produced without the refused tool's real output, so no role may treat it as its result. Any partial reply is kept in `response`, and the session, usage, budget and PID bookkeeping of a completed dispatch still runs. Without the flag a complete Claude reply stands (v0.4.3 semantics) and carries the refusals in `permissionWarning`. Classification order: a max_turns, auth, server, overloaded or workspace_not_trusted result keeps its own reason, with the refusals attached as `permissionDenied`. In fleet-sprint the dispatch engine (`dispatchRole`, `packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs`) treats this reason as a missing-permission failure for every role. It is never degraded into a verdict, so a plan-reviewer refusal can no longer charge a plan-review round. It is healed progressively through `createPermissionDenialHeal` (`member-provisioning.mjs`): each refusal gets the missing grant, checked against the member's composed allow list (`compose_permissions` `dry_run` for the compose role of all its sprint roles, so stack commands such as npm count), and the attempt is re-run without being charged to the ladder; a different tool refused next is healed the same way. Only the member's first heal re-composes its config from the role profile; later heals only add grants, since a proactive compose rewrites the allow list. Grants are recorded in a per-member ledger folder (`project_folder`, under the fleet data dir) that every proactive compose of the member passes, so the next sprint keeps them. The heal stops with `MemberPermissionDeniedError` (naming the member, the denied actions and the fix) when no progress is possible: `not_healable` (auto/bypass refusal, or a member tool policy deny), `no_progress` (refused again after a grant that covers it, a grant outside the composed policy or refused as NEVER_AUTO_GRANT, or a call no grant maps to), `cap` (3 heals per member per sprint, 2 per dispatch), or `heal` (compose_permissions failed, or no heal is wired).
 
 ## Workflow Subsystem (SEA-embedded workflow runner)
 
@@ -862,6 +886,10 @@ share the exact same code path instead of re-implementing it:
   directories are left in place; `workflows/` itself is only removed if
   nothing user-authored remains, and the command prints which user
   workflows it kept.
+- A full `apra-fleet uninstall` also stops and removes the OS-level supervisor
+  service registration (systemd user unit, launchd agent, or Windows
+  scheduled task) when it points at the installed tree, before the workflows
+  runtime is deleted. See [docs/features/uninstall.md](features/uninstall.md).
 - `apra-fleet update` reads back the previously-persisted `--workflows` mode
   and threads it into the re-invoked install, so an update refreshes
   built-in workflow assets to the new version while preserving any
@@ -1065,8 +1093,10 @@ curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra
 Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe
 ```
 
-Intel Macs: there is no prebuilt `darwin-x64` binary -- build from source (see
-the Development section of the [README](../README.md)).
+**macOS (Intel, x64)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-darwin-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer
+```
 
 ## Manual install
 
@@ -1075,6 +1105,7 @@ Download the installer for your platform from
 
 - `apra-fleet-installer-linux-x64` -- Linux (x86_64)
 - `apra-fleet-installer-darwin-arm64` -- macOS (Apple Silicon)
+- `apra-fleet-installer-darwin-x64` -- macOS (Intel, x64)
 - `apra-fleet-installer-win-x64.exe` -- Windows
 
 Double-click the downloaded file, or run it from the terminal. Installation is the default action:
@@ -1117,8 +1148,25 @@ For other providers, these are written to that provider's skill/config directori
 
 This local install only covers the machine you run it on. Remote fleet members get their own copy of the PM agent files independently -- `register_member` and `update_member` push them on first contact, and `execute_prompt` re-checks and re-provisions any missing or stale files on first dispatch to that member each server run (so an existing member picks up new agent files after you upgrade Fleet, without needing to be re-registered). Local members are unaffected -- they share the operator's home directory above.
 
-The install also registers the MCP server (`claude mcp add apra-fleet`) and
-configures a status bar icon showing fleet member activity.
+The install also registers the MCP server and configures a status bar icon
+showing fleet member activity. The registration is written directly into the
+provider's user-scope config (for Claude, `mcpServers.apra-fleet` in
+`~/.claude.json`), not through `claude mcp add`, so the access secret never
+appears on a command line. It carries this install's access secret
+(`~/.apra-fleet/data/member-access.key`, owner-only, created on first install
+or server start) in the `X-Apra-Fleet-Member-Secret` header, and every config
+file holding it is made owner-only. The server refuses a `/mcp` request
+without the secret (HTTP 401 `access secret required`); re-run
+`apra-fleet install` to rewrite a registration that lacks it. (A `--transport
+stdio` install needs no secret and still registers with `claude mcp add`.)
+
+Restart open LLM CLI sessions after an install or upgrade so they pick up the
+secret (install says so when it created the secret or changed a
+registration). Never register apra-fleet by hand (`claude mcp add`, in any
+scope): a hand-added entry has no access-secret header, and a local- or
+project-scope one also wins over the user-scope entry. Re-run `apra-fleet
+install` to (re)register. See "Dynamic Client Registration rejected (HTTP 404)" in
+[Troubleshooting](troubleshooting.md).
 
 ### Two sprint entry points -- do not confuse them
 
@@ -1163,7 +1211,7 @@ described in `packages/apra-fleet-se/docs/cli-reference.md`).
 
 - No system-level changes -- no `/usr/local`, no PATH modification, no
   admin/sudo required.
-- No network calls beyond `claude mcp add` -- the binary stays local.
+- The MCP registration makes no network calls -- the binary stays local.
 - No background services or daemons -- the fleet server starts on demand when
   your AI coding agent connects.
 
@@ -1272,7 +1320,127 @@ apra-fleet uninstall --skill workflows
 ```
 
 If the fleet server is running, uninstall aborts and tells you to re-run with
-`--force`. Full detail: [docs/features/uninstall.md](features/uninstall.md).
+`--force`. A full uninstall also stops and removes a leftover supervisor OS service
+(systemd user unit, launchd agent, or Windows scheduled task) that runs the installed
+tree, and ends with a "Kept (intentionally)" list (`data/`, `fleet.key`, user workflows).
+Full detail: [docs/features/uninstall.md](features/uninstall.md).
+
+## Replace a full install on a member
+
+A fleet member machine needs a **member install only** (`apra-fleet install
+--member`: the server plus its user-mode auto-start, no skills, no workflows, no
+user-scope MCP entry). There is one member install per Unix user (per Windows
+user); members that share a user share it and each one self-registers its own
+uuid. A member that already has a *full* install (or a member install older than
+the `data/member-install.json` marker) is left alone by the fleet and reported as
+`fleetMcp` `unavailable(full-install-running)`; its owner replaces it with a
+member install using the steps below. The takeover flag
+`--force-stop-full-install` is no longer needed for KB or code-tool access:
+replacing the install supersedes it. The `full-install-running` detail prints
+these same steps with this member's paths already resolved, after staging the
+orchestrator's current installer in `<home>/.apra-fleet/staging/`.
+
+### Pre-check
+
+- No sprint is using the member.
+- Installed version: `<home>/.apra-fleet/bin/apra-fleet --version`.
+- Port 7523 on 127.0.0.1 is free or held by THIS user's apra-fleet:
+  `ss -ltnp | grep 7523` or `lsof -iTCP:7523 -sTCP:LISTEN` (Windows:
+  `Get-NetTCPConnection -LocalPort 7523`).
+- Linux: is a `fleet-supervisor` user unit present?
+  `systemctl --user status fleet-supervisor`.
+
+### Steps
+
+Replace `<home>` with the member user's home directory (spelled out, not `~`),
+and `<provider>` with the member's LLM provider (`claude`, `agy`, `codex`,
+`copilot`, `opencode`). `<staged>` is the installer the fleet staged (or that you
+downloaded from the release page) for this OS/arch, normally
+`<home>/.apra-fleet/staging/apra-fleet` (`apra-fleet.exe` on Windows).
+
+a. Back up the data directory AND the signing key, which lives outside `data/`:
+
+   ```bash
+   # posix (Linux, macOS)
+   cp -R '<home>/.apra-fleet/data' '<home>/.apra-fleet-data.full-install.bak'
+   cp '<home>/.apra-fleet/fleet.key' '<home>/.apra-fleet-data.full-install.bak/'
+   ```
+
+   ```powershell
+   # Windows (PowerShell)
+   Copy-Item -Recurse -LiteralPath '<home>\.apra-fleet\data' -Destination '<home>\.apra-fleet-data.full-install.bak'
+   Copy-Item -LiteralPath '<home>\.apra-fleet\fleet.key' -Destination '<home>\.apra-fleet-data.full-install.bak\'
+   ```
+
+b. Uninstall with the INSTALLED binary (old full installs have it). This stops
+   the server and removes the service unit or scheduled task, the binary, hooks,
+   skills, agents and the user-scope MCP registration; it keeps `data/`:
+
+   ```bash
+   '<home>/.apra-fleet/bin/apra-fleet' uninstall --force --yes
+   ```
+
+   ```powershell
+   & '<home>\.apra-fleet\bin\apra-fleet.exe' uninstall --force --yes
+   ```
+
+c. Move the old data aside (the backup from step a stays as the rollback copy):
+
+   ```bash
+   mv '<home>/.apra-fleet/data' '<home>/.apra-fleet/data.replaced'
+   ```
+
+   ```powershell
+   Move-Item -LiteralPath '<home>\.apra-fleet\data' -Destination '<home>\.apra-fleet\data.replaced'
+   ```
+
+d. Linux only: uninstall leaves `fleet-supervisor.service` RUNNING with its
+   `serve.mjs` deleted. Stop and remove it:
+
+   ```bash
+   systemctl --user stop fleet-supervisor
+   systemctl --user disable fleet-supervisor
+   mv '<home>/.config/systemd/user/fleet-supervisor.service' '<home>/.apra-fleet-data.full-install.bak/'
+   systemctl --user daemon-reload
+   ```
+
+e. Run the STAGED current installer (not the old binary, which predates the
+   `--member` flags):
+
+   ```bash
+   chmod +x '<staged>' && '<staged>' install --member --llm <provider> --force
+   ```
+
+   ```powershell
+   & '<staged>' install --member --llm <provider> --force
+   ```
+
+f. On the orchestrator, for every member on that Unix user run `update_member`
+   with `fleet_install: "auto"`. Each member self-registers its own uuid on the
+   new member install.
+
+### Verify
+
+- `<home>/.apra-fleet/bin/apra-fleet --version` shows the orchestrator version.
+- `<home>/.apra-fleet/data/member-install.json` exists (a member install writes
+  it before the auto-start step, so it is present even if the auto-start failed;
+  the exit is then non-zero with `E-MEMBER-AUTOSTART`, and re-running step f
+  retries).
+- `apra-fleet call --member <uuid> --list-tools` lists the `kb_*` and `code_*`
+  tools and none of `execute_*`, `register_*` or `credential_*`.
+- `member_detail` with `refresh: true` shows `fleetMcp` `available`.
+
+### Rollback
+
+Run `apra-fleet uninstall --force --yes` for the member install, restore the
+backed-up data directory (`<home>/.apra-fleet-data.full-install.bak` back to
+`<home>/.apra-fleet/data`, plus `fleet.key` to `<home>/.apra-fleet/fleet.key`),
+and re-run the old full installer.
+
+### Evidence
+
+Done by hand on a Linux member and an Intel Mac member on 2026-10-05; both ended
+with `session_stats` showing kb 1 / code 1.
 
 ## Customizing model tier mapping
 
@@ -2997,6 +3165,30 @@ Common symptoms and how to resolve them. If something here does not match what
 you see, search [GitHub Issues](https://github.com/Apra-Labs/apra-fleet/issues)
 or ask in [Discussions](https://github.com/Apra-Labs/apra-fleet/discussions).
 
+## MCP connection
+
+**Claude Code: `Dynamic Client Registration rejected (HTTP 404)` for apra-fleet**
+
+Cause: the server refuses an `/mcp` request without this install's access
+secret (header `X-Apra-Fleet-Member-Secret`, value in
+`~/.apra-fleet/data/member-access.key`) with HTTP 401. Claude Code treats the
+401 as "OAuth needed", tries dynamic client registration, gets 404, and shows
+that message instead of the server's explanation.
+
+Fix:
+
+1. Restart the Claude Code (or other LLM CLI) session. A session started
+   before `apra-fleet install` / upgrade keeps its old MCP config without the
+   secret.
+2. If it persists, an apra-fleet entry without the header in a local-scope
+   (`~/.claude.json` `projects[<path>].mcpServers`) or project-scope
+   (`<repo>/.mcp.json`) config is shadowing the user-scope one install writes
+   (Claude resolves local, then project, then user scope). Remove it, e.g.
+   `claude mcp remove apra-fleet --scope local` (or delete the entry from
+   `.mcp.json`), then restart the session. Re-running `apra-fleet install`
+   also rewrites local-scope apra-fleet entries for this server with the
+   secret.
+
 ## Members
 
 **Member shows as offline**
@@ -3025,9 +3217,34 @@ Normal for a new member. `register_member` still succeeds; run
 Before provisioning: for the default OAuth flow, log in locally first (`/login`
 in a Claude Code session, or `claude auth login`) -- `provision_llm_auth` copies
 your credentials to the member. For the API-key flow, pass the key as the
-`api_key` parameter. The tool checks token expiry before deploying; an expired
+`api_key` parameter; a Claude Code OAuth token from `claude setup-token`
+(`sk-ant-oat...`) also goes in `api_key` and is set as `CLAUDE_CODE_OAUTH_TOKEN`
+(an `sk-ant-api...` key as `ANTHROPIC_API_KEY`). Without `api_key`, a credential
+already stored for the member is re-deployed rather than overwritten by your
+login (this is what cloud start and sprint self-heal do); pass
+`force_oauth_copy: true` to copy your local login instead and clear the stored
+credential. The tool checks token expiry before deploying; an expired
 access token with a live refresh token still deploys, and the member's CLI
 refreshes on first use.
+
+**`secret_delivery_unavailable` on execute_prompt / provision_llm_auth**
+
+The fleet delivers a member's stored credentials (API key, OAuth token, set by
+`provision_llm_auth` or `apra-fleet auth --member`) through an owner-only file
+written over SFTP -- never on the member's command line, where any local user
+could read it with `ps`. When no such channel exists, the dispatch is refused
+before any LLM call and is not retried:
+
+- SSH member with the SFTP subsystem disabled: enable it in the member's
+  `sshd_config` (`Subsystem sftp internal-sftp`, or the path to `sftp-server`)
+  and restart sshd.
+- Relay member (no safe channel exists), or you prefer not to enable SFTP:
+  provide the credential in that machine's own environment, then clear the
+  stored copy with `provision_llm_auth {member_name: "<name>", clear_stored_credentials: true}`
+  (registry only; works offline and over relay).
+
+`execute_command` still runs on such a member, without the stored credential
+env vars, and says so in its result (`storedEnvNotDelivered`).
 
 **`Failed to authenticate: OAuth session expired and could not be refreshed`**
 
@@ -3086,8 +3303,10 @@ The member CLI refused a tool call. Check `healable`:
 
 By default a complete reply succeeds and only warns (`permissionWarning`). The
 dispatch fails `permission_denied` only when the caller passed
-`fail_on_permission_denial: true` (fleet-sprint does), or for a `healable: false`
-refusal whose reply was incomplete in that mode. A max_turns, auth or server
+`fail_on_permission_denial: true` (fleet-sprint does); even then a
+`healable: false` refusal on a complete reply stays a warning. Without the flag
+an incomplete reply keeps its ordinary reason (e.g. `empty_response`) with the
+refusals attached as `permissionDenied`. A max_turns, auth or server
 failure keeps its own reason, with the refusals attached as `permissionDenied`.
 
 **Permission granted but still denied on Claude**
@@ -3255,6 +3474,16 @@ For unexplained behavior -- missing output, silent failure, unexpected results
 ```
 $APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log
 ```
+
+The logs are owner-only. On POSIX the data dir and `logs/` are 0700 and
+`fleet-<pid>.log` and the service log `fleet.log` are 0600; a server start
+tightens existing ones with chmod. On Windows the server removes inherited
+ACEs and grants only the current user full control
+(`icacls <path> /inheritance:r /grant:r <DOMAIN\user>:F`), because
+`APRA_FLEET_DATA_DIR` may point outside the user profile. A path that cannot
+be tightened produces a `log permissions:` warning line and the server keeps
+running. MCP session ids are logged only as their first 8 characters
+(`sid=1a2b3c4d...`): a full session id addresses the session.
 
 These are JSON lines. Filter by member or by tool with `jq`:
 

@@ -38,6 +38,7 @@ import {
     ROLE_CALL_OPTS,
     SCHEMAS,
     turnExhaustionError,
+    FAILED_SESSION_ID,
     authError,
     trustError,
     busyError,
@@ -567,7 +568,7 @@ describe('planning-role dispatch: retry and degrade ladders', () => {
         const killIndex = rec.events.findIndex((e) => e.type === 'kill');
         const resumeIndex = rec.events.lastIndexOf(rec.events.find((e) => e.type === 'dispatch' && e.entry === rec.dispatches[1]));
         assert.ok(killIndex < resumeIndex, 'The kill must precede the resume dispatch.');
-        assert.strictEqual(rec.dispatches[1].options.resume, true, 'The resume must continue the SAME session.');
+        assert.strictEqual(rec.dispatches[1].options.resume, FAILED_SESSION_ID, 'The resume must continue the SAME session by its explicit id.');
         assert.strictEqual(
             rec.dispatches[1].options.max_turns,
             rec.dispatches[0].options.max_turns * 2,
@@ -973,7 +974,7 @@ describe('planning-role dispatch ladders: per-dispatch pins (engine-served)', ()
             );
 
             // --- same-session resume flag ---------------------------------------
-            const expectedResume = pin.resume === 'call-site' ? opts.resumeArg : pin.resume;
+            const expectedResume = pin.resume === 'call-site' ? opts.resumeArg : (pin.resume === true ? FAILED_SESSION_ID : pin.resume);
             assert.strictEqual(
                 o.resume ?? null,
                 expectedResume ?? null,
