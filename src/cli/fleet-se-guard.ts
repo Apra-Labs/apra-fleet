@@ -147,7 +147,8 @@ export function fleetSeRefusalText(found: RunningFleetSe, opts: {
     }
     if (found.sprints.some(s => !(sup && s.sprintId))) {
       steps.push('     A sprint started directly (apra-fleet workflow fleet-sprint) is stopped with Ctrl-C in its');
-      steps.push('     console, or by ending its pid shown above.');
+      steps.push('     console, or by ending its pid shown above. If that pid is not a fleet-sprint (a stale');
+      steps.push('     lock whose pid was reused), delete the lock file instead.');
     }
   } else {
     steps.push('  1. No sprint is running.');

@@ -124,7 +124,9 @@ export async function runUpdate(): Promise<void> {
     // nobody would see it: refuse here, in the console, first.
     if (fleetSeGuardEnabled()) {
       let found: Awaited<ReturnType<typeof detectRunningFleetSe>> | null = null;
-      try { found = await detectRunningFleetSe(currentFleetSeProbes()); } catch { /* the installer re-checks */ }
+      try { found = await detectRunningFleetSe(currentFleetSeProbes()); } catch (err) {
+        console.warn(`WARNING: could not check for a running fleet-sprint supervisor or sprint (${(err as Error).message}). If one is running, stop it before upgrading or it will fail with HTTP 401.`);
+      }
       if (found && (found.supervisor || found.sprints.length > 0)) {
         const lines = (exe: string, a: string[]) => selfInvocationLines({ platform: process.platform, execPath: exe, sea: true, args: a });
         console.error(fleetSeRefusalText(found, {
