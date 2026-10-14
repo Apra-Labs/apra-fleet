@@ -37,6 +37,10 @@ export interface PortHolder {
   uid?: number;
   /** Holding process's command name, when known. */
   command?: string;
+  /** Set when the owner's name is not visible but this user was shown NOT to
+   *  own the holder (process.kill(pid, 0) -> EPERM, or lsof sees no own
+   *  listener on a bound port). */
+  otherUser?: boolean;
 }
 
 export type PortHolderProbe = (port: number) => Promise<PortHolder | null>;
@@ -158,13 +162,21 @@ export function parseLsofFields(out: string): PortHolder | null {
   return h.pid !== undefined || h.user ? h : null;
 }
 
-function lsofPortHolder(port: number): PortHolder | null {
+type ExecFileText = (file: string, args: string[], opts: object) => string | Buffer;
+
+/** macOS probe (exported with an exec seam for tests). */
+export function lsofPortHolder(port: number, exec: ExecFileText = execFileSync as unknown as ExecFileText): PortHolder | null {
   try {
-    const out = execFileSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-FpcLu'], {
+    const out = exec('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-FpcLu'], {
       encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     });
     return parseLsofFields(String(out));
-  } catch {
+  } catch (err) {
+    // lsof ran but listed nothing (exit 1, no output): a non-root lsof lists
+    // every socket of THIS user, so a bound port it cannot see is held by
+    // another OS user (or root). Only called once the port is known bound.
+    const e = err as { code?: unknown; status?: unknown; stdout?: unknown };
+    if (e.code !== 'ENOENT' && e.status === 1 && !String(e.stdout ?? '').trim()) return { otherUser: true };
     return null;
   }
 }
@@ -203,7 +215,53 @@ function windowsPortHolder(port: number): PortHolder | null {
     const out = execSync(wrapPowerShellEncoded(windowsPortHolderScript(port)), {
       encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     });
-    return parseWindowsPortHolder(String(out ?? ''));
+    const holder = parseWindowsPortHolder(String(out ?? ''));
+    if (holder) return holder;
+  } catch { /* CIM denied (standard user on a network/SSH logon): fall back below */ }
+  return netstatPortHolder(port);
+}
+
+/**
+ * Pid of the LISTEN socket on `port` from `netstat -ano -p TCP` (no CIM/WMI,
+ * so it works for a standard user over SSH). The state column is localized,
+ * so a listener is recognised by its unbound foreign address instead.
+ */
+export function parseNetstatListenPid(out: string, port: number): number | undefined {
+  for (const line of out.split(/\r?\n/)) {
+    const f = line.trim().split(/\s+/);
+    if (f.length < 5 || f[0].toUpperCase() !== 'TCP') continue;
+    if (!f[1].endsWith(`:${port}`)) continue;
+    if (!/^(0\.0\.0\.0|\[::\]):0$/.test(f[2])) continue;
+    const pid = Number(f[f.length - 1]);
+    if (Number.isInteger(pid) && pid > 0) return pid;
+  }
+  return undefined;
+}
+
+/** Whether `pid` belongs to another user: signal 0 is refused (EPERM) for one. */
+export function pidOwnedByOtherUser(pid: number, kill: (pid: number, sig: number) => unknown = (p, s) => process.kill(p, s)): boolean | undefined {
+  try {
+    kill(pid, 0);
+    return false;
+  } catch (err) {
+    return (err as { code?: unknown }).code === 'EPERM' ? true : undefined;
+  }
+}
+
+/** Windows CIM-free fallback probe (exported with seams for tests). */
+export function netstatPortHolder(
+  port: number,
+  exec: ExecFileText = execFileSync as unknown as ExecFileText,
+  kill?: (pid: number, sig: number) => unknown,
+): PortHolder | null {
+  try {
+    const out = exec('netstat', ['-ano', '-p', 'TCP'], {
+      encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
+    });
+    const pid = parseNetstatListenPid(String(out), port);
+    if (pid === undefined) return null;
+    const otherUser = pidOwnedByOtherUser(pid, kill);
+    return { pid, ...(otherUser !== undefined ? { otherUser } : {}) };
   } catch {
     return null;
   }
@@ -229,7 +287,7 @@ export function currentUser(): { user?: string; uid?: number } {
 export function heldByOtherUser(holder: PortHolder, me: { user?: string; uid?: number } = currentUser()): boolean | undefined {
   if (holder.uid !== undefined && me.uid !== undefined) return holder.uid !== me.uid;
   if (holder.user && me.user) return holder.user.toLowerCase() !== me.user.toLowerCase();
-  return undefined;
+  return holder.otherUser;
 }
 
 /** Machine-readable code on the refusal when another user holds the port. */
@@ -238,7 +296,8 @@ export const PORT_HELD_BY_OTHER_USER_CODE = 'E-PORT-HELD-BY-OTHER-USER';
 function holderPhrase(holder: PortHolder): string {
   const who = holder.user ?? (holder.uid !== undefined ? `uid ${holder.uid}` : 'an unknown user');
   const pid = holder.pid !== undefined ? `pid ${holder.pid}` : 'pid not visible to this user';
-  return `user "${who}" (${pid}${holder.command ? `, ${holder.command}` : ''})`;
+  const whose = !holder.user && holder.uid === undefined && holder.otherUser ? 'another OS user' : `user "${who}"`;
+  return `${whose} (${pid}${holder.command ? `, ${holder.command}` : ''})`;
 }
 
 /** The refusal when ANOTHER user's process holds the port: who, pid, remedy. */

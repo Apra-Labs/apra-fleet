@@ -25,7 +25,7 @@ import { execFileSync } from 'node:child_process';
 export interface OwnerOnlyDeps {
   platform?: NodeJS.Platform;
   execFile?: (file: string, args: string[]) => void;
-  /** Windows account to grant (default: USERDOMAIN\USERNAME of this process). */
+  /** Windows account to grant (default: currentWindowsUser()). */
   windowsUser?: string;
 }
 
@@ -33,11 +33,49 @@ function defaultExecFile(file: string, args: string[]): void {
   execFileSync(file, args, { stdio: 'ignore', windowsHide: true, timeout: 15_000 });
 }
 
-/** The account icacls grants on Windows: DOMAIN\user when the domain is known. */
-export function currentWindowsUser(): string {
-  const user = process.env.USERNAME || os.userInfo().username;
-  const domain = process.env.USERDOMAIN;
-  return domain ? `${domain}\\${user}` : user;
+function defaultWhoami(): string {
+  return execFileSync('whoami', [], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 15_000 });
+}
+
+let cachedWindowsUser: string | undefined;
+
+/**
+ * The account icacls (and the service task) grants on Windows, read from this
+ * process's token: `whoami` prints DOMAIN\user (<COMPUTERNAME>\user for a local
+ * account). Never env USERDOMAIN: Win32-OpenSSH sets it to WORKGROUP on a
+ * workgroup machine, a name that maps to no account. Falls back to the bare
+ * token user name (os.userInfo), which icacls/schtasks resolve themselves.
+ */
+export function currentWindowsUser(whoami?: () => string): string {
+  if (!whoami && cachedWindowsUser) return cachedWindowsUser;
+  let name: string | undefined;
+  try {
+    const out = (whoami ?? defaultWhoami)().trim();
+    if (/^[^\\\s]+\\[^\\]+$/.test(out) && !out.includes(String.fromCharCode(0xfffd))) name = out;
+  } catch { /* fall back below */ }
+  if (!name) {
+    try { name = os.userInfo().username; } catch { name = 'unknown'; }
+  }
+  if (!whoami) cachedWindowsUser = name;
+  return name;
+}
+
+/**
+ * Windows install step: restrict each path to the owner and return one loud
+ * `[!]` line per failure, naming the file and the manual fix (empty on
+ * success). Callers gate on win32; POSIX keeps its chmod path.
+ */
+export function ownerOnlyInstallWarnings(targets: Array<{ path: string; kind: 'file' | 'dir' }>, deps: OwnerOnlyDeps = {}): string[] {
+  const out: string[] = [];
+  for (const t of targets) {
+    if (!fs.existsSync(t.path)) continue;
+    const why = restrictToOwner(t.path, t.kind, deps);
+    if (!why) continue;
+    const user = deps.windowsUser ?? currentWindowsUser();
+    const grant = t.kind === 'dir' ? `${user}:(OI)(CI)F` : `${user}:F`;
+    out.push(`    [!] ${t.path} is NOT owner-only (${why}). Other local users may read it. Fix: icacls "${t.path}" /inheritance:r /grant:r "${grant}"`);
+  }
+  return out;
 }
 
 /**

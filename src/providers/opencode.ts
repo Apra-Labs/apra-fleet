@@ -26,6 +26,12 @@ import {
 /** Work-folder-relative project config opencode reads MCP servers from. */
 export const OPENCODE_PROJECT_CONFIG = 'opencode.json';
 
+/** True when an opencode.json mcp entry is the one compose wrote for `memberId`. */
+function isOwnMemberEntry(entry: unknown, memberId: string): boolean {
+  return !!entry && typeof entry === 'object' && typeof (entry as { url?: unknown }).url === 'string'
+    && ((entry as { url: string }).url).endsWith(`?member=${encodeURIComponent(memberId)}`);
+}
+
 export class OpenCodeProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'opencode';
   readonly processName = 'opencode';
@@ -327,8 +333,12 @@ export class OpenCodeProvider implements ProviderAdapter {
       }
     } else if (fileExists && await isGitTracked(ctx.execCommand, agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, posix)) {
       detail = `opencode: ${file} is tracked by git; left untouched`;
+    } else if (ctx.removeOnlyOwnEntry && !hadLegacy && !isOwnMemberEntry(mcp[MEMBER_MCP_SERVER_NAME], agent.id)) {
+      // Only THIS member's entry (?member=<uuid>) is removed; the owner's own
+      // apra-fleet entry (e.g. a full install) is never touched.
+      detail = `opencode: no member MCP entry of this member in ${file}`;
     } else {
-      delete mcp[MEMBER_MCP_SERVER_NAME];
+      if (!ctx.removeOnlyOwnEntry || isOwnMemberEntry(mcp[MEMBER_MCP_SERVER_NAME], agent.id)) delete mcp[MEMBER_MCP_SERVER_NAME];
       if (Object.keys(mcp).length > 0) config.mcp = mcp; else delete config.mcp;
       if (Object.keys(config).length === 0) {
         await deleteMemberFile(ctx.execCommand, file, posix);

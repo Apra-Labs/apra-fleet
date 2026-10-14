@@ -769,18 +769,33 @@ async function syncMemberMcpConfig(
   // role's `git add -A`). Listed before the sync so the recoverable
   // member-config error path below excludes it too.
   if (agent.agentType !== 'local' && provider.mcpConfigFlag) workFolderFiles.push(REMOTE_SESSION_MCP_FILE);
+  let noMemberInstall = false;
   try {
     // A local claude member gets the member config per dispatch session
     // (--mcp-config), so no folder entry is written for it: the sync runs in
     // remove mode instead, pruning legacy entries and a folder entry an older
     // compose wrote for THIS member (so the human's own sessions in that
     // clone get their user-scope server back), and nothing else.
-    const perFolder = perFolderMcpEntryNeeded(agent);
+    let perFolder = perFolderMcpEntryNeeded(agent);
     if (provider.syncMemberMcpEntry) {
       // The member MCP wiring touches home-anchored files too (~/.claude.json,
       // agy/opencode global MCP configs), so resolve the home here when the
       // permission paths did not already need it.
       const homeDir = memberHomeDir ?? await getMemberHomeDir(agent);
+      // A remote member with no apra-fleet MEMBER install (fleet_install
+      // "skip", a full install, or none at all) has no server that would
+      // accept ?member=<uuid>: write no entry there, and remove one an earlier
+      // compose wrote for this member (any other apra-fleet entry, e.g. the
+      // owner's full install, is left alone). The marker probe is built for
+      // the member's own OS/shell. A failed probe keeps the previous behaviour.
+      if (perFolder && agent.agentType !== 'local' && homeDir) {
+        const { probeMemberInstallMarker } = await import('../services/member-fleet-install.js');
+        const marker = await probeMemberInstallMarker(agent, homeDir, { exec: (_a, cmd, t) => exec(cmd, t) });
+        if (marker.kind === 'absent') {
+          perFolder = false;
+          noMemberInstall = true;
+        }
+      }
       const result = await provider.syncMemberMcpEntry({
         agent,
         execCommand: exec,
@@ -815,6 +830,9 @@ async function syncMemberMcpConfig(
       };
     }
     return { failure: `[FAIL] Failed to write the apra-fleet member MCP entry on "${agent.friendlyName}" (${provider.name}): ${e?.message ?? String(e)}` };
+  }
+  if (noMemberInstall) {
+    return { note: 'Member MCP entry NOT written: the member has no apra-fleet member install (fleet_install "auto" installs one); any entry an earlier compose wrote for this member was removed' };
   }
   // Read the CURRENT record (the caller's agent object may predate it).
   const recorded = getAgent(agent.id)?.fleetMcp;

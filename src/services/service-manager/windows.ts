@@ -1,6 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { RegisterResult, ServiceManager, ServiceStatus } from './types.js';
 import { WINDOWS_TASK_NAME, SERVICE_ENV_MARKER } from './types.js';
@@ -9,6 +8,7 @@ import { clearServiceStartFailures } from '../service-start-guard.js';
 import { readStoppedMarker } from '../stopped-marker.js';
 import { SERVICE_NOTICE_PATH, writeServiceNotice, clearServiceNotice } from '../service-notice.js';
 import { BIN_DIR } from '../../cli/config.js';
+import { currentWindowsUser } from '../../utils/owner-only-fs.js';
 
 const WRAPPER_PATH = path.join(BIN_DIR, 'apra-fleet-service.bat');
 
@@ -35,7 +35,7 @@ export interface WindowsServiceOptions {
   env?: Record<string, string | undefined>;
   /** Clock for the time trigger's StartBoundary. */
   now?: () => Date;
-  /** Resolves DOMAIN\user when USERDOMAIN/USERNAME are missing (default: whoami). */
+  /** Resolves DOMAIN\user from the process token (default: whoami). */
   whoami?: () => string;
   /** Launch a command detached and hidden (default: child_process.spawn + unref). */
   spawnDetached?: (cmd: string, args: string[], verbatim?: boolean) => void;
@@ -132,27 +132,16 @@ function xmlUnescape(s: string): string {
 }
 
 /**
- * DOMAIN\user of the current account, resolved in JS (never by shell
- * expansion). A standard user may only register a logon trigger scoped to
- * THEIR OWN account -- an unscoped LogonTrigger means "any user" and needs
- * elevation (verified in a Windows Sandbox spike, Win10 19041).
+ * DOMAIN\user of the current account, read from the process token (whoami),
+ * never from env USERDOMAIN (WORKGROUP under Win32-OpenSSH on a workgroup
+ * machine) and never by shell expansion. A standard user may only register a
+ * logon trigger scoped to THEIR OWN account -- an unscoped LogonTrigger means
+ * "any user" and needs elevation (verified in a Windows Sandbox spike, Win10 19041).
  */
 export function resolveTaskUserId(
-  env: Record<string, string | undefined> = process.env,
   whoami: () => string = () => decodeSchtasks(quietExec('whoami', [])),
 ): string {
-  const user = env.USERNAME?.trim();
-  const domain = env.USERDOMAIN?.trim();
-  if (user && domain) return `${domain}\\${user}`;
-  try {
-    const out = whoami().trim();
-    if (/^[^\\\s]+\\[^\\]+$/.test(out)) return out;
-  } catch { /* fall through */ }
-  let name = user;
-  if (!name) { try { name = os.userInfo().username; } catch { /* below */ } }
-  let dom = domain;
-  if (!dom) { try { dom = os.hostname(); } catch { /* below */ } }
-  return `${dom || '.'}\\${name || 'unknown'}`;
+  return currentWindowsUser(whoami);
 }
 
 /** Local wall-clock time as Task Scheduler's StartBoundary (no zone = local). */
@@ -512,7 +501,7 @@ export class WindowsServiceManager implements ServiceManager {
     const xml = buildTaskXml({
       command: hidden ? wscriptPath(this.env) : this.wrapperPath,
       arguments: hidden ? launcherArguments(launcherPath) : undefined,
-      userId: resolveTaskUserId(this.env, this.whoami),
+      userId: resolveTaskUserId(this.whoami),
       startBoundary: localStartBoundary(this.now()),
       repeatMinutes: repeatMinutesFrom(this.env),
     });

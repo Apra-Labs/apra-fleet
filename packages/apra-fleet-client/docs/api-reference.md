@@ -636,7 +636,11 @@ member's `~/.claude.json`) for a REMOTE member only (a local claude member gets
 the member server per dispatch session through `--mcp-config`, see
 `executePrompt`, so no folder entry is written for it; a folder entry an
 older compose wrote for that member is removed), opencode to `<workFolder>/opencode.json`, and agy
-gets none (it has no per-project MCP config). claude and agy also receive
+gets none (it has no per-project MCP config). A REMOTE member with no
+apra-fleet member install (no member-install marker: `fleet_install: "skip"`,
+a full install, or none) gets no entry -- no server there would accept it --
+and an entry an earlier compose wrote for that member is removed; any other
+`apra-fleet` entry (e.g. the owner's full install) is left alone. claude and agy also receive
 client-side deny rules for exactly the registered fleet tools outside the
 member allowlist; opencode gets none. The retired `apra-fleet-member`
 url+bearer entry is pruned wherever compose finds it, `deepwiki` is never
