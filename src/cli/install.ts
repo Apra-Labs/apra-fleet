@@ -31,7 +31,7 @@ import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { installBeads, type BeadsInstallDeps } from './beads-install.js';
 import {
-  classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText,
+  classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText, selfInvocationLines,
   writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG,
 } from './install-guard.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
@@ -1471,12 +1471,21 @@ Nothing was installed.
       const killHint = process.platform === 'win32'
         ? '    taskkill /F /IM apra-fleet.exe'
         : '    pkill -x apra-fleet';
+      // Name THIS executable, not "apra-fleet": a downloaded installer is
+      // usually not on PATH, and PATH may resolve to the older installed one.
+      const forceHint = selfInvocationLines({
+        platform: process.platform,
+        execPath: process.execPath,
+        scriptPath: process.argv[1],
+        sea: isSea(),
+        args: ['install', ...args.filter(a => a !== '--force'), '--force'],
+      }).map(l => `    ${l}`).join('\n');
       console.error(`
 Error: apra-fleet is currently running. Stop the server before installing.
   (${runningScope.detail})
 
   Run with --force to stop it automatically:
-    apra-fleet install --force
+${forceHint}
 
   Or stop it manually:
 ${killHint}
@@ -2151,7 +2160,7 @@ ${manualStopHint(pidsAfterStop)}
       const serverPort = resolveServerPort();
       if (probe.state === 'gone' && await isPortInUse(serverPort, DEFAULT_HOST)) {
         const { findPortHolder, describePortConflict } = await import('../services/port-holder.js');
-        const conflict = describePortConflict(serverPort, portInUseMessage(serverPort, readServerInfoPid()), await findPortHolder(serverPort));
+        const conflict = describePortConflict(serverPort, portInUseMessage(serverPort, readServerInfoPid()), await findPortHolder(serverPort), memberMode ? 'member' : 'full');
         // Another user's process holds this install's port (a second member
         // install on this host): the server can never start here, so fail
         // now with who holds it and the remedy, not after a dead service.

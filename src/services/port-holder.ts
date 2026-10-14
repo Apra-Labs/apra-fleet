@@ -312,13 +312,27 @@ function holderPhrase(holder: PortHolder): string {
   return `${whose} (${pid}${holder.command ? `, ${holder.command}` : ''})`;
 }
 
-/** The refusal when ANOTHER user's process holds the port: who, pid, remedy. */
-export function portHeldByOtherUserMessage(port: number, holder: PortHolder, me: { user?: string; uid?: number } = currentUser()): string {
+/** Which install the conflicting server belongs to: the remedy differs. */
+export type PortConflictInstallKind = 'full' | 'member';
+
+/** The refusal when ANOTHER user's process holds the port: who, pid, remedy.
+ *  A member install can move to its own recorded port; a full install's
+ *  service is not given a custom port, so its remedy is freeing the port. */
+export function portHeldByOtherUserMessage(
+  port: number,
+  holder: PortHolder,
+  installKind: PortConflictInstallKind,
+  me: { user?: string; uid?: number } = currentUser(),
+): string {
   const self = me.user ? ` (this is "${me.user}")` : '';
+  const remedy = installKind === 'member'
+    ? 'Remedy: give this member install its own port -- re-run "apra-fleet install --member --port <free port>"; '
+      + 'the fleet picks up the new port on its next fleet_install "auto" probe.'
+    : `Remedy: that user stops their apra-fleet server ("apra-fleet stop", or "apra-fleet uninstall" to remove it), then re-run "apra-fleet install". `
+      + 'A full install\'s service listens on the default port: it is not given APRA_FLEET_PORT, so changing the port is not a lasting fix.';
   return `${PORT_HELD_BY_OTHER_USER_CODE}: port ${port} on 127.0.0.1 is held by ${holderPhrase(holder)}, another user's process${self}. `
     + 'apra-fleet will not share or take over another user\'s server. '
-    + 'Remedy: give this install its own port -- re-run "apra-fleet install --member --port <free port>" '
-    + '(or set APRA_FLEET_PORT to a free port and re-run "apra-fleet install"); the fleet picks up the new port on its next fleet_install "auto" probe.';
+    + remedy;
 }
 
 /**
@@ -330,10 +344,11 @@ export function describePortConflict(
   port: number,
   genericMessage: string,
   holder: PortHolder | null,
+  installKind: PortConflictInstallKind,
   me: { user?: string; uid?: number } = currentUser(),
 ): { foreign: boolean; message: string } {
   if (holder && heldByOtherUser(holder, me) === true) {
-    return { foreign: true, message: portHeldByOtherUserMessage(port, holder, me) };
+    return { foreign: true, message: portHeldByOtherUserMessage(port, holder, installKind, me) };
   }
   if (holder) return { foreign: false, message: `${genericMessage} Holder: ${holderPhrase(holder)}.` };
   return { foreign: false, message: genericMessage };

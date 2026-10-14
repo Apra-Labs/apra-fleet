@@ -181,6 +181,25 @@ describe('install --force (#96)', () => {
     errorSpy.mockRestore();
   });
 
+  it('server running, no --force -- the --force hint names THIS executable, not "apra-fleet" on PATH', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    const realExecPath = process.execPath;
+    Object.defineProperty(process, 'execPath', { value: '/home/u/My Downloads/apra-fleet-installer-linux-x64', configurable: true, writable: true });
+    mockServerRunning();
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(runInstall(['--skill', 'none'])).rejects.toThrow('exit');
+      const errText = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+      expect(errText).toContain(`'/home/u/My Downloads/apra-fleet-installer-linux-x64' install --skill none --force`);
+      expect(errText).not.toContain('    apra-fleet install --force');
+    } finally {
+      Object.defineProperty(process, 'execPath', { value: realExecPath, configurable: true, writable: true });
+      exitSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
   it('server running, no --force — prints taskkill hint on Windows', async () => {
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
     mockServerRunning();

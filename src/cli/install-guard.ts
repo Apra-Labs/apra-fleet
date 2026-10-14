@@ -275,3 +275,35 @@ Error: ${FULL_INSTALL_RUNNING_CODE}: a running apra-fleet server was not started
     apra-fleet install --member --force ${FORCE_STOP_FULL_INSTALL_FLAG}
 `;
 }
+
+/** True when `s` can be typed as-is in cmd, PowerShell and POSIX shells. */
+function needsNoQuoting(s: string): boolean {
+  return /^[A-Za-z0-9_\-.:=/\\+,@]+$/.test(s);
+}
+
+/**
+ * The exact command line that re-runs THIS executable with `args`, for a hint
+ * the user copies: a downloaded installer is usually not on PATH, so
+ * "apra-fleet ..." can name a missing (or an older, installed) binary. SEA:
+ * the executable itself; npm/dev: node plus the entry script. One line per
+ * shell: POSIX single-quotes when needed; Windows prints the bare words when
+ * none needs quoting (valid in cmd and PowerShell), else a PowerShell
+ * `& '...'` line and a cmd `"..."` line (a quoted path followed by arguments
+ * is a PowerShell parse error without `&`).
+ */
+export function selfInvocationLines(opts: {
+  platform: NodeJS.Platform;
+  execPath: string;
+  scriptPath?: string;
+  sea: boolean;
+  args: string[];
+}): string[] {
+  const words = [opts.execPath, ...(!opts.sea && opts.scriptPath ? [opts.scriptPath] : []), ...opts.args];
+  if (opts.platform !== 'win32') {
+    return [words.map(w => (needsNoQuoting(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`)).join(' ')];
+  }
+  if (words.every(needsNoQuoting)) return [words.join(' ')];
+  const ps = words.map(w => (needsNoQuoting(w) ? w : `'${w.replace(/'/g, "''")}'`));
+  const cmd = words.map(w => (needsNoQuoting(w) ? w : `"${w}"`));
+  return [`PowerShell: & ${ps.join(' ')}`, `cmd:        ${cmd.join(' ')}`];
+}
