@@ -2119,6 +2119,21 @@ ${manualStopHint(pidsAfterStop)}
   } catch (err) {
     console.warn('    [!] member access secret not created:', err instanceof Error ? err.message : String(err));
   }
+  // Windows: make the data dir and the secret owner-only NOW, and say so
+  // loudly when icacls fails (the server only logs it). POSIX keeps its
+  // chmod path (0600 file mode, 0700 dirs at server start).
+  if (process.platform === 'win32') {
+    try {
+      const { ownerOnlyInstallWarnings } = await import('../utils/owner-only-fs.js');
+      const { memberAccessSecretPath } = await import('../services/member-access-secret.js');
+      const dataDir = getInstallDataDir();
+      for (const line of ownerOnlyInstallWarnings([{ path: dataDir, kind: 'dir' }, { path: memberAccessSecretPath(dataDir), kind: 'file' }])) {
+        console.warn(line);
+      }
+    } catch (err) {
+      console.warn('    [!] owner-only permissions not checked:', err instanceof Error ? err.message : String(err));
+    }
+  }
 
   // --- Step N: Register and start service (SEA + HTTP mode only) ---
   let serviceRegistered = false;

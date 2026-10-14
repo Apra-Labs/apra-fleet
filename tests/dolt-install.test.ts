@@ -7,6 +7,7 @@ import {
   resolveDoltAsset,
   downloadAndExtractDolt,
   verifyDolt,
+  killChild,
   UnsupportedDoltPlatformError,
   type DoltInstallDeps,
   type DoltVerifyDeps,
@@ -401,5 +402,72 @@ describe('verifyDolt (apra-fleet-ire.2)', () => {
     expect(result.serverOk).toBe(false);
     expect(result.reason).toMatch(/boom/);
     expect(deps.fs.rmSync).toHaveBeenCalledWith('/tmp/dolt-verify-fake', { recursive: true, force: true });
+  });
+});
+
+/** A child whose kill() either exits it or (termination denied) does nothing. */
+function killableChild(opts: { killExits: boolean; pid?: number }) {
+  const listeners: Record<string, Array<() => void>> = {};
+  const child = {
+    pid: opts.pid ?? 4242,
+    exitCode: null as number | null,
+    signalCode: null as string | null,
+    kill: vi.fn(() => {
+      if (opts.killExits) {
+        child.signalCode = 'SIGTERM';
+        (listeners.exit || []).forEach((cb) => cb());
+      }
+      return true;
+    }),
+    unref: vi.fn(),
+    once: (event: string, cb: () => void) => { (listeners[event] ||= []).push(cb); return child; },
+    removeListener: (event: string, cb: () => void) => { listeners[event] = (listeners[event] || []).filter((l) => l !== cb); return child; },
+  };
+  return child;
+}
+
+describe('killChild: bounded dolt verify termination on every OS', () => {
+  for (const platform of ['win32', 'linux', 'darwin'] as const) {
+    it(`${platform}: child.kill() first; no tree kill when it exits; always unref`, async () => {
+      const child = killableChild({ killExits: true });
+      const exec = vi.fn();
+      await killChild(child as any, { platform, execFileSync: exec as any, waitMs: 50 });
+      expect(child.kill).toHaveBeenCalledTimes(1);
+      expect(child.kill).toHaveBeenCalledWith(platform === 'win32' ? undefined : 'SIGKILL');
+      expect(exec).not.toHaveBeenCalled();
+      expect(child.unref).toHaveBeenCalled();
+    });
+  }
+
+  it('win32: returns in bounded time, unref\'d and reported, when taskkill /T is denied', async () => {
+    const child = killableChild({ killExits: false });
+    const exec = vi.fn(() => { throw new Error('ERROR: Access denied'); });
+    const warn = vi.fn();
+    const t0 = Date.now();
+    await killChild(child as any, { platform: 'win32', execFileSync: exec as any, waitMs: 50, warn });
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(exec).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '4242'], expect.objectContaining({ windowsHide: true }));
+    expect(child.unref).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/\[!\].*pid 4242.*Stop-Process -Id 4242/));
+  });
+
+  it('POSIX: a child that survives SIGKILL is reported and unref\'d in bounded time, no taskkill', async () => {
+    const child = killableChild({ killExits: false, pid: 999999 });
+    const exec = vi.fn();
+    const warn = vi.fn();
+    const t0 = Date.now();
+    await killChild(child as any, { platform: 'linux', execFileSync: exec as any, waitMs: 50, warn });
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(exec).not.toHaveBeenCalled();
+    expect(child.unref).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/kill -9 999999/));
+  });
+
+  it('only unrefs a child that already exited', async () => {
+    const child = killableChild({ killExits: true });
+    child.exitCode = 0;
+    await killChild(child as any, { platform: 'win32', waitMs: 50 });
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(child.unref).toHaveBeenCalled();
   });
 });
