@@ -987,9 +987,10 @@ test('every command() call site in phases/regression-test.mjs passes member_name
 // made by the DISPATCHED harvester inside its own repo, and they reach the
 // remote through the 'harvester' policy row's pushCode/pushBeads bracket --
 // never through an orchestrator-side command() here. The one site is the
-// no-write harvest modes' verification helper: it reads HEAD and the working
-// tree on the harvester's member before and after the dispatch, and resets a
-// write the harvester was told not to make. It must run on that member, so
+// harvest write checks' helper: it reads HEAD, the working tree and the
+// remote branch tip on the harvester's member before and after the dispatch,
+// resets a write the no-write modes forbid, and lists the paths a docs-dir
+// harvester's commits touched. It must run on that member, so
 // it must name it. A second site would mean the orchestrator had started
 // doing something else on the member -- move this number deliberately.
 //

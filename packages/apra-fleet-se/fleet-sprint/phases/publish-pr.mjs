@@ -80,17 +80,35 @@ import { buildSprintPrBody, buildSprintPrTitle } from '../pr-body.mjs';
  * harvester wrote nothing when ./harvest.mjs actually verified it
  * (harvestWriteCheck.status 'clean'). A 'violation' is stated as one -- and
  * says the change was discarded only when harvestWriteCheck.restored is true
- * (the member matches its pre-harvest state exactly) -- and an
+ * (the member matches its pre-harvest state exactly). When only the remote
+ * branch read failed (harvestWriteCheck.localRestored true) it says the
+ * member was restored but a harvester push could not be ruled out -- never
+ * "NOT restored" for a member that was restored. An
  * unverified run says the engine could not check -- never a false "wrote
  * nothing".
+ *
+ * For 'docs-dir' the line states the engine's check of the harvester's
+ * commits: verified under the docs directory, a VIOLATION naming the paths
+ * outside it (or a README) -- those commits are already on the branch, so
+ * the line asks the reviewer to revert them and never says discarded -- or
+ * unverified. With no check result at all it keeps the plain mode line.
  * @param {{ harvestMode?: string, harvestDocsDir?: string|null }} validated
- * @param {{ status?: string, detail?: string }|null} [harvestWriteCheck]
+ * @param {{ status?: string, restored?: boolean, localRestored?: boolean, detail?: string }|null} [harvestWriteCheck]
  * @returns {string|null}
  */
 export function harvestModeDetail(validated, harvestWriteCheck = null) {
     const mode = validated && validated.harvestMode;
     if (mode === 'docs-dir') {
-        return `Harvest mode: docs-dir -- sprint analysis and durable docs written under ${validated.harvestDocsDir}/ only; no README edits.`;
+        const dir = `${validated.harvestDocsDir}/`;
+        const base = `Harvest mode: docs-dir -- sprint analysis and durable docs written under ${dir} only; no README edits.`;
+        const docsStatus = harvestWriteCheck && harvestWriteCheck.status;
+        const docsDetail = harvestWriteCheck && harvestWriteCheck.detail ? harvestWriteCheck.detail : 'no check result was recorded';
+        if (docsStatus === 'clean') return `${base.slice(0, -1)} (engine-verified: ${docsDetail}).`;
+        if (docsStatus === 'violation') {
+            return `Harvest mode: docs-dir -- VIOLATION: the harvester committed outside ${dir} despite the docs-dir mode (${docsDetail}). These commits are on this branch; revert them before merging.`;
+        }
+        if (docsStatus === 'unverified') return `${base.slice(0, -1)}, but the engine could not verify the harvester's commits (${docsDetail}).`;
+        return base;
     }
     if (mode !== 'pr-body-only' && mode !== 'off') return null;
     const tail = mode === 'pr-body-only' ? ' The sprint analysis is in this PR body.' : '';
@@ -98,13 +116,20 @@ export function harvestModeDetail(validated, harvestWriteCheck = null) {
     const detail = harvestWriteCheck && harvestWriteCheck.detail ? harvestWriteCheck.detail : 'no check result was recorded';
     if (status === 'clean') {
         return mode === 'pr-body-only'
-            ? 'Harvest mode: pr-body-only -- no harvester commits (engine-verified: HEAD and working tree unchanged); the sprint analysis is in this PR body.'
-            : 'Harvest mode: off -- the harvester wrote nothing to the repository (engine-verified: HEAD and working tree unchanged).';
+            ? 'Harvest mode: pr-body-only -- no harvester commits (engine-verified: HEAD, remote branch tip and working tree unchanged); the sprint analysis is in this PR body.'
+            : 'Harvest mode: off -- the harvester wrote nothing to the repository (engine-verified: HEAD, remote branch tip and working tree unchanged).';
     }
     if (status === 'violation') {
-        const outcome = harvestWriteCheck.restored === true
-            ? 'The engine discarded the change and did not push it.'
-            : 'The engine did not push it, but the harvester\'s member was NOT restored to its pre-harvest state -- inspect it before reusing it.';
+        let outcome;
+        if (harvestWriteCheck.restored === true) {
+            outcome = 'The engine discarded the change and did not push it.';
+        } else if (harvestWriteCheck.localRestored === true) {
+            // The member is back to its pre-harvest state; only the remote
+            // read failed, so a push cannot be ruled out -- never "NOT restored".
+            outcome = 'The engine restored the harvester\'s member to its pre-harvest state and did not push the change, but could not read the remote branch to confirm the harvester did not push -- check the remote branch before merging.';
+        } else {
+            outcome = 'The engine did not push it, but the harvester\'s member was NOT restored to its pre-harvest state -- inspect it before reusing it.';
+        }
         return `Harvest mode: ${mode} -- VIOLATION: the harvester changed the repository despite the no-write mode (${detail}). ${outcome}${tail}`;
     }
     return `Harvest mode: ${mode} -- repository writes were not requested, but the engine could not verify the harvester's member (${detail}).${tail}`;

@@ -248,9 +248,12 @@ Options:
                                 README edits; docs-dir - the same under --harvest-docs-dir
                                 only, no README edits; pr-body-only - no harvester commits,
                                 the sprint analysis goes in the PR body; off - no harvester
-                                commits and no analysis in the PR body. Knowledge-bank capture
-                                and low-priority backlog confirmation run in every mode. The
-                                cost block is never committed (PR body and log only).
+                                commits and no analysis in the PR body. The mode governs the
+                                harvester's writes only: the engine's knowledge-bank bible
+                                commits (.fleet/kb-canonical.json) continue in every mode,
+                                including off. Knowledge-bank capture and low-priority backlog
+                                confirmation run in every mode. The cost block is never
+                                committed (PR body and log only).
       --harvest-docs-dir <dir> Repo-relative directory for --harvest-mode docs-dir (required
                                 with it, rejected otherwise). '/'-separated segments of
                                 letters, digits, '.', '_' and '-' only; no absolute path, no '..'.

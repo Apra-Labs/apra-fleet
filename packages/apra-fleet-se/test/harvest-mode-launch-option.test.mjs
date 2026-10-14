@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { validateArgs, HARVEST_MODES } from '../fleet-sprint/sprint-args.mjs';
-import { planHarvestOutputs, harvesterResumePrompt, parsePorcelainStatus, NO_WRITE_HARVEST_MODES } from '../fleet-sprint/phases/harvest.mjs';
+import { planHarvestOutputs, harvesterResumePrompt, parsePorcelainStatus, parseLsRemoteTip, docsDirViolations, HARVEST_STATUS_COMMAND, NO_WRITE_HARVEST_MODES } from '../fleet-sprint/phases/harvest.mjs';
 import { ROLE_POLICIES, HARVESTER_NO_WRITE_POLICIES } from '../fleet-sprint/role-policies.mjs';
 import { buildHarvesterPrompt } from '../fleet-sprint/prompts.mjs';
 import { buildRunnerArgs, parseCliArgs } from '../bin/cli.mjs';
@@ -296,6 +296,28 @@ describe('no-write harvest modes: engine enforcement pieces', () => {
         assert.equal(parsePorcelainStatus('ok (mocked -- no real git remote)'), null);
         assert.equal(parsePorcelainStatus('fatal: not a git repository'), null);
     });
+
+    test('the working-tree read lists every untracked file (--untracked-files=all)', () => {
+        assert.equal(HARVEST_STATUS_COMMAND, 'git status --porcelain --untracked-files=all');
+    });
+
+    test('parseLsRemoteTip reads the branch tip, absent, or refuses unreadable output', () => {
+        const sha = 'c'.repeat(40);
+        assert.equal(parseLsRemoteTip(`${sha}\trefs/heads/feat/x\n`, 'feat/x'), sha);
+        assert.equal(parseLsRemoteTip(`${sha}\trefs/heads/feat/x\r\n`, 'feat/x'), sha);
+        assert.equal(parseLsRemoteTip('', 'feat/x'), 'absent', 'an empty answer means the branch is not on the remote');
+        assert.equal(parseLsRemoteTip(`${sha}\trefs/heads/feat/other\n`, 'feat/x'), null, 'a different ref is not this branch');
+        assert.equal(parseLsRemoteTip('ok (mocked -- no real git remote)', 'feat/x'), null);
+        assert.equal(parseLsRemoteTip('fatal: could not read from remote repository', 'feat/x'), null);
+    });
+
+    test('docsDirViolations flags paths outside the docs dir and any README, ignoring .beads/', () => {
+        assert.deepEqual(docsDirViolations(['notes/sprints/a.md', 'notes/sprints/sub/b.md', '.beads/issues.jsonl'], 'notes/sprints'), []);
+        assert.deepEqual(
+            docsDirViolations(['notes/sprints/a.md', 'README.md', 'notes/sprints/readme.txt', 'docs/x.md', 'notes/sprintsX/y.md', 'src/a.js', 'notes/sprints'], 'notes/sprints'),
+            ['README.md', 'notes/sprints/readme.txt', 'docs/x.md', 'notes/sprintsX/y.md', 'src/a.js', 'notes/sprints'],
+        );
+    });
 });
 
 describe('buildHarvesterPrompt: per-mode instructions', () => {
@@ -354,8 +376,14 @@ function prCreateCommand(run) {
 /**
  * A model of the harvester member's checkout, answering the engine's no-write
  * check (`git rev-parse HEAD`, `git status --porcelain`, `git reset`,
- * `git checkout <sha> -- :/<path>`, `git clean`) from state and recording
- * every `git push` with the HEAD it would have published. `tracked` maps a
+ * `git checkout <sha> -- :/<path>`, `git clean`, `git ls-remote origin
+ * refs/heads/<branch>`, `git diff --name-only --no-renames <a> <b>`) from
+ * state and recording every `git push` with the HEAD it would have published
+ * (a push also moves the modelled remote tip). Plain `git status --porcelain`
+ * collapses an untracked directory to one `?? dir/` line, as git does; only
+ * `--untracked-files=all` lists the files inside it. `remoteReadable: false`
+ * makes `git ls-remote` fail. `diffFiles` answers the docs-dir check's
+ * `git diff`. `tracked` maps a
  * modified tracked path to its porcelain XY code; `preTracked` seeds it with
  * edits already on the member before the sprint. `commitFiles` are the paths
  * a rogue harvester commit touched: `git reset --keep` refuses (like git)
@@ -366,14 +394,16 @@ function prCreateCommand(run) {
  */
 const BASE_SHA = 'a'.repeat(40);
 const ROGUE_SHA = 'b'.repeat(40);
-function memberRepoModel({ preTracked = {} } = {}) {
+function memberRepoModel({ preTracked = {}, preUntracked = [], remoteReadable = true, remoteAbsent = false } = {}) {
     const state = {
-        head: BASE_SHA, tracked: new Map(Object.entries(preTracked)), untracked: new Set(), commitFiles: new Set(),
-        pushes: [], resets: [], cleans: [], checkouts: [], seq: [],
+        // remoteListed false: origin lists no sprint branch (empty ls-remote
+        // output) until a test flips it, whatever the engine's own pushes did.
+        head: BASE_SHA, remoteTip: BASE_SHA, remoteListed: !remoteAbsent, tracked: new Map(Object.entries(preTracked)), untracked: new Set(preUntracked), commitFiles: new Set(),
+        diffFiles: [], pushes: [], resets: [], cleans: [], checkouts: [], diffs: [], lsRemotes: [], seq: [],
     };
-    const porcelain = () => [
+    const porcelain = ({ all = true } = {}) => [
         ...[...state.tracked].map(([p, code]) => `${code} ${p}`),
-        ...[...state.untracked].map((p) => `?? ${p}`),
+        ...[...new Set([...state.untracked].map((p) => (all || !p.includes('/') ? p : `${p.slice(0, p.indexOf('/'))}/`)))].map((p) => `?? ${p}`),
     ].join('\n');
     const ok = (out = '') => mockCmdResult(0, out, '');
     const gitCommandHandler = ({ command, member }) => {
@@ -381,7 +411,19 @@ function memberRepoModel({ preTracked = {} } = {}) {
             state.seq.push('rev-parse');
             return ok(`${state.head}\n`);
         }
-        if (command === 'git status --porcelain') return ok(porcelain());
+        if (command === 'git status --porcelain --untracked-files=all') return ok(porcelain());
+        if (command === 'git status --porcelain') return ok(porcelain({ all: false }));
+        let r = /^git ls-remote origin refs\/heads\/(\S+)$/.exec(command);
+        if (r) {
+            state.lsRemotes.push(r[1]);
+            if (!remoteReadable) return mockCmdResult(128, '', 'fatal: unable to access remote (mocked)');
+            return ok(!state.remoteListed ? '' : `${state.remoteTip}\trefs/heads/${r[1]}\n`);
+        }
+        r = /^git diff --name-only --no-renames ([0-9a-f]{7,64}) ([0-9a-f]{7,64})$/.exec(command);
+        if (r) {
+            state.diffs.push([r[1], r[2]]);
+            return ok(state.diffFiles.join('\n'));
+        }
         let m = /^git reset --(hard|keep|soft) ([0-9a-f]{7,64})$/.exec(command);
         if (m) {
             const mode = m[1];
@@ -399,7 +441,7 @@ function memberRepoModel({ preTracked = {} } = {}) {
         m = /^git clean -f -d -- :\/(\S+)$/.exec(command);
         if (m) {
             state.cleans.push(m[1]);
-            state.untracked.delete(m[1]);
+            for (const u of [...state.untracked]) if (u === m[1] || u.startsWith(`${m[1].replace(/\/$/, '')}/`)) state.untracked.delete(u);
             return ok();
         }
         m = /^git checkout ([0-9a-f]{7,64}) -- :\/(\S+)$/.exec(command);
@@ -411,6 +453,7 @@ function memberRepoModel({ preTracked = {} } = {}) {
         if (/^git push\b/.test(command)) {
             state.seq.push('push');
             state.pushes.push({ command, head: state.head });
+            state.remoteTip = state.head;
         }
         return null;
     };
@@ -665,12 +708,19 @@ test('mock sprint: harvest_mode off -- harvester still runs (KB capture + deferr
 });
 
 test('mock sprint: harvest_mode docs-dir -- analysis under the configured dir, no README edits', { timeout: 300000 }, async () => {
+    const repo = memberRepoModel();
     const run = await withScenarioMarkers('harvestdocsdir', async () => runDevelopLoopScenario('harvestdocsdir', {
         members: ['local'],
         taskSpecs: [{ title: 'Task: harvest-mode docs-dir scenario work' }],
         maxCycles: 1,
         harvestMode: 'docs-dir',
         harvestDocsDir: 'notes/sprints',
+        gitCommandHandler: repo.gitCommandHandler,
+        harvestHandler: async () => {
+            repo.state.seq.push('HARVESTER');
+            repo.state.head = ROGUE_SHA;
+            repo.state.diffFiles = ['notes/sprints/sprint-analysis-x.md', 'notes/sprints/design.md'];
+        },
     }));
     assert.equal(run.error, null, `sprint errored: ${run.error && run.error.message}`);
     const p = harvesterPrompt(run);
@@ -678,4 +728,148 @@ test('mock sprint: harvest_mode docs-dir -- analysis under the configured dir, n
     assert.match(p, /^analysisArtifactFile: notes\/sprints\/sprint-analysis-\S+\.md$/m);
     assert.match(p, /NO README edits/);
     assert.doesNotMatch(p, /## Cost/);
+    assert.deepEqual(repo.state.diffs, [[BASE_SHA, ROGUE_SHA]], 'the engine lists exactly the paths the harvester committed');
+    assert.ok(run.logs.some((l) => l.includes('touch only paths under notes/sprints/ and no README')), 'the clean check is logged');
+    const pr = prCreateCommand(run);
+    assert.ok(pr, 'a PR is raised');
+    assert.ok(pr.includes('Harvest mode: docs-dir') && pr.includes('engine-verified'), 'the verified docs-dir check is stated in the PR body');
+    const argsState = run.states.find((e) => e.namespace === 'sprint-args');
+    assert.ok(argsState, 'sprint-args is published');
+    assert.equal(argsState.data.harvestMode, 'docs-dir');
+    assert.equal(argsState.data.harvestDocsDir, 'notes/sprints');
+});
+
+test('mock sprint: harvest_mode docs-dir -- a harvester commit outside the docs dir (or to README) is reported as a violation, never as discarded', { timeout: 300000 }, async () => {
+    const repo = memberRepoModel();
+    const run = await withScenarioMarkers('harvestdocsdirviolation', async () => runDevelopLoopScenario('harvestdocsdirviolation', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: harvest-mode docs-dir violation scenario work' }],
+        maxCycles: 1,
+        harvestMode: 'docs-dir',
+        harvestDocsDir: 'notes/sprints',
+        gitCommandHandler: repo.gitCommandHandler,
+        harvestHandler: async () => {
+            repo.state.seq.push('HARVESTER');
+            repo.state.head = ROGUE_SHA;
+            repo.state.diffFiles = ['notes/sprints/sprint-analysis-x.md', 'README.md', 'docs/arch.md'];
+        },
+    }));
+    assert.equal(run.error, null, `sprint errored: ${run.error && run.error.message}`);
+    assert.ok(run.logs.some((l) => l.includes('[Harvest Write Violation] harvest mode docs-dir') && l.includes('README.md, docs/arch.md')),
+        'the out-of-dir commit is logged loudly with its paths');
+    assert.deepEqual(repo.state.resets, [], 'the engine does not rewrite a pushed harvest');
+    assert.equal(run.commandLog.some((c) => /^git push\b.*(--force|\s-f\b|\s\+)/.test(c)), false, 'origin is never force-pushed');
+    const pr = prCreateCommand(run);
+    assert.ok(pr, 'a PR is raised');
+    assert.ok(pr.includes('Harvest mode: docs-dir -- VIOLATION') && pr.includes('README.md, docs/arch.md'), 'the PR body states the violation and the paths');
+    assert.equal(pr.includes('discarded'), false, 'a pushed violation is never called discarded');
+});
+
+test('mock sprint: harvest_mode pr-body-only -- a harvester that PUSHES is a loud failure: no discard claim, no force-push, no PR', { timeout: 300000 }, async () => {
+    const repo = memberRepoModel();
+    const run = await withScenarioMarkers('harvestprbodypush', async () => runDevelopLoopScenario('harvestprbodypush', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: harvest-mode pr-body-only rogue push scenario work' }],
+        maxCycles: 1,
+        harvestMode: 'pr-body-only',
+        gitCommandHandler: repo.gitCommandHandler,
+        harvestHandler: async () => {
+            repo.state.seq.push('HARVESTER');
+            repo.state.head = ROGUE_SHA;
+            repo.state.remoteTip = ROGUE_SHA;
+        },
+    }));
+    assert.ok(run.error, 'the sprint fails loudly');
+    assert.match(run.error.message, /pushed to origin\/\S+ despite the no-write mode/);
+    assert.match(run.error.message, /NOT discarded and origin was not rewritten/);
+    assert.ok(repo.state.lsRemotes.length >= 2, 'the remote tip is read before and after the dispatch');
+    assert.ok(run.logs.some((l) => l.includes('[Harvest Write Violation]') && l.includes('PUSHED') && l.includes(`moved from ${BASE_SHA} to ${ROGUE_SHA}`)),
+        'the push is logged loudly');
+    assert.equal(run.logs.some((l) => l.includes('changes were discarded')), false, 'never claims the push was discarded');
+    assert.equal(run.commandLog.some((c) => /^git push\b.*(--force|\s-f\b|\s\+)/.test(c)), false, 'origin is never force-pushed back');
+    assert.equal(repo.state.pushes.some((x) => x.head === ROGUE_SHA), false, 'the engine pushes nothing of the harvester');
+    assert.equal(prCreateCommand(run), undefined, 'no PR publishes the pushed commit');
+    assert.equal(run.error.code, 'HARVEST_WRITE_VIOLATION', 'a typed harvest write-violation error');
+    assert.equal(run.error.kind, 'remote-push');
+    const terminal = run.states.find((e) => e.namespace === 'terminal');
+    assert.ok(terminal, `the sprint ends with a terminal record, states: ${JSON.stringify(run.states.map((e) => e.namespace))}`);
+    assert.equal(terminal.data.verdict, 'ABORTED');
+    assert.equal(terminal.data.terminalReason, 'HARVEST_WRITE_VIOLATION', 'the terminal record names the reason');
+    assert.equal(terminal.data.prUrl ?? null, null, 'no [ABORTED] PR publishes the pushed commit either');
+});
+
+test('mock sprint: harvest_mode pr-body-only -- a harvester that CREATES the sprint branch on origin is a loud failure', { timeout: 300000 }, async () => {
+    const repo = memberRepoModel({ remoteAbsent: true });
+    const run = await withScenarioMarkers('harvestprbodyremotecreated', async () => runDevelopLoopScenario('harvestprbodyremotecreated', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: harvest-mode pr-body-only remote created scenario work' }],
+        maxCycles: 1,
+        harvestMode: 'pr-body-only',
+        gitCommandHandler: repo.gitCommandHandler,
+        harvestHandler: async () => {
+            repo.state.seq.push('HARVESTER');
+            repo.state.head = ROGUE_SHA;
+            repo.state.remoteTip = ROGUE_SHA;
+            repo.state.remoteListed = true;
+        },
+    }));
+    assert.ok(run.error, 'the sprint fails loudly');
+    assert.equal(run.error.code, 'HARVEST_WRITE_VIOLATION');
+    assert.match(run.error.message, /did not exist before the harvester dispatch and now points at b{40}/);
+    assert.ok(run.logs.some((l) => l.includes('[Harvest Write Violation]') && l.includes('PUSHED') && l.includes('did not exist before the harvester dispatch')),
+        'the created remote branch is logged loudly');
+    assert.equal(run.commandLog.some((c) => /^git push\b.*(--force|\s-f\b|\s\+)/.test(c)), false, 'origin is never force-pushed');
+    assert.equal(prCreateCommand(run), undefined, 'no PR publishes the pushed commit');
+    const terminal = run.states.find((e) => e.namespace === 'terminal');
+    assert.ok(terminal && terminal.data.terminalReason === 'HARVEST_WRITE_VIOLATION', 'terminal record with the reason');
+});
+
+test('mock sprint: harvest_mode pr-body-only -- a write inside an already-untracked directory is detected (untracked-files=all)', { timeout: 300000 }, async () => {
+    const repo = memberRepoModel({ preUntracked: ['scratch/old.md'] });
+    const run = await withScenarioMarkers('harvestprbodyuntrackeddir', async () => runDevelopLoopScenario('harvestprbodyuntrackeddir', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: harvest-mode pr-body-only untracked dir scenario work' }],
+        maxCycles: 1,
+        harvestMode: 'pr-body-only',
+        gitCommandHandler: repo.gitCommandHandler,
+        harvestHandler: async () => {
+            repo.state.seq.push('HARVESTER');
+            repo.state.untracked.add('scratch/new.md');
+        },
+    }));
+    assert.equal(run.error, null, `sprint errored: ${run.error && run.error.message}`);
+    assert.ok(run.logs.some((l) => l.includes('[Harvest Write Violation]') && l.includes('working tree changed: scratch/new.md')),
+        'the new file inside the pre-existing untracked directory is detected');
+    assert.deepEqual(repo.state.cleans, ['scratch/new.md'], 'only the harvester file is removed');
+    assert.ok(repo.state.untracked.has('scratch/old.md'), 'the pre-existing untracked file survives');
+    const pr = prCreateCommand(run);
+    assert.ok(pr, 'a PR is raised');
+    assert.ok(pr.includes('Harvest mode: pr-body-only -- VIOLATION') && pr.includes('scratch/new.md'), 'the PR body states the violation');
+});
+
+test('mock sprint: harvest_mode off -- an unreadable remote tip is never reported as verified or discarded', { timeout: 300000 }, async () => {
+    const repo = memberRepoModel({ remoteReadable: false });
+    const run = await withScenarioMarkers('harvestoffremoteunread', async () => runDevelopLoopScenario('harvestoffremoteunread', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: harvest-mode off unreadable remote scenario work' }],
+        maxCycles: 1,
+        harvestMode: 'off',
+        gitCommandHandler: repo.gitCommandHandler,
+        harvestHandler: async () => {
+            repo.state.seq.push('HARVESTER');
+            repo.state.head = ROGUE_SHA;
+        },
+    }));
+    assert.equal(run.error, null, `sprint errored: ${run.error && run.error.message}`);
+    assert.deepEqual(repo.state.resets.map((r) => [r.mode, r.sha]), [['keep', BASE_SHA]], 'the local commit is still undone');
+    assert.ok(run.logs.some((l) => l.includes('could not read the tip of origin/') && l.includes('a push by the harvester cannot be ruled out')),
+        'the unread remote is stated');
+    assert.equal(run.logs.some((l) => l.includes('changes were discarded')), false, 'no discard claim without the remote check');
+    const pr = prCreateCommand(run);
+    assert.ok(pr, 'a PR is raised');
+    assert.ok(pr.includes('Harvest mode: off -- VIOLATION'), 'the PR body states the violation');
+    assert.ok(pr.includes('member to its pre-harvest state and did not push the change') && pr.includes('could not read the remote branch'),
+        'the PR body says the member was restored locally but the remote is unconfirmed');
+    assert.equal(pr.includes('NOT restored'), false, 'a locally restored member is never reported as NOT restored');
+    assert.equal(pr.includes('discarded the change'), false);
 });

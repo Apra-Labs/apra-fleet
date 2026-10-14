@@ -34,7 +34,10 @@ short-circuits before anything downstream runs:
    field `harvestMode`; `docs-dir` without a dir, a dir with any other mode,
    or an unsafe dir (absolute, `..`, backslash, `.git`, other characters) is
    `400`, field `harvestDocsDir`. Valid values are forwarded to the child as
-   `--harvest-mode` / `--harvest-docs-dir`.
+   `--harvest-mode` / `--harvest-docs-dir`, and the effective values are
+   published in the sprint's `sprint-args` state as `harvestMode` /
+   `harvestDocsDir` (next to `regression`). See `supervisor-openapi.yaml`
+   for the field schema and `cli-reference.md` for what each mode writes.
    Optional `roleMap` (object or JSON string) is resolved too. The
    `roleMap.orchestrator` key is a DEPRECATED alias of `roleMap.backlog`:
    using it still works, and the response carries a top-level

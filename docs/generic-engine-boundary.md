@@ -98,12 +98,14 @@ launch option (`--harvest-mode` on the CLI, `harvestMode` on the supervisor,
 `harvest_mode` in the engine args), validated in one place
 (`validateHarvestOptions` in `fleet-sprint/sprint-args.mjs`):
 
-| Mode | Target-repo writes |
-|------|--------------------|
+| Mode | Harvester writes to the target repo |
+|------|-------------------------------------|
 | `full` (default when unset) | sprint-analysis document under `docs/`, durable docs, README |
 | `docs-dir` | analysis document and durable docs only under `harvest_docs_dir`; no README edits |
 | `pr-body-only` | none -- the analysis is rendered into the PR body |
 | `off` | none |
+
+`harvest_mode` governs only the harvester's own writes: the engine's knowledge-bank bible commits (`.fleet/kb-canonical.json`, made by the engine after the harvester's write check) continue in every mode, including `off`.
 
 `harvest_docs_dir` is required with `docs-dir` and rejected otherwise; it must
 be repo-relative (no absolute path, drive letter, backslash, `..` or `.git`,
@@ -111,11 +113,21 @@ no segment starting with `-` or ending with `.`, and no Windows reserved
 device name such as `con` or `nul.md`). The engine enforces the no-write
 modes itself rather than trusting the prompt: in `pr-body-only` and `off` the
 harvester dispatch uses a policy row that never pushes code, the engine reads
-the member's HEAD and working tree before and after the dispatch, and any
+the member's HEAD, its working tree (`git status --porcelain
+--untracked-files=all`) and the sprint branch's tip on origin (`git ls-remote
+origin refs/heads/<branch>`) before and after the dispatch, and any local
 change is logged as a violation, undone on the member before Publish PR pushes
 the branch (with `git reset --keep` and per-path restores, never discarding
 edits that were already on the member; whatever cannot be restored safely is
-left and reported as not restored), and stated in the PR body.
+left and reported as not restored), and stated in the PR body. A moved remote
+tip (including a branch the harvester created on origin) means the harvester
+pushed anyway: the engine ends the sprint before Publish PR with a
+`HARVEST_WRITE_VIOLATION` terminal record, never claims the push was discarded and never force-pushes
+origin back. In `docs-dir` the engine lists the paths the harvester's commits
+changed (`git diff --name-only --no-renames <before> <after>`) and reports any
+path outside `harvest_docs_dir`, or any README, as a violation in the PR body
+(those commits are already pushed, so they are flagged for the reviewer to
+revert, not discarded).
 The sprint cost block is never written to a committed file in any mode -- it
 goes to the PR body and the run log only. Knowledge-bank capture and the
 low-priority backlog confirmation run in every mode because neither writes to

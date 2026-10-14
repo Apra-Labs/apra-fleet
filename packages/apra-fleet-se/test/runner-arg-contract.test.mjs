@@ -591,6 +591,11 @@ describe('runner.js mock-level execution', () => {
         assert.strictEqual(argsState.data.baseBranch, 'develop');
         assert.strictEqual(argsState.data.goal, 'P1');
         assert.strictEqual(argsState.data.maxCycles, 1);
+        // The harvest launch option is published next to regression, with
+        // its effective default (no harvest_mode passed -> 'full').
+        assert.strictEqual(argsState.data.regression, 'run');
+        assert.strictEqual(argsState.data.harvestMode, 'full');
+        assert.strictEqual(argsState.data.harvestDocsDir, null);
 
         // Git semantics: branch-ensure at start, push+PR at finalization.
         // apra-fleet-zzu: fetch + checkout are two sequential command()
