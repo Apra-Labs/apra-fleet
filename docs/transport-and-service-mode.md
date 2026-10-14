@@ -71,8 +71,8 @@ binds an OS-assigned port.)
 
 **Two OS users on one machine.** Each user's full install wants the same default port,
 so only one of them can serve it at a time. When another user's server holds the port,
-`apra-fleet install` and `apra-fleet start` exit 1 with `E-PORT-HELD-BY-OTHER-USER`,
-naming that user and pid; the remedy is for that user to stop (`apra-fleet stop`) or
+`apra-fleet start` and the standalone installer exit 1 with `E-PORT-HELD-BY-OTHER-USER`,
+naming the holder (the user and pid when visible); the remedy is for that user to stop (`apra-fleet stop`) or
 uninstall their server.
 
 **Singleton probe states.** Before starting, `start`, `run`, `status` and `stop` probe

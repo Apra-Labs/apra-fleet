@@ -108,7 +108,7 @@ double-click it (installation is the default action):
 npm install -g @apralabs/apra-fleet
 apra-fleet install           # installs for Claude Code (default)
 apra-fleet install --llm agy # or --llm opencode / codex / copilot
-apra-fleet start             # npm install registers no OS service: start the server
+apra-fleet start             # npm install registers no OS service: start the server (again after reboot)
 ```
 
 The standalone installer instead registers and starts a user-level service
