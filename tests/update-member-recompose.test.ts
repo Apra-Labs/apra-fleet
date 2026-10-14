@@ -11,6 +11,7 @@ import { backupAndResetRegistry, restoreRegistry, makeConfigAwareExec, makeTestA
 import { updateMember } from '../src/tools/update-member.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
 import { addAgent, recordFleetMcpStatus } from '../src/services/registry.js';
+import { memberMcpAllowRules } from '../src/services/member-config-io.js';
 import { __setMemberFleetMcpDeps, NO_INSTALL_SENTINEL, type MemberFleetMcpDeps } from '../src/services/member-fleet-install.js';
 import type { SSHExecResult } from '../src/types.js';
 
@@ -47,7 +48,7 @@ const mockCompose = vi.mocked(composePermissions);
 const VERSION = 'v0.4.4';
 const WORK = '/home/bella/repo';
 
-interface World { installed: string | null; log: string[] }
+interface World { installed: string | null; log: string[]; autostartFails?: boolean; serverDown?: boolean }
 
 const plain = (cmd: string): string => (cmd.includes('-EncodedCommand') ? decodePowerShellEncodedCommand(cmd) : cmd);
 
@@ -63,11 +64,17 @@ function fakeDeps(world: World): MemberFleetMcpDeps {
       if (c.includes('member-install.json')) return ok('');
       if (c.includes("'register-member'")) return ok('registered');
       if (c.includes('command -v bd')) return ok('bd version 1.3.0\n');
-      if (c.includes("'call'") && c.includes("'--list-tools'")) return ok(JSON.stringify({ tools: [{ name: 'version' }, { name: 'kb_list' }] }));
+      if (c.includes("'call'") && c.includes("'--list-tools'")) return ok(JSON.stringify({ tools: ['version', 'kb_query', 'kb_list', 'code_query', 'code_context'].map(name => ({ name })) }));
       if (c.includes("'call'") && c.includes("'version'")) return ok(JSON.stringify({ content: [{ type: 'text', text: `apra-fleet ${world.installed}` }] }));
       if (c.includes('--version')) return ok(world.installed ? `apra-fleet ${world.installed}\n` : `${NO_INSTALL_SENTINEL}\n`);
       if (c.includes('uname -m')) return ok('x86_64');
-      if (c.includes("'install'")) { world.installed = VERSION; return ok('installed'); }
+      if (c.includes("'install'")) {
+        world.installed = VERSION;
+        // Headless Linux without user systemd: binary on disk, autostart failed.
+        if (world.autostartFails) return { stdout: '', stderr: 'E-MEMBER-AUTOSTART: could not enable the user service', code: 1 };
+        return ok('installed');
+      }
+      if (world.serverDown && c.includes("'call'")) return { stdout: '', stderr: 'connect ECONNREFUSED 127.0.0.1:7523', code: 1 };
       if (c.includes('CLAUDE_CONFIG_DIR')) return ok('');
       if (c.includes('cat "') && c.includes('.claude.json')) {
         return ok(JSON.stringify({ projects: { [WORK]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${agent.id}` } } } } }));
@@ -109,25 +116,64 @@ afterEach(() => {
 });
 
 describe('update_member re-composes permissions after a member install/upgrade', () => {
-  it.each(['claude', 'opencode'] as const)('fleet_install auto upgrading a %s member re-composes it once (doer + its tags)', async (provider) => {
+  it('claude: an upgrade ADDS the member tool rules in grant mode (role and grants kept) and says so', async () => {
     const w: World = { installed: 'v0.4.3', log: [] };
     __setMemberFleetMcpDeps(fakeDeps(w));
-    const a = remoteMember({ llmProvider: provider, tags: ['reviewer'] });
+    const a = remoteMember({ tags: ['gpu'] });
     const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
     expect(installs(w)).toHaveLength(1);
     expect(mockCompose).toHaveBeenCalledTimes(1);
-    expect(mockCompose).toHaveBeenCalledWith({ member_id: a.id, role: 'doer', tags: ['reviewer'] });
+    expect(mockCompose).toHaveBeenCalledWith({ member_id: a.id, role: 'doer', tags: ['gpu'], grant: memberMcpAllowRules() });
+    expect(memberMcpAllowRules()).toContain('mcp__apra-fleet__kb_list');
     expect(result).toContain('updated.');
+    expect(result).toContain('NOTICE: the member apra-fleet tool rules were added to its permission allow-list');
     expect(result).not.toContain('compose_permissions failed');
   });
 
-  it('an up-to-date member (no install happened) is not re-composed', async () => {
-    const w: World = { installed: VERSION, log: [] };
+  it('opencode keeps no client-side tool list: an upgrade does not re-compose', async () => {
+    const w: World = { installed: 'v0.4.3', log: [] };
     __setMemberFleetMcpDeps(fakeDeps(w));
-    const a = remoteMember();
+    const a = remoteMember({ llmProvider: 'opencode' });
+    const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(installs(w)).toHaveLength(1);
+    expect(mockCompose).not.toHaveBeenCalled();
+    expect(result).not.toContain('NOTICE: the member');
+  });
+
+  it.each(['agy', 'codex', 'copilot'] as const)('%s gets no member install from fleet_install, so nothing is re-composed', async (provider) => {
+    const w: World = { installed: 'v0.4.3', log: [] };
+    __setMemberFleetMcpDeps(fakeDeps(w));
+    const a = remoteMember({ llmProvider: provider, ...(provider === 'agy' ? { agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' } : {}) });
     await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
     expect(installs(w)).toEqual([]);
     expect(mockCompose).not.toHaveBeenCalled();
+  });
+
+  it('an up-to-date member already recorded available is not re-composed', async () => {
+    const w: World = { installed: VERSION, log: [] };
+    __setMemberFleetMcpDeps(fakeDeps(w));
+    const a = remoteMember({ fleetMcp: { state: 'available', version: VERSION, checkedAt: '2026-10-01T00:00:00.000Z' } });
+    await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(installs(w)).toEqual([]);
+    expect(mockCompose).not.toHaveBeenCalled();
+  });
+
+  it('autostart fails on install -> owner runs apra-fleet start -> auto again (install up to date) re-composes', async () => {
+    const w: World = { installed: 'v0.4.3', log: [], autostartFails: true, serverDown: true };
+    __setMemberFleetMcpDeps(fakeDeps(w));
+    const a = remoteMember();
+    const first = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(first).toContain('fleetMcp: unavailable (install-failed)');
+    expect(mockCompose).not.toHaveBeenCalled();
+    // `apra-fleet start` on the member: the server now answers.
+    w.autostartFails = false;
+    w.serverDown = false;
+    const second = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(installs(w)).toHaveLength(1); // the second run found the install up to date
+    expect(second).toContain('fleetMcp: available');
+    expect(mockCompose).toHaveBeenCalledTimes(1);
+    expect(mockCompose).toHaveBeenCalledWith(expect.objectContaining({ member_id: a.id, grant: memberMcpAllowRules() }));
+    expect(second).toContain('NOTICE: the member apra-fleet tool rules were added');
   });
 
   it('fleet_install skip never re-composes', async () => {
