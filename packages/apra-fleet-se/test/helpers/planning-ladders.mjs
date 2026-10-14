@@ -45,11 +45,7 @@
 // inventory mapping each pre-migration assertion to its post-migration
 // replacement is in planning-role-dispatch-pins.test.mjs's header.
 
-import { EXECUTION_ENGINE_DISPATCHES, EXHAUSTED_SESSION_ID } from './execution-ladders.mjs';
-
-// Re-exported so a planning pin and the harness can be checked against ONE
-// literal: a max-turns resume names the exhausted session explicitly.
-export { EXHAUSTED_SESSION_ID };
+import { EXECUTION_ENGINE_DISPATCHES } from './execution-ladders.mjs';
 
 /**
  * Every dispatch the dispatchRole engine (fleet-sprint/dispatch-role.mjs)
@@ -107,7 +103,7 @@ export const PLANNING_ENGINE_DISPATCHES = [
         watchdog: true,
         watchdogLabel: 'Plan (resume, max_turns=1000)',
         schema: null,
-        resume: EXHAUSTED_SESSION_ID,
+        resume: true,
     },
     {
         role: 'plan-reviewer',
@@ -146,7 +142,7 @@ export const PLANNING_ENGINE_DISPATCHES = [
         watchdog: false,
         watchdogLabel: null,
         schema: 'planReviewerVerdict',
-        resume: EXHAUSTED_SESSION_ID,
+        resume: true,
     },
     {
         role: 'scoped-replan-planner',
