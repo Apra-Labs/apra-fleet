@@ -421,7 +421,11 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // 6 -> 8 (GitHub #715): reclaimInRunOrphanedClaims adds its fresh-read
 // `bd show` and its guarded `bd update --status open` write, both on the
 // backlog member with member_name.
-const EXPECTED_COMMAND_COUNT = 8;
+// 8 -> 9 (GitHub #715): reclaimStaleInProgress' plain `bd update --status
+// open` write becomes the guarded, assignee-clearing write, and its freshRead
+// path (the unconditional pre-sprint stale-claim check) adds a fresh-read
+// `bd show`, both on the backlog member with member_name.
+const EXPECTED_COMMAND_COUNT = 9;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
