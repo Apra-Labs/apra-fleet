@@ -102,8 +102,7 @@ describe('provider cache key: (slug, repoPath), not slug alone (apra-fleet-b4g.2
       summary: 'Cites a file that exists only under pathB.',
       content: 'Proves the provider serving pathB is anchored at pathB, not pathA.',
       source_files: ['src/only-in-b.ts'],
-      repo_path: pathB,
-    } as any)).resolves.toBeTruthy();
+    } as any, { folder: pathB })).resolves.toBeTruthy();
 
     await expect(kbCapture({
       type: 'knowledge',
@@ -111,8 +110,7 @@ describe('provider cache key: (slug, repoPath), not slug alone (apra-fleet-b4g.2
       summary: 'Cites a file that exists only under pathA, scoped to pathB.',
       content: 'If this succeeds, the provider serving pathB is still anchored at pathA.',
       source_files: ['src/only-in-a.ts'],
-      repo_path: pathB,
-    } as any)).rejects.toThrow(KbCaptureRejected);
+    } as any, { folder: pathB })).rejects.toThrow(KbCaptureRejected);
   });
 
   it('case 4: resetKbProviders() clears the composite-keyed cache -- a call after reset rebuilds rather than serving a stale anchor', async () => {

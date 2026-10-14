@@ -38,6 +38,10 @@ const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExec
 vi.mock('../src/services/strategy.js', () => ({
   getStrategy: () => ({
     execCommand: mockExecCommand,
+    // The member file channel (b4g.101): ~/.claude.json content never rides a command line.
+    transferFiles: async (paths: string[]) => ({ success: paths, failed: [] }),
+    writeSecretFile: async () => '/c/Users/gitbash-member/.apra-fleet-secret',
+    removeSecretFile: async () => undefined,
   }),
 }));
 
@@ -64,6 +68,11 @@ function makeFsHandler(): (cmd: string, timeout?: number) => Promise<SSHExecResu
     // Windows read (Get-Content -Raw "<path>" ...)
     m = cmd.match(/Get-Content -Raw "(.+?)"/);
     if (m) { return { stdout: files.get(m[1]) ?? '', stderr: '', code: 0 }; }
+    // Member home-directory probe (src/services/member-home.ts): POSIX form for
+    // a gitbash member, encoded PowerShell for every other Windows shell. The
+    // per-folder member MCP entry lives in the member's ~/.claude.json.
+    if (cmd === 'printf \'%s\' "$HOME"') return { stdout: '/c/Users/gitbash-member', stderr: '', code: 0 };
+    if (cmd.includes('-EncodedCommand')) return { stdout: 'C:\\Users\\win-member', stderr: '', code: 0 };
     // mkdir/New-Item, detectStacks (ls), workspace-trust writes/reads, everything else
     return { stdout: '', stderr: '', code: 0 };
   };

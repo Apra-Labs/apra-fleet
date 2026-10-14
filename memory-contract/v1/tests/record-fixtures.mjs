@@ -31,16 +31,14 @@
 //     is set, because ESM `import` declarations are hoisted and would run
 //     before the assignment otherwise (same load-order hazard documented on
 //     kb-providers.ts's module-level FLEET_DIR constant).
-//   - repo_path/repo arguments point at fresh tmpdir "repos" that are
-//     deliberately NOT git repositories, so kb_setup never installs a real
-//     git hook and kb_export's isGitRepo() check is false, so it NEVER runs
-//     `git add`/`git commit` anywhere (see kb-export.ts maybeAutoCommitBible).
-//   - repo_remote_url is set explicitly on every kb_* call (a synthetic
-//     example.test URL) rather than relying on git-derived slugs, so the
-//     recorded corpus is HOST-INDEPENDENT -- reproducible on any host
-//     regardless of whether the scratch tmpdir happens to sit inside a real
-//     git working tree. This is NOT the same claim as byte-reproducible; see
-//     the dedicated note below.
+//   - kb_* requests carry NO scope argument: every call is dispatched AS a
+//     registered member session (roundtrip-harness.mjs ENVIRONMENT.sessions,
+//     materialised by session-world.mjs into this run's hermetic registry),
+//     so it resolves that member's own work folder. The scratch repos are git
+//     repositories with synthetic example.test origin remotes, so the KB slug
+//     is HOST-INDEPENDENT. kb_export auto-commits its bible into scratch repo
+//     A only -- never outside the scratch root. This is NOT the same claim as
+//     byte-reproducible; see the dedicated note below.
 //   - code_* calls pass repo= a tmpdir with no .gitnexus/meta.json, so
 //     callGitNexus()'s pre-flight check (code-intelligence-gitnexus.ts)
 //     returns a structured "missing index" result WITHOUT ever spawning the
@@ -102,12 +100,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // ---------------------------------------------------------------------------
 // 0. Scratch environment -- MUST run before any dist/* import.
 // ---------------------------------------------------------------------------
-const SCRATCH_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-contract-fixtures-'));
+// realpath: a FULL session's (self) is process.cwd(), which the OS reports
+// with symlinks resolved (macOS /var -> /private/var); the sanitiser must see
+// that same spelling or a FULL-session message leaks a half-substituted path.
+const SCRATCH_ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memory-contract-fixtures-')));
 process.env.APRA_FLEET_DATA_DIR = path.join(SCRATCH_ROOT, 'fleet-data');
 fs.mkdirSync(process.env.APRA_FLEET_DATA_DIR, { recursive: true });
 
@@ -118,48 +120,47 @@ const FIXTURES_DIR = path.join(REPO_ROOT, 'memory-contract', 'v1', 'fixtures');
 
 // Synthetic scratch repos -- no real BluSKY code, credentials, or customer
 // text anywhere below. repoA/repoB are deliberately NOT git repos (no .git).
-const repoA = path.join(SCRATCH_ROOT, 'repo-a');
-const repoB = path.join(SCRATCH_ROOT, 'repo-b');
-const repoCode = path.join(SCRATCH_ROOT, 'repo-code');
-fs.mkdirSync(path.join(repoA, 'src'), { recursive: true });
-fs.mkdirSync(repoB, { recursive: true });
-fs.mkdirSync(repoCode, { recursive: true });
+const { ENVIRONMENT, RECORDED_REMOTE_A, RECORDED_REMOTE_B, RECORDED_REMOTE_IMPORT_REJECTED, RECORDED_REMOTE_BARE, UNTRUSTED_COMMITTED_BIBLE } =
+  await import(pathToFileURL(path.join(HERE, 'roundtrip-harness.mjs')).href);
+const { materializeSessionWorld } = await import(pathToFileURL(path.join(HERE, 'session-world.mjs')).href);
+const { registerAllTools } = await import(pathToFileURL(path.join(DIST, 'services', 'tool-registry.js')).href);
+const { memberToolScope } = await import(pathToFileURL(path.join(DIST, 'services', 'tool-scope.js')).href);
+const { addAgent, removeAgent } = await import(pathToFileURL(path.join(DIST, 'services', 'registry.js')).href);
 
-fs.writeFileSync(
-  path.join(repoA, 'src', 'example.ts'),
-  "export function exampleFn(x: number): number {\n  return x + 1;\n}\n",
-);
-fs.writeFileSync(
-  path.join(repoA, 'src', 'helper.ts'),
-  "export function helperBar(): void {\n  // placeholder\n}\n",
-);
-
-const REMOTE_A = 'https://example.test/memory-contract-fixtures-a.git';
-const REMOTE_B = 'https://example.test/memory-contract-fixtures-b.git';
-
-// ---------------------------------------------------------------------------
-// 1. Fake McpServer -- same 4-line technique INVENTORY.md section 1 used to
-//    verify the runtime tool count. Captures every registered handler by
-//    name so this harness can call the REAL post-wrapTool envelope.
-// ---------------------------------------------------------------------------
-const registered = new Map();
-const fakeServer = {
-  tool(name, _description, _shape, handler) {
-    registered.set(name, handler);
-  },
-  server: {
-    async sendLoggingMessage() {
-      // no-op: onboarding notifications are not part of this contract
-    },
-  },
+const RECORDED_REMOTES = {
+  A: RECORDED_REMOTE_A,
+  B: RECORDED_REMOTE_B,
+  IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED,
+  BARE: RECORDED_REMOTE_BARE,
 };
 
-const { registerAllTools } = await import(pathToFileURL(path.join(DIST, 'services', 'tool-registry.js')).href);
-await registerAllTools(fakeServer);
+const world = await materializeSessionWorld(ENVIRONMENT, SCRATCH_ROOT, {
+  remoteUrl: (key) => RECORDED_REMOTES[key],
+  addAgent,
+  removeAgent,
+  registerAllTools,
+  memberToolScope,
+});
+const repoA = world.repoPaths.get('A');
+const repoB = world.repoPaths.get('B');
+const repoCode = world.repoPaths.get('CODE');
 
-// ---------------------------------------------------------------------------
-// 2. Recording plumbing
-// ---------------------------------------------------------------------------
+// Every record* call below dispatches as `currentSession`; withSession() runs
+// one call as another session and stamps that session into the fixture.
+let currentSession = ENVIRONMENT.defaultSession;
+async function withSession(session, fn) {
+  const previous = currentSession;
+  currentSession = session;
+  try {
+    return await fn();
+  } finally {
+    currentSession = previous;
+  }
+}
+function handlerFor(tool) {
+  return world.sessionHandlers.get(currentSession)?.get(tool);
+}
+
 let recorded = 0;
 let failures = 0;
 
@@ -172,6 +173,8 @@ let failures = 0;
 // inside a nested JSON-text string. Add that re-escaped variant alongside
 // the raw path so both nesting depths get caught.
 const RAW_PATH_PAIRS = [
+  // Live member labels carry a per-run tag; fixtures record the bare label.
+  ...world.memberLiterals.map(([recordedLabel, liveLabel]) => [liveLabel, recordedLabel]),
   [repoA, '<SCRATCH_REPO_A>'],
   [repoB, '<SCRATCH_REPO_B>'],
   [repoCode, '<SCRATCH_REPO_CODE>'],
@@ -205,13 +208,14 @@ function writeFixture(tool, caseName, doc) {
   const dir = path.join(FIXTURES_DIR, tool);
   fs.mkdirSync(dir, { recursive: true });
   const outPath = path.join(dir, `${caseName}.json`);
-  fs.writeFileSync(outPath, JSON.stringify(sanitizeValue(doc), null, 2) + '\n', 'utf-8');
+  const stamped = currentSession === ENVIRONMENT.defaultSession ? doc : { ...doc, session: currentSession };
+  fs.writeFileSync(outPath, JSON.stringify(sanitizeValue(stamped), null, 2) + '\n', 'utf-8');
   recorded++;
   console.log(`  [recorded] ${tool}/${caseName}.json`);
 }
 
 async function recordHappy(tool, caseName, request) {
-  const handler = registered.get(tool);
+  const handler = handlerFor(tool);
   if (!handler) {
     failures++;
     console.log(`  [FAIL] ${tool} is not registered`);
@@ -229,7 +233,7 @@ async function recordHappy(tool, caseName, request) {
 }
 
 async function recordRefusal(tool, caseName, request, expectedErrorCode) {
-  const handler = registered.get(tool);
+  const handler = handlerFor(tool);
   if (!handler) {
     failures++;
     console.log(`  [FAIL] ${tool} is not registered`);
@@ -258,7 +262,7 @@ async function recordRefusal(tool, caseName, request, expectedErrorCode) {
 // the real call actually returned -- assertFn must throw/return false to mark
 // the recording as invalid evidence of the taxonomy code.
 async function recordResponseFieldRefusal(tool, caseName, request, expectedErrorCode, assertFn) {
-  const handler = registered.get(tool);
+  const handler = handlerFor(tool);
   if (!handler) {
     failures++;
     console.log(`  [FAIL] ${tool} is not registered`);
@@ -289,7 +293,7 @@ async function recordResponseFieldRefusal(tool, caseName, request, expectedError
 }
 
 async function recordNonErrorOutcome(tool, caseName, request, note) {
-  const handler = registered.get(tool);
+  const handler = handlerFor(tool);
   if (!handler) {
     failures++;
     console.log(`  [FAIL] ${tool} is not registered`);
@@ -311,7 +315,7 @@ async function recordNonErrorOutcome(tool, caseName, request, note) {
 // assertFn still fails the recording loudly if the observed effect stops
 // holding, same non-vacuous guarantee recordResponseFieldRefusal gives.
 async function recordObservedEffect(tool, caseName, request, observedCode, note, assertFn) {
-  const handler = registered.get(tool);
+  const handler = handlerFor(tool);
   if (!handler) {
     failures++;
     console.log(`  [FAIL] ${tool} is not registered`);
@@ -352,12 +356,12 @@ function parseEnvelopeText(response) {
 console.log('== PASS 1: happy-path corpus ==');
 
 // --- kb_setup -----------------------------------------------------------
-await recordHappy('kb_setup', 'happy', { repo_path: repoA, provider: 'sqlite' });
+// No member session is served kb_setup (it writes the machine-wide provider
+// config), so it is recorded in the FULL session over repo A.
+await withSession('FULL_A', () => recordHappy('kb_setup', 'happy', { provider: 'sqlite' }));
 
 // --- kb_capture (two ordinary entries to build on) -----------------------
 const captureFoo = await recordHappy('kb_capture', 'happy', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   type: 'knowledge',
   title: 'exampleFn returns x + 1',
   summary: 'exampleFn in src/example.ts is a trivial increment helper used by the fixture corpus.',
@@ -369,8 +373,6 @@ const captureFoo = await recordHappy('kb_capture', 'happy', {
 const idFoo = parseEnvelopeText(captureFoo)?.id;
 
 await recordHappy('kb_capture', 'happy-context-cache', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   type: 'context-cache',
   title: 'src/example.ts summary',
   summary: 'File summary cache entry for src/example.ts.',
@@ -382,40 +384,85 @@ await recordHappy('kb_capture', 'happy-context-cache', {
 
 // --- kb_context -----------------------------------------------------------
 await recordHappy('kb_context', 'happy', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   files: ['src/example.ts', 'src/helper.ts'],
 });
 
 // --- kb_session_prime -----------------------------------------------------
 await recordHappy('kb_session_prime', 'happy', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   hint_symbols: ['exampleFn'],
   session_files: ['src/example.ts'],
 });
 
 // --- kb_query ---------------------------------------------------------
 await recordHappy('kb_query', 'happy', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   query: 'exampleFn',
 });
 
 // --- kb_list ------------------------------------------------------------
 await recordHappy('kb_list', 'happy', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
+});
+// The pre-redesign single-tier string form, read as a one-element list.
+await recordHappy('kb_list', 'happy-confidence-string', {
+  confidence: 'INFERRED',
 });
 
 // --- kb_promote -----------------------------------------------------------
 if (idFoo) {
   await recordHappy('kb_promote', 'happy', {
-    repo_path: repoA,
-    repo_remote_url: REMOTE_A,
     id: idFoo,
     reason: 'Manually re-read src/example.ts and confirmed exampleFn(x) returns x + 1 exactly as captured.',
   });
+}
+
+// --- kb_export --------------------------------------------------------
+// Before the CONFIRMED-only read and kb_stats: a member session's default
+// (CONFIRMED) reads come from its checkout bible, so the promoted entry is
+// visible to them once kb_export has written it there. No member session is
+// served kb_export (it auto-commits into the work tree), so it is recorded in
+// the FULL session over repo A, which shares repo A's KB.
+await withSession('FULL_A', () => recordHappy('kb_export', 'happy', {
+}));
+
+// --- kb_bible_commit -----------------------------------------------------
+// Entry-level merge of the promoted entry into repo A's bible, with explicit
+// target-base-branch provenance. Local commit only; never pushed.
+if (idFoo) {
+  await recordHappy('kb_bible_commit', 'happy', {
+    ids: [idFoo],
+    baseBranch: 'main',
+    baseCommit: '0123456789abcdef0123456789abcdef01234567',
+  });
+}
+
+// Basis skip: a CONFIRMED entry whose cited file was edited after capture fails
+// the shared bible basis predicate (same rule as kb_export) and is reported in
+// skipped with reason basis_mismatch; the bible is left untouched.
+{
+  fs.writeFileSync(path.join(repoA, 'src', 'basis-drift.ts'), 'export const drift = 1;\n');
+  const captureDrift = await recordHappy('kb_capture', 'setup-for-bible-commit-basis-mismatch', {
+    type: 'knowledge',
+    title: 'Entry whose cited file changes after capture',
+    summary: 'Set up to demonstrate the kb_bible_commit basis_mismatch skip reason.',
+    content: 'This entry cites src/basis-drift.ts, which is edited after the entry is promoted to CONFIRMED.',
+    source_files: ['src/basis-drift.ts'],
+  });
+  const idDrift = parseEnvelopeText(captureDrift)?.id;
+  if (idDrift) {
+    await recordHappy('kb_promote', 'setup-first-promote-for-bible-commit-basis-mismatch', {
+      id: idDrift,
+      reason: 'First promotion (UNVERIFIED -> INFERRED) of the entry used by the basis_mismatch fixture.',
+    });
+    await recordHappy('kb_promote', 'setup-second-promote-for-bible-commit-basis-mismatch', {
+      id: idDrift,
+      reason: 'Second promotion (INFERRED -> CONFIRMED) while the cited file still matches the capture basis.',
+    });
+    fs.writeFileSync(path.join(repoA, 'src', 'basis-drift.ts'), 'export const drift = 2;\n');
+    await recordHappy('kb_bible_commit', 'basis-mismatch', {
+      ids: [idDrift],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    });
+  }
 }
 
 // --- kb_query trust filters (after kb_promote, so idFoo is CONFIRMED) -------
@@ -424,8 +471,6 @@ if (idFoo) {
 // absent here, and related_claims must obey the same filter.
 if (idFoo) {
   await recordHappy('kb_query', 'happy-confirmed-only', {
-    repo_path: repoA,
-    repo_remote_url: REMOTE_A,
     query: 'exampleFn',
     confidence: ['CONFIRMED'],
     exclude_disputed: true,
@@ -435,46 +480,55 @@ if (idFoo) {
 
 // --- kb_stats -------------------------------------------------------------
 await recordHappy('kb_stats', 'happy', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   symbols: ['exampleFn'],
 });
 
-// --- kb_export --------------------------------------------------------
-await recordHappy('kb_export', 'happy', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
-});
 const bibleFromA = path.join(repoA, '.fleet', 'kb-canonical.json');
 
 // --- kb_import (into a genuinely separate KB -- repoB / REMOTE_B slug) ----
-await recordHappy('kb_import', 'happy', {
-  repo: repoB,
-  repo_remote_url: REMOTE_B,
+// Imported INTO member B's own KB (session B); `path` only names A's bible file.
+await withSession('B', () => recordHappy('kb_import', 'happy', {
   path: bibleFromA,
-});
+}));
+
+// --- kb_import of the v3 bible: the carried basis travels -------------------
+// Repo A's bible is format v3, so its entry carries source_file_hashes. Repo B
+// now has the cited file with DIFFERENT content: the import stores A's carried
+// hash (never a re-hash of B's file) and the post-import sweep stales it.
+{
+  fs.mkdirSync(path.join(repoB, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(repoB, 'src', 'example.ts'), 'export function exampleFn(x: number): number {\n  return x + 2;\n}\n');
+  const v3Import = await withSession('B', () => recordHappy('kb_import', 'happy-v3-carried-basis', {
+    path: bibleFromA,
+  }));
+  const report = parseEnvelopeText(v3Import);
+  if (!(report?.imported === 1 && report?.rejected === 0 && report?.sweep?.staled === 1)) {
+    failures++;
+    console.log(`  [FAIL] kb_import/happy-v3-carried-basis: expected imported 1, rejected 0, sweep.staled 1, got ${JSON.stringify(report)}`);
+  }
+}
 
 // --- kb_freshness_sweep ---------------------------------------------------
 await recordHappy('kb_freshness_sweep', 'happy', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
 });
 
 // --- kb_feedback ------------------------------------------------------
+// A MEMBER session's KB reads come from the read-only checkout bible view:
+// kb_feedback refuses with E-MEMBER-VIEW-READ-ONLY before any KB is opened and
+// changes nothing. The same request from the FULL (non-member) session FULL_A
+// -- whose server working folder is repo A, so it shares A's KB -- succeeds.
 if (idFoo) {
-  await recordHappy('kb_feedback', 'happy', {
-    repo_path: repoA,
-    repo_remote_url: REMOTE_A,
+  const feedbackRequest = {
     id: idFoo,
     reason: 'On re-check, the summary overstated precision -- exampleFn is untyped-input tolerant, unlike the note implies.',
     role: 'reviewer',
-  });
+  };
+  await recordRefusal('kb_feedback', 'refusal-member-view-read-only', feedbackRequest, 'E-MEMBER-VIEW-READ-ONLY');
+  await withSession('FULL_A', () => recordHappy('kb_feedback', 'happy', feedbackRequest));
 }
 
 // --- kb_harvest -------------------------------------------------------
 await recordHappy('kb_harvest', 'happy', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   session_transcript:
     'Note: the helper in `computeThing` inside src/example.ts had a subtle rounding bug that is now fixed after tightening the threshold check.',
   session_id: 'sess-fixture-1',
@@ -482,8 +536,6 @@ await recordHappy('kb_harvest', 'happy', {
 
 // --- Contradiction pair: kb_reconcile_prefilter + kb_resolve_contradiction -
 const captureBroken = await recordHappy('kb_capture', 'happy-contradiction-a', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   type: 'learning',
   title: 'helperBar is broken',
   summary: 'helperBar in src/helper.ts is broken under concurrent calls.',
@@ -494,8 +546,6 @@ const captureBroken = await recordHappy('kb_capture', 'happy-contradiction-a', {
 const idBroken = parseEnvelopeText(captureBroken)?.id;
 
 const captureFixed = await recordHappy('kb_capture', 'happy-contradiction-b', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   type: 'learning',
   title: 'helperBar now works under concurrent calls',
   summary: 'helperBar in src/helper.ts now works correctly for concurrent calls after a guard was added.',
@@ -507,14 +557,10 @@ const idFixed = parseEnvelopeText(captureFixed)?.id;
 console.log(`  [info] contradiction pair audn_decision for B: ${parseEnvelopeText(captureFixed)?.audn_decision}`);
 
 await recordHappy('kb_reconcile_prefilter', 'happy', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
 });
 
 if (idBroken && idFixed) {
   await recordHappy('kb_resolve_contradiction', 'happy', {
-    repo_path: repoA,
-    repo_remote_url: REMOTE_A,
     winnerId: idFixed,
     loserId: idBroken,
     evidence: 'Re-read src/helper.ts after the fix landed: the re-entrancy guard is present and concurrent calls no longer collide.',
@@ -523,21 +569,41 @@ if (idBroken && idFixed) {
 
 // --- kb_invalidate ------------------------------------------------------
 await recordHappy('kb_invalidate', 'happy', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   files: ['src/example.ts'],
 });
 
-// --- code_* (7 tools) -- all against a repo with no .gitnexus/meta.json, so
-// the real, honest "missing index" structured result is what gets recorded,
-// without ever spawning the gitnexus child process.
-await recordHappy('code_graph', 'happy-no-index', { symbol: 'exampleFn', repo: repoCode });
-await recordHappy('code_impact', 'happy-no-index', { target: 'exampleFn', direction: 'upstream', repo: repoCode });
-await recordHappy('code_query', 'happy-no-index', { query: 'exampleFn', repo: repoCode });
-await recordHappy('code_context', 'happy-no-index', { name: 'exampleFn', repo: repoCode, repo_remote_url: REMOTE_A });
-await recordHappy('code_map', 'happy-no-index', { repo: repoCode });
-await recordHappy('code_flow', 'happy-no-index', { name: 'exampleFn', repo: repoCode });
-await recordHappy('code_tests', 'happy-no-index', { symbol: 'exampleFn', repo: repoCode });
+// --- code_* (7 provider tools; code_reindex/code_status below) -- code (self): no repo argument; the CODE member
+// session (provider pinned to gitnexus) resolves its own work folder, a git
+// repo with no .gitnexus/meta.json, so every tool honestly refuses with
+// E-CODE-INDEX-NOT-READY from the pre-flight, without ever spawning the
+// gitnexus child process.
+// NOTE (self-heal): the committed refusal-index-not-ready fixtures carry the
+// "An index build was requested automatically." variant -- the contract for a
+// missing index whose background build request succeeded, which is what the
+// vitest roundtrip produces (tests/setup.ts fakes the build request, so each
+// call sees the same outcome). Recording here against the real build instead
+// requests ONE real detached analyze in this scratch repo on the first call;
+// later calls then read "still being built" (or the npx-not-found variant when
+// npx is absent), so do not re-record these 7 fixtures with this script --
+// edit them to match indexNotReadyError's "requested" text instead.
+await withSession('CODE', async () => {
+  await recordRefusal('code_graph', 'refusal-index-not-ready', { symbol: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_impact', 'refusal-index-not-ready', { target: 'exampleFn', direction: 'upstream' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_query', 'refusal-index-not-ready', { query: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_context', 'refusal-index-not-ready', { name: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_map', 'refusal-index-not-ready', {}, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_flow', 'refusal-index-not-ready', { name: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_tests', 'refusal-index-not-ready', { symbol: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
+});
+// Provider 'none': an error result, never an ok "disabled" payload.
+await withSession('CODE_OFF', () => recordRefusal('code_query', 'refusal-intel-disabled', { query: 'exampleFn' }, 'E-CODE-INTEL-DISABLED'));
+await withSession('CODE_OFF', () => recordRefusal('code_reindex', 'refusal-intel-disabled', {}, 'E-CODE-INTEL-DISABLED'));
+await withSession('CODE_OFF', () => recordRefusal('code_status', 'refusal-intel-disabled', {}, 'E-CODE-INTEL-DISABLED'));
+// Provider 'codebase-memory' (any non-gitnexus, non-none provider): a typed
+// not-started result, not an error, and gitnexus analyze is never spawned.
+const providerNote = "code_reindex/code_status gate on the member's provider: only 'gitnexus' runs the fleet-level analyze/status; any other configured provider returns { outcome:'not-started', reason:'provider-not-supported', provider, indexedCommit:null, detail } as a normal result (no taxonomy code).";
+await withSession('CODE_CM', () => recordNonErrorOutcome('code_reindex', 'non-error-provider-not-supported', {}, providerNote));
+await withSession('CODE_CM', () => recordNonErrorOutcome('code_status', 'non-error-provider-not-supported', {}, providerNote));
 
 // ===========================================================================
 // PASS 2 -- hardening: taxonomy-coded refusals + one documented non-error
@@ -547,48 +613,138 @@ await recordHappy('code_tests', 'happy-no-index', { symbol: 'exampleFn', repo: r
 // ===========================================================================
 console.log('== PASS 2: refusal + non-error-outcome fixtures ==');
 
-// -- validation group (all 6 codes) ---------------------------------------
+// -- validation group (all 7 codes) ---------------------------------------
 await recordRefusal('kb_query', 'refusal-no-selector', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
 }, 'E-QUERY-NO-SELECTOR');
 
+// E-SCOPE-KEY-REMOVED: one per kb_* tool family (read, write, bible,
+// maintenance), each with a different removed key.
+await recordRefusal('kb_query', 'refusal-scope-key-removed', {
+  query: 'exampleFn',
+  repo_path: '/elsewhere/other-repo',
+}, 'E-SCOPE-KEY-REMOVED');
+await recordRefusal('kb_capture', 'refusal-scope-key-removed', {
+  type: 'knowledge',
+  title: 'Never stored: carries a removed scope key',
+  summary: 'A capture naming another repository by a removed key is refused.',
+  content: 'Refused before any KB is resolved, so nothing is written anywhere.',
+  source_files: ['src/example.ts'],
+  repo_remote_url: 'https://example.test/some-other-repo.git',
+}, 'E-SCOPE-KEY-REMOVED');
+await withSession('FULL_A', () => recordRefusal('kb_export', 'refusal-scope-key-removed', {
+  repo_path: '/elsewhere/other-repo',
+}, 'E-SCOPE-KEY-REMOVED'));
+await recordRefusal('kb_freshness_sweep', 'refusal-scope-key-removed', {
+  repo: '/elsewhere/other-repo',
+}, 'E-SCOPE-KEY-REMOVED');
+
 await recordRefusal('kb_context', 'refusal-path-traversal', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   files: ['../outside-the-repo.txt'],
 }, 'E-PATH-TRAVERSAL');
 
-await recordRefusal('kb_export', 'refusal-repo-path-invalid', {
-  repo_path: path.join(SCRATCH_ROOT, 'this-directory-does-not-exist'),
-}, 'E-REPO-PATH-INVALID');
+// A remote member session: its folder lives on another host, so
+// kb_bible_commit (which writes the bible there) refuses. (kb_export has no
+// such case: no member session is served it, and a FULL session's folder is
+// the server's own working folder.)
+await withSession('REMOTE_UNREACHABLE', () => recordRefusal('kb_bible_commit', 'refusal-repo-path-invalid', {
+  ids: [],
+  baseBranch: 'main',
+  baseCommit: '0123456789abcdef0123456789abcdef01234567',
+}, 'E-REPO-PATH-INVALID'));
+
+// E-BIBLE-BASIS-NOT-GIT: the BARE session's folder is a bare git repository
+// with an origin remote -- a valid KB identity, but not a git work tree, so
+// bible admission cannot read cited files at HEAD. A CONFIRMED entry must
+// exist first: admission (and so the git check) only runs for candidates.
+{
+  const repoBare = world.repoPaths.get('BARE');
+  fs.mkdirSync(path.join(repoBare, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(repoBare, 'src', 'bare-basis.ts'), 'export const bare = 1;\n');
+  const captureBare = await withSession('BARE', () => recordHappy('kb_capture', 'setup-for-bible-basis-not-git', {
+    type: 'knowledge',
+    title: 'Entry in a bare repository with no work tree',
+    summary: 'Set up to demonstrate the E-BIBLE-BASIS-NOT-GIT refusal of kb_export and kb_bible_commit.',
+    content: 'This entry cites src/bare-basis.ts in a bare repository, where no file can be read at HEAD of a work tree.',
+    source_files: ['src/bare-basis.ts'],
+  }));
+  const idBare = parseEnvelopeText(captureBare)?.id;
+  if (idBare) {
+    await withSession('BARE', () => recordHappy('kb_promote', 'setup-first-promote-for-bible-basis-not-git', {
+      id: idBare,
+      reason: 'First promotion (UNVERIFIED -> INFERRED) of the entry used by the E-BIBLE-BASIS-NOT-GIT fixtures.',
+    }));
+    await withSession('BARE', () => recordHappy('kb_promote', 'setup-second-promote-for-bible-basis-not-git', {
+      id: idBare,
+      reason: 'Second promotion (INFERRED -> CONFIRMED) so bible admission runs for this entry.',
+    }));
+    await withSession('FULL_BARE', () => recordRefusal('kb_export', 'refusal-bible-basis-not-git', {}, 'E-BIBLE-BASIS-NOT-GIT'));
+    await withSession('BARE', () => recordRefusal('kb_bible_commit', 'refusal-bible-basis-not-git', {
+      ids: [idBare],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    }, 'E-BIBLE-BASIS-NOT-GIT'));
+  }
+}
+
+// kb (self) resolution refusals: the calling member's folder cannot carry a KB identity.
+await withSession('NO_WORKFOLDER', () => recordRefusal('kb_query', 'refusal-self-no-workfolder', {
+  query: 'exampleFn',
+}, 'E-SELF-NO-WORKFOLDER'));
+await withSession('NOT_A_REPO', () => recordRefusal('kb_stats', 'refusal-self-not-a-repo', {}, 'E-SELF-NOT-A-REPO'));
+await withSession('NO_REMOTE', () => recordRefusal('kb_list', 'refusal-self-no-remote', {}, 'E-SELF-NO-REMOTE'));
+// code (self) resolution refusals: the same shared resolver, minus the
+// origin-remote check (a code index is keyed by folder, not KB identity).
+await withSession('NO_WORKFOLDER', () => recordRefusal('code_query', 'refusal-self-no-workfolder', {
+  query: 'exampleFn',
+}, 'E-SELF-NO-WORKFOLDER'));
+await withSession('NOT_A_REPO', () => recordRefusal('code_map', 'refusal-self-not-a-repo', {}, 'E-SELF-NOT-A-REPO'));
+// code_reindex / code_status resolve (self) the same way; a refusal is the
+// deterministic case (a happy code_reindex would spawn a real analyze).
+await withSession('NO_WORKFOLDER', () => recordRefusal('code_reindex', 'refusal-self-no-workfolder', {}, 'E-SELF-NO-WORKFOLDER'));
+await withSession('NOT_A_REPO', () => recordRefusal('code_status', 'refusal-self-not-a-repo', {}, 'E-SELF-NOT-A-REPO'));
 
 await recordRefusal('kb_import', 'refusal-bible-not-found', {
-  repo: repoA,
-  repo_remote_url: REMOTE_A,
   path: path.join(repoA, '.fleet', 'no-such-bible.json'),
+}, 'E-BIBLE-NOT-FOUND');
+
+// E-BIBLE-NOT-FOUND with `ref`: the named git ref does not hold the bible
+// (the bible is read as committed at the ref, never from the file system).
+await recordRefusal('kb_import', 'refusal-bible-not-found-at-ref', {
+  ref: 'refs/remotes/origin/no-such-branch',
 }, 'E-BIBLE-NOT-FOUND');
 
 const notJsonPath = path.join(repoA, '.fleet', 'not-json.json');
 fs.writeFileSync(notJsonPath, 'this is not valid JSON {{{', 'utf-8');
 await recordRefusal('kb_import', 'refusal-bible-not-json', {
-  repo: repoA,
-  repo_remote_url: REMOTE_A,
   path: notJsonPath,
 }, 'E-BIBLE-NOT-JSON');
 
 const wrongShapePath = path.join(repoA, '.fleet', 'wrong-shape.json');
 fs.writeFileSync(wrongShapePath, JSON.stringify({ not: 'an array or an entries envelope' }), 'utf-8');
 await recordRefusal('kb_import', 'refusal-bible-wrong-shape', {
-  repo: repoA,
-  repo_remote_url: REMOTE_A,
   path: wrongShapePath,
 }, 'E-BIBLE-WRONG-SHAPE');
 
+// E-KB-MAINTAINER-REQUIRED: a member session WITHOUT the kb_maintainer grant
+// naming a bible by explicit path (here repo A's) is refused; nothing imported.
+await withSession('PLAIN_B', () => recordRefusal('kb_import', 'refusal-kb-maintainer-required', {
+  path: bibleFromA,
+}, 'E-KB-MAINTAINER-REQUIRED'));
+
+// E-KB-MAINTAINER-REQUIRED (trust anchor): a bible committed only in the
+// member's own checkout, whose blob id the maintainer side never recorded, is
+// refused for a member session without the grant; nothing imported.
+{
+  fs.mkdirSync(path.join(repoB, '.fleet'), { recursive: true });
+  fs.writeFileSync(path.join(repoB, '.fleet', 'kb-canonical.json'), UNTRUSTED_COMMITTED_BIBLE, 'utf-8');
+  const git = (args) => execFileSync('git', args, { cwd: repoB, stdio: ['ignore', 'pipe', 'pipe'] });
+  git(['add', '--', '.fleet/kb-canonical.json']);
+  git(['-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'setup: .fleet/kb-canonical.json', '--', '.fleet/kb-canonical.json']);
+  await withSession('PLAIN_B', () => recordRefusal('kb_import', 'refusal-untrusted-committed-bible', {}, 'E-KB-MAINTAINER-REQUIRED'));
+}
+
 // -- admission group (all 3 codes) ----------------------------------------
 await recordRefusal('kb_capture', 'refusal-no-basis', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   type: 'knowledge',
   title: 'An entry with no cited source files',
   summary: 'This capture cites no source_files at all.',
@@ -596,8 +752,6 @@ await recordRefusal('kb_capture', 'refusal-no-basis', {
 }, 'E-NO-BASIS');
 
 await recordRefusal('kb_capture', 'refusal-basis-missing-files', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   type: 'knowledge',
   title: 'An entry citing a file that does not exist',
   summary: 'This capture cites a source file absent from the worktree.',
@@ -619,31 +773,25 @@ fs.writeFileSync(
   ]),
   'utf-8',
 );
-const repoImportRejected = path.join(SCRATCH_ROOT, 'repo-import-rejected');
-fs.mkdirSync(repoImportRejected, { recursive: true });
-await recordResponseFieldRefusal(
+await withSession('IMPORT_REJECTED', () => recordResponseFieldRefusal(
   'kb_import',
   'refusal-import-entry-rejected',
-  { repo: repoImportRejected, path: rejectedBiblePath },
+  { path: rejectedBiblePath },
   'E-IMPORT-ENTRY-REJECTED',
   (response) => {
     const payload = parseEnvelopeText(response);
     return !!payload && payload.rejected >= 1;
   },
-);
+));
 
 // -- authority group (all 3 codes) ----------------------------------------
 await recordRefusal('kb_promote', 'refusal-reason-required', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   id: idFoo ?? 'placeholder-id',
 }, 'E-PROMOTE-REASON-REQUIRED');
 
 if (idBroken) {
   // idBroken was superseded by the resolve_contradiction call above.
   await recordRefusal('kb_promote', 'refusal-superseded', {
-    repo_path: repoA,
-    repo_remote_url: REMOTE_A,
     id: idBroken,
     reason: 'Attempting to re-promote an entry that was already superseded by the contradiction resolution above.',
   }, 'E-PROMOTE-SUPERSEDED');
@@ -651,8 +799,6 @@ if (idBroken) {
 
 fs.writeFileSync(path.join(repoA, 'src', 'soon-to-be-deleted.ts'), 'export const placeholder = 1;\n');
 const captureForBasisLoss = await recordHappy('kb_capture', 'setup-for-basis-unresolved', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   type: 'knowledge',
   title: 'Entry whose basis file will be deleted before a second promote',
   summary: 'Set up to demonstrate E-PROMOTE-BASIS-UNRESOLVED.',
@@ -662,15 +808,11 @@ const captureForBasisLoss = await recordHappy('kb_capture', 'setup-for-basis-unr
 const idBasisLoss = parseEnvelopeText(captureForBasisLoss)?.id;
 if (idBasisLoss) {
   await recordHappy('kb_promote', 'setup-first-promote-for-basis-unresolved', {
-    repo_path: repoA,
-    repo_remote_url: REMOTE_A,
     id: idBasisLoss,
     reason: 'First promotion (UNVERIFIED -> INFERRED) while the basis file still exists.',
   });
   fs.rmSync(path.join(repoA, 'src', 'soon-to-be-deleted.ts'));
   await recordRefusal('kb_promote', 'refusal-basis-unresolved', {
-    repo_path: repoA,
-    repo_remote_url: REMOTE_A,
     id: idBasisLoss,
     reason: 'Second promotion attempted after the cited basis file was deleted.',
   }, 'E-PROMOTE-BASIS-UNRESOLVED');
@@ -678,15 +820,11 @@ if (idBasisLoss) {
 
 // -- not_found group (both codes) -----------------------------------------
 await recordRefusal('kb_promote', 'refusal-entry-not-found', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   id: 'fixture-does-not-exist',
   reason: 'Attempting to promote an id that was never captured.',
 }, 'E-ENTRY-NOT-FOUND');
 
 await recordRefusal('kb_resolve_contradiction', 'refusal-resolve-missing-entry', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   winnerId: 'fixture-does-not-exist-winner',
   loserId: 'fixture-does-not-exist-loser',
   evidence: 'Neither id was ever captured.',
@@ -695,8 +833,6 @@ await recordRefusal('kb_resolve_contradiction', 'refusal-resolve-missing-entry',
 // -- conflict group (both codes) ------------------------------------------
 if (idFoo && idBasisLoss) {
   await recordRefusal('kb_resolve_contradiction', 'refusal-not-a-pair', {
-    repo_path: repoA,
-    repo_remote_url: REMOTE_A,
     winnerId: idFoo,
     loserId: idBasisLoss,
     evidence: 'These two entries were never linked as a contradiction pair.',
@@ -707,8 +843,6 @@ if (idBroken && idFixed) {
   // The pair was already resolved above; resolving it again hits the
   // already-superseded guard.
   await recordRefusal('kb_resolve_contradiction', 'refusal-already-superseded', {
-    repo_path: repoA,
-    repo_remote_url: REMOTE_A,
     winnerId: idFixed,
     loserId: idBroken,
     evidence: 'Re-resolving an already-resolved contradiction pair.',
@@ -717,8 +851,6 @@ if (idBroken && idFixed) {
 
 // -- governance group (2 of 5 reachable without CLI directive activation) --
 const captureDirective = await recordHappy('kb_capture', 'happy-user-directive-proposal', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   type: 'user-directive',
   title: 'Always run the sanitation test before committing fixtures',
   summary: 'A standing instruction captured as a pending proposal, never active from this channel.',
@@ -741,7 +873,7 @@ const idDirective = parseEnvelopeText(captureDirective)?.id;
 await recordObservedEffect(
   'kb_list',
   'observed-directive-quarantine',
-  { repo_path: repoA, repo_remote_url: REMOTE_A, type: 'user-directive', symbol: undefined },
+  { type: 'user-directive', confidence: ['UNVERIFIED'], symbol: undefined },
   'E-DIRECTIVE-QUARANTINE',
   'kb_list observation of the pending directive proposal captured in kb_capture/happy-user-directive-proposal.json. ' +
     'E-DIRECTIVE-QUARANTINE (governance group, surfaced: response-field) is raised at capture time by kb_capture, ' +
@@ -758,8 +890,6 @@ await recordObservedEffect(
 
 if (idDirective) {
   await recordRefusal('kb_promote', 'refusal-promote-directive', {
-    repo_path: repoA,
-    repo_remote_url: REMOTE_A,
     id: idDirective,
     reason: 'Attempting to promote a user-directive proposal directly, bypassing CLI activation.',
   }, 'E-PROMOTE-REFUSED-DIRECTIVE');
@@ -767,8 +897,6 @@ if (idDirective) {
 
 // -- non-error outcome (authority group's silent clamp branch) -----------
 await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
-  repo_path: repoA,
-  repo_remote_url: REMOTE_A,
   type: 'knowledge',
   title: 'A capture that asks for CONFIRMED directly',
   summary: 'kb_capture always clamps an incoming CONFIRMED down to INFERRED; CONFIRMED is only minted by kb_promote.',
@@ -776,6 +904,86 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
   source_files: ['src/example.ts'],
   confidence: 'CONFIRMED',
 }, 'authority group, non_error_outcomes: the silent clamp branch gets no taxonomy code by design (taxonomy.json _meta.group_definitions.authority). Observable via confidence_clamped:true in the response, not via a thrown/response-field error code.');
+
+// -- kb_bible_commit removes a bible entry the KB holds as invalidated -----
+// A CONFIRMED entry citing a committed seed file is merged into repo A's
+// bible, discarded by id (kb_invalidate), and the next kb_bible_commit with no
+// ids removes it and reports it in removed with reason invalidated.
+{
+  const captureRemoval = await recordHappy('kb_capture', 'setup-for-bible-removal', {
+    type: 'knowledge',
+    title: 'Entry merged into the bible and then invalidated',
+    summary: 'Set up to demonstrate kb_bible_commit removing an invalidated bible entry.',
+    content: 'This entry cites the committed src/helper.ts, is merged into the bible, then discarded by id.',
+    source_files: ['src/helper.ts'],
+    symbols: ['helperRemovalFixture'],
+  });
+  const idRemoval = parseEnvelopeText(captureRemoval)?.id;
+  if (idRemoval) {
+    await recordHappy('kb_promote', 'setup-first-promote-for-bible-removal', {
+      id: idRemoval,
+      reason: 'First promotion (UNVERIFIED -> INFERRED) of the entry used by the bible removal fixture.',
+    });
+    await recordHappy('kb_promote', 'setup-second-promote-for-bible-removal', {
+      id: idRemoval,
+      reason: 'Second promotion (INFERRED -> CONFIRMED) so the entry can be merged into the bible.',
+    });
+    await recordHappy('kb_bible_commit', 'setup-merge-for-bible-removal', {
+      ids: [idRemoval],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    });
+    await recordHappy('kb_invalidate', 'setup-invalidate-for-bible-removal', { ids: [idRemoval] });
+    await recordHappy('kb_bible_commit', 'happy-removes-invalidated', {
+      ids: [],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    });
+  }
+}
+
+// -- E-RETIRE-NEEDS-KB-MAINTAINER (governance, response field) -------------
+// PLAIN_A (repo A, no kb_maintainer grant) captures an entry that FULL_A then
+// promotes to CONFIRMED. PLAIN_A can retire it neither by kb_capture
+// supersedes (the capture links to it instead) nor by kb_invalidate ids: both
+// responses list it in refused and it stays live.
+{
+  const captureGate = await withSession('PLAIN_A', () => recordHappy('kb_capture', 'setup-for-retire-refused', {
+    type: 'knowledge',
+    title: 'Gate retire fixture entry',
+    summary: 'Set up to demonstrate E-RETIRE-NEEDS-KB-MAINTAINER.',
+    content: 'This entry is promoted to CONFIRMED, then a session without the kb_maintainer grant tries to retire it.',
+    source_files: ['src/example.ts'],
+    symbols: ['gateRetireFixture'],
+  }));
+  const idGate = parseEnvelopeText(captureGate)?.id;
+  if (idGate) {
+    await withSession('FULL_A', () => recordHappy('kb_promote', 'setup-first-promote-for-retire-refused', {
+      id: idGate,
+      reason: 'First promotion (UNVERIFIED -> INFERRED) of the entry used by the retire-refused fixtures.',
+    }));
+    await withSession('FULL_A', () => recordHappy('kb_promote', 'setup-second-promote-for-retire-refused', {
+      id: idGate,
+      reason: 'Second promotion (INFERRED -> CONFIRMED) so a no-grant retire is refused.',
+    }));
+    const refusedGate = (response) => {
+      const payload = parseEnvelopeText(response);
+      return Array.isArray(payload?.refused) && payload.refused.length === 1 && payload.refused[0] === idGate;
+    };
+    await withSession('PLAIN_A', () => recordResponseFieldRefusal('kb_capture', 'refusal-retire-needs-kb-maintainer', {
+      type: 'knowledge',
+      title: 'Gate retire fixture entry',
+      summary: 'A replacement that names the CONFIRMED entry in supersedes.',
+      content: 'A revised note on the gate retire fixture, meant to replace the earlier entry.',
+      source_files: ['src/example.ts'],
+      symbols: ['gateRetireFixture'],
+      supersedes: idGate,
+    }, 'E-RETIRE-NEEDS-KB-MAINTAINER', refusedGate));
+    await withSession('PLAIN_A', () => recordResponseFieldRefusal('kb_invalidate', 'refusal-retire-needs-kb-maintainer', {
+      ids: [idGate],
+    }, 'E-RETIRE-NEEDS-KB-MAINTAINER', refusedGate));
+  }
+}
 
 // ===========================================================================
 // Summary + named T7 gaps

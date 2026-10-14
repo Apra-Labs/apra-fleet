@@ -52,6 +52,7 @@
 // dispatchRole call sites for the streak-assignment and doer ladders.
 // =============================================================================
 
+import { pathsFromText } from '../kb-hints.mjs';
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 
 import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
@@ -63,6 +64,7 @@ import {
 import { isPostDispatchSyncFailure } from '../errors.mjs';
 import { isPermissionScopePostDispatchSyncFailure } from '../dispatch-failure.mjs';
 import { policyFor } from '../role-policies.mjs';
+import { CLAIMED_ELSEWHERE_REASON } from '../orphan-reclaim.mjs';
 
 /**
  * Runs ONE Develop round: streak grouping, per-doer worklist packing, and the
@@ -98,6 +100,7 @@ export async function runDevelopPhase({
     updateDashboard,
     // The KB clients the doer prompt is primed from.
     kbPriming,
+    kbInjection,
     kbWork,
     // Per-round inputs. `devRounds` arrives already incremented (see header);
     // `perBeadFeedback` is read-only here.
@@ -312,6 +315,13 @@ export async function runDevelopPhase({
         try {
         let actualBeadIds = streak.map((b) => b.id);  // May be reduced by claiming if assignee is set
         let hasClaimedBeads = false;  // Track whether we've done claiming yet
+        // Set when the claim found every bead of this streak already held by
+        // another sprint. Carried onto the failed outcome as the STRUCTURED
+        // failureReason the in-run orphan reclaim (runner.js) keys on, so a
+        // claim another sprint holds is identified without reading message
+        // text -- and sticky, so a retried attempt refuses the same way
+        // instead of dispatching a doer on beads it does not own.
+        let claimedElsewhere = false;
 
         // The base turn budget the resume ladder escalates from. Read
         // out of the ENGINE's TURN_BASES (apra-fleet-3swo.5.7) rather
@@ -384,6 +394,11 @@ export async function runDevelopPhase({
             // multi-id --claim contract (non-atomic, JSON-array-only
             // success signal) this relies on.
             claimBeads: async () => {
+                const claimedElsewhereError = () => new WorkflowError(
+                    `All beads already claimed by other sprints`,
+                    { details: { beadIds: actualBeadIds, reason: CLAIMED_ELSEWHERE_REASON } }
+                );
+                if (claimedElsewhere) throw claimedElsewhereError();
                 if (hasClaimedBeads) return;
                 hasClaimedBeads = true;
                 if (!validated.assignee) return;
@@ -394,10 +409,8 @@ export async function runDevelopPhase({
                     // All beads in this streak are already claimed by
                     // other sprints. Skip this streak entirely.
                     log(`Doer streak: all beads ${streakScope()} are already claimed by other sprints -- skipping this streak.`);
-                    throw new WorkflowError(
-                        `All beads already claimed by other sprints`,
-                        { beadIds: actualBeadIds, reason: 'all-beads-already-claimed' }
-                    );
+                    claimedElsewhere = true;
+                    throw claimedElsewhereError();
                 }
                 if (skippedBeadIds.length > 0) {
                     actualBeadIds = claimedBeadIds; // Only the successfully claimed ones
@@ -431,20 +444,11 @@ export async function runDevelopPhase({
             // Built INSIDE the bracket, after the claim: the streak this
             // dispatch actually owns is only known once the claim has run.
             prepare: async ({ dispatch, resumeAttempt, freshSession }) => {
-                const isMaxTurnsContinuation = dispatch.kind === 'max-turns-resume';
-                if (isMaxTurnsContinuation && freshSession === true) {
-                    // The exhausted attempt left no session to resume (no
-                    // id reported, or the server no longer knows it): the
-                    // continuation is a FRESH session, so it gets the FULL
-                    // streak prompt below -- a "continue where you left
-                    // off" nudge means nothing without the old context.
-                    log(
-                        `Doer streak ${streakScope()} on member '${doerMember}' exhausted its turn limit ` +
-                        '(max_turns) and its session cannot be resumed -- starting a FRESH session with the full ' +
-                        `prompt at max_turns=${BASE_DOER_MAX_TURNS * (2 ** resumeAttempt)} ` +
-                        `(attempt ${resumeAttempt}/${policyFor('doer').retry.resumeAttempts}).`
-                    );
-                } else if (isMaxTurnsContinuation) {
+                // freshSession: the engine has no explicit session id to resume
+                // (or the id was not found), so this secondary dispatch is a
+                // FRESH session and gets the FULL streak prompt below, with the
+                // worklist's warm-session resume suppressed.
+                if (dispatch.kind === 'max-turns-resume' && !freshSession) {
                     const resumeTurns = BASE_DOER_MAX_TURNS * (2 ** resumeAttempt);
                     log(
                         `Doer streak ${streakScope()} on member '${doerMember}' exhausted its turn limit ` +
@@ -508,10 +512,8 @@ export async function runDevelopPhase({
                 // provider without resume support, prior streak failed),
                 // fall back to a FRESH session carrying the FULL prompt --
                 // never a delta prompt into a fresh session.
-                // A fresh max-turns fallback is never a worklist resume:
-                // it must not continue another session's context.
                 let worklistResumeArg = false;
-                if (!isMaxTurnsContinuation && worklistCtx && worklistCtx.sessionId) {
+                if (worklistCtx && worklistCtx.sessionId && !freshSession) {
                     if (hasContextHeadroomForResume(worklistCtx.usage)) {
                         worklistResumeArg = worklistCtx.sessionId;
                     } else {
@@ -532,22 +534,30 @@ export async function runDevelopPhase({
                     );
                 }
 
-                // The doer cannot read the KB itself (the member's
-                // composed permission config disables the fleet MCP
-                // server), so the entries primed for THIS member travel in
-                // its prompt. Relevance-ranked read for THESE beads,
-                // falling back to the sprint-start primed set when the
-                // query returns nothing. The query terms are the bead ids
-                // and titles the engine already holds; expand_related on
-                // that call is what traverses the refines/contradiction_of
-                // edges.
-                const doerRepoPath = kbPriming.folderOf(doerMember);
-                const doerKnowledge = await kbWork.relevantKnowledge(doerRepoPath, kbQueryTerms(streak, actualBeadIds));
+                // KNOWLEDGE BANK: injected unless this doer member's own fleet
+                // MCP was verified at sprint init (it then reads the KB
+                // itself); otherwise fetched from the repository's
+                // kb_maintainer, ranked by the bead titles and the files the
+                // lane touches (kb-injection.mjs).
+                const laneBeads = Array.isArray(streak) ? streak : [];
+                const doerKbBlock = kbInjection
+                    ? await kbInjection.blockFor({
+                        role: 'doer',
+                        member: doerMember,
+                        context: {
+                            beadIds: actualBeadIds,
+                            beadTitles: laneBeads,
+                            laneFiles: pathsFromText(laneBeads.map((b) => b && `${b.description || ''}\n${b.acceptance_criteria || ''}\n${b.notes || ''}`)),
+                        },
+                        captureChannel: true,
+                    })
+                    : undefined;
                 const basePrompt = buildDoerPrompt({
                     beadIds: actualBeadIds,
                     branch: validated.branch,
                     feedback: feedbackForStreak || null,
-                    kbKnowledge: doerKnowledge.length > 0 ? doerKnowledge : kbPriming.knowledgeOf(doerMember),
+                    kbKnowledge: kbInjection ? undefined : kbPriming.knowledgeOf(doerMember),
+                    kbBlock: doerKbBlock,
                 });
                 let doerPrompt = basePrompt;
                 if (batchStreaks) {
@@ -590,13 +600,9 @@ export async function runDevelopPhase({
             // have run partial turns in it) -- clear it so the worklist's
             // NEXT streak starts from a FRESH session with the full
             // prompt, mirroring createRoundSessionRegistry's
-            // clear-on-failure rule. (The max-turns ladder does not use
-            // this id either: dispatch-role.mjs resumes the EXHAUSTED
-            // attempt's own session by the explicit id reported on its
-            // error -- never `resume: true`, which the server resolves to
-            // the member's last session, whichever role ran it -- and
-            // starts a fresh session with the full prompt when that id is
-            // missing or unknown.)
+            // clear-on-failure rule. (The max-turns ladder is unaffected:
+            // it resumes the failed dispatch's own explicit session id, or
+            // starts a fresh full-prompt session, never this worklist id.)
             if (worklistCtx) {
                 worklistCtx.sessionId = null;
                 worklistCtx.usage = null;
@@ -636,37 +642,41 @@ export async function runDevelopPhase({
             }));
             const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
             log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}] (dispatch error: ${dispatchError.message}).`);
-            // NOTE ON `outcome` AND REVIEW SCOPE. `outcome` is attributed from
-            // the VERIFIED closes exactly as on the success path below: a
-            // streak with ANY bead still open is 'failed' (so that bead
-            // re-lanes next round), and a streak whose every bead closed
-            // before the dispatch errored is 'success'/'retried' -- the error
-            // does not undo work already closed in the shared beads DB.
-            // `outcome` is NOT what decides review: review.mjs builds the
-            // round's review scope from `closedIds` (reviewScopeBeadIds), so
-            // the closed beads of a 'failed' streak are reviewed in the same
-            // round and a still-open bead never is.
-            //
-            // The one exclusion is the PERMISSION-SCOPE case, flagged with
-            // `publishBlocked` on EVERY outcome this dispatch records: its
-            // push was refused, so its work never reached the shared branch /
-            // beads DB (see member-sync.mjs's syncMemberAfterOrdered) even if
-            // the doer's own clone shows the beads closed. Reviewing those
-            // beads would ask the reviewer to judge acceptance criteria with
-            // no evidence and no report, risking a self-contradictory
-            // CHANGES_NEEDED verdict and dispatchReview()'s
-            // ReviewerContractViolationError -- a hard sprint ABORT. So
-            // review.mjs drops any `publishBlocked` outcome wholesale, and
-            // the still-open beads are additionally recorded on
-            // `permissionScopeBlockedBeads` below so they are not re-laned.
+            // Structured failure facts for the in-run orphan reclaim
+            // (runner.js, ../orphan-reclaim.mjs): WHY the streak failed, read
+            // off the error's own fields (never its message text), and
+            // whether the turn COMPLETED with only its post-dispatch sync
+            // failing (work committed locally -- never re-laned).
+            const failureFacts = {
+                failureReason: claimedElsewhere
+                    ? CLAIMED_ELSEWHERE_REASON
+                    : ((dispatchError.details && dispatchError.details.reason) || 'dispatch-error'),
+                ...(isPostDispatchSyncFailure(dispatchError) ? { postDispatchSyncFailed: true } : {}),
+            };
+            // NOTE ON REVIEW SCOPE: review.mjs's reviewScopeBeadIds() builds the
+            // round's review scope from each outcome's `closedIds` -- this
+            // engine's own read-back of the shared beads DB just above, never the
+            // doer's claim -- so a failed or BLOCKED streak still contributes the
+            // beads it verifiably closed. Two flags carry "the close was not
+            // published" and make reviewScopeBeadIds skip the outcome: `publishBlocked`
+            // (permission-scope G-push refusal; the App/token cannot push, see
+            // member-sync.mjs's syncMemberAfterOrdered) and `postDispatchSyncFailed`
+            // (any other post-dispatch sync failure: a failed G-push skips the
+            // D-push, so the closes never reached the shared DB even though the
+            // doer's own clone shows them closed). Both are set on EVERY outcome
+            // of the dispatch, including sub-outcomes whose beads all closed.
+            // A single-streak dispatch error whose beads ALL verified closed is
+            // recorded as success/retried (the work stands); only still-open
+            // beads make an outcome 'failed' and eligible for re-laning.
+            const unpublishedFlags = {
+                ...(permissionScopeBlocked ? { publishBlocked: true } : {}),
+                ...(isPostDispatchSyncFailure(dispatchError) ? { postDispatchSyncFailed: true } : {}),
+            };
             if (batchStreaks) {
                 // Mode (i): PER-STREAK attribution for a failed batch
                 // dispatch -- a sub-streak whose beads all verifiably
                 // closed before the failure keeps its work (outcome
-                // 'success', its closes stand and go to review -- EXCEPT
-                // when the dispatch was permission-scope publish-blocked:
-                // then every sub-outcome is marked publishBlocked and
-                // review.mjs excludes it from review wholesale); only
+                // 'success', its closes stand and go to review); only
                 // sub-streaks with still-open beads are 'failed' and
                 // re-lane next round (permission-scope ones are additionally
                 // recorded on `permissionScopeBlockedBeads` below so they are
@@ -679,17 +689,25 @@ export async function runDevelopPhase({
                     streakOutcomes.push({
                         beadIds: subIds, doerMember, wasRetried, report: null,
                         unclosedIds: subUnclosed, closedIds: subClosed,
-                        outcome: subUnclosed.length > 0 ? 'failed' : 'success',
-                        ...(subUnclosed.length > 0 ? { error: dispatchError.message } : {}),
-                        ...(permissionScopeBlocked ? { publishBlocked: true } : {}),
+                        outcome: subUnclosed.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
+                        ...(subUnclosed.length > 0 ? {
+                            error: dispatchError.message,
+                            ...failureFacts,
+                        } : {}),
+                        ...unpublishedFlags,
                     });
                 }
             } else {
                 streakOutcomes.push({
                     beadIds: actualBeadIds, doerMember, wasRetried,
-                    outcome: unclosedIds.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
-                    report: null, unclosedIds, closedIds, error: dispatchError.message,
-                    ...(permissionScopeBlocked ? { publishBlocked: true } : {}),
+                    // A claimed-elsewhere streak never ran, so its beads (possibly
+                    // closed by another sprint) stay 'failed' here.
+                    outcome: unclosedIds.length > 0 || claimedElsewhere ? 'failed' : (wasRetried ? 'retried' : 'success'),
+                    report: null, unclosedIds,
+                    closedIds: claimedElsewhere ? [] : closedIds,
+                    error: dispatchError.message,
+                    ...failureFacts,
+                    ...unpublishedFlags,
                 });
             }
             if (permissionScopeBlocked) {
@@ -751,6 +769,9 @@ export async function runDevelopPhase({
         // whatever already closed here).
         log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}].`);
 
+        // The doer RETURNED (its session ended) but left bead(s) open: a
+        // BLOCKED report, or a success-looking report the bd read disproves.
+        const leftOpenReason = report && report.status === 'BLOCKED' ? 'blocked' : 'left-open';
         if (unclosedIds.length > 0) {
             log(`Doer streak [${actualBeadIds.join(', ')}] reported status '${report ? report.status : 'unknown'}' but bead(s) still open: ${unclosedIds.join(', ')} -- treating streak as FAILED.`);
         }
@@ -768,12 +789,14 @@ export async function runDevelopPhase({
                     beadIds: subIds, doerMember, wasRetried, report,
                     unclosedIds: subUnclosed, closedIds: subClosed,
                     outcome: subUnclosed.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
+                    ...(subUnclosed.length > 0 ? { failureReason: leftOpenReason } : {}),
                 });
             }
         } else {
             streakOutcomes.push({
                 beadIds: actualBeadIds, doerMember, wasRetried, report, unclosedIds, closedIds,
                 outcome: unclosedIds.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
+                ...(unclosedIds.length > 0 ? { failureReason: leftOpenReason } : {}),
             });
         }
         await updateDashboard();

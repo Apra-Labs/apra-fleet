@@ -135,28 +135,23 @@ export const BINDINGS = Object.freeze({
 });
 
 /**
- * The session id the exhausted dispatch reports by default. A max-turns resume
- * must name EXACTLY this id (`resume: "<id>"`), never `resume: true` -- the
- * server resolves `true` to the member's last session, which may belong to a
- * different role. test/helpers/execution-ladders.mjs and planning-ladders.mjs
- * pin the same literal (pure-data files, no imports); a test asserts they agree.
+ * The session id the server reports on a typed failure (execute_prompt now
+ * returns and records it on max_turns_exhausted / empty_response /
+ * dispatch_failed). A same-session resume must target exactly this id.
  */
-export const EXHAUSTED_SESSION_ID = 'sess-exhausted-attempt';
+export const FAILED_SESSION_ID = 'failed-session-1';
 
 /**
- * An AgentDispatchError whose details.reason marks the turn budget spent.
- * `sessionId` is the exhausted attempt's own session id, carried on
- * err.details.sessionId exactly as the workflow layer does; pass null for an
- * attempt that reported no id.
+ * An AgentDispatchError whose details.reason marks the turn budget spent,
+ * shaped like the real server's envelope (reason plus the failed sessionId).
+ * Pass sessionId = null for an envelope that carries none.
  */
-export function turnExhaustionError(message = 'max turns spent', sessionId = EXHAUSTED_SESSION_ID) {
-    return new AgentDispatchError(message, {
-        details: { reason: 'max_turns_exhausted', ...(sessionId ? { sessionId } : {}) },
-    });
+export function turnExhaustionError(message = 'max turns spent', sessionId = FAILED_SESSION_ID) {
+    return new AgentDispatchError(message, { details: { reason: 'max_turns_exhausted', ...(sessionId ? { sessionId } : {}) } });
 }
 
 /** The server refused an explicit-id resume: that session is gone or unknown. */
-export function sessionNotFoundError(sessionId = EXHAUSTED_SESSION_ID, message = 'session not found') {
+export function sessionNotFoundError(sessionId = FAILED_SESSION_ID, message = 'session not found') {
     return new AgentDispatchError(message, { details: { reason: 'session_not_found', sessionId } });
 }
 
@@ -199,7 +194,7 @@ export function postDispatchSyncError(message = 'post-dispatch sync failed') {
  * for a run that reported none), because the recovery resume continues that
  * exact session by explicit id.
  */
-export function infraError(message = 'member produced no result envelope', sessionId = EXHAUSTED_SESSION_ID) {
+export function infraError(message = 'member produced no result envelope', sessionId = FAILED_SESSION_ID) {
     return new AgentDispatchError(message, { details: { reason: 'empty_response', ...(sessionId ? { sessionId } : {}) } });
 }
 

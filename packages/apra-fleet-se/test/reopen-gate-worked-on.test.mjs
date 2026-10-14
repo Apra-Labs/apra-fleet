@@ -228,9 +228,7 @@ function reviewPhaseHarness({ verdict, scope, workedOnIds }) {
         gitSync: { syncBeadsAfter: async () => {} },
         replanIds: new Set(), replannedThisCycle: new Set(), perBeadFeedback: new Map(), rejectedNewTasks: [],
         devRounds: 1,
-        // Shaped like develop.mjs's real outcomes: Review scope is built from
-        // the VERIFIED closes (`closedIds`), so a successful streak carries them.
-        streakOutcomes: [{ beadIds: ['in-goal-task'], outcome: 'success', closedIds: ['in-goal-task'], unclosedIds: [] }],
+        streakOutcomes: [{ beadIds: ['in-goal-task'], outcome: 'success', closedIds: ['in-goal-task'] }],
         readyTitleById: new Map(),
         lastReviewVerdict: undefined, reviewedThisCycle: false, pendingRejectedNewTasks: [],
         dispatchReview: async () => verdict,

@@ -59,16 +59,17 @@ export const BINDING_VALUES = Object.freeze({
 });
 
 /**
- * The session id the harness's exhausted dispatch reports
- * (dispatch-role-harness.mjs's EXHAUSTED_SESSION_ID; a test asserts the two
- * agree). Every 'max-turns-resume' pin below expects EXACTLY this id as its
+ * The session id the harness's failed dispatch reports
+ * (dispatch-role-harness.mjs's FAILED_SESSION_ID; this is a pure-data file, so
+ * the literal is repeated and dispatch-role-resume-session.test.mjs asserts the
+ * two agree). Every 'max-turns-resume' pin below expects EXACTLY this id as its
  * `resume` value: a resume after turn exhaustion names the exhausted
  * dispatch's own session explicitly. It used to be `resume: true`, which the
  * server resolves to the member's LAST session -- whichever role that
  * belonged to -- so a doer could resume a reviewer session that ran on the
  * same member. Changed deliberately; never `true` again.
  */
-export const EXHAUSTED_SESSION_ID = 'sess-exhausted-attempt';
+export const EXHAUSTED_SESSION_ID = 'failed-session-1';
 
 /**
  * Every dispatch the dispatchRole engine serves on the EXECUTION side, with

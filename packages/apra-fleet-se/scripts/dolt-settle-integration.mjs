@@ -57,6 +57,7 @@
 import { parseArgs } from 'node:util';
 import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
+import { withFleetAccessSecret } from '@apralabs/apra-fleet-client/server-resolution';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resolveFleetServerConnection } from '../bin/cli.mjs';
 import { settleDoltConflicts, DOLT_VERSION } from '../fleet-sprint/dolt-settle.mjs';
@@ -120,7 +121,7 @@ async function connectFleet() {
     if (!connection || connection.mode !== 'http') {
         throw new Precondition(`no reachable apra-fleet HTTP singleton (${connection && connection.reason}). Start the fleet server and retry.`);
     }
-    const transport = new StreamableHttpTransport(connection.url);
+    const transport = new StreamableHttpTransport(connection.url, withFleetAccessSecret());
     await transport.start();
     const mcpClient = new McpClient(transport);
     return { transport, mcpClient, fleetApi: new ApraFleet(mcpClient) };

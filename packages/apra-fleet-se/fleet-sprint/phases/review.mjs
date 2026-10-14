@@ -71,35 +71,26 @@ import {
 } from '../abort.mjs';
 
 /**
- * The bead ids this round's Review covers: the union of every streak
- * outcome's VERIFIED-closed beads (`closedIds`, which develop.mjs reads back
- * from the shared beads DB after a D-pull), de-duplicated.
+ * The bead ids a round's Review covers: the union of every streak outcome's
+ * `closedIds` (the ENGINE's read-back of the shared beads DB -- the
+ * verify-streak-closed step on success, verifyDoerStreakClosed on the error
+ * path; never the doer's own claim), de-duplicated, minus outcomes whose
+ * closes were not published (`publishBlocked` for a permission-scope G-push
+ * refusal, `postDispatchSyncFailed` for any other post-dispatch sync failure:
+ * a failed G-push skips the D-push, so those closes never reached the shared
+ * DB). A failed or BLOCKED streak therefore still contributes the beads it
+ * verifiably closed; one that closed nothing contributes nothing.
  *
- * Scope is built from `closedIds`, never from a streak's overall `outcome`:
- * `outcome` exists for re-laning (a streak with ANY bead still open is
- * 'failed' so that bead re-lanes next round), and a streak that closed A and B
- * and then stopped on C (BLOCKED, out of turns, crashed) still did A and B --
- * their commits are on the branch and they must be reviewed against their
- * acceptance criteria in the SAME round, not skipped forever. An outcome with
- * no `closedIds` contributes nothing, whatever its label.
- *
- * Invariant kept: every review-scope bead is closed in the SHARED beads DB.
- * An outcome flagged `publishBlocked` (a permission-scope post-dispatch sync
- * failure, where the D-push was skipped so the doer's closes exist only in its
- * own clone) is excluded wholesale -- asking the reviewer to judge beads that
- * carry no evidence and no report risks a self-contradictory CHANGES_NEEDED
- * verdict and a ReviewerContractViolationError sprint abort.
- *
- * @param {Array<{closedIds?: string[], publishBlocked?: boolean}>} streakOutcomes
- * @returns {string[]} unsorted, unique bead ids (callers order them).
+ * @param {object[]} streakOutcomes
+ * @returns {string[]} de-duplicated bead ids, in first-seen order
  */
 export function reviewScopeBeadIds(streakOutcomes) {
-    const ids = new Set();
+    const seen = new Set();
     for (const o of streakOutcomes || []) {
-        if (!o || o.publishBlocked) continue;
-        for (const id of Array.isArray(o.closedIds) ? o.closedIds : []) ids.add(id);
+        if (!o || o.publishBlocked || o.postDispatchSyncFailed) continue;
+        for (const id of Array.isArray(o.closedIds) ? o.closedIds : []) seen.add(id);
     }
-    return [...ids];
+    return [...seen];
 }
 
 /**
@@ -165,9 +156,9 @@ export async function runReviewPhase({
     // Sort by (title, id) -- not raw outcome-recording order -- so this
     // evidence-gathering step is deterministic. See the readyTitleById
     // comment just above.
-    // Scope = every bead verified closed this round, including the closed
-    // beads of a streak that failed on a sibling; a still-open bead and a
-    // publish-blocked outcome never enter it (see reviewScopeBeadIds).
+    // Review scope = every bead the engine's own read-back confirmed
+    // closed AND published (see reviewScopeBeadIds), including beads a
+    // failed or BLOCKED streak closed before it stopped.
     const assignedBeadIds = reviewScopeBeadIds(streakOutcomes)
         .slice().sort((a, b) => {
             const ta = readyTitleById.get(a) || a;

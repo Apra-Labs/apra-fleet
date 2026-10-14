@@ -1,0 +1,16 @@
+{
+  "tool": "code_reindex",
+  "case": "non-error-provider-not-supported",
+  "kind": "non_error_outcome",
+  "request": {},
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"outcome\":\"not-started\",\"reason\":\"provider-not-supported\",\"provider\":\"codebase-memory\",\"indexedCommit\":null,\"detail\":\"code_reindex only applies to the 'gitnexus' provider; this member uses 'codebase-memory', which manages its own index.\"}"
+      }
+    ]
+  },
+  "note": "code_reindex/code_status gate on the member's provider: only 'gitnexus' runs the fleet-level analyze/status; any other configured provider returns { outcome:'not-started', reason:'provider-not-supported', provider, indexedCommit:null, detail } as a normal result (no taxonomy code).",
+  "session": "CODE_CM"
+}

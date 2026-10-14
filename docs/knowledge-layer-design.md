@@ -489,14 +489,14 @@ Codebase Plane (structural context in `kb_session_prime`).
 Risk: if GitNexus produces low-signal results on apra-fleet's codebase, the
 Codebase Plane collapses and `kb_session_prime` returns KB-only context.
 
-Validation required (Task 0): run `npx gitnexus analyze` on the actual repo.
+Validation required (Task 0): run `npx gitnexus analyze --index-only` on the actual repo.
 Call `gitnexus context "registry"` and `gitnexus impact "src/services/registry.ts"`.
 Evaluate: does the result return meaningful callers, callees, and cluster data?
 
 **Spike Execution Notes:**
 
 Attempted to run validation commands in the development environment:
-- `npx gitnexus analyze` -- blocked by build environment restrictions
+- `npx gitnexus analyze --index-only` -- blocked by build environment restrictions
 - `npx gitnexus context "registry"` -- blocked by build environment restrictions  
 - `npx gitnexus impact "src/services/registry.ts"` -- blocked by build environment restrictions
 
@@ -556,7 +556,9 @@ again, reusing the already-open `SqliteProvider`s and disposing any
 `HttpKbProvider` it replaces. A long-lived fleet server therefore needs no
 restart after `kb_setup`. The config file is one per fleet install, not per
 repo: the selection it makes applies to every repo the install serves, and
-`kb_setup`'s `repo_path` only places the git hook. `global` is never
+`kb_setup` only places the git hook (in the calling session's own repo --
+it takes no repo/path argument; `repo_path` is a removed key refused with
+`E-SCOPE-KEY-REMOVED`, and only a FULL session is served `kb_setup`). `global` is never
 selected this way -- there is exactly one shared global KB and no remote story
 for it, so it always stays `SqliteProvider`.
 

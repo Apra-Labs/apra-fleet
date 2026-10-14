@@ -288,6 +288,22 @@ export function createGitRepoFixture(opts = {}) {
             return sha;
         },
 
+        /** A mutation at an arbitrary relative path in the PEER's clone (the
+         *  peer first fast-forwards onto origin), published to the shared
+         *  origin -- a concurrent change to a file the member also edits. */
+        peerPublishFile(relPath, body, message) {
+            gitOrThrow(['pull', '--ff-only', originDir, branch], peerPath);
+            const sha = commitFileAt(peerPath, relPath, body, message);
+            gitOrThrow(['push', originDir, `refs/heads/${branch}:refs/heads/${branch}`], peerPath);
+            return sha;
+        },
+
+        /** Publish `sha` (reachable in the peer clone) as another branch on
+         *  origin -- e.g. the sprint's target base branch. */
+        peerPublishRef(sha, ref) {
+            gitOrThrow(['push', originDir, `${sha}:refs/heads/${ref}`], peerPath);
+        },
+
         /** What actually landed on origin -- read straight from the bare repo,
          *  never through the injected command(). */
         originTip() {

@@ -1,0 +1,16 @@
+{
+  "tool": "kb_bible_commit",
+  "case": "refusal-repo-path-invalid",
+  "kind": "refusal",
+  "request": {
+    "ids": [],
+    "baseBranch": "main",
+    "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "error": {
+    "message": "kb_bible_commit: repo folder does not exist or is not a directory on this host: <SCRATCH_ROOT>/this-directory-does-not-exist",
+    "thrown": true
+  },
+  "expected_error_code": "E-REPO-PATH-INVALID",
+  "session": "REMOTE_UNREACHABLE"
+}

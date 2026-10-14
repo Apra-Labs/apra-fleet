@@ -103,11 +103,47 @@ export type KBEntryInput = Omit<KBEntry, 'id' | 'stale' | 'created_at' | 'supers
 export interface CaptureOpts {
   importMode?: boolean;
   preferredId?: string;
+  // Member bible view only (member-bible-view.ts): load the entry VERBATIM --
+  // skip AUDN dedupe/update/contradiction entirely, so an already-reviewed
+  // bible is reproduced as-is (every entry under its bible id, its bible
+  // confidence, never flagged/disputed by a sibling entry). Honoured only
+  // together with importMode and preferredId; the directive gate and the basis
+  // check still run. Never use it for a live per-repo DB: there AUDN is the
+  // point.
+  verbatim?: boolean;
+  // Bible format v3 (kb_import / member bible view only): the per-file hash
+  // basis the bible CARRIES for this entry. Honoured only together with
+  // importMode. When set (even to null), capture() stores exactly this map as
+  // the entry's basis and does NOT hash local files: a basis must never be
+  // laundered from the importing clone's tree. null (a v1/v2 entry, or an
+  // invalid carried map) hashes this clone's files into a LOCAL freshness-only
+  // basis (local_basis_only): staleness checks use it, but the bible predicate,
+  // export and the reconcile prefilter read it as no basis, so the entry is not
+  // re-exported until it is recaptured. Left undefined, capture()
+  // computes the basis from local files as for every normal capture.
+  carriedBasis?: Record<string, string> | null;
+  // A member session without the kb_maintainer grant (kb_capture sets it):
+  // an explicit `supersedes` whose matched target is CONFIRMED does NOT retire
+  // it -- the capture takes the implicit path instead (new entry linked
+  // 'refines', both live) and the target id comes back in `refused`.
+  keepConfirmed?: boolean;
+}
+
+/** SqliteProvider.capture() result. */
+export interface CaptureResult {
+  id: string;
+  audn_decision: AudnDecision;
+  /** CONFIRMED supersede targets left live (keepConfirmed); present only when non-empty. */
+  refused?: string[];
 }
 
 export interface EntryTrustFilter {
   confidence?: Confidence[];
   exclude_disputed?: boolean;
+  // MEMBER own-scope (kb-self.ts memberOwnerTag): only entries whose tags carry
+  // this exact value (member:<uuid>). Internal only -- set by the tool handlers
+  // from the session identity, never from a deserialized route.
+  owner_tag?: string;
 }
 
 export interface QueryOptions {
@@ -142,6 +178,8 @@ export interface QueryOptions {
   // to list exactly the disputed entries.
   confidence?: Confidence[];
   exclude_disputed?: boolean;
+  // MEMBER own-scope tag filter (see EntryTrustFilter.owner_tag). Internal only.
+  owner_tag?: string;
   l1_only?: boolean;
   limit?: number;
   ids?: string[];
@@ -167,6 +205,12 @@ export interface PrimeOptions {
   hint_symbols?: string[];
   hint_modules?: string[];
   decay_after_days?: number;
+  // Tier allow-list for the entries prime surfaces. Absent = no tier filter at
+  // this layer (the kb_session_prime tool applies the CONFIRMED-undisputed default).
+  confidence?: Confidence[];
+  exclude_disputed?: boolean;
+  // MEMBER own-scope tag filter (see EntryTrustFilter.owner_tag). Internal only.
+  owner_tag?: string;
 }
 
 export interface PrimedContext {
@@ -240,12 +284,40 @@ export interface ProviderConfig {
   dbPath?: string;
 }
 
+export interface DiscardResult {
+  discarded: string[];
+  not_found: string[];
+  already_discarded: string[];
+  /**
+   * Live CONFIRMED ids left untouched because the call asked to keep CONFIRMED
+   * entries (keepConfirmed: a member session without the kb_maintainer grant).
+   * Present only when keepConfirmed was set.
+   */
+  refused?: string[];
+}
+
+/** Options for id-level discard / file invalidation. */
+export interface RetireOptions {
+  /** MEMBER own-scope: act only on entries carrying this tag. */
+  ownerTag?: string;
+  /**
+   * Leave CONFIRMED entries untouched and report them as refused (a member
+   * session without the kb_maintainer grant may not retire CONFIRMED).
+   */
+  keepConfirmed?: boolean;
+}
+
 export interface MemoryProvider {
   init(): Promise<void>;
   capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }>;
   query(opts: QueryOptions): Promise<KBResult>;
-  context(files: string[]): Promise<FileContextResult[]>;
+  context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean): Promise<FileContextResult[]>;
   invalidate(files: string[]): Promise<{ invalidated: number }>;
+  // Id-level DISCARD: sets superseded_at (and stale) so the entry drops from every
+  // read path; the row is kept. ownerTag restricts the call to entries carrying
+  // that tag (MEMBER own-scope); any other id is reported as not_found.
+  // keepConfirmed leaves live CONFIRMED entries untouched (reported in refused).
+  discard(ids: string[], opts?: RetireOptions): Promise<DiscardResult>;
   getLinked(id: string): Promise<KBEntry[]>;
   prime(opts: PrimeOptions): Promise<PrimedContext>;
   promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;

@@ -1,0 +1,14 @@
+{
+  "tool": "kb_query",
+  "case": "refusal-scope-key-removed",
+  "kind": "refusal",
+  "request": {
+    "query": "exampleFn",
+    "repo_path": "/elsewhere/other-repo"
+  },
+  "error": {
+    "message": "E-SCOPE-KEY-REMOVED: kb_query no longer accepts 'repo_path' (removed in the KB redesign); the call was not run and no KB was changed. Remediation: repo_path: nothing -- drop it: every kb_* call acts on the calling session's own KB (a member session's registered work folder; a FULL session's fleet server working folder). To act on another repository, call from a member session registered on that folder.",
+    "thrown": true
+  },
+  "expected_error_code": "E-SCOPE-KEY-REMOVED"
+}

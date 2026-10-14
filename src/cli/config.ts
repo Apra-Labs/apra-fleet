@@ -167,7 +167,59 @@ export function readConfig(paths: ProviderInstallConfig): any {
   }
 }
 
-export function writeConfig(paths: ProviderInstallConfig, config: any): void {
+/**
+ * Write a file that carries a credential: owner-only (0600), never briefly
+ * readable by others. writeFileSync's mode applies only when the file is
+ * created, so an existing file (a provider config the user already had, at
+ * 0644) is chmod-ed BEFORE the credential is written into it; a new file is
+ * created 0600. The final chmod pins exactly 0600 whatever the umask.
+ */
+export function writeOwnerOnlyFile(file: string, content: string): void {
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  fs.writeFileSync(file, content, { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
+}
+
+/**
+ * writeOwnerOnlyFile for a file another process saves concurrently (Claude
+ * Code's ~/.claude.json): the content goes to an owner-only temp file in the
+ * same directory, then replaces the target by rename, so a crash or a racing
+ * save never leaves it truncated. When the rename fails (e.g. the target is
+ * briefly locked on Windows) it falls back to the in-place owner-only write.
+ * A symlinked file keeps its link: the temp file is placed next to, and
+ * renamed over, the link's real target. On POSIX a file owned by another uid
+ * (e.g. install run under sudo) is written in place, since a rename would
+ * hand it to the current user. The temp file takes the existing file's
+ * owner permission bits (never group/other).
+ */
+export function writeOwnerOnlyFileAtomic(file: string, content: string): void {
+  let target = file;
+  try { const real = fs.realpathSync(file); if (typeof real === 'string' && real) target = real; } catch { /* missing: write at `file` */ }
+  let st: fs.Stats | undefined;
+  try { st = fs.statSync(target); } catch { /* new file */ }
+  const getuid = (process as { getuid?: () => number }).getuid;
+  if (st && typeof getuid === 'function' && typeof st.uid === 'number' && st.uid !== getuid()) {
+    writeOwnerOnlyFile(target, content);
+    return;
+  }
+  const mode = st && typeof st.mode === 'number' && (st.mode & 0o700) ? (st.mode & 0o700) | 0o600 : 0o600;
+  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(tmp, content, { mode, flag: 'wx' });
+    fs.chmodSync(tmp, mode);
+    fs.renameSync(tmp, target);
+    return;
+  } catch {
+    try { fs.unlinkSync(tmp); } catch { /* not created / already moved */ }
+  }
+  writeOwnerOnlyFile(target, content);
+}
+
+export function writeConfig(paths: ProviderInstallConfig, config: any, opts: { ownerOnly?: boolean } = {}): void {
   fs.mkdirSync(paths.configDir, { recursive: true });
   let content = '';
   if (paths.settingsFile.endsWith('.toml')) {
@@ -175,7 +227,8 @@ export function writeConfig(paths: ProviderInstallConfig, config: any): void {
   } else {
     content = JSON.stringify(config, null, 2) + '\n';
   }
-  fs.writeFileSync(paths.settingsFile, content);
+  if (opts.ownerOnly) writeOwnerOnlyFile(paths.settingsFile, content);
+  else fs.writeFileSync(paths.settingsFile, content);
 }
 
 export function readInstallConfig(installConfigPath = INSTALL_CONFIG_PATH): MultiProviderInstallConfig {

@@ -46,7 +46,7 @@ import {
     infraError,
     trustError,
     turnExhaustionError,
-    EXHAUSTED_SESSION_ID,
+    FAILED_SESSION_ID,
     TURN_BASES,
     sentinelNotePolicies,
 } from './helpers/dispatch-role-harness.mjs';
@@ -394,7 +394,7 @@ describe('execution-role dispatch: cross-cutting invariants', () => {
             const call = findCallSites(SRC, builderCall.replace('({', ''))[0];
             assert.ok(call, `${builderCall} call site not found in runner.js.`);
             assert.ok(
-                /kbKnowledge:/.test(call.callText),
+                /kbKnowledge:|kbBlock:/.test(call.callText),
                 `${builderCall} must be handed kbKnowledge explicitly -- its role is excluded from the agent() wrapper injection.`
             );
         }
@@ -670,7 +670,7 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
             responses: Array.from({ length: p.retry.resumeAttempts + 1 }, () => turnExhaustionError()),
         });
         await dispatchRole(escalating.ctx, 'doer', opts);
-        const resumes = escalating.rec.dispatches.filter((d) => d.options.resume === EXHAUSTED_SESSION_ID);
+        const resumes = escalating.rec.dispatches.filter((d) => d.options.resume === FAILED_SESSION_ID);
         assert.strictEqual(resumes.length, p.retry.resumeAttempts, 'The escalation is bounded, never unbounded.');
         assert.deepStrictEqual(
             resumes.map((d) => d.options.max_turns),
@@ -1242,7 +1242,7 @@ describe('execution-role dispatch ladders: per-dispatch pins (engine-served)', (
             );
 
             // --- same-session resume flag ---------------------------------------
-            const expectedResume = pin.resume === 'call-site' ? opts.resumeArg : pin.resume;
+            const expectedResume = pin.resume === 'call-site' ? opts.resumeArg : (pin.resume === true ? FAILED_SESSION_ID : pin.resume);
             assert.strictEqual(o.resume ?? null, expectedResume ?? null, `${pin.name}: same-session resume argument.`);
 
             // --- git sync bracketing and push flags -----------------------------

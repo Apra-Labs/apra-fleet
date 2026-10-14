@@ -11,6 +11,7 @@ import {
   filterProjectBibleCandidates,
   isRepoRelativePath,
 } from '../../src/services/knowledge/bible-basis-filter.js';
+import { commitWorkTree } from '../helpers/commit-work-tree.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
 // kb_export project-scope basis filter + additive merge. Fixture: a temp git
@@ -116,6 +117,8 @@ async function seedCases(opts: { includeA: boolean }): Promise<void> {
   setBasis(ids.f1, { 'src/f1.ts': b1['src/f1.ts'] });
   // f2: cites two files, basis matches only one (second file edited).
   writeSrc('src/f2-second.ts', 'edited after capture');
+  // Admission reads the cited files at HEAD: commit the mutated tree.
+  commitWorkTree(tmpDir, 'seed cases');
 }
 
 beforeEach(async () => {
@@ -153,7 +156,7 @@ const commitCount = () => Number(git(tmpDir, ['rev-list', '--count', 'HEAD']).tr
 describe('kb_export project basis filter + additive merge', () => {
   it('exports exactly the curated entries plus qualifying entry a; b-f are absent', async () => {
     await seedCases({ includeA: true });
-    await kbExport({ repo_path: tmpDir, scope: 'project' } as any);
+    await kbExport({ scope: 'project' }, { folder: tmpDir });
     const entries = readEntries();
     const idsOut = entries.map(e => e.id).sort();
     expect(idsOut).toEqual([CURATED.id, ids.a].sort());
@@ -166,7 +169,7 @@ describe('kb_export project basis filter + additive merge', () => {
     await seedCases({ includeA: true });
     const existing = { ...CURATED, id: ids.a, title: 'Human-edited title for a' };
     fs.writeFileSync(biblePath(), JSON.stringify({ version: 2, provenance: { commit: null, branch: null, entry_count: 1 }, entries: [existing] }, null, 2) + '\n');
-    await kbExport({ repo_path: tmpDir, scope: 'project' } as any);
+    await kbExport({ scope: 'project' }, { folder: tmpDir });
     expect(readEntries()).toEqual([existing]);
   });
 
@@ -174,7 +177,7 @@ describe('kb_export project basis filter + additive merge', () => {
     await seedCases({ includeA: false });
     const before = fs.readFileSync(biblePath());
     const commitsBefore = commitCount();
-    const res = JSON.parse(await kbExport({ repo_path: tmpDir, scope: 'project' } as any));
+    const res = JSON.parse(await kbExport({ scope: 'project' }, { folder: tmpDir }));
     expect(res.committed).toBe(false);
     expect(Buffer.compare(before, fs.readFileSync(biblePath()))).toBe(0);
     expect(commitCount()).toBe(commitsBefore);
@@ -187,7 +190,7 @@ describe('kb_export project basis filter + additive merge', () => {
     const e = await globalProvider.capture(makeInput({ title: 'Global entry knowledge', summary: 'Global summary', source_files: ['src/g.ts'] }));
     await globalProvider.promote(e.id, REASON);
     writeSrc('src/g.ts', 'edited after capture');
-    await kbExport({ repo_path: tmpDir, scope: 'global' } as any);
+    await kbExport({ scope: 'global' }, { folder: tmpDir });
     const out = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet/kb-canonical-global.json'), 'utf-8'));
     expect(out.entries.map((x: any) => x.id)).toEqual([e.id]);
   });
@@ -231,18 +234,20 @@ describe('qualifiesForProjectBible (cases a-f)', () => {
     expect(isRepoRelativePath('a..b.ts')).toBe(true);
   });
 
-  it('filterProjectBibleCandidates hashes the repo files and preserves order', async () => {
+  it('filterProjectBibleCandidates hashes the repo files at HEAD and preserves order', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-basis-unit-'));
     try {
       fs.writeFileSync(path.join(dir, 'f.ts'), 'one');
+      commitWorkTree(dir, 'one');
       const p = new SqliteProvider(':memory:', dir);
       await p.init();
       const e = await p.capture(makeInput({ source_files: ['f.ts'] }));
       await p.promote(e.id, REASON);
-      const confirmed = await p.list({ confidence: 'CONFIRMED' });
+      const confirmed = await p.list({ confidence: ['CONFIRMED'] });
       const bases = p.getSourceFileBases(confirmed.map(c => c.id));
       expect((await filterProjectBibleCandidates(confirmed, bases, dir)).map(c => c.id)).toEqual([e.id]);
       fs.writeFileSync(path.join(dir, 'f.ts'), 'two');
+      commitWorkTree(dir, 'two');
       expect(await filterProjectBibleCandidates(confirmed, bases, dir)).toEqual([]);
       p.close();
     } finally {

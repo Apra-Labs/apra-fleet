@@ -11,9 +11,11 @@ import { reviewScopeBeadIds } from '../fleet-sprint/phases/review.mjs';
 // and B are done, committed and closed in the shared beads DB, and must be
 // reviewed against their acceptance criteria in the SAME round.
 //
-// The one exclusion: an outcome flagged `publishBlocked` (a permission-scope
-// post-dispatch sync failure). Its closes never reached the shared beads DB,
-// so none of its beads may enter the review scope.
+// The exclusions: an outcome flagged `publishBlocked` (a permission-scope
+// post-dispatch sync failure) or `postDispatchSyncFailed` (any other
+// post-dispatch sync failure -- a failed G-push skips the D-push). Their
+// closes never reached the shared beads DB, so none of their beads may enter
+// the review scope.
 // =============================================================================
 
 describe('reviewScopeBeadIds', () => {
@@ -45,6 +47,15 @@ describe('reviewScopeBeadIds', () => {
             { beadIds: ['A', 'B'], outcome: 'failed', closedIds: ['A'], unclosedIds: ['B'], publishBlocked: true },
             { beadIds: ['C'], outcome: 'success', closedIds: ['C'], unclosedIds: [], publishBlocked: true },
             { beadIds: ['D'], outcome: 'success', closedIds: ['D'], unclosedIds: [] },
+        ]);
+        assert.deepStrictEqual(scope, ['D']);
+    });
+
+    test('postDispatchSyncFailed outcomes never enter the scope, even with closedIds', () => {
+        const scope = reviewScopeBeadIds([
+            { beadIds: ['A', 'B'], outcome: 'failed', closedIds: ['A'], unclosedIds: ['B'], postDispatchSyncFailed: true },
+            { beadIds: ['C'], outcome: 'success', closedIds: ['C'], unclosedIds: [], postDispatchSyncFailed: true },
+            { beadIds: ['D'], outcome: 'failed', closedIds: ['D'], unclosedIds: ['E'] },
         ]);
         assert.deepStrictEqual(scope, ['D']);
     });

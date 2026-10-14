@@ -87,7 +87,7 @@ describe('yashr-9ha DOOR 1: capture exemption is gone -- a forged directive is a
   it('the pending proposal IS visible to kb_list and flagged_only (audit surfaces, H2 other side)', async () => {
     const id = await forgeDirective();
 
-    const listed = JSON.parse(await kbList({ type: 'user-directive' }));
+    const listed = JSON.parse(await kbList({ type: 'user-directive', confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }));
     expect(listed.results.some((e: any) => e.id === id)).toBe(true);
 
     const flagged = JSON.parse(await kbQuery({ flagged_only: true }));

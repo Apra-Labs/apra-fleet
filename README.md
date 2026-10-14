@@ -205,11 +205,23 @@ MCP tools that ship with the KB:
 | `kb_query` | Two-level FTS retrieval (L1: title+summary, L2: full content) |
 | `kb_list` | Audit-list entries by confidence/type/module/symbol (read-only, no use_count bump) |
 | `kb_context` | Batch file freshness check (single git call for N files) |
-| `kb_invalidate` | Mark files stale immediately (also called by the git hook) |
-| `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |
+| `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` |
+| `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED (FULL session, or the sprint's kb_maintainer member session only) |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
-| `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible |
-| `kb_setup` | Install git hook, write provider config, store remote token encrypted |
+| `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible (FULL session only) |
+| `kb_bible_commit` | Merge confirmed entry ids into the bible (format v3, per-entry file hashes), remove superseded or invalidated entries, and commit locally with base-branch provenance (used by the sprint kb_maintainer) |
+| `kb_setup` | Install git hook, write provider config, store remote token encrypted (FULL session only) |
+
+`code_*` tools resolve the calling session's own folder, refuse with typed
+`E-CODE-INDEX-NOT-READY` / `E-CODE-INTEL-DISABLED` errors when the index is not
+usable, and report `indexedCommit` on every result; `code_reindex` and
+`code_status` drive and inspect the index (see
+[docs/code-index-readiness.md](docs/code-index-readiness.md)). Registering a
+remote member also installs a member-mode apra-fleet on it and wires a
+per-folder MCP entry, recorded as `fleetMcp` (see
+[docs/member-fleet-mcp-wiring.md](docs/member-fleet-mcp-wiring.md)).
+`session_stats` reports each member's `kb_*` / `code_*` call counts, which
+fleet-sprint shows per dispatch in its Knowledge & Code Intel viewer tab.
 
 `kb_setup --remote <url> --token <key>` takes effect immediately: the next
 KB tool call resolves its project provider from this config, so a stock build
@@ -222,22 +234,30 @@ for the exact selection rule and its fallback-construction invariant.
 **The provider config is install-wide, not per repo.** There is one
 `knowledge/config.json` per fleet install, so pointing it at a remote KB
 points EVERY repo that install serves -- every member, every project -- at
-that server. `kb_setup`'s `repo_path` only chooses which repo gets the git
-post-commit hook; it does not scope the config. On a shared fleet server,
+that server. `kb_setup` only places the git post-commit hook (in the calling
+session's own repo); it does not scope the config. On a shared fleet server,
 treat `kb_setup --remote` as a change for all of its users.
 
-Every KB tool call is scoped to the repo it is about -- a fleet server
-handling many members across many repos never lets one repo's learnings land
-in another repo's KB. Scope is normally derived from the caller's repo path;
-tools also accept an explicit `repo_remote_url` so a remote member (whose
-work folder is a path on another host, unreachable from the fleet server's
-filesystem) resolves to the same project KB as a local clone of that repo
-instead of a shared fallback database. The automatic post-prompt harvest and
-the `code_context` KB enrichment path both forward this URL too, and an
-unreachable work-folder path is never silently swapped for the fleet
-server's own working directory -- see
+Every KB tool call is scoped to the calling session's own repo -- a fleet
+server handling many members across many repos never lets one repo's
+learnings land in another repo's KB. No `kb_*` tool takes a scope argument:
+a member session uses its registered work folder and any other session uses
+the fleet server's working folder, and a folder that is not a git repository
+with an origin remote is refused with a typed error that names the fix:
+`E-SELF-NO-WORKFOLDER` (create the folder or re-register the member),
+`E-SELF-NOT-A-REPO` (`git init` or clone there) or `E-SELF-NO-REMOTE`
+(`git remote add origin <url>`; for a remote member, record its origin with
+`update_member git_repos`). Member sessions get a reduced, explicit tool list:
+the `code_*` tools, a few self-reporting tools and the `kb_*` tools except
+`kb_setup` and `kb_export` (never served to a member) and `kb_promote` /
+`kb_resolve_contradiction` (served only to the sprint engine's kb_maintainer
+session, which applies the reviewer's promotions). The `apra-fleet call` verb
+lets a process call tools as a member. KB reads default to CONFIRMED,
+undisputed entries. See
 [Per-repo KB isolation](docs/knowledge-layer.md#per-repo-kb-isolation) for
-the full anchor and cache-keying rules.
+the resolution, anchor and cache-keying rules, and
+[Member-session tool calls](docs/knowledge-layer.md#member-session-tool-calls)
+for the member tool model.
 
 The backend is swappable: start with local SQLite, add a central HTTP server for
 a team, or plug in Postgres later -- all via a one-line config change.
@@ -329,7 +349,10 @@ transits an orchestrator-readable output. Permission
 composition verifies its own delivery: a grant is read back off the target
 member and structurally compared against what was intended before it is
 reported as applied, so a failed or partial write is surfaced as an
-explicit failure rather than a false success.
+explicit failure rather than a false success. Dropped or unmappable permission
+tokens are surfaced explicitly in composition warnings, and shell pipeline
+stages are decomposed into constituent command grants to provide precise
+permission suggestions across providers.
 
 ## Email Configuration
 
@@ -439,6 +462,7 @@ third-party verticals.
 | Codebase wiki (architecture, internals, AI Q&A) | [DeepWiki](https://deepwiki.com/Apra-Labs/apra-fleet) |
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
 | Choosing a provider (roles, gotchas, mixing providers, OpenCode/local models) | [docs/provider-guide.md](docs/provider-guide.md) |
+| Antigravity (agy) provider (project binding, permission mapping, model resolution, Windows parity) | [docs/agy-provider.md](docs/agy-provider.md) |
 | Transport, service mode, and supported interfaces | [docs/transport-and-service-mode.md](docs/transport-and-service-mode.md) |
 | Cost model (tiering, shell-over-prompts, measured token spend) | [docs/cost-model.md](docs/cost-model.md) |
 | The PM skill (doer-reviewer sprints, `/pm` commands) | [docs/pm-skill-overview.md](docs/pm-skill-overview.md) |
@@ -469,10 +493,10 @@ third-party verticals.
 | Authoring a SEA-embedded `apra-fleet workflow` (manifest, entry contract, launcher env vars) | [docs/authoring-workflows.md](docs/authoring-workflows.md) |
 | Workflow launcher fleet-server resolution order (HTTP singleton vs. stdio) | [docs/adr-workflow-server-resolution.md](docs/adr-workflow-server-resolution.md) |
 | Running fleet-sprint (full flag reference; identical for npm-install, standalone binary, and git-clone dev checkout) | [packages/apra-fleet-se/fleet-sprint/docs/README.md](packages/apra-fleet-se/fleet-sprint/docs/README.md) |
-| Auto-sprint overview (autonomous plan-develop-review-publish loop) | [packages/apra-fleet-se/docs/overview.md](packages/apra-fleet-se/docs/overview.md) |
-| Auto-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
-| Auto-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
-| Auto-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
+| fleet-sprint overview (autonomous plan-develop-review-publish loop) | [packages/apra-fleet-se/docs/overview.md](packages/apra-fleet-se/docs/overview.md) |
+| fleet-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
+| fleet-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
+| fleet-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
 | fleet-supervisor skill (start/stop/restart/auto-start-on-boot, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
 | Scoped in-cycle replan findings threading, and the wrapper-injection role KB contract | [docs/scoped-replan-and-planner-kb-contract.md](docs/scoped-replan-and-planner-kb-contract.md) |
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |

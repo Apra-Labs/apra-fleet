@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- restart reconciliation + force-release endpoint
+// fleet-sprint supervisor -- restart reconciliation + force-release endpoint
 // (apra-fleet-eft.5.4, Plan Part 2.2)
 // =============================================================================
 //

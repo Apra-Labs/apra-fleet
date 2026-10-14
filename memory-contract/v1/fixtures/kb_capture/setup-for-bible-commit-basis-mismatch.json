@@ -1,0 +1,22 @@
+{
+  "tool": "kb_capture",
+  "case": "setup-for-bible-commit-basis-mismatch",
+  "kind": "happy",
+  "request": {
+    "type": "knowledge",
+    "title": "Entry whose cited file changes after capture",
+    "summary": "Set up to demonstrate the kb_bible_commit basis_mismatch skip reason.",
+    "content": "This entry cites src/basis-drift.ts, which is edited after the entry is promoted to CONFIRMED.",
+    "source_files": [
+      "src/basis-drift.ts"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"8c3610dd-18a5-4fbf-a5b5-98b699db77ae\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

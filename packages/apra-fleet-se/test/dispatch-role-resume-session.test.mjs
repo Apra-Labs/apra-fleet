@@ -6,7 +6,7 @@ import { ROLE_POLICIES } from '../fleet-sprint/role-policies.mjs';
 import { dispatchRole, resolveResumeArg } from '../fleet-sprint/dispatch-role.mjs';
 import {
     BINDINGS,
-    EXHAUSTED_SESSION_ID,
+    FAILED_SESSION_ID,
     ROLE_CALL_OPTS,
     createRecordingCtx,
     sessionNotFoundError,
@@ -42,8 +42,8 @@ function optsFor(role) {
 
 describe('max-turns resume targets the exhausted session by explicit id', () => {
     test('the ladder fixtures pin the same exhausted-session literal as the harness', () => {
-        assert.strictEqual(EXEC_LADDER_SESSION_ID, EXHAUSTED_SESSION_ID);
-        assert.strictEqual(PLAN_LADDER_SESSION_ID, EXHAUSTED_SESSION_ID);
+        assert.strictEqual(EXEC_LADDER_SESSION_ID, FAILED_SESSION_ID);
+        assert.strictEqual(PLAN_LADDER_SESSION_ID, FAILED_SESSION_ID);
     });
 
     test('every role with a max-turns resume ladder is covered', () => {
@@ -97,7 +97,7 @@ describe('max-turns resume targets the exhausted session by explicit id', () => 
         assert.strictEqual(landedOn[1], 'sess-doer-own', "the resume must land on the exhausted doer's own session, not the reviewer's");
     });
 
-    test('a second exhaustion that reports a new id is resumed by that id; one that reports none keeps the previous id', async () => {
+    test('a second exhaustion that reports a new id is resumed by that id; one that reports none starts a fresh session', async () => {
         const { ctx, rec } = createRecordingCtx({
             responses: [
                 turnExhaustionError('spent 1', 'sess-a'),
@@ -116,7 +116,11 @@ describe('max-turns resume targets the exhausted session by explicit id', () => 
             ],
         });
         await dispatchRole(second.ctx, 'doer', ROLE_CALL_OPTS.doer);
-        assert.deepStrictEqual(second.rec.dispatches.map((d) => d.options.resume), [false, 'sess-a', 'sess-a']);
+        // No id on the re-exhaustion: there is no session the engine can name
+        // (and the earlier id is not the session that just ran), so the next
+        // rung is a FRESH session with the full prompt -- never resume: true.
+        assert.deepStrictEqual(second.rec.dispatches.map((d) => d.options.resume), [false, 'sess-a', false]);
+        assert.strictEqual(second.rec.dispatches[2].prompt, ROLE_CALL_OPTS.doer.prompt);
     });
 
     test('no session id on the exhausted attempt: a FRESH session with the FULL prompt, logged', async () => {
@@ -200,15 +204,15 @@ describe('usage-limit resume re-dispatch targets the failed session by explicit 
 
 describe('resolveResumeArg never returns undefined and never returns true', () => {
     test('same-session resolves to the explicit id, or false without one', () => {
-        assert.strictEqual(resolveResumeArg({ kind: 'same-session' }, {}, 'sess-x'), 'sess-x');
-        assert.strictEqual(resolveResumeArg({ kind: 'same-session' }, {}, null), false);
-        assert.strictEqual(resolveResumeArg({ kind: 'same-session' }, {}, undefined), false);
-        assert.strictEqual(resolveResumeArg({ kind: 'same-session' }, {}, ''), false);
+        assert.strictEqual(resolveResumeArg({ kind: 'same-session' }, { resumeSessionId: 'sess-x' }), 'sess-x');
+        assert.strictEqual(resolveResumeArg({ kind: 'same-session' }, { resumeSessionId: null }), false);
+        assert.strictEqual(resolveResumeArg({ kind: 'same-session' }, { resumeSessionId: undefined }), false);
+        assert.strictEqual(resolveResumeArg({ kind: 'same-session' }, { resumeSessionId: '' }), false);
         assert.strictEqual(resolveResumeArg({ kind: 'same-session' }, {}), false);
     });
     test('the other kinds are unchanged', () => {
         assert.strictEqual(resolveResumeArg(null, {}), false);
-        assert.strictEqual(resolveResumeArg({ kind: 'fresh-session' }, {}, 'sess-x'), false);
+        assert.strictEqual(resolveResumeArg({ kind: 'fresh-session' }, { resumeSessionId: 'sess-x' }), false);
         assert.strictEqual(resolveResumeArg({ kind: 'worklist' }, { resumeArg: 'sess-w' }), 'sess-w');
         assert.strictEqual(resolveResumeArg({ kind: 'round-session', role: 'reviewer' }, {}), false);
     });

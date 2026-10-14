@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * merge-kb-canonical.mjs -- a title-keyed three-way merge for the knowledge
- * bank's exported canonical file (`.fleet/kb-canonical.json`).
+ * merge-kb-canonical.mjs -- an id-keyed three-way merge for the knowledge
+ * bank's exported canonical file (`.fleet/kb-canonical.json`, the "bible").
  *
  * WHY THIS EXISTS
  * ---------------
@@ -16,30 +16,23 @@
  * the `entries` array, keyed by entry identity, with a real three-way
  * (base/ours/theirs) comparison per entry.
  *
- * WHY THE KEY IS `title` AND NOT `id` -- DO NOT "FIX" THIS BACK TO `id`
- * --------------------------------------------------------------------
- * Each entry carries an `id`, which looks like the obvious identity key. It
- * is not one. `id` is assigned per export, not per finding: the same finding
- * re-exported from two branches routinely comes back with a different `id`
- * even when every content field is byte-identical.
+ * IDENTITY IS THE ENTRY `id` -- AND NOTHING ELSE
+ * ----------------------------------------------
+ * An entry is matched across base/ours/theirs by its `id`, a non-empty
+ * string, and by nothing else: there is no title key and no title fallback.
  *
- * Measured on two real consecutive exports of this repo's own canonical file
- * (200 base entries -> 207 later entries):
+ * An earlier version keyed on the trimmed title, citing a measurement in
+ * which re-exports re-minted ids (76.5% id survival vs 99.0% title survival).
+ * That measurement predates kb_import preserving bible ids (preferredId in
+ * src/services/knowledge/bible-import.ts) and the v3 bible: an entry now
+ * keeps its id across export, import and re-export, so the id IS the stable
+ * identity of a finding. Title matching was itself the defect: a title edit
+ * on the same id merged as delete+add, leaving a stale and a corrected copy
+ * side by side under duplicate ids. Under id identity a title change is an
+ * ordinary content change of that entry (`title` is a content field).
  *
- *   - trimmed `title` survived into the later export for 198/200 = 99.0%
- *   - `id`                survived into the later export for 153/200 = 76.5%
- *   - of the 198 title-matched entries, 45 had BYTE-IDENTICAL content
- *     (summary/symbols/source_files/confidence) yet a DIFFERENT `id`
- *
- * So an id-keyed merge would have reported 45 unchanged entries as
- * "deleted by one side and added by the other", producing duplicate entries
- * and/or losing real edits. The trimmed `title` is the stable identity of a
- * finding; use it. If you are reading this because you are about to switch
- * the key to `id`, re-run the measurement above first -- the numbers, not
- * intuition about what an `id` field ought to mean, decide this.
- *
- * MERGE RULES (per identity)
- * --------------------------
+ * MERGE RULES (per id)
+ * --------------------
  *   present in base, missing from EITHER side  -> deleted (a deletion is a
  *       deliberate act; never resurrect it from the side that still has it)
  *   present in all three, nobody changed it    -> keep base
@@ -48,7 +41,22 @@
  *   changed by both sides, differently         -> GENUINE CONFLICT: reported,
  *       never silently resolved; the CLI exits non-zero
  *   added by one side only                     -> keep it
- *   added by both sides under the same title   -> de-duplicate, keep one
+ *   added by both sides under the same id      -> de-duplicate, keep one
+ *
+ * "Content" is CONTENT_FIELDS, which includes `title` and the v3
+ * `source_file_hashes` basis: a re-verified basis on one side is a change
+ * and is taken, never silently dropped. A merged entry is the whole entry of
+ * the side whose content was taken, so it carries that side's hashes.
+ *
+ * MALFORMED AND DUPLICATE INPUT
+ * -----------------------------
+ *   an entry without a usable id (non-empty string) -> malformed input: the
+ *       CLI exits 2 naming the side and entry index (never title-matched)
+ *   two entries sharing an id in one input, or in the merged result ->
+ *       reported as a genuine conflict (exit 1); such a document is never
+ *       written
+ * The merged envelope keeps the highest input `version` (a v3 input yields
+ * a v3 output).
  *
  * USAGE
  * -----
@@ -68,8 +76,9 @@
  *   -h, --help            this text
  *
  * The plain-text summary always goes to stderr, so stdout stays a clean,
- * pipeable document. Exit codes: 0 merged cleanly, 1 genuine conflicts need
- * a human (the merged document is NOT written), 2 usage/IO error.
+ * pipeable document. Exit codes: 0 merged cleanly, 1 genuine conflicts
+ * (including duplicate ids) need a human (the merged document is NOT
+ * written), 2 usage/IO error or malformed input.
  *
  * Programmatic use: import { mergeKbCanonical } and hand it three parsed
  * documents. It is pure -- no filesystem, no git, no process exit -- so it
@@ -86,71 +95,108 @@ export const DEFAULT_CANONICAL_PATH = '.fleet/kb-canonical.json';
 
 /**
  * Content fields compared to decide whether a side CHANGED an entry.
- * Deliberately excludes `id` (unstable, see the header) and `updated_at`
- * (a re-export timestamp that changes on every harvest and would make every
- * entry look "changed by both sides", i.e. an all-conflicts merge).
+ * `id` is the identity, not content. `updated_at` is excluded: a re-export
+ * timestamp that changes on every harvest and would make every entry look
+ * "changed by both sides", i.e. an all-conflicts merge. `title` is content
+ * (a title edit is a change), and so is the v3 `source_file_hashes` basis.
  */
-export const CONTENT_FIELDS = ['type', 'summary', 'symbols', 'source_files', 'confidence'];
+export const CONTENT_FIELDS = ['type', 'title', 'summary', 'symbols', 'source_files', 'source_file_hashes', 'confidence'];
+
+/** Thrown for an input the merge cannot interpret (e.g. an entry without an id). */
+export class MalformedInputError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'MalformedInputError';
+    }
+}
 
 /**
- * Identity of an entry: its trimmed title. An entry with no usable title
- * falls back to a namespaced id key -- such an entry cannot be matched
- * across sides by content identity, so it behaves like an add on whichever
- * side carries it. The namespace prefix keeps the fallback from ever
- * colliding with a real title.
+ * Identity of an entry: its id, when it is a non-empty string; otherwise
+ * null (a malformed entry -- see assertUsableIds). Never the title.
  */
 export function entryIdentity(entry) {
-    const title = typeof entry?.title === 'string' ? entry.title.trim() : '';
-    if (title) return title;
-    return `#no-title:${entry?.id ?? ''}`;
+    const id = entry?.id;
+    return typeof id === 'string' && id.trim() !== '' ? id : null;
+}
+
+/** JSON value with object keys sorted, so key order never reads as a change. */
+function canonicalValue(value) {
+    if (Array.isArray(value)) return value.map(canonicalValue);
+    if (value && typeof value === 'object') {
+        const out = {};
+        for (const key of Object.keys(value).sort()) out[key] = canonicalValue(value[key]);
+        return out;
+    }
+    return value;
 }
 
 /**
- * Stable, order-insensitive-where-it-matters content signature. Array fields
- * are compared as-is (their order is meaningful and stable within an export),
- * everything is JSON-encoded through a fixed field order so two encodings of
- * the same content always compare equal.
+ * Stable content signature over CONTENT_FIELDS in a fixed order. Array order
+ * is meaningful and kept; object keys (source_file_hashes) are sorted.
  */
 export function contentSignature(entry) {
-    return JSON.stringify(CONTENT_FIELDS.map((f) => entry?.[f] ?? null));
+    return JSON.stringify(CONTENT_FIELDS.map((f) => canonicalValue(entry?.[f] ?? null)));
 }
 
-/** Index a document's entries by identity, first occurrence wins. */
-function indexByIdentity(doc, sideName) {
-    const map = new Map();
-    const duplicates = [];
-    for (const entry of doc?.entries ?? []) {
-        const key = entryIdentity(entry);
-        if (map.has(key)) {
-            duplicates.push({ side: sideName, identity: key });
-            continue;
+/** Throw MalformedInputError naming the side and index of an entry without a usable id. */
+function assertUsableIds(doc, sideName) {
+    doc.entries.forEach((entry, index) => {
+        if (entryIdentity(entry) === null) {
+            const title = typeof entry?.title === 'string' ? ` (title ${JSON.stringify(entry.title)})` : '';
+            throw new MalformedInputError(
+                `merge-kb-canonical: ${sideName} entry #${index}${title} has no usable id (a non-empty string is required; entries are never matched by title)`,
+            );
         }
-        map.set(key, entry);
+    });
+}
+
+/** Index a document's entries by id; ids seen more than once are reported, not merged. */
+function indexById(doc, sideName) {
+    const map = new Map();
+    const positions = new Map();
+    doc.entries.forEach((entry, index) => {
+        const key = entryIdentity(entry);
+        if (!positions.has(key)) positions.set(key, []);
+        positions.get(key).push(index);
+        if (!map.has(key)) map.set(key, entry);
+    });
+    const duplicates = [];
+    for (const [key, indexes] of positions) {
+        if (indexes.length > 1) duplicates.push({ kind: 'duplicate-id', identity: key, side: sideName, indexes });
     }
     return { map, duplicates };
 }
 
+/** Highest numeric `version` among the inputs (a v3 input yields a v3 output). */
+function highestVersion(docs) {
+    const versions = docs.map((d) => d.version).filter((v) => typeof v === 'number' && Number.isFinite(v));
+    if (versions.length > 0) return Math.max(...versions);
+    return docs.map((d) => d.version).find((v) => v !== undefined);
+}
+
 /**
- * Title-keyed three-way merge of three parsed canonical documents.
+ * Id-keyed three-way merge of three parsed canonical documents.
  *
  * @param {object} base   common-ancestor document
  * @param {object} ours   the local side
  * @param {object} theirs the incoming side
  * @returns {{merged: object|null, summary: object, conflicts: Array, duplicates: Array}}
- *   `merged` is null when `conflicts` is non-empty: a conflicted merge has no
- *   single correct answer, and returning a half-resolved document invites a
- *   caller to write it out anyway.
+ *   `merged` is null when `conflicts` is non-empty (content conflicts and
+ *   duplicate ids alike): a conflicted merge has no single correct answer,
+ *   and returning a half-resolved document invites a caller to write it out
+ *   anyway. Throws MalformedInputError for an entry without a usable id.
  */
 export function mergeKbCanonical(base, ours, theirs) {
     for (const [name, doc] of [['base', base], ['ours', ours], ['theirs', theirs]]) {
         if (!doc || typeof doc !== 'object' || !Array.isArray(doc.entries)) {
-            throw new Error(`merge-kb-canonical: ${name} is not a canonical document (expected an object with an 'entries' array)`);
+            throw new MalformedInputError(`merge-kb-canonical: ${name} is not a canonical document (expected an object with an 'entries' array)`);
         }
+        assertUsableIds(doc, name);
     }
 
-    const b = indexByIdentity(base, 'base');
-    const o = indexByIdentity(ours, 'ours');
-    const t = indexByIdentity(theirs, 'theirs');
+    const b = indexById(base, 'base');
+    const o = indexById(ours, 'ours');
+    const t = indexById(theirs, 'theirs');
     const duplicates = [...b.duplicates, ...o.duplicates, ...t.duplicates];
 
     const summary = {
@@ -167,11 +213,11 @@ export function mergeKbCanonical(base, ours, theirs) {
         removedByOurs: 0,
         removedByTheirs: 0,
         removedByBoth: 0,
+        duplicateIds: duplicates.length,
         genuineConflicts: 0,
-        duplicateIdentitiesDropped: duplicates.length,
         mergedEntries: 0,
     };
-    const conflicts = [];
+    const conflicts = [...duplicates];
     const merged = new Map();
 
     // Pass 1: everything the base knew about. Base order is preserved so the
@@ -204,8 +250,7 @@ export function mergeKbCanonical(base, ours, theirs) {
                 merged.set(key, oursEntry);
                 continue;
             }
-            summary.genuineConflicts += 1;
-            conflicts.push({ identity: key, base: baseEntry, ours: oursEntry, theirs: theirsEntry });
+            conflicts.push({ kind: 'content', identity: key, base: baseEntry, ours: oursEntry, theirs: theirsEntry });
             continue;
         }
         if (oursChanged) { summary.changedByOurs += 1; merged.set(key, oursEntry); continue; }
@@ -214,11 +259,10 @@ export function mergeKbCanonical(base, ours, theirs) {
         merged.set(key, baseEntry);
     }
 
-    // Pass 2: additions. Ours first, then theirs; a title added by both sides
+    // Pass 2: additions. Ours first, then theirs; an id added by both sides
     // is de-duplicated (ours wins the slot). A both-sides addition whose
     // content differs is NOT a conflict -- there is no common ancestor to
-    // arbitrate against, and one of the two near-identical restatements of the
-    // same finding is the right answer either way.
+    // arbitrate against.
     for (const [key, entry] of o.map) {
         if (b.map.has(key) || merged.has(key)) continue;
         summary.addedByOurs += 1;
@@ -231,16 +275,22 @@ export function mergeKbCanonical(base, ours, theirs) {
         merged.set(key, entry);
     }
 
+    const entries = [...merged.values()];
+    // Duplicate-id guard on the output itself: never hand back a document in
+    // which two entries share an id, whatever produced it.
+    const out = indexById({ entries }, 'merged');
+    conflicts.push(...out.duplicates);
+
     summary.mergedEntries = merged.size;
+    summary.genuineConflicts = conflicts.length;
 
     if (conflicts.length > 0) {
         return { merged: null, summary, conflicts, duplicates };
     }
 
-    const entries = [...merged.values()];
     const mergedDoc = {
         ...ours,
-        version: ours.version ?? theirs.version ?? base.version,
+        version: highestVersion([ours, theirs, base]),
         provenance: { ...(ours.provenance ?? {}), entry_count: entries.length },
         entries,
     };
@@ -263,12 +313,12 @@ export function formatSummary(summary) {
         ['removed by ours', summary.removedByOurs],
         ['removed by theirs', summary.removedByTheirs],
         ['removed by both', summary.removedByBoth],
-        ['duplicate titles dropped', summary.duplicateIdentitiesDropped],
+        ['duplicate ids', summary.duplicateIds],
         ['genuine conflicts', summary.genuineConflicts],
         ['merged entries', summary.mergedEntries],
     ];
     const width = Math.max(...rows.map(([label]) => label.length));
-    const lines = ['Three-way merge summary (identity key: trimmed title):'];
+    const lines = ['Three-way merge summary (identity key: entry id):'];
     for (const [label, value] of rows) lines.push(`  ${label.padEnd(width)} : ${value}`);
     return lines.join('\n');
 }
@@ -280,12 +330,17 @@ export function formatSummary(summary) {
  */
 export function formatConflicts(conflicts) {
     const lines = [
-        `${conflicts.length} genuine conflict(s): the same title was changed differently by both sides.`,
-        'Nothing was merged. Resolve these by hand (edit one side to agree, or pick the correct',
-        'content) and re-run, or hand-edit the file with both versions in view.',
+        `${conflicts.length} genuine conflict(s): an id changed differently by both sides, or an id shared by two entries.`,
+        'Nothing was merged. Resolve these by hand (edit one side to agree, pick the correct',
+        'content, or give one of the duplicate entries its own id) and re-run.',
         '',
     ];
     for (const c of conflicts) {
+        if (c.kind === 'duplicate-id') {
+            lines.push(`--- duplicate id ${c.identity}: ${c.side} has ${c.indexes.length} entries with this id (indexes ${c.indexes.join(', ')})`);
+            lines.push('');
+            continue;
+        }
         lines.push(`--- ${c.identity}`);
         for (const side of ['base', 'ours', 'theirs']) {
             lines.push(`    ${side}:`);
@@ -362,7 +417,8 @@ const USAGE = [
     '  --out <file>      write the merged document here (default: stdout)',
     '  -h, --help        show this help',
     '',
-    '  Exit 0 merged cleanly, 1 genuine conflicts (nothing written), 2 usage/IO error.',
+    '  Entries are matched by id only. Exit 0 merged cleanly, 1 genuine conflicts or',
+    '  duplicate ids (nothing written), 2 usage/IO error or an entry without an id.',
 ].join('\n');
 
 export function main(argv = process.argv.slice(2)) {
