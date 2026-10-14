@@ -99,7 +99,7 @@ workflow reliably across your fleet (see **Any domain** above).
 
 ## Quick start (5 minutes)
 
-**1. Install** -- one command via npm (Node.js 22+), or grab the
+**1. Install** -- one command via npm (Node.js 22.16+), or grab the
 standalone installer binary for your platform from
 [Releases](https://github.com/Apra-Labs/apra-fleet/releases) and
 double-click it (installation is the default action):
@@ -121,8 +121,8 @@ The default install includes fleet-se (fleet-sprint, supervisor, bd), which requ
 
 **2. Connect your agent.** Load the fleet server in Claude Code with
 `/mcp` (or restart your provider CLI). Your agent now has a fleet. To check
-from a shell, `claude mcp list` should show
-`apra-fleet: http://localhost:7523/mcp (HTTP) - Connected`.
+from a shell, `claude mcp list` should show a line like
+`apra-fleet: http://localhost:7523/mcp (HTTP) - ... Connected` (7523 is the default port).
 
 **3. Register members -- in plain language.** apra-fleet is driven
 conversationally through any MCP-capable agent:

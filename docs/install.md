@@ -7,19 +7,23 @@ which skills are installed, uninstalling, and self-updating.
 
 - An AI coding agent CLI on the machine where you run Fleet - Claude Code,
   Antigravity (agy), Codex, Copilot, or OpenCode. For Claude Code, use
-  Anthropic's installer (https://claude.com/claude-code). If it warns that
+  Anthropic's installer: see https://code.claude.com/docs/en/setup for the
+  macOS/Linux, Windows PowerShell (`irm https://claude.ai/install.ps1 | iex`)
+  and Windows CMD commands. If it warns that
   `~/.local/bin` (Windows: `%USERPROFILE%\.local\bin`) is not on PATH, add it
   and open a new terminal.
 - Node.js 22.16+ and npm on PATH, for the default install. They are needed by
   fleet-se (fleet-sprint, supervisor, bd), and the installer fails up front if
   they are missing. Get Node.js from https://nodejs.org (LTS installer on
   Windows and macOS; your package manager or nodejs.org on Linux), then open a
-  new terminal. `apra-fleet install --workflows none` installs the core only
-  and needs no Node.js.
-  - Windows PowerShell: with the default `Restricted` execution policy,
-    `npm -v` fails with "npm.ps1 cannot be loaded". The installer is not
-    affected. Use `npm.cmd -v`, or run
-    `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+  new terminal. With the standalone installer, `--workflows none` installs
+  the core only and needs no Node.js (the npm install path always needs it).
+  - Windows PowerShell: with the default `Restricted` execution policy, any
+    npm-global command fails with "<name>.ps1 cannot be loaded" -- `npm -v`,
+    and also `bd` when the installer put it in the npm global folder. The
+    installer is not affected. Call the `.cmd` shim instead (`npm.cmd -v`,
+    `bd.cmd --version`), or run
+    `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
 - SSH access to any remote machines you want to register as members. The local
   machine needs nothing extra; remote members need only an SSH server.
 - Windows: if Git for Windows is installed, a local or remote Windows member
