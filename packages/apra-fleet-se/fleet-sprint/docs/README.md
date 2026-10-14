@@ -81,16 +81,19 @@ Watch progress there rather than tailing raw stdout.
 |---|---|---|---|---|
 | `--issue <ids>` | `-i` | yes | -- | Target issue ID(s), comma separated (e.g. `epic-1,epic-2`). Scope resolves to each id's full descendant subtree -- see the epics section below. |
 | `--members <ids>` | `-m` | yes | -- | Member IDs/names to use, comma separated. Members act as repo targets for parallelism. |
-| `--branch <name>` | `-b` | yes | -- | Sprint branch to develop on. Created from `--base` if it does not exist; reused as-is if it does. |
+| `--branch <name>` | `-b` | yes | -- | Sprint branch to develop on. Created from `--base` if it does not exist; reused as-is if it does. Must differ from `--base`: the comparison ignores case and `refs/heads/`, `origin/` and `refs/remotes/origin/` prefixes, and an equal pair is rejected at launch. |
 | `--base <name>` | `-B` | yes | -- | Base branch the sprint branch is created from, and the branch the eventual PR targets. |
 | `--goal <goal>` | `-g` | no | `P1/P2` | Sprint goal constraint. One of `P1`, `P1/P2`, `P1/P2/P3`. |
 | `--max-cycles <n>` | `-c` | no | `5` | Max plan/develop/review cycles. |
 | `--allow-missing-members` | | no | off | Warn and continue if some `--members` are not registered with the fleet. Without it, any missing member aborts the sprint. |
 | `--requirements-file <path>` | | no | -- | Path to a requirements file threaded into the planner's prompt. |
-| `--role-map <json\|@file>` | | no | -- | JSON object mapping role -> member[], e.g. `'{"doer":["m1","m2"]}'`. Inline JSON or `@path/to/file.json`. |
+| `--role-map <json\|@file>` | | no | -- | JSON object mapping role -> member[], e.g. `'{"doer":["m1","m2"]}'`. Inline JSON or `@path/to/file.json`. The `backlog` key names the member whose beads clone the engine runs its own `bd`/`git` commands against (`orchestrator` is its deprecated alias: accepted with a warning in 0.4.4, removed in v0.5). Without `backlog` the engine picks one and logs `backlog: <member> (auto-selected: <reason>)`. |
 | `--viewer-port <port>` | | no | `8080` | Port for the local dashboard viewer. |
 | `--budget <usd>` | | no | unlimited | USD ceiling for this run's total estimated spend. |
 | `--dispatch-timeout-s <s>` | | no | `9000` | Per-dispatch total time budget in seconds -- the hard ceiling on every agent dispatch (integ-test dispatch ceiling is 2x, regression-test ceiling is 3x). Minimum 60. The inactivity/stall threshold used to detect a hung dispatch is derived from this value but capped separately at 30 minutes, so raising this budget for a large sprint does not also grant a stalled dispatch a correspondingly longer grace period before it is killed. Lower it for small sprints so a hung dispatch costs minutes, not 2.5 hours. |
+| `--usage-limit-max-wait-s <s>` | | no | engine default | Total seconds a dispatch may stay paused on a provider usage limit, across all reprobes, before the run ends with a typed abort. Minimum 60. |
+| `--usage-limit-max-reprobes <n>` | | no | engine default | Max usage-limit reprobes before giving up, independent of elapsed wait. Minimum 1. |
+| `--skip-regression` | | no | off | Skip the once-per-sprint regression pass. Logged, and stated in the sprint analysis and the PR body. Integration tests still run. |
 | `--sync` | | no | off | Synced topology mode (orchestrator-bracketed git sync): members may sit on differing HEADs but must share the same origin URL and pass a `bd dolt pull` probe. Omitted uses shared-workspace mode: at launch every member is aligned to the sprint branch automatically (WIP preserved in a named stash), then must share the same HEAD. |
 | `--help` | `-h` | | | Show the engine's help. |
 
@@ -115,6 +118,12 @@ resumed sprint's resync step still runs real git commands against every
 - Every `--members` name must be registered with the fleet
   (`list_members`); an unregistered member aborts the sprint unless
   `--allow-missing-members` is passed.
+- Every member that reads beads needs `bd` on its PATH (`apra-fleet install`
+  provides it). Before any dispatch the engine checks each member's beads: a
+  missing `bd` aborts the sprint, a beads-reading member with no beads
+  database yet is set up from the expected beads remote (or the sprint aborts
+  if that set-up fails), and a member resolving to a different beads project
+  aborts. Each error names the member and the fix.
 - Multi-member sprints do not need members aligned by hand: at launch
   (without `--sync`) every member is fetched and checked out on the sprint
   branch (from `origin/<branch>`, else `origin/<base>`), uncommitted work is
