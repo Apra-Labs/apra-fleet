@@ -77,6 +77,7 @@
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 
 import { createSyncBrackets, createGitSync } from '../fleet-sprint/git-sync.mjs';
 import { GitDivergedError } from '../fleet-sprint/errors.mjs';
@@ -342,6 +343,69 @@ describe('withGitSync against a real git origin (no network, no credentials)', {
         assert.deepEqual(fixture.originSubjects(), ['add workflow change', 'seed'], 'linear history: no merge/rebase/rewrite was needed for an uncontested push');
         assert.equal(fixture.localStatus(), '', 'the working tree is clean after the bracket');
         assert.equal(fixture.localRebaseInProgress(), false, 'no rebase/merge state left behind');
+        assert.equal(gitSync.openBracketCount(), 0, 'the bracket closed');
+    });
+
+    // -------------------------------------------------------------------
+    // 6. Salvage before the resume reset, through the real bracket. A killed
+    //    attempt left one finished-but-unpublished commit, a tracked edit
+    //    and untracked files (a secret, a per-member provider file) while a
+    //    peer published on top of the shared branch. The retry bracket must
+    //    resume on the peer's tip, pin the commit + tracked edit on a LOCAL
+    //    fleet-salvage/ side ref without ever committing on the sprint
+    //    branch, leave the untracked files alone, and push nothing.
+    // -------------------------------------------------------------------
+    test('G-pull: resumeOntoRemoteTip pins the killed attempt\'s unpublished commit and tracked edit on a local fleet-salvage side ref, leaves untracked files in place and never pushes the ref', async () => {
+        fixture = createGitRepoFixture({ member: 'salvage-member', prefix: 'salvage-bracket-' });
+        const logs = [];
+        const gitSync = makeGitSync(fixture, { log: (m) => logs.push(String(m)) });
+
+        const killedSha = fixture.memberCommit('killed-attempt-test-commit', 'protected test');
+        fixture.memberWriteFile('README.md', 'modified by the killed attempt');
+        fixture.memberWriteFile('.env', 'SECRET_TOKEN=do-not-commit');
+        fixture.memberWriteFile('.codex/config.toml', 'model = "member-local"');
+        const peerSha = fixture.peerPublish('published-tip');
+
+        let tipSeenByDispatch = null;
+        await gitSync.withGitSync('salvage-member', true, async () => {
+            tipSeenByDispatch = fixture.localTip();
+            return 'dispatch-ok';
+        }, { resumeOntoRemoteTip: true });
+
+        assert.equal(tipSeenByDispatch, peerSha, 'the retried dispatch resumes ON the published tip');
+        assert.equal(fixture.localTip(), peerSha);
+        assert.equal(fixture.isAncestor(killedSha, 'HEAD'), false, 'the sprint branch never carries the salvaged work');
+
+        // Exactly one side ref; it reaches the killed commit and carries the
+        // tracked edit (the stash commit's tree), but no untracked file.
+        const prefix = 'fleet-salvage/';
+        const salvage = fixture.localBranchesUnder(prefix);
+        assert.equal(salvage.length, 1, `expected exactly one side ref under ${prefix}, got ${JSON.stringify(salvage)}`);
+        const ref = salvage[0];
+        const refSha = fixture.localRev(`refs/heads/${ref}`);
+        assert.ok(refSha.startsWith(ref.slice(ref.lastIndexOf('/') + 1)), `the ref suffix names the commit it points at (${ref} -> ${refSha})`);
+        assert.equal(fixture.isAncestor(killedSha, refSha), true, 'the killed commit is reachable from the side ref');
+        assert.equal(fixture.localFileAt(refSha, 'README.md'), 'modified by the killed attempt', 'the tracked edit is on the side ref');
+        assert.equal(fixture.localFileAt(refSha, 'killed-attempt-test-commit.txt'), 'protected test');
+        assert.equal(fixture.localFileAt(refSha, '.env'), null, 'an untracked secret is never swept into the side ref');
+        assert.equal(fixture.localFileAt(refSha, '.codex/config.toml'), null, 'a per-member provider file is never swept into the side ref');
+
+        // Untracked files survive the reset with their content.
+        assert.equal(fs.readFileSync(path.join(fixture.clonePath, '.env'), 'utf-8'), 'SECRET_TOKEN=do-not-commit\n');
+        assert.equal(fs.readFileSync(path.join(fixture.clonePath, '.codex', 'config.toml'), 'utf-8'), 'model = "member-local"\n');
+        assert.equal(fixture.localFileAt('HEAD', 'README.md'), 'seed', 'the tracked file itself was reset');
+
+        // Nothing staged or committed by the salvage, nothing pushed anywhere.
+        assert.deepEqual(fixture.calls.filter((c) => /^git (add|commit)\b/.test(c.cmd)).map((c) => c.cmd), [], 'the salvage never stages or commits');
+        assert.deepEqual(fixture.originRefNames().filter((r) => r.includes('fleet-salvage')), [], 'the side ref never reaches the remote');
+
+        // Order: the side ref existed before the reset was issued.
+        const branchIdx = fixture.calls.findIndex((c) => /^git branch -f fleet-salvage\//.test(c.cmd));
+        const resetIdx = fixture.calls.findIndex((c) => /^git reset --hard/.test(c.cmd));
+        assert.ok(branchIdx !== -1 && resetIdx !== -1 && branchIdx < resetIdx, `side ref (idx ${branchIdx}) must be created before the reset (idx ${resetIdx})`);
+
+        const line = logs.find((l) => l.includes(ref));
+        assert.ok(line && line.includes(`git stash apply ${refSha}`), `the log names the ref and the stash-apply recovery; logs: ${JSON.stringify(logs)}`);
         assert.equal(gitSync.openBracketCount(), 0, 'the bracket closed');
     });
 });
