@@ -6,7 +6,9 @@ import { serverVersion } from '../version.js';
 import { parseVersion, isNewer } from '../services/update-check.js';
 import { FLEET_DIR } from '../paths.js';
 import { readInstallConfig } from './config.js';
-import { isSea, isNpmGlobalInstall } from './install.js';
+import { isSea, isNpmGlobalInstall, fleetSeGuardEnabled, currentFleetSeProbes } from './install.js';
+import { selfInvocationLines } from './install-guard.js';
+import { detectRunningFleetSe, fleetSeRefusalText, IGNORE_RUNNING_SPRINTS_FLAG } from './fleet-se-guard.js';
 import { showPendingServiceNotice } from '../services/service-notice.js';
 
 export async function runUpdate(): Promise<void> {
@@ -118,6 +120,22 @@ export async function runUpdate(): Promise<void> {
     // `--workflows none` choice survives an update instead of silently
     // reverting to the `all` default on re-install (apra-fleet-7pm.10).
     const args = ['install', '--force', '--llm', targetLlm, '--skill', targetSkill, '--workflows', targetWorkflowsMode];
+    // The detached installer refuses while fleet-sprint work is running, but
+    // nobody would see it: refuse here, in the console, first.
+    if (fleetSeGuardEnabled()) {
+      let found: Awaited<ReturnType<typeof detectRunningFleetSe>> | null = null;
+      try { found = await detectRunningFleetSe(currentFleetSeProbes()); } catch { /* the installer re-checks */ }
+      if (found && (found.supervisor || found.sprints.length > 0)) {
+        const lines = (exe: string, a: string[]) => selfInvocationLines({ platform: process.platform, execPath: exe, sea: true, args: a });
+        console.error(fleetSeRefusalText(found, {
+          platform: process.platform,
+          rerunLines: lines(process.execPath, ['update']),
+          ignoreLines: lines(tmpPath, [...args, IGNORE_RUNNING_SPRINTS_FLAG]),
+        }));
+        process.exitCode = 1;
+        return;
+      }
+    }
     const installer = spawn(tmpPath, args, { detached: true, stdio: 'ignore', windowsHide: true });
     installer.unref();
     // The installer runs detached with no console: anything it has to tell
