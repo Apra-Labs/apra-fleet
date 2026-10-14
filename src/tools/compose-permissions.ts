@@ -998,6 +998,39 @@ function memberMcpFailureResult(failure: string, projectFolder: string | undefin
   return `${failure}\n  The permission config files were written${projectFolder ? ' and recorded in the ledger' : ''}; the apra-fleet member MCP entry was NOT written.`;
 }
 
+/** Reads a claude member's <workFolder>/.claude/settings.local.json -- the
+ *  file the grant path merges into. Missing or non-JSON content reads as an
+ *  empty allow list. */
+async function readClaudeSettingsLocal(agent: Agent, strategy: ReturnType<typeof getStrategy>, agentShell: MemberShell | undefined): Promise<any> {
+  const isWindowsAgent = (agent.os ?? 'linux') === 'windows';
+  const absSettingsPath = resolveRemotePath(agent.workFolder, '.claude/settings.local.json', isWindowsAgent, agentShell);
+  // Branched on the member's SHELL, not just its OS: a gitbash Windows
+  // member cannot run Get-Content (apra-fleet-7dir.1.3).
+  const readResult = isPosixShell(isWindowsAgent, agentShell)
+    ? await strategy.execCommand(`cat ${quotePosixPath(absSettingsPath)} 2>/dev/null || echo "{}"`, LOCAL_FS_OP_TIMEOUT_MS)
+    : await strategy.execCommand(`Get-Content -Raw ${quotePwshPath(absSettingsPath.replace(/\//g, '\\'))} -ErrorAction SilentlyContinue`, LOCAL_FS_OP_TIMEOUT_MS);
+  try {
+    return JSON.parse(readResult.stdout.trim());
+  } catch {
+    return { permissions: { allow: [] } };
+  }
+}
+
+/** The given rules a claude member's settings.local.json allow list does not
+ *  hold yet. Any read failure returns every rule (the caller then grants,
+ *  which is additive); never throws. Lets a caller skip a grant that would
+ *  only rewrite the file -- a grant also resets the deny list to the
+ *  composed one. */
+export async function missingClaudeAllowRules(agent: Agent, rules: string[]): Promise<string[]> {
+  try {
+    const current = await readClaudeSettingsLocal(agent, getStrategy(agent), getAgentShell(agent));
+    const allow = new Set<string>(Array.isArray(current?.permissions?.allow) ? current.permissions.allow : []);
+    return rules.filter(r => !allow.has(r));
+  } catch {
+    return [...rules];
+  }
+}
+
 export async function composePermissions(input: ComposePermissionsInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
@@ -1082,19 +1115,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       // wholesale (see deepMerge doc comment), so an `allow` computed from the
       // wrong file here would silently discard every pre-existing grant in the
       // real settings.local.json once the write lands at the correct path.
-      const isWindowsAgent = (agent.os ?? 'linux') === 'windows';
-      const absSettingsPath = resolveRemotePath(agent.workFolder, '.claude/settings.local.json', isWindowsAgent, agentShell);
-      // Branched on the member's SHELL, not just its OS: a gitbash Windows
-      // member cannot run Get-Content (apra-fleet-7dir.1.3).
-      const readResult = isPosixShell(isWindowsAgent, agentShell)
-        ? await strategy.execCommand(`cat ${quotePosixPath(absSettingsPath)} 2>/dev/null || echo "{}"`, LOCAL_FS_OP_TIMEOUT_MS)
-        : await strategy.execCommand(`Get-Content -Raw ${quotePwshPath(absSettingsPath.replace(/\//g, '\\'))} -ErrorAction SilentlyContinue`, LOCAL_FS_OP_TIMEOUT_MS);
-      let current: any;
-      try {
-        current = JSON.parse(readResult.stdout.trim());
-      } catch {
-        current = { permissions: { allow: [] } };
-      }
+      const current = await readClaudeSettingsLocal(agent, strategy, agentShell);
       const existingAllow = new Set<string>(current?.permissions?.allow ?? []);
       for (const p of expanded) existingAllow.add(p);
       allow = [...existingAllow];

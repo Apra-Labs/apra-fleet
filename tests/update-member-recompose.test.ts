@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { backupAndResetRegistry, restoreRegistry, makeConfigAwareExec, makeTestAgent, makeTestLocalAgent, decodePowerShellEncodedCommand } from './test-helpers.js';
 import { updateMember } from '../src/tools/update-member.js';
+import { memberDetail } from '../src/tools/member-detail.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
 import { addAgent, recordFleetMcpStatus } from '../src/services/registry.js';
 import { memberMcpAllowRules } from '../src/services/member-config-io.js';
@@ -47,6 +48,14 @@ vi.mock('../src/cli/install.js', async (importOriginal) => {
 const mockCompose = vi.mocked(composePermissions);
 const VERSION = 'v0.4.4';
 const WORK = '/home/bella/repo';
+const SETTINGS = `"${WORK}/.claude/settings.local.json"`;
+let memberExec: ReturnType<typeof makeConfigAwareExec>;
+
+/** Writes the member's settings.local.json in the fake member filesystem. */
+async function seedAllow(allow: string[]): Promise<void> {
+  await memberExec(`cat > ${SETTINGS} << 'FLEET_PERMS_EOF'\n${JSON.stringify({ permissions: { allow } })}\nFLEET_PERMS_EOF`);
+}
+const settingsWrites = () => mockExecCommand.mock.calls.filter(([c]) => c.startsWith(`cat > ${SETTINGS}`));
 
 interface World { installed: string | null; log: string[]; autostartFails?: boolean; serverDown?: boolean }
 
@@ -107,7 +116,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockCompose.mockImplementation(async () => '\u2705 Permissions composed');
   mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
-  mockExecCommand.mockImplementation(makeConfigAwareExec());
+  memberExec = makeConfigAwareExec();
+  mockExecCommand.mockImplementation(memberExec);
 });
 
 afterEach(() => {
@@ -149,13 +159,60 @@ describe('update_member re-composes permissions after a member install/upgrade',
     expect(mockCompose).not.toHaveBeenCalled();
   });
 
-  it('an up-to-date member already recorded available is not re-composed', async () => {
+  it('an up-to-date member already recorded available whose allow list has the rules is not re-composed', async () => {
     const w: World = { installed: VERSION, log: [] };
     __setMemberFleetMcpDeps(fakeDeps(w));
+    await seedAllow(['Bash(git:*)', ...memberMcpAllowRules()]);
     const a = remoteMember({ fleetMcp: { state: 'available', version: VERSION, checkedAt: '2026-10-01T00:00:00.000Z' } });
-    await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
     expect(installs(w)).toEqual([]);
     expect(mockCompose).not.toHaveBeenCalled();
+    expect(result).not.toContain('NOTICE: the member');
+  });
+
+  it('an up-to-date member already recorded available but missing the rules IS re-composed', async () => {
+    const w: World = { installed: VERSION, log: [] };
+    __setMemberFleetMcpDeps(fakeDeps(w));
+    await seedAllow(['Bash(git:*)']);
+    const a = remoteMember({ fleetMcp: { state: 'available', version: VERSION, checkedAt: '2026-10-01T00:00:00.000Z' } });
+    const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(mockCompose).toHaveBeenCalledTimes(1);
+    expect(mockCompose).toHaveBeenCalledWith(expect.objectContaining({ member_id: a.id, grant: memberMcpAllowRules() }));
+    expect(result).toContain('NOTICE: the member apra-fleet tool rules were added');
+  });
+
+  it('start -> member_detail refresh -> update_member auto still adds the rules; a repeat update is a silent no-op', async () => {
+    const w: World = { installed: 'v0.4.3', log: [], autostartFails: true, serverDown: true };
+    __setMemberFleetMcpDeps(fakeDeps(w));
+    await seedAllow(['Bash(git:*)', 'Edit(feedback*.md)']);
+    // The compose mock performs the additive grant on the fake member file.
+    mockCompose.mockImplementation(async (input: any) => {
+      const cur = JSON.parse((await memberExec(`cat ${SETTINGS} 2>/dev/null || echo "{}"`)).stdout || '{}');
+      await seedAllow([...new Set([...(cur.permissions?.allow ?? []), ...(input.grant ?? [])])]);
+      return '\u2705 Granted';
+    });
+    const a = remoteMember();
+    const first = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(first).toContain('fleetMcp: unavailable (install-failed)');
+    expect(mockCompose).not.toHaveBeenCalled();
+    // `apra-fleet start` on the member, then the refresh member_detail recommends.
+    w.autostartFails = false;
+    w.serverDown = false;
+    await memberDetail({ member_id: a.id, refresh: true } as any);
+    expect(w.log.filter(c => c.includes("'call'") && c.includes("'version'")).length).toBeGreaterThan(0);
+    const second = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(second).toContain('fleetMcp: available');
+    expect(mockCompose).toHaveBeenCalledTimes(1);
+    expect(second).toContain('NOTICE: the member apra-fleet tool rules were added');
+    const allow = JSON.parse((await memberExec(`cat ${SETTINGS} 2>/dev/null`)).stdout).permissions.allow;
+    expect(allow).toEqual(expect.arrayContaining(['Bash(git:*)', 'Edit(feedback*.md)', ...memberMcpAllowRules()]));
+    // Repeat: rules already present -> no compose, no settings write, no NOTICE.
+    mockExecCommand.mockClear();
+    const third = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(mockCompose).toHaveBeenCalledTimes(1);
+    expect(settingsWrites()).toEqual([]);
+    expect(third).not.toContain('NOTICE: the member');
+    expect(third).not.toContain('compose_permissions failed');
   });
 
   it('autostart fails on install -> owner runs apra-fleet start -> auto again (install up to date) re-composes', async () => {
