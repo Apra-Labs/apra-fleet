@@ -221,10 +221,11 @@ Options:
                                 other member must match it. A mismatch aborts before any bd mutation.
       --budget <usd>            USD ceiling for this run's total estimated spend. Optional;
                                 omitted (the default) means unlimited, identical to prior behavior.
-      --dispatch-timeout-s <s>  Per-dispatch time budget in seconds (default 3600). Applied as both
-                                the inactivity timeout and the hard ceiling on every agent dispatch
-                                (the integration-test dispatch ceiling is 2x). Lower it for small
-                                sprints so a hung dispatch costs minutes, not an hour. Minimum 60.
+      --dispatch-timeout-s <s>  Per-dispatch time budget in seconds (default 9000). The hard ceiling
+                                on every agent dispatch (integration-test ceiling 2x, regression-test
+                                ceiling 3x); the inactivity timeout is this value capped at 1800.
+                                Lower it for small sprints so a hung dispatch costs minutes, not
+                                hours. Minimum 60.
       --usage-limit-max-wait-s <s>   Total wall-clock seconds a dispatch may stay paused across all
                                 usage-limit reprobes before giving up (typed sprint abort). Optional;
                                 omitted uses the runner default. Minimum 60.
