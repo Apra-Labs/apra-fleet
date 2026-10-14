@@ -269,7 +269,12 @@ One member is enough to start, and a single-member sprint avoids the multi-clone
 topology questions entirely. You will also want git credentials provisioned for
 the member so it can push the branch and open the PR -- apra-fleet's
 `provision_vcs_auth` supports **GitHub**, Bitbucket, and **Azure DevOps** (org URL
-+ PAT), so a GitHub- or AzDevOps-hosted git repo is fully supported.
++ PAT), so a GitHub- or AzDevOps-hosted git repo is fully supported. For a
+GitHub repo, opening the PR needs a GitHub App configured on the fleet
+(`setup_git_app`, see
+[GitHub App setup](https://github.com/Apra-Labs/apra-fleet/blob/main/docs/github-app-setup.md)):
+with only a PAT the sprint pushes the branch but logs `[Publish PR Skipped]
+... GitHub App not configured` and opens no PR.
 
 ### 2.5 Scale sideways: one member per sprint, several sprints at once
 
@@ -324,6 +329,14 @@ stop them) and stop the supervisor (`POST /api/shutdown`); start the supervisor
 again afterwards. A supervisor started under an older version keeps running the
 old code; against a 0.4.4 fleet server it is refused with HTTP 401, because it
 does not send the install's access secret.
+
+**Stale member reservations.** If a sprint died uncleanly -- it crashed, or
+was still running when you upgraded (for example with
+`--ignore-running-sprints`) -- its members can stay reserved on the fleet
+server, and the first launch fails with `409 member overlap rejects launch:
+sprint '<id or branch>' already claims [...]`. Clear each member listed there
+from your agent with the fleet MCP tool `member_reservation`
+`{member_name: "<member>", action: "force_release"}`, then launch again.
 
 Launching a sprint is one POST:
 

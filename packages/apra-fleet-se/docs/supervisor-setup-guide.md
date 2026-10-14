@@ -198,6 +198,16 @@ curl -s http://localhost:8787/api/health     # expect beads.prefix = your projec
 stop the supervisor before upgrading; start it again afterwards. It keeps
 the code it was started with. A supervisor started under 0.4.3 is refused by a 0.4.4 fleet
 server (HTTP 401: it does not send the install's access secret).
+
+**Stale member reservations.** If a sprint died uncleanly (it crashed, or
+was still running when you upgraded, e.g. with `--ignore-running-sprints`),
+its members can stay reserved on the fleet server and the first launch
+fails with `409 member overlap rejects launch: sprint '<id or branch>'
+already claims [...]`. Clear each listed member with the fleet MCP tool
+`member_reservation {member_name: "<member>", action: "force_release"}`
+(from your agent; the supervisor has no HTTP route for it), then launch
+again.
+
 See the `fleet-supervisor` skill for the full
 start/stop/restart/auto-start-on-login procedures, and `docs/supervisor-api.md`
 in this folder for the API's operational semantics -- both are fully generic,

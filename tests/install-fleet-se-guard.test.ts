@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execSync, execFileSync } from 'node:child_process';
 import { runInstall, _setSeaOverride, _setManifestOverride, _setFleetSeProbes, _resetFleetSeProbes } from '../src/cli/install.js';
-import { detectRunningFleetSe, fleetSeRefusalText, type FleetSeProbes } from '../src/cli/fleet-se-guard.js';
+import { detectRunningFleetSe, fleetSeRefusalText, INSTALLED_SERVE_SCRIPT, type FleetSeProbes } from '../src/cli/fleet-se-guard.js';
 
 // Upgrading under a running fleet-sprint supervisor/sprint breaks them with
 // HTTP 401 (old process, no member access secret). install must refuse before
@@ -133,6 +133,38 @@ describe('fleetSeRefusalText', () => {
     expect(text).toContain('C:\\inst.exe install --force --ignore-running-sprints');
     expect(text).toContain('Restart the supervisor');
     expect(/^[\x00-\x7F]*$/.test(text)).toBe(true);
+  });
+
+  it('restart step names the installed serve.mjs as a resolved path, never a nonexistent fleet-se command', () => {
+    const text = fleetSeRefusalText(
+      { supervisor: { pid: 500, port: 8787 }, sprints: [] },
+      { platform: 'linux', rerunLines: ['x'], ignoreLines: ['y'] },
+    );
+    // Same layout install writes fleet-sprint to (WORKFLOWS_DIR/fleet-sprint),
+    // resolved from the mocked home dir -- no shell ~ or $HOME left to expand.
+    expect(INSTALLED_SERVE_SCRIPT).toBe(path.join('/mock/home', '.apra-fleet', 'workflows', 'fleet-sprint', 'bin', 'serve.mjs'));
+    expect(text).toContain(`node "${INSTALLED_SERVE_SCRIPT}"`);
+    expect(text).toContain('--beads-dir <project folder>');
+    expect(text).not.toMatch(/fleet-se serve|fleet-se-serve/);
+    expect(text).not.toMatch(/~[\\/]|\$HOME/);
+  });
+
+  it('restart step uses an injected serve script path verbatim (e.g. a Windows path with spaces)', () => {
+    const win = 'C:\\Users\\A B\\.apra-fleet\\workflows\\fleet-sprint\\bin\\serve.mjs';
+    const text = fleetSeRefusalText(
+      { supervisor: { pid: 500, port: 8787 }, sprints: [] },
+      { platform: 'win32', rerunLines: ['x'], ignoreLines: ['y'], serveScript: win },
+    );
+    expect(text).toContain(`node "${win}"`);
+  });
+
+  it('omits the restart command when no supervisor is running', () => {
+    const text = fleetSeRefusalText(
+      { supervisor: null, sprints: [{ pid: 700, lockFile: '/l/x.lock' }] },
+      { platform: 'linux', rerunLines: ['x'], ignoreLines: ['y'] },
+    );
+    expect(text).not.toContain('serve.mjs');
+    expect(text).toContain('4. Relaunch the sprints.');
   });
 });
 
