@@ -116,6 +116,13 @@ history/working tree) and `.beads/`. Verify with `bd status` in that folder
 -- it should report the same issue counts as any other clone of the same
 project.
 
+Sprint processes run from the supervisor's project folder, so with a
+beads-only folder there are no source files there: a `requirementsFile`
+given as a relative path (e.g. `docs/reqs.md`) is not found, and the
+sprint only logs a warning and plans without it. Pass `requirementsFile`
+as an absolute path on the supervisor's machine (for example into your
+dev checkout).
+
 The backlog member has `llm_provider: "none"`: it only ever runs
 `bd`/`git`/`curl` commands via `execute_command`, never an LLM dispatch, so
 it needs no LLM auth at all.
@@ -187,9 +194,9 @@ curl -s http://localhost:8787/api/health     # expect beads.prefix = your projec
 (Windows PowerShell 5.1: use `curl.exe`, since `curl` there is an alias of
 `Invoke-WebRequest`.)
 
-**Restart the supervisor after every apra-fleet upgrade.** It keeps the
-code it was started with; stop it before upgrading and start it again
-afterwards. A supervisor started under 0.4.3 is refused by a 0.4.4 fleet
+**Upgrading apra-fleet.** Let running sprints finish (or stop them) and
+stop the supervisor before upgrading; start it again afterwards. It keeps
+the code it was started with. A supervisor started under 0.4.3 is refused by a 0.4.4 fleet
 server (HTTP 401: it does not send the install's access secret).
 See the `fleet-supervisor` skill for the full
 start/stop/restart/auto-start-on-login procedures, and `docs/supervisor-api.md`

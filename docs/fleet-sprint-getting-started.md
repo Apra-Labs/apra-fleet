@@ -319,10 +319,11 @@ request (naming any other member for it is an HTTP 400). If the supervisor found
 no `.beads`, it still starts, but every launch answers HTTP 503 until you restart
 it from the right folder.
 
-**Upgrading apra-fleet: restart the supervisor.** Stop it before you upgrade
-(`POST /api/shutdown`) and start it again afterwards. A supervisor started under
-an older version keeps running the old code; against a 0.4.4 fleet server it is
-refused with HTTP 401, because it does not send the install's access secret.
+**Upgrading apra-fleet.** Before you upgrade, let running sprints finish (or
+stop them) and stop the supervisor (`POST /api/shutdown`); start the supervisor
+again afterwards. A supervisor started under an older version keeps running the
+old code; against a 0.4.4 fleet server it is refused with HTTP 401, because it
+does not send the install's access secret.
 
 Launching a sprint is one POST:
 
@@ -443,7 +444,11 @@ ordered by reach:
    verbatim into the **planner's** prompt. Use it for sprint-specific technical
    direction that should shape decomposition. Honest limit: it reaches the planner
    (and is readable by the harvester), not the doer -- direction that implementers
-   must follow needs mechanism 1 or 3.
+   must follow needs mechanism 1 or 3. The file is read on the supervisor's
+   machine by the sprint process, which runs from the supervisor's project
+   folder: a relative path resolves there, and a file that is not found is
+   only a warning in the run log (the planner runs without it). Use an
+   absolute path when in doubt.
 3. **Bead descriptions and acceptance criteria.** The highest-fidelity channel to
    the agents writing the code: the planner must give every task concrete
    acceptance criteria, the doer implements to them, the reviewer diffs against

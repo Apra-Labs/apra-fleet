@@ -167,9 +167,9 @@ restart command exists:
    run its smoke test (`GET /api/sprints`, `GET /api/members`) to confirm the
    new process is actually serving before treating the restart as done.
 
-**After every apra-fleet upgrade, restart the supervisor.** A running
-supervisor keeps the code it started with. Stop it (and let running sprints
-finish or stop them) before upgrading, and start it again afterwards. A
+**Upgrading apra-fleet.** A running supervisor keeps the code it started
+with. Before upgrading, let running sprints finish (or stop them) and stop
+the supervisor; start it again afterwards. A
 supervisor started under 0.4.3 does not send the install's access secret, so
 a 0.4.4 fleet server refuses its requests with HTTP 401.
 
@@ -342,7 +342,7 @@ Field names, exactly as the API expects them:
 | `goal` | no | `P1`, `P1/P2` (default), or `P1/P2/P3`. |
 | `maxCycles` | no | default 5. |
 | `allowMissingMembers` | no | bool. |
-| `requirementsFile` | no | path. |
+| `requirementsFile` | no | path on the supervisor's machine; a relative path resolves against the supervisor's project folder. Not found = a run-log warning only, so prefer an absolute path. |
 | `roleMap` | no | `{"doer":["m1","m2"], "reviewer":["m3"]}`. Leave out `backlog`: the supervisor injects its own backlog member; naming any other member there is a 400. `orchestrator` is the deprecated alias of `backlog` (removed in v0.5). |
 | `budget` | no | USD cap. |
 | `phases` | no | `{"regression": "skip"}` skips the regression pass (`"run"` is the default). Any other key or value is a 400. |
