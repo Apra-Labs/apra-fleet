@@ -832,7 +832,10 @@ async function syncMemberMcpConfig(
     return { failure: `[FAIL] Failed to write the apra-fleet member MCP entry on "${agent.friendlyName}" (${provider.name}): ${e?.message ?? String(e)}` };
   }
   if (noMemberInstall) {
-    return { note: 'Member MCP entry NOT written: the member has no apra-fleet member install (fleet_install "auto" installs one); any entry an earlier compose wrote for this member was removed' };
+    // register_member/update_member run compose BEFORE their fleet_install
+    // step and do not show this note; their install step writes the entry once
+    // the member install exists. So this only states the current state.
+    return { note: 'Member MCP entry not written yet: the member has no apra-fleet member install now; the fleet_install "auto" step of register_member/update_member installs one and then writes the entry. Any entry an earlier compose wrote for this member was removed.' };
   }
   // Read the CURRENT record (the caller's agent object may predate it).
   const recorded = getAgent(agent.id)?.fleetMcp;

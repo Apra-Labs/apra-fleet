@@ -767,7 +767,7 @@ describe('composePermissions -- legacy fleet MCP entries pruned from settings.lo
 
     const result = await composePermissions({ member_id: member.id, role: 'doer' });
     expect(result).toContain('Permissions composed');
-    expect(result).toContain('Member MCP entry NOT written');
+    expect(result).toContain('Member MCP entry not written yet');
 
     const body = JSON.parse(memberFs.landed('/home/testuser/.claude.json')!);
     expect(body.projects['/home/testuser/project'].mcpServers['apra-fleet']).toBeUndefined();
@@ -823,7 +823,7 @@ describe('composePermissions -- legacy fleet MCP entries pruned from settings.lo
     });
 
     const result = await composePermissions({ member_id: member.id, role: 'doer' });
-    expect(result).toContain('Member MCP entry NOT written');
+    expect(result).toContain('Member MCP entry not written yet');
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const probe = allCmds.find(c => c.includes('member-install.json'));
     expect(probe).toContain("Test-Path -LiteralPath 'C:\\Users\\alice\\.apra-fleet\\data\\member-install.json'");
