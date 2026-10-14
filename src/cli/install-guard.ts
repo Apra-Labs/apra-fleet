@@ -276,9 +276,10 @@ Error: ${FULL_INSTALL_RUNNING_CODE}: a running apra-fleet server was not started
 `;
 }
 
-/** True when `s` can be typed as-is in cmd, PowerShell and POSIX shells. */
-function needsNoQuoting(s: string): boolean {
-  return /^[A-Za-z0-9_\-.:=/\\+,@]+$/.test(s);
+/** True when `s` can be typed as-is: Windows (cmd and PowerShell) allows `\`;
+ *  POSIX does not (it is an escape there). */
+function needsNoQuoting(s: string, platform: NodeJS.Platform): boolean {
+  return platform === 'win32' ? /^[A-Za-z0-9_\-.:=/\\+]+$/.test(s) : /^[A-Za-z0-9_\-.:=/+]+$/.test(s);
 }
 
 /**
@@ -299,11 +300,12 @@ export function selfInvocationLines(opts: {
   args: string[];
 }): string[] {
   const words = [opts.execPath, ...(!opts.sea && opts.scriptPath ? [opts.scriptPath] : []), ...opts.args];
+  const bare = (w: string) => needsNoQuoting(w, opts.platform);
   if (opts.platform !== 'win32') {
-    return [words.map(w => (needsNoQuoting(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`)).join(' ')];
+    return [words.map(w => (bare(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`)).join(' ')];
   }
-  if (words.every(needsNoQuoting)) return [words.join(' ')];
-  const ps = words.map(w => (needsNoQuoting(w) ? w : `'${w.replace(/'/g, "''")}'`));
-  const cmd = words.map(w => (needsNoQuoting(w) ? w : `"${w}"`));
+  if (words.every(bare)) return [words.join(' ')];
+  const ps = words.map(w => (bare(w) ? w : `'${w.replace(/'/g, "''")}'`));
+  const cmd = words.map(w => (bare(w) ? w : `"${w}"`));
   return [`PowerShell: & ${ps.join(' ')}`, `cmd:        ${cmd.join(' ')}`];
 }

@@ -328,7 +328,7 @@ export function portHeldByOtherUserMessage(
   const remedy = installKind === 'member'
     ? 'Remedy: give this member install its own port -- re-run "apra-fleet install --member --port <free port>"; '
       + 'the fleet picks up the new port on its next fleet_install "auto" probe.'
-    : `Remedy: that user stops their apra-fleet server ("apra-fleet stop", or "apra-fleet uninstall" to remove it), then re-run "apra-fleet install". `
+    : `Remedy: that user stops their apra-fleet server ("apra-fleet stop", or "apra-fleet uninstall" to remove it), then re-run the install. `
       + 'A full install\'s service listens on the default port: it is not given APRA_FLEET_PORT, so changing the port is not a lasting fix.';
   return `${PORT_HELD_BY_OTHER_USER_CODE}: port ${port} on 127.0.0.1 is held by ${holderPhrase(holder)}, another user's process${self}. `
     + 'apra-fleet will not share or take over another user\'s server. '

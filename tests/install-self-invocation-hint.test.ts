@@ -50,6 +50,13 @@ describe('selfInvocationLines', () => {
       .toEqual(["'/Users/Jo'\\''s Mac/Downloads/apra-fleet-installer-darwin-arm64' install --force"]);
   });
 
+  it('POSIX quotes a backslash (an escape there); Windows quotes , and @', () => {
+    expect(selfInvocationLines({ platform: 'linux', sea: true, args, execPath: '/tmp/a\\b' }))
+      .toEqual(["'/tmp/a\\b' install --force"]);
+    expect(selfInvocationLines({ platform: 'win32', sea: true, args, execPath: 'C:\\@x,y\\a.exe' })[0])
+      .toBe("PowerShell: & 'C:\\@x,y\\a.exe' install --force");
+  });
+
   it('Linux npm/dev -> node plus the entry script; SEA ignores the script path', () => {
     expect(selfInvocationLines({ platform: 'linux', sea: false, args, execPath: '/usr/bin/node', scriptPath: '/usr/lib/node_modules/apra-fleet/dist/index.js' }))
       .toEqual(['/usr/bin/node /usr/lib/node_modules/apra-fleet/dist/index.js install --force']);

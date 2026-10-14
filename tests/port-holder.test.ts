@@ -76,7 +76,7 @@ describe('classification and message', () => {
     expect(r.foreign).toBe(true);
     expect(r.message).toContain(PORT_HELD_BY_OTHER_USER_CODE);
     expect(r.message).toContain('"apra-fleet stop"');
-    expect(r.message).toContain('re-run "apra-fleet install"');
+    expect(r.message).toContain('re-run the install');
     expect(r.message).not.toContain('--member');
   });
   it('another user whose pid is not visible -> says so, never invents one', () => {
