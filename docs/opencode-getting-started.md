@@ -209,7 +209,7 @@ curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra
 
 **Windows (x64)** -- run in PowerShell:
 ```powershell
-Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe --llm opencode
+curl.exe -fL -o apra-fleet-installer.exe https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe; .\apra-fleet-installer.exe --llm opencode
 ```
 
 After install, restart OpenCode to load the MCP server. All fleet tools
