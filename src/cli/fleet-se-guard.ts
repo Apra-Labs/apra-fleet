@@ -35,6 +35,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { isPidAlive, processCommandLine } from '../utils/process-utils.js';
+import { WORKFLOWS_DIR } from './config.js';
+
+/** Installed supervisor entry point, resolved here (no shell ~ expansion). */
+export const INSTALLED_SERVE_SCRIPT = path.join(WORKFLOWS_DIR, 'fleet-sprint', 'bin', 'serve.mjs');
 
 export const IGNORE_RUNNING_SPRINTS_FLAG = '--ignore-running-sprints';
 export const DEFAULT_SUPERVISOR_PORT = 8787;
@@ -159,7 +163,10 @@ export async function detectRunningFleetSe(probes: FleetSeProbes = realFleetSePr
 /** The refusal printed when fleet-se work is running. */
 export function fleetSeRefusalText(found: RunningFleetSe, opts: {
   platform: NodeJS.Platform; rerunLines: string[]; ignoreLines: string[];
+  /** Supervisor script to restart; defaults to the installed one. */
+  serveScript?: string;
 }): string {
+  const serveScript = opts.serveScript ?? INSTALLED_SERVE_SCRIPT;
   const curl = opts.platform === 'win32' ? 'curl.exe' : 'curl';
   const sup = found.supervisor;
   const base = sup ? `http://localhost:${sup.port}` : `http://localhost:${DEFAULT_SUPERVISOR_PORT}`;
@@ -189,7 +196,11 @@ export function fleetSeRefusalText(found: RunningFleetSe, opts: {
   steps.push('  3. Upgrade:');
   for (const l of opts.rerunLines) steps.push(`       ${l}`);
   steps.push(sup
-    ? '  4. Restart the supervisor the way you started it (fleet-se serve), then relaunch sprints.'
+    ? [
+      '  4. Restart the supervisor from your project folder (the one holding .beads), or add',
+      '     --beads-dir <project folder>, then relaunch sprints:',
+      `       node "${serveScript}"`,
+    ].join('\n')
     : '  4. Relaunch the sprints.');
   return [
     '',
