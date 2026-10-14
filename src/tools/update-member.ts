@@ -75,7 +75,7 @@ export const updateMemberSchema = z.object({
   unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "backlog" role). reserve/release/force_release become no-op successes and overlap guards skip it.'),
   shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
   vcs_provider: z.enum(['github', 'bitbucket', 'azure-devops', 'none']).optional().describe('Directly set (override) this member\'s VCS provider -- an explicit operator value, never auto-detected. Use this to correct a wrong auto-detect from register_member, or to set the provider for a member with no credentials to provision (so provision_vcs_auth is not required just to record it). Pass "none" to clear it, declaring the member deliberately has no VCS provider.'),
-  fleet_install: z.enum(['auto', 'skip', 'replace-full']).optional().describe('Upgrade or skip the member\'s own apra-fleet install. "auto": for a remote member, probe it and install/upgrade apra-fleet when it is missing or older than this orchestrator (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify a MEMBER session, even when nothing else changed; local members only get the MEMBER-session probe. An install without the member-install marker (a full install) is never touched by "auto". "replace-full": everything "auto" does, plus an explicit opt-in to REPLACE such a full install with a member install (back up data and fleet.key to a timestamped dir, uninstall with the installed binary, stop the linux fleet-supervisor unit, move data aside, run the current installer in member mode, self-register); refused with no destructive command when the marker probe fails. "skip": no install (a refresh triggered by another change runs with install off). Omit to keep the default: install only on a provider change. The result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true). A requested install/upgrade that cannot happen (no release for this build, checksum or download failure, unsupported platform, full install present, ...) never fails the update: it adds a WARNING naming the consequence, the exact reason and OS-correct manual install steps (also in fleetMcp.manualInstall).'),
+  fleet_install: z.enum(['auto', 'skip', 'replace-full']).optional().describe('Upgrade or skip the member\'s own apra-fleet install. "auto": for a remote member, probe it and install/upgrade apra-fleet when it is missing or older than this orchestrator (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify a MEMBER session, even when nothing else changed; an install/upgrade that ran also re-runs compose_permissions (role doer plus the member tags) so the allow-list covers the new tools (a failure is a WARNING); local members only get the MEMBER-session probe. An install without the member-install marker (a full install) is never touched by "auto". "replace-full": everything "auto" does, plus an explicit opt-in to REPLACE such a full install with a member install (back up data and fleet.key to a timestamped dir, uninstall with the installed binary, stop the linux fleet-supervisor unit, move data aside, run the current installer in member mode, self-register); refused with no destructive command when the marker probe fails. "skip": no install (a refresh triggered by another change runs with install off). Omit to keep the default: install only on a provider change. The result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true). A requested install/upgrade that cannot happen (no release for this build, checksum or download failure, unsupported platform, full install present, ...) never fails the update: it adds a WARNING naming the consequence, the exact reason and OS-correct manual install steps (also in fleetMcp.manualInstall).'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -387,6 +387,23 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
       if (installWarning) {
         fleetMcpLine += installWarning.startsWith('NOTICE') ? ' (see NOTICE below)' : ' (see WARNING below)';
         warnings.unshift(installWarning);
+      }
+      // A fresh install/upgrade/replace can add member tools the allow list
+      // composed for the OLD install does not grant: re-compose, as a provider
+      // switch or folder move does (skipped when that block already composed).
+      const installChanged = status.fleetInstalledAt !== existing.fleetMcp?.fleetInstalledAt
+        || !!status.replacedFullInstall;
+      if (install && installChanged && !providerChanged && !workFolderMoved) {
+        let recompose: string;
+        try {
+          recompose = await composePermissions({ member_id: updated.id, role: 'doer', tags: updated.tags });
+        } catch (e: any) {
+          recompose = `compose_permissions threw: ${e?.message ?? String(e)}`;
+        }
+        if (!recompose.startsWith('\u2705')) {
+          const asciiDetail = recompose.replace(/^[^\x00-\x7F]+\s*/, '');
+          warnings.push(`WARNING: apra-fleet was installed/upgraded on the member but compose_permissions failed -- its permission allow-list was not refreshed, so its LLM may refuse fleet tools the new install serves. Retry with compose_permissions {member_id, role}: ${asciiDetail}`);
+        }
       }
     } catch (e: any) {
       fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;
