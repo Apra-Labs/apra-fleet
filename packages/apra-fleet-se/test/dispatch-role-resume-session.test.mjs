@@ -8,6 +8,7 @@ import {
     BINDINGS,
     ROLE_CALL_OPTS,
     createRecordingCtx,
+    infraError,
     sessionNotFoundError,
     turnExhaustionError,
 } from './helpers/dispatch-role-harness.mjs';
@@ -73,6 +74,47 @@ describe('max-turns resume targets the exhausted session by explicit id', () => 
         assert.ok(fallbacks[0].includes('session_not_found') && fallbacks[0].includes('sess-a'), fallbacks[0]);
         assert.ok(fallbacks[1].includes('no session id'), `second fallback must report no session id: ${fallbacks[1]}`);
         assert.ok(!fallbacks[1].includes('sess-a'), `second fallback must not name the stale lost session: ${fallbacks[1]}`);
+    });
+});
+
+describe('the resume announcement never claims "resuming the same session" when there is no session to resume', () => {
+    const SAME = 'resuming the same session';
+    const FRESH = 'continuing in a FRESH session';
+    const announcements = (logs, pattern) => logs.filter((m) => pattern.test(m));
+    const runSettled = async (role, responses) => {
+        const { ctx, rec } = createRecordingCtx({ responses });
+        try {
+            await dispatchRole(ctx, role, ROLE_CALL_OPTS[role]);
+        } catch {
+            // Only the log lines matter here.
+        }
+        return rec;
+    };
+
+    test('first exhaustion with no session id: the announcement says it continues in a FRESH session', async () => {
+        const rec = await runSettled('doer', [turnExhaustionError('spent', null), 'DONE']);
+        const lines = announcements(rec.logs, /exhausted its turn limit [(]max_turns=/);
+        assert.strictEqual(lines.length, 1, JSON.stringify(rec.logs));
+        assert.ok(lines[0].includes(FRESH), lines[0]);
+        assert.ok(!rec.logs.some((m) => m.includes(SAME)), JSON.stringify(rec.logs));
+    });
+
+    test('infrastructure failure with no session id: the recovery announcement says FRESH session', async () => {
+        const rec = await runSettled('integ-test-runner', [infraError('x', null), 'INTEG DONE']);
+        const lines = announcements(rec.logs, /infrastructure dispatch failure/);
+        assert.strictEqual(lines.length, 1, JSON.stringify(rec.logs));
+        assert.ok(lines[0].includes(FRESH), lines[0]);
+        assert.ok(!rec.logs.some((m) => m.includes(SAME)), JSON.stringify(rec.logs));
+    });
+
+    test('a re-exhaustion with no session id: the "again" announcement says FRESH, the first one still says same session', async () => {
+        const rec = await runSettled('doer', [turnExhaustionError('spent 1', 'sess-a'), turnExhaustionError('spent 2', null), 'DONE']);
+        const first = announcements(rec.logs, /exhausted its turn limit [(]max_turns=/);
+        const again = announcements(rec.logs, /exhausted its turn limit again/);
+        assert.strictEqual(first.length, 1, JSON.stringify(rec.logs));
+        assert.ok(first[0].includes(SAME), `sess-a was resumable, so the first announcement is accurate: ${first[0]}`);
+        assert.strictEqual(again.length, 1, JSON.stringify(rec.logs));
+        assert.ok(again[0].includes(FRESH) && !again[0].includes(SAME), again[0]);
     });
 });
 
