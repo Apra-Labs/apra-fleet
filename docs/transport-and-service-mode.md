@@ -62,7 +62,7 @@ Every other launch (terminal, CI, nohup, containers, scripts) exits 1. The same
 applies to refusing because an unresponsive server holds the data dir. It does not fall back to a random port: every configured MCP
 client only knows the configured port, so a re-homed server would be unreachable.
 Free the port. `APRA_FLEET_PORT` is read from each process's own environment and a
-full install does not record it: the OS service it registers is not given it and
+full install does not record it: the OS service it registers does not receive it and
 listens on the default port, so a port set only for the install command is not a
 lasting fix (a member install records its port: `apra-fleet install --member --port
 <port>`). `apra-fleet start` and `apra-fleet install` check the port up front and
@@ -70,10 +70,11 @@ print the same message. (Only an explicit port 0 -- used internally and in tests
 binds an OS-assigned port.)
 
 **Two OS users on one machine.** Each user's full install wants the same default port,
-so only one of them can serve it at a time. When another user's server holds the port,
-`apra-fleet start` and the standalone installer exit 1 with `E-PORT-HELD-BY-OTHER-USER`,
-naming the holder (the user and pid when visible); the remedy is for that user to stop (`apra-fleet stop`) or
-uninstall their server.
+so only one of them can serve it at a time. When apra-fleet can tell that another OS
+user's process holds the port, `apra-fleet start` and the standalone installer exit 1
+with `E-PORT-HELD-BY-OTHER-USER`, naming the holder (the user and pid when visible);
+the remedy is for that user to stop (`apra-fleet stop`) or uninstall their server. When
+the holder cannot be identified, you get the generic port-in-use error above instead.
 
 **Singleton probe states.** Before starting, `start`, `run`, `status` and `stop` probe
 `server.json`:
