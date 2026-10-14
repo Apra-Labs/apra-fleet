@@ -31,8 +31,16 @@ describe('resolveSessionCaller', () => {
     mockFindBySessionId.mockReturnValue(undefined);
     expect(resolveSessionCaller('sid-missing')).toEqual({
       sessionId: 'sid-missing',
-      identity: 'session:sid-missing',
+      identity: 'session:sid-miss...',
     });
+  });
+
+  it('shortens a full uuid session id in the synthetic identity (no full sid in denial/log text)', () => {
+    mockFindBySessionId.mockReturnValue(undefined);
+    const full = '3f2b8c1e-5a47-4d9e-9b1c-7e6a0d4f2c88';
+    const caller = resolveSessionCaller(full);
+    expect(caller.identity).toBe('session:3f2b8c1e...');
+    expect(caller.identity).not.toContain(full);
   });
 
   it('returns the member friendly name when the session and agent resolve', () => {
@@ -56,7 +64,7 @@ describe('resolveSessionCaller', () => {
     expect(resolveSessionCaller('sid-stale')).toEqual({
       sessionId: 'sid-stale',
       session,
-      identity: 'session:sid-stale',
+      identity: 'session:sid-stal...',
     });
   });
 });

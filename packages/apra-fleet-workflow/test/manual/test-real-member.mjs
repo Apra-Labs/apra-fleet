@@ -5,13 +5,14 @@
 // -- see README gap note).
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
+import { withFleetAccessSecret } from '@apralabs/apra-fleet-client/server-resolution';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import * as fs from 'fs';
 import * as path from 'path';
 
 async function main() {
     console.log('Connecting to real apra-fleet server at http://127.0.0.1:7523/mcp...');
-    const transport = new StreamableHttpTransport('http://127.0.0.1:7523/mcp');
+    const transport = new StreamableHttpTransport('http://127.0.0.1:7523/mcp', withFleetAccessSecret());
     const readyPromise = new Promise(resolve => transport.on('ready', resolve));
     transport.start();
     await readyPromise;

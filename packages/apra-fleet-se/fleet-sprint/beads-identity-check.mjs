@@ -19,7 +19,8 @@
 //     BeadsIdentityError (reason MISMATCH) before any bd mutation.
 //   - bd MISSING is FATAL: a bd probe whose failure classifies as a
 //     missing-tool failure for bd itself (not installed / not on PATH) throws
-//     BeadsIdentityError (reason MISSING_TOOL) naming the member and the fix.
+//     BeadsIdentityError (reason MISSING_TOOL) before any dispatch, naming
+//     the member and the fix -- every bd there would fail mid-sprint.
 //   - a beads-reading member with NO beads database, or with a database but
 //     no sync.remote while the expectation names one, is SET UP before any
 //     dispatch (setupMemberBeads below): `bd config set sync.remote
@@ -53,8 +54,8 @@ import {
     hasBeadsDatabase,
 } from './beads-identity.mjs';
 import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS, VCS_FAILURE_KINDS } from './errors.mjs';
-import { classifyFailure, commandBinary } from './vcs-module.mjs';
 import { syncBefore as doltSyncBefore } from './dolt-sync.mjs';
+import { classifyFailure, commandBinary } from './vcs-module.mjs';
 
 // Short: three cheap local reads per member. A member that cannot answer
 // `bd where` inside a minute is not a member this sprint should mutate.
@@ -186,13 +187,18 @@ function noExpectationWarning(backlogMember, probed) {
         `To restore it: fix the backlog member's beads (${BEADS_IDENTITY_FIELD_FIX.prefix}), or launch via the supervisor so --expect-beads is supplied.`;
 }
 
-// GitHub #616: the one probe outcome that is fatal besides a mismatch -- the
-// member cannot run bd AT ALL (not installed / not on PATH). Every later bd
-// command on it would fail, and the sync self-heal cannot fix a missing
-// binary, so the sprint stops here with the fix named. Only a failure of a bd
-// probe that classifies as missing-tool FOR bd counts; every other probe
-// failure (no database, unset field, unrelated profile noise) stays a warning.
-function assertBdPresent(member, probed) {
+export const BD_MISSING_FIX =
+    "install bd on that member (or fix that member's PATH) so 'bd --version' works in its workFolder shell " +
+    '(re-running the member fleet install places it in the member fleet bin dir), then relaunch';
+
+// The one probe outcome that is fatal besides a mismatch -- the member cannot
+// run bd AT ALL (not installed / not on PATH). Every later bd command on it
+// would fail, and neither the sync self-heal nor the beads set-up below can
+// fix a missing binary, so the sprint stops here with the fix named. Only a
+// failure of a bd probe that classifies as missing-tool FOR bd counts (the
+// shared VCS failure classifier); every other probe failure (no database,
+// unset field, unrelated profile noise) stays a warning.
+export function assertBdPresent(member, probed) {
     for (const f of probed.failures) {
         const tool = commandBinary(f.probe);
         if (tool !== 'bd') continue;
@@ -200,8 +206,8 @@ function assertBdPresent(member, probed) {
         if (c.kind !== VCS_FAILURE_KINDS.MISSING_TOOL) continue;
         throw new BeadsIdentityError(
             `Beads identity check failed: 'bd' is not installed or not on PATH on member '${member}' ` +
-            `('${f.probe}' -> ${summarizeRaw(f.error)}). Install bd on that member (or fix that member's PATH) and relaunch; ` +
-            'no bd command can run there, and re-provisioning credentials cannot fix a missing binary.',
+            `('${f.probe}' -> ${summarizeRaw(f.error)}). Every sprint role on it runs bd, so the sprint stops before any dispatch; ` +
+            're-provisioning credentials cannot fix a missing binary. To fix: ' + BD_MISSING_FIX + '.',
             { reason: BEADS_IDENTITY_FAILURE_REASONS.MISSING_TOOL, member, details: { tool: 'bd', probe: f.probe, error: f.error } }
         );
     }

@@ -9,21 +9,14 @@
     "v1-kb_import-request": {
       "type": "object",
       "properties": {
-        "repo_remote_url": {
-          "type": "string",
-          "description": "Origin remote URL of the repo this call is about. Supply it when repo_path is a path on another host (a remote member work folder), where git cannot be shelled out. When omitted, scope is derived from repo_path as before."
-        },
         "path": {
           "type": "string",
-          "description": "Explicit path to a bible JSON file. When omitted, resolves to <repo>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). Directives are quarantined to pending proposals either way."
+          "description": "Explicit path to a bible JSON file (e.g. <worktree>/.fleet/kb-canonical.json). This is a file path, not a scope selector: the KB written is always the calling session's own (a member session -> its work folder; otherwise the server folder). When omitted, resolves to <own folder>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json as committed is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). In a MEMBER session without the kb_maintainer grant an explicit path other than the session's own .fleet/kb-canonical.json is refused with E-KB-MAINTAINER-REQUIRED and nothing is imported, and the own bible is read as committed at HEAD (never the work-tree file); with no committed copy, or when that committed bible was never written or imported by the maintainer side (kb_bible_commit, or kb_import from the kb_maintainer or a FULL session), nothing is imported (E-KB-MAINTAINER-REQUIRED). Directives are quarantined to pending proposals either way."
         },
-        "repo": {
+        "ref": {
           "type": "string",
-          "description": "Repo root used to resolve <repo>/.fleet/kb-canonical.json when --path is omitted, and to anchor the post-import freshness sweep. Validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated process working directory."
-        },
-        "repo_path": {
-          "type": "string",
-          "description": "Alias for `repo`, matching the input name used by every other kb_* tool. Ignored when `repo` is also supplied."
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9._/-]*$",
+          "description": "Read the bible as COMMITTED at this git ref (a ref name such as HEAD or refs/remotes/origin/main; no rev expressions) instead of the file on disk; with path, reads that repository-relative file at the ref. The bytes are verified in-process against the git blob id before import. A ref that does not hold the bible fails with E-BIBLE-NOT-FOUND and nothing is imported. In the kb_maintainer or a FULL session the verified blob is what gets recorded as trusted, so a seeding import does not depend on the work tree; in a member session without the grant the trust check still applies. Omitted: the file on disk (or, in a member session without the grant, HEAD)."
         },
         "scope": {
           "type": "string",
@@ -33,6 +26,15 @@
         "skip_sweep": {
           "type": "boolean",
           "description": "Skip the post-import freshness sweep. The sweep re-judges EVERY entry in the KB against this worktree, which is right for a deliberate audit but wrong for a routine import: an import performed to warm the KB should not mass-stale it because unrelated files have changed since capture. prime() still runs its own bounded freshness check on the entries it actually returns, so skipping this does not surface stale claims. Default false (sweep runs, unchanged)."
+        },
+        "repo_path": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo_remote_url": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
         }
       },
       "additionalProperties": false

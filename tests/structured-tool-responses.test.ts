@@ -46,6 +46,8 @@ vi.mock('../src/services/strategy.js', () => ({
     execCommand: mockExecCommand,
     testConnection: mockTestConnection,
     transferFiles: vi.fn(),
+    writeSecretFile: vi.fn(async (name: string) => `/home/testuser/${name}`),
+    removeSecretFile: vi.fn(async () => {}),
     close: vi.fn(),
   }),
 }));

@@ -247,7 +247,36 @@ describe('verifyBeadsIdentity', () => {
         assert.ok(logs.some((l) => l.includes('the supplied expected beads identity carries no syncRemote; syncRemote is not compared on any member this sprint')), JSON.stringify(logs));
     });
 
-    test('BEADS_IDENTITY_FAILURE_REASONS has no probe-failure reason: only MISMATCH, a missing bd binary and a failed member beads set-up are fatal', () => {
+    for (const [shell, error] of [
+        ['POSIX', 'Exit code 127: bash: line 1: bd: command not found'],
+        // The real shape: FleetWorkflow.command() failSoft error over an execute_command result.
+        ['POSIX (real failSoft shape)', '[Command Failed] Exit code 127: Exit code: 127\n[stderr]\nbash: line 1: bd: command not found'],
+        ['PowerShell (real failSoft shape)', "[Command Failed] Exit code 1: Exit code: 1\n[stderr]\nbd : The term 'bd' is not recognized as the name of a cmdlet, function, script file, or operable program."],
+        ['PowerShell', "bd : The term 'bd' is not recognized as the name of a cmdlet, function, script file, or operable program."],
+        ['cmd', "'bd' is not recognized as an internal or external command"],
+    ]) {
+        test(`a member whose ${shell} shell has no bd fails the preflight with MISSING_TOOL naming the member and the fix, before later members are probed`, async () => {
+            const { command, calls } = fakeCommand({
+                orch: identityAnswers(),
+                m1: { [BEADS_IDENTITY_PROBES.where]: { fail: error } },
+                m2: identityAnswers({ dir: '/m2/.beads' }),
+            });
+            await assert.rejects(
+                verifyBeadsIdentity({ command, log: () => {}, backlogMember: 'orch', members: ['m1', 'm2'] }),
+                (err) => {
+                    assert.ok(err instanceof BeadsIdentityError);
+                    assert.equal(err.reason, BEADS_IDENTITY_FAILURE_REASONS.MISSING_TOOL);
+                    assert.equal(err.member, 'm1');
+                    assert.match(err.message, /'bd' is not installed or not on PATH on member 'm1'/);
+                    assert.match(err.message, /To fix: install bd on that member \(or fix that member's PATH\)/);
+                    return true;
+                },
+            );
+            assert.ok(!calls.some((c) => c.opts.member_name === 'm2'), 'stops before probing later members');
+        });
+    }
+
+    test('BEADS_IDENTITY_FAILURE_REASONS: only MISMATCH, a missing bd binary and a failed member beads set-up are fatal (no generic probe-failure reason)', () => {
         assert.deepEqual(Object.keys(BEADS_IDENTITY_FAILURE_REASONS), ['MISMATCH', 'MISSING_TOOL', 'BEADS_SETUP_FAILED']);
     });
 
@@ -272,7 +301,7 @@ describe('verifyBeadsIdentity', () => {
                     assert.equal(err.reason, BEADS_IDENTITY_FAILURE_REASONS.MISSING_TOOL);
                     assert.equal(err.member, 'm1');
                     assert.match(err.message, /'bd' is not installed or not on PATH on member 'm1'/);
-                    assert.match(err.message, /Install bd on that member \(or fix that member's PATH\)/);
+                    assert.match(err.message, /install bd on that member \(or fix that member's PATH\)/);
                     return true;
                 },
             );
@@ -298,6 +327,8 @@ describe('verifyBeadsIdentity', () => {
             },
         });
         const logs = [];
+        // m1 is not a beads-reading member (setupMembers), so its missing
+        // database is not set up; the non-bd failures stay warnings.
         const res = await verifyBeadsIdentity({ command, log: (l) => logs.push(l), backlogMember: 'orch', members: ['m1'], setupMembers: ['orch'] });
         assert.ok(logs.some((l) => l.startsWith(BEADS_IDENTITY_WARNING_PREFIX) && l.includes("member 'm1' reports no beads database")), JSON.stringify(logs));
         assert.ok(!('m1' in res.members));

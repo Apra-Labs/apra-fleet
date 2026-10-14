@@ -38,12 +38,14 @@ export function parseKbCommitArgs(args: string[]): KbCommitArgs {
 // Structural type for the injected export function -- kept narrow (input in,
 // JSON string out) so tests can pass either the real kbExport or a stub
 // without importing the full tool module graph.
-export type KbExportFn = (input: { repo_path?: string; scope?: 'project' | 'global' }) => Promise<string>;
+// The second argument is the explicit KB anchor (--repo); omitted, kbExport
+// resolves the caller's own folder (this process's working directory).
+export type KbExportFn = (input: { scope?: 'project' | 'global' }, anchor?: { folder: string }) => Promise<string>;
 
 export async function kbCommitCmd(exportFn: KbExportFn, args: string[]): Promise<number> {
   const { repo, global } = parseKbCommitArgs(args);
   try {
-    const raw = await exportFn({ repo_path: repo, scope: global ? 'global' : 'project' });
+    const raw = await exportFn({ scope: global ? 'global' : 'project' }, repo ? { folder: repo } : undefined);
     const result = JSON.parse(raw) as { exported: number; path: string; scope: string; committed: boolean };
     console.log('Exported ' + result.exported + ' entries to ' + result.path + ' (scope=' + result.scope + ').');
     console.log(

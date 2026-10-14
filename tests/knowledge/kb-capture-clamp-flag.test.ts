@@ -49,9 +49,8 @@ async function capture(type: 'user-directive' | 'learning', title: string, confi
     summary: `${title} summary`,
     content: `${title} content`,
     source_files: ['src/fixture.ts'],
-    repo_path: repoPath,
     ...(confidence ? { confidence } : {}),
-  } as any)) as { id: string; confidence_clamped: boolean };
+  } as any, { folder: repoPath })) as { id: string; confidence_clamped: boolean };
 }
 
 async function storedEntry(id: string): Promise<KBEntry> {

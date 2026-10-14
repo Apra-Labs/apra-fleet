@@ -90,6 +90,7 @@ import { buildSettleCallback } from '../dolt-settle.mjs';
 // verdict would then FAIL a sprint the loop had just declared complete.
 import { partitionDeferredBeads } from '../beads-scope.mjs';
 import { applyDeployFailureVerdictGate, formatDeployFailureReason } from './deploy.mjs';
+import { applyVerifyBlockVerdictGate } from '../verify-block.mjs';
 
 /**
  * Runs the Final Review phase: the sprint's closing evidence-based verdict,
@@ -134,6 +135,13 @@ export async function runFinalReviewPhase({
     // deploy succeeded or no deploy.md exists. Non-null forces a FAIL verdict
     // (see the deploy-failure verdict gate in ./deploy.mjs).
     lastDeployFailure = null,
+    // GitHub #715: bead ids a failed doer of this run left 'in_progress' that
+    // hit the in-run re-dispatch cap and were left as they are. Named in the
+    // verdict notes (never changes the verdict) so a human sees them.
+    reclaimCappedIds = [],
+    // GitHub #717: the named verify-block deadlock diagnosis the cycle loop
+    // exited on, or null. Non-null forces a FAIL verdict (never PASS).
+    verifyBlockDiagnosis = null,
     // runSprintCycle-scoped locals and runner-module-private values, injected
     // rather than imported (see header).
     bdListScoped,
@@ -144,6 +152,8 @@ export async function runFinalReviewPhase({
     workedOnIds,
     NOT_DONE_STATUSES,
     kbPriming,
+    kbInjection,
+    kbSprintContext,
     kbWork,
     getMemberForRole,
     childIdAllocator,
@@ -207,8 +217,10 @@ export async function runFinalReviewPhase({
     // per-round reviewer gets. Fetched once, before the dispatch, so the retry
     // and resume paths reuse the identical block rather than re-querying a
     // KB that its own earlier promotions may have already changed.
-    const finalReviewRepoPath = kbPriming.folderOf(getMemberForRole('reviewer'));
-    const finalKbCandidates = await kbWork.promotionCandidates(finalReviewRepoPath);
+    // Candidates are read from (and the confirmations later committed to the
+    // bible on) the reviewer's repository kb_maintainer, whose KB every write
+    // is routed to.
+    const finalKbCandidates = await kbWork.promotionCandidates(getMemberForRole('reviewer'));
     if (finalKbCandidates.length > 0) {
         log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
     }
@@ -249,7 +261,15 @@ export async function runFinalReviewPhase({
             unclosedVerifyIds: finalUnclosedVerifyIds,
             deferredAtGoalIds: finalDeferredAtGoalIds,
             kbCandidates: finalKbCandidates,
-            kbKnowledge: kbPriming.knowledgeOf(getMemberForRole('reviewer')),
+            kbKnowledge: kbInjection ? undefined : kbPriming.knowledgeOf(getMemberForRole('reviewer')),
+            kbBlock: kbInjection
+                ? await kbInjection.blockFor({
+                    role: 'reviewer',
+                    member: getMemberForRole('reviewer'),
+                    context: { ...(kbSprintContext || {}) },
+                    captureChannel: true,
+                })
+                : undefined,
         }),
         resumePrompt: 'Continue your final review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. Weigh the remaining evidence and return your final PASS/FAIL verdict now (with newTasks findings if FAIL).',
         roleLabel: 'Final Review',
@@ -267,6 +287,17 @@ export async function runFinalReviewPhase({
         finalVerdictResult = applyDeployFailureVerdictGate(finalVerdictResult, lastDeployFailure);
         log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${formatDeployFailureReason(lastDeployFailure)}`);
     }
+    if (verifyBlockDiagnosis) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        finalVerdictResult = applyVerifyBlockVerdictGate(finalVerdictResult, verifyBlockDiagnosis);
+        log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${verifyBlockDiagnosis}`);
+    }
+    if (finalVerdictResult && Array.isArray(reclaimCappedIds) && reclaimCappedIds.length > 0) {
+        const cappedNote = `${reclaimCappedIds.length} bead(s) were left 'in_progress' by failed doer streaks of this sprint more often than the re-dispatch cap allows and were NOT re-laned again -- needs human investigation: ${reclaimCappedIds.join(', ')}.`;
+        const prior = typeof finalVerdictResult.notes === 'string' ? finalVerdictResult.notes : '';
+        finalVerdictResult = { ...finalVerdictResult, notes: prior ? `${prior}\n\n${cappedNote}` : cappedNote };
+        log(`Final Review: ${cappedNote}`);
+    }
     // No duplicate log() dump -- see dispatchReview() for why.
     // `finalVerdictResult.verdict` also surfaces via the generic,
     // workflow-agnostic Result strip in the dashboard header (state.result --
@@ -283,11 +314,24 @@ export async function runFinalReviewPhase({
     // fabricated by the engine and carries no KB fields at all, so there is
     // nothing to apply.
 
-    // Publish what this sprint confirmed. Immediately after the LAST promotion
-    // of the run, so the bible carries every CONFIRMED entry including the ones
-    // minted a line above. Without this the sprint's knowledge never left the
-    // member's local sqlite store -- see createKbWorkClient.exportBible.
-    await kbWork.exportBible(finalReviewRepoPath);
+    // Commit the final review round's confirmations to the bible on each
+    // repository's kb_maintainer (G-pull, kb_bible_commit, G-push) -- unless
+    // the verdict is FAIL: a FAIL sprint commits nothing further to the bible
+    // and its queued confirmations are not flushed. A degraded FAIL counts
+    // too: the engine fabricated it, so no reviewer stood behind it.
+    //
+    // Writes still queued behind a busy maintainer get one last attempt
+    // first (the commit itself applies them before committing); any that
+    // remain (an unreachable maintainer) are reported with a WARN, never
+    // dropped silently.
+    if (finalVerdictResult && finalVerdictResult.verdict === 'FAIL') {
+        if (typeof kbWork.seal === 'function') kbWork.seal('final review verdict FAIL');
+    } else if (typeof kbWork.commitRound === 'function') {
+        await kbWork.commitRound('final review');
+    } else if (typeof kbWork.flushAll === 'function') {
+        await kbWork.flushAll();
+    }
+    if (typeof kbWork.warnPending === 'function') kbWork.warnPending();
 
     // Persist the Final Review's actionable findings to BEADS -- the only
     // artifact the next sprint's planner reads (notes reach only the PR body

@@ -4,6 +4,30 @@ Common symptoms and how to resolve them. If something here does not match what
 you see, search [GitHub Issues](https://github.com/Apra-Labs/apra-fleet/issues)
 or ask in [Discussions](https://github.com/Apra-Labs/apra-fleet/discussions).
 
+## MCP connection
+
+**Claude Code: `Dynamic Client Registration rejected (HTTP 404)` for apra-fleet**
+
+Cause: the server refuses an `/mcp` request without this install's access
+secret (header `X-Apra-Fleet-Member-Secret`, value in
+`~/.apra-fleet/data/member-access.key`) with HTTP 401. Claude Code treats the
+401 as "OAuth needed", tries dynamic client registration, gets 404, and shows
+that message instead of the server's explanation.
+
+Fix:
+
+1. Restart the Claude Code (or other LLM CLI) session. A session started
+   before `apra-fleet install` / upgrade keeps its old MCP config without the
+   secret.
+2. If it persists, an apra-fleet entry without the header in a local-scope
+   (`~/.claude.json` `projects[<path>].mcpServers`) or project-scope
+   (`<repo>/.mcp.json`) config is shadowing the user-scope one install writes
+   (Claude resolves local, then project, then user scope). Remove it, e.g.
+   `claude mcp remove apra-fleet --scope local` (or delete the entry from
+   `.mcp.json`), then restart the session. Re-running `apra-fleet install`
+   also rewrites local-scope apra-fleet entries for this server with the
+   secret.
+
 ## Members
 
 **Member shows as offline**
@@ -32,9 +56,34 @@ Normal for a new member. `register_member` still succeeds; run
 Before provisioning: for the default OAuth flow, log in locally first (`/login`
 in a Claude Code session, or `claude auth login`) -- `provision_llm_auth` copies
 your credentials to the member. For the API-key flow, pass the key as the
-`api_key` parameter. The tool checks token expiry before deploying; an expired
+`api_key` parameter; a Claude Code OAuth token from `claude setup-token`
+(`sk-ant-oat...`) also goes in `api_key` and is set as `CLAUDE_CODE_OAUTH_TOKEN`
+(an `sk-ant-api...` key as `ANTHROPIC_API_KEY`). Without `api_key`, a credential
+already stored for the member is re-deployed rather than overwritten by your
+login (this is what cloud start and sprint self-heal do); pass
+`force_oauth_copy: true` to copy your local login instead and clear the stored
+credential. The tool checks token expiry before deploying; an expired
 access token with a live refresh token still deploys, and the member's CLI
 refreshes on first use.
+
+**`secret_delivery_unavailable` on execute_prompt / provision_llm_auth**
+
+The fleet delivers a member's stored credentials (API key, OAuth token, set by
+`provision_llm_auth` or `apra-fleet auth --member`) through an owner-only file
+written over SFTP -- never on the member's command line, where any local user
+could read it with `ps`. When no such channel exists, the dispatch is refused
+before any LLM call and is not retried:
+
+- SSH member with the SFTP subsystem disabled: enable it in the member's
+  `sshd_config` (`Subsystem sftp internal-sftp`, or the path to `sftp-server`)
+  and restart sshd.
+- Relay member (no safe channel exists), or you prefer not to enable SFTP:
+  provide the credential in that machine's own environment, then clear the
+  stored copy with `provision_llm_auth {member_name: "<name>", clear_stored_credentials: true}`
+  (registry only; works offline and over relay).
+
+`execute_command` still runs on such a member, without the stored credential
+env vars, and says so in its result (`storedEnvNotDelivered`).
 
 **`Failed to authenticate: OAuth session expired and could not be refreshed`**
 
@@ -93,8 +142,10 @@ The member CLI refused a tool call. Check `healable`:
 
 By default a complete reply succeeds and only warns (`permissionWarning`). The
 dispatch fails `permission_denied` only when the caller passed
-`fail_on_permission_denial: true` (fleet-sprint does), or for a `healable: false`
-refusal whose reply was incomplete in that mode. A max_turns, auth or server
+`fail_on_permission_denial: true` (fleet-sprint does); even then a
+`healable: false` refusal on a complete reply stays a warning. Without the flag
+an incomplete reply keeps its ordinary reason (e.g. `empty_response`) with the
+refusals attached as `permissionDenied`. A max_turns, auth or server
 failure keeps its own reason, with the refusals attached as `permissionDenied`.
 
 **Permission granted but still denied on Claude**
@@ -262,6 +313,16 @@ For unexplained behavior -- missing output, silent failure, unexpected results
 ```
 $APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log
 ```
+
+The logs are owner-only. On POSIX the data dir and `logs/` are 0700 and
+`fleet-<pid>.log` and the service log `fleet.log` are 0600; a server start
+tightens existing ones with chmod. On Windows the server removes inherited
+ACEs and grants only the current user full control
+(`icacls <path> /inheritance:r /grant:r <DOMAIN\user>:F`), because
+`APRA_FLEET_DATA_DIR` may point outside the user profile. A path that cannot
+be tightened produces a `log permissions:` warning line and the server keeps
+running. MCP session ids are logged only as their first 8 characters
+(`sid=1a2b3c4d...`): a full session id addresses the session.
 
 These are JSON lines. Filter by member or by tool with `jq`:
 

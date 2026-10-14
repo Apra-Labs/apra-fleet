@@ -67,16 +67,19 @@ describe('generateTaskWrapper - restart_command (F1)', () => {
     expect(mainMatch![1]).not.toBe(restartMatch![1]);
   });
 
-  it('first run uses MAIN_CMD', () => {
+  it('first run uses MAIN_CMD from an owner-only file, never `bash -c "<cmd>"`', () => {
     const script = generateTaskWrapper(baseConfig);
-    // First bash -c invocation should use MAIN_CMD
-    expect(script).toContain('bash -c "$MAIN_CMD"');
+    expect(script).toContain('umask 077');
+    expect(script).toContain('printf \'%s\\n\' "$MAIN_CMD" > "$TASK_DIR/main.cmd"');
+    expect(script).toContain('bash "$TASK_DIR/main.cmd"');
+    // A resolved secret in the command text must never become a bash argv.
+    expect(script).not.toContain('bash -c');
   });
 
-  it('retry loop uses RESTART_CMD', () => {
+  it('retry loop uses RESTART_CMD from its file; both files are removed at the end', () => {
     const script = generateTaskWrapper(baseConfig);
-    // Inside the while loop: bash -c "$RESTART_CMD"
-    expect(script).toContain('bash -c "$RESTART_CMD"');
+    expect(script).toContain('bash "$TASK_DIR/restart.cmd"');
+    expect(script).toContain('rm -f "$TASK_DIR/task.pid" "$TASK_DIR/main.cmd" "$TASK_DIR/restart.cmd"');
   });
 });
 

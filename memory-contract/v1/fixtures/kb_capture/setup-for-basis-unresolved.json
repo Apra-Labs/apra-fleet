@@ -3,8 +3,6 @@
   "case": "setup-for-basis-unresolved",
   "kind": "happy",
   "request": {
-    "repo_path": "<SCRATCH_REPO_A>",
-    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
     "type": "knowledge",
     "title": "Entry whose basis file will be deleted before a second promote",
     "summary": "Set up to demonstrate E-PROMOTE-BASIS-UNRESOLVED.",
@@ -17,7 +15,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"id\":\"bce6c4af-2d17-4858-8e5f-0556ccfef745\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+        "text": "{\"id\":\"e50e3742-5ae8-491c-8a8e-dc46547b4cc4\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
       }
     ]
   }

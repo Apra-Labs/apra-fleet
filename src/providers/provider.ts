@@ -187,6 +187,10 @@ export interface PromptOptions {
   /** Provider project the run is bound to (AGY: `--project <id>`, from
    *  Agent.agyProjectId). Ignored by providers without {@link ProviderAdapter.projectFlag}. */
   projectId?: string;
+  /** Absolute member-side path of a per-session MCP config file (Claude:
+   *  `--mcp-config <file>`), already written by the caller. Ignored by
+   *  providers without {@link ProviderAdapter.mcpConfigFlag}. */
+  mcpConfigPath?: string;
 }
 
 /**
@@ -240,7 +244,7 @@ export function guessedUsageLimitSignal(message: string, now: number = Date.now(
  * (529 / "overloaded") deliberately does NOT match here -- that stays a
  * retryable overload, not a usage limit.
  */
-const USAGE_LIMIT_QUOTA_RE = /\b429\b|rate limit|quota exceeded|usage limit|credit limit|resource_exhausted/i;
+const USAGE_LIMIT_QUOTA_RE = /\b429\b|rate limit|quota (?:exceeded|reached)|usage limit|credit limit|resource(?:_|\s+(?:has\s+been\s+)?)exhausted/i;
 
 export function defaultUsageLimitSignal(output: string, now: number = Date.now()): UsageLimitSignal | null {
   if (!output || !USAGE_LIMIT_QUOTA_RE.test(output)) return null;
@@ -326,8 +330,133 @@ export interface PermissionDenial {
   permissionMode?: string;
   /** false when no grant may ever be added for these denials: in Claude auto
    *  mode a refusal comes from the safety classifier or a deny rule, not from
-   *  a missing allow rule. Absent = a grant may heal it. */
+   *  a missing allow rule; in any mode, a refusal of a fleet tool outside the
+   *  member allowlist is the member tool policy (cause 'policy_deny'). Absent
+   *  = a grant may heal it. */
   healable?: boolean;
+  /** 'policy_deny': at least one refused call was a fleet tool outside the
+   *  member allowlist, denied by the deny rules compose writes on purpose.
+   *  Always comes with healable: false. */
+  cause?: 'policy_deny';
+}
+
+const SHELL_SEQUENCE_RE = /[;`]|&&/;
+const SHELL_CHAIN_RE = /[|;`]|&&|\$\(/;
+const PLAIN_COMMAND_WORD_RE = /^[a-zA-Z0-9_\-./+]+$/;
+
+/**
+ * Splits a command line into its pipeline stages (on pipe `|`), respecting
+ * single and double quotes, and ignoring logical OR `||`.
+ */
+export function splitPipelineStages(line: string): string[] {
+  const stages: string[] = [];
+  let current = '';
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let escape = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (escape) {
+      current += char;
+      escape = false;
+      continue;
+    }
+    if (char === '\\' && !inSingleQuote) {
+      escape = true;
+      current += char;
+      continue;
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+      current += char;
+      continue;
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      current += char;
+      continue;
+    }
+    if (!inSingleQuote && !inDoubleQuote) {
+      if (char === '|' && line[i + 1] !== '|' && line[i - 1] !== '|') {
+        if (current.trim()) stages.push(current.trim());
+        current = '';
+        continue;
+      }
+    }
+    current += char;
+  }
+  if (current.trim()) {
+    stages.push(current.trim());
+  }
+  return stages;
+}
+
+/** Extracts the base executable command from a single command or pipeline stage. */
+export function extractCommandFromStage(stage: string): string | undefined {
+  const trimmed = stage.trim().replace(/^['"]+|['"]+$/g, '');
+  if (!trimmed) return undefined;
+  const tokens = trimmed.split(/\s+/);
+  for (const token of tokens) {
+    const cleanToken = token.replace(/^['"]+|['"]+$/g, '');
+    if (/^[a-zA-Z_][a-zA-Z0-9_]*=/.test(cleanToken)) {
+      continue;
+    }
+    if (PLAIN_COMMAND_WORD_RE.test(cleanToken)) {
+      return cleanToken;
+    }
+    break;
+  }
+  return undefined;
+}
+
+export function suggestedGrantsForDenial(item: PermissionDenialItem): string[] {
+  const t = item.target?.trim();
+  if (item.action === 'command' || item.action === 'unsandboxed' || item.action === 'Bash') {
+    if (!t || SHELL_SEQUENCE_RE.test(t)) return [];
+    const stages = splitPipelineStages(t);
+    const out: string[] = [];
+    for (const stage of stages) {
+      const cmd = extractCommandFromStage(stage);
+      if (cmd && PLAIN_COMMAND_WORD_RE.test(cmd)) {
+        const grant = `Bash(${cmd}:*)`;
+        if (!out.includes(grant)) out.push(grant);
+      }
+    }
+    if (out.length === 0) return [];
+    if (!t.includes('|') && !SHELL_CHAIN_RE.test(t) && t !== stages[0]?.split(/\s+/)[0]) {
+      out.push(`Bash(${t})`);
+    }
+    return out;
+  }
+  const one = suggestedGrantForDenial(item);
+  return one ? [one] : [];
+}
+
+export function suggestedGrantForDenial(item: PermissionDenialItem): string | undefined {
+  const t = item.target?.trim();
+  switch (item.action) {
+    case 'command':
+    case 'unsandboxed':
+    case 'Bash':
+      return t && !SHELL_CHAIN_RE.test(t) ? `Bash(${t})` : undefined;
+    case 'read_file':
+    case 'Read':
+      return t ? `Read(${t})` : 'Read';
+    case 'write_file':
+    case 'Write':
+      return t ? `Write(${t})` : 'Write';
+    case 'mcp': {
+      const m = t ? /^([^/\s]+)\/([^/\s]+)$/.exec(t) : null;
+      return m ? `mcp__${m[1]}__${m[2]}` : undefined;
+    }
+    case 'read_url':
+    case 'WebSearch':
+      return 'WebSearch';
+    default:
+      if (item.action.startsWith('mcp__')) return item.action;
+      return undefined;
+  }
 }
 
 /** Context parseResponse may use; providers that do not need it ignore it. */
@@ -360,28 +489,41 @@ export function isMaxTurnsResponse(parsed: ParsedResponse | undefined | null): b
   return parsed.terminalReason === 'max_turns' || parsed.subtype === 'error_max_turns';
 }
 
-export interface RegisterMcpEndpointOptions {
-  /** e.g. http://<host>:<port>/mcp?member=<member-uuid> */
-  url: string;
-  /** JWT bearer token for the member's fleet MCP session. */
-  token: string;
-  workFolder: string;
-  scope: 'project' | 'user';
+/** Context for {@link ProviderAdapter.syncMemberMcpEntry}. */
+export interface MemberMcpSyncContext {
+  agent: import('../types.js').Agent;
+  execCommand: WorkspaceTrustExecFn;
+  /** The member's home directory, resolved in JavaScript (getMemberHomeDir); null when unresolvable. */
+  memberHomeDir: string | null;
+  agentOs: 'linux' | 'macos' | 'windows';
+  shell?: MemberShell;
+  /** Out-of-band file channel for large home-anchored files (see WorkspaceTrustTransport). */
+  transport?: WorkspaceTrustTransport;
+  /** Owner-only secret-file channel, tried when the file channel is unavailable
+   *  (see MemberSecretFileChannel). With neither, the write fails loudly. */
+  secretChannel?: MemberSecretFileChannel;
+  /** The per-folder apra-fleet entry URL (.../mcp?member=<uuid>) to write, or null to REMOVE
+   *  the entry this provider wrote for the member's folder (provider switch cleanup). */
+  url: string | null;
+  /** HTTP headers the entry carries with `url` -- the member install's access
+   *  secret (member-access-secret.ts), without which its server refuses the
+   *  `?member=` session. A config carrying it is written only through a file
+   *  channel, never a command string. Absent when no secret is known. */
+  headers?: Record<string, string>;
+  /** With url null: remove the folder's apra-fleet entry only when it points at
+   *  THIS member (?member=<uuid>), leaving any other apra-fleet entry alone. */
+  removeOnlyOwnEntry?: boolean;
 }
 
-export interface RegisterMcpEndpointResult {
-  /** e.g. 'cli-verb' (Claude's `claude mcp add`) or 'config-file-merge' (AGY/OpenCode). */
-  mechanism: string;
-  /** Human-readable detail for logging/audit -- what file or command was used. */
+export interface MemberMcpSyncResult {
+  /** Work-folder-relative files this provider owns for the member MCP entry -- the
+   *  caller keeps them out of `git status` via the clone's .git/info/exclude. */
+  workFolderFiles: string[];
+  /** Human-readable summary for logs/tool output. */
   detail: string;
 }
 
-/** Delivery channel for {@link ProviderAdapter.ensureWorkspaceTrusted} -- the SAME
- *  channel compose_permissions' deliverConfigFile already uses (AgentStrategy.execCommand:
- *  SSH for remote members, local shell exec for local members). Kept as a narrow function
- *  type (rather than importing AgentStrategy) so providers.ts has no dependency on
- *  services/strategy.ts. */
-export type WorkspaceTrustExecFn = (command: string, timeoutMs?: number) => Promise<SSHExecResult>;
+export type WorkspaceTrustExecFn =(command: string, timeoutMs?: number) => Promise<SSHExecResult>;
 
 /** Optional file-delivery channel for {@link ProviderAdapter.ensureWorkspaceTrusted}
  *  (GitHub #499). Writes `content` to `relPath`, resolved relative to the MEMBER's home
@@ -393,6 +535,15 @@ export type WorkspaceTrustExecFn = (command: string, timeoutMs?: number) => Prom
  *  failure so the adapter can fall back. */
 export type WorkspaceTrustWriteHomeFileFn = (relPath: string, content: string) => Promise<void>;
 export type WorkspaceTrustReadHomeFileFn = (relPath: string) => Promise<{ found: boolean; content?: string } | undefined>;
+
+/** Owner-only secret-file channel (writeMemberSecretFile): stages `content` in a
+ *  fresh owner-only file on the member WITHOUT a command line and returns its
+ *  absolute member-side path. Used when the home-anchored file channel is
+ *  unavailable; `remove` is best-effort cleanup of a staged file. */
+export interface MemberSecretFileChannel {
+  write(content: string): Promise<string>;
+  remove(filePath: string): Promise<void>;
+}
 
 export interface WorkspaceTrustTransport {
   writeHomeFile?: WorkspaceTrustWriteHomeFileFn;
@@ -432,6 +583,18 @@ export interface ProviderAdapter {
 
   // Prompt building
   buildPromptCommand(opts: PromptOptions): string;
+  /** The per-session MCP config flag for a resolved absolute member-side path,
+   *  quoted by the provider for the member's shell (`posix` false = PowerShell).
+   *  Callers append it after every positional argument: Claude's --mcp-config
+   *  is variadic and would swallow a following positional prompt. Optional:
+   *  providers without one never get a session config. */
+  mcpConfigFlag?(absPath: string, posix: boolean): string;
+  /** Minimum CLI version whose per-session MCP config accepts an always-load
+   *  option that keeps the server's tools out of tool-search deferral (Claude:
+   *  the `alwaysLoad` server key). The dispatcher probes the member's CLI
+   *  version and writes the option only at or above this, logging a WARN
+   *  otherwise. Optional: providers without one never get the option. */
+  mcpAlwaysLoadMinVersion?(): string;
 
   // Permission bypass flag
   skipPermissionsFlag(): string;
@@ -589,6 +752,30 @@ export interface ProviderAdapter {
   /** Returns the correct environment variable name for the given API key/token. */
   authEnvVarForToken(token: string): string;
 
+  /**
+   * Every env var name this provider's CLI reads a credential from. They are
+   * mutually exclusive: provisioning one clears the others (shell profiles and
+   * the member's stored encryptedEnvVars) so the CLI cannot pick a stale
+   * credential of the other kind. Optional -- providers with a single auth env
+   * var need not implement it.
+   */
+  authEnvVarNames?(): string[];
+
+  /**
+   * A warning when the token's shape is not one this provider recognises
+   * (the env var chosen for it is then a guess), or null when recognised.
+   * Must be pure -- preflight probes authEnvVarForToken with fake tokens.
+   * Never echoes the token itself.
+   */
+  authTokenKindWarning?(token: string): string | null;
+
+  /**
+   * Remote credential files an env-var token supersedes. When an env token is
+   * provisioned these are moved aside (renamed, never deleted) so a stale
+   * copied login cannot shadow or confuse the provisioned credential.
+   */
+  credentialFilesSupersededByEnvToken?(token: string): string[];
+
 
   // Windows / PowerShell prompt building helpers
   /** On Windows, wrap the command for execution (e.g. via .NET ProcessStartInfo or direct shell). */
@@ -600,12 +787,12 @@ export interface ProviderAdapter {
    *  Returns e.g. `-p "LITERAL"` for Claude/AGY/Copilot or `exec "LITERAL"` for Codex. */
   headlessInvocation(promptLiteral: string): string;
 
-  /** Register (or update) this member's apra-fleet MCP endpoint using the provider's own
-   *  native mechanism (CLI verb, e.g. Claude's `claude mcp add`; or config-file merge, e.g.
-   *  AGY/OpenCode). Optional until every provider's mechanism has been investigated and
-   *  implemented -- see docs/member-onboarding-journey.md section 3/3a.
-   *  Returns what was done, for logging/audit. */
-  registerMcpEndpoint?(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult>;
+  /** Writes (ctx.url set) or removes (ctx.url null) the member's PER-FOLDER `apra-fleet`
+   *  MCP entry in this provider's native per-project config, and prunes the legacy
+   *  `apra-fleet-member` url+bearer entry wherever this provider keeps MCP servers.
+   *  Never writes a tracked project `.mcp.json`; never touches deepwiki or any other
+   *  server. Omitted by providers with nothing to write or prune. */
+  syncMemberMcpEntry?(ctx: MemberMcpSyncContext): Promise<MemberMcpSyncResult>;
 
   /** Optional provider-NATIVE usage/quota read for execute_prompt budget
    *  awareness (apra-fleet-eft.80.2). When implemented, this is the PRIMARY
@@ -632,8 +819,11 @@ export interface ProviderAdapter {
    *  because the PowerShell ones are handed straight to bash.exe and fail (apra-fleet-7dir.2.8).
    *  `transport.writeHomeFile`, when present, delivers the merged file without a shell
    *  command line (node:fs / SFTP) so a large ~/.claude.json cannot overflow the Windows
-   *  CreateProcess limit (GitHub #499); without it the adapter chunks the write on Windows. */
-  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null): Promise<EnsureWorkspaceTrustedResult>;
+   *  CreateProcess limit (GitHub #499); without it the adapter chunks the write on Windows.
+   *  `memberHomeDir` is the member home resolved in JavaScript (getMemberHomeDir); every
+   *  member-side path is built from it, never from a shell home variable, and an adapter
+   *  that needs it refuses (seeded: false, E-MEMBER-HOME-UNRESOLVED) when it is absent. */
+  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null, secretChannel?: MemberSecretFileChannel): Promise<EnsureWorkspaceTrustedResult>;
 }
 
 

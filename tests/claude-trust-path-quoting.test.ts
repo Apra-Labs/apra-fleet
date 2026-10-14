@@ -87,12 +87,56 @@ describe('ClaudeProvider.ensureWorkspaceTrusted path quoting (real bash)', () =>
 
       const provider = new ClaudeProvider();
       const fwd = (p: string) => p.replace(/\\/g, '/');
-      await provider.ensureWorkspaceTrusted(fwd(work), exec, 'linux', undefined, undefined, fwd(home));
+      // The merged file goes through the file channel (never a command line);
+      // the staged file is then moved into place by a command embedding both
+      // paths inside "...", which is what this test exercises.
+      const transport = { writeHomeFile: async (rel: string, content: string) => { fs.writeFileSync(path.join(home, rel), content); } };
+      await provider.ensureWorkspaceTrusted(fwd(work), exec, 'linux', undefined, transport, fwd(home));
 
       const written = JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'));
       expect(written.projects[fwd(work)]?.hasTrustDialogAccepted).toBe(true);
       // No stray file created at an expanded path.
       expect(fs.readdirSync(root).sort()).toEqual([path.basename(home), path.basename(work)].sort());
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ClaudeProvider.syncMemberMcpEntry path quoting (real bash)', () => {
+  it.runIf(hasBash)('writes the local-scope entry into a home containing $ and backtick literally', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-mcp-q-'));
+    try {
+      const home = path.join(root, 'h$FLEETX`fakecmd`');
+      fs.mkdirSync(home);
+      fs.writeFileSync(path.join(home, '.claude.json'), '{"projects":{}}');
+      const env = { ...process.env };
+      delete env.CLAUDE_CONFIG_DIR;
+
+      const exec = (cmd: string): Promise<SSHExecResult> =>
+        new Promise((resolve) => {
+          execFile('bash', ['-c', cmd], { encoding: 'utf8', env }, (err, stdout, stderr) => {
+            resolve({ stdout, stderr, code: err ? ((err as any).code ?? 1) : 0 });
+          });
+        });
+
+      const fwd = (p: string) => p.replace(/\\/g, '/');
+      const work = fwd(path.join(root, 'work'));
+      const url = 'http://127.0.0.1:1/mcp?member=m1';
+      await new ClaudeProvider().syncMemberMcpEntry({
+        agent: { id: 'm1', workFolder: work } as any,
+        execCommand: exec,
+        memberHomeDir: fwd(home),
+        agentOs: 'linux',
+        url,
+        // File channel as above: the move command embeds the escaped paths.
+        transport: { writeHomeFile: async (rel: string, content: string) => { fs.writeFileSync(path.join(home, rel), content); } },
+      });
+
+      const written = JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'));
+      expect(written.projects[work]?.mcpServers?.['apra-fleet']).toEqual({ type: 'http', url });
+      expect(fs.readdirSync(root)).toEqual([path.basename(home)]);
+      expect(fs.readdirSync(home)).toEqual(['.claude.json']);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

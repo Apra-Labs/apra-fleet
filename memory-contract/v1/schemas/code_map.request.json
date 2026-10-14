@@ -6,10 +6,6 @@
     "v1-code_map-request": {
       "type": "object",
       "properties": {
-        "repo": {
-          "type": "string",
-          "description": "Absolute path to the repository root. Required when multiple repositories are indexed."
-        },
         "top": {
           "type": "integer",
           "exclusiveMinimum": 0,

@@ -61,6 +61,7 @@ export const GUARDED_MODULES = [
     'vcs-auth.mjs',
     'mcp-result.mjs',
     'member-target.mjs',
+    'member-call.mjs',
     'abort.mjs',
     'branch-ensure.mjs',
     'prompts.mjs',
@@ -70,6 +71,16 @@ export const GUARDED_MODULES = [
     'git-sync.mjs',
     'coordination.mjs',
     'kb.mjs',
+    // Per-repository kb_maintainer selection. Issues no fleet call itself
+    // (every member access is injected by runner.js), registered so a future
+    // direct call added here is scanned from the start.
+    'kb-maintainer.mjs',
+    // KB hint building and KNOWLEDGE BANK injection gating: pure / injected
+    // (the diff-file listing is a runner.js-supplied callback), no direct command().
+    'kb-hints.mjs',
+    'kb-injection.mjs',
+    // Pure lower-quality banner derivation; no command() site.
+    'lower-quality.mjs',
     'beads-scope.mjs',
     'beads-transitions.mjs',
     'role-policies.mjs',
@@ -236,6 +247,13 @@ export const GUARDED_MODULES = [
     // with the extraction is what keeps dispatch-safety-guard covering it
     // instead of silently losing it the moment it left runner.js.
     'git-topology.mjs',
+    // apra-fleet-rsd9.1.1: launch-time member alignment (alignMembersToBase,
+    // prepareLaunchTopology). It issues every git command through an injected
+    // per-member runGit(cmd, member) -- fetches go through git-topology.mjs's
+    // runGitStep -- so it adds no command() call site of its own, but it
+    // builds member-bound command strings, which is exactly what the
+    // shell-command and dolt-literal guards must keep scanning.
+    'member-align.mjs',
     // apra-fleet-3swo.6.10: the per-member git sync BRACKETS that sit on top of
     // git-topology.mjs -- syncMemberBefore (G-pull), syncMemberAfter (G-push
     // plus its bounded pull-rebase retry and Tier 2 conflict dispatch),
@@ -393,8 +411,25 @@ export const GUARDED_MODULES = [
     // command() sites (the memory list and the per-key forget), no agent(),
     // and its push goes through an injected bracketed callback.
     'beads-memory-hygiene.mjs',
+    // The engine CI gate: ONE member_name-bearing command() site (the
+    // origin-remote read on the git-capable member), no agent(), no push.
+    'ci-gate.mjs',
     'vcs-module.mjs',
     'viewer-extensions.mjs',
+    // Per-dispatch kb_* and code_* accounting: reads session_stats through the
+    // injected memberCall around each dispatch. No command() or agent() site.
+    'dispatch-accounting.mjs',
+    // The per-member sprint-init probe: kb_*/code_* calls through the injected
+    // memberCall, member_detail on the orchestrator session, and ONE
+    // member-bound command channel (fleetApi.executeCommand, command strings
+    // built by getSeCommands().wrapForMember) for the remote start-if-down.
+    'member-init-probe.mjs',
+    // In-run orphaned-claim bookkeeping (pure): no command() or agent() site;
+    // runner.js owns the fresh read, the session stop and the write.
+    'orphan-reclaim.mjs',
+    // Verify-block deadlock diagnosis (pure): no command() or agent() site;
+    // runner.js owns the runbook probes, the stop and the mid-run exit.
+    'verify-block.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',
     'vcs-providers/dolt.mjs',

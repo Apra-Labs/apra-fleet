@@ -1,0 +1,17 @@
+{
+  "tool": "kb_promote",
+  "case": "setup-second-promote-for-bible-removal",
+  "kind": "happy",
+  "request": {
+    "id": "f73a13d1-15d2-46c7-a319-84232fdf856b",
+    "reason": "Second promotion (INFERRED -> CONFIRMED) so the entry can be merged into the bible."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"f73a13d1-15d2-46c7-a319-84232fdf856b\",\"previous_confidence\":\"CONFIRMED\",\"new_confidence\":\"CONFIRMED\"}"
+      }
+    ]
+  }
+}

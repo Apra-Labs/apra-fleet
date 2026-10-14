@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- detached child-per-sprint spawner (apra-fleet-eft.4.2,
+// fleet-sprint supervisor -- detached child-per-sprint spawner (apra-fleet-eft.4.2,
 // Plan Part 2.1, process model B)
 // =============================================================================
 //

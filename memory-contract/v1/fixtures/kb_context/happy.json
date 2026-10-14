@@ -3,8 +3,6 @@
   "case": "happy",
   "kind": "happy",
   "request": {
-    "repo_path": "<SCRATCH_REPO_A>",
-    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
     "files": [
       "src/example.ts",
       "src/helper.ts"
@@ -14,7 +12,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"fresh\":[],\"stale\":[{\"file\":\"src/example.ts\",\"status\":\"stale\",\"reason\":\"file_missing\",\"entry_id\":\"87e80521-1da1-4a7c-b427-b26497ed598d\"}],\"missing\":[\"src/helper.ts\"]}"
+        "text": "{\"fresh\":[],\"stale\":[],\"missing\":[\"src/example.ts\",\"src/helper.ts\"]}"
       }
     ]
   }

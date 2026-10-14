@@ -91,6 +91,12 @@
                 "unstaled"
               ],
               "additionalProperties": false
+            },
+            "bible_source": {
+              "type": "string"
+            },
+            "worktree_ignored": {
+              "type": "boolean"
             }
           },
           "required": [

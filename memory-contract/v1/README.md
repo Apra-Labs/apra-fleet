@@ -2,7 +2,7 @@
 
 ## Overview
 
-This directory contains the canonical v1 contract definitions for the memory-bank (kb_*) and code-intelligence (code_*) tool surface. The structure has six items:
+This directory contains the canonical v1 contract definitions for the memory-bank (kb_*) and code-intelligence (code_*) tool surface. The structure has seven items:
 
 1. **INVENTORY.md** - Authoritative inventory of the tool surface (tool count, request/response shapes, provider methods)
 2. **schemas/** - GENERATED JSON Schema documents, derived from the Zod source of truth in `src/tools/*.ts`
@@ -10,6 +10,7 @@ This directory contains the canonical v1 contract definitions for the memory-ban
 4. **bindings/openapi/** - Generated OpenAPI binding (`openapi.yaml`, JSON text with a `.yaml` extension): the RFC 9457 Problem Details projection of `taxonomy.json`'s closed error-code set, emitted by `contract:generate` (landed under T1.3.3, commit d27eb0eb)
 5. **fixtures/** - Recorded round-trip request/response corpus for schema validation, one directory per tool with named scenario files (happy path, refusals, edge cases) (landed under T1.4.1, commit f230c530). **NOT byte-reproducible across recordings** (my-beads-db-27m.50): entry ids are fresh UUIDs, `created_at` timestamps are wall-clock, and result order can differ between two recordings of the same scenario (e.g. `kb_list/happy.json` flipped its two entries' order between commits f230c530 and 8d6a5e00, same two entries, same total). Re-running `record-fixtures.mjs` therefore always produces a diff even when nothing about the tools' behaviour changed -- this is expected, not drift, and `contract:check`-style byte comparison is never applied here. Any consumer that needs to compare two recordings of the same fixture semantically should normalise those fields first (`normalizeVolatileFixtureFields` in `tests/roundtrip-harness.mjs`); `T1.4.2`'s round-trip validator itself never byte-compares recorded fixtures against anything -- it validates each one against its JSON Schema (order/id-agnostic by construction) and, for its one true string-equality check (a refusal's error message), already normalises via its own `normalizeMessage`.
 6. **tests/** - Generator, validation, and drift test suite
+7. **bible/** - The bible FILE format (`.fleet/kb-canonical.json`, written by `kb_export`/`kb_bible_commit`, read by `kb_import`): a hand-authored JSON Schema (`kb-canonical.schema.json`, format v3 with per-entry `source_file_hashes`, plus the v1/v2 shapes readers still accept) and one example file per shape under `bible/examples/`. Hand-authored because the bible is a file format, not a tool request/response, so it is not generated from Zod and does not live under `schemas/` (whose contents `contract:check` requires to match the generator exactly). See spec.md section 2.8; validated by `tests/memory-contract-bible-format.test.ts`, including a live kb_export/kb_bible_commit output.
 
 ## Source of Truth
 

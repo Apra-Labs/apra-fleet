@@ -51,32 +51,30 @@ In `pr-body-only` and `off` you must NOT create, modify or delete any file in th
 repository and must NOT commit or push. Step 0 (knowledge bank) and Step 5 (backlog
 confirmation) still run in every mode -- neither writes to the repository.
 
-## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
-<!-- if-tool: ToolSearch -->
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_feedback"`
-<!-- else-tool: ToolSearch -->
-1. No tool-discovery step is needed on this provider: every step below names the KB
-   tool it wants directly. Confirm your environment exposes those tools, then call
-   them as written.
-<!-- end-tool: ToolSearch -->
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being harvested,
-   and `hint_symbols`/`hint_modules` relevant to the modules touched during the sprint.
-   Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
-3. When you extract durable knowledge during harvest -- anything non-obvious that future
-   sprints should know -- add it to the `kb_captures` array of your structured output (type
-   "knowledge" or "learning"; dedup against the KB with `kb_query` first). The engine makes
-   the actual `kb_capture` call from that field. Calling `mcp__apra-fleet__kb_capture`
-   directly is a fallback only, for dispatch contexts with no `kb_captures` output field.
-4. If a retrieved KB entry proves wrong in practice, call `mcp__apra-fleet__kb_feedback`
-   with the entry id and what was wrong.
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
+tool-discovery step is needed, and they always act on your own work folder, so never
+pass a repository path or other scope argument to them. Otherwise, read the injected
+"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
+the orchestrator fetched for the modules touched during the sprint.
+If a KB or code tool call fails, use that block if your prompt has one; otherwise
+continue without KB. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From whichever source you have,
+trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
-<!-- if-tool: ToolSearch -->
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
-<!-- else-tool: ToolSearch -->
-If those KB tools are not available in your environment (MCP server not running), skip
-these steps and proceed.
-<!-- end-tool: ToolSearch -->
+If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
+your tool-loading tool first, before concluding they are unavailable.
+
+1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
+   relevant to the modules touched during the sprint.
+2. When you extract durable knowledge during harvest -- anything non-obvious that future
+   sprints should know -- add it to the `kb_captures` array of your structured output
+   (type "knowledge" or "learning"; dedupe against the KB first, with `kb_query` when
+   present, otherwise the block). The engine records it from that field; do not write to
+   the KB yourself.
+3. If a retrieved KB entry proves wrong in practice, say so in your `notes`, naming the
+   entry and what was wrong.
 
 ### Persistent Memories (operational rules)
 
@@ -231,3 +229,7 @@ or as prose if you are answering a human directly.
   `harvestDocsDir` in `docs-dir`) -- a reader a year from now should find it illuminating
 - NEVER write a bead id, commit hash, branch name, or date into any harvested document
   (see Step 3)
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.

@@ -82,7 +82,7 @@ test('mock sprint: re-running finalization against the same branch is idempotent
         `Expected run2 to PATCH the existing PR (update-pull-request), commandLog: ${JSON.stringify(idemPrRun2.commandLog)}`
     );
     const rec = idempotentPrRecords.get(idempotentBranch);
-    check(rec && rec.title === `Auto-sprint [PASS]: ${idempotentBranch}`, `Expected the existing PR's title rewritten for run2, got: ${JSON.stringify(rec)}`);
+    check(rec && rec.title === `fleet-sprint [PASS]: ${idempotentBranch}`, `Expected the existing PR's title rewritten for run2, got: ${JSON.stringify(rec)}`);
     check(
         rec && /### Previous runs\n\n- `[^`]+` \([^)]+\): PASS/.test(rec.body) && (rec.body.match(/"verdict":"PASS"/g) || []).length === 2,
         `Expected the rewritten body to carry run1 forward in its run history, got: ${rec && rec.body}`

@@ -99,8 +99,8 @@ describe('sprint PR body (markdown)', () => {
         assert.equal(sampleBody(), EXPECTED_BODY);
     });
 
-    test('title keeps the Auto-sprint [VERDICT]: branch shape integration gates key on', () => {
-        assert.equal(buildSprintPrTitle({ verdict: 'FAIL', branch: 'feat/x' }), 'Auto-sprint [FAIL]: feat/x');
+    test('title uses the fleet-sprint [VERDICT]: branch shape', () => {
+        assert.equal(buildSprintPrTitle({ verdict: 'FAIL', branch: 'feat/x' }), 'fleet-sprint [FAIL]: feat/x');
     });
 
     test('untrusted notes cannot inject HTML, forge the history block, spell a credential placeholder or swallow later sections', () => {
@@ -412,10 +412,10 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
     test('FAIL -> PASS: title and body updated, the FAIL run kept under Previous runs', async () => {
         const gh = fakeGitHub();
         await publish({ gh, verdict: 'FAIL', notes: 'Gate failed:\n- bead 1 open', runId: 'run-1', member: 'pub-fail-pass' });
-        assert.equal(gh.pr.title, 'Auto-sprint [FAIL]: feat/x');
+        assert.equal(gh.pr.title, 'fleet-sprint [FAIL]: feat/x');
         const { logs } = await publish({ gh, verdict: 'PASS', notes: 'All good.\n- verified', runId: 'run-2', member: 'pub-fail-pass' });
         assert.deepEqual(gh.calls, ['POST', 'POST', 'GET', 'PATCH']);
-        assert.equal(gh.pr.title, 'Auto-sprint [PASS]: feat/x');
+        assert.equal(gh.pr.title, 'fleet-sprint [PASS]: feat/x');
         assert.ok(gh.pr.body.startsWith('## Sprint verdict: PASS'));
         assert.ok(gh.pr.body.includes('All good.\n- verified'));
         assert.ok(!gh.pr.body.includes('bead 1 open'), 'the old run\'s notes are replaced, not appended');
@@ -492,7 +492,7 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
         const gh = fakeGitHub();
         await publish({ gh, verdict: 'PASS', notes: 'fine', runId: 'run-a', member: 'pub-pass-fail' });
         await publish({ gh, verdict: 'FAIL', notes: 'regressed', runId: 'run-b', member: 'pub-pass-fail' });
-        assert.equal(gh.pr.title, 'Auto-sprint [FAIL]: feat/x');
+        assert.equal(gh.pr.title, 'fleet-sprint [FAIL]: feat/x');
         assert.ok(gh.pr.body.startsWith('## Sprint verdict: FAIL'));
         assert.deepEqual(parseRunHistory(gh.pr.body).map((e) => e.verdict), ['FAIL', 'PASS']);
     });
@@ -500,7 +500,7 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
     test('a pre-format PR (no history marker) is rewritten cleanly with fresh history', async () => {
         const gh = fakeGitHub({ existing: { title: 'Auto-sprint [ABORTED]: feat/x', body: 'Automated sprint ABORTED.\n\nError code: X' } });
         await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-9', member: 'pub-legacy' });
-        assert.equal(gh.pr.title, 'Auto-sprint [PASS]: feat/x');
+        assert.equal(gh.pr.title, 'fleet-sprint [PASS]: feat/x');
         assert.deepEqual(parseRunHistory(gh.pr.body).map((e) => e.run), ['run-9']);
         assert.ok(!gh.pr.body.includes('Previous runs'));
     });
@@ -519,7 +519,7 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
         const gh = fakeGitHub({ existing: { title: 'Auto-sprint [FAIL]: feat/x', body: '' }, failUpdateOnce: 1 });
         await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-4', member: 'pub-auth-heal' });
         assert.deepEqual(gh.calls, ['POST', 'GET', 'PATCH', 'PATCH']);
-        assert.equal(gh.pr.title, 'Auto-sprint [PASS]: feat/x');
+        assert.equal(gh.pr.title, 'fleet-sprint [PASS]: feat/x');
     });
 });
 
@@ -552,7 +552,7 @@ describe('finalizeAbort: an abort on a branch with an existing PR rewrites it as
         const { result, logs } = await abortRun({ gh, member: 'abort-upd' });
         assert.equal(result.reason, 'already-exists');
         assert.deepEqual(gh.calls, ['POST', 'POST', 'GET', 'PATCH']);
-        assert.equal(gh.pr.title, 'Auto-sprint [ABORTED]: feat/x');
+        assert.equal(gh.pr.title, 'fleet-sprint [ABORTED]: feat/x');
         assert.ok(gh.pr.body.startsWith('## Sprint verdict: ABORTED'));
         assert.ok(gh.pr.body.includes('### Abort details') && gh.pr.body.includes('- Error code: SPRINT_PLAN_REJECTED'));
         assert.deepEqual(parseRunHistory(gh.pr.body).map((e) => `${e.run}:${e.verdict}`), ['run-abort:ABORTED', 'run-ok:PASS']);

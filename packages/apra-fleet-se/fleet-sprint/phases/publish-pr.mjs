@@ -121,6 +121,8 @@ export function harvestModeDetail(validated, harvestWriteCheck = null) {
  *   return value -- it never overrides the sprint's own computed verdict.
  */
 export async function runPublishPrPhase({
+    // Lower-quality banner (lower-quality.mjs), or null when every member was verified.
+    lowerQualityBanner = null,
     // Presentation + command seams.
     phase,
     log,
@@ -296,6 +298,7 @@ export async function runPublishPrPhase({
             details: [
                 validated.skipRegression ? 'Regression pass: skipped by launch option -- not run this sprint.' : null,
                 harvestModeDetail(validated, harvestWriteCheck),
+                lowerQualityBanner || null,
             ],
             costAnalysis,
             analysis: harvestAnalysis,

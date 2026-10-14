@@ -72,6 +72,84 @@ export interface Agent {
    *  be exclusively reserved: reserve/release/force_release are no-op
    *  successes and overlap guards skip it. Defaults to false/absent. */
   unreservable?: boolean;
+  /** Last OBSERVED state of this member's own apra-fleet MCP server (install,
+   *  self-registration, per-folder MCP entry, MEMBER session). Never sticky:
+   *  every probe overwrites it, so a manual fix flips unavailable -> available
+   *  on the next probe with no restart (src/services/member-fleet-install.ts). */
+  fleetMcp?: FleetMcpStatus;
+  /** Remote members: the port the member's OWN apra-fleet install records in
+   *  its member-install marker, i.e. where its server listens. memberMcpUrl
+   *  builds the member's MCP URL from it; absent means the install recorded
+   *  no port (the built-in default is used, and fleetMcp detail says so).
+   *  Set by the fleetMcp probe (recordFleetMcpStatus) and kept separate from
+   *  fleetMcp so a later status overwrite never silently drops it. */
+  memberMcpPort?: number;
+  /** Remote members: the member install's member access secret
+   *  (<data dir>/member-access.key there), encrypted like encryptedPassword.
+   *  Its server accepts a `?member=` session only with this secret in the
+   *  X-Apra-Fleet-Member-Secret header (src/services/member-access-secret.ts).
+   *  Set by the fleetMcp probe; absent until it read the secret. */
+  encryptedMemberMcpSecret?: string;
+}
+
+/** Observation of a member's apra-fleet MCP server (see Agent.fleetMcp). */
+export interface FleetMcpStatus {
+  state: 'available' | 'unavailable';
+  /** Machine-readable cause when unavailable (e.g. install-too-old,
+   *  E-FOLDER-TAKEN, mcp-entry-missing, no-per-project-mcp). */
+  reason?: string;
+  /** apra-fleet version the member's own install reports, when known. */
+  version?: string;
+  /** ISO 8601 time of the probe that produced this observation. */
+  checkedAt: string;
+  /** Human-readable diagnostic for the reason. Never required. */
+  detail?: string;
+  /** True when the member's KB/code tools could not be verified (e.g. agy),
+   *  so callers must treat it as unverified (it gets the injected KB block). */
+  unverified?: boolean;
+  /** ISO 8601 time this fleet last SUCCESSFULLY installed apra-fleet on the
+   *  member (ensureOnce returned installed:true). Written only by a successful
+   *  fleet install and carried across later probes; never set by a refusal or
+   *  an observation-only probe. An observation only: it is NOT an ownership
+   *  signal (a human full install over a fleet install clears the marker but
+   *  leaves this set); the member-install marker alone is (see
+   *  memberHasInstallMarker), and the fleet never sends --force-stop-full-install. */
+  fleetInstalledAt?: string;
+  /** A requested apra-fleet upgrade that failed before the member was touched
+   *  (no arch/source, download, checksum or transfer failure) while the older
+   *  install stayed in use. Present on available and unavailable statuses so a
+   *  later step can never hide it; `detail` names it too. */
+  installFailure?: { reason: string; detail?: string };
+  /** Present only when the beads CLI (bd) is NOT usable on a remote member
+   *  (neither on its PATH nor in <home>/.apra-fleet/bin): sprint roles there
+   *  cannot run bd. Independent of `state` (the KB/code tools may still work);
+   *  absent when bd works or could not be probed. */
+  beads?: { state: 'missing' | 'broken'; detail: string; fix: string };
+  /** Remote members: the port the member's MCP URL uses, as resolved by this
+   *  probe from the member's own install. Absent when the probe did not get
+   *  that far (the previously recorded port is kept then). */
+  port?: number;
+  /** Where `port` came from: the member-install marker, or the built-in
+   *  default because the marker records no port (detail says so). */
+  portSource?: 'marker' | 'default';
+  /** Set by the probe that replaced an unmarked (full) install with a member
+   *  install (fleet_install "replace-full"): the replaced version, what was
+   *  removed or moved, and the timestamped backup directory on the member.
+   *  An observation of that probe only; not carried to later probes. */
+  replacedFullInstall?: { previousVersion: string; removed: string[]; backupPath: string };
+  /** Set when a requested apra-fleet install/upgrade on the member did not
+   *  happen (any install reason, on available and unavailable statuses): the
+   *  exact manual steps, built for the member's OS/shell, to install this
+   *  orchestrator's build there by hand (anonymous download URL, SHA-256
+   *  check, member-mode install, then update_member). register_member /
+   *  update_member print it in a WARNING; the call itself still succeeds. */
+  manualInstall?: string;
+  /** Set by the probe that installed the signed stable release of the
+   *  orchestrator's core (`tag`, e.g. v0.4.4) because no release carries the
+   *  exact build (`wantedBuild`); only when the member had no apra-fleet or an
+   *  older core. `why` says what was tried. register_member / update_member
+   *  print it as a NOTICE. */
+  sameCoreFallback?: { tag: string; wantedBuild: string; why: string };
 }
 
 export interface GitHubAppConfig {

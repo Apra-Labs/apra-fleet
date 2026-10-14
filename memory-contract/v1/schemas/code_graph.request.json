@@ -9,10 +9,6 @@
         "symbol": {
           "type": "string",
           "description": "Function, class, or method name to trace in the call graph"
-        },
-        "repo": {
-          "type": "string",
-          "description": "Absolute path to the repository root. Required when multiple repositories are indexed."
         }
       },
       "required": [

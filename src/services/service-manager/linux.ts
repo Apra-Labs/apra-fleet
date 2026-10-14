@@ -6,6 +6,7 @@ import type { ServiceManager, ServiceStatus } from './types.js';
 import { LINUX_UNIT_NAME, SERVICE_ENV_MARKER } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 import { clearServiceStartFailures } from '../service-start-guard.js';
+import { computeServicePath, systemdEnvironmentLine } from './service-path.js';
 
 const UNIT_DIR = path.join(os.homedir(), '.config', 'systemd', 'user');
 const UNIT_PATH = path.join(UNIT_DIR, LINUX_UNIT_NAME);
@@ -32,6 +33,8 @@ export class LinuxServiceManager implements ServiceManager {
       'Restart=on-failure',
       // Lets the server tell it runs under a restarting service manager.
       `Environment=${SERVICE_ENV_MARKER}=1`,
+      // systemd --user's default PATH lacks nvm/custom node dirs; npx needs both npx and node.
+      systemdEnvironmentLine('PATH', computeServicePath({ platform: 'linux' })),
       `StandardOutput=append:${logPath}`,
       `StandardError=append:${logPath}`,
       '',

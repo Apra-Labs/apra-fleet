@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- PID-liveness watchdog + four-status classifier
+// fleet-sprint supervisor -- PID-liveness watchdog + four-status classifier
 // (apra-fleet-eft.4.3, Plan Part 2.1, process model B)
 // =============================================================================
 //

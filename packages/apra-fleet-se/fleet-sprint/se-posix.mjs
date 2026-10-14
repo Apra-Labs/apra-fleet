@@ -28,8 +28,8 @@
  * its args path (^[A-Za-z0-9._/-]+$), plus: no '..' segment (no escaping the
  * work folder), no leading '/' (relative only) and no leading '-' (never
  * mistakable for an option). Anything else THROWS -- it is never quoted or
- * escaped into the string. Shared by every dialect's git-exclude/ensure-file/
- * ensure-line primitive.
+ * escaped into the string. Shared by every dialect's git-exclude/remove-file/
+ * ensure-file/ensure-line primitive.
  * @param {string} relPath
  * @param {string} what caller-facing name for the error message
  * @returns {string} the validated path
@@ -189,8 +189,9 @@ export class SePosixCommands {
    * The only `$` expansions are of a shell-LOCAL variable this same string
    * assigns (`excl`) -- nothing reads the member's environment ($HOME,
    * $VAR/path, ~/, backticks).
-   * Caller: beads-identity-check.mjs member beads set-up (new untracked
-   * beads paths are excluded so the target work tree stays clean).
+   * Callers: member-call.mjs runRemote (args-file cleanup);
+   * beads-identity-check.mjs member beads set-up (new untracked beads paths
+   * are excluded so the target work tree stays clean).
    * @param {string} entry work-folder-relative path/pattern, validated
    * @returns {string}
    */
@@ -202,6 +203,17 @@ export class SePosixCommands {
       + `if [ -s "$excl" ] && [ -n "$(tail -c 1 "$excl")" ]; then printf '\\n' >> "$excl"; fi; `
       + `printf '%s\\n' '${e}' >> "$excl"; }; }; fi`;
     return this.wrapForMember(script);
+  }
+
+  /**
+   * Delete a work-folder-relative file, never erroring when it is absent.
+   * Caller: member-call.mjs runRemote (engine-side args-file delete).
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  removeFile(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    return this.wrapForMember(`rm -f -- '${p}'`);
   }
 
   /**

@@ -55,7 +55,9 @@ call. Any change to this shape must be made in the server tool and
   - auto/bypass mode: the refusal is the safety classifier or a deny rule.
     A complete reply is a success carrying the denials as `permissionWarning`
     (logged); an incomplete one fails `permission_denied` with
-    `healable: false`. No grant is ever added for it.
+    `healable: false` when the caller passed `fail_on_permission_denial: true`
+    (fleet-sprint does), and otherwise keeps its ordinary reason with the
+    denials attached as `permissionDenied`. No grant is ever added for it.
   - acceptEdits mode: the dispatch fails `permission_denied` and fleet-sprint
     heals it progressively: grant the missing tool (only within the member's
     composed policy from `compose_permissions` dry_run), retry, repeat for the
@@ -97,3 +99,42 @@ Sprint ids and log file stems are bounded (`MAX_SPRINT_ID_LENGTH` in the supervi
 API) so multi-issue launches stay under Windows MAX_PATH, and launch failures
 surface their cause. Windows-service launcher/log paths for POSIX-style paths must
 not resolve relative to the cwd.
+
+## Orphaned-claim reclaim, verify-block exit, and session continuity
+
+Design record for sprint-engine hardening around work that gets stranded mid-run.
+
+- **In-run orphan reclaim.** A bead left `in_progress` by a doer whose dispatch
+  died is reclaimed during the run, not only at preflight. The reclaim re-reads the
+  bead fresh before writing, kills any still-live process on the claiming member
+  first, then re-lanes the bead with a status-guarded write (`--if-status
+  in_progress`) so a concurrent legitimate transition wins. Claims whose structured
+  reason names another sprint are never touched. Each bead has a reclaim cap; a bead
+  that hits it is surfaced in the final notes rather than retried forever.
+- **Verify-block deadlock exit.** When every remaining ready bead is routed to
+  verification and verification cannot run (no deploy configured, no playbook, or a
+  failed deploy), the sprint stops with a FAIL verdict instead of cycling idle:
+  a pre-sprint stop, a mid-run exit, and a verdict gate. Trade-off to know: the
+  mid-run exit shares the "integration can run this cycle" condition with the deploy
+  step, so a single transient deploy failure in that state ends the sprint without
+  a redeploy retry, bypassing the deploy retry cycle budget. Tracked as a follow-up.
+- **Review scope.** The reviewer's scope is the union of beads the engine verified
+  as closed, minus beads whose publish was blocked or whose post-dispatch sync
+  failed. A failed streak that still closed beads is therefore reviewed.
+- **Session id on every failure outcome.** `execute_prompt` returns and records the
+  session id for max-turns, auth, server, overloaded, non-zero-exit, empty-response
+  and dispatch-failed outcomes, not just success. Same-session resume uses that
+  explicit id, never an implicit "resume latest" flag; with no id, or when the
+  session is gone (`session_not_found`), the engine falls back to a fresh session
+  with the full prompt.
+- **Salvage before reset.** Before a retry hard-resets a member workspace, member
+  sync pins unpushed commits and tracked working-tree changes on a local
+  `fleet-salvage/` ref. If the pin fails the reset is refused (fail closed).
+- **Harvester analysis excludes cost.** The committed sprint-analysis artifact
+  carries no cost block; cost lives only in the PR body.
+- **newTask titles.** Leading dashes are stripped from reviewer-proposed task titles
+  (they parse as CLI flags); the original title is preserved in the description.
+- **deploy.md command discipline.** deploy.md steps contain no `$(...)` substitution
+  or shell loops, since headless CLIs refuse them; such logic lives in
+  `scripts/deploy-install.mjs`, and a test scans deploy.md for the forbidden
+  constructs.

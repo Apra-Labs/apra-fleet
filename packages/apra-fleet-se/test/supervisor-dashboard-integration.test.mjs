@@ -221,6 +221,10 @@ describe('dashboard integration (apra-fleet-eft.6.6) -- stack, backlog, launch, 
             ledger,
             watchdog,
             expandScope: async (roots) => new Set(roots),
+            // Same fixture rows as the backlog: without it the dashboard's
+            // default bulk fetch runs real bd against whatever .beads its cwd
+            // walks up to (this repo's own tracker).
+            listAllBeads: async () => allBeads,
             backlog,
             logger: silentLogger,
         });

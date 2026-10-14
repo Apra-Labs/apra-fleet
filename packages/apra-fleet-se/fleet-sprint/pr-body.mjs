@@ -185,9 +185,11 @@ export function parseRunHistory(body) {
     return out;
 }
 
-/** `Auto-sprint [<VERDICT>]: <branch>` -- the format integration gates key on. */
+/** `fleet-sprint [<VERDICT>]: <branch>`. PRs opened before the rename carry the
+ *  older `Auto-sprint [<VERDICT>]: <branch>` form; nothing in-repo matches on the
+ *  title (an existing PR is found by head branch), so both forms coexist safely. */
 export function buildSprintPrTitle({ verdict, branch }) {
-    return `Auto-sprint [${verdict}]: ${branch}`;
+    return `fleet-sprint [${verdict}]: ${branch}`;
 }
 
 /** Markdown inline code span. Only ever applied to engine-validated tokens
