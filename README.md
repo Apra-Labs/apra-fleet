@@ -108,13 +108,21 @@ double-click it (installation is the default action):
 npm install -g @apralabs/apra-fleet
 apra-fleet install           # installs for Claude Code (default)
 apra-fleet install --llm agy # or --llm opencode / codex / copilot
-cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
+apra-fleet start             # npm install registers no OS service: start the server (again after reboot)
 ```
+
+The standalone installer instead registers and starts a user-level service
+(no `start` needed) and does not add anything to PATH: the binary is
+`~/.apra-fleet/bin/apra-fleet` (Windows PowerShell:
+`& "$HOME\.apra-fleet\bin\apra-fleet.exe" status`). See
+[docs/install.md](docs/install.md).
 
 The default install includes fleet-se (fleet-sprint, supervisor, bd), which requires a system Node.js 22.16+ and npm on PATH; the installer fails up front if they are missing. Use `apra-fleet install --workflows none` to install the core only.
 
 **2. Connect your agent.** Load the fleet server in Claude Code with
-`/mcp` (or restart your provider CLI). Your agent now has a fleet.
+`/mcp` (or restart your provider CLI). Your agent now has a fleet. To check
+from a shell, `claude mcp list` should show
+`apra-fleet: http://localhost:7523/mcp (HTTP) - Connected`.
 
 **3. Register members -- in plain language.** apra-fleet is driven
 conversationally through any MCP-capable agent:
