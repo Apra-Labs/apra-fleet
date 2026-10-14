@@ -1286,8 +1286,9 @@ Options:
                           is stopped; anything else is refused (E-FULL-INSTALL-RUNNING).
   --ignore-running-sprints
                           Install even while a fleet-sprint supervisor or sprint is running for this
-                          user (they fail with HTTP 401 until restarted). Without it install refuses
-                          (E-FLEET-SE-RUNNING); --force does not override this.
+                          user; the server is replaced underneath them (ones started under 0.4.3 or
+                          earlier then fail with HTTP 401 until restarted). Without it install
+                          refuses (E-FLEET-SE-RUNNING); --force does not override this.
   --force-stop-full-install
                           With --member --force: also stop a running server that was not started
                           by a member install (e.g. a full install on a shared machine).
