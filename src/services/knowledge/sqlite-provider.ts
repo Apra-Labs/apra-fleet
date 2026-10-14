@@ -1927,7 +1927,10 @@ export class SqliteProvider implements MemoryProvider {
    *    the (now withdrawn) trust was granted;
    *  - a STALE entry MAY be demoted. Staleness is a freshness verdict, trust
    *    is a separate axis, and the entries most worth demoting are exactly the
-   *    ones the sweep has already flagged.
+   *    ones the sweep has already flagged;
+   *  - evidence is REQUIRED, like promote's resolvable basis: at least one
+   *    evidence file, each of which must resolve inside the anchor
+   *    (E-DEMOTE-EVIDENCE-UNRESOLVED otherwise).
    *
    * EVERY refusal is checked BEFORE any write, in the order below, and the
    * order is load-bearing: the own-scope/unknown-id check comes first so a
@@ -1984,9 +1987,16 @@ export class SqliteProvider implements MemoryProvider {
       );
     }
 
-    // (6) Evidence paths, when given.
+    // (6) Evidence: REQUIRED, like promote's basis. Withdrawing trust needs a
+    // resolvable reason to believe less, not only a written one.
     const evidence = evidenceFiles ?? [];
-    if (evidence.length > 0) this.assertResolvableDemoteEvidence(id, evidence);
+    if (evidence.length === 0) {
+      throw new Error(
+        'E-DEMOTE-EVIDENCE-UNRESOLVED: kb_demote requires at least one evidence file backing the demotion '
+          + '(evidence_files). Entry: ' + id
+      );
+    }
+    this.assertResolvableDemoteEvidence(id, evidence);
 
     // --- no refusal remains: everything below writes ---
 

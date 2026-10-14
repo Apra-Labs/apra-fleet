@@ -28,6 +28,11 @@ import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../
 
 const REASON = 'Re-read the cited file and the claim holds in fewer cases than the promotion note asserts.';
 const PROMOTE_REASON = 'Verified against src/real.ts: the retry budget is read once at startup.';
+// Evidence is REQUIRED (Rulebook P-1 "no silent demotion", 2026-10-13). A real
+// file in the scratch repo that is NOT the entry's own basis, so the tests that
+// edit or delete src/real.ts still have resolvable evidence.
+const EVIDENCE = ['src/other.ts'];
+const EVIDENCE_CLAUSE = ' | evidence: src/other.ts';
 
 let tmp: string;
 let repo: string;
@@ -138,7 +143,7 @@ afterEach(() => {
 
 describe('kb_demote refuses before any write', () => {
   it('an unknown id', async () => {
-    await expect(provider.demote('no-such-id', REASON)).rejects.toThrow('Entry not found: no-such-id');
+    await expect(provider.demote('no-such-id', REASON, EVIDENCE)).rejects.toThrow('Entry not found: no-such-id');
   });
 
   it("another member's row, with the SAME message an unknown id gets (existence is not disclosed)", async () => {
@@ -147,9 +152,9 @@ describe('kb_demote refuses before any write', () => {
 
     // The exact message, not a pattern: a different message for "exists but is
     // not yours" is itself the existence disclosure this rule exists to prevent.
-    const unknownIdMessage = await provider.demote('probe-id', REASON).catch((e: Error) => e.message);
+    const unknownIdMessage = await provider.demote('probe-id', REASON, EVIDENCE).catch((e: Error) => e.message);
     const foreignRowMessage = await provider
-      .demote(id, REASON, undefined, { ownerTag: 'member:bbbbbbbb' })
+      .demote(id, REASON, EVIDENCE, { ownerTag: 'member:bbbbbbbb' })
       .catch((e: Error) => e.message);
 
     expect(foreignRowMessage).toBe('Entry not found: ' + id);
@@ -165,7 +170,7 @@ describe('kb_demote refuses before any write', () => {
     const before = snapshot(id);
     expect(before.superseded_at).toBeTruthy();
 
-    await expect(provider.demote(id, REASON)).rejects.toThrow(/^E-DEMOTE-SUPERSEDED:/);
+    await expect(provider.demote(id, REASON, EVIDENCE)).rejects.toThrow(/^E-DEMOTE-SUPERSEDED:/);
     expect(snapshot(id)).toEqual(before);
   });
 
@@ -178,7 +183,7 @@ describe('kb_demote refuses before any write', () => {
     const before = snapshot(id);
     expect(before.confidence).not.toBe('CONFIRMED');
 
-    await expect(provider.demote(id, REASON)).rejects.toThrow(/^E-DEMOTE-REFUSED-DIRECTIVE:/);
+    await expect(provider.demote(id, REASON, EVIDENCE)).rejects.toThrow(/^E-DEMOTE-REFUSED-DIRECTIVE:/);
     expect(snapshot(id)).toEqual(before);
   });
 
@@ -189,7 +194,7 @@ describe('kb_demote refuses before any write', () => {
 
     // .rejects, not a returned result: a no-op return would let a caller
     // believe it lowered trust that was already below CONFIRMED.
-    await expect(provider.demote(id, REASON)).rejects.toThrow(/^E-DEMOTE-NOT-CONFIRMED:/);
+    await expect(provider.demote(id, REASON, EVIDENCE)).rejects.toThrow(/^E-DEMOTE-NOT-CONFIRMED:/);
     expect(snapshot(id)).toEqual(before);
   });
 
@@ -198,7 +203,7 @@ describe('kb_demote refuses before any write', () => {
     const before = snapshot(id);
     expect(before.confidence).toBe('UNVERIFIED');
 
-    await expect(provider.demote(id, REASON)).rejects.toThrow(/^E-DEMOTE-NOT-CONFIRMED:/);
+    await expect(provider.demote(id, REASON, EVIDENCE)).rejects.toThrow(/^E-DEMOTE-NOT-CONFIRMED:/);
     expect(snapshot(id)).toEqual(before);
   });
 
@@ -208,18 +213,31 @@ describe('kb_demote refuses before any write', () => {
     const justTooShort = 'x'.repeat(19);
     expect(justTooShort).toHaveLength(19);
 
-    await expect(provider.demote(id, justTooShort)).rejects.toThrow(/^E-DEMOTE-REASON-REQUIRED:/);
+    await expect(provider.demote(id, justTooShort, EVIDENCE)).rejects.toThrow(/^E-DEMOTE-REASON-REQUIRED:/);
     expect(snapshot(id)).toEqual(before);
 
     // The boundary is real in both directions: 20 is accepted.
-    await expect(provider.demote(id, 'y'.repeat(20))).resolves.toMatchObject({ confidence_after: 'INFERRED' });
+    await expect(provider.demote(id, 'y'.repeat(20), EVIDENCE)).resolves.toMatchObject({ confidence_after: 'INFERRED' });
   });
 
   it('a reason that is only newlines (collapses to empty)', async () => {
     const id = await confirmedEntry();
     const before = snapshot(id);
 
-    await expect(provider.demote(id, '\n\n\n\n\n')).rejects.toThrow(/^E-DEMOTE-REASON-REQUIRED:/);
+    await expect(provider.demote(id, '\n\n\n\n\n', EVIDENCE)).rejects.toThrow(/^E-DEMOTE-REASON-REQUIRED:/);
+    expect(snapshot(id)).toEqual(before);
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['empty', [] as string[]],
+  ])('no evidence (%s) -- evidence is required, like promote\'s basis', async (_label, evidence) => {
+    const id = await confirmedEntry();
+    const before = snapshot(id);
+    expect(before.confidence).toBe('CONFIRMED');
+
+    await expect(provider.demote(id, REASON, evidence))
+      .rejects.toThrow(/^E-DEMOTE-EVIDENCE-UNRESOLVED: kb_demote requires at least one evidence file/);
     expect(snapshot(id)).toEqual(before);
   });
 
@@ -286,7 +304,7 @@ describe('kb_demote success path', () => {
     expect(before.source).toBe('promotion');
     expect(before.demoted_at).toBeNull();
 
-    const result = await provider.demote(id, REASON);
+    const result = await provider.demote(id, REASON, EVIDENCE);
 
     expect(result).toEqual({ id, confidence_before: 'CONFIRMED', confidence_after: 'INFERRED' });
     const after = row(id);
@@ -311,23 +329,15 @@ describe('kb_demote success path', () => {
     expect(row(id).content).toBe(contentBefore + expectedNote);
   });
 
-  it('omits the evidence clause entirely when no evidence files are given', async () => {
-    const id = await confirmedEntry();
-    const contentBefore = row(id).content;
-
-    await provider.demote(id, REASON);
-
-    expect(row(id).content).toBe(contentBefore + '\n[Demoted: ' + REASON + ' -- tester]');
-  });
 
   it('collapses newlines inside the reason to spaces', async () => {
     const id = await confirmedEntry();
     const contentBefore = row(id).content;
 
-    await provider.demote(id, 'First line of the reason.\nSecond line of the reason.');
+    await provider.demote(id, 'First line of the reason.\nSecond line of the reason.', EVIDENCE);
 
     expect(row(id).content).toBe(
-      contentBefore + '\n[Demoted: First line of the reason. Second line of the reason. -- tester]'
+      contentBefore + '\n[Demoted: First line of the reason. Second line of the reason.' + EVIDENCE_CLAUSE + ' -- tester]'
     );
   });
 
@@ -335,7 +345,7 @@ describe('kb_demote success path', () => {
     const id = await confirmedEntry();
     const contentBefore = row(id).content;
 
-    await provider.demote(id, REASON);
+    await provider.demote(id, REASON, EVIDENCE);
     const appended = row(id).content.slice(contentBefore.length);
 
     expect(appended.startsWith('\n[Demoted: ')).toBe(true);
@@ -349,7 +359,7 @@ describe('kb_demote success path', () => {
     rawDb().prepare('UPDATE entries SET stale = 1 WHERE id = ?').run(id);
     expect(row(id).stale).toBe(1);
 
-    await expect(provider.demote(id, REASON)).resolves.toMatchObject({ confidence_after: 'INFERRED' });
+    await expect(provider.demote(id, REASON, EVIDENCE)).resolves.toMatchObject({ confidence_after: 'INFERRED' });
     expect(row(id).confidence).toBe('INFERRED');
     expect(row(id).stale).toBe(1);
   });
@@ -375,7 +385,7 @@ describe('kb_demote snapshots the basis from DISK, not from the capture-time col
     const editedSha = sha256Of(basisFile);
     expect(editedSha).not.toBe(originalSha);
 
-    await provider.demote(id, REASON);
+    await provider.demote(id, REASON, EVIDENCE);
 
     const demoted = JSON.parse(row(id).demoted_basis_hashes) as Record<string, string>;
     // The assertion that fails if demote() is reverted to copying the
@@ -390,7 +400,7 @@ describe('kb_demote snapshots the basis from DISK, not from the capture-time col
     const id = await confirmedEntry();
     fs.rmSync(path.join(repo, 'src', 'real.ts'));
 
-    await provider.demote(id, REASON);
+    await provider.demote(id, REASON, EVIDENCE);
 
     expect(JSON.parse(row(id).demoted_basis_hashes)).toEqual({});
     expect(row(id).confidence).toBe('INFERRED');
@@ -405,13 +415,13 @@ describe('kb_demote own-scope', () => {
   it('a FULL session (no ownerTag) can demote any row, including another member\'s', async () => {
     const id = await confirmedEntry({ tags: ['member:aaaaaaaa'] });
 
-    await expect(provider.demote(id, REASON)).resolves.toMatchObject({ confidence_after: 'INFERRED' });
+    await expect(provider.demote(id, REASON, EVIDENCE)).resolves.toMatchObject({ confidence_after: 'INFERRED' });
   });
 
   it('a member session can demote its OWN row', async () => {
     const id = await confirmedEntry({ tags: ['member:aaaaaaaa'] });
 
-    await expect(provider.demote(id, REASON, undefined, { ownerTag: 'member:aaaaaaaa' }))
+    await expect(provider.demote(id, REASON, EVIDENCE, { ownerTag: 'member:aaaaaaaa' }))
       .resolves.toMatchObject({ confidence_after: 'INFERRED' });
   });
 
@@ -419,7 +429,7 @@ describe('kb_demote own-scope', () => {
     const id = await confirmedEntry();
     const before = snapshot(id);
 
-    await expect(provider.demote(id, REASON, undefined, { ownerTag: 'member:aaaaaaaa' }))
+    await expect(provider.demote(id, REASON, EVIDENCE, { ownerTag: 'member:aaaaaaaa' }))
       .rejects.toThrow('Entry not found: ' + id);
     expect(snapshot(id)).toEqual(before);
   });
@@ -460,7 +470,7 @@ describe('the kb_demote tool handler', () => {
   it('returns {id, previous_confidence, new_confidence} as a JSON string', async () => {
     const id = await confirmedEntry();
 
-    const out = JSON.parse(await kbDemote({ id, reason: REASON }));
+    const out = JSON.parse(await kbDemote({ id, reason: REASON, evidence_files: EVIDENCE }));
 
     expect(out).toEqual({ id, previous_confidence: 'CONFIRMED', new_confidence: 'INFERRED' });
     expect(row(id).confidence).toBe('INFERRED');
@@ -480,21 +490,21 @@ describe('the kb_demote tool handler', () => {
     const before = snapshot(id);
 
     await expect(
-      runWithSessionMember(MEMBER_B, () => kbDemote({ id, reason: REASON }))
+      runWithSessionMember(MEMBER_B, () => kbDemote({ id, reason: REASON, evidence_files: EVIDENCE }))
     ).rejects.toThrow('Entry not found: ' + id);
     expect(snapshot(id)).toEqual(before);
 
     // ...and its own row still demotes, so the refusal above is the tag rule
     // doing its job and not the member path being broken outright.
     await expect(
-      runWithSessionMember(MEMBER_A, () => kbDemote({ id, reason: REASON }))
+      runWithSessionMember(MEMBER_A, () => kbDemote({ id, reason: REASON, evidence_files: EVIDENCE }))
     ).resolves.toContain('"new_confidence":"INFERRED"');
   });
 
   it('a FULL session reaches the provider WITHOUT an ownerTag, so another member\'s row demotes', async () => {
     const id = await confirmedEntry({ tags: ['member:' + MEMBER_A] });
 
-    await expect(kbDemote({ id, reason: REASON })).resolves.toContain('"new_confidence":"INFERRED"');
+    await expect(kbDemote({ id, reason: REASON, evidence_files: EVIDENCE })).resolves.toContain('"new_confidence":"INFERRED"');
   });
 });
 
@@ -520,7 +530,7 @@ describe('HttpKbProvider.demote', () => {
     // never from a failed request falling back to the local store.
     const http = new HttpKbProvider('http://127.0.0.1:17777', 'token', fallback);
 
-    await expect(http.demote(id, REASON)).rejects.toThrow(/not supported for an HTTP KB/);
+    await expect(http.demote(id, REASON, EVIDENCE)).rejects.toThrow(/not supported for an HTTP KB/);
 
     const after = readBack();
     expect(after.confidence).toBe('CONFIRMED');
@@ -583,7 +593,7 @@ describe('the demoted_at / demoted_basis_hashes migration is guarded and backfil
 
     // Re-added columns are not just present but USABLE: a demote against the
     // re-opened provider succeeds end-to-end.
-    await expect(second.demote(id, REASON)).resolves.toMatchObject({ confidence_after: 'INFERRED' });
+    await expect(second.demote(id, REASON, EVIDENCE)).resolves.toMatchObject({ confidence_after: 'INFERRED' });
     expect((secondDb.prepare('SELECT * FROM entries WHERE id = ?').get(id) as RawRow).demoted_at).toBeTruthy();
     second.close();
   });
@@ -599,7 +609,7 @@ describe('the demoted_at / demoted_basis_hashes migration is guarded and backfil
     p.close();
     const reopened = new SqliteProvider(dbPath, repo);
     await expect(reopened.init()).resolves.toBeUndefined();
-    await expect(reopened.demote(id, REASON)).resolves.toMatchObject({ confidence_after: 'INFERRED' });
+    await expect(reopened.demote(id, REASON, EVIDENCE)).resolves.toMatchObject({ confidence_after: 'INFERRED' });
     reopened.close();
   });
 });

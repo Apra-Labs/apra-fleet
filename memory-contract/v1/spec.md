@@ -650,15 +650,17 @@ human-terminal in both directions (`E-DEMOTE-REFUSED-DIRECTIVE`); (4) the
 entry is not CONFIRMED (`E-DEMOTE-NOT-CONFIRMED`, the ladder refusal above);
 (5) the reason, with every newline collapsed to a space and the result
 trimmed, falls short of the demote reason floor (`E-DEMOTE-REASON-REQUIRED`);
-(6) a cited evidence file does not resolve anchor-relative to a regular file in
-this worktree (`E-DEMOTE-EVIDENCE-UNRESOLVED`). The eventual content note MUST
+(6) no evidence file is cited (evidence is REQUIRED, like promote's
+resolvable basis), or a cited evidence file does not resolve anchor-relative to
+a regular file in this worktree (`E-DEMOTE-EVIDENCE-UNRESOLVED`). The eventual content note MUST
 use the one format shared with the bible tombstone path (2.6), so a demotion
 applied locally and one that crossed clones through an import read
 identically: exactly ONE leading newline (never two, which is the `kb_feedback`
 marker, so the two can never be mistaken for each other), then
-`[Demoted: <reason, newlines collapsed to spaces> -- <author>]`, with an
-optional ` | evidence: <evidence files, comma-joined>` clause inserted before
-the closing bracket only when evidence files were cited.
+`[Demoted: <reason, newlines collapsed to spaces> -- <author>]`, with a
+` | evidence: <evidence files, comma-joined>` clause inserted before the
+closing bracket whenever evidence files are known (always, for a local
+`kb_demote`; a bible tombstone may carry none).
 
 The KB's confidence-lowering surface is a short, named ladder, and `kb_demote`
 is only one rung of it: an entry that is simply less certain than its tier

@@ -42,6 +42,8 @@ import { commitWorkTree } from '../helpers/commit-work-tree.js';
 const BIBLE_REL = '.fleet/kb-canonical.json';
 const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
 const DEMOTE_REASON = 'the cited behaviour did not hold on the case checked this round';
+// kb_demote requires evidence (Rulebook P-1, 2026-10-13); README.md is the seed file every clone holds.
+const DEMOTE_EVIDENCE = ['README.md'];
 
 interface Tombstone { id: string; demoted_at: string }
 interface BibleFile {
@@ -171,7 +173,7 @@ describe('bible demotion tombstones', () => {
     await kbBibleCommit({ ids: [id, other], ...BASE }, { folder: clone });
     expect(bibleIds()).toEqual([id, other].sort());
 
-    await kbDemote({ id, reason: DEMOTE_REASON }, { folder: clone });
+    await kbDemote({ id, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: clone });
     const localDemotedAt = rowDemotedAt(id);
     expect(localDemotedAt).toBeTruthy();
 
@@ -192,7 +194,7 @@ describe('bible demotion tombstones', () => {
   it('scenario 3 (guard): a later commit carrying only UNRELATED ids preserves the tombstone', async () => {
     const demotedId = await confirmedCiting('Alpha', 'src/alpha.ts');
     await kbBibleCommit({ ids: [demotedId], ...BASE }, { folder: clone });
-    await kbDemote({ id: demotedId, reason: DEMOTE_REASON }, { folder: clone });
+    await kbDemote({ id: demotedId, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: clone });
     await kbBibleCommit({ ids: [], demoted_ids: [demotedId], ...BASE }, { folder: clone });
     const tombstone = bibleTombstones();
     expect(tombstone).toEqual([{ id: demotedId, demoted_at: rowDemotedAt(demotedId) }]);
@@ -212,7 +214,7 @@ describe('bible demotion tombstones', () => {
   it('scenario 4 (guard): re-promoting a tombstoned id and committing it restores the entry and CLEARS the tombstone', async () => {
     const id = await confirmedCiting('Alpha', 'src/alpha.ts');
     await kbBibleCommit({ ids: [id], ...BASE }, { folder: clone });
-    await kbDemote({ id, reason: DEMOTE_REASON }, { folder: clone });
+    await kbDemote({ id, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: clone });
     await kbBibleCommit({ ids: [], demoted_ids: [id], ...BASE }, { folder: clone });
     expect(bibleIds()).toEqual([]);
     expect(bibleTombstones().map(d => d.id)).toEqual([id]);
@@ -242,7 +244,7 @@ describe('bible demotion tombstones', () => {
     // (c) demoted and SINCE RE-PROMOTED: it has a demoted_at, but is CONFIRMED
     //     again, so trust is not withdrawn and it must not be tombstoned.
     const reconfirmed = await confirmedCiting('Delta', 'src/delta.ts');
-    await kbDemote({ id: reconfirmed, reason: DEMOTE_REASON }, { folder: clone });
+    await kbDemote({ id: reconfirmed, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: clone });
     await provider.promote(reconfirmed, 'test fixture: re-verified');
     expect(rowDemotedAt(reconfirmed)).toBeTruthy();
 
@@ -273,7 +275,7 @@ describe('bible demotion tombstones', () => {
   it('scenario 6a (guard): kb_export does NOT re-add a tombstoned id whose local promotion predates the demotion', async () => {
     const id = await confirmedCiting('Alpha', 'src/alpha.ts');
     await kbBibleCommit({ ids: [id], ...BASE }, { folder: clone });
-    await kbDemote({ id, reason: DEMOTE_REASON }, { folder: clone });
+    await kbDemote({ id, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: clone });
     await kbBibleCommit({ ids: [], demoted_ids: [id], ...BASE }, { folder: clone });
     const tombstone = bibleTombstones();
     expect(tombstone.map(d => d.id)).toEqual([id]);
@@ -299,7 +301,7 @@ describe('bible demotion tombstones', () => {
     const id = await confirmedCiting('Alpha', 'src/alpha.ts');
     const keep = await confirmedCiting('Beta', 'src/beta.ts');
     await kbBibleCommit({ ids: [id, keep], ...BASE }, { folder: clone });
-    await kbDemote({ id, reason: DEMOTE_REASON }, { folder: clone });
+    await kbDemote({ id, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: clone });
     await kbBibleCommit({ ids: [], demoted_ids: [id], ...BASE }, { folder: clone });
     expect(bibleTombstones().map(d => d.id)).toEqual([id]);
     expect(bibleIds()).toEqual([keep]);
@@ -352,7 +354,7 @@ describe('bible demotion tombstones', () => {
   it('scenario 8: an unreadable (malformed JSON) bible is REFUSED and never overwritten, with or without demoted_ids', async () => {
     const id = await confirmedCiting('Alpha', 'src/alpha.ts');
     await kbBibleCommit({ ids: [id], ...BASE }, { folder: clone });
-    await kbDemote({ id, reason: DEMOTE_REASON }, { folder: clone });
+    await kbDemote({ id, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: clone });
     // Captured before the garbage is written: writing its cited file commits.
     const other = await confirmedCiting('Beta', 'src/beta.ts');
 

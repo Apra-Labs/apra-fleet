@@ -67,6 +67,8 @@ import { commitWorkTree } from '../helpers/commit-work-tree.js';
 
 const BASE = { baseBranch: 'main', baseCommit: 'b'.repeat(40) };
 const DEMOTE_REASON = 'the cited behaviour did not hold on the case checked this round';
+// kb_demote requires evidence (Rulebook P-1, 2026-10-13); README.md is the seed file every clone holds.
+const DEMOTE_EVIDENCE = ['README.md'];
 // The note applyBibleDemotion appends. Pinned as a literal (not imported from
 // the provider) so a silent change to the recorded reason has to be made twice.
 const BIBLE_NOTE = (author: string) => '\n[Demoted: demoted in the project bible -- ' + author + ']';
@@ -250,7 +252,7 @@ describe('a demotion crosses clones through the committed bible', () => {
     const xBefore = row(providerB, x)!;
 
     // --- clone A demotes Y and commits the tombstone ---
-    await kbDemote({ id: y, reason: DEMOTE_REASON }, { folder: cloneA });
+    await kbDemote({ id: y, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
     const commit = JSON.parse(await kbBibleCommit({ ids: [], demoted_ids: [y], ...BASE }, { folder: cloneA }));
     expect(commit.demoted).toEqual([y]);
     const tombstoneAt = readBible(cloneA).demotions![0].demoted_at;
@@ -288,7 +290,7 @@ describe('a demotion crosses clones through the committed bible', () => {
     mergeBibleIntoB();
     await kbImport({ skip_sweep: true }, { folder: cloneB });
 
-    await kbDemote({ id: y, reason: DEMOTE_REASON }, { folder: cloneA });
+    await kbDemote({ id: y, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
     await kbBibleCommit({ ids: [], demoted_ids: [y], ...BASE }, { folder: cloneA });
     const tombstoneAt = readBible(cloneA).demotions![0].demoted_at;
 
@@ -309,7 +311,7 @@ describe('a demotion crosses clones through the committed bible', () => {
   it('scenario 3: a tombstoned id with no row in B creates no row in B', async () => {
     const y = await confirmedCiting(providerA, cloneA, 'Ypsilon', 'src/y.ts');
     await kbBibleCommit({ ids: [y], ...BASE }, { folder: cloneA });
-    await kbDemote({ id: y, reason: DEMOTE_REASON }, { folder: cloneA });
+    await kbDemote({ id: y, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
     await kbBibleCommit({ ids: [], demoted_ids: [y], ...BASE }, { folder: cloneA });
     expect(readBible(cloneA).demotions!.map(d => d.id)).toEqual([y]);
 
@@ -375,7 +377,7 @@ describe('a demotion crosses clones through the committed bible', () => {
 
     // A demotes all THREE. B holds all three, but re-promoted `three` later.
     for (const id of [one, two, three]) {
-      await kbDemote({ id, reason: DEMOTE_REASON }, { folder: cloneA });
+      await kbDemote({ id, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
     }
     await kbBibleCommit({ ids: [], demoted_ids: [one, two, three], ...BASE }, { folder: cloneA });
     const stones = readBible(cloneA).demotions!;
@@ -414,7 +416,7 @@ describe('the member bible view stops listing a tombstoned entry', () => {
     const statBefore = fs.statSync(viewPath);
 
     // A demotes Y and commits the tombstone: the bible file is REWRITTEN.
-    await kbDemote({ id: y, reason: DEMOTE_REASON }, { folder: cloneA });
+    await kbDemote({ id: y, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
     await kbBibleCommit({ ids: [], demoted_ids: [y], ...BASE }, { folder: cloneA });
     expect(readBible(cloneA).demotions!.map(d => d.id)).toEqual([y]);
 
