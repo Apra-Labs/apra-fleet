@@ -5,9 +5,7 @@ import os from 'os';
 import path from 'path';
 import { spawnSync } from 'node:child_process';
 import { validateNewTask, createChildBeadWithAllocatedId, appendRejectedFindingToParentNotes } from '../fleet-sprint/runner.js';
-import * as abortModule from '../fleet-sprint/abort.mjs';
-
-const buildFallbackNewTask = (...args) => abortModule.buildFallbackNewTask(...args);
+import { buildFallbackNewTask } from '../fleet-sprint/abort.mjs';
 
 // apra-fleet-eft.56.2, transport hardened for eft.73.1: regression pin for the
 // reviewer-free-text body seam (createChildBeadWithAllocatedId /
@@ -150,7 +148,11 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
         });
         assert.strictEqual(validation.ok, true, validation.reason);
         assert.strictEqual(validation.title, 'Retry a to b when x at least 3');
-        assert.strictEqual(validation.description, 'Flow: queue -> worker => store.');
+        // The title was mapped, so the original title is kept (escaped) on top.
+        assert.strictEqual(
+            validation.description,
+            'Original title (JSON-escaped, non-ASCII as \\uXXXX): "Retry a -> b when x >= 3"\n\nFlow: queue -> worker => store.',
+        );
         const { command, calls, readBodyOf } = makeMemberEmulatingCommand();
         await createChildBeadWithAllocatedId({
             command, allocator: NOOP_ALLOCATOR, member: 'local',
@@ -160,7 +162,7 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
         const createCmd = calls[calls.length - 1].cmd;
         assert.ok(createCmd.includes('"Retry a to b when x at least 3"'), createCmd);
         assert.ok(!createCmd.includes('->'), `arrow description must never be inlined: ${createCmd}`);
-        assert.strictEqual(await readBodyOf(createCmd), 'Flow: queue -> worker => store.');
+        assert.strictEqual(await readBodyOf(createCmd), validation.description);
     });
 
     test('a fallback newTask (unsanitisable title) carries the ASCII-escaped original title via --body-file', async () => {

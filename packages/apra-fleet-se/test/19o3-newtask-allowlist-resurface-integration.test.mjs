@@ -77,7 +77,7 @@ const FINAL_UNSAFE_TITLE = 'Leak in "$HOME" path \u2192 caf\u00E9';
 const FINAL_UNSAFE_FALLBACK_TITLE = 'Leak in HOME path to caf';
 const FINAL_UNSAFE_DESCRIPTION = 'Final Review finding with an unsanitisable title.';
 
-const TASK_A_TITLE ='Task: A closes normally (19o3 resurface scenario)';
+const TASK_A_TITLE = 'Task: A closes normally (19o3 resurface scenario)';
 const TASK_B_TITLE = 'Task: B never closes (19o3 resurface scenario)';
 
 describe('apra-fleet-19o.3: bracketed titles validate and rejected newTasks reappear in the next planning prompt', () => {
@@ -244,7 +244,10 @@ describe('apra-fleet-19o.3: bracketed titles validate and rejected newTasks reap
                 // ---- Final Review findings: arrow title sanitised, unsanitisable title filed under a fallback ----
                 const arrowBead = finalBeads.find((b) => b.title === FINAL_ARROW_TITLE_SANITISED);
                 assert.ok(arrowBead, `expected the Final Review arrow-title finding to land as '${FINAL_ARROW_TITLE_SANITISED}', got: ${JSON.stringify(titles)}`);
-                assert.equal(arrowBead.description, 'Flow: queue -> worker.');
+                assert.equal(
+                    arrowBead.description,
+                    `Original title (JSON-escaped, non-ASCII as \\uXXXX): "${FINAL_ARROW_TITLE}"\n\nFlow: queue -> worker.`,
+                );
                 const fallbackBead = finalBeads.find((b) => b.title === FINAL_UNSAFE_FALLBACK_TITLE);
                 assert.ok(fallbackBead, `expected the unsanitisable Final Review finding to land under fallback title '${FINAL_UNSAFE_FALLBACK_TITLE}', got: ${JSON.stringify(titles)}`);
                 assert.equal(

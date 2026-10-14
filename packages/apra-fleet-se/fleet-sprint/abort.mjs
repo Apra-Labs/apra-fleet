@@ -222,6 +222,11 @@ export function escapeToAsciiJson(value) {
 
 const FALLBACK_TITLE_PLACEHOLDER = 'Follow-up finding (original title not shell-safe)';
 
+// Prefix of the description line that preserves a reviewer's original title
+// whenever the filed title differs from it (mapped, dash-stripped, or a
+// fallback). Shared by validateNewTask() and buildFallbackNewTask().
+const ORIGINAL_TITLE_LABEL = 'Original title (JSON-escaped, non-ASCII as \\uXXXX): ';
+
 /**
  * Builds a filable variant of a newTask whose TITLE still fails
  * validateNewTask() after sanitizeNewTaskTitle(). The catch-all strip applies
@@ -243,10 +248,14 @@ export function buildFallbackNewTask(newTask) {
     const stripped = sanitizeNewTaskTitle(originalTitle)
         .replace(/[^A-Za-z0-9 .,:;!?()'_/+[\]-]/g, ' ')
         .replace(/ {2,}/g, ' ')
-        .trim();
+        .trim()
+        // Strip leading dashes here too, so validateNewTask() receives a
+        // title it will not change and does not prepend a second
+        // original-title line quoting this intermediate fallback title.
+        .replace(/^[-\s]+/, '');
     const fallbackTitle = stripped && SAFE_TEXT_RE.test(stripped) ? stripped : FALLBACK_TITLE_PLACEHOLDER;
     const originalDescription = String((newTask && newTask.description) ?? '');
-    const description = `Original title (JSON-escaped, non-ASCII as \\uXXXX): ${escapeToAsciiJson(originalTitle)}\n\n${originalDescription}`;
+    const description = `${ORIGINAL_TITLE_LABEL}${escapeToAsciiJson(originalTitle)}\n\n${originalDescription}`;
     const result = validateNewTask({ title: fallbackTitle, description, priority: newTask && newTask.priority });
     return result.ok ? result : null;
 }
@@ -274,17 +283,24 @@ export function validateNewTask(newTask) {
     }
     // The title is the first positional argument of `bd create`, so a leading
     // '-' would be parsed as a flag. Strip leading dashes (and the whitespace
-    // after them) shell-independently; when anything was stripped, keep the
-    // original title (JSON-escaped, ASCII) at the top of the description so
-    // nothing is lost. A title that is only dashes becomes empty and is
-    // rejected below, falling through to the parent-notes fallback.
+    // after them) shell-independently. A title that is only dashes becomes
+    // empty and is rejected below, falling through to the parent-notes
+    // fallback.
     const title = sanitizedTitle.replace(/^[-\s]+/, '');
     if (!title) {
         return { ok: false, reason: `title is empty after removing leading dashes: ${JSON.stringify(sanitizedTitle)}` };
     }
+    // Whenever the filed title differs from the reviewer's original -- mapped
+    // by sanitizeNewTaskTitle() (`Map<K, V>` -> `Map lt K, V gt`,
+    // `--flag=value` -> `--flag eq value`) or dash-stripped above -- keep the
+    // ORIGINAL title, escaped to ASCII by escapeToAsciiJson(), at the top of
+    // the description so nothing is lost. Whitespace-only differences
+    // (trimming, collapsed runs of spaces) lose no information and do not
+    // count as a change.
+    const rawTitle = String((newTask && newTask.title) ?? '');
     let description = sanitizeNewTaskDescription(newTask && newTask.description);
-    if (description && title !== sanitizedTitle) {
-        description = `Original title: ${JSON.stringify(sanitizedTitle)}\n\n${description}`;
+    if (description && title !== rawTitle.replace(/ {2,}/g, ' ').trim()) {
+        description = `${ORIGINAL_TITLE_LABEL}${escapeToAsciiJson(rawTitle)}\n\n${description}`;
     }
     if (!description || !SAFE_DESCRIPTION_RE.test(description)) {
         return { ok: false, reason: `description fails ASCII-printable validation ${SAFE_DESCRIPTION_RE} (or is empty): ${JSON.stringify(description)}` };

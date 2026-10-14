@@ -1,12 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { validateNewTask } from '../fleet-sprint/runner.js';
-import * as abortModule from '../fleet-sprint/abort.mjs';
-
-// Looked up off the namespace (not named imports) so this file still loads
-// against an abort.mjs that predates them and fails per-test instead.
-const buildFallbackNewTask = (...args) => abortModule.buildFallbackNewTask(...args);
-const escapeToAsciiJson = (...args) => abortModule.escapeToAsciiJson(...args);
+import { buildFallbackNewTask, escapeToAsciiJson } from '../fleet-sprint/abort.mjs';
 
 // apra-fleet-unw2.3 (N3): reviewer-authored newTasks (title/description/
 // priority) are LLM output whose own context includes the diff under
@@ -323,6 +318,32 @@ describe('validateNewTask -- arrows and comparison operators', () => {
         assert.strictEqual(result.description, 'Flow: a -> b => c, x >= 1');
     });
 
+    test('a mapped title keeps the escaped original title at the top of the description', () => {
+        const generic = ok('Map<String, List<T>> leaks', 'Body.');
+        assert.strictEqual(generic.title, 'Map lt String, List lt T gt gt leaks');
+        assert.strictEqual(
+            generic.description,
+            'Original title (JSON-escaped, non-ASCII as \\uXXXX): "Map<String, List<T>> leaks"\n\nBody.',
+        );
+        const flag = ok('Honour --flag=value', 'Body.');
+        assert.strictEqual(flag.title, 'Honour --flag eq value');
+        assert.strictEqual(
+            flag.description,
+            'Original title (JSON-escaped, non-ASCII as \\uXXXX): "Honour --flag=value"\n\nBody.',
+        );
+        // Non-ASCII in the original title is \uXXXX-escaped and still round-trips.
+        const unicode = ok('Route a \u2192 b', 'Body.');
+        assert.strictEqual(unicode.title, 'Route a to b');
+        assert.match(unicode.description, /^[\t\n\r\x20-\x7E]+$/);
+        const escaped = unicode.description.split('\n')[0].replace(/^[^"]*/, '');
+        assert.strictEqual(JSON.parse(escaped), 'Route a \u2192 b');
+    });
+
+    test('an unchanged or whitespace-only-changed title leaves the description untouched', () => {
+        assert.strictEqual(ok('Fix 401 handling', 'Body.').description, 'Body.');
+        assert.strictEqual(ok('  Fix  401 handling ', 'Body.').description, 'Body.');
+    });
+
     test('", $ and backslash still hard-reject in a title even next to an arrow', () => {
         for (const title of ['a -> "b"', 'a -> $HOME', 'a -> b\\']) {
             const result = validateNewTask({ title, description: 'Safe description.', priority: 'P2' });
@@ -347,6 +368,19 @@ describe('buildFallbackNewTask -- unsanitisable titles', () => {
         const escaped = fallback.description.split('\n')[0].replace(/^[^"]*/, '');
         assert.strictEqual(JSON.parse(escaped), original);
         assert.strictEqual(fallback.priority, 'P1');
+    });
+
+    test('a leading-dash unsanitisable title gets exactly one original-title line quoting the true original', () => {
+        for (const [original, expectedTitle] of [['--force "$X" breaks', 'force X breaks'], ['-- "quoted" thing', 'quoted thing']]) {
+            const fallback = buildFallbackNewTask({ title: original, description: 'Body.', priority: 'P2' });
+            assert.ok(fallback && fallback.ok, `expected a fallback for ${JSON.stringify(original)}`);
+            assert.strictEqual(fallback.title, expectedTitle);
+            assert.strictEqual(fallback.description.split('Original title (').length - 1, 1, fallback.description);
+            assert.strictEqual(
+                fallback.description,
+                `Original title (JSON-escaped, non-ASCII as \\uXXXX): ${JSON.stringify(original)}\n\nBody.`,
+            );
+        }
     });
 
     test('uses a placeholder title when nothing survives the strip', () => {
