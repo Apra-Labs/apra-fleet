@@ -282,7 +282,8 @@ describe('fleet-se guard authenticates to the supervisor', () => {
     const { supervisorServiceToken } = await import('../src/cli/fleet-se-guard.js');
     const files: Record<string, string> = {
       [path.join('/mock/home', '.apra-fleet', 'fleet.key')]: 'k'.repeat(64) + '\n',
-      [path.join('/se-data', 'private', 'token')]: 'private-token\n',
+      // resolved as the product resolves FLEET_SE_DATA_DIR (a drive letter on Windows)
+      [path.join(path.resolve('/se-data'), 'private', 'token')]: 'private-token\n',
     };
     const read = (f: string) => { if (f in files) return files[f]; throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); };
     expect(supervisorServiceToken({ FLEET_SE_DATA_DIR: '/se-data' }, read)).toBe('k'.repeat(64));
