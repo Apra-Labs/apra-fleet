@@ -31,6 +31,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { ensureTestSandbox } from './test-sandbox.mjs';
+import { repoHooksDir, snapshotHooks, restoreLeakedHooks } from './git-hooks-guard.mjs';
 
 // Every suite (and every process it spawns) runs against a per-run temp
 // HOME/USERPROFILE/APRA_FLEET_DATA_DIR and refuses the real profile -- see
@@ -389,6 +390,7 @@ let failed = false;
 // has long since scrolled the per-suite FAILED line out of view.
 const outcomes = [];
 const headroomWarnings = [];
+const hooksDir = repoHooksDir();
 for (const suite of suites) {
     // apra-fleet-qe83.3.2 rework (round 3 fix): a terminating signal handled
     // while the previous suite's own 'exit' event resolved runBounded()
@@ -398,7 +400,9 @@ for (const suite of suites) {
     if (terminating) break;
     console.log(`\n> running ${suite.name} suite...\n`);
     const startedAt = Date.now();
+    const hooksBefore = hooksDir ? snapshotHooks(hooksDir) : null;
     const result = await runBounded(suite);
+    const leakedHooks = hooksBefore ? restoreLeakedHooks(hooksDir, hooksBefore) : [];
     if (terminating) break;
     // apra-fleet-3604.1: per-suite elapsed time vs budget, shown in SUMMARY.
     const elapsedMs = Date.now() - startedAt;
@@ -411,8 +415,17 @@ for (const suite of suites) {
         failed = true;
         outcomes.push(`${suite.name}=FAILED${timing}`);
         console.error(`\n> ${suite.name} suite FAILED (exit ${result.status})\n`);
+    } else if (leakedHooks.length > 0) {
+        failed = true;
+        outcomes.push(`${suite.name}=LEAKED_GIT_HOOK${timing}`);
     } else {
         outcomes.push(`${suite.name}=ok${timing}`);
+    }
+    if (leakedHooks.length > 0) {
+        console.error(
+            `\n> ${suite.name} suite wrote into this checkout's git hooks (${hooksDir}): ${leakedHooks.join(', ')}. ` +
+            'Restored. Point the test at a temp repo (an explicit KB anchor or a temp cwd), never the checkout.\n',
+        );
     }
     if (elapsedMs > HEADROOM_WARN_FRACTION * timeoutMs) {
         const pct = Math.round((elapsedMs / timeoutMs) * 100);
