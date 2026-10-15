@@ -1005,7 +1005,11 @@ const HARVEST_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/harvest.
 const EXPECTED_HARVEST_PHASE_COMMAND_COUNT = 0;
 
 const PUBLISH_PR_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/publish-pr.mjs');
-const EXPECTED_PUBLISH_PR_PHASE_COMMAND_COUNT = 2;
+// 3 = the two sites above plus the CI gate's `git rev-parse HEAD` on
+// publishGitMember (the git-capable member, like the origin probe): run only
+// when a ci_gate run is in flight, to compare the head Publish PR just pushed
+// with the sha CI ran on. It must stay on publishGitMember, never backlogMember.
+const EXPECTED_PUBLISH_PR_PHASE_COMMAND_COUNT = 3;
 
 test('every command() call site in phases/harvest.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(HARVEST_PHASE_PATH);

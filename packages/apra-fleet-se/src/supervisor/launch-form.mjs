@@ -131,6 +131,7 @@ function generateBranchName(member) {
  *   base: string,
  *   overrideRelaunchGate?: boolean,
  *   sync?: boolean,
+ *   ciWorkflow?: string,
  * }} input
  * @returns {{ ok: true, body: object }|{ ok: false, error: string }}
  */
@@ -181,6 +182,13 @@ export function buildLaunchRequestBody(input) {
     // before this field existed.
     if (opts.sync === true) {
         body.sync = true;
+    }
+    // Optional engine CI gate workflow (file name or id). Only sent when
+    // filled in, so an empty field leaves the request unchanged; the server
+    // validates it (validateCiGate) and forwards --ci-gate to the child.
+    const ciWorkflow = typeof opts.ciWorkflow === 'string' ? opts.ciWorkflow.trim() : '';
+    if (ciWorkflow.length > 0) {
+        body.ci_gate = { workflow: ciWorkflow };
     }
     return { ok: true, body };
 }
@@ -750,6 +758,7 @@ function clientScriptSource(mountPrefix) {
             var base = document.getElementById('launch-base').value;
             var overrideGateEl = document.getElementById('launch-override-gate');
             var syncEl = document.getElementById('launch-sync');
+            var ciWorkflowEl = document.getElementById('launch-ci-workflow');
             var result = buildLaunchRequestBody({
                 selectedRoots: selectedRoots,
                 members: members,
@@ -759,6 +768,7 @@ function clientScriptSource(mountPrefix) {
                 base: base,
                 overrideRelaunchGate: overrideGateEl ? overrideGateEl.checked : false,
                 sync: syncEl ? syncEl.checked : false,
+                ciWorkflow: ciWorkflowEl ? ciWorkflowEl.value : '',
             });
             if (!result.ok) {
                 resultEl.style.color = '#ef4444';
@@ -823,6 +833,8 @@ export function renderLaunchFormHtml(mountPrefix) {
         'Override relaunch gate (the prior incarnation of this issue ended in a reason flagged as unsafe to retry blindly)</label></div>' +
         '<div style="margin-bottom:8px;"><label><input id="launch-sync" type="checkbox"/> ' +
         'Synced topology (--sync) -- pass when members are in separate checkouts</label></div>' +
+        '<div style="margin-bottom:8px;"><label>CI workflow (optional, --ci-gate): <input id="launch-ci-workflow" type="text" placeholder="e.g. ci.yml"/></label> ' +
+        '<span style="color:#a1a1aa;">run once at Finalization and reported in the PR body; never changes the verdict</span></div>' +
         '<button type="submit">Launch Sprint</button>' +
         '</form>' +
         '<div id="launch-result" style="margin-top: 8px; font-size: 13px;"></div>' +

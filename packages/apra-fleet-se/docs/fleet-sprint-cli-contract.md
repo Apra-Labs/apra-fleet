@@ -78,36 +78,48 @@ Optional (defaults applied inside `validateArgs()`):
 - `goal` -- default `'P1/P2'`; must match `GOAL_PATTERN`.
 - `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `usage_limit_max_wait_s`, `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `expect_beads`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `azdevops_pat_secret_name`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only. `usage_limit_max_wait_s` (integer >= 60) and `usage_limit_max_reprobes` (integer >= 1) are the CLI-overridable usage-limit pause budgets (`--usage-limit-max-wait-s` / `--usage-limit-max-reprobes`); omitted, they fall back to `role-policies.mjs`'s `USAGE_LIMIT_BUDGET_DEFAULTS`.
 
-**NOT WIRED (2026-10-01).** `ci_gate` / `--ci-gate` are disabled: `ci_gate` is
-not in `KNOWN_ARG_KEYS` (passing it fails as an unknown arg) and the CLI has no
-`--ci-gate` flag. The gate below runs CI per reviewer dispatch, which conflicts
-with the agreed direction (CI never blocks or reaches doer/reviewer loops; the
-integration-test phase owns CI through one reopenable bead; per-push vs
-end-of-cycle triggering per project). It stays in the code, unconfigured, until
-the CI-as-quality-resource epic (apra-fleet-dv8i) designs the flow. The text
-below describes the module as built, not a supported option.
-
-`ci_gate` (as built; CLI `--ci-gate <json>`, forwarded verbatim) configured
-the engine CI gate (`fleet-sprint/ci-gate.mjs`). Shape:
+`ci_gate` (CLI `--ci-gate <json>`, forwarded verbatim; supervisor launch body
+`ci_gate`/`ciGate`, forwarded as `--ci-gate`) configures the engine CI gate
+(`fleet-sprint/ci-gate.mjs`). Shape:
 `{"workflow": "<workflow file name or id>", "timeout_s": <positive integer, default 3600>}`.
 `validateArgs()` (`validateCiGate`) rejects bad JSON, a non-object, unknown
 keys, a missing/malformed `workflow` (must match `^[A-Za-z0-9._-]+$`) and a
 non-positive or non-integer `timeout_s` with an `[Arg Contract] Invalid ci_gate...`
-error, before any dispatch. Behavior:
-- Absent: no CI calls at all, and exactly one `[CI Gate] CI gate not configured ...` log line per sprint.
-- Set: before each reviewer dispatch the ORCHESTRATOR resolves the sprint
-  branch head sha on the remote, locates the run of that workflow already
-  triggered for that sha (or triggers one on the branch), polls it to
-  completion bounded by `timeout_s`, and records run id, url, head sha and
-  per-job conclusion in the sprint log. The reviewer prompt carries that result
-  and tells the reviewer CI is engine-verified and never to ask the doer to
-  trigger CI. An unchanged head reuses its previous PASS/FAIL result.
-- Never a silent pass: a refused trigger (e.g. HTTP 403 "Resource not
-  accessible by integration") is logged as an ERROR naming the missing
-  permission and the credential in use and recorded `FAILED-TO-RUN`; a run
-  that does not finish in time is recorded `TIMEOUT` with the run url; a
-  remote whose VCS provider has no CI-trigger support (only `github` declares
-  one today) is recorded `FAILED-TO-RUN` naming the provider.
+error, before any dispatch (the CLI and the supervisor run the same validator
+first). Behavior:
+- Absent: the gate is never constructed -- no CI calls and no CI log line; the
+  run's log and PR body are byte-identical to a sprint before this option.
+- Set: CI runs ONCE per sprint, at Finalization, as a parallel activity.
+  Right after `group('Finalization')` the orchestrator makes sure the sprint
+  branch's remote head equals the local HEAD of the git-capable publishing
+  member (the harvester's member): normally a read-only check, since every
+  code-writing dispatch already pushed; otherwise one bracketed push
+  (`gitSync.pushBranchBeforeCi`). It then STARTS the gate without awaiting it:
+  resolve the branch head sha on the remote, locate the run of that workflow
+  already triggered for that sha (or trigger one on the branch), poll it to
+  completion bounded by `timeout_s`, and record run id, url, head sha and
+  per-job conclusions. Final Review, Regression Test and Harvest run while CI
+  runs. Publish PR awaits the result after its own branch push and BEFORE
+  raising/updating the PR, and renders a `CI` section into the PR body:
+  outcome, workflow, run url, the commit CI ran on and per-job conclusions.
+  When the head Publish PR pushed differs from the sha CI ran on (e.g. the
+  harvester committed afterwards), the body and the log say so explicitly
+  (`CI ran on <sha1>; branch head is now <sha2> (commits after CI started:
+  not covered)`). No second run is started.
+- Never a verdict input, never a blocker, never silent: CI never changes the
+  sprint verdict and never blocks PR creation; a non-`PASS` outcome is logged
+  as an `[CI Gate] ERROR` line and stated plainly in the PR body. A refused
+  trigger (e.g. HTTP 403 "Resource not accessible by integration") is recorded
+  `FAILED-TO-RUN` naming the missing permission and the credential in use; a
+  run that does not finish in time is `TIMEOUT` with the run url; a remote
+  whose VCS provider has no CI-trigger support (only `github` declares one
+  today), or a sprint with no fleet MCP client, is `FAILED-TO-RUN` naming the
+  cause. A gate that throws becomes `FAILED-TO-RUN`; its promise is guarded
+  from creation, and an abort (or a failed Publish PR push) cancels its
+  polling, so it can never cause an unhandled rejection or hold the process.
+- Never in a prompt: no doer, reviewer or final-review prompt carries a CI
+  result (`test/prompt-hygiene-ci.test.mjs` pins that `ci-gate.mjs` is
+  imported only by `runner.js` and `phases/publish-pr.mjs`).
 - Credential: the orchestrator's just-in-time push+pr VCS credential (the same
   one Publish PR mints), run through `vcs_credential_exec` -- doers never need
   CI permissions.
@@ -206,6 +218,16 @@ abandoned feature.
   Exercised end-to-end through the real `WorkflowEngine.executeFile()` path by
   `test/mock-sprint-worklist-resume.test.mjs`, and unit-tested against the real
   `resolveWorklistTierPolicy()` by `test/worklist-assignment.test.mjs`.
+
+`ci_gate` was the one DORMANT key outside that set: the CI gate module was
+kept but the arg was deliberately rejected as unknown while its first design
+(CI before every reviewer dispatch, result handed to the reviewer) conflicted
+with the rule that CI never reaches doer/reviewer loops. It is now WIRED with
+the agreed design -- one run per sprint at Finalization, in parallel with
+Final Review/Regression/Harvest, awaited by Publish PR and reported in the PR
+body, never a verdict input and never in a prompt -- and has a CLI flag
+(`--ci-gate`) and a supervisor launch field (`ci_gate`). See the `ci_gate`
+paragraph above.
 
 None of the three needed a CLI flag added to satisfy "productize": the bar is
 documentation + a real test against the real consumer + a real invocation

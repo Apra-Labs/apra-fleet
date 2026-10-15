@@ -88,13 +88,20 @@ describe('CI build:ui step', () => {
     });
   });
 
-  describe('workflow triggers unchanged', () => {
-    it('should still have main and v0.5_dashboard in push branches', () => {
-      expect(workflowContent).toMatch(/push:\s*\n\s*branches:\s*\[main, v0\.5_dashboard\]/);
+  // The integration branch (v0.5_dashboard) runs CI on demand only
+  // (workflow_dispatch -- e.g. the sprint engine's ci_gate at Finalization);
+  // main keeps automatic push/pull_request CI.
+  describe('workflow triggers', () => {
+    it('should have only main in push branches', () => {
+      expect(workflowContent).toMatch(/push:\s*\n\s*branches:\s*\[main\]/);
     });
 
-    it('should still have main and v0.5_dashboard in pull_request branches', () => {
-      expect(workflowContent).toMatch(/pull_request:\s*\n\s*branches:\s*\[main, v0\.5_dashboard\]/);
+    it('should have only main in pull_request branches', () => {
+      expect(workflowContent).toMatch(/pull_request:\s*\n\s*branches:\s*\[main\]/);
+    });
+
+    it('should keep workflow_dispatch so the integration branch can run CI on demand', () => {
+      expect(workflowContent).toMatch(/on:\s*\n\s*workflow_dispatch:/);
     });
   });
 

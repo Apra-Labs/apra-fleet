@@ -1,14 +1,19 @@
 name: CI - Build & Test
 
+# v0.5_dashboard (the integration branch) is deliberately NOT a push or
+# pull_request trigger: its CI runs only on demand via workflow_dispatch
+# (Actions -> CI - Build & Test -> Run workflow, pick the branch). A dispatched
+# run reports the same build-and-test check names on that commit, so it still
+# satisfies the integration branch's required checks. main keeps automatic CI.
 on:
   workflow_dispatch:
   push:
-    branches: [main, v0.5_dashboard]
+    branches: [main]
     tags: ['v*']
     paths-ignore:
       - '.github/e2e/**'
   pull_request:
-    branches: [main, v0.5_dashboard]
+    branches: [main]
     paths-ignore:
       - '.github/e2e/**'
 
