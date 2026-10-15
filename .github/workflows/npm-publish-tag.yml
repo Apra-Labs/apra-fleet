@@ -17,9 +17,9 @@ on:
 jobs:
   npm-publish-tag:
     runs-on: ubuntu-latest
+    # No id-token: this one-off publishes without provenance (see Publish).
     permissions:
       contents: read
-      id-token: write
     environment: npm
     env:
       # Input passed via env, never interpolated into shell text.
@@ -48,7 +48,18 @@ jobs:
       - name: Checkout repository at tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Assert HEAD is the tag commit
+        run: |
+          set -euo pipefail
+          HEAD_SHA=$(git rev-parse HEAD)
+          TAG_SHA=$(git rev-parse "refs/tags/${INPUT_TAG}^{commit}")
+          if [ "$HEAD_SHA" != "$TAG_SHA" ]; then
+            echo "::error::HEAD $HEAD_SHA is not tag $INPUT_TAG ($TAG_SHA)"
+            exit 1
+          fi
+          echo "HEAD $HEAD_SHA == $INPUT_TAG"
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -165,6 +176,7 @@ jobs:
           echo "Clean install smoke test passed"
 
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        # No --provenance: from a dispatch run it attests the workflow ref (main), not the tag commit.
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
