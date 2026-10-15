@@ -42,6 +42,7 @@ function oversizedEnv(): Record<string, string> {
   return {
     Path: duplicatedPath(),
     USERPROFILE: 'C:\\Users\\bella',
+    // isolated-home-allow: a fake Windows profile string in a size-bound fixture; never a real home.
     HOME: 'C:\\Users\\bella',
     SystemRoot: 'C:\\Windows',
     GH_TOKEN: 'ghp_secret',

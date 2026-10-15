@@ -12,6 +12,7 @@ import { parse as parseToml } from 'smol-toml';
 import { registerHttpMcp, registerClaudeHttpMcp, registeredMcpTransport } from '../src/cli/install.js';
 import { getProviderInstallConfig, writeOwnerOnlyFile } from '../src/cli/config.js';
 import type { LlmProvider } from '../src/types.js';
+import { pointHomeAt } from './helpers/isolated-home.mjs';
 
 const HEADER = 'X-Apra-Fleet-Member-Secret';
 const SECRET = 'cd'.repeat(32);
@@ -24,7 +25,7 @@ const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-reg-'));
   for (const k of ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR']) saved[k] = process.env[k];
-  process.env.HOME = tmpHome;
+  pointHomeAt(tmpHome); // restored with the other saved vars in afterEach
   process.env.USERPROFILE = tmpHome;
   delete process.env.CLAUDE_CONFIG_DIR;
 });

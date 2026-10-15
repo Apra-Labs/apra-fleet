@@ -965,6 +965,8 @@ describe('service identity is distinct per platform', () => {
     const runReg = vi.fn((_args: string[]) => '');
     const mgr = new WindowsServiceManager('fleet-supervisor', undefined, undefined, {
       probeWsh: () => true, runReg, env: { USERDOMAIN: 'BOX', USERNAME: 'alice', SystemRoot: 'C:\\Windows' },
+      // The task's <UserId> comes from the process token (whoami, main #730), never env USERDOMAIN.
+      whoami: () => 'BOX\\alice',
     });
     expect(await mgr.register('C:\\node\\node.exe', ['C:\\wf\\serve.mjs'], 'C:\\logs\\sup.log', { workingDirectory: 'C:\\wf' }))
       .toBe('run-key');

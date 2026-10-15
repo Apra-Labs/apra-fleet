@@ -166,7 +166,8 @@ describe('install --member', () => {
   });
 
   it('install step labels are sequential: no duplicate or skipped numbers', async () => {
-    for (const args of [['--member'], ['--skill', 'none']]) {
+    // --workflows none on the full install: v0.5 registers a fleet-supervisor service with workflows, which this test does not stub.
+    for (const args of [['--member'], ['--skill', 'none', '--workflows', 'none']]) {
       vi.mocked(console.log).mockClear();
       await runInstall(['--transport', 'http', ...args]);
       const out = vi.mocked(console.log).mock.calls.flat().join('\n');

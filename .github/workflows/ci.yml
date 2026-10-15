@@ -3,10 +3,7 @@ name: CI - Build & Test
 on:
   workflow_dispatch:
   push:
-    # stabilize_0.4.4 pushes also publish an unsigned prerelease (job
-    # prerelease below) so member installs of its builds have an anonymous
-    # download source.
-    branches: [main, v0.5_dashboard, stabilize_0.4.4]
+    branches: [main, v0.5_dashboard]
     tags: ['v*']
     paths-ignore:
       - '.github/e2e/**'

@@ -153,7 +153,7 @@ export function recordedBdFromBeadsStep(
  */
 function probeBdVersion(): string | null {
   try {
-    const out = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true });
+    const out = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true, windowsHide: true });
     return out === undefined || out === null ? '' : String(out).trim();
   } catch {
     return null;

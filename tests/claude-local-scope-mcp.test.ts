@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isThisInstallMcpUrl, refreshClaudeLocalScopeEntries, claudeUserConfigPath } from '../src/services/claude-local-scope-mcp.js';
+import { pointHomeAt } from './helpers/isolated-home.mjs';
 
 const HEADER = 'X-Apra-Fleet-Member-Secret';
 const SECRET = 'ab'.repeat(32);
@@ -19,7 +20,7 @@ const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-local-scope-'));
   for (const k of ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR']) saved[k] = process.env[k];
-  process.env.HOME = tmp;
+  pointHomeAt(tmp); // restored with the other saved vars in afterEach
   process.env.USERPROFILE = tmp;
   delete process.env.CLAUDE_CONFIG_DIR;
 });

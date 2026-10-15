@@ -19,6 +19,10 @@ export const TERMINAL_REASON_CLASSES = Object.freeze({
         'PRE_SPRINT_VALIDATION',
         'BEADS_IDENTITY',
         'RUNBOOK_PERMISSIONS',
+        // A member's permission config or grants are missing (fixed by a
+        // compose_permissions grant, after which the sprint is re-run).
+        'MEMBER_PERMISSION_CONFIG',
+        'MEMBER_PERMISSION_DENIED',
     ]),
     // Environmental / timing; a relaunch may well succeed. SIGINT/SIGTERM
     // (written by the viewer) are operator/OS interruptions, not sprint

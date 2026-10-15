@@ -30,7 +30,11 @@ function makeCapturingCommand() {
 }
 
 async function fileTask(raw) {
-    const validation = validateNewTask({ title: raw, description: 'Do the thing.', priority: 'P2' });
+    // dedupCheck: v0.5 requires backlog-search evidence on every newTask (#660).
+    const validation = validateNewTask({
+        title: raw, description: 'Do the thing.', priority: 'P2',
+        dedupCheck: { query: 'leading dash title', candidateIds: [], verdict: 'no-overlap' },
+    });
     if (!validation.ok) return { validation };
     const cap = makeCapturingCommand();
     await createChildBeadWithAllocatedId({

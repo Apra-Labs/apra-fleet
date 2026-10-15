@@ -250,7 +250,7 @@ export const TOOLCHAIN_FIX_LINE =
  * exactly those fields and is unaffected by this swap.
  */
 async function defaultExec(file, args, options = {}) {
-    const { stdout } = await execFileAsync(file, args, { encoding: 'utf-8', ...options });
+    const { stdout } = await execFileAsync(file, args, { encoding: 'utf-8', windowsHide: true, ...options });
     return String(stdout);
 }
 

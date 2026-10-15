@@ -938,7 +938,10 @@ describe('(o) GET /ui with no shell dist present falls through to the existing 4
     handles.push(handle);
     const res = await getRaw(handle.port, '/ui/');
     expect(res.status).toBe(404);
+  });
+});
 
+// ---------------------------------------------------------------------------
 // (p) Every request on an existing mcp-session-id is bound to the identity that
 // opened the session: a different member JWT (or a JWT on an access-secret
 // session) is refused with 403 and the session is left intact.

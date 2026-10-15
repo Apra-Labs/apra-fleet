@@ -57,6 +57,7 @@ const SPRINT = 'auto-sprint/align-test';
 function hermeticEnv(root) {
     return {
         ...process.env,
+        // isolated-home-allow: HOME points at this test's own temp root, never the real profile.
         HOME: path.join(root, 'home'),
         USERPROFILE: path.join(root, 'home'),
         XDG_CONFIG_HOME: path.join(root, 'home', '.config'),

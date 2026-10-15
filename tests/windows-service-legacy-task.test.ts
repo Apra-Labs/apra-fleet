@@ -136,7 +136,7 @@ function legacyWorld(opts: { legacyXml?: string; noTask?: boolean } = {}) {
 }
 
 function mgrFor(w: ReturnType<typeof legacyWorld>, wrapper = WRAPPER) {
-  return new WindowsServiceManager(w.schtasks, wrapper, {
+  return new WindowsServiceManager('mcp-server', w.schtasks, wrapper, {
     runReg: w.reg, env: ENV, probeWsh: () => true, stoppedByUser: () => true, noticePath: NOTICE,
   });
 }
@@ -184,7 +184,7 @@ describe('register() with a legacy task it cannot replace', () => {
 
   it('installing the current task clears a pending notice', async () => {
     const schtasks = vi.fn(() => 'SUCCESS');
-    const mgr = new WindowsServiceManager(schtasks, WRAPPER, {
+    const mgr = new WindowsServiceManager('mcp-server', schtasks, WRAPPER, {
       runReg: vi.fn(() => { throw new Error('not found'); }), env: ENV, probeWsh: () => true, noticePath: NOTICE,
     });
     expect(await mgr.register('x.exe', [], LOG)).toBe('created');
@@ -193,7 +193,7 @@ describe('register() with a legacy task it cannot replace', () => {
   });
 
   it('an interactive install marks the persisted notice as already shown', async () => {
-    const mgr = new WindowsServiceManager(legacyWorld().schtasks, WRAPPER, {
+    const mgr = new WindowsServiceManager('mcp-server', legacyWorld().schtasks, WRAPPER, {
       runReg: vi.fn(), env: ENV, probeWsh: () => true, noticePath: NOTICE, interactive: () => true,
     });
     await mgr.register('x.exe', [], LOG);
@@ -226,7 +226,7 @@ describe('register() with a legacy task it cannot replace', () => {
     const calls: string[][] = [];
     const schtasks = vi.fn((args: string[]) => { calls.push(args); return args.includes('/xml') ? splitXml : ''; });
     const spawnDetached = vi.fn();
-    const mgr = new WindowsServiceManager(schtasks, spaced, {
+    const mgr = new WindowsServiceManager('mcp-server', schtasks, spaced, {
       runReg: vi.fn(() => ''), env: ENV, probeWsh: () => true, noticePath: NOTICE, spawnDetached,
     });
     await mgr.start();
@@ -273,7 +273,7 @@ describe('status and stop with a legacy task installed', () => {
   });
 
   it('status shows "legacy task (upgrade needed: ...)" plus the fix', async () => {
-    const mgr = new WindowsServiceManager(queryRunner(LEGACY_XML), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false });
+    const mgr = new WindowsServiceManager('mcp-server', queryRunner(LEGACY_XML), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false });
     const st = await mgr.query();
     expect(formatServiceLabel(st)).toBe(
       'installed (enabled -- legacy task (upgrade needed: no automatic revive after a crash; ' +
@@ -289,22 +289,22 @@ describe('status and stop with a legacy task installed', () => {
 
   it('status and stop give no legacy advice for a foreign task named ApraFleet', async () => {
     const foreign = LEGACY_XML.replace(`<Command>${WRAPPER}</Command>`, '<Command>C:\\other\\x.bat</Command>');
-    const st = await new WindowsServiceManager(queryRunner(foreign), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false }).query();
+    const st = await new WindowsServiceManager('mcp-server', queryRunner(foreign), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false }).query();
     expect(st.notice).toBeUndefined();
     expect(st.detail ?? '').not.toMatch(/legacy/);
-    await new WindowsServiceManager(queryRunner(foreign), WRAPPER, { runReg: vi.fn() }).stop();
+    await new WindowsServiceManager('mcp-server', queryRunner(foreign), WRAPPER, { runReg: vi.fn() }).stop();
     expect(warn.mock.calls.map(c => c.join(' ')).join('\n')).not.toContain('schtasks /delete');
   });
 
   it('status of a current task has no legacy hint', async () => {
-    const mgr = new WindowsServiceManager(queryRunner(CURRENT_QUERIED_XML), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false });
+    const mgr = new WindowsServiceManager('mcp-server', queryRunner(CURRENT_QUERIED_XML), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false });
     const st = await mgr.query();
     expect(formatServiceLabel(st)).toBe('installed (enabled)');
     expect(st.notice).toBeUndefined();
   });
 
   it('stop prints the legacy guidance when disabling is denied, and still stops the server', async () => {
-    const mgr = new WindowsServiceManager(queryRunner(LEGACY_XML), WRAPPER, { runReg: vi.fn() });
+    const mgr = new WindowsServiceManager('mcp-server', queryRunner(LEGACY_XML), WRAPPER, { runReg: vi.fn() });
     expect(await mgr.stop()).toBe(true);
     expect(mockGracefulStop).toHaveBeenCalled();
     const text = warn.mock.calls.map(c => c.join(' ')).join('\n');
@@ -316,7 +316,7 @@ describe('status and stop with a legacy task installed', () => {
   });
 
   it('stop on a current task that cannot be disabled keeps the plain warning', async () => {
-    const mgr = new WindowsServiceManager(queryRunner(CURRENT_QUERIED_XML), WRAPPER, { runReg: vi.fn() });
+    const mgr = new WindowsServiceManager('mcp-server', queryRunner(CURRENT_QUERIED_XML), WRAPPER, { runReg: vi.fn() });
     await mgr.stop();
     const text = warn.mock.calls.map(c => c.join(' ')).join('\n');
     expect(text).toMatch(/Could not disable the ApraFleet task/);
@@ -328,7 +328,7 @@ describe('status and stop with a legacy task installed', () => {
 
   it('a user-owned old-form task (no "elevated" problem) is fixed by a plain re-install', async () => {
     const userOwnedOld = CURRENT_QUERIED_XML.replace(/<Repetition>[\s\S]*?<\/Repetition>/, '');
-    const st = await new WindowsServiceManager(queryRunner(userOwnedOld), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false }).query();
+    const st = await new WindowsServiceManager('mcp-server', queryRunner(userOwnedOld), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false }).query();
     expect(st.detail).toBe('legacy task (upgrade needed: no automatic revive after a crash)');
     expect(st.notice).toBe('To upgrade it, run from a normal prompt:\n    apra-fleet install --force');
     expect(st.notice).not.toMatch(/elevated|schtasks/);

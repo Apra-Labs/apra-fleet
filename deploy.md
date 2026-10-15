@@ -115,7 +115,7 @@ your deploy; do not clear it yourself -- report it in `notes` so the
 orchestrator/operator can release it against the supervisor:
 
 ```bash
-curl -sf -X POST http://localhost:8787/api/reservations/<sprintId>/force-release -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")"
+curl -sf -X POST http://localhost:8787/api/reservations/<sprintId>/force-release -H "Authorization: Bearer <token: the contents of ~/.apra-fleet/fleet.key>"
 ```
 PowerShell:
 ```powershell
@@ -160,13 +160,11 @@ npm run build:binary
 #   exit 1 -> usage error (fix the arguments, do not proceed)
 # Unreachable supervisor = exit 0 (no live sprint to collide with). Omit
 # --self-sprint-id only when given no identity: every reservation is then foreign.
-# The header carries the shared fleet.key service token (see the "Service
-# token" row below under Sandbox Deploy), the same one every playbook curl
-# authenticates with (primary source ~/.apra-fleet/fleet.key; the supervisor
-# falls back to <dataDir>/private/token only if fleet.key did not exist at its
-# boot). A 401 {"error":"unauthorized"} (curl -f exits 22) means the token is
-# wrong or missing -- it does NOT mean "no sprints".
-curl -sf http://localhost:8787/api/sprints -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")"
+# The script reads GET /api/sprints itself, authenticated with the shared
+# fleet.key service token (see the "Service token" row below under Sandbox
+# Deploy; the supervisor falls back to <dataDir>/private/token only if
+# fleet.key did not exist at its boot). A 401 means the token is wrong or
+# missing -- it does NOT mean "no sprints".
 node scripts/check-foreign-sprints.mjs --self-sprint-id "<your-sprint-id>"
 
 # Resolves dist/apra-fleet-installer-<platform>-<arch>[.exe] and runs

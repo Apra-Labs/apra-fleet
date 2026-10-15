@@ -99,7 +99,14 @@ function isInsideMockHome(target: string, impl: path.PlatformPath = path): boole
   if (!impl.isAbsolute(target)) return true;
   const home = impl.resolve(mockHome);
   const resolved = impl.resolve(target);
-  return resolved === home || resolved.startsWith(home + impl.sep);
+  if (resolved === home || resolved.startsWith(home + impl.sep)) return true;
+  // The per-run isolated data dir tests/setup.ts creates (APRA_FLEET_DATA_DIR,
+  // an mkdtemp dir) is just as safe: install writes its data there since the
+  // 0.4.4 access secret (member-access.key) -- never the developer's home.
+  const isolatedData = process.env.APRA_FLEET_DATA_DIR;
+  if (!isolatedData) return false;
+  const data = impl.resolve(isolatedData);
+  return resolved === data || resolved.startsWith(data + impl.sep);
 }
 
 const BASE_MANIFEST = {

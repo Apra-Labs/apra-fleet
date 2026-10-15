@@ -22,6 +22,7 @@ import { getOrCreateKey } from '../src/services/jwt.js';
 import { __registerTestRouteModule, type ConsoleRoute } from '../src/console/server.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { applyIsolatedHome } from './helpers/isolated-home.mjs';
+import { memberSecretHeaders } from './test-helpers.js';
 
 function noop(_server: McpServer): void {
   // no tools registered -- this suite never opens an /mcp session
@@ -221,10 +222,17 @@ describe('console auth guard: /health and /mcp are untouched', () => {
     expect(payload.status).toBe('ok');
   });
 
-  it('/mcp is reachable with no credential -- the console guard never widened onto it', async () => {
+  // Since 0.4.4 /mcp has its own gate (the member access secret, http-transport.ts).
+  // The console guard must still never widen onto /mcp: a request carrying the
+  // access secret but no console credential is not refused, and one without
+  // it is refused by the /mcp gate's own error, never the console's.
+  it('/mcp is gated only by its own access-secret check -- the console guard never widened onto it', async () => {
     const handle = await startServer();
-    const res = await rawRequest(handle.port, 'GET', '/mcp');
-    expect(res.status).not.toBe(401);
+    const withSecret = await rawRequest(handle.port, 'GET', '/mcp', memberSecretHeaders());
+    expect(withSecret.status).not.toBe(401);
+    const bare = await rawRequest(handle.port, 'GET', '/mcp');
+    expect(bare.status).toBe(401);
+    expect(JSON.parse(bare.body).error).toBe('access secret required');
   });
 });
 

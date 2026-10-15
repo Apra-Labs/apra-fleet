@@ -171,10 +171,10 @@ describe('WindowsServiceManager lifecycle', () => {
     });
   }
 
-  let cwdBefore: string[];
+  let cwdEntriesBefore: string[];
 
   beforeEach(() => {
-    cwdBefore = fs.readdirSync(process.cwd());
+    cwdEntriesBefore = fs.readdirSync(process.cwd());
     vi.clearAllMocks();
     order.length = 0;
     wsh = true;
@@ -215,7 +215,7 @@ describe('WindowsServiceManager lifecycle', () => {
   afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
     // Nothing may leak into the cwd (relative '\\tmp\\fleet-wintask-*' launcher, 'C:\\' log dir).
-    const leaked = fs.readdirSync(process.cwd()).filter(n => !cwdBefore.includes(n));
+    const leaked = fs.readdirSync(process.cwd()).filter(n => !cwdEntriesBefore.includes(n));
     for (const n of leaked) fs.rmSync(path.join(process.cwd(), n), { recursive: true, force: true });
     expect(leaked).toEqual([]);
   });
