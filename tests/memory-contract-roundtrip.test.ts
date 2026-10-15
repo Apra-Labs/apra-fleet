@@ -21,6 +21,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
 import { registerAllTools } from '../src/services/tool-registry.js';
@@ -32,6 +33,7 @@ import {
   RECORDED_REMOTE_A,
   RECORDED_REMOTE_B,
   RECORDED_REMOTE_IMPORT_REJECTED,
+  RECORDED_REMOTE_BARE,
 } from '../memory-contract/v1/tests/roundtrip-harness.mjs';
 import { materializeSessionWorld } from '../memory-contract/v1/tests/session-world.mjs';
 import { KB_MODULES, CODE_EXPORTS } from '../memory-contract/v1/generate-contract.mjs';
@@ -55,7 +57,7 @@ const ROSTER: string[] = [
 ];
 
 interface SetupOp {
-  op: 'write' | 'delete';
+  op: 'write' | 'delete' | 'commit';
   repo: string;
   rel: string;
   contents?: string;
@@ -71,6 +73,7 @@ const RECORDED_REMOTES: Record<string, string> = {
   A: RECORDED_REMOTE_A,
   B: RECORDED_REMOTE_B,
   IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED,
+  BARE: RECORDED_REMOTE_BARE,
 };
 
 /**
@@ -103,7 +106,10 @@ class SqliteContractProvider {
   }
 
   async prepareEnvironment(env: EnvironmentSpec) {
-    this.root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-contract-roundtrip-'));
+    // realpath: a FULL session's (self) is process.cwd(), reported with
+    // symlinks resolved (macOS /var -> /private/var), so substitutions must
+    // use that same spelling.
+    this.root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memory-contract-roundtrip-')));
     const world = await materializeSessionWorld(env, this.root, {
       remoteUrl: (key: string) => this.liveRemote(key),
       addAgent,
@@ -140,6 +146,10 @@ class SqliteContractProvider {
         fs.writeFileSync(target, op.contents ?? '', 'utf-8');
       } else if (op.op === 'delete') {
         fs.rmSync(target, { force: true });
+      } else if (op.op === 'commit') {
+        const git = (args: string[]) => execFileSync('git', args, { cwd: repoDir, stdio: ['ignore', 'pipe', 'pipe'] });
+        git(['add', '--', op.rel]);
+        git(['-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'setup: ' + op.rel, '--', op.rel]);
       } else {
         throw new Error(`unknown setup op "${op.op}"`);
       }
@@ -212,7 +222,7 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    expect(report.steps.length).toBe(74); // 73 + kb_stats/edge-empty-promote-ratio-null (apra-fleet-i9ag.15.17, session B); 73 = 64 + kb_list/happy-confidence-string + 4 E-SCOPE-KEY-REMOVED refusals (one per kb_* family); 63 + kb_feedback/happy (FULL, non-member session); 61 (code_reindex/code_status outcomes, kb + code (self) refusals, code_query/refusal-intel-disabled on top of 48 + kb_query/happy-confirmed-only) + kb_bible_commit happy and refusal
+    expect(report.steps.length).toBe(93); // one SCENARIO step per committed fixture (93 fixture files on disk)
   });
 
   it('covers all 26 inventoried tools', () => {
@@ -353,4 +363,35 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
       expect(result.errors).toContain('must be string');
     });
   });
+});
+
+// The basis-mismatch step's assertParsed, made falsifiable: a provider whose
+// kb_bible_commit ADMITS the drifted entry (moves it from skipped to merged)
+// still returns a schema-valid response, so only that assertion can catch it.
+// The stub wraps the real sqlite adapter and rewrites nothing else, so the
+// basis-mismatch step must be the run's one and only failure.
+class AdmitsDriftedEntryProvider extends SqliteContractProvider {
+  async call(tool: string, request: unknown, session: string) {
+    const envelope = await super.call(tool, request, session);
+    if (tool !== 'kb_bible_commit') return envelope;
+    const body = JSON.parse(envelope.content[0].text) as { merged: string[]; skipped: { id: string; reason: string }[] };
+    const drifted = body.skipped.filter((x) => x.reason === 'basis_mismatch').map((x) => x.id);
+    if (drifted.length === 0) return envelope;
+    const admitted = { ...body, merged: [...body.merged, ...drifted], skipped: body.skipped.filter((x) => x.reason !== 'basis_mismatch') };
+    return { ...envelope, content: [{ ...envelope.content[0], text: JSON.stringify(admitted) }] };
+  }
+}
+
+describe('memory-contract/v1 round trip: a provider that admits a drifted id fails the basis-mismatch step', () => {
+  const provider = new AdmitsDriftedEntryProvider();
+
+  afterAll(() => {
+    provider.dispose();
+  });
+
+  it('reports exactly the kb_bible_commit/basis-mismatch step as failed', async () => {
+    const report = await runRoundTrip(provider, ROSTER);
+    expect(report.failures).toHaveLength(1);
+    expect(report.failures[0]).toMatch(/^kb_bible_commit\/basis-mismatch: expected merged to be empty/);
+  }, 120_000);
 });

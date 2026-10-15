@@ -705,7 +705,7 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds, expande
 }
 
 /**
- * apra-fleet-eft.37.3: pure HTML-string builder for the auto-sprint verdict
+ * apra-fleet-eft.37.3: pure HTML-string builder for the fleet-sprint verdict
  * badge + PR link, moved OUT of the generic workflow core (which used to
  * mint `state.verdict`/`state.prUrl` by name -- see
  * docs/workflow-core-boundary-refactoring.md M2) and into this se-owned
@@ -714,11 +714,11 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds, expande
  * SCALAR fields as a generic, unstyled key/value strip (src/viewer/
  * index.mjs's `#result-strip`). This function reads the SAME
  * `state.result` object, but knows the two keys that are meaningful for an
- * auto-sprint run specifically -- `verdict` (colored by outcome) and
+ * fleet-sprint run specifically -- `verdict` (colored by outcome) and
  * `prUrl` (link-ified) -- exactly the se-domain knowledge that has no
  * business living in the generic engine.
  *
- * Returns '' when `result` carries neither key (e.g. a non-auto-sprint
+ * Returns '' when `result` carries neither key (e.g. a non-fleet-sprint
  * workflow, or a run that hasn't finished yet), so the caller can hide its
  * container entirely rather than show an empty badge strip.
  *
@@ -728,7 +728,7 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds, expande
 export function renderResultExtrasHtml(result) {
     const verdict = result && typeof result === 'object' ? result.verdict : undefined;
     const prUrl = result && typeof result === 'object' ? result.prUrl : undefined;
-    // Nothing se-meaningful to show (non-auto-sprint workflow, or a run that
+    // Nothing se-meaningful to show (non-fleet-sprint workflow, or a run that
     // hasn't finished yet) -- let the caller hide its container entirely.
     if (verdict == null && prUrl == null) return '';
 
@@ -924,7 +924,7 @@ export const beadsExtension = {
         ${renderProgressPlaceholderHtml.toString()}
         ${renderBeadsSummaryProgressHtml.toString()}
 
-        // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
+        // apra-fleet-eft.37.3: mounts the fleet-sprint verdict badge + PR
         // link into the header, next to core's generic (unstyled)
         // #result-strip -- see viewer/index.mjs's 'workflow:result'
         // CustomEvent, dispatched on every renderState() with
@@ -1196,7 +1196,7 @@ export const beadsExtension = {
             schedulePayloadRender();
         });
 
-        // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
+        // apra-fleet-eft.37.3: mounts the fleet-sprint verdict badge + PR
         // link into the header, next to core's generic (unstyled)
         // #result-strip -- see viewer/index.mjs's 'workflow:result'
         // CustomEvent, dispatched on every renderState() with
@@ -1247,6 +1247,16 @@ export function renderKbCodeIntelHtml(data, init) {
         function th(label) {
             return '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">' + escapeHtml(label) + '</th>';
         }
+        // Why a member's totals are unknown: the first unknown dispatch's reason,
+        // else the member-init record when that member's tools were unavailable.
+        function memberUnknownReason(name, firstReason) {
+            if (firstReason) return String(firstReason);
+            const ms = (init && typeof init === 'object' && Array.isArray(init.members)) ? init.members : [];
+            for (const m of ms) {
+                if (m && m.member === name && m.verified !== true) return 'member tools unavailable: ' + String(m.reason || 'unverified');
+            }
+            return 'at least one dispatch count is unknown';
+        }
         const records = (data && typeof data === 'object' && Array.isArray(data.dispatches))
             ? data.dispatches.filter(function (r) { return r && typeof r === 'object'; })
             : [];
@@ -1284,11 +1294,12 @@ export function renderKbCodeIntelHtml(data, init) {
         for (const r of records) {
             const name = String(r.member || '(unknown member)');
             if (!Object.prototype.hasOwnProperty.call(totals, name)) {
-                totals[name] = { dispatches: 0, kb: 0, code: 0 };
+                totals[name] = { dispatches: 0, kb: 0, code: 0, reason: null };
                 order.push(name);
             }
             const t = totals[name];
             t.dispatches++;
+            if (!t.reason && r.reason && (!isCount(r.kb) || !isCount(r.code))) t.reason = String(r.reason);
             t.kb = isCount(t.kb) && isCount(r.kb) ? t.kb + r.kb : 'unknown';
             t.code = isCount(t.code) && isCount(r.code) ? t.code + r.code : 'unknown';
         }
@@ -1297,9 +1308,16 @@ export function renderKbCodeIntelHtml(data, init) {
         for (const name of order) {
             const t = totals[name];
             html += '<tr data-member="' + escapeHtml(name) + '">' + textCell(name) + textCell(t.dispatches)
-                + countCell(t.kb, 'at least one dispatch count is unknown') + countCell(t.code, 'at least one dispatch count is unknown') + '</tr>';
+                + countCell(t.kb, memberUnknownReason(name, t.reason)) + countCell(t.code, memberUnknownReason(name, t.reason)) + '</tr>';
         }
         html += '</table>';
+        // Visible reason for every member whose totals are unknown.
+        for (const name of order) {
+            const t = totals[name];
+            if (isCount(t.kb) && isCount(t.code)) continue;
+            html += '<div data-kb-unknown-reason="' + escapeHtml(name) + '" style="font-size: 11px; color: #f59e0b; padding: 2px 8px;">'
+                + escapeHtml(name) + ': kb_* and code_* counts unknown (' + escapeHtml(memberUnknownReason(name, t.reason)) + ')</div>';
+        }
 
         html += '<div style="font-size: 11px; font-weight: 600; color: #a1a1aa; padding: 8px 8px 2px 8px;">Per dispatch</div>';
         html += '<table data-kb-panel-dispatches="true" style="border-collapse: collapse;"><tr>' + th('#') + th('member') + th('role') + th('label') + th('kb_* calls') + th('code_* calls') + '</tr>';

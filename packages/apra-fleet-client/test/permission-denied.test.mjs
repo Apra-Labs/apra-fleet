@@ -29,7 +29,7 @@ const recorded = {
             signals: ['result_json', 'stderr', 'transcript'],
         },
         sessionId: '48ae7611-290b-4396-90c6-c266d09c9473',
-        usage: { input_tokens: 17220, output_tokens: 68, total_tokens: 17288 },
+        usage: { input_tokens: 17220, output_tokens: 68, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, total_tokens: 17288 },
     },
 };
 
@@ -65,6 +65,24 @@ describe('permission_denied', () => {
         assert.strictEqual(permissionDenialOf(null), null);
         assert.strictEqual(permissionDenialOf({ structuredContent: { reason: 'permission_denied', permissionDenied: { actions: 'command' } } }), null);
         assert.strictEqual(permissionDenialOf({ structuredContent: { reason: 'permission_denied', permissionDenied: { actions: [], denials: [{}], suggestedGrants: [], hint: '' } } }), null);
+    });
+
+    test('permissionDenialOf keeps per-call grants, the permission mode and healable:false (never grant)', () => {
+        const block = {
+            actions: ['Bash'],
+            denials: [{ action: 'Bash', target: 'curl x', suggestedGrants: ['Bash(curl:*)', 'Bash(curl x)'] }],
+            suggestedGrants: ['Bash(curl:*)', 'Bash(curl x)'],
+            hint: 'classifier',
+            signals: ['result_json'],
+            permissionMode: 'auto',
+            healable: false,
+        };
+        const d = permissionDenialOf({ structuredContent: { isError: true, reason: 'permission_denied', permissionDenied: block } });
+        assert.deepStrictEqual(d, block);
+        assert.match(executePromptSrc, /permissionWarning\?: PermissionDenial;/);
+        assert.match(apiSrc, /@property \{PermissionDenied\} \[permissionWarning\]/);
+        assert.match(apiSrc, /@property \{number\} \[cost_usd\]/);
+        assert.match(executePromptSrc, /cost_usd\?: number;/);
     });
 
     test('client typedefs match the server declarations', () => {

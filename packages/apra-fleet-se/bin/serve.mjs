@@ -20,7 +20,7 @@
 import { parseArgs } from 'node:util';
 import path from 'node:path';
 import fs from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
 import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 import { createLedger, defaultDataDir } from '../src/supervisor/ledger.mjs';
@@ -56,6 +56,7 @@ import { ensureBacklogMember, BacklogMemberRefusedError } from '../src/superviso
 import { BeadsViewUnavailableError, createBeadsView, createBeadsViewCommand, createLaunchRowsFetcher, createSnapshotRowsReader } from '../src/supervisor/beads-view.mjs';
 import { createDoltOrphanSweep, normalizeMsysPathForPlatform } from '../src/supervisor/dolt-orphan-sweep.mjs';
 import { resolveFleetServerConnection } from './cli.mjs';
+import { withFleetAccessSecret } from '@apralabs/apra-fleet-client/server-resolution';
 import {
     discoverBeadsDir, probeBeadsIdentity, createBeadsIdentityState,
     formatNoBeadsWarning, formatProbeFailedWarning,
@@ -80,7 +81,7 @@ import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 
 const SERVE_USAGE = `
-Usage: fleet-se serve [options]
+Usage: node "${fileURLToPath(import.meta.url)}" [options]
 
 Starts the always-on fleet-sprint supervisor. Runs until POST /api/shutdown or a
 termination signal (Ctrl-C / SIGTERM).
@@ -1059,7 +1060,9 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     try {
         const projectsConnection = await resolveFleetServerConnection();
         if (projectsConnection && projectsConnection.mode === 'http') {
-            projectsTransport = new StreamableHttpTransport(projectsConnection.url);
+            // The fleet server refuses an /mcp session without this install's
+            // access secret (main #730), same as fleet-members.mjs's transports.
+            projectsTransport = new StreamableHttpTransport(projectsConnection.url, withFleetAccessSecret());
             await projectsTransport.start();
             projectsClient = new ApraFleet(new McpClient(projectsTransport));
         } else {

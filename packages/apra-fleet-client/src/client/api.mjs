@@ -5,10 +5,17 @@
  * @property {number} [max_total_s] - Hard ceiling in seconds, measured from when the server
  *   receives the call (setup counts); exceeding it returns reason 'max_total_time'
  * @property {number} [max_turns] - Max turns for claude -p (default: 50)
+ * @property {boolean} [fail_on_permission_denial] - Strict permission handling (default false).
+ *   true: a refused tool call fails with reason 'permission_denied' (except a healable:false
+ *   Claude refusal on a complete reply, which is a permissionWarning). Omitted/false: a complete
+ *   Claude reply succeeds with the refusals in permissionWarning; AGY refusals still fail.
+ *   A max_turns/auth/server/overloaded result keeps its own reason either way, with the
+ *   refusals attached as permissionDenied.
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [model] - Model tier ("cheap", "standard", "premium") or a specific model ID
- * @property {boolean|string} [resume] - Resume the previous session if one exists. Defaults to
+ * @property {boolean|string} [resume] - Resume the previous session if one exists (`true` starts
+ *   fresh instead when the stored session was recorded by a different server build). Defaults to
  *   true at this client/transport layer when the field is omitted entirely. NOTE: the
  *   FleetWorkflow.agent() workflow layer (packages/apra-fleet-workflow/src/workflow/index.mjs)
  *   always sends this field explicitly, defaulting it to `false` for workflow-authored
@@ -66,6 +73,8 @@
  * @typedef {Object} PermissionDenialItem
  * @property {string} action - Provider permission action, e.g. 'command', 'read_file', 'mcp'.
  * @property {string} [target] - The concrete target when the CLI named it, e.g. 'git status --short --branch'.
+ * @property {string[]} [suggestedGrants] - compose_permissions grants that would allow this one
+ *   call, primary first (empty when no grant maps to it).
  */
 
 /**
@@ -76,9 +85,18 @@
  * @property {string[]} suggestedGrants - compose_permissions `grant` values that would allow the
  *   denied calls, primary first (for an agy command or unsandboxed denial, on any OS, a
  *   `Bash(<cmd>:*)` prefix grant, then the exact command as the narrow alternative); empty when no
- *   canonical mapping exists.
+ *   canonical mapping exists, and always empty when `healable` is false (never grant those).
  * @property {string} hint - One-line remediation.
  * @property {Array<'result_json'|'stderr'|'transcript'>} signals - Which CLI signals reported it.
+ * @property {string} [permissionMode] - The permission mode the session ran in, when the
+ *   provider knows it (Claude: 'auto' | 'acceptEdits' | 'bypassPermissions').
+ * @property {boolean} [healable] - false when no grant may ever be added for these denials
+ *   (Claude auto/bypass mode: the safety classifier or a deny rule refused the call, not a
+ *   missing allow rule; or, in any mode, a fleet tool outside the member allowlist was refused
+ *   -- see `cause`). Absent = a grant may heal it.
+ * @property {'policy_deny'} [cause] - 'policy_deny' when at least one refused call was a fleet
+ *   tool outside the member allowlist, denied by the member's own permission config on purpose.
+ *   Always comes with `healable: false`; never grant it.
  */
 
 /**
@@ -99,10 +117,19 @@
  *   without a command line -- relay member or SFTP disabled; deterministic, do not retry;
  *   no LLM call was made) | ...
  * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
- *   the member CLI refused tool calls for lack of a grant (AGY headless mode auto-denies them
- *   and exits 0, which used to surface as 'empty_response'). Pass `suggestedGrants` to
- *   compose_permissions `grant` to heal it; read it with {@link permissionDenialOf}. Any partial
- *   reply is in `response`.
+ *   the member CLI refused tool calls (AGY headless mode auto-denies them and exits 0; Claude
+ *   reports them in its result event's non-empty `permission_denials`). For Claude this needs the
+ *   caller's `fail_on_permission_denial: true`; AGY fails this way either way. Pass
+ *   `suggestedGrants` to compose_permissions `grant` to heal it; read it with
+ *   {@link permissionDenialOf}. Any partial reply is in `response`. A healable:false Claude
+ *   refusal (auto/bypass mode) on a complete reply is a `permissionWarning`, not this failure;
+ *   on an incomplete one it fails here with `healable: false` and no suggested grants. Also
+ *   present as an EXTRA field on a typed failure (max_turns_exhausted, auth, server,
+ *   overloaded, ...) or a non-strict Claude failure whose turn carried refusals: the typed
+ *   reason wins.
+ * @property {PermissionDenied} [permissionWarning] - Present on a SUCCESSFUL dispatch whose
+ *   session refused tool calls without failing it: a healable:false refusal (never grant it),
+ *   or any Claude refusal when `fail_on_permission_denial` was not set. A logged warning.
  * @property {UsageLimitSignal} [usageLimit] - Present when `reason === 'usage_limit'`
  *   (apra-fleet-hzeb.2): the provider's detectUsageLimit() signal verbatim -- a 429/quota
  *   exhaustion that a fresh session cannot cure, so execute_prompt returns this INSTEAD of
@@ -117,14 +144,55 @@
  *   `packages/apra-fleet-workflow` forwards it onto `AgentDispatchError.details.dispatched`.
  * @property {string} [response] - The LLM's actual reply text on success.
  * @property {string} [sessionId] - The session id this dispatch landed on, when known --
- *   present on success AND on a 'usage_limit'/'max_turns_exhausted' failure so the SAME
- *   session can be resumed later instead of losing context to a fresh one.
- * @property {{input_tokens:number, output_tokens:number, total_tokens:number}} [usage]
+ *   present on success AND on a 'usage_limit' or typed-failure result ('max_turns_exhausted',
+ *   'empty_response', 'dispatch_failed', 'nonzero_exit', 'auth', 'server', 'overloaded') whenever
+ *   the provider parsed one, so the SAME session can be resumed by explicit id later instead of
+ *   losing context to a fresh one. The server also records it as a known session. Absent when
+ *   the provider supplied none.
+ * @property {ExecutePromptUsage} [usage]
+ */
+
+/**
+ * @typedef {Object} ExecutePromptUsage
+ * @property {number} input_tokens - Uncached prompt tokens.
+ * @property {number} output_tokens - Completion tokens.
+ * @property {number} cache_read_input_tokens - Prompt tokens served from the provider's
+ *   prompt cache; billed, and NOT included in input_tokens (0 when the provider reports none).
+ * @property {number} cache_creation_input_tokens - Prompt tokens written to the provider's
+ *   prompt cache; billed, and NOT included in input_tokens (0 when the provider reports none).
+ * @property {number} total_tokens - input_tokens + output_tokens only (the context-window
+ *   figure context admission reads); it deliberately EXCLUDES the cache counts, so a cost
+ *   figure must price all four counts rather than total_tokens.
+ * @property {number} [cost_usd] - USD this dispatch cost as the provider CLI reported it
+ *   (Claude: the per-dispatch share of the cumulative total_cost_usd). Use it as-is when
+ *   present; price the token counts only when it is absent.
+ */
+
+/**
+ * @typedef {Object} ModelPrice
+ * @property {string} model - Concrete model the tier resolves to.
+ * @property {number} promptPrice - $/1M input_tokens.
+ * @property {number} completionPrice - $/1M output_tokens.
+ * @property {number} cacheReadPrice - $/1M cache_read_input_tokens (the model's own cache-hit rate).
+ * @property {number} cacheWritePrice - $/1M cache_creation_input_tokens (Claude: the 1-hour
+ *   cache-write rate, 2x input, which the Claude Code CLI uses).
+ */
+
+/**
+ * @typedef {Object} MemberModelPricingResult
+ * @property {string} member_id
+ * @property {string} member_name
+ * @property {string} llm_provider
+ * @property {{cheap: ModelPrice|null, standard: ModelPrice|null, premium: ModelPrice|null}} pricing
+ *   - null for a tier whose resolved model has no known price.
  */
 
 /**
  * @typedef {Object} ExecuteCommandOptions
- * @property {string} command - The shell command to execute
+ * @property {string} command - The shell command to execute. Multi-line commands and heredocs
+ *   are supported. On POSIX members (linux, macos, windows Git Bash) the server passes it to its
+ *   wrapper as data (`eval '<command>'`), so the work-folder `cd` covers the whole command and a
+ *   syntax error in it surfaces on stderr as `eval: line N: ...` (not `-c: line N: ...`).
  * @property {boolean} [long_running] - Run as background task. Supported on linux and windows
  *   members. Windows launches the task detached via `Invoke-CimMethod Win32_Process.Create`
  *   (WMI provider host / session 0), independent of the SSH session's job object, since a plain
@@ -158,6 +226,35 @@
  * @property {number} code - code_* calls counted
  * @property {number} total - kb + code
  * @property {Object<string, number>} tools - Per-tool counts (tools called at least once)
+ */
+
+/**
+ * Result-side shape of execute_command's `structuredContent`. Mirrors
+ * src/tools/execute-command.ts's ExecuteCommandStructured. A command that ran
+ * reports its real `exitCode` (isError absent). A command that never produced an
+ * exit code -- the exec timed out, the transport failed, a cloud member could
+ * not be started, or the pre-dispatch check failed -- reports `isError: true`,
+ * a `reason`, and `exitCode: -1` (never a fake 0). Read it with
+ * {@link commandFailureOf}.
+ * @typedef {Object} ExecuteCommandStructured
+ * @property {number} exitCode - Exit code of the command; -1 when it never produced one.
+ * @property {string} stdout - Command stdout (credential values redacted).
+ * @property {string} stderr - Command stderr, or the failure detail when isError is true.
+ * @property {boolean} [isError] - true when the command did not run to an exit code.
+ * @property {string} [reason] - Present with isError: 'timeout' (inactivity timeout) |
+ *   'max_total_time' (hard total-time cap) | 'transport_error' (connection/channel failure) |
+ *   'cloud_start_failed' | 'preflight_offline' | 'preflight_auth_expired' |
+ *   'preflight_auth_missing'.
+ * @property {'secret_delivery_unavailable'} [storedEnvNotDelivered] - Present when the
+ *   command ran WITHOUT the member's stored credential env vars because no
+ *   owner-only file channel exists to deliver them (SFTP disabled, relay member).
+ */
+
+/**
+ * @typedef {Object} ExecuteCommandFailure
+ * @property {string} reason - The structured reason, or 'unflagged_failure' for a failure
+ *   recognized only from the text of an older server that sent no structuredContent.
+ * @property {string} message - Human-readable failure text.
  */
 
 /**
@@ -258,8 +355,9 @@
  * @property {string} [category] - Optional group label
  * @property {string[]} [tags] - Optional list of free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
+ *   ("auto" on a Claude model without auto-mode support, such as Haiku, runs acceptEdits)
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "backlog" role)
- * @property {"auto" | "skip"} [fleet_install] - Whether registration installs/updates apra-fleet on the member, writes its per-folder apra-fleet MCP entry and verifies it (default "auto"; local members only get the MEMBER-session probe). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports fleetMcp.
+ * @property {"auto" | "skip" | "replace-full"} [fleet_install] - Whether registration installs/updates apra-fleet on the member, writes its per-folder apra-fleet MCP entry and verifies it (default "auto"; local members only get the MEMBER-session probe; a full install without the member-install marker is never touched). "replace-full": also explicitly opts in to replacing such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports fleetMcp, plus a WARNING (consequence, exact reason, OS-correct manual install steps; also fleetMcp.manualInstall) when a requested install/upgrade did not happen.
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field.
  * @property {Object<string, string>} [env] - Free-form name -> value map for this member. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision.
@@ -270,7 +368,7 @@
  * @typedef {Object} UpdateMemberOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
- * @property {"auto" | "skip"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed. "skip": never install. Omit: install only on a provider change. Unknown input keys are rejected by the server.
+ * @property {"auto" | "skip" | "replace-full"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member's permission allow-list through compose_permissions grant mode, keeping its role and grants (a NOTICE says so; a failure is a WARNING); a full install without the member-install marker is never touched. "replace-full": "auto" plus an explicit opt-in to replace such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register). "skip": never install. Omit: install only on a provider change. A requested install/upgrade that cannot happen never fails the update: the result adds a WARNING (consequence, exact reason, OS-correct manual install steps; also fleetMcp.manualInstall). Unknown input keys are rejected by the server.
  * @property {string} [friendly_name] - New friendly name
  * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {string} [host] - New host
@@ -295,7 +393,8 @@
  * @property {"codebase-memory" | "gitnexus" | "none"} [code_intel_provider] - Change the code-intelligence provider for this member
  * @property {string} [category] - Group label
  * @property {string[]} [tags] - Free-form labels
- * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode
+ * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode ("auto" on a
+ *   Claude model without auto-mode support, such as Haiku, runs acceptEdits)
  * @property {boolean} [unreservable] - Mark/unmark this member as shared/never exclusively reservable
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  * @property {"github" | "bitbucket" | "azure-devops" | "none"} [vcs_provider] - Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use this to correct a wrong auto-detect from register_member, or to set the provider without provisioning credentials. "none" clears it.
@@ -316,6 +415,20 @@
  * @property {string} [fleetInstalledAt] - ISO 8601 time this fleet's own install run last succeeded on the member; carried across later probes; absent when the fleet never installed it (a refusal or observation-only probe never sets it)
  * @property {{reason: string, detail?: string}} [installFailure] - A requested apra-fleet upgrade that failed before the member was touched while the older install stayed in use; present on available and unavailable statuses, also named in detail
  * @property {{state: "missing" | "broken", detail: string, fix: string}} [beads] - Present only when the beads CLI (bd) is not usable on a remote member (not on its PATH nor in <home>/.apra-fleet/bin); independent of state; absent when bd works or could not be probed
+ * @property {number} [port] - Remote members: the port of the member's own apra-fleet install, resolved from its member-install marker; the member MCP URL (per-folder entry and per-session config) uses it
+ * @property {"marker" | "default"} [portSource] - Where port came from: the member-install marker, or the built-in default because the install recorded no port (detail says so)
+ * @property {{previousVersion: string, removed: string[], backupPath: string}} [replacedFullInstall] - Set by the probe that replaced a full install with a member install (fleet_install "replace-full"): replaced version, what was removed or moved, and the timestamped backup directory on the member
+ * @property {string} [manualInstall] - Set when a requested apra-fleet install/upgrade on the member did not happen (any install reason, e.g. no-matching-release, checksum-unavailable, download-failed): OS-correct manual steps to install the orchestrator build on the member by hand (anonymous release download URL, SHA-256 check, member-mode install, then update_member); register_member/update_member print them in a WARNING and still succeed
+ * @property {{tag: string, wantedBuild: string, why: string}} [sameCoreFallback] - Set when no release carries the orchestrator's exact build and the member had no apra-fleet or an older core, so the signed stable release of the same core (tag) was installed instead of wantedBuild; register_member/update_member print a NOTICE
+ */
+
+/**
+ * Code intelligence availability reported by member_detail.
+ * @typedef {Object} CodeIntelStatus
+ * @property {string|null} provider - 'gitnexus' | 'codebase-memory' | 'none' (null when it could not be resolved)
+ * @property {boolean} available
+ * @property {string} [cause] - Why it is unavailable; absent when available
+ * @property {string} [remedy] - What to do about the cause; absent when available
  */
 
 /**
@@ -341,6 +454,10 @@
  *   minted token carries a given permission (e.g. GitHub's 'workflows', required to push any
  *   .github/workflows/** change) must read THIS, not their own provisioning default -- the two differ
  *   exactly for the members at risk.
+ * @property {string[]} [permissionConfigPaths] - The member's provider permission config file(s)
+ *   that compose_permissions writes (work-folder-relative, or home-anchored "~/..."), e.g.
+ *   ['.claude/settings.local.json'] for Claude. [] when the provider cannot name them yet (agy before
+ *   its project is provisioned). Reported even for an offline member. Absent on older servers.
  * @property {Object} connectivity - Connectivity check result (status, latencyMs, auth, keyPath, or error)
  * @property {boolean} [offline] - Set when the member could not be reached
  * @property {string} llmProvider - LLM provider for this member (default: "claude")
@@ -351,6 +468,9 @@
  *   server (null when never probed). Recoverable: `member_detail { refresh: true }` re-probes and records.
  * @property {string|null} [fleetMcpFix] - One-line operator fix for `fleetMcp` when the member's KB/code tools are
  *   not usable (state "unavailable" or `unverified`); null when available and verified
+ * @property {CodeIntelStatus|null} [codeIntel] - Whether code intelligence (code_* tools) can run for this member,
+ *   with the cause and remedy when it cannot (e.g. npx/node missing from the apra-fleet service PATH). null for
+ *   remote members: their code tools run on the member host, not on this server.
  * @property {Object} [llm_cli] - LLM CLI info: { version, auth }
  * @property {Object|string} [tokenUsage] - Cumulative token usage, or "compute only" for llmProvider "none"
  * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status, idleSecs }
@@ -541,7 +661,9 @@
  * @property {string} [label] - Credential label provision_vcs_auth deployed the helper under
  *   (it defaults to the provider name there, e.g. "github" or "azure-devops"). Omit for the
  *   unlabelled helper.
- * @property {number} [timeout_s] - Timeout in seconds for the command (default: 120).
+ * @property {number} [timeout_s] - Inactivity timeout in seconds for the command (default: 120).
+ *   On expiry the command's remote process tree is killed and the result is reason
+ *   'dispatch_failed' with a "Command timed out" message.
  */
 
 /**
@@ -702,6 +824,11 @@
  *   force-release), which remain grantable by name -- are rejected outright,
  *   for every caller.
  * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
+ * @property {boolean} [dry_run] - Compose only: return the allow list the role/tags
+ *   (plus detected stacks, plus the ledger when project_folder is given) would deliver, as
+ *   JSON text `{"dry_run":true,"mode","stacks","allow"}`, without writing anything to the
+ *   member. Ignored with `grant`. Use it to check whether a grant is within the member's
+ *   composed policy.
  */
 
 /**
@@ -720,12 +847,63 @@
  * @typedef {Object} KbBibleCommitOptions
  * @property {string[]} ids - Ids of the entries confirmed this round. Ids that are not
  *   live CONFIRMED entries are skipped (reason not_confirmed_or_unknown); a CONFIRMED id
- *   whose cited files no longer match its recorded basis (the same rule kb_export applies)
- *   is skipped with reason basis_mismatch. Skips are reported in the result's skipped list.
- *   An empty list makes no commit.
+ *   whose cited files at the repo's HEAD commit no longer match its recorded basis (the
+ *   same rule kb_export applies; uncommitted edits never change the verdict) is skipped
+ *   with reason basis_mismatch, and a CONFIRMED id citing no source file is skipped with
+ *   reason no_source_files. Skips are reported in the result's skipped list.
+ *   Independently of ids, bible entries the KB holds as superseded or invalidated are
+ *   removed and reported in the result's removed list, and existing bible entries with
+ *   no source_file_hashes gain the KB's stored basis for the same id when it passes the
+ *   same rule (counted in the result's backfilled); an empty list with nothing to remove
+ *   or backfill makes no commit.
  * @property {string} baseBranch - The target base branch, written to provenance.branch.
  * @property {string} baseCommit - The base commit the entries were verified against,
  *   written to provenance.commit.
+ */
+
+/**
+ * One entry of the bible file (.fleet/kb-canonical.json) kb_export and
+ * kb_bible_commit write and kb_import reads -- bible format v3, described by
+ * memory-contract/v1/bible/kb-canonical.schema.json. The file itself is
+ * {version: 3, provenance: {commit, branch, entry_count}, entries: KbBibleEntry[]};
+ * readers also accept v2 (same envelope, no hashes) and v1 (a bare entry array).
+ * @typedef {Object} KbBibleEntry
+ * @property {string} id - Entry id (unique within the bible; writers refuse a duplicate id).
+ * @property {string} type - Content type (knowledge, learning, runbook, context-cache, user-directive).
+ * @property {string} title - Entry title.
+ * @property {string} summary - Entry summary.
+ * @property {string[]} symbols - Symbols the entry is about.
+ * @property {string[]} source_files - Repo-relative files the entry cites.
+ * @property {string} confidence - CONFIRMED, INFERRED or UNVERIFIED.
+ * @property {string} updated_at - Promotion (or creation) timestamp.
+ * @property {Object<string, string>} [source_file_hashes] - v3: the per-file hash basis
+ *   (repo-relative path -> hash) the entry was admitted against, copied from the
+ *   exporting KB's stored basis. kb_import stores it as the entry's basis exactly
+ *   (never re-hashing local files); an entry without it gets a local
+ *   freshness-only basis (it can go stale) that is never exported, so it is not
+ *   re-published until recaptured.
+ *   Because kb_import keeps an entry's bible confidence and carried basis, an
+ *   import from an explicit `path` is equivalent to kb_promote: a member session
+ *   without the kb_maintainer grant is refused one (E-KB-MAINTAINER-REQUIRED,
+ *   nothing imported) unless the path is its own .fleet/kb-canonical.json. Even
+ *   then (and without path) such a session imports its own bible only as
+ *   committed at HEAD, never the work-tree file; the result adds
+ *   bible_source "HEAD" and worktree_ignored, and with no committed copy the
+ *   import fails with E-KB-MAINTAINER-REQUIRED. A committed copy is trusted
+ *   only when the maintainer side recorded its git blob id in the hub-side KB
+ *   (kb_bible_commit, or kb_import from the kb_maintainer or a FULL session,
+ *   records every bible it writes or imports); a bible committed only in the
+ *   member's own checkout fails with E-KB-MAINTAINER-REQUIRED (the message
+ *   names the unrecorded blob id) and nothing is imported. The blob's bytes
+ *   are hashed in-process and must equal the trusted id (a replace ref or
+ *   overwritten object in the member's .git is refused).
+ *   kb_import also takes an optional `ref` (a plain git ref name, e.g.
+ *   "refs/remotes/origin/main"): the bible is then read as committed at that
+ *   ref (hash-verified) instead of from disk, in any session; the result's
+ *   bible_source is the ref, a ref without the bible fails with
+ *   E-BIBLE-NOT-FOUND, and a kb_maintainer or FULL session records that
+ *   verified blob as trusted. The engine's sprint-start priming seeds trust
+ *   this way from the base branch, never from the maintainer's work tree.
  */
 
 /**
@@ -950,10 +1128,17 @@ export function permissionDenialOf(result) {
     if (!Array.isArray(d.denials) || !d.denials.every((x) => x && typeof x.action === 'string' && (x.target === undefined || typeof x.target === 'string'))) return null;
     return {
         actions: [...d.actions],
-        denials: d.denials.map((x) => (x.target === undefined ? { action: x.action } : { action: x.action, target: x.target })),
+        denials: d.denials.map((x) => ({
+            action: x.action,
+            ...(x.target === undefined ? {} : { target: x.target }),
+            ...(isStringArray(x.suggestedGrants) ? { suggestedGrants: [...x.suggestedGrants] } : {}),
+        })),
         suggestedGrants: [...d.suggestedGrants],
         hint: d.hint,
         signals: isStringArray(d.signals) ? [...d.signals] : [],
+        ...(typeof d.permissionMode === 'string' ? { permissionMode: d.permissionMode } : {}),
+        ...(typeof d.healable === 'boolean' ? { healable: d.healable } : {}),
+        ...(d.cause === 'policy_deny' ? { cause: 'policy_deny' } : {}),
     };
 }
 
@@ -1006,6 +1191,43 @@ export function fleetToolFailureOf(result) {
     return null;
 }
 
+// Older servers (before execute_command carried isError on its failure
+// paths) returned a bare text with no structuredContent for a command that
+// never ran. These are that text's two shapes.
+const UNFLAGGED_COMMAND_FAILURE_RE = /^Failed to (execute command|launch task) on "/;
+
+/**
+ * Typed read of an execute_command failure that never produced an exit code.
+ * Accepts the raw executeCommand() result. Returns `{ reason, message }` when the
+ * result is an isError failure (structuredContent.isError, or the MCP-level
+ * isError flag), or when an older server sent the bare "Failed to execute
+ * command on ..." / "Failed to launch task on ..." text with no
+ * structuredContent. Returns null for a command that ran (any exit code --
+ * callers check a non-zero exitCode separately).
+ *
+ * @param {{content?: {text?: string}[], structuredContent?: ExecuteCommandStructured, isError?: boolean} | null | undefined} result
+ * @returns {ExecuteCommandFailure | null}
+ */
+export function commandFailureOf(result) {
+    if (!result || typeof result !== 'object') return null;
+    const text = Array.isArray(result.content) && result.content.length > 0 && typeof result.content[0]?.text === 'string'
+        ? result.content[0].text
+        : '';
+    const sc = result.structuredContent;
+    if (sc && typeof sc === 'object' && sc.isError) {
+        const reason = typeof sc.reason === 'string' && sc.reason ? sc.reason : 'unknown';
+        const detail = typeof sc.stderr === 'string' ? sc.stderr : '';
+        return { reason, message: text || detail || `execute_command failed (${reason})` };
+    }
+    if (result.isError) {
+        return { reason: 'unknown', message: text || 'execute_command failed' };
+    }
+    if (!sc && UNFLAGGED_COMMAND_FAILURE_RE.test(text)) {
+        return { reason: 'unflagged_failure', message: text };
+    }
+    return null;
+}
+
 export class ApraFleet {
     /**
      * @param {{ callTool: (name: string, args: Record<string, any>, opts?: { timeoutMs?: number, signal?: AbortSignal }) => Promise<any> }} mcpClient
@@ -1015,7 +1237,9 @@ export class ApraFleet {
     }
 
     /**
-     * Run an AI prompt on a member.
+     * Run an AI prompt on a member. A claude member's session gets the
+     * member-scoped `apra-fleet` server per session (`--mcp-config`); see
+     * docs/api-reference.md.
      * @param {ExecutePromptOptions} options
      * @returns {Promise<{content?: {type: string, text: string}[], structuredContent?: ExecutePromptStructured}>}
      *   the raw callTool() result -- see the {@link ExecutePromptStructured} typedef above
@@ -1032,6 +1256,9 @@ export class ApraFleet {
     /**
      * Run a shell command on a member.
      * @param {ExecuteCommandOptions} options
+     * @returns {Promise<{content?: {type: string, text: string}[], structuredContent?: ExecuteCommandStructured}>}
+     *   the raw callTool() result. A command that never produced an exit code carries
+     *   `structuredContent.isError` and `reason` -- read it with {@link commandFailureOf}.
      */
     async executeCommand(options) {
         const { timeoutMs, signal, ...payload } = options;
@@ -1100,6 +1327,7 @@ export class ApraFleet {
     /**
      * Get a member's cheap/standard/premium tier resolved to a concrete
      * model and its real per-1M-token price (apra-fleet-dv5.5/dv5.6).
+     * The tool result text is the JSON of a {@link MemberModelPricingResult}.
      * @param {{ member_id?: string, member_name?: string }} options
      */
     async getMemberModelPricing(options) {
@@ -1144,7 +1372,10 @@ export class ApraFleet {
     /**
      * Remove a member from the fleet. Member-side composed config (the
      * per-folder `apra-fleet` MCP entry, permission keys) is removed first;
-     * what could not be removed is reported as a warning.
+     * what could not be removed is reported as a warning. The member-side registration on the
+     * member's own apra-fleet install is removed only when that install carries the
+     * member-install marker; otherwise (unmarked, or the marker probe failed) it is
+     * skipped and the output says so and why.
      *
      * Without `force`, refuses (error text containing "member-held") while the member is
      * busy, reserved (reservedBy set), or a registered workflow package reports it held
@@ -1341,7 +1572,9 @@ export class ApraFleet {
     /**
      * Compose and deliver a scoped permission profile to a member. Also writes
      * the member's per-folder `apra-fleet` MCP entry (`?member=<uuid>`) through
-     * the member provider's own per-project config, with deny rules for every
+     * the member provider's own per-project config (not for a local claude
+     * member, whose dispatches get it per session: an entry an older compose
+     * wrote for it is removed instead), with deny rules for every
      * fleet tool outside the member allowlist (claude, agy), merged by union
      * with any existing deny rules. The result states why a member config was
      * not edited (tracked by git, not strict JSON, unreadable) and when a stale
@@ -1355,7 +1588,9 @@ export class ApraFleet {
     /**
      * Export the calling session's CONFIRMED KB entries to the canonical bible
      * file and auto-commit it locally (never pushed). Pass baseBranch/baseCommit
-     * to record the target base branch and base commit in provenance.
+     * to record the target base branch and base commit in provenance. Writes
+     * bible format v3: each added project entry is a KbBibleEntry carrying its
+     * source_file_hashes basis; a bible holding a duplicate id is refused.
      * Result JSON: {exported, path, scope, committed}; extract with parseToolJson().
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
@@ -1368,12 +1603,30 @@ export class ApraFleet {
 
     /**
      * Merge exactly the given confirmed entry ids into the bible at entry level
-     * (existing entries kept), write baseBranch/baseCommit provenance, and make a
-     * local commit scoped to the bible path. Never pushes; re-running with the
+     * (existing entries kept unless this KB holds them as superseded or
+     * invalidated -- those are removed, also when ids is empty; each merged
+     * entry is a v3 KbBibleEntry carrying its source_file_hashes basis; a bible
+     * holding a duplicate id is refused), write baseBranch/baseCommit
+     * provenance, and make a local commit scoped to the bible path whose message
+     * lists each removal. Never pushes; re-running with the
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
-     * be retried. Result JSON: {path, merged, skipped, entry_count, committed};
-     * extract with parseToolJson(). Each skipped item is {id, reason} with reason
-     * not_confirmed_or_unknown or basis_mismatch.
+     * be retried. Result JSON: {path, merged, skipped, removed, entry_count,
+     * backfilled, committed}; extract with parseToolJson(). backfilled counts the
+     * existing bible entries with no source_file_hashes (carried over from a
+     * v1/v2 bible) that gained this KB's stored basis for the same id, because
+     * it passes the same basis rule at HEAD and cites the same files (legacy
+     * backfill; only that field changes, nothing is dropped); a backfill alone
+     * makes a commit. Each skipped item is {id, reason}
+     * with reason not_confirmed_or_unknown, no_source_files (a CONFIRMED id
+     * citing no source file) or basis_mismatch. Each removed item is {id, reason}
+     * with reason superseded or invalidated. A member session without the
+     * kb_maintainer grant cannot retire a CONFIRMED entry through the kb_* tools:
+     * kb_invalidate leaves CONFIRMED entries untouched, and kb_capture with
+     * supersedes links to a CONFIRMED target (refines, both live) instead of
+     * retiring it; both list such ids in their response's refused list. The
+     * kb_maintainer session and FULL sessions are not limited, and the grant is
+     * a routing guard for agent sessions, not a boundary against a local process
+     * that can open a FULL session or write the KB directly.
      * A CONFIRMED id is admitted only if it passes the same basis rule as kb_export.
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
@@ -1436,7 +1689,12 @@ export class ApraFleet {
      * is 'started' | 'up-to-date' | 'starting' | 'already-running' |
      * 'not-started'; a not-started result carries a typed `reason`
      * ('npx-not-found' | 'gitnexus-not-found' | 'analyze-failed' |
-     * 'spawn-failed' | 'remote-member' | 'provider-not-supported'). Only the
+     * 'spawn-failed' | 'remote-member' | 'gitnexus-too-old' |
+     * 'provider-not-supported'); 'gitnexus-too-old' means the installed
+     * gitnexus rejects --index-only and its `detail` names the upgrade fix.
+     * Every result also carries `injectedBlockFiles` (repo-relative agent docs
+     * still holding a gitnexus block injected by an earlier plain analyze run;
+     * detection only, the work tree is never edited). Only the
      * gitnexus provider is supported: provider 'none' makes the tool fail with
      * E-CODE-INTEL-DISABLED, and any other provider (e.g. codebase-memory)
      * yields { outcome: 'not-started', reason: 'provider-not-supported',
@@ -1452,13 +1710,21 @@ export class ApraFleet {
      * code_status -- the calling session's own code index state: the last
      * analyze run (`analyze`: phase, result 'indexed' | 'up-to-date' |
      * 'incomplete' | 'failed', lastLine, ...), live `readiness`
-     * ('ready' | 'building' | 'interrupted' | 'missing'; 'interrupted' = an
-     * analyze died mid-write and none is running -- the next code_* call
-     * starts a rebuild), `indexedCommit`, `lockHeld`, and `logPath` (null
+     * ('ready' | 'building' | 'interrupted' | 'inconsistent' | 'missing';
+     * 'building' also covers an analyze rewriting an existing index, which is
+     * never served meanwhile; 'interrupted' = an analyze died mid-write and
+     * none is running; 'inconsistent' = the gitnexus registry or the fleet
+     * record of its last build names a different commit than meta.json, with
+     * the reason in `inconsistency` (null otherwise) -- for both, the next
+     * code_* call starts a rebuild), `indexedCommit`, `lockHeld`, and `logPath` (null
      * when no analyze log exists yet), and `autoReindexPaused` (null, or the
      * { result, lastLine, logPath, finished } of a failed automatic run --
      * automatic rebuilds stay paused until codeReindex() or a server
-     * restart). A remote work folder returns { remote: true, repo,
+     * restart), `injectedBlockFiles` / `injectedBlockWarning` (agent docs still
+     * holding a previously injected gitnexus block, and the one-line WARN with
+     * the fix; [] / null when clean), and on a failed run
+     * `analyze.failureCause` ('gitnexus-too-old' when gitnexus rejected
+     * --index-only). A remote work folder returns { remote: true, repo,
      * indexedCommit: null, detail }. Same provider gate as codeReindex():
      * provider 'none' fails with E-CODE-INTEL-DISABLED; a non-gitnexus
      * provider returns the not-supported shape { outcome: 'not-started',

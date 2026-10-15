@@ -37,6 +37,26 @@
 //      never masks the call's own result or typed error.
 // --list-tools delivers no file and issues neither command.
 //
+// KB_MAINTAINER GRANT: memberCall(member, tool, args, { kbMaintainer: true })
+// opens the member session with the kb_maintainer grant (local:
+// connectFleetMember { kbMaintainer: true }; remote: `apra-fleet call
+// --kb-maintainer`). Only that session is served kb_promote and
+// kb_resolve_contradiction. Callers pass it only when calling AS a repository's
+// chosen kb_maintainer (kb.mjs flushRepo / commitRepo).
+//
+// KB_MAINTAINER CAPABILITY GATE (remote | relay only): --kb-maintainer landed
+// inside one core version, so a version comparison cannot tell whether a
+// member install accepts it. Before the FIRST kbMaintainer call to a remote
+// member (per createMemberCall instance) the engine runs `apra-fleet call
+// --help` on the member and reads the usage text: it lists --kb-maintainer
+// (capable, cached), or it is the call verb's usage without the flag (too
+// old, cached), or neither (inconclusive, not cached -- the call proceeds).
+// A too-old install throws MemberCallError E-MEMBER-FLEET-TOO-OLD before any
+// exclude, send_files or call command runs, so no args file is delivered. A
+// call that still answers "unknown option --kb-maintainer" (inconclusive
+// probe) is mapped to the same code; the args-file delete still runs. Calls
+// without kbMaintainer never probe; local members never probe (no CLI flag).
+//
 // The engine's own orchestrator work keeps its FULL session -- the injected
 // callTool used elsewhere is untouched by this module.
 //
@@ -70,12 +90,13 @@ const TOOL_RE = /^[A-Za-z0-9_]+$/;
 /**
  * Build the command run ON a remote/relay member. Pure; exported for tests.
  * @param {{ os: string, shell: string }} target
- * @param {{ memberId: string, tool?: string, argsPath?: string, listTools?: boolean }} spec
+ * @param {{ memberId: string, tool?: string, argsPath?: string, listTools?: boolean, kbMaintainer?: boolean }} spec
  * @returns {string}
  */
-export function buildRemoteCallCommand(target, { memberId, tool, argsPath, listTools = false }) {
+export function buildRemoteCallCommand(target, { memberId, tool, argsPath, listTools = false, kbMaintainer = false }) {
     if (!UUID_RE.test(String(memberId))) throw new MemberCallError('E-USAGE', `unsafe member id '${memberId}'`);
     let script = `apra-fleet call --member ${memberId}`;
+    if (kbMaintainer === true) script += ' --kb-maintainer';
     if (listTools) {
         script += ' --list-tools';
     } else {
@@ -85,6 +106,48 @@ export function buildRemoteCallCommand(target, { memberId, tool, argsPath, listT
         script += ` ${tool} --args-file ${argsPath} --rm-args-file`;
     }
     return getSeCommands(target).wrapForMember(script);
+}
+
+/** MemberCallError code: the member's install predates `apra-fleet call --kb-maintainer`. */
+export const E_MEMBER_FLEET_TOO_OLD = 'E-MEMBER-FLEET-TOO-OLD';
+
+/** The one-line fix for a member install that is too old (shared with member-init). */
+export function memberFleetUpgradeFix(memberName) {
+    return `run update_member with fleet_install auto for member '${memberName}' to upgrade its install to the orchestrator build`;
+}
+
+/**
+ * Build the capability probe run ON a remote/relay member: the call verb's
+ * usage text. Pure; exported for tests.
+ * @param {{ os: string, shell: string }} target
+ */
+export function buildKbMaintainerProbeCommand(target) {
+    return getSeCommands(target).wrapForMember('apra-fleet call --help');
+}
+
+/**
+ * Classify the probe output: 'supported' when the usage lists --kb-maintainer,
+ * 'unsupported' when it is the call verb's usage without the flag,
+ * 'inconclusive' otherwise (no usage text: the probe itself failed).
+ * @param {string} text
+ * @returns {'supported'|'unsupported'|'inconclusive'}
+ */
+export function classifyKbMaintainerProbe(text) {
+    const t = String(text || '');
+    if (/--kb-maintainer\b/.test(t)) return 'supported';
+    if (/apra-fleet call --member\b/.test(t)) return 'unsupported';
+    return 'inconclusive';
+}
+
+const UNKNOWN_KB_MAINTAINER_RE = /unknown option --kb-maintainer\b/;
+
+function fleetTooOldError(member, how) {
+    const name = (member && (member.name || memberIdOf(member))) || 'unknown';
+    return new MemberCallError(
+        E_MEMBER_FLEET_TOO_OLD,
+        `member '${name}': the fleet build installed there predates the --kb-maintainer option (${how}), so kb_maintainer calls cannot run there. Fix: ${memberFleetUpgradeFix(name)}.`,
+        { member: name, fix: memberFleetUpgradeFix(name) },
+    );
 }
 
 function memberIdOf(member) {
@@ -133,30 +196,30 @@ function parseRemoteOutput(res, what) {
 /**
  * Create the helper. Dependencies (all injectable):
  *   fleetApi        sendFiles / executeCommand / memberDetail (remote adapter + OS resolution)
- *   connectLocal    (memberId) => Promise<{ mcpClient: {callTool, listTools}, transport?: {stop} }>
+ *   connectLocal    (memberId, { kbMaintainer }) => Promise<{ mcpClient: {callTool, listTools}, transport?: {stop} }>
  *                   defaults to the client's connectFleetMember
  *   resolveTarget   ({ fleetApi, member, log }) => Promise<{os, shell}>; defaults to resolveMemberTarget
  *   fsImpl          { mkdtempSync, writeFileSync, rmSync } for the local args temp file
  *   tmpdir          local temp root
  *   log
  *
- * @returns {{ memberCall(member, tool, args): Promise<object>, listTools(member): Promise<object> }}
+ * @returns {{ memberCall(member, tool, args, opts?: { kbMaintainer?: boolean }): Promise<object>, listTools(member): Promise<object> }}
  */
 export function createMemberCall(deps = {}) {
     const { fleetApi, log = () => {} } = deps;
     const fsImpl = deps.fsImpl || fs;
     const tmpdir = deps.tmpdir || os.tmpdir();
     const resolveTarget = deps.resolveTarget || resolveMemberTarget;
-    const connectLocal = deps.connectLocal || (async (memberId) => {
+    const connectLocal = deps.connectLocal || (async (memberId, opts = {}) => {
         const m = await import('@apralabs/apra-fleet-client/server-resolution');
         // origin=engine: the engine's own reads are excluded from the member's session_stats counts.
-        return m.connectFleetMember(memberId, { origin: 'engine' });
+        return m.connectFleetMember(memberId, { origin: 'engine', ...(opts.kbMaintainer === true ? { kbMaintainer: true } : {}) });
     });
 
-    async function withLocalSession(member, fn) {
+    async function withLocalSession(member, fn, opts = {}) {
         let session;
         try {
-            session = await connectLocal(memberIdOf(member));
+            session = await connectLocal(memberIdOf(member), { kbMaintainer: opts.kbMaintainer === true });
         } catch (err) {
             if (err && err.status === 403) {
                 throw new MemberCallError('E-MEMBER-FORBIDDEN', `server refused member ${memberIdOf(member)}: not a registered member (HTTP 403)`, { status: 403 });
@@ -205,6 +268,33 @@ export function createMemberCall(deps = {}) {
         }
     }
 
+    /** Member id -> cached capability verdict ('supported' | 'unsupported') for --kb-maintainer (this instance only). */
+    const kbMaintainerVerdicts = new Map();
+
+    /**
+     * Whether a remote/relay member's install accepts --kb-maintainer:
+     * 'supported' | 'unsupported' | 'inconclusive'. A definite verdict is
+     * cached per member id, so a member is probed at most once; an
+     * inconclusive one (the probe command failed) is retried next time.
+     * Local members are never probed: they open the grant in-process.
+     */
+    async function probeKbMaintainer(member, target) {
+        const memberId = memberIdOf(member);
+        if (isLocal(member)) return 'supported';
+        const cached = kbMaintainerVerdicts.get(memberId);
+        if (cached) return cached;
+        let verdict = 'inconclusive';
+        try {
+            const t = target || await resolveTarget({ fleetApi, member: member.name, log });
+            const res = await fleetApi.executeCommand({ member_id: memberId, command: buildKbMaintainerProbeCommand(t) });
+            verdict = classifyKbMaintainerProbe(resultText(res));
+        } catch (err) {
+            log(`[member-call] WARNING: --kb-maintainer capability probe on member '${member.name || memberId}' failed (continuing; the call itself decides): ${err && err.message || err}`);
+        }
+        if (verdict !== 'inconclusive') kbMaintainerVerdicts.set(memberId, verdict);
+        return verdict;
+    }
+
     async function runRemote(member, spec, what) {
         const target = await resolveTarget({ fleetApi, member: member.name, log });
         const memberId = memberIdOf(member);
@@ -212,6 +302,10 @@ export function createMemberCall(deps = {}) {
             const command = buildRemoteCallCommand(target, { memberId, listTools: true });
             const res = await fleetApi.executeCommand({ member_id: memberId, command });
             return parseRemoteOutput(res, what);
+        }
+        if (spec.kbMaintainer === true && (await probeKbMaintainer(member, target)) === 'unsupported') {
+            // Before any exclude / send_files / call: no args file is ever delivered.
+            throw fleetTooOldError(member, 'its call usage does not list it');
         }
         const cmds = getSeCommands(target);
         await ensureArgsDirExcluded(member, cmds);
@@ -233,8 +327,16 @@ export function createMemberCall(deps = {}) {
             } finally {
                 try { fsImpl.rmSync(localDir, { recursive: true, force: true }); } catch { /* ignore */ }
             }
-            const command = buildRemoteCallCommand(target, { memberId, tool: spec.tool, argsPath });
+            const command = buildRemoteCallCommand(target, { memberId, tool: spec.tool, argsPath, kbMaintainer: spec.kbMaintainer === true });
             const res = await fleetApi.executeCommand({ member_id: memberId, command });
+            if (spec.kbMaintainer === true && UNKNOWN_KB_MAINTAINER_RE.test(resultText(res))) {
+                // The probe raced or was inconclusive: the install rejected the flag itself.
+                kbMaintainerVerdicts.set(memberId, 'unsupported');
+                throw fleetTooOldError(member, 'it answered unknown option --kb-maintainer');
+            }
+            // The flag was accepted (no option was rejected): a definite verdict
+            // even after an inconclusive probe, so the member is not re-probed.
+            if (spec.kbMaintainer === true && !/unknown option/.test(resultText(res))) kbMaintainerVerdicts.set(memberId, 'supported');
             return parseRemoteOutput(res, what);
         } finally {
             // Even after a failed send_files: a partial delivery may have landed.
@@ -243,13 +345,14 @@ export function createMemberCall(deps = {}) {
     }
 
     return {
-        async memberCall(member, tool, args = {}) {
+        async memberCall(member, tool, args = {}, opts = {}) {
             if (!memberIdOf(member)) throw new MemberCallError('E-USAGE', 'memberCall requires a member with an id');
             if (!TOOL_RE.test(String(tool))) throw new MemberCallError('E-USAGE', `unsafe tool name '${tool}'`);
+            const kbMaintainer = opts !== null && typeof opts === 'object' && opts.kbMaintainer === true;
             if (isLocal(member)) {
-                return withLocalSession(member, async (client) => unwrapToolResult(await client.callTool(tool, args), tool));
+                return withLocalSession(member, async (client) => unwrapToolResult(await client.callTool(tool, args), tool), { kbMaintainer });
             }
-            return runRemote(member, { tool, args }, tool);
+            return runRemote(member, { tool, args, kbMaintainer }, tool);
         },
         async listTools(member) {
             if (!memberIdOf(member)) throw new MemberCallError('E-USAGE', 'listTools requires a member with an id');
@@ -257,6 +360,15 @@ export function createMemberCall(deps = {}) {
                 return withLocalSession(member, (client) => client.listTools());
             }
             return runRemote(member, { listTools: true }, 'list-tools');
+        },
+        /**
+         * The cached-per-member --kb-maintainer capability verdict
+         * ('supported' | 'unsupported' | 'inconclusive'); probes a remote
+         * member on first use. Local members answer 'supported' with no probe.
+         */
+        async kbMaintainerCapability(member) {
+            if (!memberIdOf(member)) throw new MemberCallError('E-USAGE', 'kbMaintainerCapability requires a member with an id');
+            return probeKbMaintainer(member);
         },
     };
 }

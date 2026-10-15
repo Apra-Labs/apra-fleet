@@ -137,12 +137,24 @@ function buildCallTool(fleet, executeCommand) {
             for (const p of args.local_paths || []) lastArgs = JSON.parse(fs.readFileSync(p, 'utf8'));
             return { content: [{ type: 'text', text: 'sent' }] };
         }
+        if (name === 'execute_command' && typeof args.command === 'string' && args.command.includes('apra-fleet call') && args.command.includes('--list-tools')) {
+            // A current member server: its kb_import advertises `ref` (the
+            // engine's version gate before the priming grant import).
+            fleet.events.push({ type: 'list-tools' });
+            return { content: [{ type: 'text', text: JSON.stringify({ tools: [{ name: 'kb_import', inputSchema: { type: 'object', properties: { path: { type: 'string' }, ref: { type: 'string' }, skip_sweep: { type: 'boolean' } } } }] }) }] };
+        }
         if (name === 'execute_command' && typeof args.command === 'string' && args.command.includes('apra-fleet call')) {
-            const m = /apra-fleet call --member (\S+) (\w+) --args-file/.exec(args.command);
+            const m =/apra-fleet call --member (\S+) (?:--kb-maintainer )?(\w+) --args-file/.exec(args.command);
             const id = m && m[1];
             const tool = m && m[2];
             const member = byId.get(id);
-            fleet.events.push({ type: 'kb', member, tool, args: lastArgs });
+            // The kb_maintainer grant (`apra-fleet call --kb-maintainer`): only
+            // that session is served kb_promote, exactly like the real server.
+            const grant = / --kb-maintainer /.test(args.command);
+            fleet.events.push({ type: 'kb', member, tool, args: lastArgs, grant });
+            if (tool === 'kb_promote' && !grant) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: { code: 'E-TOOL', message: 'MCP error -32602: Tool kb_promote not found' } }) }] };
+            }
             try {
                 const body = fleet.memberTool(member, id, tool, lastArgs || {});
                 return { content: [{ type: 'text', text: JSON.stringify(body) }] };
@@ -251,6 +263,16 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             });
             assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
             assert.ok(r.logs.includes(`[kb-maintainer] repository ${REPO}: maintainer 'maint' (rule: role-less)`), 'maint must be the selected maintainer');
+            // Sprint-start priming imports the bible once per repository, on
+            // the maintainer, with the grant, from the base branch's
+            // remote-tracking ref -- never the work tree or HEAD (nothing has
+            // cleaned the maintainer's checkout at priming time).
+            const imports = fleet.events.filter((e) => e.type === 'kb' && e.tool === 'kb_import');
+            assert.equal(imports.length, 1, JSON.stringify(imports));
+            assert.equal(imports[0].member, 'maint');
+            assert.equal(imports[0].grant, true, 'the priming import carries the kb_maintainer grant');
+            assert.match(String(imports[0].args && imports[0].args.ref), /^refs\/remotes\/origin\/[A-Za-z0-9_]/);
+            assert.equal(imports[0].args.path, undefined);
 
             const MAINT = memberUuid('maint');
             const DEV = memberUuid('dev');
@@ -260,9 +282,12 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             // member:<maintainer uuid>, and passes the basis check there.
             const captures = writes.filter((e) => e.tool === 'kb_capture');
             assert.deepEqual(captures.map((e) => e.member), ['maint', 'maint'], 'every kb_capture must run in the maintainer session, never the producing doer');
+            assert.ok(captures.every((e) => e.grant === true), 'maintainer writes carry the kb_maintainer grant');
             const maintEntries = fleet.kbOf(MAINT).filter((e) => e.id !== OLD_ENTRY_ID);
             assert.deepEqual(maintEntries.map((e) => e.title).sort(), ['claim to confirm', 'claim to discard']);
             for (const e of maintEntries) assert.deepEqual(e.tags, [`member:${MAINT}`]);
+            // The basis (cited file) is recorded on the stored entry; it exists only in the maintainer's checkout.
+            for (const e of maintEntries) assert.deepEqual(e.source_files, [CITED]);
             assert.ok(!r.logs.some((l) => /basis check failed/.test(l)), 'the basis check must pass on the maintainer');
             assert.deepEqual(fleet.kbOf(DEV), [], "the producing doer's own KB stays empty");
 
@@ -293,6 +318,7 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             const promote = writes.find((e) => e.tool === 'kb_promote');
             const invalidate = writes.find((e) => e.tool === 'kb_invalidate');
             assert.equal(promote.member, 'maint');
+            assert.equal(promote.grant, true, 'kb_promote runs in the kb_maintainer-grant session');
             assert.deepEqual(promote.args, { id: confirmed.id, reason: `verified against ${CITED}:42 and the tenant test` });
             assert.equal(invalidate.member, 'maint');
             assert.deepEqual(invalidate.args, { ids: [discarded.id] });
@@ -328,6 +354,37 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             assert.ok(r.logs.some((l) => l.endsWith("[kb-work] WARN: member 'scratch' (doer): work folder is not a repository -- 1 capture(s) dropped")),
                 JSON.stringify(r.logs.filter((l) => l.includes('[kb-work]'))));
             assert.deepEqual(fleet.events.filter((e) => e.type === 'kb' && e.tool === 'kb_capture'), [], 'the capture is dropped, not written anywhere');
+            assert.deepEqual(fleet.orchestratorKbCalls, []);
+        });
+    });
+
+    test('a capture citing a file absent from the maintainer checkout is rejected with the basis-check reason, not stored', { timeout: scaledTimeout(240000) }, async () => {
+        await withScenarioMarkers('kb write routing basis rejected', async () => {
+            const fleet = createFakeFleet();
+            const doerHandler = async ({ opts, tempDir, runCmd }) => {
+                const ids = (opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/)?.[1] || '').split(',').map((s) => s.trim()).filter(Boolean);
+                for (const id of ids) await runCmd(`bd close ${id}`, tempDir);
+                // Deliberately NOT published: the cited file is in no checkout.
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'done', kb_captures: [captureFor('claim with no basis')] }) }] };
+            };
+            const r = await runDevelopLoopScenario('kbroute-nobasis', {
+                members: ['maint', 'dev'],
+                roleMap: { doer: ['dev'] },
+                beadsIdentity: { maint: { repoRemote: REPO_URL }, dev: { repoRemote: REPO_URL } },
+                taskSpecs: [{ title: 'Task: kb capture citing a missing file' }],
+                doerHandler,
+                reviewerHandler: async () => ({ content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }] }),
+                maxCycles: 1,
+                callToolFactory: (executeCommand) => buildCallTool(fleet, executeCommand),
+                onCommand: buildOnCommand(fleet),
+            });
+            assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
+            const attempts = fleet.events.filter((e) => e.type === 'kb' && e.tool === 'kb_capture');
+            assert.ok(attempts.length >= 1 && attempts.every((e) => e.member === 'maint'), 'the capture was attempted on the maintainer only');
+            assert.ok(r.logs.some((l) => /\[kb-work\] kb_capture (rejected|failed) .*basis check failed: src\/widget-cache\.ts not in the checkout/.test(l)),
+                JSON.stringify(r.logs.filter((l) => l.includes('[kb-work]'))));
+            assert.deepEqual(fleet.kbOf(memberUuid('maint')), [], 'a rejected capture is not stored on the maintainer');
+            assert.deepEqual(fleet.kbOf(memberUuid('dev')), [], 'nor on the producing member');
             assert.deepEqual(fleet.orchestratorKbCalls, []);
         });
     });

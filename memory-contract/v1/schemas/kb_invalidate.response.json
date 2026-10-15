@@ -67,6 +67,12 @@
                   "items": {
                     "type": "string"
                   }
+                },
+                "refused": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 }
               },
               "required": [
@@ -91,6 +97,12 @@
                   }
                 },
                 "already_discarded": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "refused": {
                   "type": "array",
                   "items": {
                     "type": "string"

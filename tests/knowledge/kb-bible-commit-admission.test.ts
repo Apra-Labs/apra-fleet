@@ -8,10 +8,14 @@ import { kbBibleCommit } from '../../src/tools/kb-bible-commit.js';
 import { kbExport } from '../../src/tools/kb-export.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
+import { commitWorkTree } from '../helpers/commit-work-tree.js';
 
 // kb_bible_commit admission = kb_export (scope=project) admission: both pass a
 // CONFIRMED entry only through the shared bible basis predicate, against a REAL
 // temp git repo (bare origin + clone) and the real handlers.
+//
+// The predicate reads cited files at HEAD, so each scenario commits its work
+// tree (commitWorkTree) before calling a tool.
 //
 // FALSIFICATION: reverting the predicate call in src/tools/kb-bible-commit.ts
 // (back to admitting every requested CONFIRMED id) makes scenario 2 (the edited
@@ -96,6 +100,7 @@ describe('kb_bible_commit admission (shared basis predicate)', () => {
     writeSrc('src/a.ts', 'export const a = 1;\n');
     const id = await confirmedCiting('Unchanged', ['src/a.ts']);
 
+    commitWorkTree(clone);
     const r = JSON.parse(await kbBibleCommit({ ids: [id], ...BASE }, { folder: clone }));
 
     expect(r.merged).toEqual([id]);
@@ -112,6 +117,7 @@ describe('kb_bible_commit admission (shared basis predicate)', () => {
     const drift = await confirmedCiting('Changed', ['src/b.ts']);
     writeSrc('src/b.ts', 'export const b = 2;\n');
 
+    commitWorkTree(clone);
     const r = JSON.parse(await kbBibleCommit({ ids: [ok, drift], ...BASE }, { folder: clone }));
 
     expect(r.merged).toEqual([ok]);
@@ -123,6 +129,7 @@ describe('kb_bible_commit admission (shared basis predicate)', () => {
     writeSrc('src/a.ts', 'export const a = 1;\n');
     const { id: inferred } = await provider.capture(makeInput({ title: 'Only inferred' }));
 
+    commitWorkTree(clone);
     const r = JSON.parse(await kbBibleCommit({ ids: [inferred, 'no-such-id'], ...BASE }, { folder: clone }));
 
     expect(r.merged).toEqual([]);
@@ -131,6 +138,58 @@ describe('kb_bible_commit admission (shared basis predicate)', () => {
       { id: 'no-such-id', reason: 'not_confirmed_or_unknown' },
     ]);
     expect(r.committed).toBe(false);
+  });
+
+  it('a CONFIRMED id citing no source file is skipped with no_source_files, never basis_mismatch', async () => {
+    writeSrc('src/a.ts', 'export const a = 1;\n');
+    writeSrc('src/b.ts', 'export const b = 1;\n');
+    const noFiles = await confirmedCiting('NoFiles', ['src/a.ts']);
+    const emptyBasis = await confirmedCiting('EmptyBasis', ['src/b.ts']);
+    // No MCP path mints a CONFIRMED entry without source files (capture and
+    // import refuse it), but a legacy row can hold one: make it directly.
+    db().prepare("UPDATE entries SET source_files = '[]', source_file_hashes = '{}' WHERE id = ?").run(noFiles);
+    db().prepare("UPDATE entries SET source_file_hashes = '{}' WHERE id = ?").run(emptyBasis);
+    commitWorkTree(clone);
+
+    const r = JSON.parse(await kbBibleCommit({ ids: [noFiles, emptyBasis], ...BASE }, { folder: clone }));
+
+    expect(r.merged).toEqual([]);
+    expect(r.skipped).toEqual([
+      { id: noFiles, reason: 'no_source_files' },
+      { id: emptyBasis, reason: 'basis_mismatch' },
+    ]);
+    expect(r.committed).toBe(false);
+  });
+
+  it('a skipped id already in the bible leaves its bible entry byte-identical (basis_mismatch and no_source_files)', async () => {
+    writeSrc('src/a.ts', 'export const a = 1;\n');
+    writeSrc('src/b.ts', 'export const b = 1;\n');
+    const drift = await confirmedCiting('Drift', ['src/a.ts']);
+    const noFiles = await confirmedCiting('LosesFiles', ['src/b.ts']);
+    commitWorkTree(clone);
+    const first = JSON.parse(await kbBibleCommit({ ids: [drift, noFiles], ...BASE }, { folder: clone }));
+    expect(first.merged).toEqual([drift, noFiles]);
+    const biblePath = path.join(clone, BIBLE_REL);
+    const before = fs.readFileSync(biblePath);
+    const headBefore = git(clone, ['rev-parse', 'HEAD']).trim();
+
+    writeSrc('src/a.ts', 'export const a = 2;\n');
+    commitWorkTree(clone);
+    db().prepare("UPDATE entries SET source_files = '[]', title = 'changed in the KB' WHERE id = ?").run(noFiles);
+    db().prepare("UPDATE entries SET title = 'also changed in the KB' WHERE id = ?").run(drift);
+    const headAfterEdit = git(clone, ['rev-parse', 'HEAD']).trim();
+
+    const second = JSON.parse(await kbBibleCommit({ ids: [drift, noFiles], ...BASE }, { folder: clone }));
+
+    expect(second.merged).toEqual([]);
+    expect(second.skipped).toEqual([
+      { id: drift, reason: 'basis_mismatch' },
+      { id: noFiles, reason: 'no_source_files' },
+    ]);
+    expect(second.committed).toBe(false);
+    expect(Buffer.compare(fs.readFileSync(biblePath), before)).toBe(0);
+    expect(git(clone, ['rev-parse', 'HEAD']).trim()).toBe(headAfterEdit);
+    expect(headAfterEdit).not.toBe(headBefore);
   });
 
   it('scenario 3: on one mixed fixture, kb_bible_commit merges exactly the ids kb_export admits', async () => {
@@ -151,6 +210,7 @@ describe('kb_bible_commit admission (shared basis predicate)', () => {
     db().prepare("UPDATE entries SET confidence = 'INFERRED' WHERE id = ?").run(i);
 
     const all = [u, c, m, e, n, i];
+    commitWorkTree(clone);
     const commitResult = JSON.parse(await kbBibleCommit({ ids: all, ...BASE }, { folder: clone }));
     const mergedByCommit = [...commitResult.merged].sort();
     expect(commitResult.skipped.map((s: { id: string }) => s.id).sort()).toEqual([c, m, e, n, i].sort());

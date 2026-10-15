@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- sprint terminal-event history (apra-fleet-eft.5.4)
+// fleet-sprint supervisor -- sprint terminal-event history (apra-fleet-eft.5.4)
 // =============================================================================
 //
 // A small, append-only, persisted log of TERMINAL sprint events that the live

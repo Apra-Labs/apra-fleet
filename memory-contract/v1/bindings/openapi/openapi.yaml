@@ -58,7 +58,7 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-NOT-FOUND",
-      "title": "The resolved bible file does not exist.",
+      "title": "The resolved bible file does not exist (with ref: the named git ref does not hold it).",
       "status": 400
     },
     {
@@ -68,7 +68,12 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-WRONG-SHAPE",
-      "title": "The bible parses as JSON but is neither an entry array nor the v2 envelope.",
+      "title": "The bible parses as JSON but is neither an entry array nor the v2/v3 envelope.",
+      "status": 400
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-MALFORMED",
+      "title": "A bible file exists but cannot be read as a bible (invalid JSON, or neither the legacy array nor the v2/v3 envelope). Raised by the shared bible reader, so it also fails a MEMBER session's read of its own checkout bible; it is never treated as an empty bible.",
       "status": 400
     },
     {
@@ -99,6 +104,16 @@
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-PROMOTE-SUPERSEDED",
       "title": "The target entry is already superseded, so it has no standing to earn a higher tier.",
+      "status": 403
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-MAINTAINER-REQUIRED",
+      "title": "kb_import in a MEMBER session that does not carry the kb_maintainer grant either named an explicit path other than the session's own .fleet/kb-canonical.json, or (without path / with its own path) found no committed copy of its own bible at HEAD. An explicit-path import keeps the bible's confidence, which is equivalent in power to kb_promote, so it needs the same grant; the own bible is trusted only as committed, never as the member-writable work-tree file. Nothing is imported.",
+      "status": 403
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-RETIRE-NEEDS-KB-MAINTAINER",
+      "title": "A MEMBER session without the kb_maintainer grant tried to retire a live CONFIRMED entry: kb_invalidate named it (by id, or a CONFIRMED context-cache entry by file), or kb_capture named it in supersedes and AUDN matched it. Retiring it would remove it from the bible at the next kb_bible_commit, so it is left live and its id is reported in the response's refused list. kb_invalidate processes every other named entry as usual; kb_capture still stores the new entry, linked to the CONFIRMED one (refines, both live), and on a remote KB provider drops supersedes entirely (fail closed).",
       "status": 403
     },
     {
@@ -169,6 +184,16 @@
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-MEMBER-VIEW-READ-ONLY",
       "title": "kb_feedback was called in a MEMBER session. A member's reads come from the in-memory view of its own checkout bible, which is read-only; a downvote would flag an entry the member cannot see in the shared per-repo DB. Nothing is changed.",
+      "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-MEMBER-VIEW-REMOTE",
+      "title": "A remote MEMBER session's checkout bible could not be read from the member host (unreachable member, or the read command failed). The member view never falls back to the per-repo DB, so the call fails loudly.",
+      "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-BASIS-NOT-GIT",
+      "title": "The folder is not inside a git work tree, so file content at HEAD cannot be read and the bible's file hashes cannot be computed. Nothing is written.",
       "status": 500
     }
   ]

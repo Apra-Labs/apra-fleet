@@ -38,6 +38,22 @@ export function escapeDoubleQuoted(s: string): string {
 }
 
 /**
+ * Escape a literal value for embedding inside "..." in a member-bound command.
+ * POSIX: backslash, ", $ and backtick are live inside double quotes. `!` is
+ * deliberately NOT escaped (unlike escapeDoubleQuoted): history expansion is
+ * off in the non-interactive shells commands run in, so `\!` would stay a
+ * literal backslash + `!` and corrupt the path. PowerShell: backtick, ", $ (and
+ * the curly double quotes U+201C..U+201E, which PowerShell treats as quotes)
+ * are live and are escaped with a backtick; backslash is literal there.
+ * A literal newline needs no escaping: it is inert inside "..." in both shells.
+ */
+export function escapeForDoubleQuotes(s: string, powershell: boolean): string {
+  return powershell
+    ? s.replace(/[`"$\u201C-\u201E]/g, '`$&')
+    : s.replace(/[\\"$`]/g, '\\$&');
+}
+
+/**
  * Escape a string for safe use inside double-quoted Windows cmd.exe arguments.
  * Escapes: " & | ^ < > (cmd.exe metacharacters).
  */

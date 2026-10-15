@@ -17,6 +17,7 @@ import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
+import { createBeadsFixture, envWithoutBeadsDir } from './helpers/beads-fixture.mjs';
 
 // =============================================================================
 // apra-fleet-eft.4.6 -- supervisor lifecycle end-to-end test.
@@ -126,6 +127,9 @@ const SUPERVISOR_HEALTH_TIMEOUT_MS = resolveSupervisorHealthBudgetMs();
 const spawnedPids = new Set();
 /** @type {Set<string>} */
 const tmpDirs = new Set();
+// Beads fixtures, removed via their own cleanup() (with retries) after the
+// processes using them are killed.
+const fixtureCleanups = [];
 
 function track(pid) {
     if (Number.isInteger(pid) && pid > 0) spawnedPids.add(pid);
@@ -139,6 +143,10 @@ function forceKill(pid) {
 after(async () => {
     for (const pid of spawnedPids) forceKill(pid);
     spawnedPids.clear();
+    for (const cleanup of fixtureCleanups.splice(0)) {
+        // eslint-disable-next-line no-await-in-loop
+        await cleanup();
+    }
     for (const dir of tmpDirs) {
         // eslint-disable-next-line no-await-in-loop
         await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -524,17 +532,22 @@ describe('supervisor lifecycle -- real `fleet-se serve` stays up, exits only on 
         // one exists -- see auth.mjs).
         const serviceToken = resolveServiceToken(seDataDir).token;
 
+        // Hermetic tracker via --beads-dir, never this repo's own .beads.
+        const beadsFixture = await createBeadsFixture();
+        fixtureCleanups.push(beadsFixture.cleanup);
+
         // apra-fleet-ecjf.8: wrapped in trackSpawnError() so a spawn failure
         // here (a) is captured for describeHealthWaitFailure()'s
         // never-spawned diagnostic below and (b) does not crash the worker
         // via an unhandled 'error' event before that diagnostic can run.
-        const serve = trackSpawnError(spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
+        const serve = trackSpawnError(spawn(process.execPath, [SERVE_BIN, '--port', String(port), '--beads-dir', beadsFixture.dir], {
             cwd: SE_PKG_ROOT,
             // apra-fleet-v6t7.8: piped (not ignored) so a health-wait timeout
             // can carry the "never bound" vs "bound but silent" diagnostic
             // plus the stdout/stderr tail -- see describeHealthWaitFailure().
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir },
+            env: envWithoutBeadsDir({ APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir }),
+            windowsHide: true,
         }));
         track(serve.pid);
         let stdoutBuf = '';

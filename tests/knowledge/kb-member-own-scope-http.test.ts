@@ -26,7 +26,7 @@ import { getKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { requireSqliteProject } from '../../src/services/knowledge/require-sqlite-project.js';
 import { resetMemberBibleViews } from '../../src/services/knowledge/member-bible-view.js';
 import type { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
-import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
+import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, memberSecretRequestInit } from '../test-helpers.js';
 
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
 const RUN = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -65,12 +65,14 @@ function checkout(name: string): string {
   return dir;
 }
 
-async function connect(member?: string): Promise<Client> {
+async function connect(member?: string, opts: { kbMaintainer?: boolean } = {}): Promise<Client> {
   const url = new URL(`http://127.0.0.1:${handle.port}/mcp`);
   if (member) url.searchParams.set('member', member);
+  // The engine's kb_maintainer grant: the only member session served kb_promote.
+  if (opts.kbMaintainer) { url.searchParams.set('origin', 'engine'); url.searchParams.set('kb_maintainer', '1'); }
   const client = new Client({ name: 'kb-own-scope-e2e', version: '1.0.0' }, { capabilities: {} });
   clients.push(client);
-  await client.connect(new StreamableHTTPClientTransport(url, { reconnectionOptions: RECONNECT }));
+  await client.connect(new StreamableHTTPClientTransport(url, { reconnectionOptions: RECONNECT, requestInit: memberSecretRequestInit() }));
   return client;
 }
 
@@ -151,18 +153,26 @@ describe('member-tagged writes and own-scope operations over real HTTP', () => {
     expect(await inferredIds(b)).toEqual([bEntry]);
   });
 
-  it('3. kb_promote confirms an own entry; promoting another member\'s entry is a typed not-found and leaves it unchanged', async () => {
+  it('3. kb_promote (kb_maintainer session) confirms an own entry; promoting another member\'s entry is a typed not-found and leaves it unchanged', async () => {
+    // A plain member session is not served kb_promote at all.
+    const plain = await callRaw(a, 'kb_promote', { id: aEntry, reason: REASON });
+    expect(plain.isError).toBe(true);
+    expect(plain.text).toMatch(/Tool kb_promote not found/);
+    expect(row(aEntry)!.confidence).toBe('INFERRED');
+
+    // The own-scope rule still applies inside the maintainer session.
+    const aMaint = await connect(members.a, { kbMaintainer: true });
     const before = row(bEntry)!;
-    const refused = await callRaw(a, 'kb_promote', { id: bEntry, reason: REASON });
+    const refused = await callRaw(aMaint, 'kb_promote', { id: bEntry, reason: REASON });
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain(`Entry not found: ${bEntry}`);
     // Same shape as an id that never existed.
-    const unknown = await callRaw(a, 'kb_promote', { id: 'no-such-entry', reason: REASON });
+    const unknown = await callRaw(aMaint, 'kb_promote', { id: 'no-such-entry', reason: REASON });
     expect(unknown.isError).toBe(true);
     expect(unknown.text).toContain('Entry not found: no-such-entry');
     expect(row(bEntry)).toEqual(before);
 
-    const promoted = await callJson(a, 'kb_promote', { id: aEntry, reason: REASON });
+    const promoted = await callJson(aMaint, 'kb_promote', { id: aEntry, reason: REASON });
     expect(promoted).toMatchObject({ id: aEntry, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' });
     expect(row(aEntry)!.confidence).toBe('CONFIRMED');
   });

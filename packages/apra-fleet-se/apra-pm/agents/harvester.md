@@ -41,6 +41,9 @@ continue without KB. A missing or failing KB or code tool is never a reason to s
 never report this dispatch as blocked because of it. From whichever source you have,
 trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
+If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
+your tool-loading tool first, before concluding they are unavailable.
+
 1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
    relevant to the modules touched during the sprint.
 2. When you extract durable knowledge during harvest -- anything non-obvious that future
@@ -50,6 +53,18 @@ trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
    the KB yourself.
 3. If a retrieved KB entry proves wrong in practice, say so in your `notes`, naming the
    entry and what was wrong.
+
+### Persistent Memories (operational rules)
+
+Before beginning harvest operations, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +harvester+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+harvester+`.
 
 ## Step 1 -- Write sprint analysis artifact (FIRST, before anything else)
 
@@ -175,3 +190,7 @@ or as prose if you are answering a human directly.
 - Durable knowledge only in docs/ -- a reader a year from now should find it illuminating
 - NEVER write a bead id, commit hash, branch name, or date into any harvested document
   (see Step 3)
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.

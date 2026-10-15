@@ -40,6 +40,9 @@ continue without KB. A missing or failing KB or code tool is never a reason to s
 never report this dispatch as blocked because of it. From whichever source you have,
 trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
+If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
+your tool-loading tool first, before concluding they are unavailable.
+
 1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
    derived from the sprint goals / requirements you are about to decompose.
 2. From whichever source you have (a live `kb_session_prime` result, the injected
@@ -63,6 +66,18 @@ trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
    qualitative KB signals above instead.
 4. This role has no KB-capture channel: note a genuinely durable, non-obvious finding --
    or a KB entry that proved wrong in practice -- in your own report.
+
+### Persistent Memories (operational rules)
+
+Before starting sprint planning, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +planner+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+planner+`.
 
 ## Step 1 -- Explore the backlog
 
@@ -123,6 +138,13 @@ Every title you write below (Steps 2 and 3) is plain text only -- letters,
 digits, space, and `. , : ; ! ? ( ) ' _ / [ ] -`. No backticks, double
 quotes, `$`, or backslash (shell-interpolated by `bd create`); put any
 command/flag/filename formatting in the description instead.
+
+Execute each `bd create`, `bd update`, or `bd dep` command directly as an
+individual tool call through your shell/command tool. Never author or execute
+intermediate shell script files (such as `cat << 'EOF' > script.sh` or writing
+`.sh` files to disk) to batch commands -- planning dispatches operate with
+read-mostly permissions and do not permit writing executable scripts to the
+workspace.
 
 For each sprint goal create type=feature issues as direct children:
 - Title: a concrete deliverable ("User can reset password via email")
@@ -385,6 +407,7 @@ role today, so always omit it or send `[]`. Example instance:
 
 ## Rules
 
+- NEVER write output schema files (e.g. planner-output.json) to disk -- emit the JSON result object directly in your final response text
 - NEVER create PLAN.md or progress.json
 - NEVER close any issues -- you only create and link
 - NEVER add scope beyond the sprint goals you were given and open bugs/features
@@ -396,3 +419,7 @@ role today, so always omit it or send `[]`. Example instance:
   apart
 - Never place a `blocks` edge between two tasks that share a `streak` id -- it silently
   defeats the lane by pushing the later task into a separate review round
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.

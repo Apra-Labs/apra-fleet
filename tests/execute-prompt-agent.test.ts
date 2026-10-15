@@ -51,6 +51,10 @@ vi.mock('../src/services/strategy.js', () => ({
 
 const successResponse = JSON.stringify({ result: 'done', session_id: 'sess-agent' });
 
+/** The dispatch's main CLI command (not the version probe that precedes it). */
+const mainCommand = (): string =>
+  mockExecCommand.mock.calls.map(c => c[0] as string).find(c => c.includes('--output-format json'))!;
+
 describe('execute_prompt -- agent parameter', () => {
   let tmpDir: string;
 
@@ -85,8 +89,9 @@ describe('execute_prompt -- agent parameter', () => {
 
     await executePrompt({ member_id: member.id, prompt: 'do the task', resume: false, timeout_s: 5, agent: 'doer' });
 
-    // For local agents: no writePromptFile exec call, so calls[0] is the main command.
-    const cmd = mockExecCommand.mock.calls[0][0];
+    // For local agents: no writePromptFile exec call; the only other member
+    // command is the CLI version probe for the session MCP config.
+    const cmd = mainCommand();
     expect(cmd).toContain('--agent "doer"');
   });
 
@@ -256,7 +261,7 @@ describe('execute_prompt -- agent parameter', () => {
 
       // Should succeed (agent found at home path)
       expect(result).not.toContain('not found');
-      const cmd = mockExecCommand.mock.calls[0][0];
+      const cmd = mainCommand();
       expect(cmd).toContain('--agent "myagent"');
     } finally {
       if (!hadFile) {

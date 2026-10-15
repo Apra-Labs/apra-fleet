@@ -1,0 +1,3 @@
+{"title":"Fixture epic","issue_type":"epic","priority":1,"status":"open"}
+{"title":"Fixture task one","issue_type":"task","priority":2,"status":"open"}
+{"title":"Fixture task two","issue_type":"task","priority":2,"status":"closed"}

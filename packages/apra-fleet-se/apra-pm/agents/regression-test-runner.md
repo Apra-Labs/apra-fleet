@@ -18,6 +18,9 @@ continue without KB. A missing or failing KB or code tool is never a reason to s
 never report this dispatch as blocked because of it. From whichever source you have,
 trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
+If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
+your tool-loading tool first, before concluding they are unavailable.
+
 1. When the tools are present, call `kb_session_prime` with `hint_modules` naming the
    subsystems `regression-test-playbook.md` exercises.
 2. Known-flaky tests and known environment setup/teardown gotchas are the point here -- they
@@ -27,6 +30,18 @@ trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
    reason, or its setup/teardown turns out to need a step the playbook does not
    record, note the regression gotcha in your own report. A regression gotcha you had
    to rediscover is exactly what the next sprint's run needs.
+
+### Persistent Memories (operational rules)
+
+Before running the playbook, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +regression-test-runner+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+regression-test-runner+`.
 
 You own `regression-test-playbook.md` end to end: run every part it
 defines, in its order, and if it defines a `## Teardown`, ALWAYS run it --
@@ -232,3 +247,7 @@ directly.
 - NEVER modify regression-test-playbook.md
 - NEVER close beads -- this role only creates carry-over bugs, it does not close features or tasks
 - Tag every new issue title with `[regression][carry-over]` so it is searchable and structurally distinguishable from `[integ]` and planned work
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.

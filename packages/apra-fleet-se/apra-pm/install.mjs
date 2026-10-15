@@ -786,11 +786,11 @@ function main() {
   // and npm on the target by design, so requiring npm here adds no
   // prerequisite that fleet-se did not already have.
   console.log('');
-  const bdCheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true });
+  const bdCheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true, windowsHide: true });
   if (bdCheck.error || bdCheck.status !== 0) {
     const pinnedPkg = `@beads/bd@${BEADS_VERSION}`;
     console.log(`  beads (bd) not found -- installing ${pinnedPkg} via npm...`);
-    const bdInstall = spawnSync('npm', ['install', '-g', pinnedPkg], { encoding: 'utf-8', shell: true, stdio: 'inherit' });
+    const bdInstall = spawnSync('npm', ['install', '-g', pinnedPkg], { encoding: 'utf-8', shell: true, stdio: 'inherit', windowsHide: true });
     if (bdInstall.error || bdInstall.status !== 0) {
       const reason = bdInstall.error ? bdInstall.error.message : `npm exited ${bdInstall.status}`;
       console.error('');
@@ -801,7 +801,7 @@ function main() {
       console.error(`      reason above (or run 'npm install -g ${pinnedPkg}' by hand) and re-run this installer.`);
       process.exit(1);
     }
-    const bdRecheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true });
+    const bdRecheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true, windowsHide: true });
     if (bdRecheck.error || bdRecheck.status !== 0) {
       console.error('');
       console.error(`  [!] npm reported success but 'bd --version' still does not run.`);

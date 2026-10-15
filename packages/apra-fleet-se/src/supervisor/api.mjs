@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- operator HTTP endpoints (apra-fleet-eft.4.4)
+// fleet-sprint supervisor -- operator HTTP endpoints (apra-fleet-eft.4.4)
 // members / backlog / sprints CRUD / stop proxy
 // =============================================================================
 //
@@ -37,7 +37,7 @@
 // =============================================================================
 
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -58,6 +58,26 @@ import { fleetMembersUnavailableReason, fleetMembersStoppedByUserReason } from '
 const API_MODULE_PATH = fileURLToPath(import.meta.url);
 
 /** A controller error carrying an HTTP status and (optionally) the bad field. */
+/** Hard cap on a generated sprint id's length (it is also the --run-id, ledger key and log file stem). */
+export const MAX_SPRINT_ID_LENGTH = 48;
+const SPRINT_ID_ROOT_LENGTH = 20;
+
+/**
+ * Bounded, launch-unique sprint id: `<first-root>-<count>-<hash>-<uuid8>`.
+ * The full issue list is NOT encoded in the id (it lives in the sprint
+ * record's issueRoots and the child argv), so the id -- and the log file name
+ * derived from it -- stays the same length for 1 or 100 roots. Uniqueness
+ * per launch comes from the uuid fragment.
+ * @param {string} issue - comma-joined issue roots
+ * @returns {string}
+ */
+export function defaultGenerateSprintId(issue) {
+    const roots = String(issue ?? '').split(',').map((r) => r.trim()).filter(Boolean);
+    const first = (roots[0] ?? 'sprint').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, SPRINT_ID_ROOT_LENGTH);
+    const hash = createHash('sha256').update(roots.join(',')).digest('hex').slice(0, 6);
+    return `${first}-${roots.length}-${hash}-${randomUUID().slice(0, 8)}`;
+}
+
 export class ApiError extends Error {
     /**
      * @param {number} status
@@ -414,7 +434,7 @@ export function createSprintController(deps = {}) {
     // their own beforeLaunch (e.g. to compose it with the eft.5.3 issue-scope
     // guard) -- this default is what runs when nothing is injected.
     const beforeLaunch = deps.beforeLaunch ?? defaultMemberOverlapGuard(ledger, listMembers);
-    const generateSprintId = deps.generateSprintId ?? ((issue) => `${issue}-${randomUUID()}`);
+    const generateSprintId = deps.generateSprintId ?? defaultGenerateSprintId;
     const resolvePort = deps.resolvePort
         ?? ((pid) => (pid != null && spawner.getLiveEntry ? spawner.getLiveEntry(pid)?.port : undefined));
     // apra-fleet-2l4.1: same collaborator watchdog.mjs's classifySprint() uses
@@ -787,9 +807,9 @@ export function createSprintController(deps = {}) {
         // carrying the resolver's own operator-facing message (names every
         // candidate tried plus the Node.js version/PATH fix line) -- instead
         // of bubbling to server.mjs's generic 500 "internal supervisor
-        // error", which would tell the operator nothing actionable. Every
-        // other spawnSprint() failure is rethrown unchanged and keeps its
-        // existing (500, isolation-wrapper) behaviour.
+        // error", which would tell the operator nothing actionable. Any
+        // other spawnSprint() failure is answered as a 500 that names the
+        // failing step and its cause (an ApiError passes through as-is).
         //
         // apra-fleet-i9ag.15: this catch is KEPT even though launch() now
         // preflights the same resolution at its top -- it is the fallback
@@ -800,6 +820,7 @@ export function createSprintController(deps = {}) {
         try {
             spawned = await spawner.spawnSprint(spawnOpts);
         } catch (err) {
+            if (err instanceof ApiError) throw err;
             if (err instanceof SprintRunnerResolutionError) {
                 throw runnerResolutionApiError(err);
             }
@@ -807,7 +828,13 @@ export function createSprintController(deps = {}) {
                 console.error(`[spawner] sprint child could not be spawned -- launch refused: ${err.message}`);
                 throw new ApiError(500, err.message);
             }
-            throw err;
+            // Name the failing step and the underlying cause (code + message,
+            // e.g. an ENOENT on the log path) instead of letting the generic
+            // 'internal supervisor error' 500 hide it.
+            const code = err && err.code ? `${err.code}: ` : '';
+            const detail = err && err.message ? err.message : String(err);
+            console.error(`[supervisor] launch of '${sprintId}' failed at step 'spawn sprint child':`, err && err.stack ? err.stack : err);
+            throw new ApiError(500, `sprint launch failed at step 'spawn sprint child': ${code}${detail}`);
         }
         // apra-fleet-gey.2: best-effort stale-process detection -- compare
         // the build this supervisor process STAMPED at startup against

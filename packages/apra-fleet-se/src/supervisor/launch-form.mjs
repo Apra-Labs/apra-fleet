@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- Launch Sprint form (apra-fleet-eft.6.3, Plan Part 2.3)
+// fleet-sprint supervisor -- Launch Sprint form (apra-fleet-eft.6.3, Plan Part 2.3)
 // =============================================================================
 //
 // The index page (GET /, dashboard.mjs) attaches ONE Launch Sprint form after

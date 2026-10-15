@@ -119,7 +119,9 @@ carry a KB identity is refused before the provider is reached
 (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`). A remote
 member's folder lives on another host: the read tools carry it verbatim and
 tolerate the missing anchor, while the writing tools (`kb_export`,
-`kb_bible_commit`, `kb_import`) refuse with `E-REPO-PATH-INVALID`. This is recorded in
+`kb_bible_commit`, `kb_import`) refuse with `E-REPO-PATH-INVALID` (for
+`kb_export` that path is defence in depth: no member session is served it, see
+section 2.5a). This is recorded in
 `methods.json`'s `_meta.kb_self_resolution` and per tool in each method
 entry's `tools[].anchor_validation` field.
 
@@ -152,13 +154,123 @@ stored entry `member:<caller uuid>`; `kb_promote` and `kb_invalidate` act only
 on entries carrying that tag and report any other id as not found, changing
 nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
-`{discarded, not_found, already_discarded}`. `kb_feedback` is refused with
+`{discarded, not_found, already_discarded}`. In a member session without the
+kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the
+response then also carries `refused`; the same holds for `kb_capture` with
+`supersedes`. `kb_feedback` is refused with
 `E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
 unchanged.
 
+### 2.5a MEMBER-session tool exposure (KB write policy)
+
+A MEMBER session is served an explicit tool list
+(`src/services/member-tool-allowlist.ts`), not every `kb_*` tool:
+
+- `kb_setup` (writes the machine-wide provider config and stores credentials)
+  and `kb_export` (auto-commits into the work tree) are NEVER served to a
+  member session. Calling one is an unknown-tool error; they are available to
+  a FULL session.
+- `kb_promote`, `kb_resolve_contradiction` and `kb_reconcile_prefilter` (which
+  resolves pairs through the `kb_resolve_contradiction` write path) mint
+  CONFIRMED. They are served only to a member session carrying the
+  kb_maintainer grant: an engine-opened
+  member session (`origin=engine`) with `kb_maintainer=1` on its URL, which the
+  engine opens only for the member it chose as a repository's kb_maintainer
+  (client `connectFleetMember(id, { origin: 'engine', kbMaintainer: true })`,
+  `apra-fleet call --kb-maintainer`). `kb_maintainer=1` without
+  `origin=engine` is ignored. Every other member session -- including an agent
+  session on the maintainer member, which connects through the plain
+  `?member=<uuid>` entry -- gets an unknown-tool error.
+- Every other `kb_*` tool (including `kb_bible_commit` and `kb_import`) and
+  every `code_*` tool is served to every member session.
+- `kb_import` with an explicit `path` keeps the named bible's confidence (and a
+  v3 bible's carried hashes), which is equivalent in power to `kb_promote`. In
+  a member session WITHOUT the grant an explicit path is refused with
+  `E-KB-MAINTAINER-REQUIRED` before any KB is opened, and nothing is imported
+  (a refusal, not a clamp). A path naming the session's own
+  `.fleet/kb-canonical.json`, and a call without `path` (the engine's priming
+  import of the checkout bible), import that bible AS COMMITTED: the handler
+  reads the blob at `HEAD:./.fleet/kb-canonical.json` (git, no shell), never
+  the work-tree file, which the member's agent can edit (CONFIRMED entries
+  with v3 hashes matching HEAD would otherwise land CONFIRMED and pass
+  `kb_bible_commit` admission). The response then also carries
+  `bible_source: "HEAD"` and `worktree_ignored` (true when the work-tree file
+  differs from, or is missing versus, the committed copy, so its uncommitted
+  content was not imported). A clean tree or fresh clone yields the same bytes,
+  so priming is unchanged. When a work-tree bible exists but has no committed
+  copy (unborn HEAD, untracked bible, git unavailable) the call fails with
+  `E-KB-MAINTAINER-REQUIRED` and nothing is imported; with no bible at all it
+  fails with the plain bible-not-found error. Committed is not trusted on its
+  own: the member controls its own `.git`, so it could commit a hand-made
+  bible locally, import it, and reset the commit away with nothing ever
+  pushed. The import is therefore gated on a trust anchor OUTSIDE the
+  checkout: the hub-side per-repo KB records the git blob id of every bible
+  the maintainer side wrote or imported (`kb_bible_commit`, and `kb_import`
+  from a FULL session or the kb_maintainer session; a member session without
+  the grant never records). When the committed bible's blob id is not
+  recorded the call fails with `E-KB-MAINTAINER-REQUIRED` (the message names
+  the unrecorded blob id) and nothing is imported -- a refusal, not a clamp,
+  so no row is written that could later shadow the genuine entry's id. The
+  object store is member-writable too (replace refs, alternates, overwritten
+  loose objects, crafted packs), so the blob is read with
+  `--no-replace-objects` and its bytes are hashed in-process (git object
+  format: `blob <len>\0<bytes>`, sha1 for a 40-hex id, sha256 for a 64-hex id)
+  and refused unless they equal the id checked; recorded ids are likewise
+  computed in-process from the exact bytes written or parsed (never
+  `git hash-object` with the checkout's clean filters). Optional `ref` (a
+  plain git ref name; no rev expressions) reads the bible as committed at that
+  ref instead of the file system, in any session, with the same in-process
+  verification; `bible_source` then reports the ref, a ref that does not hold
+  the bible fails with `E-BIBLE-NOT-FOUND`, a no-grant session still needs a
+  recorded blob, and a FULL or kb_maintainer session records the verified
+  blob. Bootstrap: a clone whose bible was published by `kb_bible_commit` on
+  this hub imports normally; a bible this hub never saw (fresh hub, bible
+  merged from elsewhere) is seeded by the engine's sprint-start priming,
+  which imports through the kb_maintainer session with
+  `ref: "refs/remotes/origin/<base branch>"`. Priming runs before anything
+  cleans the maintainer's checkout (launch alignment runs only for
+  multi-member legacy launches, branch-ensure runs after priming, and a
+  reused local branch keeps local-only commits), so it never reads the work
+  tree or HEAD; with no base branch it makes no grant import. Residual: the
+  remote-tracking ref is as fresh as the member's last fetch and lives in the
+  member-writable `.git` (the grant is a routing guard, not a security
+  boundary against a process on the member's host). FULL sessions and the
+  kb_maintainer session without `ref` are otherwise unchanged (they read the
+  named or work-tree file).
+- `kb_invalidate` retires entries (`ids` discards them; `files` marks
+  context-cache entries invalidated), and `kb_bible_commit` removes retired
+  entries from the bible, so in a member session WITHOUT the grant neither
+  form retires a CONFIRMED entry: each such live CONFIRMED entry the call would
+  have retired is left untouched and its id is listed in `refused`
+  (`E-RETIRE-NEEDS-KB-MAINTAINER`, a response-field refusal); the rest of the
+  call proceeds unchanged (INFERRED/UNVERIFIED own entries are still retired).
+  The response carries `refused` exactly when the call came from such a
+  session (possibly empty), on both forms. The engine's own discards run in
+  the kb_maintainer session and are unaffected.
+- `kb_capture` with `supersedes` retires the matched entry, and AUDN matches
+  candidates across the whole per-repo DB (not only the caller's own
+  entries), so in a member session WITHOUT the grant a CONFIRMED target is
+  never retired: the capture takes the implicit path instead (the new entry
+  is stored and linked to the target with `refines`, both stay live) and the
+  target id is listed in `refused` (`E-RETIRE-NEEDS-KB-MAINTAINER`). A
+  non-CONFIRMED target is still retired. Over a remote (HTTP) KB provider the
+  grant cannot be conveyed, so such a session's `supersedes` is dropped
+  entirely and its id listed in `refused` (fail closed). The response carries
+  `refused` exactly when such a session passed `supersedes` (possibly empty);
+  the kb_maintainer session and FULL sessions are unchanged.
+- A tool handler sees the grant through the per-call context
+  (`getSessionKbMaintainer()` next to `getSessionMemberId()` in
+  `src/services/tool-scope.ts`).
+
+The grant is an unauthenticated loopback URL parameter, like `?member=` and
+`origin=engine`: it keeps agent sessions off the CONFIRMED-minting tools, it is
+not a security boundary against a local process (which can open a FULL
+session). The round-trip harness runs session A as the kb_maintainer session
+and records `kb_setup` and `kb_export` in `FULL_A`.
+
 ### 2.6 Bible provenance (target base branch) and entry-level commits
 
-The v2 bible (`.fleet/kb-canonical.json`) records `provenance.branch` and
+The bible (`.fleet/kb-canonical.json`, format v3, section 2.8) records `provenance.branch` and
 `provenance.commit`. `provenance.branch` is the TARGET BASE branch -- the
 branch the bible's entries merge into -- and `provenance.commit` the base
 commit those entries were verified against. Neither is the HEAD of the
@@ -167,18 +279,33 @@ working folder, which is typically a feature branch.
 - `kb_export` accepts optional `baseBranch` and `baseCommit` and writes them
   into provenance. When omitted, provenance falls back to the export folder's
   HEAD branch and commit (the pre-existing behaviour). It regenerates the whole
-  bible from the KB.
+  bible from the KB. Its project-scope admission is the basis rule described
+  for `kb_bible_commit` below (cited files compared at HEAD); a folder that is
+  not a git work tree is refused with `E-BIBLE-BASIS-NOT-GIT` and no bible is
+  written.
 - `kb_bible_commit` takes `ids`, `baseBranch` and `baseCommit` (all required)
-  and merges at ENTRY level: every entry already in the bible is kept, only
-  the given ids are added or replaced, and an entry in the file but absent from
-  the KB is never dropped. Ids that are not live CONFIRMED entries are skipped
+  and merges at ENTRY level: only the given ids are added or replaced, and
+  every entry already in the bible is kept unless the KB holds it as
+  superseded or invalidated. Those are REMOVED at every call (also with no
+  ids) and listed in the response's `removed` as `{id, reason}` (reason
+  `superseded` or `invalidated`) and in the commit message. An entry in the
+  file but absent from the KB, one the KB holds as CONFIRMED and current, and
+  a merely stale one (freshness sweep) are never dropped. `kb_export` stays
+  additive-only: it never removes an entry. Ids that are not live CONFIRMED entries are skipped
   and reported in `skipped` with reason `not_confirmed_or_unknown` (never an
   error). A live CONFIRMED id is admitted only if it passes the same basis rule
   as `kb_export` (scope=project): every cited source file has a recorded hash
-  matching the file in the repo; otherwise it is skipped with reason
-  `basis_mismatch` and any existing bible entry for it is left unchanged. It makes a local commit scoped to
-  the bible path (identity `pm-kb`) and never pushes. No ids, no mergeable
-  ids, or an unchanged entry set makes no write and no commit. Re-running with
+  matching that file's content at the repo's HEAD commit (uncommitted edits
+  never change the verdict; a file absent at HEAD is a mismatch; a folder that
+  is not a git work tree -- e.g. a bare repository, which still passes (self)
+  resolution -- is refused with `E-BIBLE-BASIS-NOT-GIT`, never hashed from
+  disk, and nothing is written); otherwise it is skipped with reason
+  `basis_mismatch` and any existing bible entry for it is left unchanged. A
+  live CONFIRMED id that cites no source file has no checkable basis and is
+  skipped with its own reason `no_source_files` (never `basis_mismatch`),
+  likewise leaving any existing bible entry unchanged. It makes a local commit scoped to
+  the bible path (identity `pm-kb`) and never pushes. Nothing merged and
+  nothing removed, or an unchanged entry set, makes no write and no commit. Re-running with
   the same ids after resetting to a newer HEAD re-merges at entry level, so a
   rejected push can be retried with no manual merge. An existing bible that
   cannot be parsed is refused (thrown), never overwritten.
@@ -198,9 +325,13 @@ usage telemetry records, and (for `code_context`) whose KB enriches the result.
 Owned by `resolveCodeSelf()` in `src/tools/code-intelligence.ts`, over the
 shared `resolveSelfSession()` / `validateSelfRepoFolder()` in
 `src/services/knowledge/kb-self.ts`. Past resolution, a folder with no ready
-code index (none yet, one marked incomplete with no analyze running, or one
-still being built) is refused with `E-CODE-INDEX-NOT-READY`; for a missing or
-interrupted index on this host the gitnexus pre-flight first requests a
+code index (none yet, one marked incomplete with no analyze running, one
+whose metadata disagrees with itself -- the gitnexus registry or the fleet
+record of its last build naming a different commit than meta.json -- or one
+still being built, including an existing index an analyze is rewriting) is
+refused with `E-CODE-INDEX-NOT-READY`, as is an answer during which the index
+changed (readiness is re-checked after the child answers); for a missing,
+interrupted or inconsistent index on this host the gitnexus pre-flight first requests a
 background build and the message says so (retry shortly) -- after an automatic
 build that ends without a ready index, automatic builds for that folder pause
 until `code_reindex` and the message says so -- and provider `none` with `E-CODE-INTEL-DISABLED` --
@@ -210,6 +341,49 @@ pin the two (self) refusals; every `code_*` tool has a
 `refusal-index-not-ready` fixture run as the `CODE` member session (provider
 pinned to `gitnexus`, no index), and `code_query/refusal-intel-disabled` runs as
 the `CODE_OFF` member session (provider `none`).
+
+### 2.8 Bible file format (v3) and its hash basis
+
+The bible file is described by `bible/kb-canonical.schema.json`; example files
+for every accepted shape live in `bible/examples/`.
+
+- Format v3 (written by `kb_export` and `kb_bible_commit`) is the envelope
+  `{version: 3, provenance: {commit, branch, entry_count}, entries: [...]}`.
+  Each entry has the stable field set `{id, type, title, summary, symbols,
+  source_files, confidence, updated_at}` plus, in v3, an optional
+  `source_file_hashes`: a map from repo-relative path to file hash. A writer
+  copies it verbatim (keys sorted) from the exporting KB's STORED basis --
+  the basis the bible predicate admitted the entry against -- and never
+  re-hashes files at write time. An entry carried over from an older bible has
+  no `source_file_hashes`; a writer keeps it as it is and never invents one.
+  The one exception is `kb_bible_commit`'s legacy backfill: when its KB holds
+  the same id, citing the same `source_files`, with a stored basis that passes
+  the bible admission predicate at HEAD, that STORED basis is attached as the
+  entry's `source_file_hashes` (copied, not re-hashed; every other field is
+  unchanged; an entry that does not qualify is kept as it is, never dropped).
+  A backfill is a change: the bible is rewritten at the current format version
+  and committed, and the response's `backfilled` counts the entries. A local
+  freshness-only basis (below) never backfills.
+- Every writer refuses (throws, file untouched) to write a bible holding two
+  entries with the same `id`.
+- Readers (`kb_import`, the member bible view) accept v1 (a bare JSON array of
+  entries), v2 (the same envelope with `version: 2` and no per-entry hashes)
+  and v3. A v3 entry whose `source_file_hashes` is a non-empty map with
+  repo-relative keys covering every `source_files` entry is stored with
+  EXACTLY that basis: the importing clone's files are never hashed for it, so
+  an entry whose cited file differs on the importing clone is not admitted to
+  that clone's bible and the post-import sweep stales it. An entry without a
+  valid carried map (every v1/v2 entry) gets a LOCAL freshness-only basis
+  hashed from the importing clone's files. Freshness checks use it, so the
+  entry goes stale when a cited file changes. It is never a verified basis:
+  it is never written to a bible, the bible admission predicate (kb_export,
+  kb_bible_commit) reads it as no basis, and the reconcile prefilter never
+  resolves a pair on it. The entry is therefore not re-exported until it is
+  recaptured (kb_promote and kb_resolve_contradiction do not give it a
+  verified basis).
+- No tool request shape changes with v3. The only response change is
+  `kb_bible_commit`'s `backfilled` count (above); otherwise the format change is
+  confined to the bible file.
 
 ## 3. Error model
 
@@ -325,7 +499,9 @@ KB identity is its single known origin remote (`knownRepoRemoteUrl`) and the
 folder is passed verbatim; `kb_session_prime` and `kb_stats` tolerate that
 missing anchor (`taxonomy.json` non_error_outcomes
 `N-ANCHOR-VERBATIM-MISSING`), while `kb_export`, `kb_bible_commit` and
-`kb_import` refuse with `E-REPO-PATH-INVALID` (`requireLocalFolder`). In-process callers that already
+`kb_import` refuse with `E-REPO-PATH-INVALID` (`requireLocalFolder`; a member
+session is never served `kb_export`, section 2.5a, so for it this is defence in
+depth). In-process callers that already
 know the repo (the post-dispatch harvest in `src/tools/execute-prompt.ts`, the
 `kb commit` / `kb import` CLIs) pass an explicit anchor as the handler's second
 argument, which no MCP request can carry.

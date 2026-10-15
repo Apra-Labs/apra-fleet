@@ -495,7 +495,10 @@ async function startHttpServer() {
   } catch (err) {
     lock.release();
     if (err instanceof PortInUseError) {
-      logError('startup', portInUseMessage(err.port, readServerInfoPid()));
+      const { findPortHolder, describePortConflict } = await import('./services/port-holder.js');
+      const { hasMemberInstallMarker } = await import('./cli/install-guard.js');
+      const conflict = describePortConflict(err.port, portInUseMessage(err.port, readServerInfoPid()), await findPortHolder(err.port), hasMemberInstallMarker() ? 'member' : 'full');
+      logError('startup', conflict.message);
       process.exit(await refusalExitCode());
     }
     throw err;

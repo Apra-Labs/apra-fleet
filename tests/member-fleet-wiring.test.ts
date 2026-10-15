@@ -17,6 +17,7 @@ import { addAgent, getAgent, getAllAgents, recordFleetMcpStatus } from '../src/s
 import { __setMemberFleetMcpDeps, NO_INSTALL_SENTINEL, type MemberFleetMcpDeps, type MemberSession } from '../src/services/member-fleet-install.js';
 import type { SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
+import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -25,12 +26,20 @@ import { registerAllTools } from '../src/services/tool-registry.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 const mockTestConnection = vi.fn();
+const stagedFiles = new Map<string, string>();
 
 vi.mock('../src/services/strategy.js', () => ({
   getStrategy: () => ({
     execCommand: mockExecCommand,
     testConnection: mockTestConnection,
-    transferFiles: vi.fn(),
+    // The member file channel: ~/.claude.json content never rides a command line,
+    // so tests read what the writer staged here, keyed by file name.
+    transferFiles: async (paths: string[]) => {
+      for (const p of paths) stagedFiles.set(path.basename(p), fs.readFileSync(p, 'utf8'));
+      return { success: paths, failed: [] };
+    },
+    writeSecretFile: async () => '/home/testuser/.apra-fleet-secret',
+    removeSecretFile: async () => undefined,
     close: vi.fn(),
   }),
 }));
@@ -87,6 +96,8 @@ function fakeDeps(world: World, local?: () => Promise<MemberSession>, home = HOM
       const c = plain(command);
       world.log.push(c);
       world.lastId = agent.id;
+      // The member access secret read: an install without one (older than the secret).
+      if (c.includes('member-access.key')) return ok('');
       if (c.includes('member-install.json')) return world.marker ? ok('') : { stdout: '', stderr: '', code: 1 };
       if (c.includes("'register-member'")) {
         world.probes++;
@@ -181,8 +192,9 @@ describe('register_member fleet_install', () => {
     mockExecCommand.mockImplementation(async (cmd: string) => {
       // Member-side writes of ~/.claude.json (staged as a .tmp heredoc, then
       // moved): keep each one that carries the per-folder apra-fleet entry.
-      const m = cmd.match(/^cat > "?([^"\n]*\.claude\.json[^"\n]*)"? << '(\w+)'\n([\s\S]*?)\n\2/);
-      if (m && m[3].includes('"apra-fleet"')) { w.log.push(`compose-write ${m[1]}`); written.push(m[3]); }
+      const m = cmd.match(/^(?:mv|Move-Item -Force) "([^"]*)" "([^"]*\.claude\.json)"$/);
+      const staged = m ? stagedFiles.get(path.basename(m[1].replace(/\\/g, '/'))) : undefined;
+      if (m && staged && staged.includes('"apra-fleet"')) { w.log.push(`compose-write ${m[2]}`); written.push(staged); }
       return configExec(cmd);
     });
     const d = fakeDeps(w);
@@ -205,6 +217,43 @@ describe('register_member fleet_install', () => {
     const registerAt = w.log.findIndex(c => c.includes("'register-member'"));
     expect(composeAt).toBeGreaterThanOrEqual(0);
     expect(registerAt).toBeGreaterThan(composeAt);
+    expect(written[written.length - 1]).toContain(`?member=${agent.id}`);
+  });
+
+  it('fresh fleet_install "auto": compose (before install, no marker yet) writes no entry and says nothing misleading; the install step writes the entry with the secret', async () => {
+    const w = newWorld({ installed: null, entry: false });
+    w.marker = false;
+    const configExec = makeConfigAwareExec();
+    const written: string[] = [];
+    const markerAtCompose: boolean[] = [];
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('member-install.json')) {
+        markerAtCompose.push(w.marker);
+        return w.marker ? { stdout: '', stderr: '', code: 0 } : { stdout: '', stderr: '', code: 1 };
+      }
+      const m = cmd.match(/^(?:mv|Move-Item -Force) "([^"]*)" "([^"]*\.claude\.json)"$/);
+      const staged = m ? stagedFiles.get(path.basename(m[1].replace(/\\/g, '/'))) : undefined;
+      if (m && staged && staged.includes('"apra-fleet"')) written.push(staged);
+      return configExec(cmd);
+    });
+    const d = fakeDeps(w);
+    const baseExec = d.exec;
+    d.exec = async (agent, command) => {
+      const c = plain(command);
+      if (c.includes('cat "') && c.includes('.claude.json') && written.length > 0) return { stdout: written[written.length - 1], stderr: '', code: 0 };
+      return baseExec(agent, command);
+    };
+    // The real post-install writer (the same compose path, via writeMemberMcpEntry).
+    d.writeMcpEntry = a => writeMemberMcpEntry(a);
+    __setMemberFleetMcpDeps(d);
+    const result = await registerMember({ ...REMOTE, friendly_name: 'bella', llm_provider: 'claude', fleet_install: 'auto', port: 22, cloud_region: 'us-east-1', cloud_idle_timeout_min: 30 } as any);
+    expect(result).toContain('Member registered successfully');
+    expect(result).not.toMatch(/NOT written|not written yet/);
+    // The orchestrator compose ran before the install (no marker) and later after it (marker).
+    expect(markerAtCompose[0]).toBe(false);
+    expect(markerAtCompose).toContain(true);
+    const agent = getAllAgents()[0];
+    expect(agent.fleetMcp).toMatchObject({ state: 'available' });
     expect(written[written.length - 1]).toContain(`?member=${agent.id}`);
   });
 
@@ -255,12 +304,12 @@ describe('register_member fleet_install', () => {
     expect(result).toContain('fleetMcp: unavailable (E-FOLDER-TAKEN)');
   });
 
-  it('a missing per-folder MCP entry -> unavailable(mcp-entry-missing)', async () => {
+  it('claude: a missing per-folder MCP entry does not gate (dispatches get the member config per session)', async () => {
     const w = newWorld({ entry: false });
     __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
     const result = await registerMember({ ...REMOTE, friendly_name: 'bella', fleet_install: 'auto', port: 22, cloud_region: 'us-east-1', cloud_idle_timeout_min: 30 } as any);
     expect(result).toContain('Member registered successfully');
-    expect(result).toContain('fleetMcp: unavailable (mcp-entry-missing)');
+    expect(result).toContain('fleetMcp: available');
   });
 
   it('agy member -> unavailable(no-per-project-mcp), unverified; nothing installed', async () => {
@@ -300,13 +349,13 @@ describe('register_member fleet_install', () => {
 
 describe('recoverable: unavailable -> available on re-probe, no restart', () => {
   it('member_detail refresh:true flips the recorded status after the cause is fixed', async () => {
-    const w = newWorld({ entry: false });
+    const w = newWorld({ listTools: ['version'] });
     __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
     const a = remoteMember();
     const first = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
-    expect(first.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
+    expect(first.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'member-tools-missing' });
     expect(getAgent(a.id)!.fleetMcp).toMatchObject({ state: 'unavailable' });
-    w.entry = true; // operator fixes the member
+    w.listTools = newWorld().listTools; // operator fixes the member
     const second = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
     expect(second.fleetMcp).toMatchObject({ state: 'available', version: VERSION });
     expect(getAgent(a.id)!.fleetMcp).toMatchObject({ state: 'available' });
@@ -561,8 +610,9 @@ describe('fleet_install writes the per-folder MCP entry before checking it', () 
     const configExec = makeConfigAwareExec();
     const written: string[] = [];
     mockExecCommand.mockImplementation(async (cmd: string) => {
-      const m = cmd.match(/^cat > "?([^"\n]*\.claude\.json[^"\n]*)"? << '(\w+)'\n([\s\S]*?)\n\2/);
-      if (m && m[3].includes('"apra-fleet"')) { w.log.push(`entry-write ${m[1]}`); written.push(m[3]); }
+      const m = cmd.match(/^(?:mv|Move-Item -Force) "([^"]*)" "([^"]*\.claude\.json)"$/);
+      const staged = m ? stagedFiles.get(path.basename(m[1].replace(/\\/g, '/'))) : undefined;
+      if (m && staged && staged.includes('"apra-fleet"')) { w.log.push(`entry-write ${m[2]}`); written.push(staged); }
       return configExec(cmd);
     });
     const d = fakeDeps(w);
@@ -609,16 +659,27 @@ describe('fleet_install writes the per-folder MCP entry before checking it', () 
     expect(calls).toEqual([getAllAgents()[0].id]);
   });
 
-  it('a member config the writer cannot safely edit is reported with its own reason', async () => {
+  it('a member config the writer cannot safely edit is reported with its own reason (opencode: the entry gates)', async () => {
+    const w = newWorld({ entry: false });
+    const d = fakeDeps(w);
+    d.writeMcpEntry = async () => ({ ok: false, reason: 'member-config-unparseable', detail: 'Member MCP config NOT edited: /home/bella/repo/opencode.json is not strict JSON' });
+    __setMemberFleetMcpDeps(d);
+    const a = remoteMember({ llmProvider: 'opencode' });
+    const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(result).toContain('fleetMcp: unavailable (member-config-unparseable)');
+    expect(getAgent(a.id)!.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'member-config-unparseable' });
+    expect(w.log.some(c => c.includes("'call'"))).toBe(false);
+  });
+
+  it('claude: a failed per-folder write does not gate (the entry is only the fallback of the per-session config)', async () => {
     const w = newWorld({ entry: false });
     const d = fakeDeps(w);
     d.writeMcpEntry = async () => ({ ok: false, reason: 'member-config-unparseable', detail: 'Member MCP config NOT edited: /home/bella/.claude.json is not strict JSON' });
     __setMemberFleetMcpDeps(d);
     const a = remoteMember();
     const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
-    expect(result).toContain('fleetMcp: unavailable (member-config-unparseable)');
-    expect(getAgent(a.id)!.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'member-config-unparseable' });
-    expect(w.log.some(c => c.includes("'call'"))).toBe(false);
+    expect(result).toContain('fleetMcp: available');
+    expect(w.log.some(c => c.includes("'call'"))).toBe(true);
   });
 
   it('member_detail refresh stays read-only: it never writes the entry', async () => {
@@ -629,7 +690,8 @@ describe('fleet_install writes the per-folder MCP entry before checking it', () 
     __setMemberFleetMcpDeps(d);
     const a = remoteMember();
     const r = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
-    expect(r.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
+    // claude: no entry needed (per-session config), and refresh writes nothing.
+    expect(r.fleetMcp).toMatchObject({ state: 'available' });
     expect(called).toBe(false);
   });
 

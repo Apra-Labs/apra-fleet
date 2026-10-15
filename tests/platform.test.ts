@@ -509,6 +509,22 @@ describe('OsCommands via getOsCommands', () => {
       }
     });
   });
+
+  describe('fleetProcessCheck POSIX regex compatibility', () => {
+    it('linux and macos: uses POSIX [[:space:]] character class instead of \\s for BSD/macOS pgrep compatibility', () => {
+      for (const [name, cmds] of [['linux', linux], ['macos', macos]] as const) {
+        const cmd = cmds.fleetProcessCheck('/home/user/project', undefined, 'claude');
+        expect(cmd).toContain('[[:space:]]');
+        expect(cmd).not.toContain('\\s');
+        expect(cmd).toContain('[c]laude');
+
+        const agyCmd = cmds.fleetProcessCheck('/home/user/project', undefined, 'agy');
+        expect(agyCmd).toContain('[[:space:]]');
+        expect(agyCmd).not.toContain('\\s');
+        expect(agyCmd).toContain('[a]gy');
+      }
+    });
+  });
 });
 
 describe('isContainedInWorkFolder', () => {

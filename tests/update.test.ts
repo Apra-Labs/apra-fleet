@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { runUpdate } from '../src/cli/update.js';
+import { fleetSeGuardEnabled, currentFleetSeProbes } from '../src/cli/install.js';
 import { serverVersion } from '../src/version.js';
 
 // Simulate SEA mode so the existing update tests exercise the binary-download path.
@@ -12,6 +13,8 @@ vi.mock('../src/cli/install.js', () => ({
   isSea: vi.fn(() => true),
   isNpmGlobalInstall: vi.fn(() => false),
   _setSeaOverride: vi.fn(),
+  fleetSeGuardEnabled: vi.fn(() => false),
+  currentFleetSeProbes: vi.fn(),
 }));
 
 vi.mock('node:fs');
@@ -31,6 +34,8 @@ vi.mock('node:child_process', () => ({
     unref: vi.fn(),
   })),
 }));
+vi.mock('../src/services/service-notice.js', () => ({ showPendingServiceNotice: vi.fn() }));
+import { showPendingServiceNotice } from '../src/services/service-notice.js';
 
 describe('runUpdate (T6)', () => {
   const mockTmpDir = '/tmp';
@@ -127,6 +132,44 @@ describe('runUpdate (T6)', () => {
       expect.objectContaining({ detached: true })
     );
     expect(process.exit).toHaveBeenCalledWith(0);
+    // The detached installer has no console: point the user at status, and
+    // show any guidance the previous detached install left behind.
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Run 'apra-fleet status'"));
+    expect(showPendingServiceNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it('newer available but a fleet-sprint supervisor is running -- refuses in the console, spawns nothing', async () => {
+    const assetUrl = 'https://example.com/installer';
+    vi.mocked(fetch).mockImplementation(async (url: any) => {
+      if (url.toString().includes('releases/latest')) {
+        return { ok: true, json: async () => ({ tag_name: 'v99.9.9', assets: [{ name: 'apra-fleet-installer-linux-x64', browser_download_url: assetUrl }] }) } as any;
+      }
+      return { ok: true, body: { pipeTo: async () => {} } } as any;
+    });
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    vi.mocked(fleetSeGuardEnabled).mockReturnValue(true);
+    vi.mocked(currentFleetSeProbes).mockReturnValue({
+      lockDir: () => '/tmp/locks',
+      supervisorLogPath: () => '/nope/supervisor.log',
+      readDir: () => { throw Object.assign(new Error('x'), { code: 'ENOENT' }); },
+      readFile: () => { throw Object.assign(new Error('x'), { code: 'ENOENT' }); },
+      isPidAlive: () => true,
+      commandLine: () => null,
+      getJson: async (url: string) => url.endsWith('/api/health') ? { status: 'ok', seams: {}, pid: 4242 } : { sprints: [] },
+    });
+    const prevExitCode = process.exitCode;
+    try {
+      await runUpdate();
+      expect(spawn).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      const err = vi.mocked(console.error).mock.calls.map(c => String(c[0])).join('\n');
+      expect(err).toContain('E-FLEET-SE-RUNNING');
+      expect(err).toContain('pid 4242');
+      expect(err).toContain('--ignore-running-sprints');
+    } finally {
+      process.exitCode = prevExitCode;
+      vi.mocked(fleetSeGuardEnabled).mockReturnValue(false);
+    }
   });
 
   it('missing install-config.json -- uses defaults with warning', async () => {

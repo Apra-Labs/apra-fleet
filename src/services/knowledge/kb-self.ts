@@ -86,7 +86,7 @@ function gitOut(folder: string, args: string[]): string | null {
   const env = { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(folder) };
   try {
     return execFileSync('git', args, {
-      cwd: folder, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: folder, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
   } catch {
     return null;

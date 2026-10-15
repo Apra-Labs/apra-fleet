@@ -615,9 +615,14 @@ describe('runner.js mock-level execution', () => {
         const IDENTITY_PROBES = ['bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
         const identityEnd = IDENTITY_PROBES.length;
         assert.deepStrictEqual(spy.commandLog.slice(0, identityEnd), IDENTITY_PROBES, 'the beads identity probes must open the command log');
-        const firstGitIdx = spy.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c));
+        // The backlog member's VCS-credential preflight (ensureVcsAuthFresh,
+        // run before its first beads D-pull) resolves the repo with one more
+        // `git remote get-url origin`; it is not a branch-ensure git command.
+        const PREFLIGHT_PROBE = 'git remote get-url origin';
+        const firstGitIdx = spy.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c) && c !== PREFLIGHT_PROBE);
         assert.ok(firstGitIdx >= 0, 'expected at least one git command in the log');
         for (const pre of spy.commandLog.slice(identityEnd, firstGitIdx)) {
+            if (pre === PREFLIGHT_PROBE) continue;
             assert.match(
                 pre,
                 /^bd /,
@@ -664,7 +669,11 @@ describe('runner.js mock-level execution', () => {
         // provisionVcsAuthForMember skip its own internal
         // `git remote get-url origin` re-derivation -- eliminating what
         // used to be a second, redundant classification-shaped probe here.
-        const last3 = spy.commandLog.slice(-3);
+        // The G-push landed check's read-only reads (member-sync.mjs
+        // checkGitPushLanded) follow the push; skip them -- they verify the
+        // push, they are not part of the publish sequence pinned here.
+        const isLandedCheckRead = (c) => typeof c === 'string' && (c === 'git rev-parse HEAD' || /^git (ls-remote|fetch|rev-list --count) /.test(c));
+        const last3 = spy.commandLog.filter((c) => !isLandedCheckRead(c)).slice(-3);
         assert.match(last3[0], /^git push -u origin auto-sprint\/reach-test/);
         assert.match(last3[1], /^git remote get-url origin\b/);
         assert.match(last3[2], /^curl -sS -X POST\b/);

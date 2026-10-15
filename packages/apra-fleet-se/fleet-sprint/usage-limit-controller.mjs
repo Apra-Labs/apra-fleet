@@ -170,6 +170,13 @@ export function createUsageLimitPauseController({
             // Probe before trusting the clock: one real dispatch to the same
             // member at the same tier.
             try {
+                // Deliberately NOT strict (no fail_on_permission_denial): the
+                // probe only tests whether the member answers at all after a
+                // usage-limit wait, it runs no tools, and a permission refusal
+                // there says nothing about the usage limit. A refusal must not
+                // be read as a usage limit (isUsageLimitDispatchError matches
+                // only the usage_limit reason) nor abort the wait: any such
+                // outcome falls through to the inconclusive-probe handling below.
                 await agent(PROBE_PROMPT, {
                     member_name: member,
                     ...(tier ? { model: tier } : {}),

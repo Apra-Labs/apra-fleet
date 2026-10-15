@@ -29,12 +29,13 @@
         { "id": "B06", "title": "server service registered and running", "expect": { "exit": 0, "keyline": "Running|active" } },
         { "id": "B07", "title": "supervisor service (if this build installs one)", "expect": { "exit": 0, "keyline": "Running|active" } },
         { "id": "B08", "title": "GET /health 200 on candidate version", "expect": { "exit": 200, "observed": "^${expectVersion}$" } },
-        { "id": "B09", "title": "MCP initialize over HTTP", "expect": { "exit": 200, "keyline": "serverInfo" } },
+        { "id": "B09", "title": "MCP initialize over HTTP with the install access secret", "expect": { "exit": 200, "keyline": "serverInfo" } },
         { "id": "B10", "title": "MCP with invalid bearer is 401", "expect": { "exit": 401 } },
         { "id": "B11", "title": "POST /shutdown without bearer is 401", "expect": { "exit": 401 } },
         { "id": "B12", "title": "GET /api/fleet/members without credential is 401", "expect": { "exit": 401 }, "na": { "exit": [404], "reason": "route not served by this build" } },
         { "id": "B13", "title": "GET /ui serves the shell", "severity": "advisory", "expect": { "exit": 200, "keyline": "id=\"root\"" }, "na": { "exit": [404], "reason": "this build does not serve /ui" } },
-        { "id": "B14", "title": "apra-fleet status (server still up)", "expect": { "exit": 0, "keyline": "running" } }
+        { "id": "B14", "title": "apra-fleet status (server still up)", "expect": { "exit": 0, "keyline": "running" } },
+        { "id": "B15", "title": "MCP initialize without the install access secret is 401", "expect": { "exit": 401 } }
       ]
     },
     "U": {

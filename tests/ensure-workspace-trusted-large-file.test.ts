@@ -5,16 +5,15 @@
  * CreateProcess limit (32767 chars; cmd.exe 8191) and the spawn fails with
  * ENAMETOOLONG, so trust was never seeded.
  *
+ * Since apra-fleet-b4g.101 the content NEVER rides a command line at all (not raw,
+ * base64 or chunked): it goes through the file channel (transport.writeHomeFile:
+ * node:fs locally, SFTP over SSH) or the owner-only secret file, followed by a
+ * content-free Move-Item / mv; with neither channel the write fails loudly.
+ *
  * Covers:
- * - a >80 KB ~/.claude.json is delivered to a Windows PowerShell member in base64
- *   chunks, no single command over the limit, and the file lands byte-identical
- * - the same for a gitbash Windows member (bash.exe -c is still one CreateProcess)
- * - the non-Windows POSIX heredoc path is unchanged
- * - the out-of-band file channel (transport.writeHomeFile: node:fs locally, SFTP
- *   over SSH) is preferred when present, leaving only a tiny Move-Item on the
- *   command line -- and its failure falls back to chunked delivery
- * - small files keep the single-exec command they always had
- * - a failing chunk surfaces a specific error (non-fatal contract is the caller's)
+ * - the file channel on PowerShell, gitbash and Linux members (tiny move only)
+ * - no channel at all -> E-MEMBER-CONFIG-NO-FILE-CHANNEL, nothing inline
+ * - the secret-file fallback and its cleanup
  * - workspaceTrustTransportFor composes getMemberHomeDir + strategy.transferFiles
  *   and is absent for relay members
  *
@@ -27,7 +26,7 @@ import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ClaudeProvider, buildChunkedTrustWriteCommands, WORKSPACE_TRUST_MAX_COMMAND_CHARS, workspaceTrustStagingNames } from '../src/providers/claude.js';
+import { ClaudeProvider, workspaceTrustStagingNames } from '../src/providers/claude.js';
 import type { WorkspaceTrustTransport } from '../src/providers/provider.js';
 import type { SSHExecResult } from '../src/types.js';
 
@@ -79,11 +78,12 @@ function expectedMerged(existing: Record<string, unknown>, key: string): string 
 
 /**
  * Virtual member filesystem keyed by the literal path strings the impl uses
- * (`C:\Users\member\.claude.json`, `/home/member/.claude.json`, ...). Interprets every
- * command shape ensureWorkspaceTrusted can emit, in both shell flavours, so a
- * test can assert on the FINAL file content rather than on command text.
+ * (`C:\Users\member\.claude.json`, `/home/member/.claude.json`, ...). It
+ * understands ONLY the reads and the content-free moves ensureWorkspaceTrusted
+ * may emit: any other command (in particular one carrying file content) throws,
+ * so a regression to inline delivery fails loudly here.
  */
-function makeMemberFs(initialHome: string | null, posixFlavour = false, decodeFails = false) {
+function makeMemberFs(initialHome: string | null, posixFlavour = false) {
   const files = new Map<string, string>();
   if (initialHome !== null) {
     files.set(`${WIN_HOME}\\.claude.json`, initialHome);
@@ -100,77 +100,11 @@ function makeMemberFs(initialHome: string | null, posixFlavour = false, decodeFa
       const marker = cmd.match(/(?:echo|Write-Output) "([^"]+)"/)![1];
       return { stdout: `${files.get(m[1]) ?? ''}\n${marker}\n`, stderr: '', code: 0 };
     }
-
-    // --- PowerShell multi-statement writes are error-gated: unwrap the gate and
-    //     remember that a failing statement must abort the rest (exit 1). ---
-    let gated = false;
-    let body = cmd;
-    if ((m = cmd.match(/^\$ErrorActionPreference = 'Stop'; try \{ ([\s\S]*) \} catch \{ \[Console\]::Error\.WriteLine\(\$_\.Exception\.Message\); exit 1 \}$/))) {
-      gated = true;
-      body = m[1];
-    }
-
-    // --- PowerShell single write ---
-    if ((m = body.match(/^\[System\.IO\.File\]::WriteAllText\("([^"]+)", '([\s\S]*)', \(New-Object System\.Text\.UTF8Encoding\(\$false\)\)\); Move-Item -Force "([^"]+)" "([^"]+)"$/))) {
-      expect(gated).toBe(true);
-      files.set(m[4], m[2].replace(/''/g, "'"));
-      return { stdout: '', stderr: '', code: 0 };
-    }
-    // --- PowerShell base64 chunks ---
-    if ((m = cmd.match(/^\[System\.IO\.File\]::(WriteAllText|AppendAllText)\("([^"]+)", '([A-Za-z0-9+/=]*)'\)$/))) {
-      files.set(m[2], (m[1] === 'WriteAllText' ? '' : (files.get(m[2]) ?? '')) + m[3]);
-      return { stdout: '', stderr: '', code: 0 };
-    }
-    if ((m = body.match(/^\[System\.IO\.File\]::WriteAllBytes\("([^"]+)", \[System\.Convert\]::FromBase64String\(\[System\.IO\.File\]::ReadAllText\("([^"]+)"\)\)\); Remove-Item -Force "([^"]+)"; Move-Item -Force "([^"]+)" "([^"]+)"$/))) {
-      expect(gated).toBe(true);
-      const b64 = files.get(m[2]);
-      if (b64 === undefined || decodeFails) {
-        // .NET throws inside the try: with the gate, nothing after it runs.
-        return { stdout: '', stderr: 'Exception calling "FromBase64String"', code: 1 };
-      }
-      files.set(m[1], Buffer.from(b64, 'base64').toString('utf8'));
-      files.delete(m[3]);
-      files.set(m[5], files.get(m[4])!);
-      files.delete(m[4]);
-      return { stdout: '', stderr: '', code: 0 };
-    }
-    // --- PowerShell best-effort cleanup after a failed chunk ---
-    if ((m = cmd.match(/^Remove-Item -Force -ErrorAction SilentlyContinue "([^"]+)", "([^"]+)"$/))) {
-      files.delete(m[1]);
-      files.delete(m[2]);
-      return { stdout: '', stderr: '', code: 0 };
-    }
     // --- PowerShell move only (file channel) ---
     if ((m = cmd.match(/^Move-Item -Force "([^"]+)" "([^"]+)"$/))) {
       if (!files.has(m[1])) return { stdout: '', stderr: `Cannot find path '${m[1]}'`, code: 1 };
       files.set(m[2], files.get(m[1])!);
       files.delete(m[1]);
-      return { stdout: '', stderr: '', code: 0 };
-    }
-
-    // --- POSIX heredoc ---
-    if ((m = cmd.match(/^cat > "([^"]+)" << 'FLEET_TRUST_EOF'\n([\s\S]*)\nFLEET_TRUST_EOF\nmv "([^"]+)" "([^"]+)"$/))) {
-      files.set(m[4], m[2]);
-      return { stdout: '', stderr: '', code: 0 };
-    }
-    // --- POSIX base64 chunks ---
-    if ((m = cmd.match(/^printf '%s' '([A-Za-z0-9+/=]*)' (>>?) "([^"]+)"$/))) {
-      files.set(m[3], (m[2] === '>' ? '' : (files.get(m[3]) ?? '')) + m[1]);
-      return { stdout: '', stderr: '', code: 0 };
-    }
-    if ((m = cmd.match(/^base64 -d "([^"]+)" > "([^"]+)" && rm -f "([^"]+)" && mv "([^"]+)" "([^"]+)"$/))) {
-      const b64 = files.get(m[1]);
-      if (b64 === undefined || decodeFails) return { stdout: '', stderr: 'base64: invalid input', code: 1 };
-      files.set(m[2], Buffer.from(b64, 'base64').toString('utf8'));
-      files.delete(m[3]);
-      files.set(m[5], files.get(m[4])!);
-      files.delete(m[4]);
-      return { stdout: '', stderr: '', code: 0 };
-    }
-    // --- POSIX best-effort cleanup after a failed chunk ---
-    if ((m = cmd.match(/^rm -f "([^"]+)" "([^"]+)"$/))) {
-      files.delete(m[1]);
-      files.delete(m[2]);
       return { stdout: '', stderr: '', code: 0 };
     }
     // --- POSIX move only (file channel) ---
@@ -184,13 +118,12 @@ function makeMemberFs(initialHome: string | null, posixFlavour = false, decodeFa
     throw new Error(`fake member fs: unrecognised command: ${cmd.slice(0, 120)}`);
   });
 
-  /** transport.writeHomeFile fake: stages under BOTH path spellings so either
-   *  shell flavour's Move-Item/mv finds it. */
+  /** transport.writeHomeFile fake: stages under the spelling the member's shell
+   *  flavour's Move-Item/mv will look for. */
   const transport: WorkspaceTrustTransport & { writes: Array<{ relPath: string; content: string }> } = {
     writes: [],
     writeHomeFile: async (relPath, content) => {
       transport.writes.push({ relPath, content });
-      // Stage under the spelling the member's shell flavour will look for.
       files.set(posixFlavour ? `${POSIX_HOME}/${relPath}` : `${WIN_HOME}\\${relPath}`, content);
     },
   };
@@ -205,7 +138,7 @@ function makeMemberFs(initialHome: string | null, posixFlavour = false, decodeFa
   };
 }
 
-describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499)', () => {
+describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499, apra-fleet-b4g.101)', () => {
   const existing = makeLargeClaudeJson();
   const existingStr = JSON.stringify(existing, null, 2);
   const expected = expectedMerged(existing, KEY);
@@ -215,48 +148,7 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499)', ()
     expect(expected.length).toBeGreaterThan(HARD_LIMIT);
   });
 
-  it('Windows PowerShell member, exec only: chunked delivery, every command under the limit, content byte-identical', async () => {
-    const member = makeMemberFs(existingStr);
-    const result = await new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows', 'powershell5', undefined, TEST_HOME('windows', 'powershell5'));
-
-    expect(result.seeded).toBe(true);
-    expect(member.calls.length).toBeGreaterThan(3);
-    for (const c of member.calls) {
-      expect(c.length).toBeLessThanOrEqual(WORKSPACE_TRUST_MAX_COMMAND_CHARS);
-      expect(c.length).toBeLessThan(HARD_LIMIT);
-    }
-    expect(member.calls.some(c => c.includes('FromBase64String'))).toBe(true);
-    expect(member.home(false)).toBe(expected);
-    expect(member.home(false)!.charCodeAt(0)).not.toBe(0xfeff);
-    expect(member.leftovers()).toEqual([]);
-  });
-
-  it('gitbash Windows member, exec only: chunked POSIX delivery (bash.exe -c is one CreateProcess too)', async () => {
-    const member = makeMemberFs(existingStr);
-    const result = await new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows', 'gitbash', undefined, TEST_HOME('windows', 'gitbash'));
-
-    expect(result.seeded).toBe(true);
-    for (const c of member.calls) {
-      expect(c.length).toBeLessThanOrEqual(WORKSPACE_TRUST_MAX_COMMAND_CHARS);
-      expect(c).not.toMatch(/Get-Content|WriteAllText|Move-Item/);
-    }
-    expect(member.calls.some(c => c.startsWith('base64 -d'))).toBe(true);
-    expect(member.home(true)).toBe(expected);
-    expect(member.leftovers()).toEqual([]);
-  });
-
-  it('Linux member: the heredoc path is unchanged (one read, one write) even for a large file', async () => {
-    const member = makeMemberFs(existingStr);
-    const linuxKey = '/home/member/work/project-a';
-    const result = await new ClaudeProvider().ensureWorkspaceTrusted(linuxKey, member.exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
-
-    expect(result.seeded).toBe(true);
-    expect(member.calls).toHaveLength(2);
-    expect(member.calls[1]).toContain("<< 'FLEET_TRUST_EOF'");
-    expect(member.home(true)).toBe(expectedMerged(existing, linuxKey));
-  });
-
-  it('Windows member with a file channel (local node:fs / remote SFTP): content never rides a command line', async () => {
+  it('Windows PowerShell member with a file channel: content never rides a command line', async () => {
     const member = makeMemberFs(existingStr);
     const result = await new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows', undefined, member.transport, TEST_HOME('windows', undefined));
 
@@ -281,62 +173,60 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499)', ()
     expect(member.home(true)).toBe(expected);
   });
 
-  it('a failing file channel falls back to chunked exec delivery and still lands the file', async () => {
-    const member = makeMemberFs(existingStr);
-    const broken: WorkspaceTrustTransport = { writeHomeFile: async () => { throw new Error('sftp subsystem disabled'); } };
-    const result = await new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows', undefined, broken, TEST_HOME('windows', undefined));
-
-    expect(result.seeded).toBe(true);
-    expect(member.calls.some(c => c.includes('FromBase64String'))).toBe(true);
-    for (const c of member.calls) expect(c.length).toBeLessThanOrEqual(WORKSPACE_TRUST_MAX_COMMAND_CHARS);
-    expect(member.home(false)).toBe(expected);
-  });
-
-  it('a file channel whose move step fails also falls back to chunked delivery', async () => {
-    const member = makeMemberFs(existingStr);
-    // Stages nothing, so the Move-Item exits 1.
-    const silent: WorkspaceTrustTransport = { writeHomeFile: async () => undefined };
-    const result = await new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows', undefined, silent, TEST_HOME('windows', undefined));
-
-    expect(result.seeded).toBe(true);
-    expect(member.home(false)).toBe(expected);
-  });
-
-  it('a small ~/.claude.json on Windows keeps the single WriteAllText+Move-Item command (unchanged behaviour)', async () => {
-    const small = JSON.stringify({ projects: { [KEY]: { allowedTools: ["it's"] } } }, null, 2);
-    const member = makeMemberFs(small);
-    await new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows', undefined, undefined, TEST_HOME('windows', undefined));
-
+  it('Linux member with a file channel: same content-free mv', async () => {
+    const member = makeMemberFs(existingStr, true);
+    const linuxKey = '/home/member/work/project-a';
+    await new ClaudeProvider().ensureWorkspaceTrusted(linuxKey, member.exec, 'linux', undefined, member.transport, TEST_HOME('linux', undefined));
     expect(member.calls).toHaveLength(2);
-    expect(member.calls[1]).toMatch(/^\$ErrorActionPreference = 'Stop'; try \{ \[System\.IO\.File\]::WriteAllText\(.*Move-Item -Force/s);
-    expect(member.home(false)).toBe(expectedMerged(JSON.parse(small), KEY));
+    expect(member.calls[1]).toMatch(/^mv "/);
+    expect(member.home(true)).toBe(expectedMerged(existing, linuxKey));
   });
 
-  it('PowerShell: a decode failure in the gated final step never moves a stale tmp over ~/.claude.json', async () => {
-    const member = makeMemberFs(existingStr, false, true);
-    await expect(new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows', undefined, undefined, TEST_HOME('windows', undefined))).rejects.toThrow(/FromBase64String/);
-    expect(member.home(false)).toBe(existingStr);
-    expect(member.leftovers()).toEqual([]);
-  });
-
-  it('gitbash: a decode failure in the &&-gated final step never moves a stale tmp over ~/.claude.json', async () => {
-    const member = makeMemberFs(existingStr, true, true);
-    await expect(new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows', 'gitbash', undefined, TEST_HOME('windows', 'gitbash'))).rejects.toThrow(/invalid input/);
-    expect(member.home(true)).toBe(existingStr);
-    expect(member.leftovers()).toEqual([]);
-  });
-
-  it('every PowerShell write command (single and chunked-final) is error-gated', async () => {
-    for (const content of [existingStr, JSON.stringify({ projects: { [KEY]: {} } })]) {
-      const member = makeMemberFs(content);
-      await new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows', undefined, undefined, TEST_HOME('windows', undefined));
-      const writes = member.calls.filter(c => c.includes('Move-Item'));
-      expect(writes.length).toBe(1);
-      expect(writes[0]).toMatch(/^\$ErrorActionPreference = 'Stop'; try \{ .* \} catch \{ \[Console\]::Error\.WriteLine\(\$_\.Exception\.Message\); exit 1 \}$/s);
+  it('NO file channel and no secret-file channel: fails loudly naming the missing channels -- no inline fallback', async () => {
+    for (const [os, shell] of [['windows', undefined], ['windows', 'gitbash'], ['linux', undefined]] as const) {
+      const member = makeMemberFs(existingStr);
+      await expect(new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, os, shell, undefined, TEST_HOME(os, shell)))
+        .rejects.toThrow(/E-MEMBER-CONFIG-NO-FILE-CHANNEL.*file channel.*not available.*secret-file channel: not available/s);
+      // Only the read ever ran; no command carries content.
+      expect(member.calls).toHaveLength(1);
+      expect(member.home(os !== 'windows' || shell === 'gitbash')).toBe(existingStr);
     }
   });
 
-  it('staging file names are unique per call and shared by the file channel and the exec commands', async () => {
+  it('a failing file channel falls back to the owner-only secret file, then a content-free move', async () => {
+    const member = makeMemberFs(existingStr);
+    const broken: WorkspaceTrustTransport = { writeHomeFile: async () => { throw new Error('sftp subsystem disabled'); } };
+    const secret = {
+      write: vi.fn(async (content: string) => { member.files.set('C:\\Users\\member\\.apra-fleet-claude-config-1', content); return 'C:\\Users\\member\\.apra-fleet-claude-config-1'; }),
+      remove: vi.fn(async () => undefined),
+    };
+    const result = await new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows', undefined, broken, TEST_HOME('windows', undefined), secret);
+
+    expect(result.seeded).toBe(true);
+    expect(secret.write).toHaveBeenCalledWith(expected);
+    expect(member.calls[member.calls.length - 1]).toBe('Move-Item -Force "C:\\Users\\member\\.apra-fleet-claude-config-1" "C:\\Users\\member\\.claude.json"');
+    for (const c of member.calls) expect(c.length).toBeLessThan(400);
+    expect(member.home(false)).toBe(expected);
+  });
+
+  it('a file channel whose move step fails does not fall back inline: it fails naming both channels', async () => {
+    const member = makeMemberFs(existingStr);
+    // Stages nothing, so the Move-Item exits 1.
+    const silent: WorkspaceTrustTransport = { writeHomeFile: async () => undefined };
+    await expect(new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows', undefined, silent, TEST_HOME('windows', undefined)))
+      .rejects.toThrow(/E-MEMBER-CONFIG-NO-FILE-CHANNEL.*file channel: move into place failed/s);
+    expect(member.home(false)).toBe(existingStr);
+  });
+
+  it('a failed secret-file move cleans the staged secret file up', async () => {
+    const member = makeMemberFs(existingStr);
+    const secret = { write: vi.fn(async () => 'C:\\Users\\member\\missing-secret'), remove: vi.fn(async () => undefined) };
+    await expect(new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows', undefined, undefined, TEST_HOME('windows', undefined), secret))
+      .rejects.toThrow(/secret-file channel: move into place failed/);
+    expect(secret.remove).toHaveBeenCalledWith('C:\\Users\\member\\missing-secret');
+  });
+
+  it('staging file names are unique per call and shared by the file channel and the move command', async () => {
     const a = makeMemberFs(existingStr);
     const b = makeMemberFs(existingStr);
     await new ClaudeProvider().ensureWorkspaceTrusted(KEY, a.exec, 'windows', undefined, a.transport, TEST_HOME('windows', undefined));
@@ -346,61 +236,6 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499)', ()
     expect(relA).not.toBe(relB);
     expect(a.calls[1]).toContain(relA);
     expect(b.calls[1]).toContain(relB);
-
-    const chunked = makeMemberFs(existingStr);
-    await new ClaudeProvider().ensureWorkspaceTrusted(KEY, chunked.exec, 'windows', undefined, undefined, TEST_HOME('windows', undefined));
-    const b64Names = new Set(chunked.calls.map(c => c.match(/fleet-trust-(\d+-[a-z0-9]+)\.b64/)?.[1]).filter(Boolean));
-    const tmpNames = new Set(chunked.calls.map(c => c.match(/fleet-trust-(\d+-[a-z0-9]+)\.tmp/)?.[1]).filter(Boolean));
-    expect(b64Names.size).toBe(1);
-    expect(tmpNames).toEqual(b64Names);
-  });
-
-  it('a failing chunk cleans up the partial staging files on the member (best effort)', async () => {
-    const member = makeMemberFs(existingStr);
-    let appends = 0;
-    const flaky = vi.fn(async (cmd: string): Promise<SSHExecResult> => {
-      if (cmd.includes('AppendAllText') && ++appends === 3) return { stdout: '', stderr: 'disk full', code: 1 };
-      return member.exec(cmd);
-    });
-    await expect(new ClaudeProvider().ensureWorkspaceTrusted(KEY, flaky, 'windows', undefined, undefined, TEST_HOME('windows', undefined))).rejects.toThrow(/disk full/);
-    const last = flaky.mock.calls[flaky.mock.calls.length - 1][0];
-    expect(last).toMatch(/^Remove-Item -Force -ErrorAction SilentlyContinue ".*\.b64", ".*\.tmp"$/);
-    expect(member.leftovers()).toEqual([]);
-    expect(member.home(false)).toBe(existingStr);
-  });
-
-  it('a failing chunk surfaces a specific error (the caller keeps it non-fatal)', async () => {
-    const member = makeMemberFs(existingStr);
-    const flaky = vi.fn(async (cmd: string): Promise<SSHExecResult> => {
-      if (cmd.includes('AppendAllText')) return { stdout: '', stderr: 'Access to the path is denied.', code: 1 };
-      return member.exec(cmd);
-    });
-    await expect(new ClaudeProvider().ensureWorkspaceTrusted(KEY, flaky, 'windows', undefined, undefined, TEST_HOME('windows', undefined)))
-      .rejects.toThrow(/chunked write of ~\/\.claude\.json failed on a Windows member \(exit 1.*Access to the path is denied/);
-  });
-});
-
-describe('buildChunkedTrustWriteCommands', () => {
-  it('splits an 84 KB payload into commands that each stay under the limit and round-trip exactly', () => {
-    const payload = JSON.stringify({ blob: 'a"b\'c\\d'.repeat(84 * 1024 / 8) });
-    for (const posix of [false, true]) {
-      const cmds = buildChunkedTrustWriteCommands(payload, {
-        posix, homeFile: 'H', tmpFile: 'T', b64File: 'B',
-      });
-      const max = Math.max(...cmds.map(c => c.length));
-      expect(max).toBeLessThanOrEqual(WORKSPACE_TRUST_MAX_COMMAND_CHARS);
-      expect(cmds.length).toBeGreaterThan(payload.length / WORKSPACE_TRUST_MAX_COMMAND_CHARS);
-      const b64 = cmds.slice(0, -1).map(c => c.match(/'([A-Za-z0-9+/=]*)'/)![1]).join('');
-      expect(Buffer.from(b64, 'base64').toString('utf8')).toBe(payload);
-    }
-  });
-
-  it('honours a custom chunk size and always emits a final decode+move step', () => {
-    const cmds = buildChunkedTrustWriteCommands('x'.repeat(100), { posix: false, homeFile: 'H', tmpFile: 'T', b64File: 'B', chunkChars: 16 });
-    expect(cmds.length).toBe(Math.ceil(Buffer.from('x'.repeat(100)).toString('base64').length / 16) + 1);
-    expect(cmds[0]).toContain('WriteAllText("B"');
-    expect(cmds[1]).toContain('AppendAllText("B"');
-    expect(cmds[cmds.length - 1]).toContain('Move-Item -Force "T" "H"');
   });
 });
 

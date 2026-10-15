@@ -1814,6 +1814,37 @@ describe('max_turns classification (apra-fleet-p4f.2)', () => {
     expect(cost).toBeGreaterThan(0);
   });
 
+  it('a successful dispatch exposes cache-read/cache-write counts in structured usage; total_tokens stays input+output', async () => {
+    const member = makeTestAgent({ friendlyName: 'cache-usage' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          result: 'ok',
+          session_id: 'sess-cache-usage',
+          usage: { input_tokens: 30, output_tokens: 900, cache_read_input_tokens: 250_000, cache_creation_input_tokens: 12_000 },
+        }),
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent?.isError).toBeFalsy();
+    expect((result.structuredContent as any)?.usage).toEqual({
+      input_tokens: 30,
+      output_tokens: 900,
+      cache_read_input_tokens: 250_000,
+      cache_creation_input_tokens: 12_000,
+      // Context-admission figure: deliberately excludes the cache counts.
+      total_tokens: 930,
+    });
+  });
+
   it('classifies a genuine auth error as a structured "auth" reason with login advice when there is no max_turns signal', async () => {
     const member = makeTestAgent({ friendlyName: 'genuine-auth-fail' });
     addAgent(member);
@@ -1829,6 +1860,23 @@ describe('max_turns classification (apra-fleet-p4f.2)', () => {
     // err.details.reason directly instead of regexing the message text.
     expect(result.structuredContent).toMatchObject({ isError: true, reason: 'auth' });
     expect(resultText(result)).toContain('/login');
+  });
+
+  it('maps an expired-OAuth api_error result to structured reason "auth"', async () => {
+    const member = makeTestAgent({ friendlyName: 'oauth-expired' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: '{"type":"result","is_error":true,"terminal_reason":"api_error","result":"Failed to authenticate: OAuth session expired and could not be refreshed"}\n',
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'auth' });
   });
 
   // GitHub #585: a non-zero exit logs a capped, redacted stderr tail plus the
@@ -2613,7 +2661,7 @@ describe('context-headroom admission gate at the execute_prompt boundary (apra-f
       expect(result.structuredContent?.isError).toBe(true);
       expect((result.structuredContent as any)?.returnedSessionId).toBe('agy-different-id');
       expect(isKnownSession(agyMember.id, 'agy-different-id')).toBe(true);
-      expect((result.structuredContent as any)?.usage).toEqual({ input_tokens: 100, output_tokens: 50, total_tokens: 150 });
+      expect((result.structuredContent as any)?.usage).toEqual({ input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, total_tokens: 150 });
 
       const updatedAgent = getAgent(agyMember.id);
       expect(updatedAgent?.tokenUsage).toEqual({ input: 100, output: 50 });
@@ -2884,3 +2932,88 @@ describe('executePrompt -- preflight reason code mapping', () => {
   });
 });
 
+
+// Typed failures return and record the session id the provider parsed, so an
+// explicit-id resume of that exact session passes the isKnownSession gate.
+describe('execute_prompt: typed failures carry a known sessionId', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const ok = { stdout: '', stderr: '', code: 0 };
+
+  it('max_turns_exhausted carries sessionId S, records it, and a follow-up resume of S is not session_not_found', async () => {
+    const member = makeTestAgent({ friendlyName: 'typed-fail-maxturns' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce(ok)  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ type: 'result', subtype: 'error_max_turns', terminal_reason: 'max_turns', result: 'stopped', session_id: 'sess-S' }),
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce(ok);  // deletePromptFile
+
+    expect(isKnownSession(member.id, 'sess-S')).toBe(false);
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted', sessionId: 'sess-S' });
+    expect(isKnownSession(member.id, 'sess-S')).toBe(true);
+
+    mockExecCommand
+      .mockResolvedValueOnce(ok)
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ type: 'result', result: 'resumed', session_id: 'sess-S' }), stderr: '', code: 0 })
+      .mockResolvedValueOnce(ok);
+    const follow = await executePrompt({ member_id: member.id, prompt: 'continue', resume: 'sess-S', timeout_s: 5 } as any);
+    expect(follow.structuredContent?.reason).not.toBe('session_not_found');
+    expect(follow.structuredContent).toMatchObject({ response: 'resumed' });
+  });
+
+  it('empty_response (exit 0, empty result) carries and records the parsed sessionId', async () => {
+    const member = makeTestAgent({ friendlyName: 'typed-fail-empty' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce(ok)
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ type: 'result', result: '', session_id: 'sess-E' }), stderr: '', code: 0 })
+      .mockResolvedValueOnce(ok);
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'empty_response', sessionId: 'sess-E' });
+    expect(isKnownSession(member.id, 'sess-E')).toBe(true);
+  });
+
+  it('dispatch_failed after a parse carries and records the parsed sessionId', async () => {
+    const member = makeTestAgent({ friendlyName: 'typed-fail-dispatch' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce(ok)
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ type: 'result', result: 'boom', session_id: 'sess-D' }), stderr: 'x', code: 1 })
+      .mockResolvedValueOnce(ok);
+    // A throw after the provider parse lands in the outer catch -> dispatch_failed.
+    vi.spyOn(ClaudeProvider.prototype, 'classifyError').mockImplementation(() => { throw new Error('classifier exploded'); });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed', sessionId: 'sess-D' });
+    expect(isKnownSession(member.id, 'sess-D')).toBe(true);
+  });
+
+  it('no session_id in output -> no sessionId field and nothing recorded', async () => {
+    const member = makeTestAgent({ friendlyName: 'typed-fail-nosid' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce(ok)
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ type: 'result', subtype: 'error_max_turns', terminal_reason: 'max_turns', result: 'stopped' }), stderr: '', code: 1 })
+      .mockResolvedValueOnce(ok);
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted' });
+    expect(result.structuredContent).not.toHaveProperty('sessionId');
+  });
+});

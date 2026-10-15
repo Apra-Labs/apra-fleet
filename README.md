@@ -99,7 +99,7 @@ workflow reliably across your fleet (see **Any domain** above).
 
 ## Quick start (5 minutes)
 
-**1. Install** -- one command via npm (Node.js 22+), or grab the
+**1. Install** -- one command via npm (Node.js 22.16+), or grab the
 standalone installer binary for your platform from
 [Releases](https://github.com/Apra-Labs/apra-fleet/releases) and
 double-click it (installation is the default action):
@@ -108,8 +108,14 @@ double-click it (installation is the default action):
 npm install -g @apralabs/apra-fleet
 apra-fleet install           # installs for Claude Code (default)
 apra-fleet install --llm agy # or --llm opencode / codex / copilot
-cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
+apra-fleet start             # npm install registers no OS service: start the server (again after reboot)
 ```
+
+The standalone installer instead registers and starts a user-level service
+(no `start` needed) and does not add anything to PATH: the binary is
+`~/.apra-fleet/bin/apra-fleet` (Windows PowerShell:
+`& "$HOME\.apra-fleet\bin\apra-fleet.exe" status`). See
+[docs/install.md](docs/install.md).
 
 The standalone installer binary needs no Node.js at all for the core console
 and MCP server. Sprint automation (`fleet-sprint`, the always-on supervisor,
@@ -119,7 +125,9 @@ can pass `--workflows none` for a Node-free, core-only install. See
 [docs/install.md](docs/install.md#prerequisites).
 
 **2. Connect your agent.** Load the fleet server in Claude Code with
-`/mcp` (or restart your provider CLI). Your agent now has a fleet.
+`/mcp` (or restart your provider CLI). Your agent now has a fleet. To check
+from a shell, `claude mcp list` should show a line like
+`apra-fleet: http://localhost:7523/mcp (HTTP) - ... Connected` (7523 is the default port).
 
 **3. Register members -- in plain language.** apra-fleet is driven
 conversationally through any MCP-capable agent:
@@ -152,7 +160,7 @@ Open the dashboard, watch your fleet PLAN->BUILD->REVIEW->TEST->SHIP in a loop t
 > **New to fleet-sprint?** Read the
 > [fleet-sprint Getting Started Guide](https://apra-labs.github.io/apra-fleet/fleet-sprint-getting-started.html)
 > ([Markdown](docs/fleet-sprint-getting-started.md) if you're reading this on
-> GitHub -- [PDF](docs/fleet-sprint-getting-started.pdf)) -- a plain-English walkthrough
+> GitHub) -- a plain-English walkthrough
 > of what it does, what you need to prepare (beads backlog, `deploy.md`,
 > test playbooks, member registration), how to launch and monitor a sprint,
 > and what's automated versus what's still your call.
@@ -161,7 +169,9 @@ Open the dashboard, watch your fleet PLAN->BUILD->REVIEW->TEST->SHIP in a loop t
 fleet-sprint ...` command above is the same one command for everyone --
 whether you installed via `npm install -g @apralabs/apra-fleet`, the
 standalone binary, or a git-clone dev checkout. There is no separate
-`fleet-sprint` command to install or remember. See
+`fleet-sprint` command to install or remember. (Standalone installer: the
+binary is not on PATH, so use `~/.apra-fleet/bin/apra-fleet` or add
+`~/.apra-fleet/bin` to PATH -- see step 1.) See
 [the full flag reference](packages/apra-fleet-se/fleet-sprint/docs/README.md)
 for every option.
 
@@ -174,7 +184,7 @@ for every option.
   <img src="assets/marketing/fleet-stack-light.svg" alt="apra-fleet layered architecture stack: dependencies from OS primitives up to autonomous engineering orchestrators" width="100%">
 </picture>
 
-**Component Docs:** [fleet-sprint](packages/apra-fleet-se/fleet-sprint/docs/README.md) | [auto-sprint.js](packages/apra-fleet-se/apra-pm/docs/sprint-workflow.md) | [apra-fleet-client](packages/apra-fleet-client/docs/overview.md) | [apra-pm](packages/apra-fleet-se/apra-pm/README.md) | [apra-fleet-mcp](docs/mcp-tools.md) | [Agent Roles](packages/apra-fleet-se/docs/role-contracts.md)
+**Component Docs:** [fleet-sprint](packages/apra-fleet-se/fleet-sprint/docs/README.md) | [auto-sprint.js](packages/apra-fleet-se/apra-pm/docs/sprint-workflow.md) | [apra-fleet-client](packages/apra-fleet-client/docs/overview.md) | [apra-pm](packages/apra-fleet-se/apra-pm/README.md) | [apra-fleet-mcp](docs/mcp-tools.md) | [Agent Roles](packages/apra-fleet-se/docs/role-contracts.md) | [Sprint reliability gates](docs/sprint-reliability-gates.md)
 
 **Backlog hygiene:** sprint roles must search the entire open backlog before filing a bead; reviewer proposals carry machine-checked dedup evidence and integ-test bugs without it are flagged. See [docs/newtask-dedup-evidence.md](docs/newtask-dedup-evidence.md).
 
@@ -214,11 +224,11 @@ MCP tools that ship with the KB:
 | `kb_list` | Audit-list entries by confidence/type/module/symbol (read-only, no use_count bump) |
 | `kb_context` | Batch file freshness check (single git call for N files) |
 | `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` |
-| `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |
+| `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED (FULL session, or the sprint's kb_maintainer member session only) |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
-| `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible |
-| `kb_bible_commit` | Merge confirmed entry ids into the bible and commit locally with base-branch provenance (used by the sprint kb_maintainer) |
-| `kb_setup` | Install git hook, write provider config, store remote token encrypted |
+| `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible (FULL session only) |
+| `kb_bible_commit` | Merge confirmed entry ids into the bible (format v3, per-entry file hashes), remove superseded or invalidated entries, and commit locally with base-branch provenance (used by the sprint kb_maintainer) |
+| `kb_setup` | Install git hook, write provider config, store remote token encrypted (FULL session only) |
 
 `code_*` tools resolve the calling session's own folder, refuse with typed
 `E-CODE-INDEX-NOT-READY` / `E-CODE-INTEL-DISABLED` errors when the index is not
@@ -259,12 +269,21 @@ server handling many members across many repos never lets one repo's
 learnings land in another repo's KB. No `kb_*` tool takes a scope argument:
 a member session uses its registered work folder and any other session uses
 the fleet server's working folder, and a folder that is not a git repository
-with an origin remote is refused with a typed `E-SELF-*` error. Member
-sessions get a reduced tool list (`kb_*`, `code_*` and a few self-reporting
-tools), and the `apra-fleet call` verb lets a process call tools as a member.
-KB reads default to CONFIRMED, undisputed entries. See
+with an origin remote is refused with a typed error that names the fix:
+`E-SELF-NO-WORKFOLDER` (create the folder or re-register the member),
+`E-SELF-NOT-A-REPO` (`git init` or clone there) or `E-SELF-NO-REMOTE`
+(`git remote add origin <url>`; for a remote member, record its origin with
+`update_member git_repos`). Member sessions get a reduced, explicit tool list:
+the `code_*` tools, a few self-reporting tools and the `kb_*` tools except
+`kb_setup` and `kb_export` (never served to a member) and `kb_promote` /
+`kb_resolve_contradiction` (served only to the sprint engine's kb_maintainer
+session, which applies the reviewer's promotions). The `apra-fleet call` verb
+lets a process call tools as a member. KB reads default to CONFIRMED,
+undisputed entries. See
 [Per-repo KB isolation](docs/knowledge-layer.md#per-repo-kb-isolation) for
-the resolution, anchor and cache-keying rules.
+the resolution, anchor and cache-keying rules, and
+[Member-session tool calls](docs/knowledge-layer.md#member-session-tool-calls)
+for the member tool model.
 
 The backend is swappable: start with local SQLite, add a central HTTP server for
 a team, or plug in Postgres later -- all via a one-line config change.
@@ -356,7 +375,10 @@ transits an orchestrator-readable output. Permission
 composition verifies its own delivery: a grant is read back off the target
 member and structurally compared against what was intended before it is
 reported as applied, so a failed or partial write is surfaced as an
-explicit failure rather than a false success.
+explicit failure rather than a false success. Dropped or unmappable permission
+tokens are surfaced explicitly in composition warnings, and shell pipeline
+stages are decomposed into constituent command grants to provide precise
+permission suggestions across providers.
 
 ## Email Configuration
 
@@ -536,10 +558,11 @@ and the dashboard header -- see
 
 | Topic | Link |
 |-------|------|
-| **fleet-sprint Getting Started Guide (start here, plain English)** | [Website](https://apra-labs.github.io/apra-fleet/fleet-sprint-getting-started.html) - [Markdown](docs/fleet-sprint-getting-started.md) - [PDF](docs/fleet-sprint-getting-started.pdf) |
+| **fleet-sprint Getting Started Guide (start here, plain English)** | [Website](https://apra-labs.github.io/apra-fleet/fleet-sprint-getting-started.html) - [Markdown](docs/fleet-sprint-getting-started.md) |
 | Codebase wiki (architecture, internals, AI Q&A) | [DeepWiki](https://deepwiki.com/Apra-Labs/apra-fleet) |
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
 | Choosing a provider (roles, gotchas, mixing providers, OpenCode/local models) | [docs/provider-guide.md](docs/provider-guide.md) |
+| Antigravity (agy) provider (project binding, permission mapping, model resolution, Windows parity) | [docs/agy-provider.md](docs/agy-provider.md) |
 | Transport, service mode, and supported interfaces | [docs/transport-and-service-mode.md](docs/transport-and-service-mode.md) |
 | Cost model (tiering, shell-over-prompts, measured token spend) | [docs/cost-model.md](docs/cost-model.md) |
 | The PM skill (doer-reviewer sprints, `/pm` commands) | [docs/pm-skill-overview.md](docs/pm-skill-overview.md) |
@@ -575,11 +598,11 @@ and the dashboard header -- see
 | Authoring a SEA-embedded `apra-fleet workflow` (manifest, entry contract, launcher env vars) | [docs/authoring-workflows.md](docs/authoring-workflows.md) |
 | Workflow launcher fleet-server resolution order (HTTP singleton vs. stdio) | [docs/adr-workflow-server-resolution.md](docs/adr-workflow-server-resolution.md) |
 | Running fleet-sprint (full flag reference; identical for npm-install, standalone binary, and git-clone dev checkout) | [packages/apra-fleet-se/fleet-sprint/docs/README.md](packages/apra-fleet-se/fleet-sprint/docs/README.md) |
-| Auto-sprint overview (autonomous plan-develop-review-publish loop) | [packages/apra-fleet-se/docs/overview.md](packages/apra-fleet-se/docs/overview.md) |
-| Auto-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
-| Auto-sprint internals (cycle loop, stall detection, budget, topology; supervisor OS-service registration and binary-subcommand launcher) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
+| fleet-sprint overview (autonomous plan-develop-review-publish loop) | [packages/apra-fleet-se/docs/overview.md](packages/apra-fleet-se/docs/overview.md) |
+| fleet-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
+| fleet-sprint internals (cycle loop, stall detection, budget, topology; supervisor OS-service registration and binary-subcommand launcher) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
 | The fleet project model (supervisor, members, beads, and how they relate) | [packages/apra-fleet-se/docs/project-model.md](packages/apra-fleet-se/docs/project-model.md) |
-| Auto-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
+| fleet-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
 | fleet-supervisor skill (start/stop/restart/auto-start-on-boot, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
 | fleet-integrator merge gate (read-only PR status script + agent merge/repair/wait/skip loop for an integration branch) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-integrator/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-integrator/SKILL.md) |
 | Scoped in-cycle replan findings threading, and the wrapper-injection role KB contract | [docs/scoped-replan-and-planner-kb-contract.md](docs/scoped-replan-and-planner-kb-contract.md) |

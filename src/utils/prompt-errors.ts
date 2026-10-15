@@ -8,7 +8,10 @@ const patterns: Array<{ category: PromptErrorCategory; re: RegExp }> = [
   // actionable signature is not swallowed by a broader pattern. Remediation: seed trust
   // via ensureWorkspaceTrusted(workFolder) (apra-fleet-eft.40.1/40.2).
   { category: 'workspace_not_trusted', re: /this workspace has not been trusted/i },
-  { category: 'auth', re: /not logged in|unauthorized|\b401\b|authentication_error|expired.*token|permission_error|invalid.*api.*key|api_key_missing|antigravity_api_key|unauthenticated/i },
+  // OAuth-expired CLI result (is_error, terminal_reason api_error, "Failed to authenticate:
+  // OAuth session expired and could not be refreshed") also carries api_error; auth is
+  // tested before overloaded/server so it is not misread as a retryable server failure.
+  { category: 'auth', re: /not logged in|unauthorized|\b401\b|authentication_error|expired.*token|permission_error|invalid.*api.*key|api_key_missing|antigravity_api_key|unauthenticated|failed to authenticate|oauth session expired|could not be refreshed/i },
   // apra-fleet-hzeb.1: overloaded MUST be tested before server. A usage-limit /
   // rate-limit payload (e.g. a 429) commonly ALSO carries an `api_error` string,
   // which the server pattern would otherwise claim first and misclassify as a

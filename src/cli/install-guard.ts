@@ -62,7 +62,7 @@ export function getInstallDataDir(): string {
 
 function runCapture(cmd: string): string | null {
   try {
-    return execSync(cmd, { encoding: 'utf-8', stdio: 'pipe' }) as unknown as string;
+    return execSync(cmd, { encoding: 'utf-8', stdio: 'pipe', windowsHide: true }) as unknown as string;
   } catch {
     return null;
   }
@@ -237,10 +237,14 @@ export function hasMemberInstallMarker(): boolean {
   }
 }
 
-export function writeMemberInstallMarker(version: string): void {
+/** Writes the marker. `port` is the port this member install's server listens
+ *  on (the server reads it back at launch, see resolveServerPort, and the
+ *  orchestrator reads it to build the member's MCP URL). */
+export function writeMemberInstallMarker(version: string, port?: number): void {
   try {
     fs.mkdirSync(getInstallDataDir(), { recursive: true });
-    fs.writeFileSync(memberInstallMarkerPath(), JSON.stringify({ version, installedAt: new Date().toISOString() }) + '\n');
+    const marker = { version, installedAt: new Date().toISOString(), ...(port !== undefined ? { port } : {}) };
+    fs.writeFileSync(memberInstallMarkerPath(), JSON.stringify(marker) + '\n');
   } catch {
     // Best effort: a missing marker only makes the next forced member install refuse loudly.
   }
@@ -270,4 +274,38 @@ Error: ${FULL_INSTALL_RUNNING_CODE}: a running apra-fleet server was not started
   To stop it anyway and install the member server over it, re-run with:
     apra-fleet install --member --force ${FORCE_STOP_FULL_INSTALL_FLAG}
 `;
+}
+
+/** True when `s` can be typed as-is: Windows (cmd and PowerShell) allows `\`;
+ *  POSIX does not (it is an escape there). */
+function needsNoQuoting(s: string, platform: NodeJS.Platform): boolean {
+  return platform === 'win32' ? /^[A-Za-z0-9_\-.:=/\\+]+$/.test(s) : /^[A-Za-z0-9_\-.:=/+]+$/.test(s);
+}
+
+/**
+ * The exact command line that re-runs THIS executable with `args`, for a hint
+ * the user copies: a downloaded installer is usually not on PATH, so
+ * "apra-fleet ..." can name a missing (or an older, installed) binary. SEA:
+ * the executable itself; npm/dev: node plus the entry script. One line per
+ * shell: POSIX single-quotes when needed; Windows prints the bare words when
+ * none needs quoting (valid in cmd and PowerShell), else a PowerShell
+ * `& '...'` line and a cmd `"..."` line (a quoted path followed by arguments
+ * is a PowerShell parse error without `&`).
+ */
+export function selfInvocationLines(opts: {
+  platform: NodeJS.Platform;
+  execPath: string;
+  scriptPath?: string;
+  sea: boolean;
+  args: string[];
+}): string[] {
+  const words = [opts.execPath, ...(!opts.sea && opts.scriptPath ? [opts.scriptPath] : []), ...opts.args];
+  const bare = (w: string) => needsNoQuoting(w, opts.platform);
+  if (opts.platform !== 'win32') {
+    return [words.map(w => (bare(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`)).join(' ')];
+  }
+  if (words.every(bare)) return [words.join(' ')];
+  const ps = words.map(w => (bare(w) ? w : `'${w.replace(/'/g, "''")}'`));
+  const cmd = words.map(w => (bare(w) ? w : `"${w}"`));
+  return [`PowerShell: & ${ps.join(' ')}`, `cmd:        ${cmd.join(' ')}`];
 }

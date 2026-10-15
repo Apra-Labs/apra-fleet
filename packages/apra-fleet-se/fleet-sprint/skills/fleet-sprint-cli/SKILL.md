@@ -28,6 +28,7 @@ apra-fleet workflow fleet-sprint \
   [--dispatch-timeout-s <s>]      # default 9000
   [--usage-limit-max-wait-s <s>]  # usage-limit pause budget; default from role-policies
   [--usage-limit-max-reprobes <n>]# usage-limit reprobe cap; default from role-policies
+  [--skip-regression]             # skip the once-per-sprint regression pass
   [--sync]                        # synced-topology mode
 ```
 
@@ -57,7 +58,13 @@ on this list -- flags evolve and this skill can drift.
   package.json script) fails in ways that look unrelated.
 - `--role-map` assigns specific members to specific roles, e.g.
   `--role-map '{"doer":["m1","m2"],"reviewer":["m3"]}'`. Accepts inline JSON
-  or `@path/to/file.json`.
+  or `@path/to/file.json`. The `backlog` key names the member whose beads
+  clone the engine runs its own `bd`/`git` commands against. `orchestrator`
+  is its deprecated alias (works with a warning in 0.4.4, removed in v0.5) --
+  rename it to `backlog`. Without a `backlog` entry the engine picks a member
+  and logs `backlog: <member> (auto-selected: <reason>)`; check that line.
+- `--skip-regression` skips the regression pass for this run. The skip is
+  logged and stated in the sprint analysis and the PR body.
 - `--goal` controls which bead priorities are in scope for the run.
 - `--budget` caps total spend in USD; the run aborts when it is exhausted.
 - `--usage-limit-max-wait-s` / `--usage-limit-max-reprobes` bound how long a
@@ -77,31 +84,45 @@ on this list -- flags evolve and this skill can drift.
 2. Every `--members` name is registered with the fleet (`list_members` /
    `mcp__apra-fleet__list_members`). An unregistered member aborts the
    sprint unless `--allow-missing-members` is passed.
-3. Multi-member sprints require all members to share the same git topology
-   unless `--sync` is passed. Stick to single-member unless that is
-   verified -- see `fleet-sprint-diagram.md` in the package docs.
+3. Multi-member sprints align their members automatically: at launch every
+   member is fetched and checked out on the sprint branch (WIP preserved in a
+   named `fleet-sprint[<branch>]` stash, one `[Align]` line per member), so
+   do not align members by hand. The launch refuses, before moving any
+   member, only for an unreachable member, differing origin URLs, a base
+   missing on origin, a fetch auth failure or a diverged sprint branch --
+   fix what the message names and relaunch. See `fleet-sprint-diagram.md` in
+   the package docs.
 4. If a member's LLM session is stale or unauthenticated (dispatch fails
    with `empty_response`, or "member CLI likely died"), re-run
    `provision_llm_auth` for that member before retrying.
 5. Beads identity: before any `bd` mutation, the sprint probes every
    member's `bd where`/`sync.remote`/git origin and prints a `Beads:`
-   banner plus one `beads ok: <member> ...` line per member. A MISMATCH
-   (a field that resolved on both sides and differs) aborts with
-   `BeadsIdentityError` naming the member and field before anything is
-   mutated; fix by correcting that member's `workFolder` (wrong `.beads`)
-   or its `sync.remote` -- there is no bypass flag. A probe that fails or
-   resolves nothing is only a `[beads-identity] WARNING:` line (naming the
-   member, field, probe, error and the fix): that field is not compared and
-   the sprint proceeds -- read the warning and fix the member, but do not
-   treat it as an abort.
+   banner plus one `beads ok: <member> ...` line per member. These abort
+   with `BeadsIdentityError` naming the member, cause and fix, before
+   anything is dispatched -- there is no bypass flag:
+   - MISMATCH: a field that resolved on both sides differs. Fix that
+     member's `workFolder` (wrong `.beads`) or its `sync.remote`.
+   - `bd` missing on a member (not installed or not on PATH). Fix: install
+     `bd` on that member or fix its PATH so `bd --version` works in its work
+     folder (re-running the member fleet install places it in the member's
+     fleet bin dir), then relaunch.
+   - BEADS_SETUP_FAILED: a member mapped to a beads-reading role had no beads
+     database (or no `sync.remote`), and setting it up from the expected
+     beads remote failed. Matching members are left untouched.
+   Any other probe failure (including no beads database on a member used
+   only for deployer/ci-watcher) is only a `[beads-identity] WARNING:` line (naming
+   the member, field, probe, error and the fix): that field is not compared
+   and the sprint proceeds -- read the warning and fix the member.
 
 ## Launching it
 
 Run this on your own orchestrating machine, not on a `--members` target --
 members are dispatch destinations, not where this command runs.
 
-Use the delivered `apra-fleet` binary (on PATH after `npm run build:binary`),
-and start it as a genuinely detached OS process. A harness-owned background
+Use the installed `apra-fleet` binary. After `npm install -g` it is on
+PATH; the standalone installer does not add it to PATH, so call it as
+`~/.apra-fleet/bin/apra-fleet` (Windows: `$HOME\.apra-fleet\bin\apra-fleet.exe`).
+Start it as a genuinely detached OS process. A harness-owned background
 task can be silently killed when its owning tool call's process group ends,
 which orphans the sprint mid-run.
 

@@ -44,6 +44,7 @@ export function detectProviderAvailability(): ProviderAvailability {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     }).trim();
     return { available: true, provider: PROVIDER_BINARY, version: output || undefined };
   } catch (err) {

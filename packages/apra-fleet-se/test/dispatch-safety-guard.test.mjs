@@ -418,7 +418,10 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // gets its own explicit baseline count below.
 // Bumped 4 -> 5: the KB injection's diff-file listing (`git diff --name-only`,
 // role hint source for reviewer/harvester) passes member_name and is failSoft.
-const EXPECTED_COMMAND_COUNT = 6;
+// 6 -> 8 (GitHub #715): reclaimInRunOrphanedClaims adds its fresh-read
+// `bd show` and its guarded `bd update --status open` write, both on the
+// backlog member with member_name.
+const EXPECTED_COMMAND_COUNT = 8;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -533,7 +536,11 @@ const DOLT_SYNC_PATH = path.join(__dirname, '../fleet-sprint/dolt-sync.mjs');
 // 3 -> 4 (apra-fleet-akuv, remote-tip fingerprint): readRemoteDoltTip() gained
 // one new `git ls-remote <url> refs/dolt/data` call site (member_name:
 // member, confirmed present) used to skip a provably no-op D-pull/D-push.
-const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 4;
+// 4 -> 7 (D-push landed check): readTipForPushCheck()'s `git ls-remote <url>
+// refs/dolt/data`, and readUnpushedDoltChanges()'s `bd vc status --json` and
+// `bd diff remotes/origin/<branch> <branch> --json` -- each passes
+// member_name: member.
+const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 7;
 
 test('every command() call site in dolt-sync.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(DOLT_SYNC_PATH);
@@ -1120,7 +1127,16 @@ test('every command() call site in git-topology.mjs passes member_name or member
 // what a zero baseline turns red.
 // =============================================================================
 const MEMBER_SYNC_PATH = path.join(__dirname, '../fleet-sprint/member-sync.mjs');
-const EXPECTED_MEMBER_SYNC_COMMAND_COUNT = 1;
+// 1 -> 2 (G-push landed check): checkGitPushLanded()'s single `run` helper,
+// which issues its read-only git reads (rev-parse, ls-remote, fetch,
+// rev-list) with member_name: member, outside runGitStep because each is a
+// best-effort verification read, not a sync step to retry or self-heal.
+// 2 -> 3 (retry salvage, GitHub #716): salvageBeforeReset()'s single `run`
+// helper, which issues the local-only rev-parse, rev-list, stash create and
+// branch -f with member_name: member, outside runGitStep because none of them
+// is a credential/transient failure to self-heal or retry; any failure fails
+// the salvage closed and blocks the reset.
+const EXPECTED_MEMBER_SYNC_COMMAND_COUNT = 3;
 
 test('every command() call site in member-sync.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(MEMBER_SYNC_PATH);
@@ -1159,8 +1175,10 @@ test('every command() call site in member-sync.mjs passes member_name or member_
 // (base64-encoded argv, no `$`-expansion/backticks/template literals) --
 // exactly the invariant shell-command-guard.mjs separately enforces on this
 // same file. createMemberSessionGuard and createUnattendedAutoProvisioner own
-// no command() site of their own, so a THIRD site appearing here means one of
-// those two started issuing a raw command directly.
+// no command() site of their own. The THIRD site is
+// createPermissionConfigPreflight's per-OS/shell file-exists probe (it passes
+// member_name), so a FOURTH site appearing here means one of the other
+// helpers started issuing a raw command directly.
 //
 // Its agent() baseline is ZERO, same per-module baseline reasoning as the
 // other extracted helper modules above -- a raw `agent(` appearing in this
@@ -1168,7 +1186,7 @@ test('every command() call site in member-sync.mjs passes member_name or member_
 // helper, which is exactly what a zero baseline turns red.
 // =============================================================================
 const MEMBER_PROVISIONING_PATH = path.join(__dirname, '../fleet-sprint/member-provisioning.mjs');
-const EXPECTED_MEMBER_PROVISIONING_COMMAND_COUNT = 2;
+const EXPECTED_MEMBER_PROVISIONING_COMMAND_COUNT = 3;
 
 test('every command() call site in member-provisioning.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(MEMBER_PROVISIONING_PATH);

@@ -213,6 +213,65 @@ tools: [ToolSearch]
     expect(result.split('\n').some(l => l.startsWith('tools:'))).toBe(false);
     expect(warnSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('outputs invoke_subagent and send_message permissions for Agent tool', () => {
+    const source = `---
+name: delegator
+description: Delegates tasks.
+tools: [Agent]
+---
+
+# Delegator
+Body content here.`;
+    const result = transformAgentForAgy(source, 'delegator.md');
+    expect(result).toContain('<permission action="invoke_subagent" target="*" />');
+    expect(result).toContain('<permission action="send_message" target="*" />');
+  });
+
+  it('outputs mcp permission for mcp tool', () => {
+    const source = `---
+name: mcp-user
+description: Uses MCP tools.
+tools: [mcp]
+---
+
+# MCP User
+Body content here.`;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = transformAgentForAgy(source, 'mcp-user.md');
+    expect(result).toContain('<permission action="mcp" target="*" />');
+  });
+
+  it('outputs read_url permission for fetch and curl tools', () => {
+    const source = `---
+name: web-fetcher
+description: Fetches web pages.
+tools: [fetch, curl]
+---
+
+# Web Fetcher
+Body content here.`;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = transformAgentForAgy(source, 'web-fetcher.md');
+    expect(result).toContain('<permission action="read_url" target="*" />');
+  });
+
+  it('does not emit a tools: line or auto_approve block when frontmatter has no tools field', () => {
+    const source = `---
+name: no-tools-agent
+description: An agent with frontmatter but no tools field.
+---
+
+# No Tools Agent
+Body content here.`;
+    const result = transformAgentForAgy(source, 'no-tools.md');
+    expect(result).not.toContain('tools:');
+    expect(result).not.toContain('<auto_approve>');
+    expect(result).not.toContain('<!-- AGY Sandbox Pre-approvals -->');
+    expect(result).toContain('name: no-tools-agent');
+    expect(result).toContain('description: An agent with frontmatter but no tools field.');
+    expect(result).toContain('# No Tools Agent');
+  });
 });
 
 /**

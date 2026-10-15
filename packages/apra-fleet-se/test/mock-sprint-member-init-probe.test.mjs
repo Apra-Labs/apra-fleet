@@ -55,7 +55,7 @@ test('mock sprint: a member failing every init check still reaches dispatch, wit
                         return { isError: true, content: [{ type: 'text', text: 'apra-fleet: command not found' }] };
                     }
                     if (args.command.includes('apra-fleet call')) {
-                        const m = /apra-fleet call --member (\S+) (?:(\w+) --args-file|--list-tools)/.exec(args.command);
+                        const m = /apra-fleet call --member (\S+) (?:--kb-maintainer )?(?:(\w+) --args-file|--list-tools)/.exec(args.command);
                         const tool = m ? (m[2] || 'tools/list') : '?';
                         memberToolCalls.push(tool);
                         if (tool === 'kb_stats' && !order.includes('probe-refresh')) order.push('selection-kb_stats');

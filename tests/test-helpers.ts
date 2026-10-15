@@ -6,6 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { Agent, SSHExecResult } from '../src/types.js';
+import { serverVersion } from '../src/version.js';
+import { MEMBER_SECRET_HEADER, getOrCreateMemberAccessSecret } from '../src/services/member-access-secret.js';
 
 /**
  * Decode a `powershell -EncodedCommand <base64>` string back to the underlying
@@ -91,6 +93,9 @@ export function makeTestAgent(overrides: Partial<Agent> = {}): Agent {
     encryptedPassword: 'fake-encrypted',
     workFolder: '/home/testuser/project',
     createdAt: new Date().toISOString(),
+    // A seeded sessionId counts as recorded by THIS build, so resume=true
+    // resumes it (a different/missing stamp starts fresh; see execute-prompt).
+    ...(overrides.sessionId !== undefined && !('sessionServerVersion' in overrides) ? { sessionServerVersion: serverVersion } : {}),
     ...overrides,
   };
 }
@@ -170,4 +175,18 @@ export async function spawnDeadPid(timeoutMs = 5000): Promise<number> {
     await new Promise((r) => setTimeout(r, 10));
   }
   return pid;
+}
+
+/**
+ * Headers a test client sends so this install's server accepts its `?member=`
+ * session: the member access secret of the test data dir (the same file the
+ * in-process server checks; created when missing).
+ */
+export function memberSecretHeaders(): Record<string, string> {
+  return { [MEMBER_SECRET_HEADER]: getOrCreateMemberAccessSecret() };
+}
+
+/** `requestInit` for an SDK StreamableHTTPClientTransport carrying memberSecretHeaders. */
+export function memberSecretRequestInit(): { headers: Record<string, string> } {
+  return { headers: memberSecretHeaders() };
 }

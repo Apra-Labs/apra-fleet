@@ -32,7 +32,7 @@ const isWindows = process.platform === 'win32';
 function killTree(pid: number): void {
   if (!pid) return;
   if (isWindows) {
-    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F']);
+    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
   } else {
     try {
       process.kill(-pid, 'SIGKILL');
@@ -61,7 +61,7 @@ function countMarkerProcesses(marker: string): number {
       // itself as one live match and the post-kill assertion could never
       // observe 0.
       const script = `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${marker}*' -and $_.ProcessId -ne $PID } | Measure-Object | Select-Object -ExpandProperty Count`;
-      const result = spawnSync('powershell', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
+      const result = spawnSync('powershell', ['-NoProfile', '-Command', script], { encoding: 'utf8', windowsHide: true });
       const n = Number((result.stdout ?? '').trim());
       return Number.isFinite(n) ? n : 0;
     }
@@ -85,7 +85,7 @@ function killMarkerProcesses(marker: string): void {
   try {
     if (isWindows) {
       const script = `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${marker}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
-      spawnSync('powershell', ['-NoProfile', '-Command', script]);
+      spawnSync('powershell', ['-NoProfile', '-Command', script], { windowsHide: true });
     } else {
       spawnSync('sh', ['-c', `ps -eo pid,args | grep -F '${marker}' | grep -v grep | awk '{print $1}' | xargs -r kill -9`]);
     }
@@ -167,6 +167,7 @@ describe('run-all-tests.mjs wall-clock bound (apra-fleet-qe83.3)', () => {
     const child = spawn(process.execPath, [path.join(repoRoot, 'scripts', 'run-all-tests.mjs')], {
       cwd: repoRoot,
       env: { ...process.env, APRA_TEST_SUITES_JSON: suites, APRA_TEST_TIMEOUT_MS: '1500' },
+      windowsHide: true,
     });
     if (child.pid) spawnedPids.push(child.pid);
 
@@ -276,6 +277,7 @@ describe('apra-fleet-se scripts/run-tests.mjs wall-clock bound (apra-fleet-qe83.
     ], {
       cwd: sePkgRoot,
       env: { ...process.env, APRA_TEST_TIMEOUT_MS: '1500' },
+      windowsHide: true,
     });
     if (child.pid) spawnedPids.push(child.pid);
 

@@ -1,9 +1,9 @@
 {
-  "version": 2,
+  "version": 3,
   "provenance": {
     "commit": "4f1d90d5877af2cd2ac19cb250fc46b9f3b9c951",
     "branch": "v0.5_dashboard",
-    "entry_count": 434
+    "entry_count": 461
   },
   "entries": [
     {
@@ -382,6 +382,23 @@
       "updated_at": "2026-09-07T20:03:09.678Z"
     },
     {
+      "id": "0c998153-a3fa-4e2f-a8d8-749917425ed5",
+      "type": "learning",
+      "title": "Uninstall Kept-section dry-run must mirror the real-run deletion list",
+      "summary": "printKeptSection in src/cli/uninstall.ts hardcodes the dry-run planned-removal set; adding a new deleted dir to the full-uninstall global cleanup without updating it makes dry-run Kept output wrong.",
+      "symbols": [
+        "printKeptSection",
+        "runUninstall",
+        "cleanupWorkflows"
+      ],
+      "source_files": [
+        "src/cli/uninstall.ts",
+        "tests/fixtures/regression-command-surface/uninstall-dry-run.txt"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T03:49:24.870Z"
+    },
+    {
       "id": "0cabfb38-9fc0-4974-8e64-c1cf40864e4a",
       "type": "knowledge",
       "title": "classifyVerifySet can make a childless verification leaf structurally unreachable by IntegTest",
@@ -397,6 +414,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.553Z"
+    },
+    {
+      "id": "0dd36c44-87bd-4743-952c-ba90f5c85c3c",
+      "type": "knowledge",
+      "title": "?member= route requires the install's member access secret header",
+      "summary": "http-transport refuses a ?member= request without a member JWT unless the X-Apra-Fleet-Member-Secret header matches <data dir>/member-access.key; 401 comes before the registry lookup, and the file is re-read on every request.",
+      "symbols": [
+        "createHttpTransport",
+        "getOrCreateMemberAccessSecret",
+        "memberAccessSecretMatches",
+        "connectFleetMember",
+        "MEMBER_SECRET_HEADER"
+      ],
+      "source_files": [
+        "src/services/http-transport.ts",
+        "src/services/member-access-secret.ts",
+        "packages/apra-fleet-client/src/client/server-resolution.mjs",
+        "tests/test-helpers.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T14:55:56.447Z"
     },
     {
       "id": "0e10e4ea-5c23-4fc9-bd7a-baf1af522a3e",
@@ -487,6 +525,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-13T02:49:30.230Z"
+    },
+    {
+      "id": "101692b0-d5e6-4a32-8d6e-e8595ddc39f0",
+      "type": "learning",
+      "title": "kb_* tool description text is duplicated in generate-contract.mjs DESCRIPTIONS",
+      "summary": "Changing a kb_*/code_* registration description in src/services/tool-registry.ts also requires updating the hand-copied DESCRIPTIONS table in memory-contract/v1/generate-contract.mjs (and INVENTORY.md), then contract:generate; contract:check alone stays green.",
+      "symbols": [
+        "DESCRIPTIONS",
+        "registerAllTools"
+      ],
+      "source_files": [
+        "memory-contract/v1/generate-contract.mjs",
+        "src/services/tool-registry.ts",
+        "tests/memory-contract-roster-guard.test.ts",
+        "memory-contract/v1/INVENTORY.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T13:38:55.519Z"
     },
     {
       "id": "1045da8b-1650-40db-aa11-2389ad00e9a2",
@@ -1777,6 +1833,23 @@
       "updated_at": "2026-09-08T03:19:52.245Z"
     },
     {
+      "id": "3377795a-7d1a-4f6f-98b6-fd721581db37",
+      "type": "knowledge",
+      "title": "ssh2 1.17 sftp() leaves the session channel open when the sftp subsystem request is refused",
+      "summary": "Client.sftp() opens a session channel, and on a refused subsystem request calls back with only an error, without closing the channel or exposing it. Each failed attempt holds one sshd MaxSessions slot. exec() closes its channel on the equivalent failure.",
+      "symbols": [
+        "openSftp",
+        "closeRefusedSftpChannels",
+        "withSftpSession"
+      ],
+      "source_files": [
+        "src/services/sftp.ts",
+        "tests/sftp-subsystem-refusal.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T06:25:49.718Z"
+    },
+    {
       "id": "33c1189c-bf95-4cf3-b875-4b93620bea0f",
       "type": "knowledge",
       "title": "The decoupled exec timer's never-binds fallback must stay a finite int32 value",
@@ -2003,6 +2076,26 @@
       "updated_at": "2026-09-16T16:54:05.605Z"
     },
     {
+      "id": "399f2e9b-c7d1-4c6a-9785-192062276a11",
+      "type": "learning",
+      "title": "apra-fleet-se lint rejects compound 'orchestrator' identifiers in fleet-sprint code",
+      "summary": "test/backlog-role-no-orchestrator-identifiers.test.mjs fails on any compound identifier containing 'orchestrator' (e.g. orchestratorVersion) in fleet-sprint files outside the alias module; use another name such as serverVersion.",
+      "symbols": [
+        "checkInstallCurrency",
+        "isCoreOlder"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/backlog-role-no-orchestrator-identifiers.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T04:00:01.345Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs": "0d4587ee66b94998aa300aaf476b4faa8620f96a",
+        "packages/apra-fleet-se/test/backlog-role-no-orchestrator-identifiers.test.mjs": "02cc51c5452af602a3bd6d620be27558de4fdc5f"
+      }
+    },
+    {
       "id": "3a7ed082-f56d-4a58-9dad-a1a234c19ff7",
       "type": "learning",
       "title": "Recording one mock-sprint test file rewrites every scenario fixture in that file",
@@ -2178,6 +2271,25 @@
       "updated_at": "2026-09-29T06:13:26.306Z"
     },
     {
+      "id": "3fe69283-7266-44c7-9f6d-d376847b4873",
+      "type": "knowledge",
+      "title": "A hostVerifier throw reaches connectWithTOFU as the client 'error' event, so the TOFU heal path is the single host-key re-accept point",
+      "summary": "verifyHostKey throws HostKeyMismatchError inside ssh2's hostVerifier. ssh2 catches parse exceptions in its socket data handler and emits them as 'error', so connectClient rejects with that same error object and connectWithTOFU re-accepts the key and logs the warning.",
+      "symbols": [
+        "connectWithTOFU",
+        "verifyHostKey",
+        "HostKeyMismatchError",
+        "getSSHConfig"
+      ],
+      "source_files": [
+        "src/services/ssh.ts",
+        "src/services/known-hosts.ts",
+        "tests/ssh-host-key-reaccept.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:58:58.488Z"
+    },
+    {
       "id": "4049e06d-337b-48f6-9cf8-e384ba0b34e5",
       "type": "learning",
       "title": "An inline-ladder-guard fixture with no agent() call site is structurally unfalsifiable",
@@ -2236,6 +2348,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:26.797Z"
+    },
+    {
+      "id": "416532bd-32a5-4056-8cb5-03f2219c2870",
+      "type": "knowledge",
+      "title": "Server bind port is resolved at call time: APRA_FLEET_PORT, then member-install marker port, then 7523",
+      "summary": "resolveServerPort() in src/paths.ts decides the port the http server binds and start/install check: explicit APRA_FLEET_PORT, else the port data/member-install.json records, else 7523; DEFAULT_PORT (load-time, env only) is no longer the bind source.",
+      "symbols": [
+        "resolveServerPort",
+        "recordedMemberInstallPort",
+        "DEFAULT_PORT",
+        "writeMemberInstallMarker"
+      ],
+      "source_files": [
+        "src/paths.ts",
+        "src/services/http-transport.ts",
+        "src/cli/start.ts",
+        "src/cli/install.ts",
+        "src/cli/install-guard.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T12:53:45.788Z"
     },
     {
       "id": "41e88d84-a9de-4d5b-aafa-1ee96089a6f9",
@@ -2368,6 +2501,24 @@
       "updated_at": "2026-09-09T08:48:45.595Z"
     },
     {
+      "id": "44d154ae-2927-443c-bdae-fa7aa15f8f1f",
+      "type": "knowledge",
+      "title": "Only the Dolt sync path rewrites the Windows CreateProcess spawn-limit error text",
+      "summary": "surfaceDoltFailureText is applied only in dolt-sync.mjs runDoltStep. Other git spawn paths that hit the same Windows 'Not enough memory resources' refusal still surface raw output with any credential hints.",
+      "symbols": [
+        "surfaceDoltFailureText",
+        "WINDOWS_SPAWN_LIMIT_MESSAGE",
+        "runDoltStep"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/dolt.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:57:31.784Z"
+    },
+    {
       "id": "45a2d7ea-0274-43e0-b7e9-a3c5d441796f",
       "type": "knowledge",
       "title": "Fleet tool handlers signal failure three different ways; only two are machine-readable",
@@ -2435,7 +2586,10 @@
         "src/services/knowledge/audn.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-07T16:36:39.001Z"
+      "updated_at": "2026-09-25T22:26:29.791Z",
+      "source_file_hashes": {
+        "src/services/knowledge/audn.ts": "7adfb0501f6fd3d5dd88406ba68d449930df3f96"
+      }
     },
     {
       "id": "4694fdaf-0c7f-4ad3-90b2-85615da53a92",
@@ -2489,6 +2643,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.108Z"
+    },
+    {
+      "id": "483c4334-ebbd-4dda-9e66-ca7899110f85",
+      "type": "knowledge",
+      "title": "Member kb_promote/kb_resolve_contradiction need the engine kb_maintainer grant",
+      "summary": "The member tool allowlist is explicit: kb_setup and kb_export are never served to a member session, and kb_promote and kb_resolve_contradiction are served only to a member session opened with origin=engine&kb_maintainer=1, which the engine opens for a repository's kb_maintainer.",
+      "symbols": [
+        "MEMBER_BASE_TOOLS",
+        "MEMBER_MAINTAINER_TOOLS",
+        "MEMBER_NEVER_TOOLS",
+        "memberToolScope",
+        "isToolInScope",
+        "KB_MAINTAINER_CALL",
+        "connectFleetMember"
+      ],
+      "source_files": [
+        "src/services/member-tool-allowlist.ts",
+        "src/services/tool-scope.ts",
+        "src/services/http-transport.ts",
+        "packages/apra-fleet-se/fleet-sprint/member-call.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "tests/member-session-scope.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T12:01:02.130Z"
     },
     {
       "id": "4877b2e5-80f4-4759-b8f9-92742ff9adca",
@@ -3746,6 +3925,26 @@
       "updated_at": "2026-10-02T09:20:12.324Z"
     },
     {
+      "id": "70f6818d-fe2c-425e-80b1-e2124b82270c",
+      "type": "knowledge",
+      "title": "merge-kb-canonical identity is the entry id only; title and source_file_hashes are content",
+      "summary": "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs matches bible entries across base/ours/theirs by id only (no title fallback); title and source_file_hashes are in CONTENT_FIELDS; id-less entries throw MalformedInputError (CLI exit 2) and duplicate ids are conflicts (exit 1).",
+      "symbols": [
+        "mergeKbCanonical",
+        "entryIdentity",
+        "contentSignature",
+        "CONTENT_FIELDS",
+        "MalformedInputError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs",
+        "packages/apra-fleet-se/test/merge-kb-canonical.test.mjs",
+        "packages/apra-fleet-se/docs/kb-canonical-merge.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T06:57:40.812Z"
+    },
+    {
       "id": "711a5c87-4759-4322-b0a1-310d6c548685",
       "type": "knowledge",
       "title": "Manufacture a deterministic POSIX zombie with sh -c '<child> & echo $!; exec sleep N'",
@@ -4120,6 +4319,25 @@
       "updated_at": "2026-09-10T11:06:51.965Z"
     },
     {
+      "id": "7d7320d0-ed80-4b16-8ac8-c5df806cea55",
+      "type": "knowledge",
+      "title": "member-init install-currency warning is recorded under a non-gating step",
+      "summary": "checkInstallCurrency in member-init-probe.mjs records member-fleet-outdated under step 'install', which is absent from GATING_STEPS, so it never flips verified or changes the primary reason. It is invoked inside the fleetMcp try block, so it must never throw.",
+      "symbols": [
+        "checkInstallCurrency",
+        "finish",
+        "GATING_STEPS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T05:03:35.246Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs": "0d4587ee66b94998aa300aaf476b4faa8620f96a"
+      }
+    },
+    {
       "id": "7e814656-f9b7-41de-9e79-a6780d29ff1f",
       "type": "learning",
       "title": "Supervisor ledger stores member friendly names, not registry ids",
@@ -4139,6 +4357,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:24.541Z"
+    },
+    {
+      "id": "7ec3c926-46e3-42df-ba26-148260f36a61",
+      "type": "knowledge",
+      "title": "kb_bible_commit removes bible entries the maintainer KB holds as superseded or invalidated",
+      "summary": "SqliteProvider.getRetirementReasons reads the new retired_reason column (superseded | invalidated) plus content_hash='invalidated'; kb_bible_commit drops those bible entries at every call and reports them in removed and the commit message. kb_export stays additive.",
+      "symbols": [
+        "getRetirementReasons",
+        "kbBibleCommit",
+        "bibleCommitMessage",
+        "discard",
+        "resolveContradiction"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/tools/kb-bible-commit.ts",
+        "tests/knowledge/kb-bible-commit-removal.test.ts",
+        "tests/knowledge/kb-bible-prune-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T13:38:54.468Z"
     },
     {
       "id": "7f7c5b11-5779-4c0b-8265-d21a7f0e1d6d",
@@ -4755,6 +4994,23 @@
       "updated_at": "2026-09-13T09:18:41.424Z"
     },
     {
+      "id": "93bbfb5a-0681-45d2-9024-ecf14c44a479",
+      "type": "knowledge",
+      "title": "boundChildEnv drops non-protected vars even when protected vars alone keep the block over the cap",
+      "summary": "When PATH or credential vars alone exceed CHILD_ENV_BLOCK_CAP_CHARS, boundChildEnv still removes the largest non-protected vars before reporting overCap, so it can lose variables without getting under the cap.",
+      "symbols": [
+        "boundChildEnv",
+        "CHILD_ENV_BLOCK_CAP_CHARS"
+      ],
+      "source_files": [
+        "src/os/child-env-bound.ts",
+        "src/os/windows.ts",
+        "src/os/windows-gitbash.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:58:50.816Z"
+    },
+    {
       "id": "943bf745-9e06-4928-b785-6bac1606835a",
       "type": "knowledge",
       "title": "memberHeldCheck is the single combined member-held gate for member_owner and remove_member",
@@ -5190,6 +5446,29 @@
       "updated_at": "2026-09-12T08:05:24.710Z"
     },
     {
+      "id": "a1a279ec-5537-4820-a23a-c9a7737f2507",
+      "type": "knowledge",
+      "title": "Review scope is built from engine-verified closedIds, not outcome status",
+      "summary": "reviewScopeBeadIds in phases/review.mjs unions each streak outcome's closedIds (engine bd read-back), skipping outcomes flagged publishBlocked or postDispatchSyncFailed. A failed or BLOCKED streak therefore still contributes the beads it closed.",
+      "symbols": [
+        "reviewScopeBeadIds",
+        "runReviewPhase",
+        "runDevelopPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-review-scope-failed-streak-closes.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-13T00:36:01.420Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "95b3752f2049b201e649e091520f35645fd8d96e",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs": "a46b352c41915e4939ff7bf5f7cbe114f71ae587",
+        "packages/apra-fleet-se/test/mock-sprint-review-scope-failed-streak-closes.test.mjs": "7c4da5a1456c538d32f32a8592ef0db7bce9a27f"
+      }
+    },
+    {
       "id": "a26226fc-8c81-47c7-bf1a-c975a8b123d8",
       "type": "learning",
       "title": "An escaped backtick in any GUARDED_MODULES file trips the shell-command guard, even inside an Error message",
@@ -5560,6 +5839,25 @@
       "updated_at": "2026-09-09T08:37:56.037Z"
     },
     {
+      "id": "b03effcd-0488-452b-9b49-ab21049c0ece",
+      "type": "knowledge",
+      "title": "runDoltStep classifies on raw dolt output but surfaces surfaceDoltFailureText(raw)",
+      "summary": "In dolt-sync.mjs runDoltStep, classification and isSpawnOutageFailure run on rawError; the error logged, returned and used in DoltSyncError messages is surfaceDoltFailureText(rawError), which only changes Windows 'Not enough memory resources' text.",
+      "symbols": [
+        "runDoltStep",
+        "surfaceDoltFailureText",
+        "WINDOWS_SPAWN_LIMIT_MESSAGE",
+        "isSpawnOutageFailure",
+        "classifyDoltFailure"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/test/dolt-windows-spawn-limit-message.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:41:37.051Z"
+    },
+    {
       "id": "b0f6be79-738c-491b-9ba5-7c7e5d69b805",
       "type": "knowledge",
       "title": "registerAllTools can be driven by a 4-line fake McpServer, unlocking every handler body for testing",
@@ -5854,6 +6152,29 @@
       "updated_at": "2026-09-29T06:13:14.389Z"
     },
     {
+      "id": "b8d328fa-e22b-498f-98cf-2ff10bd6370a",
+      "type": "knowledge",
+      "title": "Every /mcp request on an existing session id is bound to the identity that opened it",
+      "summary": "http-transport records a SessionOwner (jwt memberId+workspaceId, or access secret) at initialize and refuses GET/DELETE/non-initialize POST from any other identity with 403 'session identity mismatch'; any access-secret caller may use any secret-opened session regardless of ?member=.",
+      "symbols": [
+        "createHttpTransport",
+        "SessionOwner",
+        "sessionOwnerMismatch",
+        "refuseForeignCaller",
+        "callerIdentity"
+      ],
+      "source_files": [
+        "src/services/http-transport.ts",
+        "tests/http-transport.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T08:35:53.886Z",
+      "source_file_hashes": {
+        "src/services/http-transport.ts": "5f5473f8a1f70d3fbe4173a2124ba726cf940f0e",
+        "tests/http-transport.test.ts": "cd60757b7c0699170eb0bb5074a787d6e9738128"
+      }
+    },
+    {
       "id": "babb6682-bde3-49f3-9441-77a078f082a7",
       "type": "knowledge",
       "title": "pushBeadsAfter's real gap vs doltPushAfter was the non-throwing degrade contract, not retry/lease-renewal (those already lived inside doltPushAfter itself)",
@@ -5921,6 +6242,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:34.848Z"
+    },
+    {
+      "id": "bcd7c247-9534-4ba5-bc6a-997c94ca7bbd",
+      "type": "knowledge",
+      "title": "Windows local-member child env is bounded by boundChildEnv (deduped PATH, 32767-char cap)",
+      "summary": "WindowsCommands.getCleanEnv and WindowsGitBashCommands.cleanExec pass their env through boundChildEnv (src/os/child-env-bound.ts): PATH deduped case-insensitively, and the largest non-protected vars dropped until the block fits CHILD_ENV_BLOCK_CAP_CHARS.",
+      "symbols": [
+        "boundChildEnv",
+        "isProtectedEnvName",
+        "CHILD_ENV_BLOCK_CAP_CHARS",
+        "getCleanEnv",
+        "cleanExec"
+      ],
+      "source_files": [
+        "src/os/child-env-bound.ts",
+        "src/os/windows.ts",
+        "src/os/windows-gitbash.ts",
+        "tests/windows-child-env-bound.test.ts",
+        "scripts/repro/win-env-block-size.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:41:38.971Z"
     },
     {
       "id": "be16196c-588c-48db-abe5-46dbd45e3935",
@@ -6132,6 +6475,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:29.108Z"
+    },
+    {
+      "id": "c5ebfbc3-a76c-42e4-8254-87fc2c82e39d",
+      "type": "knowledge",
+      "title": "fleet-sprint bible queue retries basis_mismatch skips for a bounded number of rounds",
+      "summary": "createKbWorkClient.commitRepo keeps ids that kb_bible_commit skipped with basis_mismatch queued for at most KB_BIBLE_SKIP_RETRY_ROUNDS (3) consecutive rounds, then drops them with a WARN; other skip reasons drop at once.",
+      "symbols": [
+        "createKbWorkClient",
+        "KB_BIBLE_SKIP_RETRY_ROUNDS",
+        "KB_RETRYABLE_SKIP_REASONS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:23:39.272Z"
     },
     {
       "id": "c69d7550-4811-48ef-ad10-1861cb94d45e",
@@ -6477,7 +6837,11 @@
         "packages/apra-fleet-se/test/parent-notes-staleness.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:12.068Z"
+      "updated_at": "2026-09-29T06:13:12.068Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/parent-notes-staleness.mjs": "aa5830ea8afa67cb1ce918cb5a3d8099ff18207c",
+        "packages/apra-fleet-se/test/parent-notes-staleness.test.mjs": "3e790c9468b31af602b07d0fe1ca9155c2c54b30"
+      }
     },
     {
       "id": "d3ec9cb9-285c-4e61-842b-c81393237c68",
@@ -7191,6 +7555,24 @@
       "updated_at": "2026-09-29T06:13:28.526Z"
     },
     {
+      "id": "e6525404-e387-4360-8df3-fe08d050a28a",
+      "type": "knowledge",
+      "title": "Develop dispatch excludes below-goal ready beads unless they block in-goal work or were worked on",
+      "summary": "runner.js dispatchableReadyLeafBeads filters readyLeafBeads through partitionReadyByGoal: a finite-priority below-goal bead is dropped unless it transitively blocks an open in-goal bead or is in workedOnBeadIds; there is deliberately no in-goal-ancestor exemption.",
+      "symbols": [
+        "partitionReadyByGoal",
+        "formatBelowGoalExclusionLog",
+        "dispatchableReadyLeafBeads",
+        "workedOnBeadIds"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T07:47:44.673Z"
+    },
+    {
       "id": "e687ffa8-8697-4f7f-9418-ba7f3efd6c2b",
       "type": "knowledge",
       "title": "Supervisor ledger setScopeFreshness before start() overwrites the on-disk ledger",
@@ -7377,6 +7759,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:28.687Z"
+    },
+    {
+      "id": "e9f7d4a8-575a-4f4f-9342-9bf47b017b6f",
+      "type": "knowledge",
+      "title": "Doer retry reset salvages local work to a fleet-salvage side ref and fails closed",
+      "summary": "syncMemberBefore with resetToRemoteTip first calls salvageBeforeReset. It pins unpublished commits and tracked uncommitted edits (git stash create) on a local fleet-salvage/<slug>/<sha12> ref without moving the sprint branch. Any salvage failure throws GitSyncError and the reset is skipped.",
+      "symbols": [
+        "salvageBeforeReset",
+        "syncMemberBefore",
+        "outputOf"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-13T00:36:01.522Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "408b544aafd53f232839c5c9dc0ca2ea6421b0b6",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "7e22b1e41486daf8647bf83ad899c52a6a8c5263",
+        "packages/apra-fleet-se/fleet-sprint/member-sync.mjs": "65991cdb22cbbe9e77d581117e0aa3144317891f",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs": "27961b4e2d49ff0510e4c8abc9fa4f174238435c"
+      }
     },
     {
       "id": "ea3bc985-569c-4eed-846d-1785c17be33f",
@@ -7676,6 +8083,28 @@
       "updated_at": "2026-10-06T00:33:23.008Z"
     },
     {
+      "id": "f33011e2-8ae6-4388-95d4-5e21f1716d0f",
+      "type": "knowledge",
+      "title": "fleet_install replace-full is decided in ensureOnce before the up-to-date gates",
+      "summary": "ensureMemberFleetInstall(opts.replaceFull) probes the member-install marker before the version short-circuits, so a same-version full install is replaced too. Only a clean 'absent' marker answer on an installed binary triggers replaceFullInstall; probe-failed refuses with no destructive command.",
+      "symbols": [
+        "ensureMemberFleetInstall",
+        "replaceFullInstall",
+        "buildReplaceFullInstallPlan",
+        "probeRemote",
+        "INSTALL_FAIL_CLOSED"
+      ],
+      "source_files": [
+        "src/services/member-fleet-install.ts",
+        "src/tools/update-member.ts",
+        "src/tools/register-member.ts",
+        "tests/member-fleet-replace-full.test.ts",
+        "tests/member-replace-full-scenarios.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T17:05:07.548Z"
+    },
+    {
       "id": "f34ed294-df0a-43fc-a138-fa5f773bcaa3",
       "type": "knowledge",
       "title": "doltPullBefore records the remote tip before the caller re-lists, so a failed post-pull list is not retried",
@@ -7707,6 +8136,44 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:29.225Z"
+    },
+    {
+      "id": "f503ec1b-2ff6-488f-9f2c-583adaeec7e9",
+      "type": "learning",
+      "title": "launcherPathFor picks path flavor from the wrapper path shape",
+      "summary": "launcherPathFor uses path.win32 only for drive-letter, UNC or backslash-containing wrapper paths, else path.posix; on Windows every real path is win32-shaped so behaviour there is unchanged.",
+      "symbols": [
+        "launcherPathFor",
+        "WindowsServiceManager.register"
+      ],
+      "source_files": [
+        "src/services/service-manager/windows.ts",
+        "tests/windows-service-task-xml.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:58:52.734Z"
+    },
+    {
+      "id": "f5c5d252-51e0-4107-a55f-c4eba27ea15d",
+      "type": "knowledge",
+      "title": "gitnexus readiness fences a live analyze before meta completeness",
+      "summary": "codeIndexReadiness reports 'building' whenever an analyze is live (lock, isReindexRunning, or recorded run alive), even if meta.json looks complete, because analyze rewrites the index in place; callGitNexus also discards answers if the index generation changed during the call.",
+      "symbols": [
+        "codeIndexReadiness",
+        "indexInconsistency",
+        "indexGeneration",
+        "callGitNexus",
+        "isRecordedAnalyzeAlive",
+        "indexChangedDuringCallError"
+      ],
+      "source_files": [
+        "src/tools/code-intelligence-readiness.ts",
+        "src/tools/code-index-state.ts",
+        "src/tools/code-intelligence-gitnexus.ts",
+        "src/tools/code-intelligence-reindex.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T06:57:41.197Z"
     },
     {
       "id": "f5fd18a6-c552-4dc8-bd9d-3bed5bef3e89",
@@ -7749,6 +8216,22 @@
       "updated_at": "2026-09-29T06:13:14.498Z"
     },
     {
+      "id": "f60d53f5-f72a-439f-82c9-03b7deaefc9a",
+      "type": "learning",
+      "title": "Member-init: server fleetMcp reason supersedes a tools-step failure",
+      "summary": "In member-init-probe finish(), a fleetMcp problem with a server-named reason overrides a generic tools-step failure only when the tools failure is the first gating problem.",
+      "symbols": [
+        "createMemberInitProbe",
+        "finish"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-member-init-probe.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:23:05.562Z"
+    },
+    {
       "id": "f6f82c58-cdf1-40fb-aa50-38f593db673c",
       "type": "knowledge",
       "title": "Member env-injection design: auth credentials must win name collisions with the plaintext env map",
@@ -7763,6 +8246,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:28.809Z"
+    },
+    {
+      "id": "f76a103e-797e-4606-b224-bc130e8243e0",
+      "type": "knowledge",
+      "title": "A failed last-cycle deploy forces the sprint verdict to FAIL in the orchestrator, not the LLM",
+      "summary": "runner.js keeps lastDeployFailure for the latest cycle. Both satisfied exits (root-closed and goal-priority) refuse to fire while it is set and re-attempt the deploy, bounded by maxCycles and DEPLOY_RETRY_CYCLE_LIMIT. Final Review then overrides any PASS to FAIL with a reason naming the cycle and deployer notes.",
+      "symbols": [
+        "latestDeployFailure",
+        "applyDeployFailureVerdictGate",
+        "DEPLOY_RETRY_CYCLE_LIMIT",
+        "runFinalReviewPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/deploy.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-deploy-failure-verdict.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T08:11:44.370Z"
     },
     {
       "id": "f8604414-0bbf-4850-88bd-6a67e5539341",
@@ -7818,6 +8321,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.250Z"
+    },
+    {
+      "id": "fbf058a3-a2de-45e1-b97f-ec58b048cbc4",
+      "type": "knowledge",
+      "title": "Same-session resume in dispatchRole is the explicit failed session id, never resume true",
+      "summary": "resolveResumeArg for 'same-session' returns opts.resumeSessionId (the failed dispatch's err.details.sessionId) or false. With no id the engine runs the secondary dispatch as a fresh full-prompt session and passes freshSession to opts.prepare.",
+      "symbols": [
+        "resolveResumeArg",
+        "sessionIdOfError",
+        "dispatchRole"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/test/doer-max-turns-resume-explicit-session.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-13T00:36:01.319Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "bd92d5073942148377413cf030e6787cf1a3f679",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "95b3752f2049b201e649e091520f35645fd8d96e",
+        "packages/apra-fleet-se/test/doer-max-turns-resume-explicit-session.test.mjs": "725d0dab768d2ad2c42aad09ca0c12c5137c6c79"
+      }
     },
     {
       "id": "fc4f7390-e183-420b-b518-5d9fe2bd56c2",

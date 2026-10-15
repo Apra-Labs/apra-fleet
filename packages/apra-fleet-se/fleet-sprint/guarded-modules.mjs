@@ -244,6 +244,13 @@ export const GUARDED_MODULES = [
     // with the extraction is what keeps dispatch-safety-guard covering it
     // instead of silently losing it the moment it left runner.js.
     'git-topology.mjs',
+    // apra-fleet-rsd9.1.1: launch-time member alignment (alignMembersToBase,
+    // prepareLaunchTopology). It issues every git command through an injected
+    // per-member runGit(cmd, member) -- fetches go through git-topology.mjs's
+    // runGitStep -- so it adds no command() call site of its own, but it
+    // builds member-bound command strings, which is exactly what the
+    // shell-command and dolt-literal guards must keep scanning.
+    'member-align.mjs',
     // apra-fleet-3swo.6.10: the per-member git sync BRACKETS that sit on top of
     // git-topology.mjs -- syncMemberBefore (G-pull), syncMemberAfter (G-push
     // plus its bounded pull-rebase retry and Tier 2 conflict dispatch),
@@ -278,6 +285,9 @@ export const GUARDED_MODULES = [
     // `node -e ...` member-side temp-file write. Both are shell-agnostic
     // (base64-encoded argv, no `$`-expansion/backticks/template literals),
     // which is exactly the invariant shell-command-guard.mjs enforces here.
+    // A THIRD site was added since: createPermissionConfigPreflight's
+    // per-OS/shell file-exists probe (SeOsCommands.fileExistsProbe, a
+    // validated literal path, no member environment reads).
     // resolveSettleShell stayed in runner.js (module-private composition-root
     // wiring anchored there by test/sprint-state.test.mjs) and is not part of
     // this module's surface.
@@ -419,6 +429,12 @@ export const GUARDED_MODULES = [
     // member-bound command channel (fleetApi.executeCommand, command strings
     // built by getSeCommands().wrapForMember) for the remote start-if-down.
     'member-init-probe.mjs',
+    // In-run orphaned-claim bookkeeping (pure): no command() or agent() site;
+    // runner.js owns the fresh read, the session stop and the write.
+    'orphan-reclaim.mjs',
+    // Verify-block deadlock diagnosis (pure): no command() or agent() site;
+    // runner.js owns the runbook probes, the stop and the mid-run exit.
+    'verify-block.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',
     'vcs-providers/dolt.mjs',

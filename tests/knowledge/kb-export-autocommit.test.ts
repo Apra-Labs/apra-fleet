@@ -54,12 +54,13 @@ let priorConfigContent: string | null = null;
 beforeEach(async () => {
   repoDir = initTempGitRepo();
   // The project export only publishes entries whose per-file hash basis matches
-  // the files in repo_path: the cited file must exist under the anchored repo.
-  // It is git-excluded (not committed) so these tests still see exactly one
-  // commit and a clean status after the bible commit.
+  // the cited file at the repo's HEAD commit, so the cited file is committed in
+  // one seed commit; each test counts commits relative to that seed.
   fs.mkdirSync(path.join(repoDir, 'src'), { recursive: true });
   fs.writeFileSync(path.join(repoDir, 'src', 'default.ts'), 'export const d = 1;');
-  fs.appendFileSync(path.join(repoDir, '.git', 'info', 'exclude'), 'src/' + String.fromCharCode(10));
+  git(repoDir, ['add', 'src/default.ts']);
+  git(repoDir, ['-c', 'user.name=seed', '-c', 'user.email=seed@example.invalid', '-c', 'commit.gpgsign=false',
+    'commit', '--quiet', '-m', 'seed']);
   provider = new SqliteProvider(':memory:', repoDir);
   await provider.init();
   vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
@@ -106,7 +107,7 @@ describe('kb_export auto-commit (T2.3, F6a, D5 amended)', () => {
     expect(result.committed).toBe(true);
 
     const log = git(repoDir, ['log', '--format=%an|%ae|%s']).trim().split('\n');
-    expect(log).toHaveLength(1);
+    expect(log).toHaveLength(2); // the seed commit plus exactly one bible commit
     const [name, email, subject] = log[0].split('|');
     expect(name).toBe('pm-kb');
     expect(email).toBe('kb@pm.local');
@@ -132,15 +133,16 @@ describe('kb_export auto-commit (T2.3, F6a, D5 amended)', () => {
     expect(second.committed).toBe(false);
 
     const log = git(repoDir, ['log', '--format=%H']).trim().split('\n');
-    expect(log).toHaveLength(1); // still exactly one commit
+    expect(log).toHaveLength(2); // still the seed plus exactly one bible commit
   });
 
   it('git failure -> export still succeeds and logs a warning (non-fatal)', async () => {
     enableAutoCommit();
-    // A ".git" that exists but is not a real git repo (isGitRepo() checks
-    // existsSync only) -- any actual git command inside fails.
-    fs.rmSync(path.join(repoDir, '.git'), { recursive: true, force: true });
-    fs.writeFileSync(path.join(repoDir, '.git'), 'not a real git dir');
+    // A pre-commit hook that always fails: the repo stays readable (bible
+    // admission reads HEAD) but the auto-commit itself fails.
+    const hook = path.join(repoDir, '.git', 'hooks', 'pre-commit');
+    fs.mkdirSync(path.dirname(hook), { recursive: true });
+    fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
 
     const warnSpy = vi.spyOn(logHelpers, 'logWarn');
 
@@ -168,8 +170,8 @@ describe('kb_export auto-commit (T2.3, F6a, D5 amended)', () => {
     expect(result.exported).toBe(1);
     expect(result.committed).toBe(false);
 
-    // No commit was ever created (the bible file is untracked, not committed).
-    expect(() => git(repoDir, ['log'])).toThrow();
+    // No bible commit was created (only the seed; the bible file is untracked).
+    expect(git(repoDir, ['log', '--format=%s']).trim().split('\n')).toEqual(['seed']);
     expect(git(repoDir, ['status', '--porcelain']).trim()).not.toBe('');
   });
 

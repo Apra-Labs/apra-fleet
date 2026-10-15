@@ -1,0 +1,12 @@
+{
+  "tool": "kb_export",
+  "case": "refusal-bible-basis-not-git",
+  "kind": "refusal",
+  "request": {},
+  "error": {
+    "message": "E-BIBLE-BASIS-NOT-GIT: '<SCRATCH_ROOT>/bare-repo' is not inside a git work tree, so file content at HEAD cannot be read (not inside a work tree). Remediation: Run this from a git checkout ('git init' or clone the repository into '<SCRATCH_ROOT>/bare-repo').",
+    "thrown": true
+  },
+  "expected_error_code": "E-BIBLE-BASIS-NOT-GIT",
+  "session": "FULL_BARE"
+}

@@ -9,11 +9,12 @@
  * No LLM CLI is ever invoked.
  *
  * Observable properties asserted:
- *  - claude: projects[<folder>].mcpServers.apra-fleet.url ends with
- *    ?member=<uuid>, and no {disabled:true} apra-fleet entry exists anywhere;
+ *  - claude (local member): no projects[<folder>].mcpServers.apra-fleet entry
+ *    (its dispatches get the member config per session), and no
+ *    {disabled:true} apra-fleet entry exists anywhere;
  *  - opencode: <workFolder>/opencode.json carries the ?member=<uuid> entry,
  *    .git/info/exclude lists opencode.json, and opencode has no MCP deny rules;
- *  - agy: no member MCP entry is written; deny rules = allowlist complement;
+ *  - agy: member MCP entry is written; deny rules = allowlist complement;
  *  - claude deny rules = allowlist complement (computed from
  *    member-tool-allowlist.ts, never a hardcoded copy);
  *  - git status --porcelain is empty after compose, for every provider;
@@ -28,7 +29,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { backupAndResetRegistry, restoreRegistry, makeTestAgent } from './test-helpers.js';
+import { backupAndResetRegistry, restoreRegistry, makeTestAgent, memberSecretHeaders } from './test-helpers.js';
 import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
 import { updateMember } from '../src/tools/update-member.js';
@@ -189,8 +190,11 @@ function assertCommonInvariants(wf: string, provider: 'claude' | 'agy' | 'openco
 
 function assertClaudeConfigured(wf: string, member: Agent): void {
   const cfgs = allConfigs(wf);
-  const entry = cfgs.claudeJson.projects[wf].mcpServers['apra-fleet'];
-  expect(entry).toEqual({ type: 'http', url: expect.stringMatching(memberUrlRe(member.id)) });
+  // Every member here is LOCAL: a local claude member gets the ?member=<uuid>
+  // server per dispatch session (--mcp-config), so compose writes no folder
+  // entry for it -- the human's own sessions in the clone are unaffected.
+  expect(member.agentType).toBe('local');
+  expect(cfgs.claudeJson.projects[wf].mcpServers['apra-fleet']).toBeUndefined();
   expect(cfgs.claudeJson.projects[wf].mcpServers.deepwiki).toEqual(DEEPWIKI);
   expect(cfgs.claudeSettings.permissions.deny).toEqual(COMPLEMENT.map(t => `mcp__apra-fleet__${t}`));
   expect(excludeLines(wf)).toContain('/.claude/settings.local.json');
@@ -205,7 +209,9 @@ function assertClaudeAbsent(wf: string): void {
 
 function assertOpencodeConfigured(wf: string, member: Agent): void {
   const cfgs = allConfigs(wf);
-  expect(cfgs.opencodeProject.mcp['apra-fleet']).toEqual({ type: 'remote', url: expect.stringMatching(memberUrlRe(member.id)), enabled: true });
+  expect(cfgs.opencodeProject.mcp['apra-fleet']).toEqual({ type: 'remote', url: expect.stringMatching(memberUrlRe(member.id)), enabled: true, headers: memberSecretHeaders() });
+  // It carries this install's member access secret, so the file is owner-only.
+  expect(fs.statSync(paths.opencodeProject(wf)).mode & 0o777).toBe(0o600);
   expect(excludeLines(wf)).toContain('/opencode.json');
   // opencode relies on the server's reduced tool list: no MCP deny rules.
   expect(JSON.stringify(cfgs.opencodeSettings)).not.toMatch(/mcp|apra-fleet|deny\b.*apra/);
@@ -218,11 +224,24 @@ function assertOpencodeAbsent(wf: string): void {
   expect(excludeLines(wf)).not.toContain('/.opencode/settings.json');
 }
 
-function assertAgyConfigured(): void {
+function assertAgyConfigured(member?: Agent): void {
   const grants = readJson(paths.agyProject()).permissionGrants.permissionGrants;
   expect(grants.deny).toEqual(COMPLEMENT.map(t => `mcp(apra-fleet/${t})`));
-  // agy has no per-project MCP config: mcp_config.json holds only deepwiki.
-  expect(readJson(paths.agyMcp())).toEqual({ mcpServers: { deepwiki: DEEPWIKI } });
+  if (member) {
+    expect(readJson(paths.agyMcp())).toEqual({
+      mcpServers: {
+        'apra-fleet': { url: expect.stringMatching(memberUrlRe(member.id)), headers: memberSecretHeaders() },
+        deepwiki: DEEPWIKI,
+      },
+    });
+  } else {
+    expect(readJson(paths.agyMcp())).toEqual({
+      mcpServers: {
+        'apra-fleet': { url: expect.stringMatching(/^http:\/\/localhost:\d+\/mcp\?member=/), headers: memberSecretHeaders() },
+        deepwiki: DEEPWIKI,
+      },
+    });
+  }
 }
 
 function assertAgyAbsent(): void {
@@ -230,6 +249,7 @@ function assertAgyAbsent(): void {
   expect(project.permissionGrants).toBeUndefined();
   // agy's own project fields are left alone.
   expect(project.id).toBe(AGY_PROJECT_ID);
+  expect(readJson(paths.agyMcp())).toEqual({ mcpServers: { deepwiki: DEEPWIKI } });
 }
 
 beforeAll(() => {
@@ -267,7 +287,7 @@ describe.skipIf(process.platform === 'win32')('member per-folder apra-fleet MCP 
     expect(COMPLEMENT.some(t => t.includes('deepwiki'))).toBe(false);
   });
 
-  it('claude: compose writes the local-scope ?member=<uuid> entry and complement deny rules; legacy gone; clone clean', async () => {
+  it('claude: compose writes no folder entry for a local member, complement deny rules; legacy gone; clone clean', async () => {
     const wf = makeClone();
     seedLegacy(wf);
     const member = addMember('claude', wf);
@@ -293,14 +313,14 @@ describe.skipIf(process.platform === 'win32')('member per-folder apra-fleet MCP 
     assertCommonInvariants(wf, 'opencode');
   }, 60000);
 
-  it('agy: compose writes no member MCP entry and complement deny rules; clone clean', async () => {
+  it('agy: compose writes member MCP entry and complement deny rules; clone clean', async () => {
     const wf = makeClone();
     seedLegacy(wf);
     const member = addMember('agy', wf);
 
     expect(await composePermissions({ member_id: member.id, role: 'doer' })).toContain('Permissions composed');
 
-    assertAgyConfigured();
+    assertAgyConfigured(member);
     expect(allConfigs(wf).claudeJson.projects[wf].mcpServers['apra-fleet']).toBeUndefined();
     assertOpencodeAbsent(wf);
     expect(fs.existsSync(path.join(wf, '.claude'))).toBe(false);
@@ -323,7 +343,7 @@ describe.skipIf(process.platform === 'win32')('member per-folder apra-fleet MCP 
 
     await switchTo('agy');
     assertClaudeAbsent(wf);
-    assertAgyConfigured();
+    assertAgyConfigured(member);
     assertOpencodeAbsent(wf);
     assertCommonInvariants(wf, 'agy');
 

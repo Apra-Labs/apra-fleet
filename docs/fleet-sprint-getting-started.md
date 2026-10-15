@@ -49,8 +49,10 @@ evidence-based **PASS or FAIL verdict** for the whole sprint, a "harvester"
 writes durable documentation and the sprint analysis, an optional
 once-per-sprint regression pass runs your regression playbook, and the engine
 pushes the branch and **opens a pull request** whose title and body state the
-verdict plainly, with a cost breakdown. It never merges the PR -- that is always
-a human decision.
+verdict plainly, with a cost breakdown. If the branch already has an open PR
+(a relaunch), every sprint end rewrites that PR's title and body to the latest
+verdict and keeps earlier runs in a short run history. It never merges the PR --
+that is always a human decision.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../assets/marketing/fleet-sprint-pipeline-dark.svg">
@@ -63,8 +65,10 @@ Concretely, after a run finishes, here is what has changed in your world:
   against the base branch you chose.
 - Your issue tracker (beads -- see Section 2) has the sprint's issues decomposed,
   worked, and closed-with-evidence or left open with filed bugs explaining why.
-- A sprint analysis document is committed to the branch (under `sprint-logs/`),
-  and the run's raw log is retained on disk.
+- A sprint analysis document is committed to the branch
+  (`docs/sprint-analysis-<branch>-<hash>.md`: `/` in the branch name becomes
+  `-`, plus an 8-character hash), and the run's raw log is retained on
+  disk. No `CHANGELOG.md` entry is written; the cost breakdown is in the PR body.
 
 What it is *not*: it does not invent product scope (the planner is explicitly
 forbidden from adding work beyond the issues you gave it), it does not merge its
@@ -162,6 +166,11 @@ own role definition):
   prompt carries the sprint's own `sprintId` line, so a runbook can key the
   instance's location on it.
 
+Write every step as plain commands. Recent Claude Code CLIs in headless mode
+refuse shell `for`/`while` loops and `$(...)` command substitution even when each
+inner command is allowed, and every sprint role is told not to write them. If a
+step needs that logic, put it in a script in your repo and call the script.
+
 The deployer is explicitly forbidden from improvising: if `deploy.md` is absent,
 the deploy and integration-test phases are **skipped cleanly** -- the sprint still
 runs, but nothing gets verified against a running system. If a step fails, it
@@ -195,13 +204,18 @@ version: a `## Permissions` section, how to reach the deployed app
 that is three curl commands and what their responses should contain.
 
 **`regression-test-playbook.md`** (repo root) -- run **once per sprint**, near the
-end, by a separate regression runner that owns a sandbox lifecycle (`## Setup`, a
-test scenario, `## Teardown` -- teardown always runs, pass or fail). Its job is
+end, by a separate regression runner. The playbook decides its own structure:
+the runner runs every part it defines, in its order, and reports each part under
+the playbook's own name for it. `## Setup` and `## Teardown` are optional; a
+`## Teardown` always runs, pass or fail, and a failed `## Setup` skips only the
+parts that depend on it. Its job is
 proving *existing* functionality still works. Two honest softeners for a team
 starting from zero: (a) its result is explicitly informational -- it never gates
 the sprint's PASS/FAIL verdict; failures are filed as standalone "carry-over"
 bugs for a future sprint; and (b) if the file is absent, the phase is skipped with
-a warning. So you can defer this one -- but a sprint with no regression pass has
+a warning. You can also skip it for one sprint on purpose
+(`"phases": {"regression": "skip"}` on the launch request); the skip is logged
+and stated in the PR body. So you can defer this one -- but a sprint with no regression pass has
 no systematic check that it didn't break what already worked, and with no unit
 tests either, your only safety nets are the reviewer's diff reading and your own
 PR review. Plan to add it by your second or third sprint.
@@ -222,21 +236,30 @@ of your repo. The fleet server dispatches all agent work to members.
   <img src="../assets/marketing/fleet-topology-light.svg" alt="apra-fleet topology: a control plane dispatching agent work to registered members across machines and providers.">
 </picture>
 
-fleet-sprint ships inside the `@apralabs/apra-fleet` package. Install it from npm
-(Node.js 22+):
+fleet-sprint ships inside the `@apralabs/apra-fleet` package. It needs a system
+Node.js 22.16+ and npm on PATH; the installer checks this first and stops,
+changing nothing, if either is missing. Install it from npm:
 
 ```bash
 npm install -g @apralabs/apra-fleet
-apra-fleet                                # installs for Claude Code (default)
-cd ~/.apra-fleet/bin && apra-fleet start  # start the fleet server
+apra-fleet install    # installs for Claude Code (default)
+apra-fleet start      # npm install registers no OS service: start the server
 ```
 
 Alternatively, download the standalone installer for your platform from
 [GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases)
-(`apra-fleet-installer-darwin-arm64`, `apra-fleet-installer-linux-x64`,
-`apra-fleet-installer-win-x64.exe`) and run it -- installation is the default
-action. Either way, the fleet runtime is unpacked into `~/.apra-fleet/` with the
-`apra-fleet` binary at `~/.apra-fleet/bin`.
+(`apra-fleet-installer-darwin-arm64`, `apra-fleet-installer-darwin-x64`,
+`apra-fleet-installer-linux-x64`, `apra-fleet-installer-win-x64.exe`; per-OS
+download commands in [docs/install.md](install.md#quick-install)) and run it --
+installation is the default action, and it registers and starts a user-level
+service, with the `apra-fleet` binary in `~/.apra-fleet/bin` (not added to
+PATH; PowerShell: `& "$HOME\.apra-fleet\bin\apra-fleet.exe" status`). Either way,
+fleet-sprint is installed into `~/.apra-fleet/workflows/fleet-sprint`.
+
+Every member a sprint uses needs `bd` (beads) runnable in its work folder; the
+install provides it (it needs npm on that machine). A member without `bd` fails
+the sprint's preflight before any work is dispatched, with an error naming the
+member and the fix.
 
 Then load the fleet MCP server in Claude Code (`/mcp`) and register members
 conversationally -- registration is driven through your agent in plain language,
@@ -248,7 +271,12 @@ One member is enough to start, and a single-member sprint avoids the multi-clone
 topology questions entirely. You will also want git credentials provisioned for
 the member so it can push the branch and open the PR -- apra-fleet's
 `provision_vcs_auth` supports **GitHub**, Bitbucket, and **Azure DevOps** (org URL
-+ PAT), so a GitHub- or AzDevOps-hosted git repo is fully supported.
++ PAT), so a GitHub- or AzDevOps-hosted git repo is fully supported. For a
+GitHub repo, opening the PR needs a GitHub App configured on the fleet
+(`setup_git_app`, see
+[GitHub App setup](https://github.com/Apra-Labs/apra-fleet/blob/main/docs/github-app-setup.md)):
+with only a PAT the sprint pushes the branch but logs `[Publish PR Skipped]
+... GitHub App not configured` and opens no PR.
 
 See [`packages/apra-fleet-se/docs/project-model.md`](../packages/apra-fleet-se/docs/project-model.md) for the full
 schema of how a project, its beads DB, its members, and the supervisor
@@ -305,6 +333,35 @@ with your own Node. If `apra-fleet install` cannot register the service it fails
 loudly with a non-zero exit naming the reason, rather than reporting a successful
 install with no supervisor registered.
 
+The supervisor works in a project folder (the one holding `.beads`):
+`apra-fleet install --project-dir <folder>` records it for the service, and
+`apra-fleet supervisor --beads-dir <folder>` names it for a foreground run.
+
+At startup the supervisor sets up its own **backlog member**: a local member with
+no LLM whose work folder is that project folder. It adopts an LLM-less local
+member already registered there (name kept), or registers one named
+`backlog-<folderName>` (the folder name in camelCase, ASCII letters and digits
+only). Every sprint it launches runs its own `bd`/`git` commands and
+the PR call through that member, so leave the `backlog` role out of your launch
+request (naming any other member for it is an HTTP 400). If the supervisor found
+no `.beads`, it still starts, but every launch answers HTTP 503 until you restart
+it from the right folder.
+
+**Upgrading apra-fleet.** Before you upgrade, let running sprints finish (or
+stop them) and stop the supervisor (`apra-fleet stop` also stops the registered
+`fleet-supervisor` service; a foreground one stops on `POST /api/shutdown`);
+start it again afterwards (`apra-fleet start`). A supervisor started under an older version keeps running the
+old code; against a 0.4.4 fleet server it is refused with HTTP 401, because it
+does not send the install's access secret.
+
+**Stale member reservations.** If a sprint died uncleanly -- it crashed, or
+was still running when you upgraded (for example with
+`--ignore-running-sprints`) -- its members can stay reserved on the fleet
+server, and the first launch fails with `409 member overlap rejects launch:
+sprint '<id or branch>' already claims [...]`. Clear each member listed there
+from your agent with the fleet MCP tool `member_reservation`
+`{member_name: "<member>", action: "force_release"}`, then launch again.
+
 Launching a sprint is one authenticated POST (send `Authorization: Bearer <token>`; the
 token is `~/.apra-fleet/fleet.key`, falling back to `<dataDir>/private/token` only when
 `fleet.key` did not exist when the supervisor booted -- a `401` means the token is missing or wrong):
@@ -315,20 +372,28 @@ Authorization: Bearer <contents of ~/.apra-fleet/fleet.key>
 {
   "issue":   "myapp-epic-1",          // your epic bead id (comma-separate for multiple roots)
   "members": ["dev1"],                // registered member name(s)
-  "branch":  "sprint/checkout-v2",    // the branch the sprint develops on (created if absent)
+  "branch":  "sprint/checkout-v2",    // the branch the sprint develops on (created if absent); must differ from base
   "base":    "main",                  // what the branch forks from and the PR targets
   "goal":    "P1/P2",                 // optional: priority ceiling for "done"
   "maxCycles": 5,                     // optional
   "budget":  25,                      // optional: USD ceiling for the run
-  "requirementsFile": "docs/checkout-v2-requirements.md"   // optional, see Section 5
+  "requirementsFile": "docs/checkout-v2-requirements.md",  // optional, see Section 5
+  "phases":  {"regression": "skip"}   // optional: skip the regression pass this once
 }
 ```
 
-The request is validated before anything spawns (malformed issue ids, branch
-names, or empty member lists are rejected with a 400 naming the field), then the
+The request is validated before anything spawns (malformed issue ids or branch
+names, a `branch` equal to `base`, or an empty member list are rejected with a
+400 naming the field), then the
 sprint starts as a detached child process and the response gives you a
 `sprintId`, the child's dashboard port, and the path to its raw log file.
-`POST /api/sprints/<id>/stop` stops it cooperatively. There is also a launch form
+`POST /api/sprints/<id>/stop` stops it cooperatively.
+
+Before the first dispatch the sprint checks every member's beads. A member that
+reads beads but has no beads database yet is set up from your beads remote
+automatically. If that set-up fails, `bd` is missing, or a member resolves to a
+different beads project, the sprint stops before any work with an error naming
+the member and the fix. There is also a launch form
 in the supervisor's web dashboard that submits through this exact same endpoint,
 so point-and-click and API launches can never diverge.
 
@@ -402,8 +467,8 @@ A non-engineer can get real signal from a glance: how many sprints are running,
 whether any health badge is red, what the spend is so far, and -- once finished --
 PASS or FAIL and a PR link. The deliverable a human ultimately reviews is that PR:
 reviewed commits, a verdict and cost breakdown stated plainly in the PR title/body,
-and a written sprint analysis document (including the same cost block) committed
-under `docs/` on the branch.
+and a written sprint analysis document committed under `docs/` on the branch (the
+cost breakdown is only in the PR body).
 
 ---
 
@@ -413,30 +478,35 @@ There is no dedicated "architecture decision record" input to fleet-sprint. Here
 is what actually exists, verified against the code and the shipped role contracts,
 ordered by reach:
 
-1. **`bd remember` -- durable knowledge that reaches every role.** Beads has a
-   persistent-memory store: `bd remember --key <key> "<one or two sentences>"`
-   writes an entry into the shared beads database, and `bd prime` (beads'
-   context-recovery command) prints every stored memory in a "Persistent Memories"
-   section, searchable via `bd memories <keyword>`. The delivery path: beads'
-   convention -- used by this repo itself, whose checked-in
-   `.claude/settings.json` is exactly this -- is a Claude Code `SessionStart` hook
-   that runs `bd prime`, so *every* agent session opened in the repo gets the
-   memories as session context. Since each dispatched sprint role (planner, doer,
-   reviewer, test runners) runs as a Claude Code session inside the member's
-   working copy, a repo carrying that hook delivers your recorded conventions to
-   all of them. Two verified caveats: the fleet-sprint engine does **not** run
-   `bd prime` or inject memories into dispatch prompts itself (the hook in your
-   repo is the whole mechanism), and it is a Claude Code/Codex hook convention;
-   other provider CLIs handle session context differently. For standing direction
+1. **`bd remember` -- durable knowledge, scoped to the roles that need it.**
+   Beads has a persistent-memory store: `bd remember --key <key> "<one or two
+   sentences>"` writes an entry into the shared beads database, searchable via
+   `bd memories <keyword>`. Every dispatched sprint role (planner, doer,
+   reviewer, test runners, ...) reads it itself: its role prompt runs
+   `bd memories --json +all+` and `bd memories --json +<role>+` (e.g. `+doer+`)
+   before it starts work (`--json` because text output truncates long values). So the key decides who sees a memory:
+   `+all+:<slug>` reaches every role, `+<role>+:<slug>` one role, and
+   `+<role1>+<role2>+:<slug>` each listed role; an unscoped key reaches no role
+   (full contract in `packages/apra-fleet-se/docs/role-contracts.md`). The
+   interactive session you launch and supervise sprints from is the
+   `orchestrator` role: no role prompt runs there, so give it its memories with a
+   session-start hook (e.g. a Claude Code `SessionStart` hook that prints
+   `+all+` and `+orchestrator+` memories). If your repo's hooks run plain
+   `bd prime`, every memory lands in every session regardless of scope; use
+   `bd prime --no-memories` to keep sessions scoped. For standing direction
    like "all new endpoints go through the gateway service" or "no new runtime
-   dependencies without approval", this is the closest thing to a real cross-role
-   channel that exists.
+   dependencies without approval", an `+all+` memory is the closest thing to a
+   real cross-role channel that exists.
 2. **The requirements file (`requirementsFile` on the launch request).** The one
    explicit per-sprint channel: the engine reads the file and pastes its content
    verbatim into the **planner's** prompt. Use it for sprint-specific technical
    direction that should shape decomposition. Honest limit: it reaches the planner
    (and is readable by the harvester), not the doer -- direction that implementers
-   must follow needs mechanism 1 or 3.
+   must follow needs mechanism 1 or 3. The file is read on the supervisor's
+   machine by the sprint process, which runs from the supervisor's project
+   folder: a relative path resolves there, and a file that is not found is
+   only a warning in the run log (the planner runs without it). Use an
+   absolute path when in doubt.
 3. **Bead descriptions and acceptance criteria.** The highest-fidelity channel to
    the agents writing the code: the planner must give every task concrete
    acceptance criteria, the doer implements to them, the reviewer diffs against
@@ -454,9 +524,15 @@ ordered by reach:
 5. **The runbooks.** `deploy.md` and the playbooks encode operational decisions
    (how we deploy, what "healthy" means, what we verify) as enforced behavior,
    since agents execute them literally.
+6. **The Knowledge Bank (optional).** If you use apra-fleet's KB for the repo,
+   the engine adds a short knowledge block to role prompts. Only CONFIRMED
+   entries that are not disputed (flagged for review or part of an open
+   contradiction) are injected as knowledge; INFERRED and UNVERIFIED captures
+   are not injected until they are promoted (the reviewer may be shown INFERRED
+   entries as promotion candidates to verify, never as facts).
 
-> **Rule of thumb:** durable cross-cutting conventions -> `bd remember` plus the
-> `bd prime` session hook (and `CLAUDE.md` as belt-and-suspenders); sprint-scoped
+> **Rule of thumb:** durable cross-cutting conventions -> `bd remember` under an
+> `+all+` or `+<role>+` key (and `CLAUDE.md` as belt-and-suspenders); sprint-scoped
 > direction -> the requirements file; per-work-item constraints -> bead acceptance
 > criteria.
 
@@ -475,7 +551,7 @@ ordered by reach:
 | Live dashboard: activity tree, cost in USD, health watchdog, stop control, raw logs | Watching it occasionally, and acting on a red badge or a FAIL verdict |
 | Cost governance: per-task model tiers, optional USD budget ceiling, cost block rendered in the PR body | Setting the budget; paying the bill |
 | Opens the PR with a plain PASS/FAIL verdict and a committed sprint analysis | Merging (or not), and everything that happens after merge -- your CI, your release process |
-| Guards against operational foot-guns: member/scope reservation conflicts, deterministic-failure relaunch refusal, validated launches | Running the supervisor and fleet server; registering members; provisioning git and LLM credentials |
+| Guards against operational foot-guns: member/scope reservation conflicts, deterministic-failure relaunch refusal, validated launches | Running the supervisor and fleet server (and restarting the supervisor after an apra-fleet upgrade); registering members; provisioning git and LLM credentials |
 
 The pattern in that table is consistent: **fleet-sprint automates execution and
 verification against artifacts you author.** Teams that invest a day or two in
@@ -496,8 +572,8 @@ API in `packages/apra-fleet-se/src/supervisor/api.mjs`. The Azure DevOps and
 GitHub Issues import claims were checked against the beads project's documentation
 and confirmed against the installed `bd` CLI (`bd github --help`,
 `bd github sync --help`, `bd ado --help`, `bd import --help`). The
-`bd remember`/`bd prime` delivery path was verified against `bd prime`'s actual
-output and this repo's checked-in `.claude/settings.json` hook. The supervisor and
+`bd remember` delivery path was verified against the role prompts' `bd memories`
+queries and `bd memories` search behavior. The supervisor and
 sprint screenshots are unretouched captures of a running supervisor. Claims about
 what agents refuse to do (improvising deploys, inventing scope, self-granting
 permissions) are taken from the role contracts verbatim.*

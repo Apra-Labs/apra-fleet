@@ -9,5 +9,6 @@
     "message": "E-SCOPE-KEY-REMOVED: kb_export no longer accepts 'repo_path' (removed in the KB redesign); the call was not run and no KB was changed. Remediation: repo_path: nothing -- drop it: every kb_* call acts on the calling session's own KB (a member session's registered work folder; a FULL session's fleet server working folder). To act on another repository, call from a member session registered on that folder.",
     "thrown": true
   },
-  "expected_error_code": "E-SCOPE-KEY-REMOVED"
+  "expected_error_code": "E-SCOPE-KEY-REMOVED",
+  "session": "FULL_A"
 }

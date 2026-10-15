@@ -11,7 +11,7 @@
 // core's src/os/windows.ts wrapPowerShellEncoded(), not a reuse of it: this
 // package cannot import core.
 
-import { assertSafeRelativePath, assertSafeFileLine } from './se-posix.mjs';
+import { assertSafeRelativePath, assertSafeFileLine, FILE_PROBE_PRESENT, FILE_PROBE_ABSENT } from './se-posix.mjs';
 
 /**
  * PowerShell command primitives for a Windows member.
@@ -145,7 +145,9 @@ export class SeWindowsCommands {
    *    not Add-Content's platform CRLF, and no backtick escape is used
    *    anywhere -- the only variables are script-local ones this string
    *    assigns; nothing reads the member's environment ($env:, ~/).
-   * Caller: member-call.mjs runRemote (args-file cleanup).
+   * Callers: member-call.mjs runRemote (args-file cleanup);
+   * beads-identity-check.mjs member beads set-up (new untracked beads paths
+   * are excluded so the target work tree stays clean).
    * @param {string} entry validated
    * @returns {string}
    */
@@ -175,6 +177,19 @@ export class SeWindowsCommands {
   removeFile(relPath) {
     const p = assertSafeRelativePath(relPath, 'file path');
     return this.wrapForMember(`if (Test-Path -LiteralPath '${p}') { Remove-Item -LiteralPath '${p}' -Force }`);
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.fileExistsProbe: prints exactly
+   * FILE_PROBE_PRESENT or FILE_PROBE_ABSENT, literal path only, no member
+   * environment reads. Read-only.
+   * Caller: member-provisioning.mjs permission-config preflight.
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  fileExistsProbe(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    return this.wrapForMember(`if (Test-Path -LiteralPath '${p}') { Write-Output '${FILE_PROBE_PRESENT}' } else { Write-Output '${FILE_PROBE_ABSENT}' }`);
   }
 
   /**
