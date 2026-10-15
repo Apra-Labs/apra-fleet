@@ -187,6 +187,22 @@ jobs:
           path: ${{ env.TARBALL_NAME }}
           retention-days: 30
 
+      # Same npm pack guard as the tag-only npm-publish job, on every push/PR,
+      # so a size regression fails here instead of first surfacing on a tag.
+      # npm-publish packs after prepublishOnly (dist-pm + build); Build already
+      # ran above, so only dist-pm is needed here to match its payload.
+      - name: npm pack guard (stale SEA artifacts + size)
+        run: |
+          set -o pipefail
+          npm run dist-pm
+          npm pack --dry-run 2>&1 | tee pack-check.txt
+          if grep -qE '\.(exe)$|sea-prep\.blob|sea-bundle\.cjs' pack-check.txt; then
+            echo "::error::Pack contains stale SEA build artifacts (exe/sea-prep.blob/sea-bundle.cjs)."
+            grep -E '\.(exe)$|sea-prep\.blob|sea-bundle\.cjs' pack-check.txt
+            exit 1
+          fi
+          node scripts/check-pack-size.mjs
+
   build-binary:
     needs: build-and-test
     strategy:
