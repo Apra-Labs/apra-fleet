@@ -69,6 +69,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   const { revokeVcsAuthSchema, revokeVcsAuth } = await import('../tools/revoke-vcs-auth.js');
   const { vcsCredentialExecSchema, vcsCredentialExec } = await import('../tools/vcs-credential-exec.js');
   const { fleetStatusSchema, fleetStatus } = await import('../tools/check-status.js');
+  const { fleetSnapshotSchema, fleetSnapshot } = await import('../tools/fleet-snapshot.js');
   const { memberDetailSchema, memberDetail } = await import('../tools/member-detail.js');
   const { updateAgentCliSchema, updateAgentCli } = await import('../tools/update-agent-cli.js');
   const { shutdownServerSchema, shutdownServer } = await import('../tools/shutdown-server.js');
@@ -225,6 +226,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
 
   // Status & Monitoring
   server.tool('fleet_status', 'Get status of all fleet members. Use json format for structured data.', fleetStatusSchema.shape, wrapTool('fleet_status', (input) => fleetStatus(input as any)));
+  server.tool('fleet_snapshot', 'Cheap read-only fleet view for status displays: every member with its last-known status (busy/idle/offline/unknown), icon, category and holder, as JSON. Reads only local state -- no SSH probes, no writes. Use fleet_status for a live check.', fleetSnapshotSchema.shape, wrapTool('fleet_snapshot', () => fleetSnapshot()));
   server.tool('member_detail', 'Get detailed status for one member: connectivity, AI version, authentication, active session, resources, and git branch.', memberDetailSchema.shape, wrapTool('member_detail', (input) => memberDetail(input as any)));
 
   // Maintenance

@@ -1,0 +1,7 @@
+{
+  "name": "fleet-status",
+  "version": "0.1.0",
+  "author": { "name": "Apra Labs" },
+  "description": "apra-fleet at a glance: a live status line entry and a /fleet-status pane of every fleet member.",
+  "types": "./types/index.d.ts"
+}

@@ -45,7 +45,7 @@ export const REGISTERED_TOOL_NAMES: readonly string[] = Object.freeze([
   'member_owner', 'member_git_status',
   'send_files', 'receive_files', 'execute_prompt', 'execute_command',
   'provision_llm_auth', 'setup_ssh_key', 'setup_git_app', 'provision_vcs_auth',
-  'revoke_vcs_auth', 'vcs_credential_exec', 'fleet_status', 'member_detail',
+  'revoke_vcs_auth', 'vcs_credential_exec', 'fleet_status', 'fleet_snapshot', 'member_detail',
   'update_llm_cli', 'shutdown_server', 'version', 'session_stats', 'compose_permissions',
   'cloud_control', 'monitor_task', 'stop_prompt', 'credential_store_set',
   'credential_store_list', 'credential_store_delete', 'credential_store_update',
