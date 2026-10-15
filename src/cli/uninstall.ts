@@ -29,6 +29,7 @@ import {
   ProviderInstallConfig
 } from './config.js';
 import { BUILTIN_WORKFLOW_NAMES } from './workflow-assets.js';
+import { claudePluginsDir, isApraFleetStatusLine, uninstallClaudeMod } from './claude-mod.js';
 
 function run(cmd: string, opts?: Record<string, unknown>): void {
   const shellOpt = process.platform === 'win32' ? { shell: 'cmd.exe' } : {};
@@ -148,7 +149,7 @@ function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): boolean
   }
 
   // 4. StatusLine
-  if (settings.statusLine?.command?.includes('fleet-statusline')) {
+  if (isApraFleetStatusLine(settings.statusLine)) {
     console.log(`  - Removing statusLine configuration`);
     if (!dryRun) delete settings.statusLine;
     changed = true;
@@ -254,10 +255,12 @@ function printKeptSection(
   dryRun: boolean,
   keptUserWorkflows: string[],
   keptSupervisorRegs: SupervisorRegistration[],
+  claudeModPlanned: boolean,
 ): void {
   const plannedRemovals = new Set<string>();
   if (dryRun) {
     for (const p of [BIN_DIR, HOOKS_DIR, SCRIPTS_DIR, NODE_MODULES_DIR, SCHEMAS_DIR]) plannedRemovals.add(path.basename(p));
+    if (claudeModPlanned) plannedRemovals.add(path.basename(claudePluginsDir()));
     if (keptUserWorkflows.length === 0) plannedRemovals.add(path.basename(WORKFLOWS_DIR));
   }
 
@@ -425,6 +428,7 @@ Options:
   }
 
   let anythingRemoved = false;
+  let claudeModPlanned = false;
 
   for (const llm of providersToClean) {
     const paths = getProviderInstallConfig(llm);
@@ -438,6 +442,12 @@ Options:
             run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
             anythingRemoved = true;
           } catch { /* already removed or not found */ }
+        }
+        // fleet-status Claude Code mod: before cleanupSettings, since the
+        // claude CLI edits the same settings file.
+        if (uninstallClaudeMod(paths, dryRun)) {
+          anythingRemoved = true;
+          claudeModPlanned = true;
         }
       }
 
@@ -548,7 +558,7 @@ Options:
   }
 
   if (isFullUninstall) {
-    printKeptSection(dryRun, keptUserWorkflows, supervisorCleanup.kept);
+    printKeptSection(dryRun, keptUserWorkflows, supervisorCleanup.kept, claudeModPlanned);
   }
 
   // One final status line: "Uninstall complete." only when nothing failed;

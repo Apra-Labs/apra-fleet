@@ -215,9 +215,18 @@ codebase. The `--help` text does not list them.
   "packages/apra-fleet-se/...",
   "packages/apra-fleet-workflow/...",
   "packages/apra-fleet-client/...",
-  "packages/apra-fleet-shell-ui/dist/"
+  "packages/apra-fleet-shell-ui/dist/",
+  "plugins/claude-code/fleet-status/.claude-plugin/plugin.json",
+  "plugins/claude-code/fleet-status/hooks/",
+  "plugins/claude-code/fleet-status/types/"
 ]
 ```
+
+The `plugins/claude-code/fleet-status/` entries ship only the fleet-status
+Claude Code mod's runtime files (its generated type stubs, tests and tsconfig
+are authoring-only); `install --llm claude` copies them into
+`~/.apra-fleet/claude-plugins/`. The SEA binary embeds the same files as the
+`claudePlugins` manifest section (scripts/gen-sea-config.mjs).
 
 **What is shipped:** compiled JS (`dist/`), hooks config, runtime scripts,
 skills (fleet + pm), `version.json`, the fleet-sprint engine subtree (see

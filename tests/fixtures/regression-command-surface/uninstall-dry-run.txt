@@ -4,6 +4,7 @@ Uninstalling Apra Fleet {VERSION}... (DRY RUN)
   - Removing MCP server service registration
 Cleaning up Claude...
   - Removing MCP server via Claude CLI
+  - Removing fleet-status Claude Code mod (fleet-status@apra-fleet-local): {CLAUDE_PLUGINS_DIR}
   - Removing PM skills: {PM_SKILLS_DIR}
   - Removing auto-sprint-args skill: {ARGS_SKILL_DIR}
   - Removing PM agent files: {AGENTS_DIR}

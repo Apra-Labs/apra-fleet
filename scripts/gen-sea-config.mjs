@@ -130,6 +130,33 @@ const fleetSupervisorSkill = collectFiles(
   'packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor'
 );
 
+// fleet-status Claude Code mod (plugins/claude-code/fleet-status): runtime
+// files only, keyed '<plugin>/<path in plugin>'. claudeModRuntimeFile mirrors
+// isClaudeModRuntimeFile in src/cli/claude-mod.ts EXACTLY (dev-mode
+// buildDevManifest uses that one) -- keep the two in lockstep.
+const CLAUDE_MOD_EXCLUDED_DIRS = new Set(['tests', 'test', 'node_modules']);
+function claudeModRuntimeFile(relPath) {
+  const p = relPath.replace(/\\/g, '/');
+  if (p === 'tsconfig.json') return false;
+  if (p.startsWith('.claude-plugin/types/')) return false;
+  const parts = p.split('/');
+  if (parts.slice(0, -1).some((d) => CLAUDE_MOD_EXCLUDED_DIRS.has(d))) return false;
+  if (parts[parts.length - 1] === '.gitignore') return false;
+  return true;
+}
+const claudePlugins = {};
+for (const [rel, diskPath] of Object.entries(collectFiles(
+  join(root, 'plugins', 'claude-code', 'fleet-status'),
+  'plugins/claude-code/fleet-status',
+  'plugins/claude-code/fleet-status'
+))) {
+  if (claudeModRuntimeFile(rel)) claudePlugins[`fleet-status/${rel}`] = diskPath;
+}
+if (!claudePlugins['fleet-status/.claude-plugin/plugin.json']) {
+  console.error('Error: plugins/claude-code/fleet-status/.claude-plugin/plugin.json is missing (fleet-status Claude Code mod).');
+  process.exit(1);
+}
+
 if (Object.keys(skills).length === 0) {
   console.error('Error: apra-pm directory is missing (skills/pm is empty).');
   process.exit(1);
@@ -251,6 +278,7 @@ const manifest = {
   fleetSprintCliSkill,
   fleetSupervisorSkill,
   ui,
+  claudePlugins,
 };
 
 writeFileSync(join(distDir, 'sea-manifest.json'), JSON.stringify(manifest, null, 2));
@@ -268,6 +296,7 @@ console.log(`  Skill (auto-sprint-args): ${Object.keys(autoSprintArgsSkill).leng
 console.log(`  Skill (fleet-sprint-cli): ${Object.keys(fleetSprintCliSkill).length} files`);
 console.log(`  Skill (fleet-supervisor): ${Object.keys(fleetSupervisorSkill).length} files`);
 console.log(`  UI (console shell): ${Object.keys(ui).length} files`);
+console.log(`  Claude plugins (fleet-status mod): ${Object.keys(claudePlugins).length} files`);
 
 // Build SEA config with assets
 const assets = {};
@@ -325,6 +354,10 @@ for (const [, relPath] of Object.entries(fleetSprintCliSkill)) {
 }
 // Add fleet-supervisor skill files
 for (const [, relPath] of Object.entries(fleetSupervisorSkill)) {
+  assets[relPath] = join(root, relPath);
+}
+// Add fleet-status Claude Code mod files
+for (const [, relPath] of Object.entries(claudePlugins)) {
   assets[relPath] = join(root, relPath);
 }
 // Add UI (console shell) files. UNLIKE every other section above, the asset

@@ -141,6 +141,7 @@ describe('uninstall', () => {
       WORKFLOWS_DIR: config.WORKFLOWS_DIR,
       FLEET_DATA_DIR: path.join(config.FLEET_BASE, 'data'),
       FLEET_KEY_PATH: path.join(config.FLEET_BASE, 'fleet.key'),
+      CLAUDE_PLUGINS_DIR: path.join(config.FLEET_BASE, 'claude-plugins'),
     });
     expect(actual).toBe(normalizeCommandSurfaceOutput(expected));
   });
