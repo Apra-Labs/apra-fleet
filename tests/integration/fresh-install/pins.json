@@ -46,6 +46,22 @@
         "asset": "apra-fleet-installer-darwin-arm64",
         "sha256": "592683ccb77d596a359dee9559949d54a9b30bc6ecf437f742d08d773b43d5c0"
       }
+    },
+    "v0.4.4": {
+      "repo": "Apra-Labs/apra-fleet",
+      "version": "v0.4.4_09382a",
+      "windows": {
+        "asset": "apra-fleet-installer-win-x64.exe",
+        "sha256": "f0d2ea93b5c31b62eed2b6721a47d5d0f8143bfe451196c7b2a4eab32afd97a7"
+      },
+      "linux": {
+        "asset": "apra-fleet-installer-linux-x64",
+        "sha256": "8ceb519358f291fd0eb72ee63cc130bb811adba53865fe46a600ff69654adecb"
+      },
+      "macos": {
+        "asset": "apra-fleet-installer-darwin-arm64",
+        "sha256": "989850ea431e3fad3b51b5df78bc0795705b4ea1c31529054b21c11160c6c3e1"
+      }
     }
   }
 }
