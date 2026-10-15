@@ -69,3 +69,12 @@ if (isolatedFleetDir !== process.env.APRA_FLEET_DATA_DIR) {
       'that read, write or delete files under FLEET_DIR against a non-isolated path.',
   );
 }
+
+// The dynamic import above caches src/paths.ts in this worker's module
+// registry bound to the REAL node:fs -- before the test file's own hoisted
+// vi.mock('node:fs') can apply. Any test that mocks fs and then reaches a
+// paths.ts helper that reads files (e.g. recordedMemberInstallPort(), which
+// reads the member-install marker) would silently hit the real disk instead
+// of its in-memory fs. Drop the cached copy so the test file imports a fresh
+// paths.ts through its own mocks (FLEET_DIR re-evaluates to the same value).
+vi.resetModules();

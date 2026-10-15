@@ -85,6 +85,13 @@ describe('scripts/run-all-tests.mjs sharded root vitest run', () => {
     vi.stubEnv('APRA_TEST_TIMEOUT_MS', undefined);
     vi.mocked(spawn).mockReset();
     vi.mocked(spawnSync).mockReset();
+    // The runner's git-hooks leak guard (scripts/git-hooks-guard.mjs) asks
+    // `git rev-parse --git-common-dir` via spawnSync at import time. A bare
+    // vi.fn() returns undefined there, which threw before any suite ran;
+    // answer as "not a git checkout" so the guard is simply inactive here.
+    vi.mocked(spawnSync).mockImplementation(
+      (() => ({ status: 128, stdout: '', stderr: '', pid: 0, output: [], signal: null })) as unknown as typeof spawnSync,
+    );
     vi.mocked(spawn).mockImplementation(() => createMockChildProcess(0));
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
