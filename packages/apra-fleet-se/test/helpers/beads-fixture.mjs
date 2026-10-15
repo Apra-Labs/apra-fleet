@@ -7,7 +7,7 @@ import { exec } from 'node:child_process';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { bdInitFromTemplate } from './bd-replay.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -18,6 +18,12 @@ export function envWithoutBeadsDir(extra = {}) {
     const env = { ...process.env, ...extra };
     delete env.BEADS_DIR;
     return env;
+}
+
+function gitIn(args, cwd) {
+    return new Promise((resolve) => {
+        exec(`git ${args}`, { cwd, windowsHide: true }, (err, stdout, stderr) => resolve({ err, stdout, stderr }));
+    });
 }
 
 function bdIn(args, cwd) {
@@ -45,6 +51,17 @@ export async function createBeadsFixture({ issuesFile = DEFAULT_FIXTURE_ISSUES }
         if (!Array.isArray(issues) || issues.length === 0) {
             throw new Error(`beads fixture at ${dir} has no issues after importing ${issuesFile}`);
         }
+        // A complete project identity, as the supervisor's beads-identity check
+        // requires one (git 'origin' + beads 'sync.remote'): both point at a
+        // LOCAL bare repo inside the fixture, so nothing ever reaches a network.
+        const remoteDir = path.join(dir, '.fixture-remote.git');
+        const bare = await gitIn(`init --bare "${remoteDir}"`, dir);
+        if (bare.err) throw new Error(`git init --bare for the beads fixture failed: ${bare.err.message}\n${bare.stderr || ''}`);
+        const remoteUrl = pathToFileURL(remoteDir).href;
+        const origin = await gitIn(`remote add origin "${remoteUrl}"`, dir);
+        if (origin.err) throw new Error(`git remote add for the beads fixture failed: ${origin.err.message}\n${origin.stderr || ''}`);
+        const sync = await bdIn(`config set sync.remote "git+${remoteUrl}"`, dir);
+        if (sync.err) throw new Error(`bd config set sync.remote for the beads fixture failed: ${sync.err.message}\n${sync.stderr || ''}`);
         return { dir, beadsDir: path.join(dir, '.beads'), issues, cleanup };
     } catch (err) {
         await cleanup();

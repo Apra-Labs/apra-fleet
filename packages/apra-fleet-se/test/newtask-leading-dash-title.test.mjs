@@ -62,7 +62,7 @@ describe('newTask titles with a leading dash', () => {
 
     test('a title of only dashes is rejected (falls to the parent-notes fallback)', () => {
         for (const raw of ['---', '-', '- - -']) {
-            const r = validateNewTask({ title: raw, description: 'x', priority: 'P2' });
+            const r = validateNewTask({ title: raw, description: 'x', priority: 'P2', dedupCheck: { query: 'dash title', candidateIds: [], verdict: 'no-overlap' } });
             assert.strictEqual(r.ok, false, `expected ${JSON.stringify(raw)} to be rejected`);
             assert.match(r.reason, /title/);
         }
@@ -76,7 +76,7 @@ describe('newTask titles with a leading dash', () => {
     });
 
     test('a dash inside a title is untouched', () => {
-        const r = validateNewTask({ title: 'Fix a-b handling - now', description: 'x', priority: 'P2' });
+        const r = validateNewTask({ title: 'Fix a-b handling - now', description: 'x', priority: 'P2', dedupCheck: { query: 'dash title', candidateIds: [], verdict: 'no-overlap' } });
         assert.strictEqual(r.title, 'Fix a-b handling - now');
         assert.strictEqual(r.description, 'x');
     });
