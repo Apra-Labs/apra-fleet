@@ -254,7 +254,10 @@ describe('kb_setup merges into the existing config', () => {
 describe('kb_setup offline_fallback', () => {
   type SetupResult = { success: boolean; steps: string[]; warnings: string[] };
   async function setup(input: Parameters<typeof kbSetup>[0]): Promise<SetupResult> {
-    return JSON.parse(await kbSetup({ repo_path: tmpDir, ...input }));
+    // An explicit anchor, never the removed repo_path key: with no anchor
+    // kbSetup resolves the calling session's own folder (this checkout, from
+    // process.cwd()) and would install its post-commit hook there.
+    return JSON.parse(await kbSetup({ ...input }, { folder: tmpDir }));
   }
 
   it('persists offline_fallback "error" into config.json and reports it in steps', async () => {
