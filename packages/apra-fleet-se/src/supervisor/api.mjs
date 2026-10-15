@@ -46,7 +46,7 @@ import { validateIssueId, validateBranchName, validateBranchPair } from '../../f
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { resolveBacklogRoleAlias, ROLE_BACKLOG } from '../../fleet-sprint/backlog-role.mjs';
 import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
-import { validateCiGate } from '../../fleet-sprint/sprint-args.mjs';
+import { validateCiGate, validateMaxExtensions } from '../../fleet-sprint/sprint-args.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
@@ -528,11 +528,21 @@ export function createSprintController(deps = {}) {
             catch (err) { throw new ApiError(400, err.message, 'ci_gate'); }
             if (parsedGate) ciGate = JSON.stringify({ workflow: parsedGate.workflow, timeout_s: parsedGate.timeoutS });
         }
+        // max_extensions (optional; alias maxExtensions): the sprint extension
+        // bound, a non-negative integer. Validated with the runner's own
+        // validator so a malformed value 400s before any spawn; forwarded to
+        // the child as --max-extensions only when present.
+        let maxExtensions;
+        const rawMaxExtensions = body.max_extensions ?? body.maxExtensions;
+        if (rawMaxExtensions !== undefined && rawMaxExtensions !== null) {
+            try { maxExtensions = validateMaxExtensions(rawMaxExtensions); }
+            catch (err) { throw new ApiError(400, err.message, 'max_extensions'); }
+        }
         // `issue` stays a single comma-joined string (the exact shape
         // buildSprintArgv/cli.mjs's --issue flag expects, and byte-identical
         // to the input for the single-id case); `issueIds` is the split array
         // callers use for issueRoots / per-root history lookups.
-        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, ciGate };
+        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, ciGate, maxExtensions };
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
@@ -625,7 +635,7 @@ export function createSprintController(deps = {}) {
                 throw err;
             }
         }
-        const { issue, issueIds, branch, base, members, skipRegression, ciGate } = validateLaunchRequest(body);
+        const { issue, issueIds, branch, base, members, skipRegression, ciGate, maxExtensions } = validateLaunchRequest(body);
         // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
         // the supervisor read an arbitrary server-side path named by the request
         // body, and the alias warning could not be computed from it. Reject it.
@@ -813,6 +823,8 @@ export function createSprintController(deps = {}) {
             // Set only when the launch carried ci_gate, so a launch without it
             // produces the exact same spawnOpts shape as before.
             ...(ciGate !== undefined ? { ciGate } : {}),
+            // Same for max_extensions.
+            ...(maxExtensions !== undefined ? { maxExtensions } : {}),
             ...(body.sync === true ? { extraArgs: ['--sync'] } : {}),
         };
         // apra-fleet-i9ag.15.2: a runner-resolution failure (spawner.mjs's

@@ -389,10 +389,13 @@ paths:
                     Optional engine CI gate (alias ciGate), an object or its
                     JSON string. Validated with the engine's validateCiGate
                     (malformed -> 400, field ci_gate) and forwarded as the
-                    child's --ci-gate: the workflow runs once per sprint at
-                    Finalization, in parallel with Final Review/Regression/
-                    Harvest; Publish PR awaits it and reports it in the PR
-                    body. Never changes the verdict or blocks the PR.
+                    child's --ci-gate: the workflow runs once per Finalization
+                    pass, in parallel with Final Review; the Finalization
+                    barrier awaits it (a TIMEOUT is retried once) before
+                    Regression Test/Harvest/Publish PR, a FAIL may start a
+                    sprint extension (see max_extensions), and Publish PR
+                    reports the last result in the PR body. Never changes the
+                    verdict or blocks the PR.
                   oneOf:
                     - type: string
                     - type: object
@@ -406,6 +409,20 @@ paths:
                           type: integer
                           minimum: 1
                           default: 3600
+                max_extensions:
+                  type: integer
+                  minimum: 0
+                  default: 1
+                  description: >
+                    Optional sprint-extension bound (alias maxExtensions),
+                    validated with the engine's validateMaxExtensions (not a
+                    non-negative integer -> 400, field max_extensions) and
+                    forwarded as the child's --max-extensions. At the
+                    Finalization barrier a CI FAIL (one P1 Fix-CI bead) or an
+                    in-goal Final Review finding sends the sprint back into
+                    the cycle loop for one more cycle, then Finalization runs
+                    again; at most this many times, independent of
+                    maxCycles. 0 disables extensions.
                 overrideRelaunchGate:
                   type: boolean
                   description: >

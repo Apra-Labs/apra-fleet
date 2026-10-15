@@ -1,6 +1,7 @@
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resolveMemberTarget } from './member-target.mjs';
 import { createMemberVcsProviderResolver } from './vcs-auth.mjs';
+import { createExtensionState } from './sprint-extension.mjs';
 
 // =============================================================================
 // PER-SPRINT RESOLVED STATE (apra-fleet-3swo.6.1).
@@ -151,6 +152,12 @@ export async function resolveSettleShellWith({ fleetApi, member, log = () => {} 
  * (member-init-probe.mjs MemberInitRecord): verified status, fleetMcp, tool
  * presence, CONFIRMED count and code index state. Filled once at sprint init
  * and read by the KNOWLEDGE BANK injection and the viewer.
+ *
+ * `extension` is the sprint-extension state (sprint-extension.mjs
+ * createExtensionState): how many extensions ran, each one's trigger and
+ * outcome, and the id of the sprint's one Fix-CI bead. Kept here, on the one
+ * per-sprint object, so a paused and resumed sprint neither re-creates the
+ * Fix-CI bead nor counts an extension twice.
  */
 export function createSprintState({ callTool, log = () => {}, createFleetApi } = {}) {
     const active = typeof callTool === 'function';
@@ -181,5 +188,6 @@ export function createSprintState({ callTool, log = () => {}, createFleetApi } =
         },
         dispatchToolCalls: [],
         memberInit: [],
+        extension: createExtensionState(),
     };
 }

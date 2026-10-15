@@ -51,14 +51,17 @@ describe('role prompts and schema', () => {
         assert.doesNotMatch(t, /apra-fleet-[a-z0-9]+/i);
         assert.doesNotMatch(t, /Windows service registration|apra-fleet status|SqliteProvider|kbCaptureSchema/);
     });
-    // The ci_gate sprint arg is wired (one CI run per sprint at Finalization,
-    // awaited by Publish PR). The protection this test used to give -- CI
-    // results never reach a doer/reviewer prompt -- is kept structurally: the
-    // gate's record may flow ONLY into Publish PR's PR body, so ci-gate.mjs
-    // may be imported only by runner.js (which starts the run) and
-    // phases/publish-pr.mjs (which awaits and renders it), never by a prompt
-    // builder or a dispatching phase.
-    test('ci-gate.mjs is imported only by runner.js and phases/publish-pr.mjs -- never by a prompt builder', () => {
+    // The ci_gate sprint arg is wired (one CI run per Finalization pass,
+    // awaited at the Finalization barrier). The protection this test used to
+    // give -- CI results never reach a doer/reviewer PROMPT -- is kept
+    // structurally: the gate's record may flow only into the PR body
+    // (phases/publish-pr.mjs renders it) and into the Fix-CI bead's
+    // DESCRIPTION (sprint-extension.mjs writes it; a doer reads that bead
+    // through the normal bead flow, which is the intended way CI evidence
+    // reaches the fix). So ci-gate.mjs may be imported only by runner.js
+    // (which starts the run), phases/publish-pr.mjs and sprint-extension.mjs,
+    // never by a prompt builder or a dispatching phase.
+    test('ci-gate.mjs is imported only by runner.js, phases/publish-pr.mjs and sprint-extension.mjs -- never by a prompt builder', () => {
         const dir = path.join(ROOT, 'fleet-sprint');
         const importers = [];
         const walk = (d) => {
@@ -71,7 +74,17 @@ describe('role prompts and schema', () => {
             }
         };
         walk(dir);
-        assert.deepEqual(importers.sort(), ['phases/publish-pr.mjs', 'runner.js']);
+        assert.deepEqual(importers.sort(), ['phases/publish-pr.mjs', 'runner.js', 'sprint-extension.mjs']);
+    });
+    test('sprint-extension.mjs writes CI evidence only into bead content and PR lines: it imports no prompt builder', () => {
+        const src = fs.readFileSync(path.join(ROOT, 'fleet-sprint/sprint-extension.mjs'), 'utf8');
+        assert.doesNotMatch(src, /from\s+['"](?:\.\.?\/)+prompts\.mjs['"]/);
+        assert.doesNotMatch(src, /\bbuild[A-Za-z]*Prompt\b/);
+    });
+    test('the prompt builders still take no CI input: a CI record or extension state passed in changes nothing', () => {
+        const ciRecord = { outcome: 'FAIL', workflow: 'ci.yml', runUrl: 'https://ci.example/run/1', headSha: 'abc', jobs: [{ name: 'build', conclusion: 'failure' }] };
+        assert.equal(buildReviewerPrompt({ ...reviewerArgs, ciGate: ciRecord, ciRecord, extension: { count: 1 } }), buildReviewerPrompt(reviewerArgs));
+        assert.equal(buildFinalVerdictPrompt({ ...finalArgs, ciGate: ciRecord, ciRecord, extension: { count: 1 } }), buildFinalVerdictPrompt(finalArgs));
     });
     test('no prompt builder or role prompt carries CI gate text', () => {
         const promptsSrc = fs.readFileSync(path.join(ROOT, 'fleet-sprint/prompts.mjs'), 'utf8');

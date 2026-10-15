@@ -2149,6 +2149,9 @@ export async function runDevelopLoopScenario(tag, {
     // Optional passthrough for args.ci_gate (the --ci-gate launch option); a
     // scenario fakes the CI REST answers through `onCommand`.
     ciGate,
+    // Optional passthrough for args.max_extensions (the --max-extensions
+    // launch option), the sprint-extension bound.
+    maxExtensions,
     // Seeded beads memories for the sprint-start memory sweep -- see
     // buildMockFleetApi's `beadsMemories` option comment. The keys the
     // sweep forgot come back as `forgottenMemories` on the result.
@@ -2286,6 +2289,7 @@ export async function runDevelopLoopScenario(tag, {
                 ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
                 ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
                 ...(ciGate !== undefined ? { ci_gate: ciGate } : {}),
+                ...(maxExtensions !== undefined ? { max_extensions: maxExtensions } : {}),
             }, true);
         } catch (err) {
             error = err;

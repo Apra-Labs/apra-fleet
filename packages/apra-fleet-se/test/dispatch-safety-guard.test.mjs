@@ -1776,6 +1776,38 @@ test('adding a second path to the shared list makes the guard scan it and name i
     }
 });
 
+// =============================================================================
+// sprint-extension.mjs -- the Finalization barrier and bounded sprint
+// extension.
+//
+// Its command() baseline is TWO: the Fix-CI bead's `bd update <id>
+// --status=open` reopen and its `bd note <id> --file` append, both on the
+// backlog member named explicitly. Creation goes through the injected
+// createChildBeadWithAllocatedId path (beads-children.mjs owns those sites).
+// Its agent() baseline is ZERO: deciding an extension dispatches nothing; the
+// extension's work runs in the ordinary cycle loop.
+// =============================================================================
+const SPRINT_EXTENSION_PATH = path.join(__dirname, '../fleet-sprint/sprint-extension.mjs');
+const EXPECTED_SPRINT_EXTENSION_COMMAND_COUNT = 2;
+
+test('every command() call site in sprint-extension.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(SPRINT_EXTENSION_PATH);
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_SPRINT_EXTENSION_COMMAND_COUNT,
+        `Expected ${EXPECTED_SPRINT_EXTENSION_COMMAND_COUNT} command() call site(s) in sprint-extension.mjs, found ${commandSites.length}. ` +
+        'If a call site was intentionally added or removed, update EXPECTED_SPRINT_EXTENSION_COMMAND_COUNT after confirming ' +
+        'every site still passes member_name/member_id.'
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'sprint-extension.mjs must never dispatch an agent() -- an extension runs its work through the ordinary cycle loop.'
+    );
+    assert.deepStrictEqual(violations, [], `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`);
+});
+
 test('checkModules() rejects a non-array argument rather than silently scanning nothing', () => {
     assert.throws(() => checkModules(RUNNER_PATH), /must be an array/);
 });

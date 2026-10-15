@@ -29,6 +29,7 @@ apra-fleet workflow fleet-sprint \
   [--usage-limit-max-wait-s <s>]  # usage-limit pause budget; default from role-policies
   [--usage-limit-max-reprobes <n>]# usage-limit reprobe cap; default from role-policies
   [--skip-regression]             # skip the once-per-sprint regression pass
+  [--max-extensions N]            # sprint extensions after Finalization; default 1, 0 disables
   [--sync]                        # synced-topology mode
 ```
 

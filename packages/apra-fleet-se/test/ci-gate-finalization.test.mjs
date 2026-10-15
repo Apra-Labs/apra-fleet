@@ -18,12 +18,14 @@ import { getVcsProvider } from '../fleet-sprint/vcs-providers/index.mjs';
 //     rejection), and cancel() stops a pending poll promptly.
 //   - formatCiGateReport(): PASS / FAIL / TIMEOUT / FAILED-TO-RUN lines and
 //     the explicit sha-mismatch note.
-//   - runPublishPrPhase(): awaits the gate after its push and before the PR
-//     POST, puts the CI section in the body, never blocks the PR on a
-//     non-PASS result and never changes the verdict; without a gate the body
-//     has no CI section at all.
-// The full-sprint ordering (gate started before Final Review, Regression and
-// Harvest not blocked) is proved by mock-sprint-ci-gate-finalization.test.mjs.
+//   - runPublishPrPhase(): renders the record the Finalization barrier
+//     already awaited (it never awaits or starts a run itself), puts the CI
+//     section in the body, never blocks the PR on a non-PASS result and never
+//     changes the verdict; without a record the body has no CI section.
+// The full-sprint ordering (gate started before Final Review, awaited at the
+// barrier before Regression Test/Harvest/Publish PR) is proved by
+// mock-sprint-ci-gate-finalization.test.mjs; the barrier itself by
+// sprint-extension.test.mjs.
 // No real network: the CI transport and the PR REST calls are stubbed.
 // ASCII only.
 // =============================================================================
@@ -227,24 +229,10 @@ function fakePrApi(events) {
     return state;
 }
 
-async function publishWithGate({ record, headSha = SHA, verdict = 'PASS', ciGateRun: explicitRun } = {}) {
+async function publishWithGate({ record = null, headSha = SHA, verdict = 'PASS', extensionLines } = {}) {
     const events = [];
     const logs = [];
     const pr = fakePrApi(events);
-    let ciGateRun = explicitRun;
-    if (ciGateRun === undefined && record) {
-        let resolveRecord;
-        const promise = new Promise((r) => { resolveRecord = r; });
-        ciGateRun = {
-            workflow: 'ci.yml',
-            promise: promise.then((r) => { events.push('ci-awaited'); return r; }),
-            cancel: () => { events.push('ci-cancelled'); },
-            settled: () => false,
-        };
-        // The gate finishes only after the phase has already pushed: the
-        // phase must be the one waiting for it.
-        setTimeout(() => resolveRecord(record), 10);
-    }
     const result = await runPublishPrPhase({
         phase: () => {},
         log: (m) => logs.push(m),
@@ -261,25 +249,26 @@ async function publishWithGate({ record, headSha = SHA, verdict = 'PASS', ciGate
         gitSync: { pushGitAfter: async () => { events.push('push'); }, syncBeadsAfter: async () => {} },
         getMemberForRole: () => 'git-member',
         finalVerdictResult: { verdict, notes: 'notes' },
-        ciGateRun,
+        ciGateRecord: record,
+        ...(extensionLines ? { extensionLines } : {}),
     });
     return { result, logs, events, pr };
 }
 
-describe('Publish PR awaits the Finalization CI gate run and reports it in the PR body', () => {
+describe('Publish PR reports the already-awaited Finalization CI gate record in the PR body', () => {
     const pass = { outcome: 'PASS', workflow: 'ci.yml', branch: 'feat/x', headSha: SHA, runId: '4242', runUrl: RUN_URL, jobs: [{ name: 'build (os-a)', conclusion: 'success' }], reason: null };
 
-    test('ordering: push -> await CI -> PR POST; PASS rendered with run url, sha and jobs', async () => {
+    test('ordering: push -> head read -> PR POST (no await of its own); PASS rendered with run url, sha and jobs', async () => {
         const { result, events, pr, logs } = await publishWithGate({ record: pass });
         assert.equal(result.pushed, true);
-        assert.deepEqual(events.filter((e) => e !== 'head-read'), ['push', 'ci-awaited', 'pr-post']);
+        assert.deepEqual(events, ['push', 'head-read', 'pr-post']);
         assert.ok(pr.body.includes('### CI'), pr.body);
         assert.ok(pr.body.includes("CI gate: PASS -- workflow 'ci.yml'."));
         assert.ok(pr.body.includes(RUN_URL));
         assert.ok(pr.body.includes(`CI ran on commit: ${SHA}`));
         assert.ok(pr.body.includes('build (os-a)=success'));
         assert.equal(pr.title, 'fleet-sprint [PASS]: feat/x');
-        assert.ok(logs.some((l) => l.includes('awaiting the Finalization CI gate run')));
+        assert.ok(logs.some((l) => l.includes('reporting the last Finalization CI gate result')));
     });
 
     for (const outcome of ['FAIL', 'TIMEOUT', 'FAILED-TO-RUN']) {
@@ -303,24 +292,33 @@ describe('Publish PR awaits the Finalization CI gate run and reports it in the P
     });
 
     test('no gate configured: no head read, no CI section, body unchanged', async () => {
-        const { pr, events, logs } = await publishWithGate({ ciGateRun: null });
+        const { pr, events, logs } = await publishWithGate({ record: null });
         assert.ok(!events.includes('head-read'));
         assert.ok(!pr.body.includes('### CI'));
         assert.ok(!logs.some((l) => l.includes('[CI Gate]')));
     });
 
-    test('a failed push cancels the in-flight gate instead of waiting on it', async () => {
-        const events = [];
-        const run = { workflow: 'ci.yml', promise: new Promise(() => {}), cancel: () => events.push('cancel'), settled: () => false };
+    test('a failed push reads no head and renders nothing: there is no PR to report CI on', async () => {
+        const commands = [];
         const logs = [];
         const result = await runPublishPrPhase({
-            phase: () => {}, log: (m) => logs.push(m), command: async () => ({ ok: true, output: '' }),
+            phase: () => {}, log: (m) => logs.push(m), command: async (cmd) => { commands.push(cmd); return { ok: true, output: '' }; },
             args: {}, validated: { branch: 'feat/x', baseBranch: 'main' }, targetIssues: [], backlogMember: 'orch', finalCycleLabel: '1',
             gitSync: { pushGitAfter: async () => { throw new Error('remote unreachable'); }, syncBeadsAfter: async () => {} },
-            getMemberForRole: () => 'git-member', finalVerdictResult: { verdict: 'PASS', notes: '' }, ciGateRun: run,
+            getMemberForRole: () => 'git-member', finalVerdictResult: { verdict: 'PASS', notes: '' }, ciGateRecord: pass,
         });
         assert.equal(result.pushed, false);
-        assert.deepEqual(events, ['cancel']);
-        assert.ok(logs.some((l) => l.includes('cancelling the in-flight Finalization CI gate run')));
+        assert.ok(!commands.includes('git rev-parse HEAD'));
+        assert.ok(!logs.some((l) => l.includes('[CI Gate] Publish PR')));
+    });
+
+    test('the sprint-extension section is rendered when lines are given, and absent otherwise', async () => {
+        const lines = ["Extension 1 (after cycle 2): trigger: CI FAIL on workflow 'ci.yml'; beads: t-1.3; outcome: resolved.", 'Extensions used: 1 of at most 1.'];
+        const { pr } = await publishWithGate({ record: pass, extensionLines: lines });
+        assert.ok(pr.body.includes('### Sprint extensions'), pr.body);
+        assert.ok(pr.body.includes(`- ${lines[0]}`), pr.body);
+        assert.ok(pr.body.indexOf('### Sprint extensions') < pr.body.indexOf('### CI'), 'extensions come before the final CI result');
+        const { pr: plain } = await publishWithGate({ record: pass });
+        assert.ok(!plain.body.includes('### Sprint extensions'));
     });
 });

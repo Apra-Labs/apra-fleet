@@ -238,6 +238,9 @@ function capOwedTriageList(lines, max = PR_OWED_TRIAGE_MAX_LENGTH) {
  * @param {string[]} [opts.ciLines] engine-formatted CI gate lines (ci-gate.mjs
  *   formatCiGateReport). Non-empty renders a 'CI' section; empty (no ci_gate
  *   configured) renders nothing, so the body is unchanged.
+ * @param {string[]} [opts.extensionLines] engine-formatted sprint-extension
+ *   lines (sprint-extension.mjs formatExtensionReport). Non-empty renders a
+ *   'Sprint extensions' section; empty renders nothing.
  * @param {string} [opts.previousBody] the existing PR's body, for history carry-forward
  * @param {number} [opts.maxLength]
  * @returns {string}
@@ -245,7 +248,7 @@ function capOwedTriageList(lines, max = PR_OWED_TRIAGE_MAX_LENGTH) {
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
     notes, notesHeading = 'Reviewer notes', details = [], costAnalysis = '', previousBody = '',
-    owedTriageLines = [], owedTriageTotal, ciLines = [],
+    owedTriageLines = [], owedTriageTotal, ciLines = [], extensionLines = [],
     maxLength = PR_DESCRIPTION_MAX_LENGTH,
 }) {
     const v = VERDICTS.has(verdict) ? verdict : 'FAIL';
@@ -301,8 +304,11 @@ export function buildSprintPrBody({
         : null;
     const ci = (Array.isArray(ciLines) ? ciLines : []).filter(Boolean).map((l) => `- ${inline(l)}`);
     const ciBlock = ci.length > 0 ? ['### CI', '', ...ci, ''].join('\n') : null;
+    const ext = (Array.isArray(extensionLines) ? extensionLines : []).filter(Boolean).map((l) => `- ${inline(l)}`);
+    const extBlock = ext.length > 0 ? ['### Sprint extensions', '', ...ext, ''].join('\n') : null;
     const tail = [
         '',
+        extBlock,
         ciBlock,
         owedBlock,
         detailLines.length ? '### Details\n' : null,

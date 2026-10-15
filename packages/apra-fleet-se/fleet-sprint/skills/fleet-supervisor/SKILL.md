@@ -505,6 +505,7 @@ Field names, exactly as the API expects them:
 | `roleMap` | no | `{"doer":["m1","m2"], "reviewer":["m3"]}`. Leave out `backlog`: the supervisor injects its own backlog member; naming any other member there is a 400. `orchestrator` is the deprecated alias of `backlog` (removed in v0.5). |
 | `budget` | no | USD cap. |
 | `phases` | no | `{"regression": "skip"}` skips the regression pass (`"run"` is the default). Any other key or value is a 400. |
+| `max_extensions` | no | non-negative integer, default 1; `0` disables. How many times a CI failure or an in-goal Final Review finding may send the sprint back into the cycle loop after Finalization. Anything else is a 400. Alias: `maxExtensions`. |
 | `overrideRelaunchGate` | no | bool. See below. |
 | `sync` | no | bool. Passes `--sync` so members in separate checkouts pass the topology check. |
 

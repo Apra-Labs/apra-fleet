@@ -419,6 +419,11 @@ export const GUARDED_MODULES = [
     // The engine CI gate: ONE member_name-bearing command() site (the
     // origin-remote read on the git-capable member), no agent(), no push.
     'ci-gate.mjs',
+    // The Finalization barrier and bounded sprint extension: TWO
+    // member_name-bearing command() sites (the Fix-CI bead's reopen and its
+    // note append, both on the backlog member), no agent(), and its beads
+    // D-pull/D-push go through the injected gitSync brackets.
+    'sprint-extension.mjs',
     'vcs-module.mjs',
     'viewer-extensions.mjs',
     // Per-dispatch kb_* and code_* accounting: reads session_stats through the
