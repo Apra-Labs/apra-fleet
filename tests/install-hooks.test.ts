@@ -12,8 +12,11 @@ const script = path.join(__dirname, '..', 'scripts', 'install-hooks.mjs');
 describe('install-hooks', () => {
   for (const command of ['pack', 'publish']) {
     it(`skips under npm ${command}`, () => {
+      // Windows env names are case-insensitive: drop every spelling of the
+      // npm_command that `npm test` itself set, or it can win over ours.
+      const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toLowerCase() !== 'npm_command'));
       const r = spawnSync(process.execPath, [script], {
-        env: { ...process.env, npm_command: command },
+        env: { ...env, npm_command: command },
         encoding: 'utf8',
         windowsHide: true,
       });
