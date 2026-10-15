@@ -19,6 +19,7 @@ import { beadsExtension, kbCodeIntelExtension } from '../fleet-sprint/viewer-ext
 import { VIEWER_BACK_LINK_TEXT } from '../src/supervisor/viewer-back-link.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit, commandResultStdout } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
+import { validateCiGate } from '../fleet-sprint/sprint-args.mjs';
 import { prepareLaunchTopology, toAlignCommandResult } from '../fleet-sprint/member-align.mjs';
 import { ROLE_BACKLOG, resolveBacklogRoleAlias, selectBacklogMember, formatBacklogSelection } from '../fleet-sprint/backlog-role.mjs';
 import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
@@ -188,10 +189,12 @@ export function buildOptionsSpec() {
         // body's phases.regression:"skip"). Never silent: logged, and reported in
         // the sprint analysis and the PR body.
         'skip-regression': { type: 'boolean' },
-        // --ci-gate is DELIBERATELY NOT WIRED (2026-10-01): the runner's
-        // ci_gate arg is disabled until the CI-as-quality-resource epic
-        // (apra-fleet-dv8i) designs the flow -- see fleet-sprint/sprint-args.mjs.
-        // 'ci-gate': { type: 'string' },
+        // Optional engine CI gate, JSON {"workflow": "<file or id>",
+        // "timeout_s": <n>}, forwarded verbatim as the runner's ci_gate arg.
+        // Run once per sprint at Finalization, in parallel with Final Review/
+        // Regression/Harvest; Publish PR awaits it and reports the result in
+        // the PR body. Never changes the verdict or blocks the PR.
+        'ci-gate': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -247,6 +250,10 @@ Options:
                                 uses legacy shared-workspace mode (all members on the same HEAD).
       --skip-regression        Skip the once-per-sprint regression pass. Logged, and stated in the
                                 sprint analysis and the PR body. Integration tests still run.
+      --ci-gate <json>         Run a CI workflow once per sprint, e.g. '{"workflow":"ci.yml","timeout_s":3600}'.
+                                Started at Finalization on the sprint branch head, awaited by Publish PR
+                                and reported in the PR body. Never changes the verdict or blocks the PR;
+                                a non-PASS result is logged loudly. Omitted: no CI is triggered.
   -h, --help                   Show this help message.
 `.trim();
 
@@ -420,8 +427,10 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // The raw --expect-beads JSON, forwarded verbatim; runner.js's
     // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
     if (expectBeads !== undefined) args.expect_beads = expectBeads;
-    // --ci-gate is not wired (apra-fleet-dv8i); ci_gate is never forwarded.
-    // if (ciGate !== undefined) args.ci_gate = ciGate;
+    // The raw --ci-gate JSON, forwarded verbatim; runner.js's validateArgs()
+    // parses it (validateCiGate). Only forwarded when set, so a default
+    // launch's runner args are unchanged.
+    if (ciGate !== undefined) args.ci_gate = ciGate;
     return args;
 }
 
@@ -735,6 +744,9 @@ async function main() {
         validateBranchName(branchName, 'branch');
         validateBranchName(baseBranch, 'base');
         validateBranchPair(branchName, baseBranch);
+        // Fail fast on a malformed --ci-gate before any dispatch; runner.js
+        // re-validates the same raw value (single validator).
+        if (values['ci-gate'] !== undefined) validateCiGate(values['ci-gate']);
         ({ roleMap, warnings: roleMapWarnings } = await resolveRoleMapWithWarnings(values['role-map']));
         for (const w of roleMapWarnings) console.warn(`Warning: ${w}`);
     } catch (err) {
@@ -1211,7 +1223,7 @@ async function main() {
                 runId: effectiveRunId,
                 expectBeads,
                 skipRegression: Boolean(values['skip-regression']),
-                // ciGate: values['ci-gate'],  -- not wired (apra-fleet-dv8i)
+                ciGate: values['ci-gate'],
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc

@@ -51,17 +51,41 @@ describe('role prompts and schema', () => {
         assert.doesNotMatch(t, /apra-fleet-[a-z0-9]+/i);
         assert.doesNotMatch(t, /Windows service registration|apra-fleet status|SqliteProvider|kbCaptureSchema/);
     });
-    test('no fleet-sprint runtime file describes a ci_gate sprint arg', () => {
+    // The ci_gate sprint arg is wired (one CI run per sprint at Finalization,
+    // awaited by Publish PR). The protection this test used to give -- CI
+    // results never reach a doer/reviewer prompt -- is kept structurally: the
+    // gate's record may flow ONLY into Publish PR's PR body, so ci-gate.mjs
+    // may be imported only by runner.js (which starts the run) and
+    // phases/publish-pr.mjs (which awaits and renders it), never by a prompt
+    // builder or a dispatching phase.
+    test('ci-gate.mjs is imported only by runner.js and phases/publish-pr.mjs -- never by a prompt builder', () => {
         const dir = path.join(ROOT, 'fleet-sprint');
+        const importers = [];
+        const walk = (d) => {
+            for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+                const f = path.join(d, e.name);
+                if (e.isDirectory()) walk(f);
+                else if (/\.(mjs|js)$/.test(e.name) && /from\s+['"](?:\.\.?\/)+ci-gate\.mjs['"]/.test(fs.readFileSync(f, 'utf8'))) {
+                    importers.push(path.relative(dir, f).split(path.sep).join('/'));
+                }
+            }
+        };
+        walk(dir);
+        assert.deepEqual(importers.sort(), ['phases/publish-pr.mjs', 'runner.js']);
+    });
+    test('no prompt builder or role prompt carries CI gate text', () => {
+        const promptsSrc = fs.readFileSync(path.join(ROOT, 'fleet-sprint/prompts.mjs'), 'utf8');
+        assert.doesNotMatch(promptsSrc, /ci_gate|ciGate|CI gate|formatCiGateReport/i);
+        const agentsDir = path.join(ROOT, 'apra-pm/agents');
         const hits = [];
         const walk = (d) => {
             for (const e of fs.readdirSync(d, { withFileTypes: true })) {
                 const f = path.join(d, e.name);
                 if (e.isDirectory()) walk(f);
-                else if (/\.(mjs|js)$/.test(e.name) && /ci_gate sprint arg/.test(fs.readFileSync(f, 'utf8'))) hits.push(f);
+                else if (/ci_gate|ciGate|CI gate/i.test(fs.readFileSync(f, 'utf8'))) hits.push(f);
             }
         };
-        walk(dir);
+        walk(agentsDir);
         assert.deepEqual(hits, []);
     });
 });

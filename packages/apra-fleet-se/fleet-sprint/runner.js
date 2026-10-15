@@ -71,7 +71,7 @@ import { createSprintState, sprintScopedFleetApi, resolveSettleShellWith } from 
 // member-sync.mjs imports it back from here.
 import {
     syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, resyncReacquiredMember,
-    isMissingRemoteRefError,
+    isMissingRemoteRefError, checkGitPushLanded,
 } from './member-sync.mjs';
 // apra-fleet-3swo.6.12: createMemberSessionGuard, createUnattendedAutoProvisioner,
 // createDeployPermissionsProvisioner and stageCommandBodyMemberSide, moved
@@ -202,6 +202,9 @@ import { runRegressionTestPhase } from './phases/regression-test.mjs';
 // See each module's header for where its boundary is drawn.
 import { runHarvestPhase } from './phases/harvest.mjs';
 import { runPublishPrPhase } from './phases/publish-pr.mjs';
+// Optional engine CI gate (ci_gate sprint arg): started once at Finalization,
+// in parallel with Final Review/Regression/Harvest, awaited by Publish PR.
+import { startFinalizationCiGate, createCiGateContextResolver } from './ci-gate.mjs';
 // apra-fleet-5u79.2: the pure owed-triage collector. runSprintCycle does the
 // bead read; the module only classifies and formats.
 import { computeOwedTriage, formatOwedTriageLines, findStrandedRollups } from './owed-triage.mjs';
@@ -3755,6 +3758,17 @@ async function runSprintCycle(context) {
     // 6. Finalization: the evidence-based final verdict drives the return value
     // =======================
     group('Finalization');
+
+    // Engine CI gate (optional `ci_gate` sprint arg). Started ONCE, here, on
+    // the sprint branch's remote head and deliberately NOT awaited: Final
+    // Review, Regression Test and Harvest run while CI runs, and Publish PR
+    // awaits the result after its own push and renders it into the PR body.
+    // CI never changes the verdict and never blocks the PR. Unconfigured, no
+    // gate is constructed at all -- no CI request, no extra log line.
+    const ciGateRun = validated.ciGate
+        ? await startSprintCiGate({ context, validated, args, command, log, gitSync, getMemberForRole, backlogMember, fleetApi: sprintState.fleetApi })
+        : null;
+
     // The phase body lives in ./phases/final-review.mjs (apra-fleet-3swo.6.6),
     // which receives its state explicitly instead of closing over
     // runSprintCycle's locals. The group('Finalization') banner above stays
@@ -3922,6 +3936,7 @@ async function runSprintCycle(context) {
         args, validated, targetIssues, backlogMember, finalCycleLabel,
         gitSync, getMemberForRole,
         finalVerdictResult, costAnalysis, owedTriage,
+        ciGateRun,
     });
 
     endGroup();
@@ -3951,6 +3966,47 @@ async function runSprintCycle(context) {
         owedTriage,
         clean: finalVerdictResult.verdict === 'PASS' && owedTriage.total === 0 && !owedTriage.incomplete,
     };
+}
+
+/**
+ * Start the sprint's one CI gate run at Finalization (see the call site in
+ * runSprintCycle). First makes the remote branch head equal the local HEAD of
+ * the git-capable publishing member (the harvester's member, the same one
+ * Publish PR pushes from): every code-writing dispatch already G-pushed, so
+ * this is normally a read-only check; only a branch whose HEAD is not on
+ * origin is pushed, through the bracketed gitSync.pushBranchBeforeCi() helper
+ * (never a raw git push). A push failure is logged loudly and the gate still
+ * starts -- Publish PR reports any gap between the sha CI ran on and the head
+ * it pushes. Returns the in-flight handle (its promise never rejects) and
+ * records it on the run context so main() can cancel it on every exit path.
+ */
+async function startSprintCiGate({ context, validated, args, command, log, gitSync, getMemberForRole, backlogMember, fleetApi }) {
+    const gitMember = getMemberForRole('harvester');
+    try {
+        const landed = await checkGitPushLanded(gitMember, { command, remote: 'origin', branch: validated.branch });
+        if (landed.status === 'contained') {
+            log(`[CI Gate] sprint branch '${validated.branch}' is already on origin at local HEAD ${landed.localHead}; no push needed before CI starts.`);
+        } else {
+            log(`[CI Gate] pushing sprint branch '${validated.branch}' from '${gitMember}' before CI starts (${landed.why || landed.status}).`);
+            await gitSync.pushBranchBeforeCi(gitMember);
+        }
+    } catch (pushErr) {
+        log(`[CI Gate] WARNING: could not bring origin/${validated.branch} up to the local HEAD before CI starts (${pushErr && pushErr.message ? pushErr.message : String(pushErr)}); CI runs on whatever head origin has, and Publish PR reports any gap.`);
+    }
+    const ciGateRun = startFinalizationCiGate({
+        ciGate: validated.ciGate,
+        branch: validated.branch,
+        log,
+        resolveContext: createCiGateContextResolver({
+            fleetApi: fleetApi || ((args && typeof args.callTool === 'function') ? sprintScopedFleetApi({ callTool: args.callTool, log }) : null),
+            command,
+            backlogMember,
+            gitMember,
+            log,
+        }),
+    });
+    context.ciGateRun = ciGateRun;
+    return ciGateRun;
 }
 
 // ---------------------------------------------------------------------------
@@ -4112,6 +4168,12 @@ export async function main(context) {
 
         throw err;
     } finally {
+        // A Finalization CI gate run still in flight (the sprint aborted, or
+        // Publish PR never awaited it): stop its polling so it cannot hold the
+        // process open. Its promise is guarded and never rejects.
+        if (runContext.ciGateRun && typeof runContext.ciGateRun.cancel === 'function') {
+            runContext.ciGateRun.cancel('the sprint ended before the CI gate finished');
+        }
         uninstallFatalGuard();
         // Always release the sprint lock, on every exit path (success, typed
         // abort, or an untyped re-thrown error) -- a lock never released here

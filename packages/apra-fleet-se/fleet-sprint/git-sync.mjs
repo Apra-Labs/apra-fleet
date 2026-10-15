@@ -588,6 +588,14 @@ export function createGitSync(deps = {}) {
          */
         pushBibleCommit: (memberName) => pushGitAfter(memberName),
         /**
+         * The Finalization CI gate's pre-CI G-push of the sprint branch
+         * (runner.js startSprintCiGate): the same bracketed syncMemberAfter()
+         * as pushGitAfter(), under its own name for the same reason as
+         * pushBibleCommit above. Only called when the configured ci_gate
+         * finds the local HEAD not yet on origin.
+         */
+        pushBranchBeforeCi: (memberName) => pushGitAfter(memberName, { remote: 'origin' }),
+        /**
          * A bracketed `git rebase --abort` on a member, for a caller retrying
          * after a rejected G-push (the KB bible commit). There is no portable
          * probe for "a rebase is in progress" across member shells, so the

@@ -218,12 +218,13 @@ export async function allocateFreePort(opts = {}) {
  *   requirementsFile?: string, roleMap?: object|string, budget?: number|string,
  *   viewerPort: number, serviceUrl?: string, runId?: string, expectBeads?: string,
  *   viewerBackUrl?: string, extraArgs?: string[], skipRegression?: boolean,
+ *   ciGate?: string,
  * }} opts
  * @returns {string[]}
  */
 export function buildSprintArgv(opts = {}) {
     const { issue, members, branch, base, goal, maxCycles, allowMissingMembers,
-        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, viewerBackUrl, extraArgs, skipRegression } = opts;
+        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, viewerBackUrl, extraArgs, skipRegression, ciGate } = opts;
 
     if (!issue || !members || !branch || !base) {
         throw new Error('buildSprintArgv requires issue, members, branch, and base');
@@ -248,6 +249,9 @@ export function buildSprintArgv(opts = {}) {
     }
     if (budget !== undefined) args.push('--budget', String(budget));
     if (skipRegression === true) args.push('--skip-regression');
+    // The engine CI gate JSON (already validated/normalized by the launch
+    // API), forwarded verbatim as cli.mjs's --ci-gate. Omitted when unset.
+    if (ciGate !== undefined) args.push('--ci-gate', ciGate);
     // apra-fleet-f34.1: when this supervisor instance has a known --service-url
     // (its own HTTP listen address, wired in from createSpawner()'s deps.serviceUrl
     // below), forward it so the spawned cli.mjs child threads it into

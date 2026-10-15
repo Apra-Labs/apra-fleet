@@ -31,6 +31,12 @@ short-circuits before anything downstream runs:
    Optional `phases` is validated too: only `{ "regression": "run" | "skip" }`
    is accepted (anything else -> `400`, field `phases`); `"skip"` forwards
    `--skip-regression` to the child.
+   Optional `ci_gate` (alias `ciGate`; an object or JSON string
+   `{ "workflow": "<file or id>", "timeout_s": <n> }`) is validated with the
+   engine's own `validateCiGate` (anything malformed -> `400`, field
+   `ci_gate`) and forwarded to the child as `--ci-gate` (normalized JSON):
+   the sprint runs that CI workflow once at Finalization and reports it in
+   the PR body (see `docs/cli-reference.md` `--ci-gate`).
    Optional `roleMap` (object or JSON string) is resolved too. The
    `roleMap.orchestrator` key is a DEPRECATED alias of `roleMap.backlog`:
    using it still works, and the response carries a top-level
