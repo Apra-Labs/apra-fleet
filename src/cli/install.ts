@@ -31,9 +31,11 @@ import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { installBeads, type BeadsInstallDeps } from './beads-install.js';
 import {
-  classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText,
+  classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText, selfInvocationLines,
   writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG,
 } from './install-guard.js';
+import { detectRunningFleetSe, fleetSeRefusalText, realFleetSeProbes, IGNORE_RUNNING_SPRINTS_FLAG, type FleetSeProbes } from './fleet-se-guard.js';
+import { writeServiceNotice, clearServiceNoticeContaining } from '../services/service-notice.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
 import { codeIntelPathWarning } from '../utils/find-on-path.js';
 import { gitBashCandidates } from '../os/git-bash-candidates.js';
@@ -126,6 +128,25 @@ export function _setFleetSePrereqProbes(overrides: Partial<FleetSePrereqProbes>)
 /** Test-only: restore the real fleet-se prerequisite probes. */
 export function _resetFleetSePrereqProbes(): void {
   fleetSePrereqProbes = realFleetSePrereqProbes;
+}
+
+// Running fleet-sprint supervisor/sprint guard (fleet-se-guard.ts): same
+// injectable-probes + NODE_ENV=test gate as the prereq check above, so unit
+// tests never probe the real port 8787 or tmp lock dir.
+let fleetSeProbes: FleetSeProbes = realFleetSeProbes;
+/** Test-only: inject fake probes for the running fleet-sprint guard. */
+export function _setFleetSeProbes(overrides: Partial<FleetSeProbes>): void {
+  fleetSeProbes = { ...realFleetSeProbes, ...overrides };
+}
+/** Test-only: restore the real running fleet-sprint guard probes. */
+export function _resetFleetSeProbes(): void {
+  fleetSeProbes = realFleetSeProbes;
+}
+/** The probes the running fleet-sprint guard uses (shared with update.ts). */
+export function currentFleetSeProbes(): FleetSeProbes { return fleetSeProbes; }
+export function fleetSeGuardEnabled(): boolean {
+  if (process.env.NODE_ENV !== 'test') return true;
+  return process.env.APRA_FLEET_ENABLE_FLEET_SE_GUARD === '1';
 }
 
 function fleetSePrereqCheckEnabled(): boolean {
@@ -1263,6 +1284,11 @@ Options:
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
                           With --member, only a server a previous member install left behind
                           is stopped; anything else is refused (E-FULL-INSTALL-RUNNING).
+  --ignore-running-sprints
+                          Install even while a fleet-sprint supervisor or sprint is running for this
+                          user; the server is replaced underneath them (ones started under 0.4.3 or
+                          earlier then fail with HTTP 401 until restarted). Without it install
+                          refuses (E-FLEET-SE-RUNNING); --force does not override this.
   --force-stop-full-install
                           With --member --force: also stop a running server that was not started
                           by a member install (e.g. a full install on a shared machine).
@@ -1387,7 +1413,7 @@ Options:
   }
 
   const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows=', '--port='];
-  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, '--transport', '--port', '--help', '-h']);
+  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, IGNORE_RUNNING_SPRINTS_FLAG, '--transport', '--port', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -1423,6 +1449,42 @@ Options:
       process.exit(1);
     }
   }
+
+  // Running fleet-sprint supervisor/sprint guard: before the running-server
+  // guard so a refusal stops and writes nothing. --force does not bypass it
+  // (update always passes --force); only the dedicated flag does. A member
+  // install is exempt: it installs no fleet-se and is driven remotely by the
+  // orchestrator, whose own host runs the sprints.
+  if (!memberMode && !args.includes(IGNORE_RUNNING_SPRINTS_FLAG)
+      && (isSea() || isNpmGlobalInstall()) && fleetSeGuardEnabled()) {
+    let found: Awaited<ReturnType<typeof detectRunningFleetSe>> | null = null;
+    try {
+      found = await detectRunningFleetSe(fleetSeProbes);
+    } catch (err) {
+      console.warn(`WARNING: could not check for a running fleet-sprint supervisor or sprint (${(err as Error).message}). If one is running, stop it before upgrading.`);
+    }
+    for (const w of found?.warnings ?? []) console.warn(`WARNING: ${w}`);
+    if (found && (found.supervisor || found.sprints.length > 0)) {
+      const self = (a: string[]) => selfInvocationLines({
+        platform: process.platform, execPath: process.execPath, scriptPath: process.argv[1], sea: isSea(), args: ['install', ...a],
+      });
+      const text = fleetSeRefusalText(found, {
+        platform: process.platform,
+        rerunLines: self(args),
+        ignoreLines: self([...args, IGNORE_RUNNING_SPRINTS_FLAG]),
+      });
+      console.error(text);
+      // apra-fleet update runs install detached with no console: persist it
+      // for the next service verb.
+      writeServiceNotice(text.trim(), undefined, new Date(), Boolean(process.stderr.isTTY));
+      process.exit(1);
+      return;
+    }
+  }
+  // Past the guard: a refusal persisted by an earlier (detached) install is
+  // obsolete and must not be shown after this install succeeds. All OSes --
+  // only the Windows service manager clears notices on registration.
+  clearServiceNoticeContaining('E-FLEET-SE-RUNNING');
 
   const serviceStep = isSea() && transport === 'http';
   // A member install exists to leave an auto-starting server behind. With no
@@ -1471,12 +1533,21 @@ Nothing was installed.
       const killHint = process.platform === 'win32'
         ? '    taskkill /F /IM apra-fleet.exe'
         : '    pkill -x apra-fleet';
+      // Name THIS executable, not "apra-fleet": a downloaded installer is
+      // usually not on PATH, and PATH may resolve to the older installed one.
+      const forceHint = selfInvocationLines({
+        platform: process.platform,
+        execPath: process.execPath,
+        scriptPath: process.argv[1],
+        sea: isSea(),
+        args: ['install', ...args.filter(a => a !== '--force'), '--force'],
+      }).map(l => `    ${l}`).join('\n');
       console.error(`
 Error: apra-fleet is currently running. Stop the server before installing.
   (${runningScope.detail})
 
   Run with --force to stop it automatically:
-    apra-fleet install --force
+${forceHint}
 
   Or stop it manually:
 ${killHint}
@@ -2119,6 +2190,21 @@ ${manualStopHint(pidsAfterStop)}
   } catch (err) {
     console.warn('    [!] member access secret not created:', err instanceof Error ? err.message : String(err));
   }
+  // Windows: make the data dir and the secret owner-only NOW, and say so
+  // loudly when icacls fails (the server only logs it). POSIX keeps its
+  // chmod path (0600 file mode, 0700 dirs at server start).
+  if (process.platform === 'win32') {
+    try {
+      const { ownerOnlyInstallWarnings } = await import('../utils/owner-only-fs.js');
+      const { memberAccessSecretPath } = await import('../services/member-access-secret.js');
+      const dataDir = getInstallDataDir();
+      for (const line of ownerOnlyInstallWarnings([{ path: dataDir, kind: 'dir' }, { path: memberAccessSecretPath(dataDir), kind: 'file' }])) {
+        console.warn(line);
+      }
+    } catch (err) {
+      console.warn('    [!] owner-only permissions not checked:', err instanceof Error ? err.message : String(err));
+    }
+  }
 
   // --- Step N: Register and start service (SEA + HTTP mode only) ---
   let serviceRegistered = false;
@@ -2136,7 +2222,7 @@ ${manualStopHint(pidsAfterStop)}
       const serverPort = resolveServerPort();
       if (probe.state === 'gone' && await isPortInUse(serverPort, DEFAULT_HOST)) {
         const { findPortHolder, describePortConflict } = await import('../services/port-holder.js');
-        const conflict = describePortConflict(serverPort, portInUseMessage(serverPort, readServerInfoPid()), await findPortHolder(serverPort));
+        const conflict = describePortConflict(serverPort, portInUseMessage(serverPort, readServerInfoPid()), await findPortHolder(serverPort), memberMode ? 'member' : 'full');
         // Another user's process holds this install's port (a second member
         // install on this host): the server can never start here, so fail
         // now with who holds it and the remedy, not after a dead service.

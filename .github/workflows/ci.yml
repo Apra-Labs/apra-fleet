@@ -3,10 +3,10 @@ name: CI - Build & Test
 on:
   workflow_dispatch:
   push:
-    # feat/kb-redesign pushes also publish an unsigned prerelease (job
+    # stabilize_0.4.4 pushes also publish an unsigned prerelease (job
     # prerelease below) so member installs of its builds have an anonymous
     # download source.
-    branches: [main, feat/kb-redesign]
+    branches: [main, stabilize_0.4.4]
     tags: ['v*']
     paths-ignore:
       - '.github/e2e/**'
@@ -227,7 +227,7 @@ jobs:
 
       # Cached install + workspace link check; key design lives in the action.
       # Shipped binaries come from a clean npm ci (no cache restore or save):
-      # every push build (v* tag releases, main / feat/kb-redesign
+      # every push build (v* tag releases, main / stabilize_0.4.4
       # prereleases) and ANY build of a tag ref, including a workflow_dispatch
       # re-run on a v* tag, which the tag-gated sign/release/npm-publish jobs
       # would ship. Only pull_request and branch workflow_dispatch builds, which
@@ -633,7 +633,7 @@ jobs:
             release-binaries/apra-fleet-installer-win-x64.exe
           generate_release_notes: true
 
-  # Unsigned prerelease of every build pushed to main / feat/kb-redesign, so a
+  # Unsigned prerelease of every build pushed to main / stabilize_0.4.4, so a
   # member install of an unreleased orchestrator build has an anonymous
   # download source (Actions artifacts need auth and expire). Tag = the exact
   # build version the binaries report (e.g. v0.4.4_d1e339). Never signed (no
@@ -654,7 +654,7 @@ jobs:
     needs: [package, build-binary]
     # push only: push builds use a clean npm ci (no node_modules cache, see
     # build-binary), dispatch/PR builds may use the cache and never publish.
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/kb-redesign')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/stabilize_0.4.4')
     runs-on: ubuntu-latest
     permissions:
       contents: write

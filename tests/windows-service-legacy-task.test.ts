@@ -28,6 +28,8 @@ import {
   legacyTaskFix, legacyTaskGuidance,
 } from '../src/services/service-manager/windows.js';
 import { formatServiceLabel } from '../src/cli/status.js';
+import path from 'node:path';
+import { BIN_DIR } from '../src/cli/config.js';
 
 const WRAPPER = 'C:\\Users\\u\\.apra-fleet\\bin\\apra-fleet-service.bat';
 const LAUNCHER = launcherPathFor(WRAPPER);
@@ -332,6 +334,24 @@ describe('status and stop with a legacy task installed', () => {
     expect(st.notice).not.toMatch(/elevated|schtasks/);
     expect(legacyTaskGuidance(['no-revive'])).not.toMatch(/elevated|schtasks \/delete/);
     expect(legacyTaskFix(['no-revive', 'elevated'])).toContain('schtasks /delete /tn ApraFleet /f');
+  });
+});
+
+describe('legacyTaskFix names an install command that works for a standalone install', () => {
+  it('the running installer names its own path, not a bare apra-fleet (not on PATH)', () => {
+    const exe = 'C:\\Users\\x\\Downloads\\apra-fleet-installer-win-x64.exe';
+    expect(legacyTaskFix(['no-revive'], exe)).toBe(`To upgrade it, run from a normal prompt:\n    ${exe} install --force`);
+    expect(legacyTaskFix(['no-revive', 'elevated'], exe)).toContain(`\n    ${exe} install --force`);
+  });
+
+  it('the installed binary (status, stop) points at the downloaded installer', () => {
+    const fix = legacyTaskFix(['no-revive'], path.join(BIN_DIR, 'apra-fleet.exe'));
+    expect(fix).toContain('<the apra-fleet installer .exe you downloaded> install --force');
+    expect(fix).not.toMatch(/^ +apra-fleet install --force$/m);
+  });
+
+  it('npm global / dev (node) keeps apra-fleet install --force', () => {
+    expect(legacyTaskFix(['no-revive'], 'C:\\Program Files\\nodejs\\node.exe')).toContain('    apra-fleet install --force');
   });
 });
 

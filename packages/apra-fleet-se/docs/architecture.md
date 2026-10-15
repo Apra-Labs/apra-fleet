@@ -751,7 +751,7 @@ Both primitives exist in **two independent implementations that must stay
 semantically identical**, not because of duplication oversight but because
 neither host alone can reach every launch topology:
 
-- The **supervisor** (`fleet-se-serve`) hosts the original mutex/allocator
+- The **supervisor** (`bin/serve.mjs`) hosts the original mutex/allocator
   (`src/supervisor/dolt-mutex.mjs`, `src/supervisor/id-allocator.mjs`) over
   its own HTTP routes, reachable by any sprint launched *through* the
   supervisor via `--service-url`. This covers supervisor-launched sprints
@@ -1105,7 +1105,7 @@ resume a crashed `fleet-sprint` invocation from the CLI today.
 
 ## Supervisor: reservation ledger and scope freshness (apra-fleet-eft.5)
 
-`fleet-se-serve` (`bin/serve.mjs`, `src/supervisor/`) is a separate, always-on
+The supervisor (`bin/serve.mjs`, `src/supervisor/`) is a separate, always-on
 process from the per-sprint `bin/cli.mjs` invocation described above. It owns
 one combined reservation ledger (`src/supervisor/ledger.mjs`) that claims two
 axes per launched sprint in lockstep -- the reserved member set and the
@@ -1175,7 +1175,7 @@ bug.
 
 ## Supervisor: process model
 
-`fleet-se-serve` boots one always-on process that owns the reservation ledger
+The supervisor (`bin/serve.mjs`) boots one always-on process that owns the reservation ledger
 and an HTTP API, and never exits because a sprint finished or a sprint's child
 process crashed -- it exits only on an explicit shutdown request or signal.
 Each sprint runs as the *existing* per-sprint CLI, launched fully detached

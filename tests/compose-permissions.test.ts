@@ -748,6 +748,89 @@ describe('composePermissions -- legacy fleet MCP entries pruned from settings.lo
     expect(allCmds.some(cmd => cmd.includes('cat >') && cmd.includes('.mcp.json'))).toBe(false);
   });
 
+  it('a REMOTE member with NO apra-fleet member install (POSIX): no secret-less entry is written and a stale own entry is removed', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-no-install', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    const human = { type: 'http', url: 'http://localhost:7523/mcp' };
+    const fsHandler = makeFsHandler({
+      '"/home/testuser/.claude.json"': JSON.stringify({
+        projects: {
+          '/home/testuser/project': { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${member.id}` } } },
+          '/home/testuser/other': { mcpServers: { 'apra-fleet': human } },
+        },
+      }),
+    });
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd === 'test -f "/home/testuser/.apra-fleet/data/member-install.json"') return { stdout: '', stderr: '', code: 1 };
+      return fsHandler(cmd);
+    });
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+    expect(result).toContain('Permissions composed');
+    expect(result).toContain('Member MCP entry not written yet');
+
+    const body = JSON.parse(memberFs.landed('/home/testuser/.claude.json')!);
+    expect(body.projects['/home/testuser/project'].mcpServers['apra-fleet']).toBeUndefined();
+    expect(body.projects['/home/testuser/other'].mcpServers['apra-fleet']).toEqual(human);
+  });
+
+  it('a REMOTE member with NO member install leaves the owner\'s own (full-install) entry in its folder untouched', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-full-install', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    const human = { type: 'http', url: 'http://localhost:7523/mcp', headers: { 'X-Apra-Fleet-Member-Secret': 'x' } };
+    const seeded = JSON.stringify({ projects: { '/home/testuser/project': { mcpServers: { 'apra-fleet': human } } } });
+    const fsHandler = makeFsHandler({ '"/home/testuser/.claude.json"': seeded });
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd === 'test -f "/home/testuser/.apra-fleet/data/member-install.json"') return { stdout: '', stderr: '', code: 1 };
+      return fsHandler(cmd);
+    });
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+    const landed = memberFs.landed('/home/testuser/.claude.json');
+    expect(JSON.parse(landed!).projects['/home/testuser/project'].mcpServers['apra-fleet']).toEqual(human);
+  });
+
+  it('opencode: a REMOTE member with NO member install keeps the owner\'s entry and drops only its own', async () => {
+    const owner = { type: 'remote', url: 'http://localhost:7523/mcp', enabled: true };
+    for (const [seedEntry, expected] of [[owner, owner], [{ type: 'remote', url: 'X', enabled: true }, undefined]] as const) {
+      const member = makeTestAgent({ friendlyName: `oc-no-install-${expected ? 'owner' : 'own'}`, llmProvider: 'opencode', os: 'linux' });
+      addAgent(member);
+      const entry = expected ? seedEntry : { ...seedEntry, url: `http://localhost:7523/mcp?member=${member.id}` };
+      const fsHandler = makeFsHandler({ '"/home/testuser/project/opencode.json"': JSON.stringify({ mcp: { 'apra-fleet': entry }, theme: 't' }) });
+      mockExecCommand.mockReset();
+      mockExecCommand.mockImplementation(async (cmd: string) => {
+        if (cmd === 'test -f "/home/testuser/.apra-fleet/data/member-install.json"') return { stdout: '', stderr: '', code: 1 };
+        if (cmd.includes('ls-files')) return { stdout: '', stderr: '', code: 1 }; // opencode.json untracked
+        return fsHandler(cmd);
+      });
+      await composePermissions({ member_id: member.id, role: 'doer' });
+      const body = JSON.parse(memberFs.landed('/home/testuser/project/opencode.json')!);
+      expect(body.mcp?.['apra-fleet']).toEqual(expected);
+      expect(body.theme).toBe('t');
+    }
+  });
+
+  it('a REMOTE Windows (PowerShell) member: the member-install probe is a PowerShell Test-Path on the member path; absent -> no entry', async () => {
+    const { wrapPowerShellEncoded } = await import('../src/os/windows.js');
+    const member = makeTestAgent({ friendlyName: 'claude-win-no-install', llmProvider: 'claude', os: 'windows' });
+    addAgent(member);
+    const fsHandler = makeFsHandler();
+    const homeProbe = wrapPowerShellEncoded('[Console]::Out.Write($env:USERPROFILE)');
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd === homeProbe) return { stdout: 'C:\\Users\\alice', stderr: '', code: 0 };
+      if (cmd.includes('member-install.json') && cmd.includes('Test-Path')) return { stdout: '', stderr: '', code: 1 };
+      return fsHandler(cmd);
+    });
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+    expect(result).toContain('Member MCP entry not written yet');
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const probe = allCmds.find(c => c.includes('member-install.json'));
+    expect(probe).toContain("Test-Path -LiteralPath 'C:\\Users\\alice\\.apra-fleet\\data\\member-install.json'");
+    expect(probe).not.toMatch(/\$HOME|~\//);
+    expect(allCmds.some(c => c.includes(`?member=${member.id}`))).toBe(false);
+  });
+
   it('a REMOTE claude member: the per-dispatch session MCP config file is git-excluded in the work folder', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-remote-exclude', llmProvider: 'claude', os: 'linux' });
     addAgent(member);

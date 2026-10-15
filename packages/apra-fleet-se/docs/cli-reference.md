@@ -50,7 +50,7 @@ allowed.
 | `--role-map <json\|@file>` | | no | JSON object or `@path/to/file.json` | -- | Maps role name -> array of member names, e.g. `'{"doer":["m1","m2"]}'`. Overrides the default member-pool resolution for that role (see `docs/architecture.md`). Also accepts the application-level pseudo-role key `backlog` (which member issues the sprint's own `bd`/`git` commands). `orchestrator` is a deprecated alias of `backlog`: accepted in 0.4.4 (with a deprecation warning in the run log) and removed in v0.5; giving both keys with different values is an arg-contract error. Keys are normalized (trimmed + lowercased) on load; two keys that normalize to the same value are rejected as ambiguous. |
 | `--viewer-port <port>` | | no | integer 1-65535 | `8080` | Port for the local dashboard viewer HTTP server. |
 | `--budget <usd>` | | no | non-negative finite number | unset (unlimited) | USD ceiling for this run's total *estimated* spend. When set, `agent()` dispatches abort the run with a budget-exceeded error once tracked spend reaches the ceiling. Omitted means unlimited -- identical to not having this flag at all. See the budget-tracking caveats in `docs/architecture.md`. |
-| `--dispatch-timeout-s <s>` | | no | integer >= 60 | `9000` (applied by the runner) | Per-dispatch time budget in seconds, used as both the inactivity timeout and the hard elapsed-time ceiling on every agent dispatch. The integ-test dispatch ceiling is 2x this value and the regression-test ceiling is 3x. Omitting the flag leaves it unset at the CLI; `runner.js` then applies its own `9000` default. |
+| `--dispatch-timeout-s <s>` | | no | integer >= 60 | `9000` (applied by the runner) | Per-dispatch time budget in seconds: the hard elapsed-time ceiling on every agent dispatch. The inactivity (stall) timeout is this value capped at 1800 s (`resolveDispatchInactivityTimeoutS` in `runner.js`). The integ-test dispatch ceiling is 2x this value and the regression-test ceiling is 3x. Omitting the flag leaves it unset at the CLI; `runner.js` then applies its own `9000` default. |
 | `--usage-limit-max-wait-s <s>` | | no | integer >= 60 | runner default (`USAGE_LIMIT_BUDGET_DEFAULTS.USAGE_LIMIT_MAX_WAIT_S`) | Total wall-clock seconds a single dispatch may stay paused across all usage-limit reprobes before the controller gives up with a typed `UsageLimitWaitExhaustedError` (routed through `finalizeAbort()`/an `[ABORTED]` PR). Omitting the flag leaves it unset at the CLI; the runner uses `role-policies.mjs`'s default. See `docs/architecture.md` "A provider usage/rate limit pauses the run". |
 | `--usage-limit-max-reprobes <n>` | | no | integer >= 1 | runner default (`USAGE_LIMIT_BUDGET_DEFAULTS.USAGE_LIMIT_MAX_REPROBES`) | Maximum usage-limit reprobe attempts before the controller gives up, independent of elapsed wait. Omitting the flag leaves it unset at the CLI; the runner uses `role-policies.mjs`'s default. |
 | `--skip-regression` | | no | boolean flag | off | Skips the once-per-sprint regression pass. Logged, and stated in the sprint analysis and the PR body ("skipped by launch option"). Integration tests still run. The supervisor sets it from `phases: { regression: "skip" }`. |
@@ -150,11 +150,19 @@ In order, `main()` in `bin/cli.mjs` performs:
 9. **Target-issue existence check** -- runs `bd show <id>` for every
    `--issue` id, on the **backlog member** specifically (not the local
    machine -- see `checkIssuesExistOnMember()`). The backlog member is
-   `roleMap.backlog[0]` if configured, else the first valid `--members`
-   entry.
-10. **Multi-member topology check** -- `checkMemberTopology()` (see
-    `docs/architecture.md` "Multi-member topology") compares `git rev-parse
-    HEAD` across every configured member and refuses to start on a mismatch.
+   `roleMap.backlog[0]` if configured; otherwise `selectBacklogMember()`
+   (`fleet-sprint/backlog-role.mjs`) picks the first `--members` entry not
+   named in any `--role-map` role (the first member when there is no role
+   map), else the first doer-mapped member, else the first member, and logs
+   `backlog: <member> (auto-selected: <reason>)`.
+10. **Multi-member alignment and topology check** -- in the default
+    shared-workspace mode every member is first aligned to the sprint branch
+    (fetch, WIP preserved in a named `fleet-sprint[<branch>]` stash, one
+    `[Align]` line per member); only what cannot be reconciled (unreachable
+    member, differing origin URLs, base missing on origin, fetch auth
+    failure, diverged sprint branch) refuses the launch, before any member is
+    moved. `checkMemberTopology()` (see `docs/architecture.md` "Multi-member
+    topology") then compares `git rev-parse HEAD` across the aligned members.
     Single-member sprints trivially pass.
 
 Any failure at steps 7-10 stops the fleet transport and exits 1 with a
