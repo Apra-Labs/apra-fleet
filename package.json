@@ -1,6 +1,6 @@
 {
   "name": "@apralabs/apra-fleet",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "MCP server for orchestrating multiple agentic AI instances (Claude, Gemini, Codex, Copilot, AGY) across machines via SSH",
   "author": "Apra Labs",
   "homepage": "https://github.com/Apra-Labs/apra-fleet",
@@ -27,6 +27,7 @@
   },
   "files": [
     "dist/",
+    "!dist/**/*.map",
     "hooks/",
     "scripts/fleet-statusline.sh",
     "scripts/agy-transcript-reader.js",
@@ -36,6 +37,7 @@
     "packages/apra-fleet-se/package.json",
     "packages/apra-fleet-se/fleet-sprint/",
     "packages/apra-fleet-se/bin/",
+    "packages/apra-fleet-se/src/",
     "packages/apra-fleet-se/apra-pm/agents/",
     "packages/apra-fleet-se/apra-pm/skills/",
     "packages/apra-fleet-workflow/src/",

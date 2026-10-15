@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseProcNetTcp, userFromPasswd, parseLsofFields, parseWindowsPortHolder, windowsPortHolderScript,
   heldByOtherUser, describePortConflict, PORT_HELD_BY_OTHER_USER_CODE,
+  parseNetstatListenPid, pidOwnedByOtherUser, netstatPortHolder, lsofPortHolder, windowsPortHolder,
 } from '../src/services/port-holder.js';
 
 const PROC_NET_TCP = [
@@ -63,25 +64,98 @@ describe('classification and message', () => {
     expect(heldByOtherUser({ pid: 9 }, me)).toBeUndefined();
   });
   it('another user -> foreign refusal naming the user, pid and remedy', () => {
-    const r = describePortConflict(7523, 'generic', { pid: 4321, user: 'bob', uid: 1002, command: 'apra-fleet' }, me);
+    const r = describePortConflict(7523, 'generic', { pid: 4321, user: 'bob', uid: 1002, command: 'apra-fleet' }, 'member', me);
     expect(r.foreign).toBe(true);
     expect(r.message).toContain(PORT_HELD_BY_OTHER_USER_CODE);
     expect(r.message).toContain('"bob"');
     expect(r.message).toContain('pid 4321');
     expect(r.message).toContain('--member --port');
   });
+  it('another user, FULL install -> remedy frees the port; never suggests --member', () => {
+    const r = describePortConflict(7523, 'generic', { pid: 4321, user: 'bob', uid: 1002, command: 'apra-fleet' }, 'full', me);
+    expect(r.foreign).toBe(true);
+    expect(r.message).toContain(PORT_HELD_BY_OTHER_USER_CODE);
+    expect(r.message).toContain('"apra-fleet stop"');
+    expect(r.message).toContain('re-run the install');
+    expect(r.message).not.toContain('--member');
+  });
   it('another user whose pid is not visible -> says so, never invents one', () => {
-    const r = describePortConflict(7523, 'generic', { uid: 1002, user: 'bob' }, me);
+    const r = describePortConflict(7523, 'generic', { uid: 1002, user: 'bob' }, 'full', me);
     expect(r.foreign).toBe(true);
     expect(r.message).toContain('pid not visible to this user');
   });
   it('same user -> generic message plus the holder pid', () => {
-    const r = describePortConflict(7523, 'Port 7523 is already in use.', { pid: 777, uid: 1001, user: 'alice' }, me);
+    const r = describePortConflict(7523, 'Port 7523 is already in use.', { pid: 777, uid: 1001, user: 'alice' }, 'full', me);
     expect(r).toEqual({ foreign: false, message: expect.stringContaining('Port 7523 is already in use.') });
     expect(r.message).toContain('pid 777');
   });
   it('unknown holder -> generic message unchanged', () => {
-    expect(describePortConflict(7523, 'generic', null, me)).toEqual({ foreign: false, message: 'generic' });
+    expect(describePortConflict(7523, 'generic', null, 'full', me)).toEqual({ foreign: false, message: 'generic' });
+  });
+});
+
+describe('holder owned by another OS user whose name is not visible (standard user over SSH)', () => {
+  const me = { user: 'alice' };
+  const NETSTAT = [
+    '',
+    'Active Connections',
+    '',
+    '  Proto  Local Address          Foreign Address        State           PID',
+    '  TCP    0.0.0.0:135            0.0.0.0:0              ABHOEREN        1000',
+    '  TCP    127.0.0.1:7523         0.0.0.0:0              ABHOEREN        4321',
+    '  TCP    127.0.0.1:50000        127.0.0.1:7523         HERGESTELLT     5555',
+    '  TCP    [::]:7524              [::]:0                 LISTENING       6000',
+  ].join('\r\n');
+
+  it('windows netstat: the LISTEN pid by unbound foreign address (state column is localized)', () => {
+    expect(parseNetstatListenPid(NETSTAT, 7523)).toBe(4321);
+    expect(parseNetstatListenPid(NETSTAT, 7524)).toBe(6000);
+    expect(parseNetstatListenPid(NETSTAT, 50000)).toBeUndefined();
+  });
+
+  it('EPERM on signal 0 -> another user; success -> this user; ESRCH -> unknown', () => {
+    const throwing = (code: string) => () => { throw Object.assign(new Error(code), { code }); };
+    expect(pidOwnedByOtherUser(1, throwing('EPERM'))).toBe(true);
+    expect(pidOwnedByOtherUser(1, () => true)).toBe(false);
+    expect(pidOwnedByOtherUser(1, throwing('ESRCH'))).toBeUndefined();
+  });
+
+  it('windows (CIM denied): netstat + EPERM -> E-PORT-HELD-BY-OTHER-USER naming another OS user and the fix', () => {
+    const holder = netstatPortHolder(7523, () => NETSTAT, () => { throw Object.assign(new Error('EPERM'), { code: 'EPERM' }); });
+    expect(holder).toEqual({ pid: 4321, otherUser: true });
+    const r = describePortConflict(7523, 'server.json in this data dir records no apra-fleet server (holder pid: none)', holder, 'full', me);
+    expect(r.foreign).toBe(true);
+    expect(r.message).toContain(PORT_HELD_BY_OTHER_USER_CODE);
+    expect(r.message).toContain('another OS user (pid 4321)');
+    expect(r.message).toContain('"apra-fleet stop"');
+  });
+
+  it('windows (CIM works, GetOwner denied -> no user): signal-0 EPERM still names another OS user', () => {
+    const eperm = () => { throw Object.assign(new Error('EPERM'), { code: 'EPERM' }); };
+    const holder = windowsPortHolder(7523, () => '{"pid":4321,"name":"apra-fleet.exe","user":null}', eperm);
+    expect(holder).toEqual({ pid: 4321, command: 'apra-fleet.exe', otherUser: true });
+    expect(describePortConflict(7523, 'generic', holder, 'full', me).foreign).toBe(true);
+    // A named owner is left to the name comparison.
+    expect(windowsPortHolder(7523, () => '{"pid":4321,"name":"x","user":"bob"}', eperm)).toEqual({ pid: 4321, command: 'x', user: 'bob' });
+  });
+
+  it('windows: this user\'s own holder stays a same-user conflict', () => {
+    const holder = netstatPortHolder(7523, () => NETSTAT, () => true);
+    expect(describePortConflict(7523, 'generic', holder, 'full', me).foreign).toBe(false);
+  });
+
+  it('macOS: lsof ran but sees no listener on the bound port -> another OS user', () => {
+    const noMatch = () => { throw Object.assign(new Error('exit 1'), { status: 1, stdout: '' }); };
+    const holder = lsofPortHolder(7523, noMatch);
+    expect(holder).toEqual({ otherUser: true });
+    const r = describePortConflict(7523, 'generic', holder, 'full', me);
+    expect(r.foreign).toBe(true);
+    expect(r.message).toContain('another OS user (pid not visible to this user)');
+    expect(lsofPortHolder(7523, () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); })).toBeNull();
+  });
+
+  it('linux: the /proc/net/tcp uid already names the other user (unchanged)', () => {
+    expect(heldByOtherUser({ uid: 1002 }, { uid: 1001 })).toBe(true);
   });
 });
 

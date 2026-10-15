@@ -31,6 +31,11 @@ export function clearServiceNotice(file = SERVICE_NOTICE_PATH): void {
   try { fs.unlinkSync(file); } catch { /* absent */ }
 }
 
+/** Remove the pending notice only when its text contains `marker` (an obsolete refusal). */
+export function clearServiceNoticeContaining(marker: string, file = SERVICE_NOTICE_PATH): void {
+  if (readNotice(file)?.text.includes(marker)) clearServiceNotice(file);
+}
+
 function readNotice(file: string): ServiceNoticeFile | null {
   try {
     const n = JSON.parse(fs.readFileSync(file, 'utf8')) as ServiceNoticeFile;
