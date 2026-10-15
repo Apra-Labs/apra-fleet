@@ -8,7 +8,7 @@ import { getStallDetector } from '../services/stall/index.js';
 import { serverVersion } from '../version.js';
 
 // fleet_snapshot: the cheap, read-only fleet view the Claude Code fleet-status
-// mod polls (plugins/claude/fleet-status). Built only from what is already on
+// mod polls (plugins/claude-code/fleet-status). Built only from what is already on
 // this host -- the registry, the last-known per-member states the statusline
 // writer persists, and this process's stall detector. It never probes a
 // member over SSH and never writes anything, so polling it every few seconds
@@ -32,13 +32,10 @@ export interface SnapshotMember {
 
 export interface FleetSnapshot {
   version: string;
-  /** When the persisted member states last changed (ISO), null if never. */
-  updatedAt: string | null;
   members: SnapshotMember[];
 }
 
 const STATE_PATH = path.join(FLEET_DIR, 'statusline-state.json');
-const STATUSLINE_PATH = path.join(FLEET_DIR, 'statusline.txt');
 
 function readStates(): Record<string, string> {
   try {
@@ -46,15 +43,6 @@ function readStates(): Record<string, string> {
   } catch {
     return {};
   }
-}
-
-function lastWrite(): string | null {
-  for (const p of [STATE_PATH, STATUSLINE_PATH]) {
-    try {
-      return fs.statSync(p).mtime.toISOString();
-    } catch { /* try the next */ }
-  }
-  return null;
 }
 
 /** "busy(02:14)" -> busy; anything unrecognised -> unknown. */
@@ -96,7 +84,7 @@ export function buildFleetSnapshot(now: number = Date.now()): FleetSnapshot {
     if (a.reservedBy) m.reservedBy = a.reservedBy;
     return m;
   });
-  return { version: serverVersion, updatedAt: lastWrite(), members };
+  return { version: serverVersion, members };
 }
 
 export async function fleetSnapshot(): Promise<string> {

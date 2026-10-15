@@ -22,8 +22,10 @@ Once the mod is installed, apra-fleet stops writing Claude Code's
 
    Members that need attention (stalled `unknown`, then `busy` with the time
    since their task last showed activity) are named, at most three plus
-   `+N`; idle and offline members are counted. Unreachable server:
-   `server down`; still starting: `connecting...`.
+   `+N`; idle and offline members are counted. Errors: `connecting...`
+   (first minute after session start), `server not reachable`, or
+   `server too old: update apra-fleet` (connected, but no fleet_snapshot).
+   On an error the pane keeps the last known list under the error line.
 
 2. **`/fleet-status`** opens a pane (docked beside the transcript in a wide
    fullscreen terminal, inline above the prompt otherwise) and prints a
@@ -59,8 +61,8 @@ apra-fleet server (stdio or http, already configured by install)
 ```
 
 - **`fleet_snapshot`** (new MCP tool, FULL sessions only -- not in
-  `MEMBER_BASE_TOOLS`): `{ version, updatedAt, members: [{ id, name, icon,
-  category, status, quietForS?, reservedBy? }] }`. Reads only local state:
+  `MEMBER_BASE_TOOLS`): `{ version, members: [{ id, name, icon, category,
+  status, quietForS?, reservedBy? }] }`. Reads only local state:
   no SSH probes, no writes, so it is safe to poll. `status` is the
   last-known state the server already persists for the old status line;
   `quietForS` comes from the live stall detector when this process runs the
@@ -69,16 +71,20 @@ apra-fleet server (stdio or http, already configured by install)
 - **Why the session's MCP connection** and not HTTP from the mod: it already
   carries whatever the install configured (stdio, or http plus the member
   access secret header), so the mod holds no secret and needs no port.
-- **Refresh**: on session start (retrying every 3s, at most 20 times, while
-  the MCP server is still connecting), every 30s, 2s after any other
+- **Refresh**: on session start (retrying every 3s while reads fail during
+  the first 60s -- Claude Code reports a starting and a dead server with the
+  same message, so time since start tells them apart), every 30s, 2s after any other
   `mcp__apra-fleet__*` tool call starts (`execute_prompt` marks the member
   busy at dispatch), and when that call settles. Overlapping refreshes
   collapse into one.
-- **Permissions**: the snapshot call is a tool call like any other. The
+- **Permissions**: the plugin API's types say a plugin's `$.mcp.call` needs
+  no permission prompt, but Claude Code 2.1.300 was observed to put it
+  through the permission check (a prompt per poll in a session without an
+  allow rule; the debug log shows the permission request). The
   `mcp__apra-fleet__*` allow rule that `apra-fleet install --llm claude`
   already writes covers it. A plugin's own hooks never answer for its own
   calls (the engine skips re-entry), so the mod cannot self-approve -- and
-  should not.
+  should not. Either way the mod calls only `fleet_snapshot`.
 
 ## Surfaces
 

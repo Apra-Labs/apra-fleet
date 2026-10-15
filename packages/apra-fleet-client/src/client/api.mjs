@@ -12,7 +12,6 @@
 /**
  * @typedef {Object} FleetSnapshot
  * @property {string} version Server version.
- * @property {string|null} updatedAt When the persisted member states last changed (ISO).
  * @property {FleetSnapshotMember[]} members
  */
 

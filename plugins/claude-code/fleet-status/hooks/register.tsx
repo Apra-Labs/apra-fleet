@@ -7,10 +7,13 @@
 // Data comes from one read-only MCP tool, apra-fleet's fleet_snapshot, called
 // over this session's own connection to the apra-fleet server (so it carries
 // whatever credentials that connection has). It is polled every 30s and
-// re-read after any other apra-fleet tool call. No writes, no actions.
-// The call is a tool call like any other, so it runs unprompted under the
-// mcp__apra-fleet__* allow rule `apra-fleet install --llm claude` writes (a
-// plugin's own hooks never answer for its own calls).
+// re-read after any other apra-fleet tool call. No writes, no actions: the
+// mod calls fleet_snapshot and nothing else.
+// Claude Code 2.1.300 puts the call through the permission check like any
+// tool call (observed: a prompt per poll without a rule), so it relies on the
+// mcp__apra-fleet__* allow rule `apra-fleet install --llm claude` writes. A
+// plugin's own hooks never answer for its own calls (the engine skips
+// re-entry), so the mod cannot approve itself.
 //
 // Source is ASCII only: glyphs are written as \u escapes.
 
@@ -28,6 +31,9 @@ const BUSY_RECHECK_MS = 2_000
 const STATUS_NAMES_MAX = 3
 const CONNECTING = 'connecting...'
 const RETRY_MS = 3_000
+// While a read fails this soon after session start the server is presumed
+// to be starting: retried every RETRY_MS, shown as CONNECTING.
+const STARTUP_MS = 60_000
 
 const view = atom({ plugin: 'fleet-status', key: 'view' } as const, { members: [], fetchedAt: 0 } as FleetView)
 
@@ -81,7 +87,7 @@ export function parseSnapshot(texts: string[]): { version?: string; members: Fle
         category: typeof m.category === 'string' && m.category ? m.category : null,
         status: asStatus(m.status),
       }
-      if (typeof m.quietForS === 'number') member.quietForS = m.quietForS
+      if (typeof m.quietForS === 'number' && Number.isFinite(m.quietForS) && m.quietForS >= 0) member.quietForS = Math.round(m.quietForS)
       if (typeof m.reservedBy === 'string' && m.reservedBy) member.reservedBy = m.reservedBy
       return member
     })
@@ -114,10 +120,10 @@ export function statusLine(v: FleetView): string | undefined {
 
 /** Body rows the pane draws for a view: header, counts, rule, groups, footer. */
 export function paneRows(v: FleetView): number {
-  if (v.error || v.members.length === 0) return 4
+  if (v.members.length === 0) return v.error ? 4 : 3
   const categories = new Set(v.members.map(m => m.category ?? '')).size
   const labelled = categories > 1 || v.members.some(m => m.category !== null)
-  return 4 + v.members.length + (labelled ? categories * 2 : 0)
+  return 4 + (v.error ? 1 : 0) + v.members.length + (labelled ? categories * 2 : 0)
 }
 
 /** Plain-text summary, the /fleet-status transcript line. */
@@ -131,16 +137,22 @@ export function summaryText(v: FleetView): string {
   return `${v.members.length} member${v.members.length === 1 ? '' : 's'}: ${bits.join(', ')}`
 }
 
-function shortError(err: unknown): string {
-  const text = err instanceof Error ? err.message : String(err)
-  if (/no connected MCP tool|not connected|pending|connecting/i.test(text)) return CONNECTING
-  if (/not found|unknown tool|no such tool/i.test(text)) return 'server too old (no fleet_snapshot)'
-  if (/not connected|no server|unknown server|failed to connect|ECONNREFUSED|closed/i.test(text)) return 'server down'
-  return text.length > 60 ? `${text.slice(0, 57)}...` : text
+/**
+ * Why a fleet_snapshot read failed, for the status line. Claude Code reports
+ * a server that is still starting and one that is down the same way (`no tool
+ * "fleet_snapshot" on a server named "apra-fleet"; servers with tools: none`),
+ * so time since session start tells them apart; a connected apra-fleet that
+ * lacks the tool is an older server.
+ */
+export function classifyError(text: string, sinceStartMs: number): string {
+  const withTools = /servers with tools:\s*(.*)$/i.exec(text)?.[1] ?? ''
+  if (withTools.split(/[,\s]+/).includes(SERVER)) return 'server too old: update apra-fleet'
+  if (sinceStartMs < STARTUP_MS) return CONNECTING
+  return 'server not reachable'
 }
 
 let inFlight: Promise<void> | undefined
-let connectRetries = 0
+let startedAt = Date.now()
 let poll: { cancel: () => void } | undefined
 
 /** One fleet_snapshot read into the view and the status line; calls overlap into one. */
@@ -155,19 +167,16 @@ function refresh($: EngineInterface): Promise<void> {
       const snap = parseSnapshot(texts)
       fresh = { version: snap.version, members: snap.members, fetchedAt: Date.now() }
     } catch (err) {
+      // Keep the last good members: the pane shows them under the error.
       const prev = await read($, view)
-      fresh = { ...prev, fetchedAt: Date.now(), error: shortError(err) }
+      const text = err instanceof Error ? err.message : String(err)
+      fresh = { ...prev, fetchedAt: Date.now(), error: classifyError(text, Date.now() - startedAt) }
     }
     await update($, view, () => fresh)
     $.ui.status(statusLine(fresh))
-    // At session start the apra-fleet server may still be connecting.
-    // Bounded: a server that never connects settles to the 30s poll.
-    if (fresh.error === CONNECTING && connectRetries < 20) {
-      connectRetries += 1
-      $.clock.after(RETRY_MS, () => void refresh($))
-    } else if (fresh.error !== CONNECTING) {
-      connectRetries = 0
-    }
+    // Bounded by STARTUP_MS: after it a failure is no longer CONNECTING and
+    // reads settle to the 30s poll.
+    if (fresh.error === CONNECTING) $.clock.after(RETRY_MS, () => void refresh($))
   })().finally(() => {
     inFlight = undefined
   })
@@ -180,6 +189,7 @@ export const register: Register = on => {
       name: 'fleet-status',
       description: 'Show every apra-fleet member and what it is doing',
     })
+    startedAt = Date.now()
     poll?.cancel()
     poll = $.clock.every(POLL_MS, () => void refresh($))
     void refresh($)
@@ -198,9 +208,8 @@ export const register: Register = on => {
   // Any other apra-fleet tool call may change a member's state: re-read
   // shortly after it starts (execute_prompt marks the member busy at
   // dispatch) and again once it settles.
-  on('tool.call', async ($, e, next) => {
-    const watched = e.tool.startsWith(TOOL_PREFIX) && e.tool !== TOOL_PREFIX + SNAPSHOT_TOOL
-    if (!watched) return next(e)
+  on('tool.call', { tool: /^mcp__apra-fleet__/ }, async ($, e, next) => {
+    if (e.tool === TOOL_PREFIX + SNAPSHOT_TOOL) return next(e)
     const early = $.clock.after(BUSY_RECHECK_MS, () => void refresh($))
     try {
       return await next(e)
@@ -227,13 +236,14 @@ export const register: Register = on => {
       </Box>
     )
 
-    if (v.error) {
+    const hint = v.error === 'server not reachable' ? 'Start it with `apra-fleet start`, then /mcp to reconnect.' : undefined
+    if (v.error && v.members.length === 0) {
       return (
         <Box flexDirection="column">
           {header}
           {rule}
-          <Text color="error">{`${GLYPH.offline} ${v.error}`}</Text>
-          <Text dimColor>Start it with `apra-fleet start`, then /mcp to reconnect.</Text>
+          <Text color={v.error === CONNECTING ? 'subtle' : 'error'}>{v.error}</Text>
+          {hint ? <Text dimColor>{hint}</Text> : null}
         </Box>
       )
     }
@@ -262,6 +272,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {header}
+        {v.error ? <Text color="error">{`${v.error} -- last known below`}</Text> : null}
         <Box flexDirection="row" gap={2}>
           {counts.map(c => (
             <Text color={COLOR[c.s]}>{`${GLYPH[c.s]} ${c.n} ${c.s}`}</Text>

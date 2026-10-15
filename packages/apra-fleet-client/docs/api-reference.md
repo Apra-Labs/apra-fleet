@@ -366,8 +366,8 @@ field set is typed as `ListedMember` in `api.mjs`, pinned against the
 
 Calls `fleet_snapshot` -- a cheap read-only fleet view for status displays
 (the Claude Code fleet-status mod polls it). The result text is the JSON of a
-`FleetSnapshot`: `{ version, updatedAt, members: [{ id, name, icon, category,
-status, quietForS?, reservedBy? }] }`, `status` one of `busy`, `idle`,
+`FleetSnapshot`: `{ version, members: [{ id, name, icon, category, status,
+quietForS?, reservedBy? }] }`, `status` one of `busy`, `idle`,
 `offline`, `unknown`. Built from local state only -- no SSH probes, no writes;
 use `fleetStatus` for a live check.
 

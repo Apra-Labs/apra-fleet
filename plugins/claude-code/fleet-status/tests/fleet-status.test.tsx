@@ -1,7 +1,7 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect, mock, test } from 'claude-code/testing'
 import type { McpToolResult, On } from 'claude-code'
 
-import { clock, paneRows, parseSnapshot, statusLine, summaryText } from '../hooks/register'
+import { classifyError, clock, paneRows, parseSnapshot, statusLine, summaryText } from '../hooks/register'
 import type { FleetView } from '../types'
 
 const SNAPSHOT = JSON.stringify({
@@ -83,11 +83,12 @@ describe('fleet-status formatting', () => {
 // apra-fleet server would.
 // ui.open and ui.status stand in for the surface: the pane is placed and the
 // status line text is kept for the test to read.
-function serveSnapshot(on: On, reply: McpToolResult | { deny: string }): { status: (string | undefined)[] } {
-  const seen: { status: (string | undefined)[] } = { status: [] }
+function serveSnapshot(on: On, reply: McpToolResult | { deny: string }): { status: (string | undefined)[]; reads: number } {
+  const seen: { status: (string | undefined)[]; reads: number } = { status: [], reads: 0 }
   on('mcp.call', ($, e) => {
     expect(e.server).toBe('apra-fleet')
     expect(e.tool).toBe('fleet_snapshot')
+    seen.reads += 1
     return 'deny' in reply ? reply : { value: reply }
   })
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -122,13 +123,60 @@ describe('fleet-status pane', () => {
     }
   })
 
-  test('an unreachable server shows the reason and the fix', async ($, on) => {
-    serveSnapshot(on, { deny: 'MCP server "apra-fleet" closed' })
+  test('a server not answering right after start reads as connecting', async ($, on) => {
+    serveSnapshot(on, { deny: 'no tool "fleet_snapshot" on a server named "apra-fleet"; servers with tools: none' })
     const ran = await $.command.run(RUN)
-    expect(ran.text).toBe('server down')
+    expect(ran.text).toBe('connecting...')
     const ui = await $.ui.mount({ plugin: 'fleet-status', surface: 'terminal', component: 'Pane', requestId: 'fleet-status', props: { ...PANE_PROPS, placement: 'inline' } })
-    expect(await ui.find({ type: 'Text', text: /server down/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /apra-fleet start/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /connecting/ })).toBeDefined()
     await ui.unmount()
   })
 })
+
+describe('fleet-status errors', () => {
+  // The text Claude Code 2.1.300 gives $.mcp.call for a server that is still
+  // starting or is down (captured from a live session).
+  const NONE = 'no tool "fleet_snapshot" on a server named "apra-fleet"; servers with tools: none'
+  const OLD = 'no tool "fleet_snapshot" on a server named "apra-fleet"; servers with tools: apra-fleet'
+
+  test('starting vs down is decided by time since session start', async () => {
+    expect(classifyError(NONE, 5_000)).toBe('connecting...')
+    expect(classifyError(NONE, 61_000)).toBe('server not reachable')
+  })
+
+  test('a connected server without the tool is an older apra-fleet', async () => {
+    expect(classifyError(OLD, 5_000)).toBe('server too old: update apra-fleet')
+    expect(classifyError(OLD, 120_000)).toBe('server too old: update apra-fleet')
+  })
+
+  test('a stale list stays visible under the error', async ($, on) => {
+    serveSnapshot(on, { content: [{ type: 'text', text: SNAPSHOT }], isError: false })
+    await $.command.run(RUN)
+    const v = viewOf(SNAPSHOT)
+    expect(paneRows({ ...v, error: 'server not reachable' })).toBe(paneRows(v) + 1)
+  })
+})
+
+describe('fleet-status tool.call wrapper', () => {
+  test('passes apra-fleet calls through untouched and re-reads after them; ignores other tools', async ($, on) => {
+    mock.clock(on)
+    const seen = serveSnapshot(on, { content: [{ type: 'text', text: SNAPSHOT }], isError: false })
+    let ran = 0
+    on('tool.call', { tool: 'mcp__apra-fleet__version' }, () => {
+      ran += 1
+      return { result: { content: [{ type: 'text', text: 'apra-fleet v0.5.0' }] } }
+    })
+    on('tool.call', { tool: 'Read' }, () => ({ result: 'file text' }))
+
+    const before = seen.reads
+    const out = await $.tool.call({ tool: 'mcp__apra-fleet__version', input: {} } as never)
+    expect(ran).toBe(1)
+    expect(JSON.stringify(out.result)).toBe(JSON.stringify({ content: [{ type: 'text', text: 'apra-fleet v0.5.0' }] }))
+    expect(seen.reads).toBe(before + 1)
+
+    const afterFleet = seen.reads
+    await $.tool.call({ tool: 'Read', input: { file_path: '/x' } } as never)
+    expect(seen.reads).toBe(afterFleet)
+  })
+})
+

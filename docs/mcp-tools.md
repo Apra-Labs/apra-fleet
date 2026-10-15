@@ -541,7 +541,7 @@ A cheap, read-only fleet view for status displays -- the Claude Code
 fleet-status mod polls it. Takes no arguments and returns JSON:
 
 ```json
-{ "version": "0.5.0", "updatedAt": "2026-10-15T09:12:03.000Z",
+{ "version": "0.5.0",
   "members": [ { "id": "...", "name": "alice", "icon": "...", "category": "build",
                  "status": "busy", "quietForS": 134, "reservedBy": "run-1" } ] }
 ```

@@ -43,7 +43,6 @@ describe('fleet_snapshot', () => {
   it('returns an empty member list on a fresh install', () => {
     const snap = buildFleetSnapshot();
     expect(snap.members).toEqual([]);
-    expect(snap.updatedAt).toBeNull();
     expect(typeof snap.version).toBe('string');
   });
 
@@ -65,7 +64,6 @@ describe('fleet_snapshot', () => {
     // no persisted state yet: idle, as the statusline writer defaults it
     expect(byName.erin.status).toBe('idle');
     expect(byName.erin.quietForS).toBeUndefined();
-    expect(snap.updatedAt).not.toBeNull();
   });
 
   it('prefers the live stall detector clock and reports a reported stall as unknown', () => {
