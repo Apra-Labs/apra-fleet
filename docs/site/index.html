@@ -332,7 +332,7 @@
   <div class="links">
     <a href="https://github.com/Apra-Labs/apra-fleet">GitHub</a>
     <a href="https://www.npmjs.com/package/@apralabs/apra-fleet">npm</a>
-    <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/fleet-sprint-getting-started.md">Getting started</a>
+    <a href="fleet-sprint-getting-started.html">Getting started</a>
     <a href="https://deepwiki.com/Apra-Labs/apra-fleet">Ask the codebase</a>
     <a href="https://github.com/Apra-Labs/apra-fleet/discussions">Discussions</a>
   </div>
@@ -349,7 +349,7 @@
     <div class="install"><span class="ps1">$</span><span>npm install -g @apralabs/apra-fleet</span></div>
     <div class="chips">
       <span>Windows / macOS / Linux</span>
-      <span>Node.js 22+</span>
+      <span>Node.js 22.16+</span>
       <span>MCP-compatible</span>
       <span>No paid tier -- bring your own LLM keys</span>
     </div>
@@ -555,11 +555,19 @@ another called reviewer. Pair them."</span></pre>
   <div class="steps">
     <div class="step"><div>
       <h3>Install</h3>
-      <p>Via npm (Node.js 22+), or grab the standalone installer for your
+      <p>Via npm (Node.js 22.16+ and npm), or grab the standalone installer for your
       platform from <a href="https://github.com/Apra-Labs/apra-fleet/releases">Releases</a>.</p>
       <pre class="term">npm install -g @apralabs/apra-fleet
-apra-fleet
-cd ~/.apra-fleet/bin && apra-fleet start</pre>
+apra-fleet install
+apra-fleet start</pre>
+      <p>npm install registers no OS service, so <code>apra-fleet start</code>
+      starts the server (again after a reboot). The standalone installer
+      registers and starts a user-level service instead, and does not add
+      anything to PATH: the binary is <code>~/.apra-fleet/bin/apra-fleet</code>
+      (Windows PowerShell: <code>&amp; "$HOME\.apra-fleet\bin\apra-fleet.exe" status</code>).
+      The default install includes fleet-sprint, which needs a system Node.js
+      22.16+ and npm on PATH. Per-OS download commands:
+      <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/install.md#quick-install">docs/install.md</a>.</p>
     </div></div>
     <div class="step"><div>
       <h3>Connect your agent</h3>
@@ -583,7 +591,7 @@ apra-fleet workflow fleet-sprint \
   --branch fleet-sprint/first-run --base main</pre>
       <p>Open the dashboard and watch the fleet plan, build, review, test,
       and ship in a loop. New to fleet-sprint? Start with the
-      <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/fleet-sprint-getting-started.md">plain-English
+      <a href="fleet-sprint-getting-started.html">plain-English
       getting-started guide</a>.</p>
     </div></div>
   </div>
@@ -620,9 +628,7 @@ apra-fleet workflow fleet-sprint \
       <h3>Preview / early -- treat accordingly</h3>
       <ul>
         <li>Multi-sprint supervisor dashboard <span class="tagchip">preview</span> -- runs concurrent sprints with reservations, but its end-to-end smoke test has not yet passed cleanly</li>
-        <li>Hub-spoke cloud mode (<code>apra-fleet join</code> / <code>spoke</code>) <span class="tagchip">groundwork</span> -- API contract and identity model landed; not yet usable end-to-end</li>
-        <li>Default install expects the <code>claude</code> CLI to be on PATH -- install Claude Code first, or pass <code>--llm</code> / <code>--transport http</code></li>
-      </ul>
+        <li>Hub-spoke cloud mode (<code>apra-fleet join</code> / <code>spoke</code>) <span class="tagchip">groundwork</span> -- API contract and identity model landed; not yet usable end-to-end</li>      </ul>
     </div>
   </div>
 </div>

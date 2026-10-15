@@ -155,7 +155,7 @@ Open the dashboard, watch your fleet PLAN->BUILD->REVIEW->TEST->SHIP in a loop t
 > **New to fleet-sprint?** Read the
 > [fleet-sprint Getting Started Guide](https://apra-labs.github.io/apra-fleet/fleet-sprint-getting-started.html)
 > ([Markdown](docs/fleet-sprint-getting-started.md) if you're reading this on
-> GitHub -- [PDF](docs/fleet-sprint-getting-started.pdf)) -- a plain-English walkthrough
+> GitHub) -- a plain-English walkthrough
 > of what it does, what you need to prepare (beads backlog, `deploy.md`,
 > test playbooks, member registration), how to launch and monitor a sprint,
 > and what's automated versus what's still your call.
@@ -468,7 +468,7 @@ third-party verticals.
 
 | Topic | Link |
 |-------|------|
-| **fleet-sprint Getting Started Guide (start here, plain English)** | [Website](https://apra-labs.github.io/apra-fleet/fleet-sprint-getting-started.html) - [Markdown](docs/fleet-sprint-getting-started.md) - [PDF](docs/fleet-sprint-getting-started.pdf) |
+| **fleet-sprint Getting Started Guide (start here, plain English)** | [Website](https://apra-labs.github.io/apra-fleet/fleet-sprint-getting-started.html) - [Markdown](docs/fleet-sprint-getting-started.md) |
 | Codebase wiki (architecture, internals, AI Q&A) | [DeepWiki](https://deepwiki.com/Apra-Labs/apra-fleet) |
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
 | Choosing a provider (roles, gotchas, mixing providers, OpenCode/local models) | [docs/provider-guide.md](docs/provider-guide.md) |

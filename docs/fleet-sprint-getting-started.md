@@ -248,10 +248,12 @@ apra-fleet start      # npm install registers no OS service: start the server
 
 Alternatively, download the standalone installer for your platform from
 [GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases)
-(`apra-fleet-installer-darwin-arm64`, `apra-fleet-installer-linux-x64`,
-`apra-fleet-installer-win-x64.exe`) and run it -- installation is the default
-action, and it registers and starts a user-level service, with the
-`apra-fleet` binary in `~/.apra-fleet/bin` (not added to PATH). Either way,
+(`apra-fleet-installer-darwin-arm64`, `apra-fleet-installer-darwin-x64`,
+`apra-fleet-installer-linux-x64`, `apra-fleet-installer-win-x64.exe`; per-OS
+download commands in [docs/install.md](install.md#quick-install)) and run it --
+installation is the default action, and it registers and starts a user-level
+service, with the `apra-fleet` binary in `~/.apra-fleet/bin` (not added to
+PATH; PowerShell: `& "$HOME\.apra-fleet\bin\apra-fleet.exe" status`). Either way,
 fleet-sprint is installed into `~/.apra-fleet/workflows/fleet-sprint`.
 
 Every member a sprint uses needs `bd` (beads) runnable in its work folder; the

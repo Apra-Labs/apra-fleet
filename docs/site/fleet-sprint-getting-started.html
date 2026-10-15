@@ -637,7 +637,7 @@
 <header class="masthead">
   <div class="measure"><span class="eyebrow">Fleet-sprint getting started</span></div>
   <h1>fleet-sprint: What It Does, What You Bring, and How You Watch It Work</h1>
-  <p class="deck">A first-look guide for teams that have a git repo, a backlog in Azure DevOps, and Claude Code already working &mdash; and have never touched apra-fleet.</p>
+  <p class="deck">A first-look guide for teams that have a git repo, a backlog in Azure DevOps or GitHub Issues, and Claude Code already working &mdash; and have never touched apra-fleet.</p>
 
   <nav class="toc">
     <h2>Contents</h2>
@@ -1052,13 +1052,39 @@
 
   <p>This is the honest part. fleet-sprint automates execution; it does not automate knowing your project. Four things are yours to build first, and none of them are generated for you.</p>
 
-  <h3 id="s2-1">2.1 Your Azure DevOps epics need equivalents in beads</h3>
+  <h3 id="s2-1">2.1 Your Azure DevOps / GitHub Issues epics need equivalents in beads</h3>
 
   <p>fleet-sprint tracks all work in <strong>beads</strong> (<code>bd</code>), a git-friendly issue tracker: the data lives in your repo clone and syncs through your existing git remote, no extra server. That is where the sprint's plan gets written, where acceptance criteria live, and where closure evidence is recorded. For this guide, that is all you need to know about beads internals.</p>
 
   <p>Before a sprint can run, the work in scope must exist there: one epic bead as the sprint root, with the in-scope features/stories as its children (created or linked with <code>--parent</code> &mdash; the engine resolves a sprint's scope by following parent links from the root id you launch with).</p>
 
-  <p>Getting your backlog in is better than we expected: beads itself ships a native Azure DevOps integration. <code>bd ado sync --pull-only</code> bulk-pulls work items from an AzDevOps org/project (configured via <code>bd config</code> or env vars: organization, project, PAT), <code>bd ado pull</code> fetches specific items, and a generic <code>bd import</code> accepts JSONL for anything else &mdash; all verified against the beads CLI and its documentation. Two honest caveats. First, this is upstream beads functionality, not something apra-fleet adds or wraps &mdash; apra-fleet knows Azure DevOps only as a git host (PAT provisioning for push/PR); validate the sync against your own org before relying on it. Second, an imported work item is not automatically sprint-ready: most AzDevOps items lack the concrete acceptance criteria every sprint role depends on &mdash; the planner decomposes from them, the doer is instructed to <em>skip</em> beads without them rather than guess, and the reviewer diffs against them. So the real work is curation, not transcription: parent the in-scope items under one root and write down what "done" looks like for each. One epic with 3-8 well-described children is enough for a first sprint.</p>
+  <p>Getting your backlog in is better than we expected: beads ships native integrations for <strong>both</strong> Azure DevOps and GitHub Issues, built on a common sync engine.</p>
+
+  <p><strong>Azure DevOps.</strong> <code>bd ado sync --pull-only</code> bulk-pulls work items from an AzDevOps org/project, <code>bd ado pull</code> fetches specific items. Configured via <code>bd config</code> or env vars: organization, project, PAT.</p>
+
+  <p><strong>GitHub Issues.</strong> <code>bd github sync</code> synchronizes issues, and it is <strong>bidirectional by default</strong> &mdash; it pulls new/updated issues from GitHub into beads <em>and</em> pushes local beads issues back to GitHub. Constrain the direction explicitly until you know you want two-way traffic:</p>
+
+<pre><code>bd config set github.token  "$GITHUB_TOKEN"   <span class="cm"># or env: GITHUB_TOKEN</span>
+bd config set github.owner  "your-org"        <span class="cm"># or env: GITHUB_OWNER</span>
+bd config set github.repo   "your-repo"       <span class="cm"># or env: GITHUB_REPO</span>
+
+bd github sync --pull-only        <span class="cm"># GitHub -&gt; beads only (start here)</span>
+bd github sync --dry-run          <span class="cm"># show what would sync, change nothing</span>
+bd github pull  &lt;refs...&gt;         <span class="cm"># fetch specific issues</span>
+bd github status                  <span class="cm"># current config + sync status</span></code></pre>
+
+  <p>Useful flags on <code>bd github sync</code>: <code>--issues</code> (comma-separated bead ids) and <code>--parent</code> (limit a push to one bead and its descendants) to scope a sync, and <code>--prefer-newer</code> (the default), <code>--prefer-github</code> or <code>--prefer-local</code> to settle conflicts. GitHub Enterprise is supported via <code>github.url</code> / <code>GITHUB_API_URL</code>.</p>
+
+  <p>For anything else, the generic <code>bd import</code> accepts JSONL on a file or stdin (<code>title</code> is the only required field; <code>external_ref</code> / <code>source_system</code> carry cross-system ids). All of the above was checked against the installed <code>bd</code> CLI (<code>bd github --help</code>, <code>bd github sync --help</code>, <code>bd ado --help</code>, <code>bd import --help</code>) and the beads documentation.</p>
+
+  <p>Two honest caveats.</p>
+
+  <ol>
+    <li>This is upstream <strong>beads</strong> functionality, not something apra-fleet adds or wraps &mdash; apra-fleet knows Azure DevOps and GitHub only as git hosts (credential provisioning for push/PR). Validate the sync against your own org before relying on it, and prefer <code>--pull-only</code> / <code>--dry-run</code> on the first run, since <code>bd github sync</code> will otherwise push your beads back into GitHub.</li>
+    <li>An imported work item is not automatically sprint-ready: most AzDevOps and GitHub issues lack the concrete acceptance criteria every sprint role depends on &mdash; the planner decomposes from them, the doer is instructed to <em>skip</em> beads without them rather than guess, and the reviewer diffs against them.</li>
+  </ol>
+
+  <p>So the real work is curation, not transcription: parent the in-scope items under one root and write down what "done" looks like for each. One epic with 3-8 well-described children is enough for a first sprint.</p>
 
   <h3 id="s2-2">2.2 Write <code>deploy.md</code> &mdash; fleet-sprint cannot write it for you</h3>
 
@@ -1068,6 +1094,7 @@
     <li><code>## Deploy</code> &mdash; the commands to deploy/stand up the software, in order.</li>
     <li><code>## Smoke test</code> &mdash; one command; exit code 0 means healthy.</li>
     <li><code>## Permissions</code> (optional but recommended) &mdash; the command prefixes the agent needs allowed in its CLI permission settings. The deployer checks this <em>before running anything</em> and stops with a clear report if your allowlist is missing entries, rather than failing mid-deploy.</li>
+    <li>A sandbox / isolated test-deploy mode (optional) &mdash; if <code>deploy.md</code> distinguishes one from its production deploy, sprint-dispatched deploys (always for integration/regression testing) use it, leave the instance running for the test phase, and your test playbooks own its teardown. Every phase's dispatch prompt carries the sprint's own <code>sprintId</code> line, so a runbook can key the instance's location on it.</li>
   </ul>
 
   <p>Write every step as plain commands. Recent Claude Code CLIs in headless mode refuse shell <code>for</code>/<code>while</code> loops and <code>$(...)</code> command substitution even when each inner command is allowed, and every sprint role is told not to write them. If a step needs that logic, put it in a script in your repo and call the script.</p>
@@ -1508,10 +1535,10 @@
 
   <figure>
     <div class="frame">
-      <img class="art-light" src="../../assets/marketing/fleet-topology-light.svg" alt="apra-fleet topology: a control plane dispatching agent work to registered members across machines and providers." loading="lazy">
-      <img class="art-dark" src="../../assets/marketing/fleet-topology-dark.svg" alt="apra-fleet topology: a control plane dispatching agent work to registered members across machines and providers." loading="lazy">
+      <img class="art-light" src="assets/topo-light.svg" alt="apra-fleet topology: a control plane dispatching agent work to registered members across machines and providers." loading="lazy">
+      <img class="art-dark" src="assets/topo-dark.svg" alt="apra-fleet topology: a control plane dispatching agent work to registered members across machines and providers." loading="lazy">
     </div>
-    <figcaption>assets/marketing/fleet-topology-{light,dark}.svg</figcaption>
+    <figcaption>assets/topo-{light,dark}.svg</figcaption>
   </figure>
 
   <p>fleet-sprint ships inside the <code>@apralabs/apra-fleet</code> package. It needs a system Node.js 22.16+ and npm on PATH; the installer checks this first and stops, changing nothing, if either is missing. Install it from npm:</p>
@@ -1520,13 +1547,13 @@
 apra-fleet install    <span class="cm"># installs for Claude Code (default)</span>
 apra-fleet start      <span class="cm"># npm install registers no OS service: start the server</span></code></pre>
 
-  <p>Alternatively, download the standalone installer for your platform from <a href="https://github.com/Apra-Labs/apra-fleet/releases">GitHub Releases</a> (<code>apra-fleet-installer-darwin-arm64</code>, <code>apra-fleet-installer-linux-x64</code>, <code>apra-fleet-installer-win-x64.exe</code>) and run it &mdash; installation is the default action, and it registers and starts a user-level service, with the <code>apra-fleet</code> binary in <code>~/.apra-fleet/bin</code> (not added to PATH). Either way, fleet-sprint is installed into <code>~/.apra-fleet/workflows/fleet-sprint</code>.</p>
+  <p>Alternatively, download the standalone installer for your platform from <a href="https://github.com/Apra-Labs/apra-fleet/releases">GitHub Releases</a> (<code>apra-fleet-installer-darwin-arm64</code>, <code>apra-fleet-installer-darwin-x64</code>, <code>apra-fleet-installer-linux-x64</code>, <code>apra-fleet-installer-win-x64.exe</code>; per-OS download commands in <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/install.md#quick-install">docs/install.md</a>) and run it &mdash; installation is the default action, and it registers and starts a user-level service, with the <code>apra-fleet</code> binary in <code>~/.apra-fleet/bin</code> (not added to PATH; PowerShell: <code>&amp; "$HOME\.apra-fleet\bin\apra-fleet.exe" status</code>). Either way, fleet-sprint is installed into <code>~/.apra-fleet/workflows/fleet-sprint</code>.</p>
 
   <p>Every member a sprint uses needs <code>bd</code> (beads) runnable in its work folder; the install provides it (it needs npm on that machine). A member without <code>bd</code> fails the sprint's preflight before any work is dispatched, with an error naming the member and the fix.</p>
 
   <p>Then load the fleet MCP server in Claude Code (<code>/mcp</code>) and register members conversationally &mdash; registration is driven through your agent in plain language, e.g. "Register a local member called <code>dev1</code>, work folder <code>C:\work\myapp</code>." Registration validates connectivity and that the CLI is present; remote machines work over SSH, with passwords collected out-of-band (never typed into the chat).</p>
 
-  <p>One member is enough to start, and a single-member sprint avoids the multi-clone topology questions entirely. You will also want git credentials provisioned for the member so it can push the branch and open the PR &mdash; apra-fleet's <code>provision_vcs_auth</code> supports GitHub, Bitbucket, and <strong>Azure DevOps</strong> (org URL + PAT), so an AzDevOps-hosted git repo is fully supported. For a GitHub repo, opening the PR needs a GitHub App configured on the fleet (<code>setup_git_app</code>, see <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/github-app-setup.md">GitHub App setup</a>): with only a PAT the sprint pushes the branch but logs <code>[Publish PR Skipped] ... GitHub App not configured</code> and opens no PR.</p>
+  <p>One member is enough to start, and a single-member sprint avoids the multi-clone topology questions entirely. You will also want git credentials provisioned for the member so it can push the branch and open the PR &mdash; apra-fleet's <code>provision_vcs_auth</code> supports <strong>GitHub</strong>, Bitbucket, and <strong>Azure DevOps</strong> (org URL + PAT), so a GitHub- or AzDevOps-hosted git repo is fully supported. For a GitHub repo, opening the PR needs a GitHub App configured on the fleet (<code>setup_git_app</code>, see <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/github-app-setup.md">GitHub App setup</a>): with only a PAT the sprint pushes the branch but logs <code>[Publish PR Skipped] ... GitHub App not configured</code> and opens no PR.</p>
 
   <h3 id="s2-5">2.5 Scale sideways: one member per sprint, several sprints at once</h3>
 
@@ -1589,30 +1616,30 @@ node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs"    <span class="cm
 
   <figure>
     <div class="frame">
-      <img src="../../assets/marketing/supervisor-sprints.png" alt="Supervisor index, Sprints tab: the running sprint with its health badge, branch, goal, claimed bead scope and members, plus per-sprint Open live view, Raw log, Stop and Restart controls." loading="lazy">
+      <img src="assets/supervisor-sprints.png" alt="Supervisor index, Sprints tab: the running sprint with its health badge, branch, goal, claimed bead scope and members, plus per-sprint Open live view, Raw log, Stop and Restart controls." loading="lazy">
     </div>
-    <figcaption>assets/marketing/supervisor-sprints.png &mdash; supervisor index, Sprints tab (http://localhost:8787)</figcaption>
+    <figcaption>assets/supervisor-sprints.png &mdash; supervisor index, Sprints tab (http://localhost:8787)</figcaption>
   </figure>
 
   <figure>
     <div class="frame">
-      <img src="../../assets/marketing/supervisor-backlog.png" alt="Supervisor index, Backlog tab: the bead backlog as a filterable table with search and type, status, priority and model filters, each row showing its issue type, status, priority and assigned model tier." loading="lazy">
+      <img src="assets/supervisor-backlog.png" alt="Supervisor index, Backlog tab: the bead backlog as a filterable table with search and type, status, priority and model filters, each row showing its issue type, status, priority and assigned model tier." loading="lazy">
     </div>
-    <figcaption>assets/marketing/supervisor-backlog.png &mdash; supervisor index, Backlog tab</figcaption>
+    <figcaption>assets/supervisor-backlog.png &mdash; supervisor index, Backlog tab</figcaption>
   </figure>
 
   <figure>
     <div class="frame">
-      <img src="../../assets/marketing/supervisor-launch-form.png" alt="The Launch Sprint panel at the foot of the Backlog tab: a member list with a role dropdown per member, a goal selector, branch and base-branch fields, an override-relaunch-gate checkbox and a Launch Sprint button." loading="lazy">
+      <img src="assets/supervisor-launch-form.png" alt="The Launch Sprint panel at the foot of the Backlog tab: a member list with a role dropdown per member, a goal selector, branch and base-branch fields, an override-relaunch-gate checkbox and a Launch Sprint button." loading="lazy">
     </div>
-    <figcaption>assets/marketing/supervisor-launch-form.png &mdash; the Launch Sprint panel, at the foot of the Backlog tab</figcaption>
+    <figcaption>assets/supervisor-launch-form.png &mdash; the Launch Sprint panel, at the foot of the Backlog tab</figcaption>
   </figure>
 
   <figure>
     <div class="frame">
-      <img src="../../assets/marketing/sprint-live-view.png" alt="A sprint's live view: activity tree of commands and agent dispatches grouped by sprint cycle and phase, each row timestamped with its duration, model tier and success, failed or running status, above a header showing activity count, dollars spent, tokens and uptime." loading="lazy">
+      <img src="assets/sprint-live-view.png" alt="A sprint's live view: activity tree of commands and agent dispatches grouped by sprint cycle and phase, each row timestamped with its duration, model tier and success, failed or running status, above a header showing activity count, dollars spent, tokens and uptime." loading="lazy">
     </div>
-    <figcaption>assets/marketing/sprint-live-view.png &mdash; a sprint's live view, Activity Tree tab</figcaption>
+    <figcaption>assets/sprint-live-view.png &mdash; a sprint's live view, Activity Tree tab</figcaption>
   </figure>
 
   <p>Clicking into a live sprint gives the per-sprint dashboard: phases and agent dispatches streaming in as they happen, <strong>token and dollar cost totals</strong> accruing live, a Stop button, a live rendering of the beads work graph (which tasks exist, which are in progress, which closed) and &mdash; at the end &mdash; a <strong>verdict badge</strong> (PASS in green, FAIL in red) with a direct <strong>link to the opened PR</strong>. Every sprint's raw output is also captured to a per-sprint log file linked from the dashboard, so even a run that crashes before reporting anything structured leaves a traceable trail.</p>
@@ -1655,7 +1682,7 @@ node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs"    <span class="cm
       <tbody>
         <tr>
           <td>Decomposes your epics into a reviewed task graph with dependencies and per-task model tiers (cost routing)</td>
-          <td>Curating the epic and its children in beads with real acceptance criteria &mdash; including pulling your AzDevOps backlog across (beads' own <code>bd ado sync</code> / <code>bd import</code> do the transport; the curation is yours)</td>
+          <td>Curating the epic and its children in beads with real acceptance criteria &mdash; including pulling your AzDevOps or GitHub Issues backlog across (beads' own <code>bd ado sync</code> / <code>bd github sync</code> / <code>bd import</code> do the transport; the curation is yours)</td>
         </tr>
         <tr>
           <td>Implements tasks: real commits on a branch, one per task, build/lint/unit checks run before each commit</td>
@@ -1701,7 +1728,7 @@ node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs"    <span class="cm
 </section>
 
 <footer class="sources">
-  <p>Sources: this document was drafted from the apra-fleet repository's README, <code>docs/architecture.md</code>, <code>packages/apra-fleet-se/docs/overview.md</code> and <code>architecture.md</code>, <code>packages/apra-fleet-se/fleet-sprint/docs/README.md</code>, the agent role contracts under <code>packages/apra-fleet-se/apra-pm/agents/</code>, and the supervisor API in <code>packages/apra-fleet-se/src/supervisor/api.mjs</code>. The Azure DevOps import claims were checked against the beads project's documentation (DeepWiki, gastownhall/beads) and confirmed against the installed <code>bd</code> CLI (<code>bd ado --help</code>, <code>bd import --help</code>). The <code>bd remember</code> delivery path was verified against the role prompts' <code>bd memories</code> queries and <code>bd memories</code> search behavior. Claims about what agents refuse to do (improvising deploys, inventing scope, self-granting permissions) are taken from the role contracts verbatim.</p>
+  <p>Sources: this document was drafted from the apra-fleet repository's README, <code>docs/architecture.md</code>, <code>packages/apra-fleet-se/docs/overview.md</code> and <code>architecture.md</code>, <code>packages/apra-fleet-se/fleet-sprint/docs/README.md</code>, the agent role contracts under <code>packages/apra-fleet-se/apra-pm/agents/</code>, and the supervisor API in <code>packages/apra-fleet-se/src/supervisor/api.mjs</code>. The Azure DevOps and GitHub Issues import claims were checked against the beads project's documentation (DeepWiki, gastownhall/beads) and confirmed against the installed <code>bd</code> CLI (<code>bd github --help</code>, <code>bd github sync --help</code>, <code>bd ado --help</code>, <code>bd import --help</code>). The <code>bd remember</code> delivery path was verified against the role prompts' <code>bd memories</code> queries and <code>bd memories</code> search behavior. The supervisor and sprint screenshots are unretouched captures of a running supervisor. Claims about what agents refuse to do (improvising deploys, inventing scope, self-granting permissions) are taken from the role contracts verbatim.</p>
 </footer>
 
 </div>
