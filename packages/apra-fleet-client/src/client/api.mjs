@@ -1,4 +1,21 @@
 /**
+ * @typedef {Object} FleetSnapshotMember
+ * @property {string} id
+ * @property {string} name
+ * @property {string} icon
+ * @property {string|null} category
+ * @property {'busy'|'idle'|'offline'|'unknown'} status
+ * @property {number} [quietForS] While busy: seconds since the task last showed activity.
+ * @property {string} [reservedBy] Holder of the member reservation, when held.
+ */
+
+/**
+ * @typedef {Object} FleetSnapshot
+ * @property {string} version Server version.
+ * @property {FleetSnapshotMember[]} members
+ */
+
+/**
  * @typedef {Object} ExecutePromptOptions
  * @property {string} prompt - The prompt to send to the LLM on the remote member
  * @property {string} [agent] - Optional agent name to activate
@@ -1312,6 +1329,16 @@ export class ApraFleet {
      */
     async fleetStatus(options = {}) {
         return this.mcpClient.callTool('fleet_status', options);
+    }
+
+    /**
+     * Cheap read-only fleet view for status displays (the Claude Code
+     * fleet-status mod polls it). The result text is the JSON of a
+     * {@link FleetSnapshot}: every member's last-known status from local
+     * state only -- no SSH probes, no writes. Use fleetStatus for a live check.
+     */
+    async fleetSnapshot() {
+        return this.mcpClient.callTool('fleet_snapshot', {});
     }
 
     /**

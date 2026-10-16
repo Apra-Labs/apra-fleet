@@ -362,6 +362,15 @@ field set is typed as `ListedMember` in `api.mjs`, pinned against the
 `members` object list-members.ts builds by
 `test/client-server-typedef-parity.test.mjs`.
 
+#### `fleetSnapshot()`
+
+Calls `fleet_snapshot` -- a cheap read-only fleet view for status displays
+(the Claude Code fleet-status mod polls it). The result text is the JSON of a
+`FleetSnapshot`: `{ version, members: [{ id, name, icon, category, status,
+quietForS?, reservedBy? }] }`, `status` one of `busy`, `idle`,
+`offline`, `unknown`. Built from local state only -- no SSH probes, no writes;
+use `fleetStatus` for a live check.
+
 #### `fleetStatus(options: FleetStatusOptions = {})`
 
 Calls `fleet_status` -- status of all fleet members.

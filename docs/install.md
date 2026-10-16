@@ -158,6 +158,7 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
 | `~/.claude/skills/auto-sprint-args/` | Args contract for the `/auto-sprint` workflow (Claude only) |
 | `~/.claude/skills/fleet-sprint-cli/` | How to launch `apra-fleet workflow fleet-sprint` -- flag contract, preconditions, detached launch (all providers) |
 | `~/.claude/agents/` | PM role-agent files (planner, doer, reviewer, etc.), plus `schemas/` and `_shared/` -- written whenever PM is installed and the provider has an agents directory (not codex/copilot) |
+| `~/.apra-fleet/claude-plugins/` | Local Claude Code plugin marketplace `apra-fleet-local` holding the fleet-status mod (Claude only; see below) |
 
 For other providers, these are written to that provider's skill/config directories. For example, for Antigravity (`agy`), settings are written to `~/.gemini/antigravity-cli/settings.json`, and hooks / MCP configs are merged into `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json`. These configure the agy CLI you run the orchestrator in; agy members get their grants in their own agy project instead (see [Antigravity (agy) provider](agy-provider.md)).
 
@@ -365,6 +366,38 @@ control exactly which skills are installed:
 | `install --skill none` | neither |
 | `install --no-skill` | neither (same as `--skill none`) |
 
+## The fleet-status mod (Claude Code)
+
+`apra-fleet install --llm claude` (the default) installs **fleet-status**, a
+Claude Code mod that shows apra-fleet member status in Claude Code's status
+line and adds a `/fleet-status` pane (it reads the read-only `fleet_snapshot`
+MCP tool). The installer copies the mod into a local plugin marketplace,
+`~/.apra-fleet/claude-plugins/` (marketplace `apra-fleet-local`, plugin
+`fleet-status`), then runs:
+
+```bash
+claude plugin marketplace add ~/.apra-fleet/claude-plugins --scope user
+claude plugin install fleet-status@apra-fleet-local --scope user
+```
+
+Both are idempotent, and Claude Code reads the plugin straight from that folder,
+so re-running `install` (or upgrading apra-fleet) just refreshes the files; run
+`/reload-plugins` or start a new session to pick them up. When both succeed,
+apra-fleet stops writing `settings.statusLine` and removes the statusLine entry
+it wrote earlier (the one running `fleet-statusline.sh`). When either fails --
+`claude` not on PATH, a `claude` too old to have the `plugin` command, or a
+non-zero exit -- install prints one line with the reason and keeps the
+statusLine script. The install summary shows `Claude mod: fleet-status
+installed` or `skipped: <reason>`.
+
+For every provider, install never overwrites a statusLine you configured
+yourself: it only writes (or replaces) the entry that runs apra-fleet's own
+`fleet-statusline.sh`, and otherwise prints that your statusLine was kept.
+`apra-fleet uninstall` runs `claude plugin uninstall
+fleet-status@apra-fleet-local --scope user` and `claude plugin marketplace
+remove apra-fleet-local` (best-effort), then deletes
+`~/.apra-fleet/claude-plugins/`.
+
 ## Install for other providers (Antigravity, Codex, Copilot, OpenCode)
 
 By default, `install` configures Apra Fleet for **Claude Code**. Use the `--llm`
@@ -411,7 +444,9 @@ are written and how permission denials are reported is described in
 ## Uninstall
 
 The built-in uninstall command surgically removes MCP registration,
-permissions, hooks, status line, skill directories, and PM agent files
+permissions, hooks, status line (only apra-fleet's own entry), the
+fleet-status Claude Code mod and its `~/.apra-fleet/claude-plugins/`
+marketplace, skill directories, and PM agent files
 (`~/.claude/agents/`, or the equivalent provider directory) without touching
 your other settings:
 

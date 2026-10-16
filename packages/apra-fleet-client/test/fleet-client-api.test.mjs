@@ -161,6 +161,24 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'ok' });
     });
 
+    test('fleetSnapshot', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { members: [] };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const result = await fleet.fleetSnapshot();
+
+        assert.strictEqual(calledName, 'fleet_snapshot');
+        assert.deepStrictEqual(calledArgs, {});
+        assert.deepStrictEqual(result, { members: [] });
+    });
+
     test('memberDetail', async () => {
         let calledName, calledArgs;
         const mockClient = {
@@ -750,11 +768,12 @@ describe('apra-fleet-client api-reference method-doc parity', () => {
         // apra-fleet-4qtu.3.2's memberGitStatus addition, which followed
         // apra-fleet-4qtu.2.1's memberOwner; 39 once the KB redesign's
         // kbExport, kbBibleCommit, codeReindex, codeStatus and sessionStats
-        // merged in). A future wrapper
+        // merged in; 40 with fleetSnapshot for the Claude Code fleet-status
+        // mod). A future wrapper
         // addition/removal must update this assertion deliberately, rather
         // than silently passing the >25 sanity floor above while docs drift
         // out of sync.
-        assert.strictEqual(methods.size, 39, `expected exactly 39 ApraFleet methods, parsed ${methods.size}: ${[...methods].sort().join(', ')}`);
+        assert.strictEqual(methods.size, 40, `expected exactly 40 ApraFleet methods, parsed ${methods.size}: ${[...methods].sort().join(', ')}`);
 
         // Documented method names are those referenced as `name(...)` inside a
         // backtick code span anywhere in the doc (covers both a method's own

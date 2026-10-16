@@ -36,7 +36,7 @@ this pair as "member identifier" rather than repeating it.
 **Authentication and git:** `provision_llm_auth`, `setup_ssh_key`, `setup_git_app`,
 `provision_vcs_auth`, `revoke_vcs_auth`, `vcs_credential_exec`.
 
-**Status and maintenance:** `fleet_status`, `member_detail`, `session_stats`,
+**Status and maintenance:** `fleet_status`, `fleet_snapshot`, `member_detail`, `session_stats`,
 `update_llm_cli`, `shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
 
 **Credential store:** `credential_store_set`, `credential_store_list`,
@@ -534,6 +534,24 @@ Updates -- or, on request, installs -- the LLM provider CLI on a member.
 ## 4. Observability Tools
 
 Two-layer monitoring -- a fleet-wide summary and a per-member deep dive.
+
+### `fleet_snapshot`
+
+A cheap, read-only fleet view for status displays -- the Claude Code
+fleet-status mod polls it. Takes no arguments and returns JSON:
+
+```json
+{ "version": "0.5.0",
+  "members": [ { "id": "...", "name": "alice", "icon": "...", "category": "build",
+                 "status": "busy", "quietForS": 134, "reservedBy": "run-1" } ] }
+```
+
+`status` is the last-known state (`busy`, `idle`, `offline`, `unknown`) that
+`execute_prompt`, the stall detector and `fleet_status` persist; `quietForS`
+(busy only) is seconds since the task last showed activity. It reads local
+state only -- no SSH probes and no writes -- so it is safe to poll. Use
+`fleet_status` when you need a live check. FULL sessions only; member
+sessions are not served it.
 
 ### `fleet_status`
 
