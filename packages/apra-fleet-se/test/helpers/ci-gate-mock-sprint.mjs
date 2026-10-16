@@ -10,8 +10,8 @@ import { runDevelopLoopScenario, withScenarioMarkers, mockCmdResult } from './mo
 // command of its own beyond that stream: the CI gate issues none, and the
 // Finalization barrier issues none when it does not extend. A scenario that
 // extends (a Fix-CI bead plus another cycle) needs a new bd stream, which can
-// only be recorded against a real `bd` (npm run test:record); those paths are
-// covered at unit level by sprint-extension.test.mjs instead. Each scenario
+// only be recorded against a real `bd` (npm run test:record), so such a
+// scenario passes its own `tag` and commits its own recording. Each scenario
 // must live in its OWN test file: the replay queues are per process and a
 // second run of the same tag in one process would find them consumed.
 //
