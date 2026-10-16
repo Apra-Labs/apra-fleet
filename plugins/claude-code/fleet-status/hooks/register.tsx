@@ -223,6 +223,19 @@ export function expiresSoon(row: SecretRow): boolean {
   return row.expiry.endsWith('remaining') && !/\dh\b/.test(row.expiry)
 }
 
+/** credential_store_list's expiry, compact for the pane: "167h 59m remaining" -> "6d left". */
+export function expiryLabel(expiry: string): string {
+  if (expiry === 'none') return 'no expiry'
+  const hm = /^(\d+)h (\d+)m remaining$/.exec(expiry)
+  if (hm) {
+    const h = Number(hm[1])
+    return h >= 48 ? `${Math.floor(h / 24)}d left` : `${h}h ${hm[2]}m left`
+  }
+  const m = /^(\d+)m \d+s remaining$/.exec(expiry)
+  if (m) return `${m[1]}m left`
+  return expiry.replace(/ remaining$/, ' left')
+}
+
 /** The status line's secrets part: only when some secret needs attention. */
 export function secretsStatus(s: SecretsView): string | undefined {
   const n = s.items.filter(expiresSoon).length
@@ -287,6 +300,7 @@ export function removeNote(name: string, replies: string[], isError?: boolean): 
   const first = replies.join('\n').trim().split('\n')[0] ?? ''
   if (!isError && /has been removed/.test(first)) return `Removed ${name}.`
   const why = first.replace(/^\W+/, '').replace(/\s*(or\s+)?set force=true.*$/i, '').replace(/\s*Error code: [\w-]+\.?/, '')
+    .replace(/^Cannot remove member "[^"]*":\s*/, '')
   return `Not removed: ${why || 'no reply from the server'}`
 }
 
@@ -328,6 +342,9 @@ function refreshSecrets($: EngineInterface): Promise<void> {
       fresh = { ...prev, fetchedAt: Date.now(), error: err instanceof Error ? err.message : String(err) }
     }
     await update($, secrets, () => fresh)
+    // A delete or apply changes the expiring count: keep the status line in step.
+    const v = await read($, view)
+    if (v.fetchedAt) $.ui.status(withSecrets(statusLine(v), fresh))
   })().finally(() => {
     secretsInFlight = undefined
   })
@@ -595,7 +612,7 @@ export const register: Register = on => {
       <Box flexDirection="column" paddingLeft={1}>
         {f.replacing || !Input
           ? <Text>{`Name: ${f.name || '(type a name)'}`}{f.replacing ? <Text dimColor>  (replacing its value)</Text> : null}</Text>
-          : <Input key="secret-name" label="Name" placeholder="GITHUB_TOKEN" value={f.name} submitLabel="ok"
+          : <Input key="secret-name" label="Name" autoFocus placeholder="GITHUB_TOKEN" value={f.name} submitLabel="ok"
               onInput={(t: string) => setForm(cur => ({ ...cur, name: t.trim() }))}
               onSubmit={(t: string) => setForm(cur => ({ ...cur, name: t.trim() }))} />}
         {Input
@@ -647,7 +664,8 @@ export const register: Register = on => {
         {rule}
         <Box flexDirection="row" gap={2}>
           <Text bold>{`${KEY} Secrets`}</Text>
-          {f.mode === 'closed' ? <Button key="secret-add" label="add" plain onPress={() => openForm()} /> : null}
+          {/* Always drawn: a pressed control that vanished would drop the pane's focus back to the prompt. */}
+          <Button key="secret-add" label="add" plain onPress={() => openForm()} />
         </Box>
         {s.error ? <Text color="error">{`secrets: ${s.error}`}</Text> : null}
         {s.items.length === 0
@@ -657,7 +675,7 @@ export const register: Register = on => {
               <Box width={Math.min(28, Math.max(...s.items.map(r => r.name.length)) + 2)}><Text bold wrap="truncate-end">{row.name}</Text></Box>
               <Box width={12}><Text dimColor>{row.scope}</Text></Box>
               <Box width={16}><Text dimColor wrap="truncate-end">{row.members === '*' ? 'all members' : row.members}</Text></Box>
-              <Box flexGrow={1}><Text color={expiresSoon(row) ? 'warning' : undefined} dimColor={!expiresSoon(row)} wrap="truncate-end">{row.expiry === 'none' ? 'no expiry' : row.expiry}</Text></Box>
+              <Box flexGrow={1} marginRight={1}><Text color={expiresSoon(row) ? 'warning' : undefined} dimColor={!expiresSoon(row)} wrap="truncate-end">{expiryLabel(row.expiry)}</Text></Box>
               <Box flexDirection="row" gap={1}>
                 <Button key={`secret-replace:${row.name}`} label="replace" plain dimColor onPress={() => openForm(row)} />
                 <Button key={`secret-delete:${row.name}`} label={CROSS} plain dimColor

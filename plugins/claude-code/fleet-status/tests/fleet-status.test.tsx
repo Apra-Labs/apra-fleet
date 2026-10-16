@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { McpToolResult, On } from 'claude-code'
 
 import {
-  classifyError, clock, entryLinkWarning, expiresSoon, paneRows, parseEntryLink, parseSecrets, parseSnapshot,
+  classifyError, clock, entryLinkWarning, expiresSoon, expiryLabel, paneRows, parseEntryLink, parseSecrets, parseSnapshot,
   removeNote, secretsStatus, statusLine, summaryText, withSecrets,
 } from '../hooks/register'
 import type { FleetView } from '../types'
@@ -89,14 +89,15 @@ describe('fleet-status formatting', () => {
 // status line text is kept for the test to read.
 type Seen = { status: (string | undefined)[]; reads: number; calls: { tool: string; args: Record<string, unknown> }[] }
 type Reply = McpToolResult | { deny: string }
-function serveSnapshot(on: On, reply: Reply, tools: Record<string, Reply> = {}): Seen {
+function serveSnapshot(on: On, reply: Reply, tools: Record<string, Reply | (() => Reply)> = {}): Seen {
   const seen: Seen = { status: [], reads: 0, calls: [] }
-  const all: Record<string, Reply> = { credential_store_list: text('[]'), ...tools, fleet_snapshot: reply }
+  const all: Record<string, Reply | (() => Reply)> = { credential_store_list: text('[]'), ...tools, fleet_snapshot: reply }
   on('mcp.call', ($, e) => {
     expect(e.server).toBe('apra-fleet')
     seen.calls.push({ tool: e.tool, args: (e.args ?? {}) as Record<string, unknown> })
     if (e.tool === 'fleet_snapshot') seen.reads += 1
-    const r = all[e.tool]
+    const got = all[e.tool]
+    const r = typeof got === 'function' ? got() : got
     if (!r) return { deny: `no tool "${e.tool}" in this test` }
     return 'deny' in r ? r : { value: r }
   })
@@ -221,6 +222,14 @@ describe('fleet-status secrets formatting', () => {
     expect(withSecrets('x', { items: [], fetchedAt: 1 })).toBe('x')
   })
 
+  test('expiry labels are compact', async () => {
+    expect(expiryLabel('none')).toBe('no expiry')
+    expect(expiryLabel('167h 59m remaining')).toBe('6d left')
+    expect(expiryLabel('47h 5m remaining')).toBe('47h 5m left')
+    expect(expiryLabel('12m 3s remaining')).toBe('12m left')
+    expect(expiryLabel('expired')).toBe('expired')
+  })
+
   test('the entry link is fine over https or loopback, flagged over plain http elsewhere', async () => {
     expect(entryLinkWarning('https://fleet.example.com/ui/#/secret-entry/abc')).toBe(undefined)
     expect(entryLinkWarning('http://127.0.0.1:7601/ui/#/secret-entry/abc')).toBe(undefined)
@@ -245,7 +254,7 @@ describe('fleet-status secrets formatting', () => {
     expect(removeNote('bob', ['\u26D4 Member "bob" is currently busy. Wait for the task to complete or set force=true to remove anyway.']))
       .toBe('Not removed: Member "bob" is currently busy. Wait for the task to complete')
     expect(removeNote('bob', ['\u26D4 Cannot remove member "bob": held by sprint-42. Error code: member-held. Set force=true to remove anyway.']))
-      .toBe('Not removed: Cannot remove member "bob": held by sprint-42.')
+      .toBe('Not removed: held by sprint-42.')
   })
 })
 
@@ -258,7 +267,7 @@ describe('fleet-status secrets pane', () => {
     await $.command.run(RUN)
     expect(seen.status.at(-1)?.endsWith('\uD83D\uDD11 1 expiring')).toBe(true)
     const ui = await $.ui.mount(MOUNT)
-    for (const t of ['GITHUB_TOKEN', 'aws_key', 'all members', 'alice,bob', '12m 3s remaining', 'no expiry']) {
+    for (const t of ['GITHUB_TOKEN', 'aws_key', 'all members', 'alice,bob', '12m left', 'no expiry']) {
       expect(await ui.find({ type: 'Text', text: t })).toBeDefined()
     }
     await ui.unmount()
@@ -309,16 +318,25 @@ describe('fleet-status secrets pane', () => {
     await ui.unmount()
   })
 
-  test('delete asks to confirm, then deletes by name', async ($, on) => {
-    const seen = serveSnapshot(on, OK, { credential_store_list: text(SECRETS), credential_store_delete: text('deleted') })
+  test('delete asks to confirm, then deletes by name and updates the status line', async ($, on) => {
+    let list = SECRETS
+    const seen = serveSnapshot(on, OK, {
+      credential_store_list: () => text(list),
+      credential_store_delete: () => {
+        list = JSON.stringify(JSON.parse(SECRETS).filter((r: { name: string }) => r.name !== 'aws_key'))
+        return text('deleted')
+      },
+    })
     await $.command.run(RUN)
     const ui = await $.ui.mount(MOUNT)
-    await ui.press({ key: 'secret-delete:GITHUB_TOKEN' })
+    expect(seen.status.at(-1)?.includes('expiring')).toBe(true)
+    await ui.press({ key: 'secret-delete:aws_key' })
     expect(seen.calls.some(c => c.tool === 'credential_store_delete')).toBe(false)
-    expect(await ui.find({ type: 'Text', text: 'Delete secret GITHUB_TOKEN?' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Delete secret aws_key?' })).toBeDefined()
     await ui.press({ key: 'secret-delete-confirm' })
-    expect(seen.calls.find(c => c.tool === 'credential_store_delete')?.args).toEqual({ name: 'GITHUB_TOKEN' })
-    expect(await ui.find({ type: 'Text', text: 'Deleted GITHUB_TOKEN.' })).toBeDefined()
+    expect(seen.calls.find(c => c.tool === 'credential_store_delete')?.args).toEqual({ name: 'aws_key' })
+    expect(await ui.find({ type: 'Text', text: 'Deleted aws_key.' })).toBeDefined()
+    expect(seen.status.at(-1)?.includes('expiring')).toBe(false)
     await ui.unmount()
   })
 })
