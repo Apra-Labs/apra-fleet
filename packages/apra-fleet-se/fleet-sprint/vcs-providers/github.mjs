@@ -434,10 +434,11 @@ function capabilitiesForHost(_host) {
 // ---------------------------------------------------------------------------
 //
 // The orchestrator -- never a doer -- triggers and awaits the target repo's
-// CI workflow on the sprint branch head, so "CI is green" becomes an
-// engine-verified fact handed to the reviewer instead of an acceptance
-// criterion a doer dispatch cannot satisfy (a doer's credential is refused
-// workflow_dispatch with HTTP 403 "Resource not accessible by integration").
+// CI workflow on the sprint branch head (once per sprint, at Finalization),
+// so "CI is green" becomes an engine-verified fact reported in the PR body
+// instead of an acceptance criterion a doer dispatch cannot satisfy (a doer's
+// credential is refused workflow_dispatch with HTTP 403 "Resource not
+// accessible by integration"). It never reaches a doer or reviewer prompt.
 //
 // Every GitHub REST literal the gate needs lives HERE; ../ci-gate.mjs only
 // sequences the five actions below and reads their answers through the parse

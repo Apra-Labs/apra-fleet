@@ -2146,6 +2146,9 @@ export async function runDevelopLoopScenario(tag, {
     // Optional passthrough for args.skip_regression (the --skip-regression
     // launch option), so a scenario can prove the regression phase is skipped.
     skipRegression,
+    // Optional passthrough for args.ci_gate (the --ci-gate launch option); a
+    // scenario fakes the CI REST answers through `onCommand`.
+    ciGate,
     // Seeded beads memories for the sprint-start memory sweep -- see
     // buildMockFleetApi's `beadsMemories` option comment. The keys the
     // sweep forgot come back as `forgottenMemories` on the result.
@@ -2282,6 +2285,7 @@ export async function runDevelopLoopScenario(tag, {
                 ...(roleMapWarnings !== undefined ? { roleMapWarnings } : {}),
                 ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
                 ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
+                ...(ciGate !== undefined ? { ci_gate: ciGate } : {}),
             }, true);
         } catch (err) {
             error = err;

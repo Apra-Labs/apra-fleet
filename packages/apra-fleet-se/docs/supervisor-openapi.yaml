@@ -384,6 +384,28 @@ paths:
                       type: string
                       enum: [run, skip]
                       default: run
+                ci_gate:
+                  description: >
+                    Optional engine CI gate (alias ciGate), an object or its
+                    JSON string. Validated with the engine's validateCiGate
+                    (malformed -> 400, field ci_gate) and forwarded as the
+                    child's --ci-gate: the workflow runs once per sprint at
+                    Finalization, in parallel with Final Review/Regression/
+                    Harvest; Publish PR awaits it and reports it in the PR
+                    body. Never changes the verdict or blocks the PR.
+                  oneOf:
+                    - type: string
+                    - type: object
+                      additionalProperties: false
+                      required: [workflow]
+                      properties:
+                        workflow:
+                          type: string
+                          pattern: '^[A-Za-z0-9._-]+$'
+                        timeout_s:
+                          type: integer
+                          minimum: 1
+                          default: 3600
                 overrideRelaunchGate:
                   type: boolean
                   description: >
