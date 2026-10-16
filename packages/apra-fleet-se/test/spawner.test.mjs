@@ -93,10 +93,23 @@ async function waitForFileContent(filePath, marker, { timeoutMs = 3000, interval
 function isAlive(pid) {
     try {
         process.kill(pid, 0);
-        return true;
     } catch {
         return false;
     }
+    // A killed orphan whose new parent (PID 1) never reaps it stays a zombie,
+    // and kill(pid, 0) still succeeds on a zombie. That happens in containers
+    // whose PID 1 is not an init (no tini/--init). On Linux, read the state
+    // from /proc and count a zombie as dead.
+    if (process.platform === 'linux') {
+        try {
+            const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
+            const state = stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3);
+            if (state === 'Z' || state === 'X') return false;
+        } catch {
+            return false;
+        }
+    }
+    return true;
 }
 
 // -- fake, in-process spawn for fast/deterministic unit tests ---------------
