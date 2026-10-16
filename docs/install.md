@@ -370,8 +370,10 @@ control exactly which skills are installed:
 
 `apra-fleet install --llm claude` (the default) installs **fleet-status**, a
 Claude Code mod that shows apra-fleet member status in Claude Code's status
-line and adds a `/fleet-status` pane (it reads the read-only `fleet_snapshot`
-MCP tool). The installer copies the mod into a local plugin marketplace,
+line and adds a `/fleet-status` pane (it polls the read-only `fleet_snapshot`
+and `credential_store_list` MCP tools; removing a member and managing secrets
+run only on a press in the pane, see
+[design-fleet-status-mod.md](design-fleet-status-mod.md)). The installer copies the mod into a local plugin marketplace,
 `~/.apra-fleet/claude-plugins/` (marketplace `apra-fleet-local`, plugin
 `fleet-status`), then runs:
 

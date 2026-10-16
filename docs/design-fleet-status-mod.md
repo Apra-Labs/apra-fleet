@@ -1,13 +1,16 @@
-# Design: fleet-status, a Claude Code mod for apra-fleet (phase 1)
+# Design: fleet-status, a Claude Code mod for apra-fleet
 
-Issue: #672. Status: phase 1 implemented on `feat/fleet-status-mod`.
+Issue: #672. Status: phase 1 (status line and member pane) merged in #746;
+phase 2 (secrets, removing a member) on `feat/fleet-status-secrets`.
 
 ## Goal
 
 Basic fleet observability inside Claude Code, without leaving the session:
 who is busy, who looks stalled, who is idle or offline -- at a glance, always
-current. Simplicity is the cornerstone: one read-only server tool, one hooks
-file, no actions, no new daemons.
+current, and the everyday actions on that view (manage secrets, remove a
+member) without asking the model. Simplicity is the cornerstone: existing
+server tools plus one read-only snapshot tool, one hooks file, no new
+daemons.
 
 Once the mod is installed, apra-fleet stops writing Claude Code's
 `settings.statusLine` (the mod's status entry replaces it).
@@ -48,6 +51,60 @@ Once the mod is installed, apra-fleet stops writing Claude Code's
    colored by state through the user's theme keys (warning / success /
    error / permission), so it follows light and dark themes.
 
+3. **Remove** beside each member in the pane: a confirm row
+   (`Remove bob from the fleet? [Remove] [Cancel]`), then `remove_member`
+   by name, never with `force`. The server's own guards still apply: a busy
+   or held member is refused, and the pane shows the refusal
+   (`Not removed: Member "bob" is currently busy...`).
+
+4. **Secrets** section under the members: every stored secret by name,
+   scope, allowed members and expiry (`credential_store_list`; values are
+   never listed), with `replace` and `delete` per row (delete confirms
+   first), and `add`. Secrets that are expired or within an hour of
+   expiring add `<key> N expiring` to the status line.
+
+5. **Folding and "more"**: each section header (`Members 6`, `Secrets 4`)
+   folds and unfolds its section; Members starts open and Secrets folded,
+   its header still counting expiring secrets. Rows are compact by
+   default (member: state, name, x; secret: name, an expiry only when it is
+   close, replace, x); `more...` shows the less-used fields (quiet time,
+   holder, stall note; scope, allowed members, expiry). The add/replace
+   form asks only for the name: all members, persistent and never
+   expiring are the defaults, with `more options...` for the rest. The
+   layout is remembered across sessions (`$.store`).
+
+6. **Insert a secret's token**: pressing a secret's name puts
+   `{{secret.NAME}}` at the prompt's cursor (`$.prompt.fill`, mode
+   `insert`), the placeholder the fleet resolves inside member-bound
+   commands. Only the token is inserted, never the value.
+
+## Secrets: the value never passes through Claude Code
+
+The mod sends names and settings only. A value is typed in one of two
+places, neither of which is Claude Code:
+
+1. **Another terminal (shown first; works headless):** the pane shows
+   `apra-fleet secret --set NAME --persist` with a Copy button. The CLI
+   prompts with input hidden and stores the value encrypted. The pane's
+   `Apply members and expiry` then calls `credential_store_update` with the
+   members and TTL picked in the form. The command always persists; a
+   session-only secret uses the browser link.
+2. **The server's one-time form:** `Get browser link` calls
+   `credential_store_set` with `return_url: true`; the server answers with a
+   single-use link (10 minute TTL) to its own entry page, where the value is
+   typed into a masked field and posted straight to the server. The pane
+   shows the link with Copy, and warns when it is plain http to a
+   non-loopback host (the value would cross the network unencrypted).
+
+Claude Code's own `Input` is never used for a value: it is unmasked, and
+any other plugin's `ui.input` hooks would see the text. Canary check
+(2026-10-16, Claude Code 2.1.301, HTTP transport): one value entered
+through the pane's browser link and one through the CLI, then the model
+asked to list secrets; neither value (plain or base64) appeared in the
+session transcript, the `--debug-file` log, the server log, the terminal
+scrollback or any other file under the sandbox home, and both decrypted
+correctly from the store.
+
 ## Architecture
 
 ```
@@ -84,7 +141,10 @@ apra-fleet server (stdio or http, already configured by install)
   `mcp__apra-fleet__*` allow rule that `apra-fleet install --llm claude`
   already writes covers it. A plugin's own hooks never answer for its own
   calls (the engine skips re-entry), so the mod cannot self-approve -- and
-  should not. Either way the mod calls only `fleet_snapshot`.
+  should not. Polling calls only `fleet_snapshot` and
+  `credential_store_list`; the write tools (`credential_store_set`,
+  `credential_store_update`, `credential_store_delete`, `remove_member`)
+  run only on a press in the pane.
 
 ## Surfaces
 
@@ -116,10 +176,12 @@ Developer loop: `claude --plugin-dir plugins/claude-code/fleet-status`
 (hot-reloads on save); `claude plugin validate` and `claude plugin test`
 on the same folder.
 
-## Out of scope for phase 1
+## Not yet
 
-- Sprints, tasks, KB/code-intel health.
-- Actions (stop, dispatch, reserve) -- read-only by design.
+- Sprint status (next): needs a read-only server tool, since the
+  supervisor API takes a bearer token the mod must not hold.
+- Tasks, KB/code-intel health; member actions beyond removal (stop,
+  dispatch, reserve).
 - A hosted view (`https://fleet.apralabs.com/<workspace>`) that would reach
   mobile and desktop panes beyond the local session; the mod's data shape
   (`fleet_snapshot`) is the seam for it.
