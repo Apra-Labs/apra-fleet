@@ -17,6 +17,7 @@ import path from 'node:path';
 
 const root = path.resolve(__dirname, '..');
 const manifestPath = path.join(root, 'dist', 'sea-manifest.json');
+const configPath = path.join(root, 'dist', 'sea-config.json');
 
 describe('gen-sea-config.mjs -- generated SEA manifest', () => {
   let manifest: {
