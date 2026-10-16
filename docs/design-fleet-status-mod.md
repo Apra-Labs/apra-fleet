@@ -63,6 +63,21 @@ Once the mod is installed, apra-fleet stops writing Claude Code's
    first), and `add`. Secrets that are expired or within an hour of
    expiring add `<key> N expiring` to the status line.
 
+5. **Folding and "more"**: each section header (`Members 6`, `Secrets 4`)
+   folds and unfolds its section; Members starts open and Secrets folded,
+   its header still counting expiring secrets. Rows are compact by
+   default (member: state, name, x; secret: name, an expiry only when it is
+   close, replace, x); `more...` shows the less-used fields (quiet time,
+   holder, stall note; scope, allowed members, expiry). The add/replace
+   form asks only for the name: all members, persistent and never
+   expiring are the defaults, with `more options...` for the rest. The
+   layout is remembered across sessions (`$.store`).
+
+6. **Insert a secret's token**: pressing a secret's name puts
+   `{{secret.NAME}}` at the prompt's cursor (`$.prompt.fill`, mode
+   `insert`), the placeholder the fleet resolves inside member-bound
+   commands. Only the token is inserted, never the value.
+
 ## Secrets: the value never passes through Claude Code
 
 The mod sends names and settings only. A value is typed in one of two

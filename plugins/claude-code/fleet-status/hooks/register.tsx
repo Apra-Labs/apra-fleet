@@ -30,9 +30,9 @@
 // Source is ASCII only: glyphs are written as \u escapes.
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, UiPressArgument } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren, UiPressArgument } from 'claude-code'
 
-import type { FleetMember, FleetMemberStatus, FleetView, MemberAction, SecretForm, SecretRow, SecretsView } from '../types'
+import type { FleetMember, FleetMemberStatus, FleetView, MemberAction, PaneLayout, SecretForm, SecretRow, SecretsView } from '../types'
 
 const SERVER = 'apra-fleet'
 const TOOL_PREFIX = 'mcp__apra-fleet__'
@@ -59,6 +59,11 @@ const view = atom({ plugin: 'fleet-status', key: 'view' } as const, { members: [
 const secrets = atom({ plugin: 'fleet-status', key: 'secrets' } as const, { items: [], fetchedAt: 0 } as SecretsView)
 const CLOSED_FORM: SecretForm = { mode: 'closed', name: '', members: '', keep: 'persistent', ttl: 'none' }
 const secretForm = atom({ plugin: 'fleet-status', key: 'secretForm' } as const, CLOSED_FORM)
+// Members open, secrets folded; the less-used fields behind "more". Kept
+// across sessions in $.store.
+export const DEFAULT_LAYOUT: PaneLayout = { membersOpen: true, secretsOpen: false, moreMembers: false, moreSecrets: false, moreOptions: false }
+const LAYOUT_KEY = 'layout'
+const layout = atom({ plugin: 'fleet-status', key: 'layout' } as const, DEFAULT_LAYOUT)
 const memberAction = atom({ plugin: 'fleet-status', key: 'memberAction' } as const, {} as MemberAction)
 
 const GLYPH: Record<FleetMemberStatus, string> = {
@@ -80,6 +85,9 @@ const RULE = '\u2500'
 // One-glyph remove/delete control: a narrow x, one column wide on every
 // terminal (the wastebasket emoji's width varies and would break columns).
 const CROSS = '\u2715'
+const OPEN = '\u25BE'
+const CLOSED = '\u25B8'
+const MORE = '\u2026'
 
 /** 134 -> "02:14", 3725 -> "1:02:05". */
 export function clock(s: number): string {
@@ -152,12 +160,18 @@ export function withSecrets(line: string | undefined, s: SecretsView): string | 
   return line ? `${line}  ${extra}` : extra
 }
 
-/** Body rows the pane draws for a view: header, counts, rule, groups, footer. */
-export function paneRows(v: FleetView): number {
-  if (v.members.length === 0) return v.error ? 4 : 3
+/**
+ * Body rows the pane draws for the members part: title, rule, section header,
+ * the error line, then (open) a label per category and a row per member, or
+ * the empty/error lines; and the footer.
+ */
+export function paneRows(v: FleetView, l: PaneLayout = DEFAULT_LAYOUT): number {
+  const fixed = 4
+  if (!l.membersOpen) return fixed + (v.error && v.members.length > 0 ? 1 : 0)
+  if (v.members.length === 0) return fixed + 1 + (v.error === 'server not reachable' ? 1 : 0)
   const categories = new Set(v.members.map(m => m.category ?? '')).size
   const labelled = categories > 1 || v.members.some(m => m.category !== null)
-  return 4 + (v.error ? 1 : 0) + v.members.length + (labelled ? categories * 2 : 0)
+  return fixed + (v.error ? 1 : 0) + v.members.length + (labelled ? categories : 0)
 }
 
 /** Plain-text summary, the /fleet-status transcript line. */
@@ -416,11 +430,23 @@ async function deleteSecret($: EngineInterface, name: string): Promise<void> {
   await refreshSecrets($)
 }
 
-/** Rows the Secrets section takes in the pane: rule, title, rows (or one line), form. */
-export function secretsRows(s: SecretsView, f: SecretForm): number {
+/** Rows the Secrets section takes in the pane: rule and header, then (open) the list, confirm, form and note. */
+export function secretsRows(s: SecretsView, f: SecretForm, l: PaneLayout = DEFAULT_LAYOUT): number {
+  if (!l.secretsOpen) return 2
   const list = Math.max(1, s.items.length) + (s.error ? 1 : 0)
-  const form = f.mode === 'form' ? 7 : f.mode === 'link' ? 3 + (f.warning ? 1 : 0) : 0
+  const form = f.mode === 'form' ? 4 + (l.moreOptions ? 3 : 0) : f.mode === 'link' ? 3 + (f.warning ? 1 : 0) : 0
   return 2 + list + form + (f.note ? 1 : 0) + (f.confirmDelete ? 1 : 0)
+}
+
+/** The token the fleet resolves to a secret's value inside a member-bound command. */
+export function secretToken(name: string): string {
+  return `{{secret.${name}}}`
+}
+
+async function setLayout($: EngineInterface, patch: Partial<PaneLayout>): Promise<void> {
+  const next = await update($, layout, cur => ({ ...cur, ...patch }))
+  // Remembering the layout is a convenience: a store that refuses must not undo the toggle.
+  await $.store.set(LAYOUT_KEY, next).catch(() => undefined)
 }
 
 let inFlight: Promise<void> | undefined
@@ -463,6 +489,8 @@ export const register: Register = on => {
       description: 'Show every apra-fleet member and what it is doing',
     })
     startedAt = Date.now()
+    const saved = (await $.store.get(LAYOUT_KEY)) as Partial<PaneLayout> | undefined
+    if (saved && typeof saved === 'object') await update($, layout, () => ({ ...DEFAULT_LAYOUT, ...saved }))
     poll?.cancel()
     poll = $.clock.every(POLL_MS, () => void refresh($))
     void refresh($)
@@ -474,7 +502,8 @@ export const register: Register = on => {
     const v = await read($, view)
     // Inline (above the prompt) the pane asks for the rows its content takes;
     // docked beside the transcript it is floor to ceiling anyway.
-    const rows = paneRows(v) + memberActionRows(await read($, memberAction)) + secretsRows(await read($, secrets), await read($, secretForm))
+    const l = await read($, layout)
+    const rows = paneRows(v, l) + (l.membersOpen ? memberActionRows(await read($, memberAction)) : 0) + secretsRows(await read($, secrets), await read($, secretForm), l)
     await $.ui.open({ id: PANE, title: 'Fleet', rows })
     return { text: summaryText(v) }
   })
@@ -519,28 +548,45 @@ export const register: Register = on => {
       </Box>
     )
 
+    const l = await read($, layout)
+    const toggle = (patch: Partial<PaneLayout>) => () => void setLayout($, patch)
+    // A section header: the fold control, a summary, then the section's own controls.
+    const sectionHeader = (key: string, open: boolean, title: string, summary: RenderChildren, controls: RenderChildren) => (
+      <Box flexDirection="row" justifyContent="space-between">
+        <Box flexDirection="row" gap={2}>
+          <Button key={key} label={`${open ? OPEN : CLOSED} ${title}`} plain onPress={toggle(key === 'fold-members' ? { membersOpen: !open } : { secretsOpen: !open })} />
+          {summary}
+        </Box>
+        <Box flexDirection="row" gap={2}>{controls}</Box>
+      </Box>
+    )
+    const moreButton = (key: string, shown: boolean, patch: Partial<PaneLayout>) => (
+      <Button key={key} label={shown ? 'less' : `more${MORE}`} plain dimColor onPress={toggle(patch)} />
+    )
+
     // --- Members ---
-    let membersBlock
+    const counts = (['busy', 'unknown', 'idle', 'offline'] as const)
+      .map(c => ({ s: c, n: v.members.filter(m => m.status === c).length }))
+      .filter(c => c.n > 0)
+    const memberSummary = (
+      <Box flexDirection="row" gap={2}>
+        {counts.map(c => (
+          <Text color={COLOR[c.s]}>{`${GLYPH[c.s]} ${c.n}`}</Text>
+        ))}
+      </Box>
+    )
+    let memberBody
     const hint = v.error === 'server not reachable' ? 'Start it with `apra-fleet start`, then /mcp to reconnect.' : undefined
     if (v.error && v.members.length === 0) {
-      membersBlock = (
+      memberBody = (
         <Box flexDirection="column">
-          {rule}
           <Text color={v.error === CONNECTING ? 'subtle' : 'error'}>{v.error}</Text>
           {hint ? <Text dimColor>{hint}</Text> : null}
         </Box>
       )
     } else if (v.members.length === 0) {
-      membersBlock = (
-        <Box flexDirection="column">
-          {rule}
-          <Text dimColor>No members yet. Ask Claude to register one.</Text>
-        </Box>
-      )
+      memberBody = <Text dimColor>No members yet. Ask Claude to register one.</Text>
     } else {
-      const counts = (['busy', 'unknown', 'idle', 'offline'] as const)
-        .map(c => ({ s: c, n: v.members.filter(m => m.status === c).length }))
-        .filter(c => c.n > 0)
       const groups = new Map<string, FleetMember[]>()
       for (const m of v.members) {
         const key = m.category ?? ''
@@ -549,17 +595,10 @@ export const register: Register = on => {
       const keys = [...groups.keys()].sort((a, b) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)))
       const nameWidth = Math.min(24, Math.max(...v.members.map(m => m.name.length)) + 2)
       const showCategories = keys.length > 1 || keys[0] !== ''
-      membersBlock = (
+      memberBody = (
         <Box flexDirection="column">
-          {v.error ? <Text color="error">{`${v.error} -- last known below`}</Text> : null}
-          <Box flexDirection="row" gap={2}>
-            {counts.map(c => (
-              <Text color={COLOR[c.s]}>{`${GLYPH[c.s]} ${c.n} ${c.s}`}</Text>
-            ))}
-          </Box>
-          {rule}
           {keys.map(key => (
-            <Box flexDirection="column" marginBottom={showCategories ? 1 : 0}>
+            <Box flexDirection="column">
               {showCategories ? <Text bold dimColor>{key === '' ? 'uncategorized' : key}</Text> : null}
               {groups.get(key)!.sort(byAttention).map(m => (
                 <Box flexDirection="row" paddingLeft={showCategories ? 1 : 0}>
@@ -568,13 +607,15 @@ export const register: Register = on => {
                   <Box width={nameWidth}><Text bold wrap="truncate-end">{m.name}</Text></Box>
                   <Box width={9}><Text color={COLOR[m.status]}>{m.status}</Text></Box>
                   <Box flexGrow={1}>
-                    <Text dimColor wrap="truncate-end">
-                      {[
-                        m.status === 'busy' && m.quietForS !== undefined ? `quiet ${clock(m.quietForS)}` : '',
-                        m.status === 'unknown' ? 'no activity -- may be stalled' : '',
-                        m.reservedBy ? `held by ${m.reservedBy}` : '',
-                      ].filter(Boolean).join(`  ${DOT}  `)}
-                    </Text>
+                    {l.moreMembers ? (
+                      <Text dimColor wrap="truncate-end">
+                        {[
+                          m.status === 'busy' && m.quietForS !== undefined ? `quiet ${clock(m.quietForS)}` : '',
+                          m.status === 'unknown' ? 'no activity -- may be stalled' : '',
+                          m.reservedBy ? `held by ${m.reservedBy}` : '',
+                        ].filter(Boolean).join(`  ${DOT}  `)}
+                      </Text>
+                    ) : null}
                   </Box>
                   <Button key={`remove:${m.name}`} label={CROSS} plain dimColor
                     onPress={() => void update($, memberAction, () => ({ confirmRemove: m.name }))} />
@@ -594,19 +635,36 @@ export const register: Register = on => {
         </Box>
       )
     }
+    const membersBlock = (
+      <Box flexDirection="column">
+        {rule}
+        {sectionHeader('fold-members', l.membersOpen, `Members ${v.members.length}`, memberSummary,
+          l.membersOpen && v.members.length > 0 ? moreButton('more-members', l.moreMembers, { moreMembers: !l.moreMembers }) : null)}
+        {v.error && v.members.length > 0 ? <Text color="error">{`${v.error} -- last known below`}</Text> : null}
+        {l.membersOpen ? memberBody : null}
+      </Box>
+    )
 
     // --- Secrets ---
-    const openForm = (row?: SecretRow) => setForm(() => ({
-      ...CLOSED_FORM,
-      mode: 'form',
-      name: row?.name ?? '',
-      members: row?.members ?? '',
-      keep: row && row.scope !== 'persistent' ? 'session' : 'persistent',
-      replacing: row ? true : undefined,
-    }))
+    const openForm = (row?: SecretRow) => {
+      setForm(() => ({
+        ...CLOSED_FORM,
+        mode: 'form',
+        name: row?.name ?? '',
+        members: row && row.members !== '*' ? row.members : '',
+        keep: row && row.scope !== 'persistent' ? 'session' : 'persistent',
+        replacing: row ? true : undefined,
+      }))
+      if (!l.secretsOpen) void setLayout($, { secretsOpen: true })
+    }
     const closeForm = () => {
       setForm(cur => ({ ...CLOSED_FORM, note: cur.note }))
       void refreshSecrets($)
+    }
+    // Pressing a secret's name puts its token (never its value) at the prompt's cursor.
+    const insertToken = async (name: string) => {
+      const got = await $.prompt.fill({ text: secretToken(name), mode: 'insert' })
+      await setNote($, got.isFilled ? `Inserted ${secretToken(name)} at the cursor.` : `Could not insert: the prompt box is not taking text right now.`)
     }
     const formBlock = f.mode === 'form' ? (
       <Box flexDirection="column" paddingLeft={1}>
@@ -615,33 +673,40 @@ export const register: Register = on => {
           : <Input key="secret-name" label="Name" autoFocus placeholder="GITHUB_TOKEN" value={f.name} submitLabel="ok"
               onInput={(t: string) => setForm(cur => ({ ...cur, name: t.trim() }))}
               onSubmit={(t: string) => setForm(cur => ({ ...cur, name: t.trim() }))} />}
-        {Input
-          ? <Input key="secret-members" label="Members" placeholder="* (all)" value={f.members} submitLabel="ok"
-              onInput={(t: string) => setForm(cur => ({ ...cur, members: t }))}
-              onSubmit={(t: string) => setForm(cur => ({ ...cur, members: t }))} />
-          : <Text>{`Members: ${f.members.trim() || '* (all)'}`}</Text>}
-        {Select
-          ? <Select key="secret-keep" label="Keep" value={f.keep}
-              options={[{ value: 'persistent', label: 'persistent (survives restart)' }, { value: 'session', label: 'this server session only' }]}
-              onSelect={(k: string) => setForm(cur => ({ ...cur, keep: k as SecretForm['keep'] }))} />
-          : <Text>{`Keep: ${f.keep}`}</Text>}
-        {Select
-          ? <Select key="secret-ttl" label="Expires" value={f.ttl}
-              options={[{ value: 'none', label: 'never' }, { value: '1h', label: 'in 1 hour' }, { value: '1d', label: 'in 1 day' }, { value: '7d', label: 'in 7 days' }]}
-              onSelect={(t: string) => setForm(cur => ({ ...cur, ttl: t as SecretForm['ttl'] }))} />
-          : <Text>{`Expires: ${f.ttl}`}</Text>}
+        {l.moreOptions ? (
+          <Box flexDirection="column">
+            {Input
+              ? <Input key="secret-members" label="Members" placeholder="* (all)" value={f.members} submitLabel="ok"
+                  onInput={(t: string) => setForm(cur => ({ ...cur, members: t }))}
+                  onSubmit={(t: string) => setForm(cur => ({ ...cur, members: t }))} />
+              : <Text>{`Members: ${f.members.trim() || '* (all)'}`}</Text>}
+            {Select
+              ? <Select key="secret-keep" label="Keep" value={f.keep}
+                  options={[{ value: 'persistent', label: 'persistent (survives restart)' }, { value: 'session', label: 'this server session only' }]}
+                  onSelect={(k: string) => setForm(cur => ({ ...cur, keep: k as SecretForm['keep'] }))} />
+              : <Text>{`Keep: ${f.keep}`}</Text>}
+            {Select
+              ? <Select key="secret-ttl" label="Expires" value={f.ttl}
+                  options={[{ value: 'none', label: 'never' }, { value: '1h', label: 'in 1 hour' }, { value: '1d', label: 'in 1 day' }, { value: '7d', label: 'in 7 days' }]}
+                  onSelect={(t: string) => setForm(cur => ({ ...cur, ttl: t as SecretForm['ttl'] }))} />
+              : <Text>{`Expires: ${f.ttl}`}</Text>}
+          </Box>
+        ) : null}
         <Text dimColor>
-          {f.keep === 'persistent'
-            ? 'Run in ANOTHER terminal (the value is typed hidden), then Apply:'
-            : 'Session-only: use the browser link (the command always persists).'}
+          {f.keep === 'session'
+            ? 'Session-only: use the browser link (the command always persists).'
+            : l.moreOptions
+              ? 'Run in ANOTHER terminal (the value is typed hidden), then Apply:'
+              : 'Run in ANOTHER terminal (the value is typed hidden):'}
         </Text>
         <Box flexDirection="row" gap={1}>
           <Text color="claude">{cliCommand(f.name || '<NAME>')}</Text>
           <Button key="secret-copy-cmd" label="Copy" onPress={copy(cliCommand(f.name || '<NAME>'))} />
         </Box>
         <Box flexDirection="row" gap={1}>
-          <Button key="secret-apply" label="Apply members and expiry" variant="primary" onPress={() => void applySettings($)} />
+          {l.moreOptions ? <Button key="secret-apply" label="Apply members and expiry" variant="primary" onPress={() => void applySettings($)} /> : null}
           <Button key="secret-link" label="Get browser link" onPress={() => void requestEntryLink($)} />
+          <Button key="secret-options" label={l.moreOptions ? 'fewer options' : `more options${MORE}`} plain dimColor onPress={toggle({ moreOptions: !l.moreOptions })} />
           <Button key="secret-cancel" label="Close" onPress={closeForm} />
         </Box>
       </Box>
@@ -659,39 +724,53 @@ export const register: Register = on => {
       </Box>
     ) : null
 
+    const expiring = s.items.filter(expiresSoon).length
+    const nameWidth = Math.min(28, Math.max(0, ...s.items.map(r => r.name.length)) + 2)
     const secretsBlock = (
       <Box flexDirection="column">
         {rule}
-        <Box flexDirection="row" gap={2}>
-          <Text bold>{`${KEY} Secrets`}</Text>
-          {/* Always drawn: a pressed control that vanished would drop the pane's focus back to the prompt. */}
-          <Button key="secret-add" label="add" plain onPress={() => openForm()} />
-        </Box>
-        {s.error ? <Text color="error">{`secrets: ${s.error}`}</Text> : null}
-        {s.items.length === 0
-          ? <Text dimColor>No secrets stored.</Text>
-          : s.items.map(row => (
-            <Box flexDirection="row">
-              <Box width={Math.min(28, Math.max(...s.items.map(r => r.name.length)) + 2)}><Text bold wrap="truncate-end">{row.name}</Text></Box>
-              <Box width={12}><Text dimColor>{row.scope}</Text></Box>
-              <Box width={16}><Text dimColor wrap="truncate-end">{row.members === '*' ? 'all members' : row.members}</Text></Box>
-              <Box flexGrow={1} marginRight={1}><Text color={expiresSoon(row) ? 'warning' : undefined} dimColor={!expiresSoon(row)} wrap="truncate-end">{expiryLabel(row.expiry)}</Text></Box>
+        {sectionHeader('fold-secrets', l.secretsOpen, `${KEY} Secrets ${s.items.length}`,
+          expiring > 0 ? <Text color="warning">{`${expiring} expiring`}</Text> : null,
+          <Box flexDirection="row" gap={2}>
+            {l.secretsOpen && s.items.length > 0 ? moreButton('more-secrets', l.moreSecrets, { moreSecrets: !l.moreSecrets }) : null}
+            {/* Always drawn: a pressed control that vanished would drop the pane's focus back to the prompt. */}
+            <Button key="secret-add" label="add" plain onPress={() => openForm()} />
+          </Box>)}
+        {l.secretsOpen ? (
+          <Box flexDirection="column">
+            {s.error ? <Text color="error">{`secrets: ${s.error}`}</Text> : null}
+            {s.items.length === 0
+              ? <Text dimColor>No secrets stored.</Text>
+              : s.items.map(row => (
+                <Box flexDirection="row">
+                  <Box width={nameWidth}>
+                    <Button key={`secret-insert:${row.name}`} label={row.name} plain onPress={() => void insertToken(row.name)} />
+                  </Box>
+                  {l.moreSecrets ? <Box width={12}><Text dimColor>{row.scope}</Text></Box> : null}
+                  {l.moreSecrets ? <Box width={16}><Text dimColor wrap="truncate-end">{row.members === '*' ? 'all members' : row.members}</Text></Box> : null}
+                  <Box flexGrow={1} marginRight={1}>
+                    {l.moreSecrets || expiresSoon(row)
+                      ? <Text color={expiresSoon(row) ? 'warning' : undefined} dimColor={!expiresSoon(row)} wrap="truncate-end">{expiryLabel(row.expiry)}</Text>
+                      : null}
+                  </Box>
+                  <Box flexDirection="row" gap={1}>
+                    <Button key={`secret-replace:${row.name}`} label="replace" plain dimColor onPress={() => openForm(row)} />
+                    <Button key={`secret-delete:${row.name}`} label={CROSS} plain dimColor
+                      onPress={() => setForm(cur => ({ ...cur, confirmDelete: row.name, note: undefined }))} />
+                  </Box>
+                </Box>
+              ))}
+            {f.confirmDelete ? (
               <Box flexDirection="row" gap={1}>
-                <Button key={`secret-replace:${row.name}`} label="replace" plain dimColor onPress={() => openForm(row)} />
-                <Button key={`secret-delete:${row.name}`} label={CROSS} plain dimColor
-                  onPress={() => setForm(cur => ({ ...cur, confirmDelete: row.name, note: undefined }))} />
+                <Text color="warning">{`Delete secret ${f.confirmDelete}?`}</Text>
+                <Button key="secret-delete-confirm" label="Delete" variant="primary" onPress={() => void deleteSecret($, f.confirmDelete!)} />
+                <Button key="secret-delete-cancel" label="Cancel" onPress={() => setForm(cur => ({ ...cur, confirmDelete: undefined }))} />
               </Box>
-            </Box>
-          ))}
-        {f.confirmDelete ? (
-          <Box flexDirection="row" gap={1}>
-            <Text color="warning">{`Delete secret ${f.confirmDelete}?`}</Text>
-            <Button key="secret-delete-confirm" label="Delete" variant="primary" onPress={() => void deleteSecret($, f.confirmDelete!)} />
-            <Button key="secret-delete-cancel" label="Cancel" onPress={() => setForm(cur => ({ ...cur, confirmDelete: undefined }))} />
+            ) : null}
+            {formBlock}
+            {f.note ? <Text color={/^(No link|Not applied|Could not)/.test(f.note) ? 'error' : 'success'}>{f.note}</Text> : null}
           </Box>
         ) : null}
-        {formBlock}
-        {f.note ? <Text color={/^(No link|Not applied|Could not)/.test(f.note) ? 'error' : 'success'}>{f.note}</Text> : null}
       </Box>
     )
 
@@ -700,7 +779,7 @@ export const register: Register = on => {
         {header}
         {membersBlock}
         {secretsBlock}
-        <Text dimColor>{`refreshes every ${POLL_MS / 1000}s ${DOT} /fleet-status to reopen`}</Text>
+        <Text dimColor>{`refreshes every ${POLL_MS / 1000}s ${DOT} press a secret's name to insert its token`}</Text>
       </Box>
     )
   })

@@ -69,8 +69,20 @@ export type MemberAction = {
   note?: string
 }
 
+/** What the pane shows: which sections are open, and which show their less-used fields. */
+export type PaneLayout = {
+  membersOpen: boolean
+  secretsOpen: boolean
+  /** Members: quiet time, holder and stall notes beside each row. */
+  moreMembers: boolean
+  /** Secrets: scope, allowed members and expiry beside each row. */
+  moreSecrets: boolean
+  /** The add/replace form: members, keep and expiry (all members, persistent, never by default). */
+  moreOptions: boolean
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'fleet-status': { view: FleetView; secrets: SecretsView; secretForm: SecretForm; memberAction: MemberAction }
+    'fleet-status': { view: FleetView; secrets: SecretsView; secretForm: SecretForm; memberAction: MemberAction; layout: PaneLayout }
   }
 }

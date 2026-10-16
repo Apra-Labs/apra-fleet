@@ -3,7 +3,7 @@ import type { McpToolResult, On } from 'claude-code'
 
 import {
   classifyError, clock, entryLinkWarning, expiresSoon, expiryLabel, paneRows, parseEntryLink, parseSecrets, parseSnapshot,
-  removeNote, secretsStatus, statusLine, summaryText, withSecrets,
+  DEFAULT_LAYOUT, removeNote, secretToken, secretsStatus, secretsRows, statusLine, summaryText, withSecrets,
 } from '../hooks/register'
 import type { FleetView } from '../types'
 
@@ -71,10 +71,25 @@ describe('fleet-status formatting', () => {
     expect(statusLine({ members: [], fetchedAt: 1 })).toBe('no members')
   })
 
-  test('pane rows fit the content: members, a label and a gap per category, header and footer', async () => {
-    expect(paneRows(viewOf(SNAPSHOT))).toBe(4 + 5 + 3 * 2)
+  test('pane rows fit the content: title, rule, section header, a label per category, members, footer', async () => {
+    expect(paneRows(viewOf(SNAPSHOT))).toBe(4 + 5 + 3)
     expect(paneRows(viewOf(JSON.stringify({ members: [{ id: 'a', name: 'a', status: 'idle' }] })))).toBe(5)
-    expect(paneRows({ members: [], fetchedAt: 1, error: 'server down' })).toBe(4)
+    expect(paneRows({ members: [], fetchedAt: 1, error: 'server down' })).toBe(5)
+    expect(paneRows({ members: [], fetchedAt: 1, error: 'server not reachable' })).toBe(6)
+    // Folded, the members part is the section header alone.
+    expect(paneRows(viewOf(SNAPSHOT), { ...DEFAULT_LAYOUT, membersOpen: false })).toBe(4)
+  })
+
+  test('secrets rows: folded by default, the form grows with more options', async () => {
+    const s = { items: parseSecrets([SECRETS]), fetchedAt: 1 }
+    const form = { mode: 'form', name: 'X', members: '', keep: 'persistent', ttl: 'none' } as const
+    expect(secretsRows(s, { ...form, mode: 'closed' })).toBe(2)
+    expect(secretsRows(s, form, { ...DEFAULT_LAYOUT, secretsOpen: true })).toBe(2 + 2 + 4)
+    expect(secretsRows(s, form, { ...DEFAULT_LAYOUT, secretsOpen: true, moreOptions: true })).toBe(2 + 2 + 7)
+  })
+
+  test('the inserted token is the fleet placeholder, never a value', async () => {
+    expect(secretToken('NPM_TOKEN')).toBe('{{secret.NPM_TOKEN}}')
   })
 
   test('summary text counts by state', async () => {
@@ -89,7 +104,7 @@ describe('fleet-status formatting', () => {
 // status line text is kept for the test to read.
 type Seen = { status: (string | undefined)[]; reads: number; calls: { tool: string; args: Record<string, unknown> }[] }
 type Reply = McpToolResult | { deny: string }
-function serveSnapshot(on: On, reply: Reply, tools: Record<string, Reply | (() => Reply)> = {}): Seen {
+function serveSnapshot(on: On, reply: Reply, tools: Record<string, Reply | (() => Reply)> = {}, opts: { store?: boolean } = {}): Seen {
   const seen: Seen = { status: [], reads: 0, calls: [] }
   const all: Record<string, Reply | (() => Reply)> = { credential_store_list: text('[]'), ...tools, fleet_snapshot: reply }
   on('mcp.call', ($, e) => {
@@ -101,6 +116,7 @@ function serveSnapshot(on: On, reply: Reply, tools: Record<string, Reply | (() =
     if (!r) return { deny: `no tool "${e.tool}" in this test` }
     return 'deny' in r ? r : { value: r }
   })
+  if (opts.store !== false) mock.store(on)
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', ($, e) => {
     seen.status.push(e.text)
@@ -130,6 +146,11 @@ describe('fleet-status pane', () => {
     expect(seen.status.at(-1)?.includes('alice 02:14')).toBe(true)
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'fleet-status', surface, component: 'Pane', requestId: 'fleet-status', props: PANE_PROPS })
+      // Quiet time, holder and stall notes sit behind "more".
+      if (surface === 'terminal') {
+        expect(await ui.find({ type: 'Text', text: 'held by sprint-42' })).toBe(undefined)
+        await ui.press({ key: 'more-members' })
+      }
       for (const text of ['apra-fleet', 'v0.5.0', 'alice', 'quiet 02:14', 'held by sprint-42', 'dgx-2', 'build', 'gpu', 'uncategorized', 'may be stalled']) {
         expect(await ui.find({ type: 'Text', text })).toBeDefined()
       }
@@ -267,7 +288,13 @@ describe('fleet-status secrets pane', () => {
     await $.command.run(RUN)
     expect(seen.status.at(-1)?.endsWith('\uD83D\uDD11 1 expiring')).toBe(true)
     const ui = await $.ui.mount(MOUNT)
-    for (const t of ['GITHUB_TOKEN', 'aws_key', 'all members', 'alice,bob', '12m left', 'no expiry']) {
+    await ui.press({ key: 'fold-secrets' })
+    // Compact: names, and an expiry only where it needs attention.
+    expect(await ui.find({ type: 'Text', text: '12m left' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'all members' })).toBe(undefined)
+    expect(await ui.find({ type: 'Text', text: 'no expiry' })).toBe(undefined)
+    await ui.press({ key: 'more-secrets' })
+    for (const t of ['all members', 'alice,bob', '12m left', 'no expiry']) {
       expect(await ui.find({ type: 'Text', text: t })).toBeDefined()
     }
     await ui.unmount()
@@ -280,8 +307,12 @@ describe('fleet-status secrets pane', () => {
     })
     await $.command.run(RUN)
     const ui = await $.ui.mount(MOUNT)
+    await ui.press({ key: 'fold-secrets' })
     await ui.press({ key: 'secret-add' })
     await ui.input({ key: 'secret-name', text: 'NEW_KEY', kind: 'submit' })
+    // All members, persistent, never expiring unless "more options" says otherwise.
+    expect(await ui.find({ type: 'Select', key: 'secret-ttl' })).toBe(undefined)
+    await ui.press({ key: 'secret-options' })
     await ui.select({ key: 'secret-ttl', value: '1d' })
     expect(await ui.find({ type: 'Text', text: 'apra-fleet secret --set NEW_KEY --persist' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /ANOTHER terminal/ })).toBeDefined()
@@ -298,6 +329,7 @@ describe('fleet-status secrets pane', () => {
     const seen = serveSnapshot(on, OK)
     await $.command.run(RUN)
     const ui = await $.ui.mount(MOUNT)
+    await ui.press({ key: 'fold-secrets' })
     await ui.press({ key: 'secret-add' })
     await ui.input({ key: 'secret-name', text: 'bad name!', kind: 'submit' })
     await ui.press({ key: 'secret-link' })
@@ -310,7 +342,9 @@ describe('fleet-status secrets pane', () => {
     const seen = serveSnapshot(on, OK, { credential_store_list: text(SECRETS), credential_store_update: text('updated') })
     await $.command.run(RUN)
     const ui = await $.ui.mount(MOUNT)
+    await ui.press({ key: 'fold-secrets' })
     await ui.press({ key: 'secret-replace:aws_key' })
+    await ui.press({ key: 'secret-options' })
     await ui.input({ key: 'secret-members', text: 'alice', kind: 'submit' })
     await ui.press({ key: 'secret-apply' })
     expect(seen.calls.find(c => c.tool === 'credential_store_update')?.args).toEqual({ name: 'aws_key', members: 'alice' })
@@ -329,6 +363,7 @@ describe('fleet-status secrets pane', () => {
     })
     await $.command.run(RUN)
     const ui = await $.ui.mount(MOUNT)
+    await ui.press({ key: 'fold-secrets' })
     expect(seen.status.at(-1)?.includes('expiring')).toBe(true)
     await ui.press({ key: 'secret-delete:aws_key' })
     expect(seen.calls.some(c => c.tool === 'credential_store_delete')).toBe(false)
@@ -348,6 +383,7 @@ describe('fleet-status remove member', () => {
     })
     await $.command.run(RUN)
     const ui = await $.ui.mount(MOUNT)
+    await ui.press({ key: 'fold-secrets' })
     await ui.press({ key: 'remove:alice' })
     expect(seen.calls.some(c => c.tool === 'remove_member')).toBe(false)
     expect(await ui.find({ type: 'Text', text: 'Remove alice from the fleet?' })).toBeDefined()
@@ -361,10 +397,44 @@ describe('fleet-status remove member', () => {
     const seen = serveSnapshot(on, OK)
     await $.command.run(RUN)
     const ui = await $.ui.mount(MOUNT)
+    await ui.press({ key: 'fold-secrets' })
     await ui.press({ key: 'remove:bob' })
     await ui.press({ key: 'remove-cancel' })
     expect(await ui.find({ type: 'Text', text: 'Remove bob from the fleet?' })).toBe(undefined)
     expect(seen.calls.some(c => c.tool === 'remove_member')).toBe(false)
+    await ui.unmount()
+  })
+})
+
+describe('fleet-status inserting a secret token', () => {
+  test("pressing a secret's name puts {{secret.NAME}} at the prompt's cursor", async ($, on) => {
+    serveSnapshot(on, OK, { credential_store_list: text(SECRETS) })
+    const filled: { text: string; mode?: string }[] = []
+    on('prompt.fill', ($, e) => {
+      filled.push({ text: e.text, mode: e.mode })
+      return { isFilled: true }
+    })
+    await $.command.run(RUN)
+    const ui = await $.ui.mount(MOUNT)
+    await ui.press({ key: 'fold-secrets' })
+    await ui.press({ key: 'secret-insert:GITHUB_TOKEN' })
+    expect(filled).toEqual([{ text: '{{secret.GITHUB_TOKEN}}', mode: 'insert' }])
+    expect(await ui.find({ type: 'Text', text: 'Inserted {{secret.GITHUB_TOKEN}} at the cursor.' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('the layout is remembered across sessions', async ($, on) => {
+    serveSnapshot(on, OK, {}, { store: false })
+    const saved: unknown[] = []
+    on('store.get', () => ({ value: undefined }))
+    on('store.set', ($, e) => {
+      if (e.key === 'layout') saved.push(e.value)
+      return { value: undefined }
+    })
+    await $.command.run(RUN)
+    const ui = await $.ui.mount(MOUNT)
+    await ui.press({ key: 'fold-members' })
+    expect(saved.at(-1)).toEqual({ ...DEFAULT_LAYOUT, membersOpen: false })
     await ui.unmount()
   })
 })
