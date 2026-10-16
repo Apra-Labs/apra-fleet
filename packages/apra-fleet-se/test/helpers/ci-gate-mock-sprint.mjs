@@ -38,9 +38,20 @@ const JOBS_FOR = {
  *   ciGate?: object,
  *   maxExtensions?: number,
  *   holdFirstRunUntilFinalReview?: boolean,
+ *   tag?: string,
+ *   finalReviews?: object[],
  * }} o
+ *
+ * `tag` defaults to 'regressiongreen' (the shared recording). A scenario that
+ * extends passes its own tag, so its own bd stream is recorded under
+ * test/fixtures/bd-recordings. `finalReviews` scripts the Final Review
+ * verdict JSON per pass (the last entry repeats); default: one PASS.
  */
-export async function runCiGateMockSprint({ label, runs, ciGate = { workflow: 'ci.yml' }, maxExtensions, holdFirstRunUntilFinalReview = false }) {
+export async function runCiGateMockSprint({ label, runs, ciGate = { workflow: 'ci.yml' }, maxExtensions, holdFirstRunUntilFinalReview = false, tag = 'regressiongreen', finalReviews }) {
+    const reviewScript = Array.isArray(finalReviews) && finalReviews.length > 0
+        ? finalReviews
+        : [{ verdict: 'PASS', notes: 'All goal-priority beads closed, last review APPROVED.' }];
+    let finalReviewPass = -1;
     const prRecordState = new Map();
     const events = [];
     const ciCalls = [];
@@ -107,18 +118,20 @@ export async function runCiGateMockSprint({ label, runs, ciGate = { workflow: 'c
 
     let run;
     try {
-        run = await withScenarioMarkers(label, () => runDevelopLoopScenario('regressiongreen', {
+        run = await withScenarioMarkers(label, () => runDevelopLoopScenario(tag, {
             members: ['local'],
             taskSpecs: [{ title: 'Task: regression-never-gates scenario work' }],
             maxCycles: 1,
             withRegressionPlaybook: true,
             finalReviewHandler: async () => {
+                finalReviewPass += 1;
                 events.push('final-review');
                 // CI is still running while Final Review runs; release it only
                 // now, so the barrier is what waits for it.
                 events.push(`final-review-saw-ci-settled=${ciSettledCount}`);
                 setTimeout(releaseFirst, 50);
-                return { content: [{ text: JSON.stringify({ verdict: 'PASS', notes: 'All goal-priority beads closed, last review APPROVED.' }) }] };
+                const verdict = reviewScript[Math.min(finalReviewPass, reviewScript.length - 1)];
+                return { content: [{ text: JSON.stringify(verdict) }] };
             },
             regressionHandler: () => {
                 events.push(`regression(ci-settled=${ciSettledCount})`);
