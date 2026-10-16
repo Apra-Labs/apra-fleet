@@ -88,16 +88,16 @@ describe('CI build:ui step', () => {
     });
   });
 
-  // The integration branch (v0.5_dashboard) runs CI on demand only
-  // (workflow_dispatch -- e.g. the sprint engine's ci_gate at Finalization);
-  // main keeps automatic push/pull_request CI.
+  // The integration branch (v0.5_dashboard) gets no push-triggered CI, but
+  // pull requests into it must still run CI: the repo ruleset only accepts
+  // required checks from pull_request runs. main keeps push/pull_request CI.
   describe('workflow triggers', () => {
     it('should have only main in push branches', () => {
       expect(workflowContent).toMatch(/push:\s*\n\s*branches:\s*\[main\]/);
     });
 
-    it('should have only main in pull_request branches', () => {
-      expect(workflowContent).toMatch(/pull_request:\s*\n\s*branches:\s*\[main\]/);
+    it('should run pull_request CI for main and the integration branch', () => {
+      expect(workflowContent).toMatch(/pull_request:\s*\n\s*branches:\s*\[main, v0\.5_dashboard\]/);
     });
 
     it('should keep workflow_dispatch so the integration branch can run CI on demand', () => {

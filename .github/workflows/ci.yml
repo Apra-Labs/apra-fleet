@@ -1,10 +1,11 @@
 name: CI - Build & Test
 
-# v0.5_dashboard (the integration branch) is deliberately NOT a push or
-# pull_request trigger: its CI runs only on demand via workflow_dispatch
-# (Actions -> CI - Build & Test -> Run workflow, pick the branch). A dispatched
-# run reports the same build-and-test check names on that commit, so it still
-# satisfies the integration branch's required checks. main keeps automatic CI.
+# v0.5_dashboard (the integration branch): pushes do NOT trigger CI, but pull
+# requests into it do. The repo ruleset only accepts required checks from
+# pull_request runs -- a workflow_dispatch run on the same commit leaves them
+# "expected" and blocks the merge -- so the pull_request trigger must stay.
+# workflow_dispatch remains for on-demand runs (e.g. the sprint engine's
+# ci_gate at Finalization). main keeps automatic push and pull_request CI.
 on:
   workflow_dispatch:
   push:
@@ -13,7 +14,7 @@ on:
     paths-ignore:
       - '.github/e2e/**'
   pull_request:
-    branches: [main]
+    branches: [main, v0.5_dashboard]
     paths-ignore:
       - '.github/e2e/**'
 
