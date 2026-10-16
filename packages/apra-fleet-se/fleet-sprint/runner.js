@@ -202,9 +202,13 @@ import { runRegressionTestPhase } from './phases/regression-test.mjs';
 // See each module's header for where its boundary is drawn.
 import { runHarvestPhase } from './phases/harvest.mjs';
 import { runPublishPrPhase } from './phases/publish-pr.mjs';
-// Optional engine CI gate (ci_gate sprint arg): started once at Finalization,
-// in parallel with Final Review/Regression/Harvest, awaited by Publish PR.
+// Optional engine CI gate (ci_gate sprint arg): started at each Finalization
+// pass, in parallel with Final Review, awaited at the Finalization barrier.
 import { startFinalizationCiGate, createCiGateContextResolver } from './ci-gate.mjs';
+// The Finalization barrier and the bounded sprint extension (max_extensions):
+// awaits the CI gate after Final Review and decides whether a CI failure or an
+// in-goal Final Review finding sends the sprint back into the cycle loop.
+import { runFinalizationBarrier, formatExtensionReport, EXTENSION_CYCLE_BUDGET } from './sprint-extension.mjs';
 // apra-fleet-5u79.2: the pure owed-triage collector. runSprintCycle does the
 // bead read; the module only classifies and formats.
 import { computeOwedTriage, formatOwedTriageLines, findStrandedRollups } from './owed-triage.mjs';
@@ -1336,6 +1340,13 @@ async function runSprintCycle(context) {
 
     let cycle = 1;
     const MAX_CYCLES = validated.maxCycles;
+    // The cycle loop's ceiling. MAX_CYCLES for the sprint's own cycles; a
+    // sprint extension (see the Finalization barrier below) re-enters the
+    // loop with its OWN budget -- EXTENSION_CYCLE_BUDGET cycles after the last
+    // cycle run, independent of MAX_CYCLES -- and may stretch it only by the
+    // existing deploy-retry allowance (inExtension below).
+    let cycleCeiling = MAX_CYCLES;
+    let inExtension = false;
 
     // Per-(role, cycle) session registry: a role's session is resumed across
     // ROUNDS within one cycle via an explicit session id, but NEVER across
@@ -2955,7 +2966,18 @@ async function runSprintCycle(context) {
     let lastReviewVerdict = null;
     let reviewedThisCycle = false;
 
-    while (cycle <= MAX_CYCLES) {
+    // One pass per Finalization. The first pass runs the sprint's own cycles;
+    // each later pass is a sprint extension that re-enters the SAME cycle loop
+    // (ordinary cycles: every guard below applies unchanged) and then runs
+    // Finalization again. The cycle loop body is deliberately NOT re-indented
+    // under this outer loop, so the diff and every source-shape pin on it stay
+    // readable; the pass ends at the Finalization barrier's `break`/`continue`.
+    let finalCycleLabel;
+    let finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds;
+    let lastCiGateRecord = null;
+    let lastBarrier = null;
+    for (;;) {
+    while (cycle <= cycleCeiling) {
         group(`Sprint Cycle ${cycle}`);
 
         // Reset per-cycle review state -- a verdict is only ever trustworthy
@@ -3696,9 +3718,12 @@ async function runSprintCycle(context) {
         if ((rootsAllClosed || goalSatisfied) && lastDeployFailure) {
             deployBlockedCycles++;
             const which = rootsAllClosed ? 'every configured sprint root/target bead is closed' : `goal priority ${validated.goal} (<=${goalMax}) is otherwise satisfied`;
-            if (cycle < MAX_CYCLES && deployBlockedCycles < DEPLOY_RETRY_CYCLE_LIMIT) {
+            // A sprint extension's one-cycle budget may stretch by the same
+            // deploy-retry allowance (bounded by DEPLOY_RETRY_CYCLE_LIMIT).
+            if ((cycle < cycleCeiling || inExtension) && deployBlockedCycles < DEPLOY_RETRY_CYCLE_LIMIT) {
                 log(`Cycle ${cycle}: ${which}, but NOT exiting as satisfied -- ${formatDeployFailureReason(lastDeployFailure)}. Re-attempting deploy next cycle (deploy-blocked cycle ${deployBlockedCycles} of at most ${DEPLOY_RETRY_CYCLE_LIMIT}).`);
                 cycle++;
+                if (cycle > cycleCeiling) cycleCeiling = cycle;
                 endGroup();
                 continue;
             }
@@ -3749,25 +3774,24 @@ async function runSprintCycle(context) {
         endGroup();
     }
 
-    // When the loop exits because `cycle` exceeded MAX_CYCLES (rather than via
-    // an early `break`), `cycle` is MAX_CYCLES + 1 at this point; the labels
-    // below must report the last cycle actually run.
-    const finalCycleLabel = Math.min(cycle, MAX_CYCLES);
+    // When the loop exits because `cycle` exceeded its ceiling (rather than
+    // via an early `break`), `cycle` is cycleCeiling + 1 at this point; the
+    // labels below must report the last cycle actually run.
+    finalCycleLabel = Math.min(cycle, cycleCeiling);
 
     // =======================
     // 6. Finalization: the evidence-based final verdict drives the return value
     // =======================
     group('Finalization');
 
-    // Engine CI gate (optional `ci_gate` sprint arg). Started ONCE, here, on
-    // the sprint branch's remote head and deliberately NOT awaited: Final
-    // Review, Regression Test and Harvest run while CI runs, and Publish PR
-    // awaits the result after its own push and renders it into the PR body.
+    // Engine CI gate (optional `ci_gate` sprint arg). Started ONCE PER
+    // FINALIZATION PASS, here, on the sprint branch's remote head and
+    // deliberately NOT awaited: Final Review runs while CI runs, and the
+    // Finalization barrier below awaits the result before anything else.
     // CI never changes the verdict and never blocks the PR. Unconfigured, no
     // gate is constructed at all -- no CI request, no extra log line.
-    const ciGateRun = validated.ciGate
-        ? await startSprintCiGate({ context, validated, args, command, log, gitSync, getMemberForRole, backlogMember, fleetApi: sprintState.fleetApi })
-        : null;
+    const startCiGate = () => startSprintCiGate({ context, validated, args, command, log, gitSync, getMemberForRole, backlogMember, fleetApi: sprintState.fleetApi });
+    const ciGateRun = validated.ciGate ? await startCiGate() : null;
 
     // The phase body lives in ./phases/final-review.mjs (apra-fleet-3swo.6.6),
     // which receives its state explicitly instead of closing over
@@ -3784,7 +3808,7 @@ async function runSprintCycle(context) {
     // a reader; the test pin plus the A/B mock sprint in
     // mock-sprint-regression-failure-never-gates.test.mjs are what actually
     // hold the line.
-    const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds } = await runFinalReviewPhase({
+    const finalReviewOutcome = await runFinalReviewPhase({
         phase, log, command, dispatchCtx,
         args, validated, targetIssues, backlogMember, finalCycleLabel, sprintState,
         gitSync,
@@ -3798,6 +3822,64 @@ async function runSprintCycle(context) {
         childIdAllocator, sprintMutexId, resolveSettleShell,
         computeChildFloor, createChildBeadWithAllocatedId, sanitizePrText,
     });
+    ({ finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds } = finalReviewOutcome);
+
+    // =======================
+    // 6a. Finalization barrier: await CI, then decide on a sprint extension
+    // =======================
+    // Nothing that changes code runs between the CI gate start above and this
+    // barrier (Final Review is read-only on the sprint branch), and nothing
+    // after it runs until it has decided: Regression Test, Harvest and
+    // Publish PR all sit behind it, so none of them ever runs on a head an
+    // extension is about to change. A CI FAIL (or a TIMEOUT that times out
+    // again on its one retry) gets one reopenable P1 Fix-CI bead; in-goal
+    // Final Review findings are already beads. Either sends the sprint back
+    // into the cycle loop above for EXTENSION_CYCLE_BUDGET cycle(s), bounded
+    // by max_extensions and the no-progress stop. Unconfigured sprints (no
+    // ci_gate, no in-goal finding) pass straight through: no command, no log.
+    const finalizationSettleShell = validated.ciGate
+        ? await resolveSettleShell({ args, member: backlogMember, log, sprintState })
+        : '';
+    const barrier = await runFinalizationBarrier({
+        log,
+        state: sprintState.extension,
+        maxExtensions: validated.maxExtensions,
+        cycleLabel: finalCycleLabel,
+        goalMax,
+        ciGateRun,
+        restartCiGate: startCiGate,
+        finalReview: { newTasks: finalReviewOutcome.createdFindings, reopenedIds: finalReviewOutcome.reopenedIds },
+        command, backlogMember, parentId: targetIssues[0], bdListScoped, gitSync,
+        settle: buildSettleCallback(backlogMember, { command, log, shell: finalizationSettleShell }),
+        createChild: async ({ title, description, priority }) => {
+            const floor = await computeChildFloor({ command, member: backlogMember, parentId: targetIssues[0], log });
+            return createChildBeadWithAllocatedId({
+                command, allocator: childIdAllocator, member: backlogMember,
+                title, description, priority, parentId: targetIssues[0],
+                sprintId: sprintMutexId, floor, log,
+                label: `Create the sprint-extension Fix-CI task: ${title}`,
+            });
+        },
+    });
+    lastBarrier = barrier;
+    lastCiGateRecord = barrier.ciRecord;
+    if (barrier.extend) {
+        endGroup();
+        // Monotonic cycle numbering: the extension's cycles follow the last
+        // cycle run. Its budget is its own (independent of MAX_CYCLES); the
+        // stall counter restarts because the extension is a fresh, bounded
+        // attempt whose own no-progress stop decides what happens next, and a
+        // verify-block diagnosis from the previous pass is re-derived (or not)
+        // by the extension's own Cycle Evaluation.
+        cycle = finalCycleLabel + 1;
+        cycleCeiling = cycle + EXTENSION_CYCLE_BUDGET - 1;
+        inExtension = true;
+        staleCycles = 0;
+        verifyBlockDiagnosis = null;
+        continue;
+    }
+    break;
+    }
 
     // Owed triage (apra-fleet-5u79.2): what this sprint leaves for a human --
     // unrouted follow-ups, stranded all-children-closed rollups, rejected
@@ -3838,12 +3920,15 @@ async function runSprintCycle(context) {
     // 6b. Regression Test (once per sprint, informational -- never a gate)
     // =======================
     //
-    // Sits deliberately BETWEEN Final Review and Harvest.
+    // Sits deliberately BETWEEN the Finalization barrier and Harvest.
     //
-    // After Final Review, because `finalVerdictResult` is already computed by
-    // the time this runs -- so a regression failure structurally CANNOT
-    // perturb the sprint's verdict. No LLM-trusted "please ignore this"
-    // instruction is needed; the ordering is the guarantee.
+    // After the barrier, and therefore after the LAST Final Review: by the
+    // time this runs no sprint extension can follow, so it runs exactly once,
+    // on the final head, and `finalVerdictResult` is already computed -- so a
+    // regression failure structurally CANNOT perturb the sprint's verdict.
+    // No LLM-trusted "please ignore this" instruction is needed; the ordering
+    // is the guarantee. A regression failure never triggers an extension
+    // either: the barrier has already decided.
     //
     // Before Harvest, because the harvester writes
     // docs/sprint-analysis-<slug>.md and this phase's summary is folded into
@@ -3936,7 +4021,16 @@ async function runSprintCycle(context) {
         args, validated, targetIssues, backlogMember, finalCycleLabel,
         gitSync, getMemberForRole,
         finalVerdictResult, costAnalysis, owedTriage,
-        ciGateRun,
+        // The barrier already awaited the LAST CI gate run; Publish PR only
+        // renders that record (null when ci_gate is not configured).
+        ciGateRecord: lastCiGateRecord,
+        extensionLines: formatExtensionReport({
+            state: sprintState.extension,
+            finalDecision: lastBarrier ? lastBarrier.decision : null,
+            ciUnfixable: lastBarrier ? lastBarrier.ciUnfixable : false,
+            ciRecord: lastCiGateRecord,
+            maxExtensions: validated.maxExtensions,
+        }),
     });
 
     endGroup();
@@ -3969,8 +4063,9 @@ async function runSprintCycle(context) {
 }
 
 /**
- * Start the sprint's one CI gate run at Finalization (see the call site in
- * runSprintCycle). First makes the remote branch head equal the local HEAD of
+ * Start one Finalization pass's CI gate run (see the call site in
+ * runSprintCycle; the Finalization barrier also calls it once more to retry a
+ * TIMEOUT on the same commit). First makes the remote branch head equal the local HEAD of
  * the git-capable publishing member (the harvester's member, the same one
  * Publish PR pushes from): every code-writing dispatch already G-pushed, so
  * this is normally a read-only check; only a branch whose HEAD is not on
@@ -4168,9 +4263,10 @@ export async function main(context) {
 
         throw err;
     } finally {
-        // A Finalization CI gate run still in flight (the sprint aborted, or
-        // Publish PR never awaited it): stop its polling so it cannot hold the
-        // process open. Its promise is guarded and never rejects.
+        // A Finalization CI gate run still in flight (the sprint aborted
+        // before the Finalization barrier awaited it): stop its polling so it
+        // cannot hold the process open. Its promise is guarded and never
+        // rejects. context.ciGateRun is always the latest pass's run.
         if (runContext.ciGateRun && typeof runContext.ciGateRun.cancel === 'function') {
             runContext.ciGateRun.cancel('the sprint ended before the CI gate finished');
         }

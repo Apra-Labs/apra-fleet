@@ -64,16 +64,25 @@
 // rather than assumed. It also owns the ONLY remaining vcsCapabilities() call
 // site outside abort.mjs, which test/vcs-capabilities-table.test.mjs counts.
 //
-// CI GATE (optional ci_gate sprint arg). runner.js starts the sprint's one CI
-// gate run at the start of Finalization and hands the in-flight handle in as
-// `ciGateRun` (null when ci_gate is not configured -- then nothing below runs
-// and the PR body is unchanged). After its own branch push succeeds, this
-// phase awaits that handle (its promise never rejects), reads the head it just
-// pushed (a third member_name-bearing command() site, `git rev-parse HEAD` on
-// publishGitMember, run only when a gate is in flight) and renders the result
-// into the PR body's CI section, loudly logging any non-PASS outcome and any
-// gap between the sha CI ran on and the pushed head. CI never changes the
-// verdict and never blocks the PR; it never starts a second run here.
+// CI GATE (optional ci_gate sprint arg). runner.js starts a CI gate run at the
+// start of every Finalization pass and the Finalization barrier
+// (../sprint-extension.mjs) awaits it before deciding on a sprint extension,
+// so by the time this phase runs there is nothing in flight: runner.js hands
+// in the already-awaited record of the LAST gate run as `ciGateRecord` (null
+// when ci_gate is not configured -- then nothing below runs and the PR body is
+// unchanged). After its own branch push succeeds, this phase reads the head it
+// just pushed (a third member_name-bearing command() site, `git rev-parse
+// HEAD` on publishGitMember, run only when there is a record) and renders the
+// record into the PR body's CI section, loudly logging any non-PASS outcome
+// and any gap between the sha CI ran on and the pushed head (the harvester
+// commits after the barrier, so that gap is normal and always stated). CI
+// never changes the verdict and never blocks the PR; this phase never starts
+// or awaits a CI run.
+//
+// SPRINT EXTENSIONS. `extensionLines` (../sprint-extension.mjs
+// formatExtensionReport) lists every extension -- trigger, beads, outcome --
+// and why the sprint stopped extending; rendered as its own PR-body section
+// only when non-empty.
 // =============================================================================
 
 import { CommandError } from '@apralabs/apra-fleet-workflow';
@@ -119,9 +128,11 @@ export async function runPublishPrPhase({
     // as its own PR-body section only when non-empty; it never changes the
     // verdict this phase publishes.
     owedTriage = null,
-    // The in-flight Finalization CI gate run (ci-gate.mjs
-    // startFinalizationCiGate), or null when ci_gate is not configured.
-    ciGateRun = null,
+    // The already-awaited record of the LAST Finalization CI gate run (see
+    // header), or null when ci_gate is not configured.
+    ciGateRecord = null,
+    // Sprint-extension report lines (see header); empty renders nothing.
+    extensionLines = [],
 }) {
     phase(`Publish PR C${finalCycleLabel}`);
     // The branch push is the LAST step of a sprint that has already done all of
@@ -180,10 +191,6 @@ export async function runPublishPrPhase({
         lastPushError = pushErr.message;
     }
     if (!pushed) {
-        if (ciGateRun) {
-            log('[CI Gate] Publish PR push failed, so there is no PR to report CI on -- cancelling the in-flight Finalization CI gate run.');
-            ciGateRun.cancel('Publish PR could not push the sprint branch');
-        }
         log(`[Publish Push Failed] Could not push sprint branch '${validated.branch}' to origin (bounded transient retry, and a rebase-then-re-push if diverged, both exhausted) -- the sprint's work is COMMITTED LOCALLY ONLY and is NOT on the remote. Skipping PR creation and target-issue closure (neither is meaningful for an unpushed branch); the sprint's own computed verdict (${finalVerdictResult.verdict}) is preserved and returned with pushed:false. Push the branch by hand and raise the PR, or re-run finalization once the remote is reachable. Last error: ${lastPushError}`);
         return { pushed: false };
     }
@@ -194,11 +201,11 @@ export async function runPublishPrPhase({
     // reviewer can weigh it before merging.
     const finalVerdictLabel = finalVerdictResult.verdict === 'PASS' ? 'PASS' : 'FAIL';
 
-    // Await the Finalization CI gate run (see this file's header) AFTER the
-    // branch push and BEFORE any PR work. Never a second run; never a gate on
-    // the PR or the verdict.
+    // Render the already-awaited CI gate record (see this file's header)
+    // AFTER the branch push and BEFORE any PR work. Never a run of its own;
+    // never a gate on the PR or the verdict.
     let ciLines = [];
-    if (ciGateRun) {
+    if (ciGateRecord) {
         const headRes = await command('git rev-parse HEAD', {
             member_name: publishGitMember,
             silent: true,
@@ -207,17 +214,8 @@ export async function runPublishPrPhase({
         });
         const headLine = headRes && headRes.ok ? String(headRes.output || '').trim().split(/\r?\n/)[0].trim() : '';
         const branchHeadSha = /^[0-9a-f]{7,64}$/i.test(headLine) ? headLine : null;
-        log(`[CI Gate] Publish PR: awaiting the Finalization CI gate run (workflow '${ciGateRun.workflow}') before raising the PR.`);
-        let ciRecord = null;
-        try {
-            ciRecord = await ciGateRun.promise;
-        } catch (ciErr) {
-            // Unreachable by construction (the promise never rejects); kept so
-            // a future regression still degrades to a loud FAILED-TO-RUN.
-            ciRecord = null;
-            log(`[CI Gate] ERROR: the Finalization CI gate run rejected unexpectedly: ${ciErr && ciErr.message ? ciErr.message : String(ciErr)}`);
-        }
-        const ciReport = formatCiGateReport(ciRecord, { branchHeadSha });
+        log(`[CI Gate] Publish PR: reporting the last Finalization CI gate result (workflow '${ciGateRecord.workflow}', awaited at the Finalization barrier).`);
+        const ciReport = formatCiGateReport(ciGateRecord, { branchHeadSha });
         for (const line of ciReport.logLines) log(line);
         ciLines = ciReport.lines;
     }
@@ -310,6 +308,7 @@ export async function runPublishPrPhase({
             owedTriageLines: formatOwedTriageLines(owedTriage),
             owedTriageTotal: owedTriage ? owedTriage.total : 0,
             ciLines,
+            extensionLines,
             previousBody,
         });
         const prBody = buildBody();

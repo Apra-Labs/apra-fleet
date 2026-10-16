@@ -143,6 +143,13 @@ const KNOWN_ARG_KEYS = new Set([
     // reviewer prompt; a non-PASS outcome is logged loudly and stated in the
     // PR body. Absent, the gate is never constructed (no CI calls, no log).
     'ci_gate',
+    // Sprint extension bound (optional, non-negative integer, default
+    // DEFAULT_MAX_EXTENSIONS): how many times Finalization may send the sprint
+    // back into the cycle loop to fix a CI failure (ci_gate) or in-goal Final
+    // Review findings (see sprint-extension.mjs). Independent of max_cycles:
+    // each extension gets its own cycle budget even when max_cycles is spent.
+    // 0 disables extensions. CLI --max-extensions; supervisor max_extensions.
+    'max_extensions',
     // An optional live `(name, args) => Promise<any>` MCP tool-call function,
     // wired by bin/cli.mjs from its already-connected `mcpClient.callTool`.
     // Consumed by createMemberSessionGuard() to call the fleet's own
@@ -226,6 +233,25 @@ export function validateCiGate(raw) {
         throw new Error(`[Arg Contract] Invalid ci_gate.timeout_s "${timeoutS}": must be a positive integer (seconds).`);
     }
     return { workflow, timeoutS };
+}
+
+/** Default for the optional `max_extensions` sprint arg. */
+export const DEFAULT_MAX_EXTENSIONS = 1;
+
+/**
+ * Validates the optional `max_extensions` sprint arg: a non-negative integer
+ * (0 disables sprint extensions). Shared by the runner, the CLI (which parses
+ * --max-extensions to a number first) and the supervisor API; anything else
+ * throws an [Arg Contract] error. Absent -> DEFAULT_MAX_EXTENSIONS.
+ * @param {unknown} raw
+ * @returns {number}
+ */
+export function validateMaxExtensions(raw) {
+    if (raw === undefined || raw === null) return DEFAULT_MAX_EXTENSIONS;
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
+        throw new Error(`[Arg Contract] Invalid max_extensions ${JSON.stringify(raw)}: must be a non-negative integer (0 disables sprint extensions; default ${DEFAULT_MAX_EXTENSIONS}).`);
+    }
+    return raw;
 }
 
 /**
@@ -563,6 +589,9 @@ export function validateArgs(args) {
     // Run once at Finalization, awaited by Publish PR; never a verdict input.
     const ciGate = validateCiGate(args.ci_gate);
 
+    // --- max_extensions (optional, default DEFAULT_MAX_EXTENSIONS) ---------
+    const maxExtensions = validateMaxExtensions(args.max_extensions);
+
     return {
         targetIssues,
         members: args.members,
@@ -587,5 +616,6 @@ export function validateArgs(args) {
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,
         expectBeads,
         ciGate,
+        maxExtensions,
     };
 }

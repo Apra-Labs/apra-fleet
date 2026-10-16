@@ -19,7 +19,7 @@ import { beadsExtension, kbCodeIntelExtension } from '../fleet-sprint/viewer-ext
 import { VIEWER_BACK_LINK_TEXT } from '../src/supervisor/viewer-back-link.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit, commandResultStdout } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
-import { validateCiGate } from '../fleet-sprint/sprint-args.mjs';
+import { validateCiGate, validateMaxExtensions } from '../fleet-sprint/sprint-args.mjs';
 import { prepareLaunchTopology, toAlignCommandResult } from '../fleet-sprint/member-align.mjs';
 import { ROLE_BACKLOG, resolveBacklogRoleAlias, selectBacklogMember, formatBacklogSelection } from '../fleet-sprint/backlog-role.mjs';
 import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
@@ -195,6 +195,11 @@ export function buildOptionsSpec() {
         // Regression/Harvest; Publish PR awaits it and reports the result in
         // the PR body. Never changes the verdict or blocks the PR.
         'ci-gate': { type: 'string' },
+        // Sprint extension bound (non-negative integer, default 1): how many
+        // times Finalization may send the sprint back into the cycle loop to
+        // fix a CI failure or in-goal Final Review findings. 0 disables it.
+        // Forwarded as the runner's max_extensions arg only when set.
+        'max-extensions': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -254,6 +259,10 @@ Options:
                                 Started at Finalization on the sprint branch head, awaited by Publish PR
                                 and reported in the PR body. Never changes the verdict or blocks the PR;
                                 a non-PASS result is logged loudly. Omitted: no CI is triggered.
+      --max-extensions <n>     Max sprint extensions (default 1; 0 disables). At Finalization a CI
+                                failure (--ci-gate) or an in-goal Final Review finding sends the
+                                sprint back into the cycle loop for one more bounded cycle, then
+                                Finalization runs again. Independent of --max-cycles.
   -h, --help                   Show this help message.
 `.trim();
 
@@ -392,7 +401,7 @@ export async function resolveRoleMapWithWarnings(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, ciGate }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, ciGate, maxExtensions }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -431,7 +440,25 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // parses it (validateCiGate). Only forwarded when set, so a default
     // launch's runner args are unchanged.
     if (ciGate !== undefined) args.ci_gate = ciGate;
+    // --max-extensions, already parsed to a number; only forwarded when set,
+    // so a default launch's runner args are unchanged (the runner applies
+    // DEFAULT_MAX_EXTENSIONS).
+    if (maxExtensions !== undefined) args.max_extensions = maxExtensions;
     return args;
+}
+
+/**
+ * Parses the raw `--max-extensions` flag string: undefined when the flag was
+ * not passed, else the number it spells (decimal digits only; anything else
+ * becomes NaN so validateMaxExtensions() rejects it loudly rather than a
+ * blank or '1e0' slipping through as a number).
+ * @param {string|undefined} raw
+ * @returns {number|undefined}
+ */
+export function parseMaxExtensionsFlag(raw) {
+    if (raw === undefined) return undefined;
+    const text = String(raw).trim();
+    return /^\d+$/.test(text) ? Number(text) : Number.NaN;
 }
 
 /**
@@ -707,6 +734,7 @@ async function main() {
     const baseBranch = values.base;
     const goal = values.goal;
     const maxCycles = values['max-cycles'] !== undefined ? Number(values['max-cycles']) : 5;
+    const maxExtensions = parseMaxExtensionsFlag(values['max-extensions']);
     const allowMissingMembers = Boolean(values['allow-missing-members']);
     const requirementsFile = values['requirements-file'];
     const viewerPort = values['viewer-port'] !== undefined ? Number(values['viewer-port']) : DEFAULT_VIEWER_PORT;
@@ -757,6 +785,17 @@ async function main() {
     if (!Number.isInteger(maxCycles) || maxCycles < 1) {
         console.error(`Error: --max-cycles must be a positive integer, got "${values['max-cycles']}".`);
         process.exit(1);
+    }
+
+    // --max-extensions: same strict posture, through the runner's own
+    // validator (re-run by runner.js on the forwarded number).
+    if (maxExtensions !== undefined) {
+        try {
+            validateMaxExtensions(maxExtensions);
+        } catch {
+            console.error(`Error: --max-extensions must be a non-negative integer (0 disables sprint extensions), got "${values['max-extensions']}".`);
+            process.exit(1);
+        }
     }
 
     if (!Number.isInteger(viewerPort) || viewerPort < 1 || viewerPort > 65535) {
@@ -1224,6 +1263,7 @@ async function main() {
                 expectBeads,
                 skipRegression: Boolean(values['skip-regression']),
                 ciGate: values['ci-gate'],
+                maxExtensions,
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc

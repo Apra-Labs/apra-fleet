@@ -168,6 +168,26 @@ describe('Regression Test phase can never gate or abort the sprint', () => {
         );
     });
 
+    // Sprint extension (design: Regression moves behind the Finalization
+    // barrier). DELIBERATE update, not a relaxation: the Regression Test call
+    // site must sit AFTER the barrier that may send the sprint back into the
+    // cycle loop, and OUTSIDE the per-Finalization-pass loop the barrier's
+    // `continue`/`break` close, so it runs exactly once, on the final head,
+    // after the LAST Final Review -- and a regression result can neither
+    // perturb the verdict nor trigger an extension (the barrier has already
+    // decided by then).
+    test('runs BEHIND the Finalization barrier and outside the per-pass loop: once, on the final head', () => {
+        const barrierIdx = runnerSource.indexOf('await runFinalizationBarrier({');
+        assert.ok(barrierIdx > 0, 'expected the Finalization barrier call site (await runFinalizationBarrier({) -- re-anchor this pin if it drifted, never delete it');
+        assert.ok(finalVerdictIdx < barrierIdx, 'the barrier must follow Final Review: it decides on Final Review\'s findings');
+        assert.ok(barrierIdx < regressionPhaseIdx, 'the Regression Test phase MUST come after the Finalization barrier, so it never runs on a head an extension is about to change');
+        const passLoopStart = runnerSource.indexOf('    for (;;) {\n    while (cycle <= cycleCeiling) {');
+        const passLoopEnd = runnerSource.indexOf('\n    break;\n    }\n', barrierIdx);
+        assert.ok(passLoopStart > 0 && passLoopStart < finalVerdictIdx, 'expected the per-Finalization-pass loop to wrap the cycle loop and Final Review');
+        assert.ok(passLoopEnd > barrierIdx && passLoopEnd < regressionPhaseIdx,
+            'the per-pass loop must close (break) before the Regression Test call site -- inside it, the pass would run once per extension');
+    });
+
     test('runs BEFORE Harvest, so its summary can fold into the analysis doc', () => {
         assert.ok(harvestIdx > 0, 'expected the Harvest phase call site -- re-anchor this pin if the call drifted, never delete it');
         assert.ok(

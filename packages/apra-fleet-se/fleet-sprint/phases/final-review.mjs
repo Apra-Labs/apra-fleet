@@ -106,6 +106,10 @@ import { applyVerifyBlockVerdictGate } from '../verify-block.mjs';
  *   (apra-fleet-rp7a.1) the ids excluded from `finalOpenAtGoalCount` because
  *   they are deferred -- carried out so the analysis doc can name what was
  *   skipped rather than leaving it invisible behind a count of zero.
+ *   It also returns `createdFindings` ({ id, title, priority } per follow-up
+ *   bead this pass created) and `reopenedIds` (the reopens that survived the
+ *   goal guard): the Finalization barrier's extension triggers
+ *   (../sprint-extension.mjs) -- returned, never acted on here.
  *   Every other output of this phase is an in-place mutation of an array the
  *   caller still holds, or a bead/KB write already performed.
  */
@@ -343,6 +347,10 @@ export async function runFinalReviewPhase({
     // newTasks; a rejected finding is logged and recorded, never sprint-fatal.
     const finalNewTasks = Array.isArray(finalVerdictResult.newTasks) ? finalVerdictResult.newTasks : [];
     let dPushNeededAfterFinalFindings = false;
+    // Every follow-up this pass actually created, with its priority: the
+    // Finalization barrier (../sprint-extension.mjs) puts the in-goal ones in
+    // scope for a sprint extension. A merged (overlap) finding created nothing.
+    const createdFindings = [];
     if (finalNewTasks.length > 0) {
         const createdIds = [];
         let createdCountUnknownId = 0;
@@ -383,6 +391,7 @@ export async function runFinalReviewPhase({
             });
             if (created) {
                 dPushNeededAfterFinalFindings = true;
+                createdFindings.push({ id: created.childId || null, title, priority });
                 if (created.childId) {
                     createdIds.push(created.childId);
                     log(`Final Review newTasks: created ${created.childId} ("${title}") under ${targetIssues[0]}.`);
@@ -405,6 +414,7 @@ export async function runFinalReviewPhase({
     // (never overwritten) via --append-notes so it never clobbers the
     // bead's existing notes.
     const finalReopenIds = Array.isArray(finalVerdictResult.reopenIds) ? finalVerdictResult.reopenIds : [];
+    let finalReopenedIds = [];
     if (finalReopenIds.length > 0) {
         // Same guard, same fail-open, same skip log as the other two verdict
         // sites -- only the entry shape ({id, reason}, both required) and the
@@ -443,6 +453,7 @@ export async function runFinalReviewPhase({
                 log(`[fleet-sprint] Final Review reopen FAILED (non-fatal) for '${id}': ${reopenErr.message} -- reason preserved verbatim in this run log: ${reason}`);
             },
         });
+        finalReopenedIds = reopenedIds;
         if (reopenedIds.length > 0) {
             log(`Final Review: reopened ${reopenedIds.length} bead(s): ${reopenedIds.join(', ')}.`);
         }
@@ -463,5 +474,9 @@ export async function runFinalReviewPhase({
         // apra-fleet-rp7a.1: carried out so the sprint analysis document names
         // what was skipped, not just how many beads remained open.
         finalDeferredAtGoalIds,
+        // The findings this pass wrote to beads -- the Finalization barrier's
+        // in-goal extension triggers (see ../sprint-extension.mjs).
+        createdFindings,
+        reopenedIds: finalReopenedIds,
     };
 }

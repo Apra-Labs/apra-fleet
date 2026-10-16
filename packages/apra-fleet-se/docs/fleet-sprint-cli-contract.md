@@ -89,7 +89,8 @@ error, before any dispatch (the CLI and the supervisor run the same validator
 first). Behavior:
 - Absent: the gate is never constructed -- no CI calls and no CI log line; the
   run's log and PR body are byte-identical to a sprint before this option.
-- Set: CI runs ONCE per sprint, at Finalization, as a parallel activity.
+- Set: CI runs once per Finalization pass (once per sprint unless a sprint
+  extension runs -- see `max_extensions` below), as a parallel activity.
   Right after `group('Finalization')` the orchestrator makes sure the sprint
   branch's remote head equals the local HEAD of the git-capable publishing
   member (the harvester's member): normally a read-only check, since every
@@ -98,14 +99,18 @@ first). Behavior:
   resolve the branch head sha on the remote, locate the run of that workflow
   already triggered for that sha (or trigger one on the branch), poll it to
   completion bounded by `timeout_s`, and record run id, url, head sha and
-  per-job conclusions. Final Review, Regression Test and Harvest run while CI
-  runs. Publish PR awaits the result after its own branch push and BEFORE
-  raising/updating the PR, and renders a `CI` section into the PR body:
-  outcome, workflow, run url, the commit CI ran on and per-job conclusions.
-  When the head Publish PR pushed differs from the sha CI ran on (e.g. the
-  harvester committed afterwards), the body and the log say so explicitly
-  (`CI ran on <sha1>; branch head is now <sha2> (commits after CI started:
-  not covered)`). No second run is started.
+  per-job conclusions. Final Review runs while CI runs. Then the
+  Finalization BARRIER (`fleet-sprint/sprint-extension.mjs`) awaits the
+  result -- also when Final Review passed -- before anything else: a
+  `TIMEOUT` is retried once on the same commit (a second `TIMEOUT` is treated
+  like `FAIL`), and a `FAIL` may start a sprint extension (see
+  `max_extensions`). Only after the barrier do Regression Test, Harvest and
+  Publish PR run. Publish PR renders the LAST awaited record into a `CI`
+  section of the PR body: outcome, workflow, run url, the commit CI ran on and
+  per-job conclusions. When the head Publish PR pushed differs from the sha CI
+  ran on (the harvester commits after the barrier), the body and the log say
+  so explicitly (`CI ran on <sha1>; branch head is now <sha2> (commits after
+  CI started: not covered)`). Publish PR never starts or awaits a run.
 - Never a verdict input, never a blocker, never silent: CI never changes the
   sprint verdict and never blocks PR creation; a non-`PASS` outcome is logged
   as an `[CI Gate] ERROR` line and stated plainly in the PR body. A refused
@@ -115,14 +120,58 @@ first). Behavior:
   whose VCS provider has no CI-trigger support (only `github` declares one
   today), or a sprint with no fleet MCP client, is `FAILED-TO-RUN` naming the
   cause. A gate that throws becomes `FAILED-TO-RUN`; its promise is guarded
-  from creation, and an abort (or a failed Publish PR push) cancels its
-  polling, so it can never cause an unhandled rejection or hold the process.
+  from creation, and an abort cancels its polling, so it can never cause an
+  unhandled rejection or hold the process. `FAILED-TO-RUN` never starts a
+  sprint extension (no code change can fix a credential, permission or
+  provider problem); the PR body says so.
 - Never in a prompt: no doer, reviewer or final-review prompt carries a CI
   result (`test/prompt-hygiene-ci.test.mjs` pins that `ci-gate.mjs` is
-  imported only by `runner.js` and `phases/publish-pr.mjs`).
+  imported only by `runner.js`, `phases/publish-pr.mjs` and
+  `sprint-extension.mjs`, and that no prompt builder takes CI input). The one
+  place CI evidence reaches a role is the Fix-CI bead's description (below),
+  which a doer reads through the normal bead flow.
 - Credential: the orchestrator's just-in-time push+pr VCS credential (the same
   one Publish PR mints), run through `vcs_credential_exec` -- doers never need
   CI permissions.
+
+`max_extensions` (CLI `--max-extensions <n>`; supervisor launch body
+`max_extensions`/`maxExtensions`, forwarded as `--max-extensions`) bounds the
+sprint extension (`fleet-sprint/sprint-extension.mjs`). A non-negative
+integer, default `1`; `0` disables extensions. `validateArgs()`
+(`validateMaxExtensions`) rejects anything else with an `[Arg Contract]
+Invalid max_extensions...` error before any dispatch (the CLI and the
+supervisor run the same validator first; the supervisor answers 400 on field
+`max_extensions`). Behavior, decided at the Finalization barrier (after Final
+Review and the CI gate, before Regression Test/Harvest/Publish PR):
+- Triggers: a CI `FAIL` (or a `TIMEOUT` that timed out again on its one
+  retry) -> one P1 "Fix CI" child bead under the first target issue, created
+  by the orchestrator through the same validated child-bead path as Final
+  Review findings, inside a beads D-pull/D-push bracket. Its description
+  carries the workflow, run url, the commit CI ran on, the failing jobs and
+  the reason. There is ONE such bead per sprint: a later failure reopens it
+  and appends a note (its id is kept in sprint state; a bead with the same
+  title already in scope is adopted, so a relaunched sprint does not
+  duplicate it). Final Review newTasks at or above the goal ceiling and Final
+  Review reopens that survived the goal guard are triggers too (they already
+  are beads). Never a trigger: CI `FAILED-TO-RUN`, below-goal Final Review
+  findings (owed triage, unchanged) and regression failures.
+- Extension: the sprint re-enters the ordinary cycle loop (Plan, Develop/
+  Review, Deploy, Integ Test, Cycle Evaluation -- every guard applies) for
+  one cycle plus the existing deploy-retry allowance, numbered after the last
+  cycle run and independent of `max_cycles` (a sprint that used every cycle
+  still gets its extension). Then Finalization runs again from the start: a
+  new CI gate run on the new head and a NEW Final Review session.
+- Stops: when `max_extensions` is spent, or when an extension ends with the
+  same CI failure (same failing job set) or the same in-goal findings that
+  triggered it (no-progress stop). The sprint then finishes with its own
+  verdict (CI still never changes it) and says why.
+- Never silent: every decision is logged (`[Sprint Extension]`), and the PR
+  body gets a `Sprint extensions` section listing each extension (trigger,
+  beads, outcome), why the sprint stopped extending, and the extensions used,
+  above the final CI result. A sprint with no `ci_gate` and no in-goal Final
+  Review finding never shows the section and issues no extra command.
+- `0` reproduces the pre-extension behaviour apart from the barrier ordering
+  (Regression Test now runs after CI is in).
 
 `expect_beads` (raw `--expect-beads` JSON, forwarded verbatim) is parsed by
 `validateArgs()` via `validateExpectBeads` -- bad JSON is rejected at
@@ -223,9 +272,9 @@ abandoned feature.
 kept but the arg was deliberately rejected as unknown while its first design
 (CI before every reviewer dispatch, result handed to the reviewer) conflicted
 with the rule that CI never reaches doer/reviewer loops. It is now WIRED with
-the agreed design -- one run per sprint at Finalization, in parallel with
-Final Review/Regression/Harvest, awaited by Publish PR and reported in the PR
-body, never a verdict input and never in a prompt -- and has a CLI flag
+the agreed design -- one run per Finalization pass, in parallel with Final
+Review, awaited at the Finalization barrier and reported in the PR body,
+never a verdict input and never in a prompt -- and has a CLI flag
 (`--ci-gate`) and a supervisor launch field (`ci_gate`). See the `ci_gate`
 paragraph above.
 

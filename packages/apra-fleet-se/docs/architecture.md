@@ -1072,7 +1072,20 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
    `PASS`/`FAIL`) is given real evidence: cycles run, closed-bead count,
    still-open-at-goal count, every deploy/integ failure, every rejected
    `newTask`. The prompt explicitly instructs the reviewer to never
-   rubber-stamp `PASS` regardless of that evidence.
+   rubber-stamp `PASS` regardless of that evidence. When `ci_gate` is set,
+   a CI gate run is started on the sprint branch head just before Final
+   Review and runs alongside it.
+   **Finalization barrier** (`fleet-sprint/sprint-extension.mjs`) -- after
+   Final Review the engine awaits that CI run (a `TIMEOUT` is retried once)
+   and decides whether to extend the sprint: a CI `FAIL` (one reopenable P1
+   "Fix CI" bead under the first target issue) or a Final Review finding at
+   or above the goal ceiling sends the sprint back into the ordinary cycle
+   loop for one more cycle (independent of `max_cycles`), after which
+   Finalization runs again from the start (new CI run, fresh Final Review
+   session). Bounded by `max_extensions` (default 1) and a no-progress stop.
+   CI `FAILED-TO-RUN`, below-goal findings and regression failures never
+   extend. Only when the sprint does not extend does Finalization continue
+   with Regression Test (once, on the final head), Harvest and Publish PR.
 2. **Harvest** -- a `harvester` dispatch is given pre-computed,
    verbatim-insert inputs: `analysisArtifactFile` (a deterministic path
    `docs/sprint-analysis-<branchSlug>.md`, where `branchSlug` is

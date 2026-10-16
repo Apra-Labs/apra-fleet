@@ -1,16 +1,21 @@
 // =============================================================================
 // ENGINE CI GATE.
 //
-// WHERE IT RUNS. Once per sprint, at Finalization, and only when the optional
+// WHERE IT RUNS. Once per Finalization pass, and only when the optional
 // `ci_gate` sprint arg is set (sprint-args.mjs validateCiGate). runner.js
 // starts the gate (startFinalizationCiGate below) right after
 // group('Finalization') on the sprint branch's remote head and does NOT await
-// it: Final Review, Regression Test and Harvest run while CI runs. Publish PR
-// (phases/publish-pr.mjs) awaits the in-flight result after its own branch
-// push, before raising/updating the PR, and renders it into the PR body
+// it: Final Review runs while CI runs. The Finalization barrier
+// (sprint-extension.mjs) then awaits the result -- retrying a TIMEOUT once on
+// the same commit -- before deciding whether a CI failure sends the sprint
+// into a bounded extension (a Fix-CI bead plus another cycle, after which the
+// next Finalization pass starts its own run on its own head). Publish PR
+// (phases/publish-pr.mjs) renders the LAST awaited record into the PR body
 // (formatCiGateReport below). CI never changes the sprint verdict, never
-// blocks PR creation and never reaches a doer or reviewer prompt. Without
-// `ci_gate` the gate is never constructed: no CI request, no log line.
+// blocks PR creation and never reaches a prompt builder; the only place the
+// record's text reaches a role is the Fix-CI bead's description, read through
+// the normal bead flow. Without `ci_gate` the gate is never constructed: no
+// CI request, no log line.
 //
 // WHAT IT DOES. Triggers (or locates) a workflow run on a branch head with the
 // caller's VCS credential, awaits it with a bounded timeout and records run
@@ -273,7 +278,7 @@ export function createCiGate({ ciGate, branch, log = () => {}, resolveContext, g
         log(CI_GATE_NOT_CONFIGURED_LOG);
         return { configured: false, results, async check() { return null; } };
     }
-    log(`${LOG_PREFIX} configured: workflow '${ciGate.workflow}', timeout ${ciGate.timeoutS}s -- run once at Finalization on the ${branch} head (parallel with Final Review/Regression/Harvest; Publish PR awaits it).`);
+    log(`${LOG_PREFIX} configured: workflow '${ciGate.workflow}', timeout ${ciGate.timeoutS}s -- run once at Finalization on the ${branch} head (parallel with Final Review; the Finalization barrier awaits it before deciding on a sprint extension).`);
     return {
         configured: true,
         results,
@@ -406,13 +411,13 @@ function failedToRunRecord({ ciGate, branch, reason, label }) {
 }
 
 /**
- * Start the sprint's ONE CI gate run at Finalization, in the background.
+ * Start one Finalization pass's CI gate run, in the background.
  *
  * Returns immediately with a handle whose `promise` NEVER rejects: it is
  * guarded from the moment it is created, so a gate that throws (or a context
  * resolver that throws) becomes a loud FAILED-TO-RUN record and can never
  * surface as an unhandled rejection, even if nothing awaits it (a sprint that
- * aborts before Publish PR). `cancel(reason)` stops any pending poll wait so
+ * aborts before the Finalization barrier). `cancel(reason)` stops any pending poll wait so
  * the run settles promptly as FAILED-TO-RUN; it is a no-op once settled.
  *
  * Only call this when `ciGate` is configured -- the unconfigured sprint never
@@ -440,7 +445,7 @@ export function startFinalizationCiGate({ ciGate, branch, log = () => {}, resolv
     let promise;
     try {
         const gate = createGate({ ciGate, branch, log, resolveContext, gateOptions: { ...gateOptions, sleep: cancellable.sleep } });
-        log(`${LOG_PREFIX} started at Finalization on the ${branch} head; Final Review, Regression Test and Harvest continue while it runs. Publish PR awaits the result; CI never changes the sprint verdict.`);
+        log(`${LOG_PREFIX} started at Finalization on the ${branch} head; Final Review continues while it runs. The Finalization barrier awaits the result before Regression Test, Harvest and Publish PR; CI never changes the sprint verdict.`);
         promise = Promise.resolve()
             .then(() => gate.check({ label }))
             .then(

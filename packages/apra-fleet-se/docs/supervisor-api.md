@@ -35,8 +35,15 @@ short-circuits before anything downstream runs:
    `{ "workflow": "<file or id>", "timeout_s": <n> }`) is validated with the
    engine's own `validateCiGate` (anything malformed -> `400`, field
    `ci_gate`) and forwarded to the child as `--ci-gate` (normalized JSON):
-   the sprint runs that CI workflow once at Finalization and reports it in
-   the PR body (see `docs/cli-reference.md` `--ci-gate`).
+   the sprint runs that CI workflow at Finalization, awaits it at the
+   Finalization barrier and reports it in the PR body (see
+   `docs/cli-reference.md` `--ci-gate`).
+   Optional `max_extensions` (alias `maxExtensions`; a non-negative integer,
+   default 1) is validated with the engine's own `validateMaxExtensions`
+   (anything else -> `400`, field `max_extensions`) and forwarded to the
+   child as `--max-extensions`: how many times a CI failure or an in-goal
+   Final Review finding may send the sprint back into the cycle loop (see
+   `docs/cli-reference.md` `--max-extensions`).
    Optional `roleMap` (object or JSON string) is resolved too. The
    `roleMap.orchestrator` key is a DEPRECATED alias of `roleMap.backlog`:
    using it still works, and the response carries a top-level
