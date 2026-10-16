@@ -124,7 +124,9 @@ The default install includes fleet-se (fleet-sprint, supervisor, bd), which requ
 
 For Claude Code, `install` also adds the **fleet-status mod** -- a Claude Code
 plugin that shows every member's state in the status line and opens a
-`/fleet-status` pane. It is installed through the `claude` CLI from a local
+`/fleet-status` pane where you can also remove a member and list, add,
+replace or delete secrets (a secret's value is typed in another terminal or
+the server's one-time form, never in Claude Code). It is installed through the `claude` CLI from a local
 marketplace in `~/.apra-fleet/claude-plugins/` and replaces the old statusLine
 script. If the `claude` CLI is missing or too old to install plugins, install
 says why and keeps the statusLine script instead. A statusLine of your own is
@@ -1294,8 +1296,10 @@ control exactly which skills are installed:
 
 `apra-fleet install --llm claude` (the default) installs **fleet-status**, a
 Claude Code mod that shows apra-fleet member status in Claude Code's status
-line and adds a `/fleet-status` pane (it reads the read-only `fleet_snapshot`
-MCP tool). The installer copies the mod into a local plugin marketplace,
+line and adds a `/fleet-status` pane (it polls the read-only `fleet_snapshot`
+and `credential_store_list` MCP tools; removing a member and managing secrets
+run only on a press in the pane, see
+[design-fleet-status-mod.md](design-fleet-status-mod.md)). The installer copies the mod into a local plugin marketplace,
 `~/.apra-fleet/claude-plugins/` (marketplace `apra-fleet-local`, plugin
 `fleet-status`), then runs:
 
