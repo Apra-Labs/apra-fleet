@@ -132,6 +132,7 @@ function generateBranchName(member) {
  *   overrideRelaunchGate?: boolean,
  *   sync?: boolean,
  *   ciWorkflow?: string,
+ *   fixUpRounds?: string|number,
  * }} input
  * @returns {{ ok: true, body: object }|{ ok: false, error: string }}
  */
@@ -189,6 +190,17 @@ export function buildLaunchRequestBody(input) {
     const ciWorkflow = typeof opts.ciWorkflow === 'string' ? opts.ciWorkflow.trim() : '';
     if (ciWorkflow.length > 0) {
         body.ci_gate = { workflow: ciWorkflow };
+    }
+    // "Fix-up rounds" is the form's name for the engine's max_extensions: how
+    // many extra rounds the sprint may run when CI fails or Final Review finds
+    // in-goal issues at Finalization. Only sent when filled in, so an empty
+    // field keeps the engine default; the server validates it again.
+    const rawRounds = opts.fixUpRounds === undefined || opts.fixUpRounds === null ? '' : String(opts.fixUpRounds).trim();
+    if (rawRounds.length > 0) {
+        if (!/^[0-9]+$/.test(rawRounds)) {
+            return { ok: false, error: 'Fix-up rounds must be a whole number (0 turns them off).' };
+        }
+        body.max_extensions = parseInt(rawRounds, 10);
     }
     return { ok: true, body };
 }
@@ -759,6 +771,7 @@ function clientScriptSource(mountPrefix) {
             var overrideGateEl = document.getElementById('launch-override-gate');
             var syncEl = document.getElementById('launch-sync');
             var ciWorkflowEl = document.getElementById('launch-ci-workflow');
+            var fixUpRoundsEl = document.getElementById('launch-fix-up-rounds');
             var result = buildLaunchRequestBody({
                 selectedRoots: selectedRoots,
                 members: members,
@@ -769,6 +782,7 @@ function clientScriptSource(mountPrefix) {
                 overrideRelaunchGate: overrideGateEl ? overrideGateEl.checked : false,
                 sync: syncEl ? syncEl.checked : false,
                 ciWorkflow: ciWorkflowEl ? ciWorkflowEl.value : '',
+                fixUpRounds: fixUpRoundsEl ? fixUpRoundsEl.value : '',
             });
             if (!result.ok) {
                 resultEl.style.color = '#ef4444';
@@ -834,7 +848,9 @@ export function renderLaunchFormHtml(mountPrefix) {
         '<div style="margin-bottom:8px;"><label><input id="launch-sync" type="checkbox"/> ' +
         'Synced topology (--sync) -- pass when members are in separate checkouts</label></div>' +
         '<div style="margin-bottom:8px;"><label>CI workflow (optional, --ci-gate): <input id="launch-ci-workflow" type="text" placeholder="e.g. ci.yml"/></label> ' +
-        '<span style="color:#a1a1aa;">run once at Finalization and reported in the PR body; never changes the verdict</span></div>' +
+        '<span style="color:#a1a1aa;">runs at Finalization alongside the final review; the result is reported in the PR body</span></div>' +
+        '<div style="margin-bottom:8px;"><label>Fix-up rounds (optional, --max-extensions): <input id="launch-fix-up-rounds" type="number" min="0" step="1" placeholder="1 (default)" style="width:7em;"/></label> ' +
+        '<span style="color:#a1a1aa;">if CI fails or the final review finds issues within the goal, the sprint goes back to fix them this many times before opening the PR; 0 turns this off</span></div>' +
         '<button type="submit">Launch Sprint</button>' +
         '</form>' +
         '<div id="launch-result" style="margin-top: 8px; font-size: 13px;"></div>' +

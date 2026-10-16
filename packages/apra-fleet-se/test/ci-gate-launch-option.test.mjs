@@ -123,3 +123,20 @@ describe('dashboard launch form: optional CI workflow', () => {
         assert.equal('ci_gate' in buildLaunchRequestBody({ ...input }).body, false);
     });
 });
+
+describe('dashboard launch form: fix-up rounds (max_extensions)', () => {
+    const input = { selectedRoots: ['PROJ-1'], members: ['alice'], goal: 'P1/P2', branch: 'feat/x', base: 'main' };
+    test('a filled-in whole number becomes body.max_extensions, 0 included; empty leaves the body unchanged', () => {
+        assert.equal(buildLaunchRequestBody({ ...input, fixUpRounds: ' 2 ' }).body.max_extensions, 2);
+        assert.equal(buildLaunchRequestBody({ ...input, fixUpRounds: '0' }).body.max_extensions, 0);
+        assert.equal('max_extensions' in buildLaunchRequestBody({ ...input, fixUpRounds: '' }).body, false);
+        assert.equal('max_extensions' in buildLaunchRequestBody({ ...input }).body, false);
+    });
+    test('a negative, fractional or non-numeric value is rejected before any request is sent', () => {
+        for (const bad of ['-1', '1.5', 'two']) {
+            const r = buildLaunchRequestBody({ ...input, fixUpRounds: bad });
+            assert.equal(r.ok, false, bad);
+            assert.match(r.error, /Fix-up rounds/);
+        }
+    });
+});
