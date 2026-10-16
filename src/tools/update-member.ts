@@ -17,8 +17,9 @@ import { recheckProjectAgentShadows, invalidateProjectAgentShadowCache } from '.
 import { getStrategy } from '../services/strategy.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { ensureAgyProject } from '../services/agy-project.js';
-import { beadsStatusNote, refreshMemberFleetMcp, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
-import { composePermissions, removeComposedMemberConfig } from './compose-permissions.js';
+import { beadsStatusNote, refreshMemberFleetMcp, getMemberFleetMcpDeps, fleetInstallWarning } from '../services/member-fleet-install.js';
+import { composePermissions, removeComposedMemberConfig, missingClaudeAllowRules } from './compose-permissions.js';
+import { memberMcpAllowRules } from '../services/member-config-io.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 import { validateEnvMap } from '../utils/env-map-validation.js';
 
@@ -66,7 +67,7 @@ export const updateMemberSchema = z.object({
   unattended: z.preprocess(
     (v) => v === false ? 'false' : v,
     z.enum(['false', 'auto', 'dangerous'])
-  ).optional().describe('Permission mode for unattended execution. Pass "false" to reset to interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
+  ).optional().describe('Permission mode for unattended execution. Pass "false" to reset to interactive prompts; "auto" = auto-approve safe operations (Claude: --permission-mode auto; on a model without auto-mode support, such as Haiku, the dispatch runs acceptEdits instead); "dangerous" = skip all permission checks.'),
   category: z.string().max(64).optional().describe('Group label for this member (e.g. "doers", "reviewers"). Pass empty string to clear.'),
   tags: z.array(z.string().max(64, 'Each tag must be 64 characters or fewer'))
     .max(10, 'At most 10 tags are allowed')
@@ -82,7 +83,7 @@ export const updateMemberSchema = z.object({
   }).optional().describe('Which package/consumer owns this member for its own bookkeeping. Refused while the member is held (reservedBy set) -- the same refusal member_owner applies, so this cannot be used to bypass it.'),
   env: z.record(z.string(), z.string()).optional().describe('Replace this member\'s env map. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision, so an entry here cannot shadow one. Pass {} to clear.'),
   llm_auth_expires_at: z.string().optional().describe('ISO 8601 expiry of this member\'s LLM auth (OAuth session / API key), when known.'),
-  fleet_install: z.enum(['auto', 'skip']).optional().describe('Upgrade or skip the member\'s own apra-fleet install. "auto": for a remote member, probe it and install/upgrade apra-fleet when it is missing or older than this orchestrator (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify a MEMBER session, even when nothing else changed; local members only get the MEMBER-session probe. "skip": no install (a refresh triggered by another change runs with install off). Omit to keep the default: install only on a provider change. The result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true).'),
+  fleet_install: z.enum(['auto', 'skip', 'replace-full']).optional().describe('Upgrade or skip the member\'s own apra-fleet install. "auto": for a remote member, probe it and install/upgrade apra-fleet when it is missing or older than this orchestrator (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify a MEMBER session, even when nothing else changed; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member\'s permission allow-list through compose_permissions grant mode, keeping its role and grants (a NOTICE says so; a failure is a WARNING); local members only get the MEMBER-session probe. An install without the member-install marker (a full install) is never touched by "auto". "replace-full": everything "auto" does, plus an explicit opt-in to REPLACE such a full install with a member install (back up data and fleet.key to a timestamped dir, uninstall with the installed binary, stop the linux fleet-supervisor unit, move data aside, run the current installer in member mode, self-register); refused with no destructive command when the marker probe fails. "skip": no install (a refresh triggered by another change runs with install off). Omit to keep the default: install only on a provider change. The result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true). A requested install/upgrade that cannot happen (no release for this build, checksum or download failure, unsupported platform, full install present, ...) never fails the update: it adds a WARNING naming the consequence, the exact reason and OS-correct manual install steps (also in fleetMcp.manualInstall).'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -383,7 +384,8 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   // and the outcome is a recorded, recoverable status (apra-fleet-b4g.56).
   const nameChanged = updated.friendlyName !== existing.friendlyName;
   let fleetMcpLine: string | undefined;
-  const fleetInstallAuto = input.fleet_install === 'auto';
+  // "replace-full" is "auto" plus the opt-in full-install replacement.
+  const fleetInstallAuto = input.fleet_install === 'auto' || input.fleet_install === 'replace-full';
   if (providerChanged || nameChanged || workFolderMoved || fleetInstallAuto) {
     try {
       // 'skip' disables the install; 'auto' installs a remote member (upgrading
@@ -397,11 +399,48 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
         // An install also (re)writes the per-folder MCP entry before it is
         // checked, so one fleet_install:"auto" call ends at fleetMcp=available.
         writeMcpEntry: install,
+        replaceFull: install && input.fleet_install === 'replace-full',
       });
       fleetMcpLine = status.state === 'available'
-        ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${status.installFailure && status.detail ? ` -- warning: ${status.detail}` : ''}`
+        ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${(status.installFailure || status.replacedFullInstall) && status.detail ? ` -- ${status.installFailure ? 'warning: ' : ''}${status.detail}` : ''}`
         : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
       fleetMcpLine += beadsStatusNote(status);
+      // A requested install that did not happen never fails the update: it is
+      // a prominent WARNING with the consequence, reason and manual steps.
+      const installWarning = fleetInstallWarning(updated.friendlyName, status);
+      if (installWarning) {
+        fleetMcpLine += installWarning.startsWith('NOTICE') ? ' (see NOTICE below)' : ' (see WARNING below)';
+        warnings.unshift(installWarning);
+      }
+      // A fresh install/upgrade/replace -- or an install that only now became
+      // usable (e.g. a failed autostart fixed by `apra-fleet start`) -- can
+      // serve member tools a claude member's allow list does not grant yet
+      // (opencode keeps no client-side tool list; agy/codex/copilot get no
+      // member install here). Grant mode ADDS the member tool rules to the
+      // existing allow list, so the member's role and reactive grants are kept.
+      // Skipped when the provider or folder block above already composed.
+      // Also runs whenever the install is available, not only on a recorded
+      // transition: a member_detail refresh between `apra-fleet start` and
+      // this update already recorded available. The grant is skipped (no
+      // NOTICE, no file rewrite) when the allow list already has every rule.
+      const mayNeedMemberRules = status.fleetInstalledAt !== existing.fleetMcp?.fleetInstalledAt
+        || !!status.replacedFullInstall
+        || status.state === 'available';
+      if (install && mayNeedMemberRules && !providerChanged && !workFolderMoved && (updated.llmProvider ?? 'claude') === 'claude'
+        && (await missingClaudeAllowRules(updated, memberMcpAllowRules())).length > 0) {
+        let recompose: string;
+        try {
+          recompose = await composePermissions({ member_id: updated.id, role: 'doer', tags: updated.tags, grant: memberMcpAllowRules() });
+        } catch (e: any) {
+          recompose = `compose_permissions threw: ${e?.message ?? String(e)}`;
+        }
+        if (!recompose.startsWith('\u2705')) {
+          const asciiDetail = recompose.replace(/^[^\x00-\x7F]+\s*/, '');
+          warnings.push(`WARNING: apra-fleet was installed/upgraded on the member but compose_permissions failed -- its permission allow-list was not refreshed, so its LLM may refuse fleet tools the new install serves. Retry with compose_permissions {member_id, role}: ${asciiDetail}`);
+        } else {
+          warnings.push('NOTICE: the member apra-fleet tool rules were added to its permission allow-list (existing rules and grants kept).');
+        }
+      }
     } catch (e: any) {
       fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;
     }

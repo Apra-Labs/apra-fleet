@@ -15,8 +15,8 @@
 import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { isRecordedAnalyzeAlive, isReindexRunning } from './code-intelligence-reindex.js';
-import { readGitNexusIndexState } from './code-index-state.js';
+import { isRecordedAnalyzeAlive, isReindexRunning, recordedIndexBuild } from './code-intelligence-reindex.js';
+import { indexInconsistency, readGitNexusIndexState } from './code-index-state.js';
 import { scheduleIndexBuild, type ScheduleReindexOutcome } from './code-index-heal.js';
 import { missingOnServerPathMessage } from '../utils/find-on-path.js';
 
@@ -43,13 +43,18 @@ export type CodeIndexProvider = 'gitnexus' | 'codebase-memory';
  *                  or a recorded run whose pid is alive);
  *   interrupted -- meta.json says incrementalInProgress but no analyze is live:
  *                  a run died mid-write and nothing will finish it;
- *   missing     -- no usable index and no analyze is live.
+ *   missing     -- no usable index and no analyze is live;
+ *   inconsistent -- the index looks complete but its metadata disagrees with
+ *                  itself (gitnexus's registry, or fleet's record of its last
+ *                  build, names a different commit than meta.json), and no
+ *                  analyze is live: a torn write whose answers cannot be
+ *                  trusted. `detail` says which copies disagree.
  */
-export type CodeIndexNotReadyState = 'missing' | 'building' | 'interrupted';
+export type CodeIndexNotReadyState = 'missing' | 'building' | 'interrupted' | 'inconsistent';
 
 export type CodeIndexReadiness =
   | { ready: true }
-  | { ready: false; state: CodeIndexNotReadyState };
+  | { ready: false; state: CodeIndexNotReadyState; detail?: string };
 
 // codebase-memory-mcp's default database storage directory (its README
 // "Persistence" section: SQLite databases under ~/.cache/codebase-memory-mcp/).
@@ -67,7 +72,12 @@ export function indexedCommitOf(repo: string): string {
  *
  *   gitnexus        -- ready when <repo>/.gitnexus/meta.json has a non-empty
  *                      lastCommit AND no incrementalInProgress flag AND no
- *                      analyze lock is held. A placeholder meta.json
+ *                      analyze is live (see 'building' below) AND the
+ *                      metadata is consistent (indexInconsistency). An
+ *                      analyze rewrites the index IN PLACE, so a complete-
+ *                      looking meta.json under a live analyze is NOT served:
+ *                      that is the fence that keeps a half-rewritten graph
+ *                      from answering. A placeholder meta.json
  *                      (lastCommit '') is NOT an index. Not ready is
  *                      'building' while an analyze is LIVE -- this server's
  *                      own run, a held analyze lock, or a status.json run
@@ -91,12 +101,14 @@ export function codeIndexReadiness(provider: CodeIndexProvider, repo?: string): 
     }
     if (!repo) return { ready: true };
     const idx = readGitNexusIndexState(repo);
-    if (idx.metaPresent && idx.lastCommit !== '' && !idx.incrementalInProgress && !idx.lockHeld) {
-      return { ready: true };
-    }
+    // Live analyze first: it may be rewriting an index whose meta.json still
+    // reads as complete.
     if (idx.lockHeld || isReindexRunning(repo) || isRecordedAnalyzeAlive(repo)) return { ready: false, state: 'building' };
     if (idx.metaPresent && idx.incrementalInProgress) return { ready: false, state: 'interrupted' };
-    return { ready: false, state: 'missing' };
+    if (!idx.metaPresent || idx.lastCommit === '') return { ready: false, state: 'missing' };
+    const inconsistency = indexInconsistency(repo, idx, recordedIndexBuild(repo));
+    if (inconsistency) return { ready: false, state: 'inconsistent', detail: inconsistency };
+    return { ready: true };
   } catch {
     return { ready: false, state: 'missing' };
   }
@@ -117,6 +129,7 @@ export function indexNotReadyError(
   repo: string | undefined,
   state: CodeIndexNotReadyState,
   heal?: IndexHealOutcome,
+  detail?: string,
 ): CodeIntelError {
   const where = repo ? ` for '${repo}'` : '';
   if (provider === 'codebase-memory') {
@@ -131,7 +144,9 @@ export function indexNotReadyError(
   }
   const problem = state === 'interrupted'
     ? `The gitnexus code index${where} is marked incomplete and no running analyze was found.`
-    : `No gitnexus code index found${where}.`;
+    : state === 'inconsistent'
+      ? `The gitnexus code index${where} has inconsistent metadata${detail ? ` (${detail})` : ''}, so its answers cannot be trusted.`
+      : `No gitnexus code index found${where}.`;
   const [what, remediation] = healText(heal);
   return new CodeIntelError('E-CODE-INDEX-NOT-READY', `${problem}${what}`, remediation);
 }
@@ -183,16 +198,38 @@ function healText(heal: IndexHealOutcome | undefined): [string, string] {
   }
 }
 
+/**
+ * The typed error for an answer discarded because the index changed while the
+ * call ran: `after` is readiness re-read once the call returned. Not ready ->
+ * the error for that state; still ready -> the index was replaced (an analyze
+ * finished) mid-call. Either way: retry.
+ */
+export function indexChangedDuringCallError(repo: string, after: CodeIndexReadiness): CodeIntelError {
+  if (!after.ready && after.state !== 'building') {
+    return new CodeIntelError(
+      'E-CODE-INDEX-NOT-READY',
+      `The gitnexus code index for '${repo}' changed while this call was answered and is now ${after.state}${after.detail ? ` (${after.detail})` : ''}; the answer was discarded.`,
+      'Retry the same call; it requests a rebuild if one is needed (code_status shows the index state).',
+    );
+  }
+  const why = after.ready ? 'was replaced by an index build' : 'started being rebuilt';
+  return new CodeIntelError(
+    'E-CODE-INDEX-NOT-READY',
+    `The gitnexus code index for '${repo}' ${why} while this call was answered; the answer was discarded.`,
+    RETRY_SOON,
+  );
+}
+
 /** Throw E-CODE-INDEX-NOT-READY unless the provider's index for `repo` is ready. Never starts a build. */
 export function assertCodeIndexReady(provider: CodeIndexProvider, repo?: string): void {
   const readiness = codeIndexReadiness(provider, repo);
-  if (!readiness.ready) throw indexNotReadyError(provider, repo, readiness.state);
+  if (!readiness.ready) throw indexNotReadyError(provider, repo, readiness.state, undefined, readiness.detail);
 }
 
 /**
  * The gitnexus code_* pre-flight: return when `repo`'s index is ready, else
- * throw E-CODE-INDEX-NOT-READY -- but first HEAL a dead index. A 'missing' or
- * 'interrupted' index gets a background build (scheduleIndexBuild: config-,
+ * throw E-CODE-INDEX-NOT-READY -- but first HEAL a dead index. A 'missing',
+ * 'interrupted' or 'inconsistent' index gets a background build (scheduleIndexBuild: config-,
  * cooldown- and single-flight-gated, never throws), so a stale or crashed
  * index recovers without anyone running analyze by hand; the error then says
  * whether a build started or why not. Never schedules for a 'building' index,
@@ -206,7 +243,7 @@ export function ensureGitNexusIndexReady(repo: string, opts: { remote?: boolean 
   let local = false;
   try { local = !opts.remote && existsSync(repo); } catch { /* treat as not local */ }
   const heal: IndexHealOutcome = local ? scheduleIndexBuild(repo) : { started: false, reason: 'remote-member' };
-  throw indexNotReadyError('gitnexus', repo, readiness.state, heal);
+  throw indexNotReadyError('gitnexus', repo, readiness.state, heal, readiness.detail);
 }
 
 /** The typed error every NullProvider method throws. */

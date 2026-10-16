@@ -8,8 +8,8 @@
 // workflow steps that re-run any of these suites. Exits non-zero if any
 // suite failed.
 //
-// apra-fleet-qe83.3: bounded by a wall-clock timeout per suite (default 15
-// minutes, override with APRA_TEST_TIMEOUT_MS) so a hung suite (e.g. a
+// apra-fleet-qe83.3: bounded by a wall-clock timeout per suite (default 20
+// minutes on POSIX, 25 minutes on Windows, override with APRA_TEST_TIMEOUT_MS) so a hung suite (e.g. a
 // vitest run that never exits -- the linked bug, observed on Windows) cannot
 // hold a dispatch open indefinitely. The suite list itself is overridable
 // via APRA_TEST_SUITES_JSON (a JSON array of {name, cmd, args}) purely so
@@ -31,6 +31,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { ensureTestSandbox } from './test-sandbox.mjs';
+import { repoHooksDir, snapshotHooks, restoreLeakedHooks } from './git-hooks-guard.mjs';
 
 // Every suite (and every process it spawns) runs against a per-run temp
 // HOME/USERPROFILE/APRA_FLEET_DATA_DIR and refuses the real profile -- see
@@ -41,7 +42,7 @@ process.on('exit', () => testSandbox.cleanup());
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const isWindows = process.platform === 'win32';
 
-const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = isWindows ? 25 * 60 * 1000 : 20 * 60 * 1000;
 const timeoutMs = (() => {
     const raw = Number(process.env.APRA_TEST_TIMEOUT_MS);
     return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
@@ -135,7 +136,7 @@ const simulateUnkillable = process.env.APRA_TEST_SIMULATE_KILL_FAILURE === '1';
 function killTree(pid) {
     if (!pid || simulateUnkillable) return;
     if (isWindows) {
-        spawnSync('taskkill', ['/PID', String(pid), '/T', '/F']);
+        spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
     } else {
         try {
             // Negative pid signals the whole process group -- see the
@@ -299,6 +300,7 @@ function runBounded(suite) {
         const child = spawn(suite.cmd, suite.args, {
             stdio: 'inherit',
             shell: true,
+            windowsHide: true,
             detached: !isWindows,
         });
         currentChild = child;
@@ -388,6 +390,7 @@ let failed = false;
 // has long since scrolled the per-suite FAILED line out of view.
 const outcomes = [];
 const headroomWarnings = [];
+const hooksDir = repoHooksDir();
 for (const suite of suites) {
     // apra-fleet-qe83.3.2 rework (round 3 fix): a terminating signal handled
     // while the previous suite's own 'exit' event resolved runBounded()
@@ -397,7 +400,9 @@ for (const suite of suites) {
     if (terminating) break;
     console.log(`\n> running ${suite.name} suite...\n`);
     const startedAt = Date.now();
+    const hooksBefore = hooksDir ? snapshotHooks(hooksDir) : null;
     const result = await runBounded(suite);
+    const leakedHooks = hooksBefore ? restoreLeakedHooks(hooksDir, hooksBefore) : [];
     if (terminating) break;
     // apra-fleet-3604.1: per-suite elapsed time vs budget, shown in SUMMARY.
     const elapsedMs = Date.now() - startedAt;
@@ -410,8 +415,17 @@ for (const suite of suites) {
         failed = true;
         outcomes.push(`${suite.name}=FAILED${timing}`);
         console.error(`\n> ${suite.name} suite FAILED (exit ${result.status})\n`);
+    } else if (leakedHooks.length > 0) {
+        failed = true;
+        outcomes.push(`${suite.name}=LEAKED_GIT_HOOK${timing}`);
     } else {
         outcomes.push(`${suite.name}=ok${timing}`);
+    }
+    if (leakedHooks.length > 0) {
+        console.error(
+            `\n> ${suite.name} suite wrote into this checkout's git hooks (${hooksDir}): ${leakedHooks.join(', ')}. ` +
+            'Restored. Point the test at a temp repo (an explicit KB anchor or a temp cwd), never the checkout.\n',
+        );
     }
     if (elapsedMs > HEADROOM_WARN_FRACTION * timeoutMs) {
         const pct = Math.round((elapsedMs / timeoutMs) * 100);

@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- detached child-per-sprint spawner (apra-fleet-eft.4.2,
+// fleet-sprint supervisor -- detached child-per-sprint spawner (apra-fleet-eft.4.2,
 // Plan Part 2.1, process model B)
 // =============================================================================
 //
@@ -36,7 +36,7 @@ import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { resolveSprintRunnerCommand } from './node-runner.mjs';
@@ -62,6 +62,10 @@ export function defaultDataDir() {
         : path.join(os.homedir(), '.apra-fleet-se');
 }
 
+/** Max length of a sprint log file's stem (basename without '.log'), identical on every OS. */
+export const MAX_LOG_STEM_LENGTH = 80;
+const LOG_STEM_HASH_LENGTH = 12;
+
 /** Subdirectory (under the SE data dir) that per-sprint raw stdout/stderr log files live in. */
 export const SPRINT_LOG_SUBDIR = 'logs';
 
@@ -82,7 +86,16 @@ export const SPRINT_LOG_SUBDIR = 'logs';
  * @returns {string}
  */
 export function resolveSprintLogPath(dataDir, stem) {
-    const safeStem = String(stem ?? '').replace(/[^A-Za-z0-9._-]/g, '_');
+    let safeStem = String(stem ?? '').replace(/[^A-Za-z0-9._-]/g, '_');
+    // Bound the stem on EVERY OS (not just Windows) so the file name -- and
+    // so the full path under a long Windows-style dataDir -- never depends on
+    // how many issue ids a caller's runId happens to embed. An over-long stem
+    // keeps its head for readability and appends a hash of the WHOLE original
+    // stem, so two different long stems never collide.
+    if (safeStem.length > MAX_LOG_STEM_LENGTH) {
+        const digest = createHash('sha256').update(String(stem)).digest('hex').slice(0, LOG_STEM_HASH_LENGTH);
+        safeStem = `${safeStem.slice(0, MAX_LOG_STEM_LENGTH - LOG_STEM_HASH_LENGTH - 1)}-${digest}`;
+    }
     const fileName = `${safeStem.length > 0 ? safeStem : 'sprint'}.log`;
     // Defense in depth: even after sanitizing, refuse anything that is not
     // a single plain filename (e.g. a sanitized-to-'..'-only stem).
@@ -205,12 +218,13 @@ export async function allocateFreePort(opts = {}) {
  *   requirementsFile?: string, roleMap?: object|string, budget?: number|string,
  *   viewerPort: number, serviceUrl?: string, runId?: string, expectBeads?: string,
  *   viewerBackUrl?: string, extraArgs?: string[], skipRegression?: boolean,
+ *   ciGate?: string,
  * }} opts
  * @returns {string[]}
  */
 export function buildSprintArgv(opts = {}) {
     const { issue, members, branch, base, goal, maxCycles, allowMissingMembers,
-        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, viewerBackUrl, extraArgs, skipRegression } = opts;
+        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, viewerBackUrl, extraArgs, skipRegression, ciGate } = opts;
 
     if (!issue || !members || !branch || !base) {
         throw new Error('buildSprintArgv requires issue, members, branch, and base');
@@ -235,6 +249,9 @@ export function buildSprintArgv(opts = {}) {
     }
     if (budget !== undefined) args.push('--budget', String(budget));
     if (skipRegression === true) args.push('--skip-regression');
+    // The engine CI gate JSON (already validated/normalized by the launch
+    // API), forwarded verbatim as cli.mjs's --ci-gate. Omitted when unset.
+    if (ciGate !== undefined) args.push('--ci-gate', ciGate);
     // apra-fleet-f34.1: when this supervisor instance has a known --service-url
     // (its own HTTP listen address, wired in from createSpawner()'s deps.serviceUrl
     // below), forward it so the spawned cli.mjs child threads it into
@@ -568,6 +585,7 @@ export function createSpawner(deps = {}) {
             }
             child = spawnImpl(command, args, {
                 detached: true,
+                windowsHide: true,
                 stdio: ['ignore', logFd, logFd],
                 ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
                 ...(spawnEnv !== process.env ? { env: spawnEnv } : {}),

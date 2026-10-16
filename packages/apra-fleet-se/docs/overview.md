@@ -1,4 +1,4 @@
-# Auto-Sprint Overview
+# fleet-sprint Overview
 
 `@apralabs/apra-fleet-se` ("sprint engine") implements **fleet-sprint**: a
 CLI-driven, autonomous sprint runner. It dispatches a fixed sequence of AI
@@ -8,7 +8,7 @@ integ-test-runner, regression-test-runner, harvester -- against a [beads](https:
 engine, to autonomously plan, implement, review, deploy/integration-test, and
 publish a batch of work with no human in the loop until the final PR review.
 
-Auto-sprint is one entry point built on top of `apra-fleet-workflow`: it is a
+fleet-sprint is one entry point built on top of `apra-fleet-workflow`: it is a
 single opinionated workflow script (`fleet-sprint/runner.js`) plus a CLI
 wrapper (`bin/cli.mjs`) that wires it to a live fleet. The workflow engine
 itself (agent/command/parallel primitives, budget tracking, the dashboard
@@ -17,8 +17,9 @@ viewer, the journal) is generic and documented in
 fleet-sprint specifically uses those primitives.
 
 **The per-sprint CLI is not the supported entry point for end users.** An
-always-on supervisor process (`bin/serve.mjs`, installed as the
-`fleet-se-serve` command) owns a reservation ledger
+always-on supervisor process (`bin/serve.mjs`; after `apra-fleet install`
+it is `~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs`, run with the
+system Node.js 22.16+) owns a reservation ledger
 (which members and which issue-scope are already claimed by a running
 sprint) and launches each sprint as a detached child running the same CLI
 underneath. Users launch and watch sprints through the supervisor's HTTP API
@@ -69,14 +70,17 @@ Once the loop exits (goal satisfied, or `max_cycles` reached), the runner
 performs sprint-level **Finalization**: a `reviewer` agent renders an
 evidence-based PASS/FAIL **final verdict** for the whole sprint; if a
 `regression-test-playbook.md` exists, a `regression-test-runner` agent then
-runs the full regression pass once (informational -- it files parent-less
-`[regression][carry-over]` bugs rather than blocking this sprint's already
-decided verdict); a `harvester` agent extracts durable knowledge into
-`docs/`, updates
-`README.md`, and defers
-low-priority open issues; then the runner pushes the sprint branch and opens
-(but never auto-merges) a PR whose title/body states the final verdict
-plainly.
+runs every part that playbook defines once (informational -- it files
+parent-less `[regression][carry-over]` bugs rather than blocking this
+sprint's already decided verdict; the launch option `--skip-regression` /
+`phases: {"regression": "skip"}` skips it, and says so in the PR body); a
+`harvester` agent extracts durable knowledge into `docs/` (including the
+sprint analysis, `docs/sprint-analysis-<branch-slug>-<hash8>.md`), updates `README.md`,
+and defers low-priority open issues (no `CHANGELOG.md` is written); then
+the runner pushes the sprint branch and opens (but never auto-merges) a PR
+whose title/body states the final verdict plainly, with the cost block. If
+the branch already has an open PR, its title and body are rewritten to this
+run's verdict, with earlier runs kept in a run-history block.
 
 See `docs/architecture.md` in this folder for the full internals (exit
 condition, stall detection, budget tracking, multi-member topology, the
@@ -84,7 +88,7 @@ journal/replay mechanism) and `docs/cli-reference.md` for every flag.
 
 ## When to use it
 
-Auto-sprint is for driving a scoped, well-defined batch of beads work (one or
+fleet-sprint is for driving a scoped, well-defined batch of beads work (one or
 more sprint-root issues, e.g. epics) to completion autonomously: plan it out,
 implement it, review it, verify it end-to-end if runbooks exist, and raise a
 PR -- without a human orchestrating each step. It fits:

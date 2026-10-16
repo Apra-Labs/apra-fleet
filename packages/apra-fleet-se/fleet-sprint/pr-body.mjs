@@ -174,9 +174,11 @@ export function parseRunHistory(body) {
     return out;
 }
 
-/** `Auto-sprint [<VERDICT>]: <branch>` -- the format integration gates key on. */
+/** `fleet-sprint [<VERDICT>]: <branch>`. PRs opened before the rename carry the
+ *  older `Auto-sprint [<VERDICT>]: <branch>` form; nothing in-repo matches on the
+ *  title (an existing PR is found by head branch), so both forms coexist safely. */
 export function buildSprintPrTitle({ verdict, branch }) {
-    return `Auto-sprint [${verdict}]: ${branch}`;
+    return `fleet-sprint [${verdict}]: ${branch}`;
 }
 
 /** Markdown inline code span. Only ever applied to engine-validated tokens
@@ -233,6 +235,9 @@ function capOwedTriageList(lines, max = PR_OWED_TRIAGE_MAX_LENGTH) {
  *   still owes triage can never be read as a clean PASS. Empty renders nothing.
  * @param {number} [opts.owedTriageTotal] the triage item count shown in the
  *   verdict heading; defaults to the number of '- ' item lines.
+ * @param {string[]} [opts.ciLines] engine-formatted CI gate lines (ci-gate.mjs
+ *   formatCiGateReport). Non-empty renders a 'CI' section; empty (no ci_gate
+ *   configured) renders nothing, so the body is unchanged.
  * @param {string} [opts.previousBody] the existing PR's body, for history carry-forward
  * @param {number} [opts.maxLength]
  * @returns {string}
@@ -240,7 +245,7 @@ function capOwedTriageList(lines, max = PR_OWED_TRIAGE_MAX_LENGTH) {
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
     notes, notesHeading = 'Reviewer notes', details = [], costAnalysis = '', previousBody = '',
-    owedTriageLines = [], owedTriageTotal,
+    owedTriageLines = [], owedTriageTotal, ciLines = [],
     maxLength = PR_DESCRIPTION_MAX_LENGTH,
 }) {
     const v = VERDICTS.has(verdict) ? verdict : 'FAIL';
@@ -294,8 +299,11 @@ export function buildSprintPrBody({
             '',
         ].join('\n')
         : null;
+    const ci = (Array.isArray(ciLines) ? ciLines : []).filter(Boolean).map((l) => `- ${inline(l)}`);
+    const ciBlock = ci.length > 0 ? ['### CI', '', ...ci, ''].join('\n') : null;
     const tail = [
         '',
+        ciBlock,
         owedBlock,
         detailLines.length ? '### Details\n' : null,
         detailLines.length ? detailLines.join('\n') : null,

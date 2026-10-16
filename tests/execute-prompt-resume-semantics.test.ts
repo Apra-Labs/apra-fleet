@@ -4,6 +4,8 @@ import { addAgent } from '../src/services/registry.js';
 import { executePrompt, inFlightAgents, provisionedRemoteAgents } from '../src/tools/execute-prompt.js';
 import { recordKnownSession, _resetKnownSessions } from '../src/services/known-sessions.js';
 import type { SSHExecResult } from '../src/types.js';
+import { serverVersion } from '../src/version.js';
+import { getAgent } from '../src/services/registry.js';
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -168,5 +170,59 @@ describe('execute_prompt resume-by-session-id semantics (apra-fleet-eft.78.1)', 
     const retryCmd = mockExecCommand.mock.calls[2][0];
     expect(retryCmd).toMatch(/--session-id "[0-9a-f-]+"/);
     expect(retryCmd).not.toContain('--resume');
+  });
+
+  // After a server upgrade the member's stored session was recorded by the old
+  // build (or before builds were stamped); resuming it by default gave a
+  // "successful" reply with no tool run. resume=true must start fresh instead.
+  it.each([
+    ['recorded before builds were stamped', undefined],
+    ['recorded by a different server build', 'v0.4.3_f390e2'],
+  ])('resume=true with a stored session %s -> fresh session, never --resume; new session stamped', async (_label, stamp) => {
+    const member = makeTestAgent({ friendlyName: 'resume-old-build', sessionId: 'old-build-sess', sessionServerVersion: stamp });
+    addAgent(member);
+    // The CLI echoes the session it was told to use (the caller-minted id).
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      const sid = /--(?:session-id|resume) "([^"]+)"/.exec(cmd)?.[1];
+      return sid
+        ? { stdout: JSON.stringify({ result: 'fresh-ok', session_id: sid }), stderr: '', code: 0 }
+        : { stdout: '', stderr: '', code: 0 };
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('fresh-ok');
+    const cmd = mockExecCommand.mock.calls[1][0];
+    expect(cmd).not.toContain('--resume');
+    expect(cmd).not.toContain('old-build-sess');
+    const minted = /--session-id "([0-9a-f-]+)"/.exec(cmd)?.[1];
+    expect(minted).toBeDefined();
+    // The fresh session is stored with THIS build, so the next default resume continues it.
+    expect(getAgent(member.id)?.sessionId).toBe(minted);
+    expect(getAgent(member.id)?.sessionServerVersion).toBe(serverVersion);
+  });
+
+  it('resume=true with a stored session recorded by THIS build still resumes it', async () => {
+    const member = makeTestAgent({ friendlyName: 'resume-same-build', sessionId: 'same-build-sess', sessionServerVersion: serverVersion });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'resumed-ok', session_id: 'same-build-sess' }),
+      stderr: '',
+      code: 0,
+    });
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, timeout_s: 5 });
+    expect(mockExecCommand.mock.calls[1][0]).toContain('--resume "same-build-sess"');
+  });
+
+  it('an explicit-id resume of an old-build session is NOT redirected to a fresh session', async () => {
+    const member = makeTestAgent({ friendlyName: 'resume-explicit-old', sessionId: 'old-build-sess', sessionServerVersion: 'v0.4.3_f390e2' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'explicit-ok', session_id: 'old-build-sess' }),
+      stderr: '',
+      code: 0,
+    });
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: 'old-build-sess', timeout_s: 5 });
+    expect(mockExecCommand.mock.calls[1][0]).toContain('--resume "old-build-sess"');
   });
 });

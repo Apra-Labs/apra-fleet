@@ -22,6 +22,9 @@ continue without KB. A missing or failing KB or code tool is never a reason to s
 never report this dispatch as blocked because of it. From whichever source you have,
 trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
+If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
+your tool-loading tool first, before concluding they are unavailable.
+
 1. When the tools are present, call `kb_session_prime` with `hint_modules` naming the
    subsystems the assigned beads touch. KB knowledge matters most for duplicate
    detection and sprint-set grouping.
@@ -29,6 +32,40 @@ trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
    two ids that are genuinely the same work, a dependency between beads that their text
    does not state, or a recurring reason items land unactionable -- note it in your own
    report. Record what stays true, not per-sprint churn.
+
+### Persistent Memories (operational rules)
+
+Before beginning grooming decisions, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +groomer+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+groomer+`.
+
+**One-time key migration** (older groomer versions saved heuristics as
+`groomer-heuristic-<slug>`, which the `+groomer+` query never returns). Run
+`bd memories --json groomer-heuristic-` only to list keys (its JSON escapes quotes and
+`&`, `<`, `>`, so never copy values from it); for each KEY starting with `groomer-heuristic-`:
+
+1. Read the value with `bd recall <old key>` (raw text).
+2. If `+groomer+:<slug>` already exists with a different value, leave both keys and
+   report the conflict in `notes`.
+3. Otherwise `bd remember --key "+groomer+:<slug>" -- "<value>"`, quoted for your shell so
+   `$`, backticks and `&&` survive. If the value contains double quotes or other characters
+   the current shell cannot pass verbatim (e.g. Windows PowerShell 5.1 strips embedded
+   double quotes), do not migrate that key; report it in `notes` instead.
+4. `bd forget <old key>` ONLY if `bd recall <old key>` and `bd recall "+groomer+:<slug>"`
+   print identical text; otherwise keep both keys and report the mismatch in `notes`.
+
+Steps 3-4 write, so they follow the same gate as bead mutations: only with `dry-run: false`
+and not in report-only "What needs grooming" mode. Otherwise run no `bd remember`/`bd forget`;
+list each key you would migrate (old -> new) with its exact proposed `bd` commands in `notes`.
+Report each key actually migrated in `heuristicsRecorded` (new key + value) and count them
+in `notes`. Nothing to do when the query returns no `groomer-heuristic-` keys. Either way,
+apply those entries in this session too.
 
 ## Usage modes
 
@@ -304,16 +341,32 @@ use), report the same fields in this JSON shape for an orchestrator caller, or a
 You have no conversation memory between invocations; beads does, per-database, which is
 the right scope since most of what you learn is calibrated to one repo's backlog.
 
-At session start: `bd memories groomer` -- read and apply what past sessions recorded.
+At session start: retrieve operational memories -- read and apply what past sessions recorded:
+
+```bash
+bd memories --json +all+
+bd memories --json +groomer+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+groomer+`.
 
 At session end, if you found a durable, non-obvious pattern specific to THIS repo's
 backlog (not a one-off, not already in this file):
 
 ```bash
-bd remember --key groomer-heuristic-<short-slug> "<one or two sentences>"
+bd remember --key "+groomer+:<short-slug>" "<one or two sentences>"
 ```
 
-Always use the `groomer-heuristic-` prefix (`bd memories groomer`, `bd forget <key>`).
+Key scheme: wrap every role token in `+` on both sides, then `:<slug>`. Use
+`+groomer+:<slug>` for a groomer-only rule, `+groomer+planner+:<slug>` when other roles
+need it too, `+all+:<slug>` when every role does. `bd memories` is a plain substring
+search over keys and values, so a bare or one-sided prefix (`groomer:`, `reviewer:`)
+also matches other roles' keys; never write one. Remove stale entries with `bd forget <key>`.
 Record calibration ("P1 bugs older than 30 days with no repro steps are almost always
 stale duplicates in this repo"), not repo-agnostic procedure (belongs in this file) or
 transient facts. If nothing durable turned up, write nothing and say so.
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.

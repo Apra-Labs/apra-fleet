@@ -343,4 +343,11 @@ describe('fleetProcessCheck — processName per provider', () => {
     const cmd = windows.fleetProcessCheck('C:\\work');
     expect(cmd).toContain('claude');
   });
+
+  it('handles empty processName (none provider) safely across platforms', () => {
+    const gitbash = getOsCommands('windows', 'gitbash');
+    expect(linux.fleetProcessCheck('/work', undefined, '')).toBe('echo "idle"');
+    expect(windows.fleetProcessCheck('C:\\work', undefined, '')).toBe("echo 'idle'");
+    expect(gitbash.fleetProcessCheck('C:\\work', undefined, '')).toBe("echo 'idle'");
+  });
 });

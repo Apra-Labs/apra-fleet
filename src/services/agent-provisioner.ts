@@ -188,7 +188,8 @@ export function rolesMissingMemberToolGrant(files: Array<{ relPath: string; cont
   return out;
 }
 
-export type RoleAgentToolCheck = { ok: true } | { ok: false; detail: string };
+/** `healed` names local role files this check rewrote from the canonical set. */
+export type RoleAgentToolCheck = { ok: true; healed?: string[] } | { ok: false; detail: string };
 
 /**
  * Member-init check through the CLI's real resolution path: a sprint role is
@@ -199,7 +200,9 @@ export type RoleAgentToolCheck = { ok: true } | { ok: false; detail: string };
  * these files). Remote: re-provisions stale role files first (the same push
  * execute_prompt does before every dispatch), then requires the member's
  * copies to match the canonical set. Local: the role files live in the
- * orchestrator's own home, written by `apra-fleet install`.
+ * orchestrator's own home, written by `apra-fleet install`; a file whose tools
+ * list hides the member tools is rewritten from the canonical set (self-heal)
+ * and only one that stays bad is reported.
  */
 export async function checkRoleAgentMemberTools(agent: Agent, homeDir: string = os.homedir()): Promise<RoleAgentToolCheck> {
   if ((agent.llmProvider ?? 'claude') !== 'claude') return { ok: true };
@@ -212,16 +215,34 @@ export async function checkRoleAgentMemberTools(agent: Agent, homeDir: string = 
   if (!rel) return { ok: true };
   if (agent.agentType === 'local') {
     const dir = path.join(homeDir, rel);
-    const bad: string[] = [];
-    for (const f of canonical) {
-      if (!f.relPath.endsWith('.md')) continue;
-      let installed: string;
-      try { installed = fs.readFileSync(path.join(dir, f.relPath), 'utf-8'); } catch { continue; }
-      if (rolesMissingMemberToolGrant([{ relPath: f.relPath, content: installed }]).length > 0) bad.push(f.relPath);
+    const findBad = (): string[] => {
+      const bad: string[] = [];
+      for (const f of canonical) {
+        if (!f.relPath.endsWith('.md')) continue;
+        let installed: string;
+        try { installed = fs.readFileSync(path.join(dir, f.relPath), 'utf-8'); } catch { continue; }
+        if (rolesMissingMemberToolGrant([{ relPath: f.relPath, content: installed }]).length > 0) bad.push(f.relPath);
+      }
+      return bad;
+    };
+    const bad = findBad();
+    if (bad.length === 0) return { ok: true };
+    // Self-heal: rewrite only the offending role files from the canonical set
+    // (the same content `apra-fleet install` writes), then re-check.
+    const writeErrors: string[] = [];
+    for (const relPath of bad) {
+      const f = canonical.find(c => c.relPath === relPath);
+      if (!f) continue;
+      try { fs.writeFileSync(path.join(dir, relPath), f.content, 'utf-8'); } catch (err: unknown) {
+        writeErrors.push(`${relPath} (${err instanceof Error ? err.message : String(err)})`);
+      }
     }
-    return bad.length === 0
-      ? { ok: true }
-      : { ok: false, detail: `installed role files in ${dir} hide the member kb_*/code_* tools from --agent sessions: ${bad.join(', ')}` };
+    const still = findBad();
+    if (still.length === 0) return { ok: true, healed: bad };
+    return {
+      ok: false,
+      detail: `installed role files in ${dir} hide the member kb_*/code_* tools from --agent sessions and could not be rewritten: ${still.join(', ')}${writeErrors.length ? ` (${writeErrors.join('; ')})` : ''}`,
+    };
   }
   const pushed = await provisionAgents(agent);
   if (pushed.warning) return { ok: false, detail: pushed.warning };

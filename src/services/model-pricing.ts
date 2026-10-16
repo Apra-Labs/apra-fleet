@@ -22,6 +22,32 @@ export interface ModelPrice {
   model: string;
   promptPrice: number;
   completionPrice: number;
+  /** $/1M prompt tokens served from the prompt cache (cache_read_input_tokens). */
+  cacheReadPrice: number;
+  /** $/1M prompt tokens written to the prompt cache (cache_creation_input_tokens). */
+  cacheWritePrice: number;
+}
+
+/**
+ * Anthropic prompt-cache write pricing, from
+ * https://platform.claude.com/docs/en/about-claude/pricing (checked
+ * 2026-10-06): a 5-minute cache write costs 1.25x the base input price and a
+ * 1-hour write 2x. The Claude Code CLI writes its cache with the 1-hour TTL
+ * (every recorded fleet dispatch reports ephemeral_1h_input_tokens and zero
+ * ephemeral_5m_input_tokens), so cache writes are priced at 2x. Cache READ
+ * rates are NOT one multiplier (0.1x on most models, 0.05x on Opus 5.5,
+ * 0.025x on Fable 5.1), so each table row carries its own `cacheRead`.
+ *
+ * This table is the FALLBACK only: a Claude dispatch's cost is the CLI's own
+ * reported figure (usage.cost_usd); the table prices providers and results
+ * that report no cost.
+ */
+export const ANTHROPIC_CACHE_WRITE_MULTIPLIER = 2;
+
+/** True for a Claude-family model id, under any provider's naming
+ *  (claude provider aliases haiku/sonnet/opus, copilot/agy 'claude-*' ids). */
+function isClaudeModel(model: string): boolean {
+  return /^(haiku|sonnet|opus|fable)$/.test(model) || /(^|\/)claude-/.test(model);
 }
 
 export type MemberModelPricing = {
@@ -39,11 +65,21 @@ export type MemberModelPricing = {
  * an override or a future provider default change) returns null rather
  * than a fabricated/guessed price.
  */
-const PROVIDER_MODEL_PRICING: Partial<Record<LlmProvider, Record<string, { prompt: number; completion: number }>>> = {
+// Claude rows are Anthropic list prices (see ANTHROPIC_CACHE_WRITE_MULTIPLIER):
+// `cacheRead` is the model's own cache-hit rate. The claude provider's
+// aliases resolve to the current models: haiku = Haiku 4.5, sonnet =
+// Sonnet 5.5, opus = Opus 5.5 (a recorded result confirms opus ->
+// claude-opus-5-5), fable = Fable 5.1.
+const PROVIDER_MODEL_PRICING: Partial<Record<LlmProvider, Record<string, { prompt: number; completion: number; cacheRead?: number }>>> = {
   claude: {
-    haiku: { prompt: 0.80, completion: 4.00 },
-    sonnet: { prompt: 3.00, completion: 15.00 },
-    opus: { prompt: 15.00, completion: 75.00 },
+    haiku: { prompt: 1.00, completion: 5.00, cacheRead: 0.10 },
+    sonnet: { prompt: 2.00, completion: 10.00, cacheRead: 0.20 },
+    opus: { prompt: 4.00, completion: 20.00, cacheRead: 0.20 },
+    fable: { prompt: 10.00, completion: 50.00, cacheRead: 0.25 },
+    'claude-haiku-4-5': { prompt: 1.00, completion: 5.00, cacheRead: 0.10 },
+    'claude-sonnet-5-5': { prompt: 2.00, completion: 10.00, cacheRead: 0.20 },
+    'claude-opus-5-5': { prompt: 4.00, completion: 20.00, cacheRead: 0.20 },
+    'claude-fable-5-1': { prompt: 10.00, completion: 50.00, cacheRead: 0.25 },
   },
   agy: {
     'gemini-3.8-flash-low': { prompt: 0.10, completion: 0.40 },
@@ -52,16 +88,16 @@ const PROVIDER_MODEL_PRICING: Partial<Record<LlmProvider, Record<string, { promp
     'gemini-3.8-flash-high': { prompt: 0.10, completion: 0.40 },
     'gemini-3.1-pro-low': { prompt: 0.35, completion: 1.05 },
     'gemini-3.1-pro-high': { prompt: 0.35, completion: 1.05 },
-    'claude-opus-4-6-thinking': { prompt: 15.00, completion: 75.00 },
+    'claude-opus-4-6-thinking': { prompt: 5.00, completion: 25.00, cacheRead: 0.50 },
   },
   codex: {
     'gpt-5.4-mini': { prompt: 0.25, completion: 2.00 },
     'gpt-5.4': { prompt: 5.00, completion: 15.00 },
   },
   copilot: {
-    'claude-haiku-4-5': { prompt: 0.80, completion: 4.00 },
-    'claude-sonnet-4-5': { prompt: 3.00, completion: 15.00 },
-    'claude-opus-4-5': { prompt: 15.00, completion: 75.00 },
+    'claude-haiku-4-5': { prompt: 1.00, completion: 5.00, cacheRead: 0.10 },
+    'claude-sonnet-4-5': { prompt: 3.00, completion: 15.00, cacheRead: 0.30 },
+    'claude-opus-4-5': { prompt: 5.00, completion: 25.00, cacheRead: 0.50 },
   },
   // OpenCode's default tier models are all free-tier ($0) -- a real,
   // known price, not an "unknown model" null.
@@ -119,7 +155,24 @@ function priceModel(providerName: LlmProvider, model: string): ModelPrice | null
   if (!table) return null;
   const price = table[model];
   if (!price) return null;
-  return { model, promptPrice: price.prompt, completionPrice: price.completion };
+  // Claude models: the row's own cache-read rate and Anthropic's 1-hour
+  // cache-write rate. Other models' adapters report no cache-token counts
+  // (always 0), so their cache rates never contribute; they are set to the
+  // plain prompt price -- the honest "billed as an input token, no known
+  // discount" figure -- rather than an invented discount.
+  const claude = isClaudeModel(model);
+  return {
+    model,
+    promptPrice: price.prompt,
+    completionPrice: price.completion,
+    cacheReadPrice: claude && price.cacheRead !== undefined ? price.cacheRead : price.prompt,
+    cacheWritePrice: claude ? round6(price.prompt * ANTHROPIC_CACHE_WRITE_MULTIPLIER) : price.prompt,
+  };
+}
+
+/** Strip binary floating-point noise (15 * 0.1 = 1.5000000000000002). */
+function round6(n: number): number {
+  return Math.round(n * 1e6) / 1e6;
 }
 
 /**

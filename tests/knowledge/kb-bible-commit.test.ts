@@ -273,6 +273,9 @@ describe('capture -> promote -> bible commit -> export round trip (basis filter)
   it('exports the unchanged entry, excludes the changed one, keeps the committed round', async () => {
     fs.writeFileSync(path.join(clone, 'src', 'b.ts'), 'export const b = 1;\n');
     fs.writeFileSync(path.join(clone, 'src', 'c.ts'), 'export const c = 1;\n');
+    // Admission reads cited files at HEAD, so the fixture files are committed.
+    git(clone, ['add', 'src']);
+    git(clone, ['commit', '--quiet', '-m', 'add b and c']);
     const head = git(clone, ['rev-parse', 'HEAD']).trim();
 
     // Round 1: the maintainer's bible commit of one confirmed entry.
@@ -288,6 +291,7 @@ describe('capture -> promote -> bible commit -> export round trip (basis filter)
       expect(bases.get(id)).not.toBeNull();
     }
     fs.writeFileSync(path.join(clone, 'src', 'c.ts'), 'export const c = 2;\n');
+    git(clone, ['commit', '--quiet', '-am', 'change c']);
 
     const result = JSON.parse(await kbExport({}, { folder: clone }));
     const ids = readBible(clone).entries.map(e => e.id);
@@ -300,20 +304,17 @@ describe('capture -> promote -> bible commit -> export round trip (basis filter)
     expect(result.exported).toBe(ids.length);
   });
 
-  // CHARACTERIZATION ONLY, pending a separate decision: kb_import routes through
-  // capture(), which hashes the LOCAL file at import time, so an entry
-  // confirmed on another branch gains a basis taken from this checkout rather
-  // than from the tree it was verified on. This pins that the column is
-  // populated (export would otherwise drop every imported entry); it does not
-  // assert that a local-file basis is the right basis for an imported entry.
-  it('kb_import currently populates each imported entry basis from the local file (characterization)', async () => {
+  // Bible format v3 decision: kb_import never takes a VERIFIED basis from this
+  // checkout's files. The seeded bible here is v2 (no source_file_hashes), so
+  // its entries get only a local freshness-only basis, which the bible
+  // predicate reads as none, so it excludes them from
+  // re-export until they are recaptured.
+  it('kb_import of a v2 bible stores no verified basis for its entries (a local re-hash is freshness-only)', async () => {
     const report = JSON.parse(await kbImport({ skip_sweep: true }, { folder: clone }));
     expect(report.imported).toBe(2);
     const bases = provider.getSourceFileBases(['kb-existing-1', 'kb-existing-2']);
     for (const id of ['kb-existing-1', 'kb-existing-2']) {
-      const basis = bases.get(id);
-      expect(basis).not.toBeNull();
-      expect(Object.keys(basis as Record<string, string>)).toEqual(['src/a.ts']);
+      expect(bases.get(id)).toBeNull();
     }
   });
 });

@@ -64,18 +64,29 @@
 //                          <base64 utf16le>` string; SePosixCommands throws
 //                          (a true POSIX member has no PowerShell to hand
 //                          the script to at all).
-//   ensureGitExcluded      member-call.mjs runRemote's args-file cleanup:
-//                          idempotently lists the args dir (.apra-call/) in
+//   ensureGitExcluded      member-call.mjs runRemote's args-file cleanup and
+//                          beads-identity-check.mjs member beads set-up:
+//                          idempotently lists the args dir (.apra-call/) or
+//                          a new untracked beads path in
 //                          the member repo's git exclude file (resolved via
 //                          `git rev-parse --git-path info/exclude`, so repo
 //                          subdirs and linked worktrees work), silent exit-0
 //                          no-op outside a git repo.
 //   removeFile             member-call.mjs runRemote's engine-side args-file
-//                          delete (force, never errors when absent). Both
-//                          validate their work-folder-relative path against
-//                          the strict charset member-call.mjs uses and THROW
-//                          on anything else (assertSafeRelativePath in
-//                          se-posix.mjs); gitbash inherits the POSIX strings.
+//                          delete (force, never errors when absent).
+//   fileExistsProbe        member-provisioning.mjs permission-config
+//                          preflight: prints 'present'/'absent' for a
+//                          work-folder-relative file, exit 0 either way.
+//   ensureFile             beads-identity-check.mjs member beads set-up:
+//                          creates a file (and parent dir) only when absent,
+//                          never truncating an existing one.
+//   ensureLine             beads-identity-check.mjs member beads set-up:
+//                          idempotently makes a line a whole line of a file.
+//                          All of these validate their work-folder-relative
+//                          path against a strict charset and THROW on
+//                          anything else (assertSafeRelativePath /
+//                          assertSafeFileLine in se-posix.mjs); gitbash
+//                          inherits the POSIX strings.
 //
 // Deliberately NOT included, so this stays an interface rather than a
 // catalogue:
@@ -102,6 +113,7 @@ import { SeWindowsGitbashCommands } from './se-windows-gitbash.mjs';
 export { SePosixCommands } from './se-posix.mjs';
 export { SeWindowsCommands } from './se-windows.mjs';
 export { SeWindowsGitbashCommands } from './se-windows-gitbash.mjs';
+export { FILE_PROBE_PRESENT, FILE_PROBE_ABSENT } from './se-posix.mjs';
 
 const posix = new SePosixCommands();
 const windowsPowerShell = new SeWindowsCommands();

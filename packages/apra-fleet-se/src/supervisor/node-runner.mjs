@@ -167,7 +167,7 @@ export class SprintRunnerResolutionError extends Error {
 }
 
 function defaultExec(file, args, options = {}) {
-    return String(execFileSync(file, args, { encoding: 'utf-8', stdio: 'pipe', ...options }));
+    return String(execFileSync(file, args, { encoding: 'utf-8', stdio: 'pipe', windowsHide: true, ...options }));
 }
 
 // `defaultIsSea` (the real node:sea probe, defensively wrapped so a host

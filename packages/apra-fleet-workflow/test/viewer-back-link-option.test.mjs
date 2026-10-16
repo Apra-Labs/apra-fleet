@@ -20,10 +20,11 @@ import { createDashboardViewer, HTML_TEMPLATE, VIEWER_BACK_LINK_ATTR } from '../
 // sha256 of HTML_TEMPLATE([]) and HTML_TEMPLATE([], { history: true,
 // state: { workflowName: 'x' } }) captured BEFORE the backLink option
 // existed. If the template is edited for unrelated reasons these hashes
-// must be re-captured -- but the "no option" vs "explicit undefined"
+// must be re-captured (last: the 0.4.4 main sync, where the no-option output
+// equals main's own template byte for byte) -- but the "no option" vs "explicit undefined"
 // equality assertions below still hold independently.
-const PRE_CHANGE_LIVE_SHA256 = '0fd2c9d5e72c31f922356dc00afb2b11e2ac0fef2edf3f86c8d905979809e2f9';
-const PRE_CHANGE_HISTORY_SHA256 = '6276e1441a3ac969b8d029d08d0b9a701a65bb9b347b321212cbf19e4ff72ca2';
+const PRE_CHANGE_LIVE_SHA256 = 'b9ef395077908de12a57269d28cf38f7825265702e3030b21ddd7a284fe11a19';
+const PRE_CHANGE_HISTORY_SHA256 = 'f50263c646a6cea5e420b93b3a4289d262d33e5d2a76b913908efb3d1cd73895';
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 

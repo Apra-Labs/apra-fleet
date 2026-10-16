@@ -12,7 +12,7 @@ if (!cmd) {
     process.exit(2);
 }
 const sandbox = ensureTestSandbox(process.env);
-const child = spawn(cmd === 'node' ? process.execPath : cmd, args, { stdio: 'inherit', env: process.env });
+const child = spawn(cmd === 'node' ? process.execPath : cmd, args, { stdio: 'inherit', env: process.env, windowsHide: true });
 const forward = (sig) => { try { child.kill(sig); } catch { /* gone */ } };
 process.on('SIGINT', forward);
 process.on('SIGTERM', forward);

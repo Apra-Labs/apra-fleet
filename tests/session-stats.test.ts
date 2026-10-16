@@ -31,7 +31,7 @@ import { sessionRegistry } from '../src/services/session-registry.js';
 import { localWorkspaceId } from '../src/services/token-issuer.js';
 import { MEMBER_ALLOWED_TOOLS } from '../src/services/member-tool-allowlist.js';
 import { resetMemberCallCounts } from '../src/services/member-call-counts.js';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, memberSecretRequestInit } from './test-helpers.js';
 // @ts-expect-error plain .mjs workspace package
 import { connectFleetMember } from '../packages/apra-fleet-client/src/client/server-resolution.mjs';
 
@@ -72,14 +72,14 @@ async function agentSession(id: string): Promise<Client> {
   url.searchParams.set('member', id);
   const client = new Client({ name: 'session-stats-agent', version: '1.0.0' }, { capabilities: {} });
   clients.push(client);
-  await client.connect(new StreamableHTTPClientTransport(url, { reconnectionOptions: RECONNECT }));
+  await client.connect(new StreamableHTTPClientTransport(url, { reconnectionOptions: RECONNECT, requestInit: memberSecretRequestInit() }));
   return client;
 }
 
 /** An ENGINE-origin session via the real client path memberCall uses. */
 async function engineSession(id: string) {
   const s = await connectFleetMember(id, {
-    env: {},
+    env: { APRA_FLEET_DATA_DIR: process.env.APRA_FLEET_DATA_DIR },
     origin: 'engine',
     checkRunningInstance: async () => ({ running: true, url: `http://127.0.0.1:${handle.port}/mcp`, pid: process.pid }),
   });

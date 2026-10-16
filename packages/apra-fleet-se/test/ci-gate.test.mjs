@@ -94,7 +94,9 @@ describe('(1) configured gate + successful run', () => {
         assert.ok(calls.filter((c) => c.action === 'ci-get-run').length >= 2, 'the run must be polled until completed');
         // The recorded result reaches the sprint log too.
         const passLine = logs.find((l) => l.includes('PASS'));
-        assert.ok(passLine && passLine.includes('4242') && passLine.includes(RUN_URL) && passLine.includes(SHA), `PASS log line must carry run id/url/sha: ${passLine}`);
+        assert.ok(passLine, 'a PASS log line must be written');
+        assert.match(passLine, /PASS: workflow 'ci\.yml' run 4242 \(https:\/\/github\.example\/o\/r\/actions\/runs\/4242\) on feat\/x@0123456789abcdef0123456789abcdef01234567; jobs: /,
+            `PASS log line must carry run id/url/sha: ${passLine}`);
     });
 
     test('no run for the head sha: the gate triggers the workflow on the branch, then finds and awaits the new run', async () => {
@@ -180,8 +182,9 @@ describe('(3) a run that never completes', () => {
         assert.equal(result.outcome, CI_GATE_OUTCOME.TIMEOUT);
         assert.notEqual(result.outcome, CI_GATE_OUTCOME.PASS);
         assert.equal(result.runUrl, RUN_URL);
-        assert.ok(result.reason.includes(RUN_URL), `the timeout reason must carry the run url: ${result.reason}`);
-        assert.ok(logs.some((l) => l.includes('ERROR') && l.includes('TIMEOUT') && l.includes(RUN_URL)));
+        assert.equal(result.reason, `run did not complete within 1s (last status: in_progress); see ${RUN_URL}.`, 'the timeout reason must carry the run url');
+        const timeoutLine = /ERROR: TIMEOUT for workflow 'ci\.yml' on feat\/x@0123456789abcdef0123456789abcdef01234567 \(run 4242, https:\/\/github\.example\/o\/r\/actions\/runs\/4242\): /;
+        assert.ok(logs.some((l) => timeoutLine.test(l)), `an ERROR TIMEOUT log line must carry the run url: ${logs.join(' | ')}`);
         assert.ok(elapsed < 5000, `the gate must stop at its bounded timeout (took ${elapsed}ms)`);
         assert.ok(elapsed >= 900, `the gate must actually wait for its timeout (took ${elapsed}ms)`);
     });
@@ -210,13 +213,15 @@ describe('(4) ci_gate arg validation, unsupported provider, unconfigured gate', 
         assert.equal(validateCiGate(undefined), undefined);
     });
 
-    // The ci_gate arg is deliberately NOT WIRED until the CI-as-quality-resource
-    // epic (apra-fleet-dv8i) designs the flow: passing it must fail loudly as an
-    // unknown arg, and a launch without it never configures the gate.
-    test('validateArgs never configures the gate; ci_gate is rejected as an unknown arg', () => {
+    // ci_gate is a known, validated sprint arg: run once at Finalization and
+    // awaited by Publish PR. Absent, the gate is never configured.
+    test('validateArgs configures the gate only when ci_gate is set, and rejects a malformed one', () => {
         const base = { target_issues: ['x-1'], members: ['m'], branch: 'feat/x', base_branch: 'main' };
         assert.equal(validateArgs(base).ciGate, undefined);
-        assert.throws(() => validateArgs({ ...base, ci_gate: { workflow: 'ci.yml' } }), /\[Arg Contract\] Unknown arg\(s\): ci_gate/);
+        assert.deepEqual(validateArgs({ ...base, ci_gate: { workflow: 'ci.yml' } }).ciGate, { workflow: 'ci.yml', timeoutS: 3600 });
+        assert.deepEqual(validateArgs({ ...base, ci_gate: '{"workflow":"ci.yml","timeout_s":900}' }).ciGate, { workflow: 'ci.yml', timeoutS: 900 });
+        assert.throws(() => validateArgs({ ...base, ci_gate: { workflow: 'ci.yml', timeout_s: 0 } }), /\[Arg Contract\] Invalid ci_gate\.timeout_s/);
+        assert.throws(() => validateArgs({ ...base, ci_gate: '{nope' }), /\[Arg Contract\] Invalid ci_gate: not valid JSON/);
     });
 
     test('a provider without CI-trigger support + ci_gate set -> loud FAILED-TO-RUN naming the provider, zero CI requests', async () => {

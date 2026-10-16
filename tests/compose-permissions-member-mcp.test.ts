@@ -1,6 +1,7 @@
 /**
  * compose_permissions writes the member's PER-FOLDER apra-fleet MCP entry
- * (?member=<uuid>) through each provider's own per-project mechanism, denies
+ * (?member=<uuid>) through each provider's own per-project mechanism (not for
+ * a local claude member, whose dispatches get it per session), denies
  * exactly the complement of the member allowlist (claude, agy), prunes the
  * retired apra-fleet-member url+bearer entry, never touches deepwiki, and
  * leaves a member clone that tracks .mcp.json with an empty
@@ -16,7 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { backupAndResetRegistry, restoreRegistry, makeTestAgent } from './test-helpers.js';
+import { backupAndResetRegistry, restoreRegistry, makeTestAgent, memberSecretHeaders } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
 import { MEMBER_DENIED_TOOLS, MEMBER_ALLOWED_TOOLS } from '../src/services/member-tool-allowlist.js';
@@ -115,7 +116,7 @@ afterEach(() => {
 });
 
 describe.skipIf(process.platform === 'win32')('compose_permissions -- per-folder apra-fleet member MCP entry', () => {
-  it('claude: local-scope entry with ?member=<uuid>, allowlist-complement deny rules, legacy pruned, clone stays clean', async () => {
+  it('claude (local member): NO folder entry (per-session config instead), allowlist-complement deny rules, legacy pruned, clone stays clean', async () => {
     const wf = makeClone();
     const member = addMember('claude', wf);
     const claudeJson = path.join(home, '.claude.json');
@@ -134,8 +135,9 @@ describe.skipIf(process.platform === 'win32')('compose_permissions -- per-folder
 
     const cfg = readJson(claudeJson);
     const project = cfg.projects[wf];
-    expect(project.mcpServers['apra-fleet'].url).toMatch(new RegExp(`\\?member=${member.id}$`));
-    expect(project.mcpServers['apra-fleet'].type).toBe('http');
+    // No per-folder apra-fleet entry for a local member: the human's own
+    // sessions in this clone keep their user-scope server.
+    expect(project.mcpServers['apra-fleet']).toBeUndefined();
     // deepwiki and unrelated project fields survive; legacy entry is gone.
     expect(project.mcpServers.deepwiki).toEqual(DEEPWIKI);
     expect(project.allowedTools).toEqual(['x']);
@@ -160,6 +162,28 @@ describe.skipIf(process.platform === 'win32')('compose_permissions -- per-folder
     expect(fs.readFileSync(path.join(wf, '.git', 'info', 'exclude'), 'utf-8')).toContain('/.claude/settings.local.json');
   }, 60000);
 
+  it('claude (local member): a folder entry an older compose wrote for THIS member is removed; another apra-fleet entry is left alone', async () => {
+    const wfOwn = makeClone();
+    const own = addMember('claude', wfOwn);
+    const wfOther = makeClone();
+    const other = addMember('claude', wfOther);
+    const claudeJson = path.join(home, '.claude.json');
+    const humanEntry = { type: 'http', url: 'http://localhost:7523/mcp' };
+    writeJson(claudeJson, {
+      projects: {
+        [wfOwn]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${own.id}` }, deepwiki: DEEPWIKI } },
+        [wfOther]: { mcpServers: { 'apra-fleet': humanEntry } },
+      },
+    });
+
+    expect(await composePermissions({ member_id: own.id, role: 'doer' })).toContain('Permissions composed');
+    expect(await composePermissions({ member_id: other.id, role: 'doer' })).toContain('Permissions composed');
+
+    const cfg = readJson(claudeJson);
+    expect(cfg.projects[wfOwn].mcpServers).toEqual({ deepwiki: DEEPWIKI });
+    expect(cfg.projects[wfOther].mcpServers['apra-fleet']).toEqual(humanEntry);
+  }, 60000);
+
   it('opencode: <workFolder>/opencode.json carries the ?member=<uuid> entry, is git-excluded, and gets no MCP deny rules', async () => {
     const wf = makeClone();
     const member = addMember('opencode', wf);
@@ -170,7 +194,9 @@ describe.skipIf(process.platform === 'win32')('compose_permissions -- per-folder
     expect(result).toContain('Permissions composed');
 
     const project = readJson(path.join(wf, 'opencode.json'));
-    expect(project.mcp['apra-fleet']).toEqual({ type: 'remote', url: expect.stringMatching(new RegExp(`\\?member=${member.id}$`)), enabled: true });
+    expect(project.mcp['apra-fleet']).toEqual({ type: 'remote', url: expect.stringMatching(new RegExp(`\\?member=${member.id}$`)), enabled: true, headers: memberSecretHeaders() });
+    // It carries this install's member access secret, so the file is owner-only.
+    expect(fs.statSync(path.join(wf, 'opencode.json')).mode & 0o777).toBe(0o600);
     const exclude = fs.readFileSync(path.join(wf, '.git', 'info', 'exclude'), 'utf-8').split('\n');
     expect(exclude).toContain('/opencode.json');
 
@@ -186,7 +212,7 @@ describe.skipIf(process.platform === 'win32')('compose_permissions -- per-folder
     expect(git(wf, 'status', '--porcelain')).toBe('');
   }, 60000);
 
-  it('agy: no member MCP entry is written, deny rules are the allowlist complement, legacy pruned, clone stays clean', async () => {
+  it('agy: member MCP entry is written, deny rules are the allowlist complement, legacy pruned, clone stays clean', async () => {
     const wf = makeClone();
     const member = addMember('agy', wf);
     const projectFile = path.join(home, '.gemini', 'config', 'projects', `${AGY_PROJECT_ID}.json`);
@@ -202,9 +228,15 @@ describe.skipIf(process.platform === 'win32')('compose_permissions -- per-folder
     expect(grants.deny).toEqual(MEMBER_DENIED_TOOLS.map(t => `mcp(apra-fleet/${t})`));
     expect(JSON.stringify(grants.deny)).not.toContain('deepwiki');
 
-    // No member MCP entry anywhere: mcp_config.json only lost the legacy entry,
-    // nothing was added to the work folder, and no new home files appeared.
-    expect(readJson(mcpConfig)).toEqual({ mcpServers: { deepwiki: DEEPWIKI } });
+    // Member MCP entry is written for agy to point at member endpoint; legacy is pruned.
+    expect(readJson(mcpConfig)).toEqual({
+      mcpServers: {
+        'apra-fleet': { url: `http://localhost:7523/mcp?member=${member.id}`, headers: memberSecretHeaders() },
+        deepwiki: DEEPWIKI,
+      },
+    });
+    // It carries this install's member access secret, so the file is owner-only.
+    expect(fs.statSync(mcpConfig).mode & 0o777).toBe(0o600);
     expect(fs.existsSync(path.join(wf, 'opencode.json'))).toBe(false);
     expect(fs.existsSync(path.join(wf, '.claude'))).toBe(false);
     const added = listFiles(home).filter(f => !homeBefore.has(f));

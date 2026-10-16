@@ -209,6 +209,16 @@ describe('composePermissions -- AGY project-bound delivery', { timeout: 60000 },
     }
   });
 
+  it('surfaces dropped unmappable tokens (e.g. Agent) in compose_permissions Warnings', async () => {
+    const workFolder = makeScratch('fleet-agy-work-');
+    seedProjects(workFolder);
+    const member = addAgyMember(workFolder, { agyProjectId: PID });
+    const result = await composePermissions({ member_id: member.id, role: 'doer', grant: ['Agent', 'CustomUnmappedToken'] });
+    expect(result).toContain('Warnings:');
+    expect(result).toContain('agy: dropped "Agent"');
+    expect(result).toContain('agy: dropped "CustomUnmappedToken"');
+  });
+
   it('upgrade path: a member registered without a project gets one, stored in the registry, then its grants', async () => {
     const workFolder = makeScratch('fleet-agy-work-');
     const others = seedProjects(workFolder, false);

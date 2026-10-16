@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   execBdSync,
   execBdAsync,
@@ -170,13 +173,20 @@ describe('execBdSync', () => {
     // results, or nothing at all, for a nonexistent parent) -- what this
     // asserts is the ABSENCE of the injected echo's output, proving no shell
     // ever interpreted the '&'.
+    // Run from an empty temp dir with BEADS_DIR stripped so bd never resolves
+    // this repo's own tracker (it then just reports no beads workspace).
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'exec-bd-inject-'));
+    const env = { ...process.env };
+    delete env.BEADS_DIR;
     let out = '';
     try {
-      out = String(execBdSync(['list', '--parent', 'a & echo INJECTED-BY-TEST', '--json', '--limit', '0'], { encoding: 'utf-8' }));
+      out = String(execBdSync(['list', '--parent', 'a & echo INJECTED-BY-TEST', '--json', '--limit', '0'], { encoding: 'utf-8', cwd, env, windowsHide: true }));
     } catch (err) {
       // bd itself rejecting the bogus id is also an acceptable outcome here
       // -- what matters is that no shell ever ran the injected echo.
       out = err instanceof Error ? String((err as { stdout?: unknown }).stdout ?? err.message) : String(err);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
     }
     expect(out).not.toMatch(/INJECTED-BY-TEST/);
     // Real `bd` subprocess spawn on a shared CI runner has been observed to

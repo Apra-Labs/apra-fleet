@@ -10,6 +10,59 @@ and how the orchestrator keeps that wiring truthful.
 uses the uuid to scope the session to that member (reduced tool list, own work
 folder; an unregistered uuid gets 403).
 
+### Member access secret
+
+The server binds loopback, so every local user can reach it. A `?member=`
+session is therefore accepted only with the install's member access secret in
+the `X-Apra-Fleet-Member-Secret` header; without it, or with another install's
+secret, the server answers 401 before any member lookup. The secret is a
+random 64-hex value in `<data dir>/member-access.key` (mode 0600; created by
+`apra-fleet install` and at server start; `src/services/member-access-secret.ts`).
+
+- Local members: the per-session `--mcp-config` (owner-only file under the
+  data dir) carries the orchestrator's own secret.
+- Remote members: the fleetMcp probe reads the member install's secret (and,
+  for an older install without one, creates it there when `fleet_install
+  "auto"` runs) and stores it encrypted on the member record
+  (`encryptedMemberMcpSecret`). The per-folder entry (Claude, OpenCode
+  `headers`) and the per-dispatch session config carry it.
+- It never appears in a member command string: files that carry it are staged
+  through the owner-only secret-file channel and moved into place by a
+  content-free command. No such channel (relay members, SSH without SFTP)
+  fails loudly; an unreadable secret file is fleetMcp reason
+  `member-secret-unavailable`.
+- `apra-fleet call` and the client's `connectFleetMember` read it from their
+  own data dir, so they work only as the install's user (401 is
+  `E-MEMBER-SECRET`).
+- Providers with no per-folder entry (agy, codex, copilot, none) are
+  unchanged: they report `no-per-project-mcp` / `provider-unsupported`.
+
+#### Every /mcp session needs the secret (no `?member=` too)
+
+The same secret guards a session WITHOUT `?member=` (the full tool set,
+including command execution): a request carrying neither a valid bearer nor
+this install's secret gets 401. Consequences:
+
+- `apra-fleet install` writes the header into each provider's user-scope
+  registration (claude: `~/.claude.json` / `$CLAUDE_CONFIG_DIR/.claude.json`,
+  codex `http_headers`, copilot/agy/opencode `headers`). Those files are
+  written 0600 (an existing 0644 file is tightened) and the claude entry is
+  written directly, never via `claude mcp add --header`, so the secret is not
+  in argv. Re-running install (what `apra-fleet update` does) rewrites the
+  entry for every provider recorded in `install-config.json`, not just the
+  first. Each provider keeps its own transport: the refresh reads the
+  provider's existing apra-fleet entry (`install-config.json` records no
+  transport) and rewrites only an http (url) entry; a stdio (command) entry is
+  left as is (its own server process, not gated by the secret), and a provider
+  with no entry is not given one.
+- A checked-in, project-scope `.mcp.json` / `mcp.json` cannot carry the secret:
+  do not list apra-fleet there with a URL (the repo's own `.mcp.json` relies on
+  the user-scope registration instead). A project that needs a project-scope
+  entry must add the header itself, from the owner-only `member-access.key`,
+  in a git-ignored local file (`.mcp.local.json` / provider local scope).
+- Programmatic clients use `withFleetAccessSecret()` (apra-fleet-client
+  `server-resolution`), which reads the secret from the caller's own data dir.
+
 | Provider | Where the entry goes |
 |---|---|
 | Claude | LOCAL scope (keyed by work folder) in `~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json`; the path is probed on the member, never shell-expanded |
@@ -24,7 +77,7 @@ a list without `mcp__` entries hides the member's `kb_*` / `code_*` tools even
 though the entry above is connected (a plain `claude -p` in the folder sees
 them; the role session does not). The Claude transform
 (`transformAgentForClaude`, used by `apra-fleet install` and by member
-provisioning) appends every member `kb_*` / `code_*` tool as an exact
+provisioning) appends every member-allowed `kb_*` / `code_*` tool as an exact
 `mcp__apra-fleet__<tool>` name to each restrictive list. Exact names, not the
 server-level `mcp__apra-fleet` pattern: a role run as a local subagent of an
 orchestrator session talks to the full fleet server and must still reach only
@@ -40,7 +93,14 @@ the installed role files in the orchestrator's home. A failure is
 
 Deny rules for Claude and agy are derived from the complement of the shared
 member allowlist (`MEMBER_DENIED_TOOLS`), so the allowlist stays the single
-source of truth. Legacy `apra-fleet-member` entries and `{disabled:true}`
+source of truth. The allowlist is explicit (`MEMBER_BASE_TOOLS` in
+`src/services/member-tool-allowlist.ts`), not a `kb_` / `code_` prefix rule:
+`kb_setup` and `kb_export` are never served to a member session, and
+`kb_promote` / `kb_resolve_contradiction` only to an engine member session
+opened with the kb_maintainer grant (`origin=engine&kb_maintainer=1`, which
+memberCall sets only when calling as a repository's kb_maintainer). Agent
+sessions connect through the plain `?member=<uuid>` entry, so those four stay
+denied there. Legacy `apra-fleet-member` entries and `{disabled:true}`
 entries are pruned on compose. Changing a member's provider removes the old
 provider's composed config and re-composes for the new one.
 The former global endpoint-registration path was deleted; there is exactly one
@@ -90,17 +150,40 @@ called with `fleet_install: "auto"`), at least as new as the orchestrator, insta
   otherwise download the release asset for the orchestrator's version;
   otherwise report `unavailable(<reason>)`. Absence is an observation, never a
   throw: registration still succeeds. There is no GitHub Actions-artifact
-  fallback and no node-based fallback. An untagged (dev) build, whose version
-  looks like `v0.4.4_abc123`, downloads the asset of the tag its version core
-  maps to (`v0.4.4`).
+  fallback (artifacts need a GitHub login and expire) and no node-based
+  fallback. Release lookup uses anonymous URLs only (no API, no auth):
+  1. the stable `v<x.y.z>` release (signed Windows installer), accepted only
+     when its `BUILD_INFO` asset (`version=`/`commit=` lines, listed in
+     `SHA256SUMS`) names the orchestrator's build -- a bare `v<x.y.z>`
+     orchestrator accepts any build of that core. Stable tag builds carry a
+     build suffix too and their commit also gets a prerelease, so stable must
+     come first;
+  2. the exact-build prerelease `v<x.y.z>_<sha6>` that CI publishes, unsigned,
+     for every push to main and feat/kb-redesign (newest 3 per branch kept;
+     never `releases/latest`). Only "no release" (SHA256SUMS HTTP 404) or "different build"
+     moves on to the next candidate; network, timeout and checksum failures are
+     reported as themselves.
+  3. same-core stable fallback: when neither carries the exact build and the
+     member has no apra-fleet or an older core, the signed stable `v<x.y.z>` of
+     the same core (BUILD_INFO naming any build of that core) is installed and
+     reported as `fleetMcp.sameCoreFallback` plus a NOTICE ("installed signed
+     stable vX.Y.Z, not the exact build ..."). Never across cores; a member
+     already on that core keeps its build. Otherwise `no-matching-release`.
 - The release asset download is bounded by a timeout and verified against the
   release's published `SHA256SUMS` before use; a timeout, a checksum mismatch
   or an unavailable checksum is a typed, recoverable `fleetMcp` reason and
   nothing unverified is installed.
+- A requested install/upgrade that does not happen never fails
+  register_member/update_member: the result carries a WARNING with the
+  consequence (no KB/code tools from the member's own apra-fleet, or its
+  installed build kept), the exact reason, and OS-correct manual steps
+  (`fleetMcp.manualInstall`: anonymous download, SHA-256 check, member-mode
+  install, then `update_member {member_id, fleet_install: "auto"}`).
 - A member install (`install --member`) with `--force` stops only a server a
   previous member install left behind; a running full-install server it did not
-  start is refused with `E-FULL-INSTALL-RUNNING` unless `--force-stop-full-install`
-  is also given.
+  start is refused with `E-FULL-INSTALL-RUNNING`. The fleet never overrides that
+  refusal; the owner replaces the full install with a member install (see
+  "Replace a full install on a member" in install.md).
 - After install the member registers itself, and a MEMBER-session is opened to
   verify the tools are really reachable.
 - Self-registration design: the member-side `register-member --id <uuid>`
@@ -157,8 +240,17 @@ PowerShell `Test-Path -LiteralPath ... -PathType Leaf` per the member's shell):
   to, so the fleet cannot plant a registry entry in a human's install.
 - The fleet never sends `--force-stop-full-install`. A refused member install
   leaves the running server alone.
+- The marker probe has three outcomes: present, cleanly absent, and probe
+  failed (timeout, transport error, unexpected non-zero exit). Only a clean
+  absence is `full-install-running`; a probe failure is `probe-failed` with the
+  reason. `remove_member` likewise skips the member-side registration removal
+  when the marker is absent or the probe failed, and its output says why.
+- `install --member` writes the marker before the auto-start registration, so a
+  failed auto-start (`E-MEMBER-AUTOSTART`) still leaves it and the next
+  `fleet_install` "auto" retries.
 - Either case records `fleetMcp` `unavailable(full-install-running)` with a
-  detail naming the takeover command below.
+  detail that stages the current installer on the member and gives the manual
+  replacement steps below.
 
 Why no other signal: an unmarked install is either a human full install or a
 member install made by a build older than the marker, and nothing on the member
@@ -171,16 +263,17 @@ check, on every same-core orchestrator rebuild. `fleetInstalledAt` is still
 recorded (and carried across probes and `compose_permissions` writes) as an
 observation only.
 
-One-time takeover: an owner who wants the fleet to manage an unmarked install
-(a pre-marker member install on a dogfood host, or a full install they give
-up) runs once on the member
-
-    apra-fleet install --member --force --force-stop-full-install
-
-which stops its running server and writes the marker, then calls
-`update_member` `{member_id, fleet_install: "auto"}` and `member_detail` with
-`refresh: true`. No released build shipped member installs, so only dogfood
-hosts can hold an unmarked member install.
+Replacing an unmarked install: members need a member install only, so an owner
+who wants the fleet to manage a full install (or a pre-marker member install)
+replaces it with a member install: back up `data/` and `fleet.key`, uninstall
+with the installed binary, move `data/` aside, on Linux stop and remove
+`fleet-supervisor`, run the staged current installer with
+`install --member --llm <provider> --force`, then call `update_member`
+`{member_id, fleet_install: "auto"}` and `member_detail` with `refresh: true`.
+The full steps (posix and PowerShell), verification and rollback are in
+[install.md](install.md#replace-a-full-install-on-a-member). The earlier
+`--force-stop-full-install` takeover is superseded and is not needed for KB
+access.
 
 ## Compose and member lifecycle invariants
 

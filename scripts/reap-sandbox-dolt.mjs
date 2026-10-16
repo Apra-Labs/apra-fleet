@@ -110,7 +110,7 @@ export function listCandidates(deps = {}) {
     const script = "Get-CimInstance Win32_Process -Filter \"Name='dolt.exe'\" -ErrorAction SilentlyContinue | ForEach-Object { \"$($_.ProcessId)|$([long]([DateTimeOffset]$_.CreationDate.ToUniversalTime()).ToUnixTimeSeconds())|$($_.CommandLine)\" }";
     let out;
     try {
-      out = exec('powershell', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
+      out = exec('powershell', ['-NoProfile', '-Command', script], { encoding: 'utf8', windowsHide: true });
     } catch (err) {
       if (err && err.code === 'ENOENT') throw new ProbeToolMissingError('powershell');
       // Unlike lsof/ps, a non-zero exit here is NOT documented PowerShell
@@ -127,7 +127,7 @@ export function listCandidates(deps = {}) {
   }
   let out;
   try {
-    out = exec('ps', ['-eo', 'pid=,etimes=,args='], { encoding: 'utf8' });
+    out = exec('ps', ['-eo', 'pid=,etimes=,args='], { encoding: 'utf8', windowsHide: true });
   } catch (err) {
     if (err && err.code === 'ENOENT') throw new ProbeToolMissingError('ps');
     throw err;
@@ -143,7 +143,7 @@ export function killPid(pid, deps = {}) {
   const exec = deps.execFileSync ?? execFileSync;
   const kill = deps.processKill ?? process.kill;
   try {
-    if (isWindows(deps)) exec('taskkill', ['/F', '/PID', String(pid)], { stdio: 'ignore' });
+    if (isWindows(deps)) exec('taskkill', ['/F', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true });
     else kill(Number(pid), 'SIGKILL');
   } catch {
     // best effort -- the retry loop's own deadline + final verification

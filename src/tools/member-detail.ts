@@ -12,6 +12,7 @@ import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, formatUptimeDuration, uptimeHoursFromLaunch } from '../services/cloud/cost.js';
 import { serverVersion } from '../version.js';
 import { refreshMemberFleetMcp, getMemberFleetMcpDeps, fleetMcpFixLine } from '../services/member-fleet-install.js';
+import { codeIntelAvailability, resolveProviderKey } from './code-intelligence.js';
 import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
 
 export const memberDetailSchema = z.object({
@@ -21,6 +22,14 @@ export const memberDetailSchema = z.object({
 });
 
 export type MemberDetailInput = z.infer<typeof memberDetailSchema>;
+
+function permissionConfigPathsOf(agent: Agent): string[] {
+  try {
+    return getProvider(agent.llmProvider).permissionConfigPaths(agent);
+  } catch {
+    return [];
+  }
+}
 
 export async function memberDetail(input: MemberDetailInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
@@ -76,6 +85,15 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     // previously never surfaced back, so a console/UI edit form could not tell
     // 'dangerous' (skip all permission checks) from false (interactive prompts).
     unattended: agent.unattended ?? false,
+    // The provider's composed per-folder permission config file(s)
+    // (ProviderAdapter.permissionConfigPaths: work-folder-relative, or
+    // home-anchored "~/..."). Same reason as repo_remote_url above: the
+    // fleet-sprint engine has no provider layer of its own, and its member
+    // preflight probes these files to re-compose a config lost to a re-clone
+    // or `git clean -xdf` before dispatching. [] when the provider cannot name
+    // them yet (agy before its project is provisioned -- compose_permissions
+    // provisions it); a static fact, so reported even for an offline member.
+    permissionConfigPaths: permissionConfigPathsOf(agent),
   };
 
   // -- fleetMcp: the recorded status; refresh:true re-probes (without installing) and records --
@@ -91,6 +109,17 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   // One-line fix when the member's KB/code tools are not usable; null otherwise.
   const fleetMcpFix = fleetMcpFixLine(fleetMcp);
   result.fleetMcpFix = fleetMcpFix;
+
+  // -- codeIntel: provider, availability and (when unavailable) the cause and remedy --
+  // Checked against THIS server's PATH, so it only describes a member whose
+  // code tools run here; a remote member's own fleet MCP runs them on its host
+  // (null here; member-init's code step exercises that path).
+  result.codeIntel = null;
+  if (isLocal) try {
+    result.codeIntel = codeIntelAvailability(await resolveProviderKey(agent.id));
+  } catch (e: unknown) {
+    result.codeIntel = { provider: agent.codeIntelProvider ?? null, available: false, cause: e instanceof Error ? e.message : String(e), remedy: "run 'apra-fleet install' to configure a code intelligence provider, or update_member code_intel_provider" };
+  }
 
   // -- Cloud Info (parallel with connectivity check) --
   let cloudSection: Record<string, unknown> | undefined;
@@ -218,24 +247,28 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     lastLlmActivityAt: agent.lastLlmActivityAt ?? null,
   };
 
-  try {
-    const busyCheck = await strategy.execCommand(
-      cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),
-      10000,
-    );
-    const output = busyCheck.stdout.trim().toLowerCase();
-    if (output.includes('fleet-busy')) {
-      session.status = 'busy';
-      if (agent.lastLlmActivityAt) {
-        session.idleSecs = Math.round((Date.now() - new Date(agent.lastLlmActivityAt).getTime()) / 1000);
+  if (agent.llmProvider === 'none' || !provider.processName) {
+    session.status = 'idle';
+  } else {
+    try {
+      const busyCheck = await strategy.execCommand(
+        cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),
+        10000,
+      );
+      const output = busyCheck.stdout.trim().toLowerCase();
+      if (output.includes('fleet-busy')) {
+        session.status = 'busy';
+        if (agent.lastLlmActivityAt) {
+          session.idleSecs = Math.round((Date.now() - new Date(agent.lastLlmActivityAt).getTime()) / 1000);
+        }
+      } else if (output.includes('other-busy')) {
+        session.status = `idle (unrelated ${provider.name} processes running)`;
+      } else {
+        session.status = 'idle';
       }
-    } else if (output.includes('other-busy')) {
-      session.status = `idle (unrelated ${provider.name} processes running)`;
-    } else {
-      session.status = 'idle';
+    } catch {
+      session.status = 'unknown';
     }
-  } catch {
-    session.status = 'unknown';
   }
   result.session = session;
 
@@ -333,6 +366,13 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     if (fleetMcpFix) t += `  fleetMcp fix: ${fleetMcpFix}\n`;
     if (fleetMcp.beads) t += `  bd=${fleetMcp.beads.state}: ${fleetMcp.beads.detail}\n  bd fix: ${fleetMcp.beads.fix}\n`;
   }
+
+  const codeIntel = result.codeIntel as null | { provider: string | null; available: boolean; cause?: string; remedy?: string };
+  if (codeIntel) t += `  codeIntel=${codeIntel.available ? 'available' : 'unavailable'} (${codeIntel.provider ?? 'unknown'})
+`;
+  if (codeIntel && !codeIntel.available) t += `  codeIntel cause: ${codeIntel.cause}
+  codeIntel fix: ${codeIntel.remedy}
+`;
 
   if (cloudSection) {
     const cs = cloudSection as Record<string, unknown>;

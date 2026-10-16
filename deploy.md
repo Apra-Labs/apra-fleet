@@ -12,6 +12,8 @@ compose_permissions tool delivers); a broader prefix entry counts as coverage:
   (see its Windows scheduled-task caveat), but `start` is still a real command
   (OS auto-start registration, manual fallback); a member missing it fails
   Step 0a as soon as anything invokes it.
+- `Bash(node scripts/deploy-install.mjs*)` -- resolves the platform installer and
+  runs `install --force` (and the macOS LaunchAgent recovery) as one command.
 - `Bash(node scripts/preflight-clear-build-locks.mjs*)` -- pre-`npm ci` stale
   build-lock cleanup, see Deploy. Trailing `*` also covers `--dry-run`.
 - `Bash(npm ci)`
@@ -75,19 +77,12 @@ This is the sanctioned recovery -- take the LaunchAgent out of the picture
 first, then install, then bring it back. Do not invent a wrapper script or an
 alternate kill loop; those only re-race launchd.
 
-```bash
-# macOS only. Take the service down (launchd stops relaunching it), then install.
-launchctl bootout "gui/$(id -u)/com.apra-fleet.server" || true
-pgrep -x apra-fleet || echo "server is down"
-
-# Run this in place of the plain `"$INSTALLER" install --force` line in the
-# Deploy script below ($INSTALLER is resolved there).
-"$INSTALLER" install --force
-
-# install re-registers and starts the service (SEA + HTTP transport). If it
-# reported "registration skipped", bring it back by hand:
-launchctl kickstart -k "gui/$(id -u)/com.apra-fleet.server"
-```
+In the Deploy script below, at the install step (which comes AFTER the
+active-sprints gate), run the `--launchagent` form instead of the plain line:
+`node scripts/deploy-install.mjs --launchagent`. It does launchctl bootout
+(|| true), install --force, then launchctl kickstart -k if the installer reports
+"registration skipped", resolving the uid and installer path itself. Do not run
+it before the gate.
 
 Never leave the LaunchAgent booted out: the machine's shared singleton server
 stays down for every sprint until it is bootstrapped again.
@@ -120,7 +115,7 @@ your deploy; do not clear it yourself -- report it in `notes` so the
 orchestrator/operator can release it against the supervisor:
 
 ```bash
-curl -sf -X POST http://localhost:8787/api/reservations/<sprintId>/force-release -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")"
+curl -sf -X POST http://localhost:8787/api/reservations/<sprintId>/force-release -H "Authorization: Bearer <token: the contents of ~/.apra-fleet/fleet.key>"
 ```
 PowerShell:
 ```powershell
@@ -165,34 +160,25 @@ npm run build:binary
 #   exit 1 -> usage error (fix the arguments, do not proceed)
 # Unreachable supervisor = exit 0 (no live sprint to collide with). Omit
 # --self-sprint-id only when given no identity: every reservation is then foreign.
-# The header carries the shared fleet.key service token (see the "Service
-# token" row below under Sandbox Deploy), the same one every playbook curl
-# authenticates with (primary source ~/.apra-fleet/fleet.key; the supervisor
-# falls back to <dataDir>/private/token only if fleet.key did not exist at its
-# boot). A 401 {"error":"unauthorized"} (curl -f exits 22) means the token is
-# wrong or missing -- it does NOT mean "no sprints".
-curl -sf http://localhost:8787/api/sprints -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")"
+# The script reads GET /api/sprints itself, authenticated with the shared
+# fleet.key service token (see the "Service token" row below under Sandbox
+# Deploy; the supervisor falls back to <dataDir>/private/token only if
+# fleet.key did not exist at its boot). A 401 means the token is wrong or
+# missing -- it does NOT mean "no sprints".
 node scripts/check-foreign-sprints.mjs --self-sprint-id "<your-sprint-id>"
 
-OS="$(uname -s)"
-ARCH="$(uname -m)"
-case "$OS" in
-  Darwin) PLATFORM=darwin ;;
-  Linux)  PLATFORM=linux ;;
-  *)      PLATFORM=win ;;
-esac
-case "$ARCH" in
-  x86_64) SEA_ARCH=x64 ;;
-  arm64|aarch64) SEA_ARCH=arm64 ;;
-  *) SEA_ARCH="$ARCH" ;;
-esac
-
-INSTALLER="dist/apra-fleet-installer-${PLATFORM}-${SEA_ARCH}"
-[ "$PLATFORM" = "win" ] && INSTALLER="${INSTALLER}.exe"
-
-"$INSTALLER" install --force
+# Resolves dist/apra-fleet-installer-<platform>-<arch>[.exe] and runs
+# `install --force` with inherited stdio (exit code propagated). Add
+# `--print-path` to only print the resolved installer path.
+# Only after the gate above passes: it adds --ignore-running-sprints (your own
+# sprint/supervisor keep running) when the host already has a 0.4.4+ member
+# access key. Without one, install exits 1 with E-FLEET-SE-RUNNING: return
+# `deployed: false` quoting its stop/restart steps -- never add the flag yourself.
+node scripts/deploy-install.mjs
+# macOS where the LaunchAgent wins the race (see recovery section above):
+# use `node scripts/deploy-install.mjs --launchagent` instead of the plain line.
 # Agy-dedicated sprint (target issue is about the agy/Antigravity provider):
-# use `"$INSTALLER" install --force --llm agy` instead, so the agy role-prompt
+# use `node scripts/deploy-install.mjs --llm agy` instead, so the agy role-prompt
 # transform built from this branch is what gets deployed.
 
 # Use `run`, not `start` -- `start`'s Windows scheduled task requires an

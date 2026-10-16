@@ -18,12 +18,19 @@ import {
   isGitTracked,
   memberFileExists,
   writeMemberJson,
+  writeSecretBearingConfig,
   LEGACY_MEMBER_MCP_SERVER_NAME,
   MEMBER_MCP_SERVER_NAME,
 } from '../services/member-config-io.js';
 
 /** Work-folder-relative project config opencode reads MCP servers from. */
 export const OPENCODE_PROJECT_CONFIG = 'opencode.json';
+
+/** True when an opencode.json mcp entry is the one compose wrote for `memberId`. */
+function isOwnMemberEntry(entry: unknown, memberId: string): boolean {
+  return !!entry && typeof entry === 'object' && typeof (entry as { url?: unknown }).url === 'string'
+    && ((entry as { url: string }).url).endsWith(`?member=${encodeURIComponent(memberId)}`);
+}
 
 export class OpenCodeProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'opencode';
@@ -118,8 +125,11 @@ export class OpenCodeProvider implements ProviderAdapter {
 
   // apra-fleet-hzeb.1: OpenCode has no distinct usage-limit event surface, so key off
   // the raw output using the shared quota detector (guessed resume window).
+  // A successful dispatch (code 0 and !isError) must NEVER be classified as a
+  // usage limit, even if stdout transcripts happen to mention 429 in token metrics.
   detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null {
-    return defaultUsageLimitSignal(result.stderr || result.stdout || parsed.result);
+    if (result.code === 0 && !parsed.isError) return null;
+    return defaultUsageLimitSignal(result.stderr || (parsed.isError ? parsed.result : ''));
   }
 
   headlessInvocation(promptLiteral: string): string {
@@ -297,7 +307,10 @@ export class OpenCodeProvider implements ProviderAdapter {
     let detail: string;
     if (url !== null) {
       const cur = mcp[MEMBER_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
-      const current = !!cur && typeof cur === 'object' && cur.type === 'remote' && cur.url === url && cur.enabled === true && Object.keys(cur).length === 3;
+      // The member install's access secret rides as an http header (opencode
+      // remote MCP `headers`); without it the server refuses the session.
+      const wanted: Record<string, unknown> = { type: 'remote', url, enabled: true, ...(ctx.headers ? { headers: ctx.headers } : {}) };
+      const current = !!cur && typeof cur === 'object' && JSON.stringify(cur) === JSON.stringify(wanted);
       if (current && !hadLegacy) {
         detail = `opencode: ${file} already up to date`;
       } else {
@@ -309,15 +322,23 @@ export class OpenCodeProvider implements ProviderAdapter {
             `E-OPENCODE-CONFIG-TRACKED: ${file} is tracked by git; compose left it untouched (writing the member URL would dirty the repo). Untrack it or add the apra-fleet MCP entry to it yourself.`,
           );
         }
-        mcp[MEMBER_MCP_SERVER_NAME] = { type: 'remote', url, enabled: true };
+        mcp[MEMBER_MCP_SERVER_NAME] = wanted;
         config.mcp = mcp;
-        await writeMemberJson(ctx.execCommand, file, config, posix);
+        if (ctx.headers) {
+          await writeSecretBearingConfig(ctx, file, JSON.stringify(config, null, 2) + '\n', posix);
+        } else {
+          await writeMemberJson(ctx.execCommand, file, config, posix);
+        }
         detail = `opencode: wrote ${MEMBER_MCP_SERVER_NAME} in ${file}`;
       }
     } else if (fileExists && await isGitTracked(ctx.execCommand, agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, posix)) {
       detail = `opencode: ${file} is tracked by git; left untouched`;
+    } else if (ctx.removeOnlyOwnEntry && !hadLegacy && !isOwnMemberEntry(mcp[MEMBER_MCP_SERVER_NAME], agent.id)) {
+      // Only THIS member's entry (?member=<uuid>) is removed; the owner's own
+      // apra-fleet entry (e.g. a full install) is never touched.
+      detail = `opencode: no member MCP entry of this member in ${file}`;
     } else {
-      delete mcp[MEMBER_MCP_SERVER_NAME];
+      if (!ctx.removeOnlyOwnEntry || isOwnMemberEntry(mcp[MEMBER_MCP_SERVER_NAME], agent.id)) delete mcp[MEMBER_MCP_SERVER_NAME];
       if (Object.keys(mcp).length > 0) config.mcp = mcp; else delete config.mcp;
       if (Object.keys(config).length === 0) {
         await deleteMemberFile(ctx.execCommand, file, posix);

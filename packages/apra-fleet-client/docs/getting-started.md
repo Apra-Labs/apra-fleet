@@ -88,8 +88,11 @@ transport.stop();
 import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
+import { withFleetAccessSecret } from '@apralabs/apra-fleet-client/server-resolution';
 
-const transport = new StreamableHttpTransport('http://localhost:7523/mcp');
+// The server refuses an /mcp session without the install's access secret
+// (HTTP 401); withFleetAccessSecret() adds it from the local data dir.
+const transport = new StreamableHttpTransport('http://localhost:7523/mcp', withFleetAccessSecret());
 
 const ready = new Promise((resolve, reject) => {
   transport.once('ready', resolve);

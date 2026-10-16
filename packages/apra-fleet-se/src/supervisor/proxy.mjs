@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- live-detail reverse proxy (apra-fleet-eft.6.4,
+// fleet-sprint supervisor -- live-detail reverse proxy (apra-fleet-eft.6.4,
 // Plan Part 2.3)
 // =============================================================================
 //

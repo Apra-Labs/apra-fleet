@@ -133,15 +133,16 @@ const KNOWN_ARG_KEYS = new Set([
     // formula units). Default DEFAULT_EFFORT_THRESHOLD.
     // No CLI flag sets this today; only test/programmatic callers pass it.
     'worklist_effort_budget',
-    // Engine CI gate arg -- DELIBERATELY NOT WIRED (2026-10-01). ci-gate.mjs
-    // runs CI per reviewer dispatch and hands the result to the reviewer; the
-    // agreed direction is the opposite (CI never blocks or reaches doer/
-    // reviewer loops; the integ-test phase owns CI via one reopenable bead;
-    // per-push vs end-of-cycle triggering per project). Until the "fleet-sprint
-    // must also utilize CI as a resource for quality" epic (apra-fleet-dv8i)
-    // designs that flow, ci_gate is not a known arg, so passing it fails loudly
-    // as an unknown arg. The gate module stays in place, unconfigured.
-    // 'ci_gate',
+    // Engine CI gate arg (optional): { workflow, timeout_s? }, validated by
+    // validateCiGate(). When set, the runner STARTS the gate ONCE per sprint,
+    // at the start of Finalization, against the sprint branch's remote head,
+    // as a parallel activity (Final Review, Regression Test and Harvest run
+    // while CI runs). Publish PR awaits the in-flight result after its own
+    // branch push and renders it into the PR body. CI never changes the
+    // sprint verdict, never blocks PR creation and never reaches a doer or
+    // reviewer prompt; a non-PASS outcome is logged loudly and stated in the
+    // PR body. Absent, the gate is never constructed (no CI calls, no log).
+    'ci_gate',
     // An optional live `(name, args) => Promise<any>` MCP tool-call function,
     // wired by bin/cli.mjs from its already-connected `mcpClient.callTool`.
     // Consumed by createMemberSessionGuard() to call the fleet's own
@@ -558,9 +559,9 @@ export function validateArgs(args) {
     // --- expect_beads (optional) ------------------------------------------
     const expectBeads = validateExpectBeads(args.expect_beads);
 
-    // --- ci_gate: NOT WIRED (see the KNOWN_ARG_KEYS note; apra-fleet-dv8i) ---
-    // const ciGate = validateCiGate(args.ci_gate);
-    const ciGate = undefined;
+    // --- ci_gate (optional; see the KNOWN_ARG_KEYS note) --------------------
+    // Run once at Finalization, awaited by Publish PR; never a verdict input.
+    const ciGate = validateCiGate(args.ci_gate);
 
     return {
         targetIssues,

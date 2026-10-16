@@ -12,13 +12,26 @@ export interface FindOnPathOptions {
   isFile?: (p: string) => boolean;
 }
 
+/**
+ * A regular file; off Windows it must also carry an execute bit, so a plain
+ * (non-executable) file named node/npx is skipped the way the shell would.
+ */
 function defaultIsFile(p: string): boolean {
-  try { return statSync(p).isFile(); } catch { return false; }
+  try {
+    const st = statSync(p);
+    if (!st.isFile()) return false;
+    return process.platform === 'win32' || (st.mode & 0o111) !== 0;
+  } catch { return false; }
 }
 
-/** Split a PATH string with the target platform's delimiter, dropping empty entries. */
+/**
+ * Split a PATH string with the target platform's delimiter, dropping empty
+ * entries. On win32 an entry may be wrapped in double quotes (to carry a `;`
+ * or spaces); those are stripped, since a quoted dir is not a valid path.
+ */
 export function splitPath(envPath: string, platform: NodeJS.Platform = process.platform): string[] {
-  return envPath.split(platform === 'win32' ? ';' : ':').filter(Boolean);
+  const parts = envPath.split(platform === 'win32' ? ';' : ':');
+  return (platform === 'win32' ? parts.map((d) => d.trim().replace(/^"(.*)"$/, '$1')) : parts).filter(Boolean);
 }
 
 /** Resolve an executable on PATH (PATHEXT-aware on Windows) without a shell. */
@@ -61,4 +74,20 @@ export function npxUnavailableReason(opts: FindOnPathOptions = {}): string | nul
   if (!findExecutableOnPath('npx', o)) return missingOnServerPathMessage('npx', envPath);
   if (platform !== 'win32' && !findExecutableOnPath('node', o)) return missingOnServerPathMessage('node (required by npx)', envPath);
   return null;
+}
+
+/**
+ * The install-time warning line when node and/or npx cannot be resolved from
+ * the installer's PATH (the PATH a service definition records), naming each
+ * missing tool; null when both resolve. Code intelligence runs through npx, so
+ * without them it stays unavailable until fixed.
+ */
+export function codeIntelPathWarning(opts: FindOnPathOptions = {}): string | null {
+  const platform = opts.platform ?? process.platform;
+  const envPath = opts.envPath ?? process.env.PATH ?? '';
+  const o = { ...opts, platform, envPath };
+  const missing = ['node', 'npx'].filter((name) => !findExecutableOnPath(name, o));
+  if (missing.length === 0) return null;
+  return `${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not resolvable from the installer PATH: code intelligence will be unavailable until it is fixed. ` +
+    `Install Node.js (which provides node and npx) or add it to PATH, then re-run 'apra-fleet install'.`;
 }

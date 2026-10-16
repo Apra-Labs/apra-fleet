@@ -11,6 +11,7 @@ import {
   filterProjectBibleCandidates,
   isRepoRelativePath,
 } from '../../src/services/knowledge/bible-basis-filter.js';
+import { commitWorkTree } from '../helpers/commit-work-tree.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
 // kb_export project-scope basis filter + additive merge. Fixture: a temp git
@@ -116,6 +117,8 @@ async function seedCases(opts: { includeA: boolean }): Promise<void> {
   setBasis(ids.f1, { 'src/f1.ts': b1['src/f1.ts'] });
   // f2: cites two files, basis matches only one (second file edited).
   writeSrc('src/f2-second.ts', 'edited after capture');
+  // Admission reads the cited files at HEAD: commit the mutated tree.
+  commitWorkTree(tmpDir, 'seed cases');
 }
 
 beforeEach(async () => {
@@ -231,10 +234,11 @@ describe('qualifiesForProjectBible (cases a-f)', () => {
     expect(isRepoRelativePath('a..b.ts')).toBe(true);
   });
 
-  it('filterProjectBibleCandidates hashes the repo files and preserves order', async () => {
+  it('filterProjectBibleCandidates hashes the repo files at HEAD and preserves order', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-basis-unit-'));
     try {
       fs.writeFileSync(path.join(dir, 'f.ts'), 'one');
+      commitWorkTree(dir, 'one');
       const p = new SqliteProvider(':memory:', dir);
       await p.init();
       const e = await p.capture(makeInput({ source_files: ['f.ts'] }));
@@ -243,6 +247,7 @@ describe('qualifiesForProjectBible (cases a-f)', () => {
       const bases = p.getSourceFileBases(confirmed.map(c => c.id));
       expect((await filterProjectBibleCandidates(confirmed, bases, dir)).map(c => c.id)).toEqual([e.id]);
       fs.writeFileSync(path.join(dir, 'f.ts'), 'two');
+      commitWorkTree(dir, 'two');
       expect(await filterProjectBibleCandidates(confirmed, bases, dir)).toEqual([]);
       p.close();
     } finally {

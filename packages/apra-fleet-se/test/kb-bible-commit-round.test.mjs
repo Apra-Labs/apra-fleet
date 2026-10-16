@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { createKbWorkClient } from '../fleet-sprint/kb.mjs';
+import { createKbWorkClient, KB_BIBLE_SKIP_RETRY_ROUNDS } from '../fleet-sprint/kb.mjs';
 import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
 import { createSyncBrackets, createGitSync } from '../fleet-sprint/git-sync.mjs';
 import { syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure } from '../fleet-sprint/runner.js';
@@ -24,7 +24,7 @@ const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
  * A fake maintainer: records every event in order. `pushFailures` is how many
  * G-pushes fail before one succeeds.
  */
-function harness({ pushFailures = 0, committed = true, unpushed = false, skipped = [] } = {}) {
+function harness({ pushFailures = 0, committed = true, unpushed = false, skipped = [], removed, bibleSkipRetryRounds } = {}) {
     const events = [];
     const logs = [];
     let pushesLeftToFail = pushFailures;
@@ -34,7 +34,11 @@ function harness({ pushFailures = 0, committed = true, unpushed = false, skipped
         if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
         events.push({ ev: tool, member: member.name, args });
         if (tool === 'kb_bible_commit') {
-            return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged: args.ids.filter((id) => !skipped.some((s) => s.id === id)), skipped, entry_count: args.ids.length, committed }) }] };
+            // `skipped` is a fixed list, or a function of the call's ids (a
+            // per-round answer); only skips for ids actually sent are returned.
+            const all = typeof skipped === 'function' ? skipped(args.ids) : skipped;
+            const sk = all.filter((s) => args.ids.includes(s.id));
+            return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged: args.ids.filter((id) => !sk.some((s) => s.id === id)), skipped: sk, ...(removed === undefined ? {} : { removed }), entry_count: args.ids.length, committed }) }] };
         }
         return {};
     };
@@ -59,6 +63,7 @@ function harness({ pushFailures = 0, committed = true, unpushed = false, skipped
             return unpushed === null ? { unpushed: null, reason: 'git failed in the test' } : { unpushed };
         },
         log: (m) => logs.push(m),
+        ...(bibleSkipRetryRounds === undefined ? {} : { bibleSkipRetryRounds }),
     });
     return { client, events, logs };
 }
@@ -89,18 +94,90 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
         assert.deepEqual(client.pendingConfirmations(), []);
     });
 
-    test('a skipped id is logged with the reason the tool returned and leaves the pending queue', async () => {
-        const { client, logs } = harness({ skipped: [{ id: 'e2', reason: 'basis_mismatch' }] });
-        await confirm(client, ['e1', 'e2']);
+    test('a skip that cannot succeed on a retry (not_confirmed_or_unknown, no_source_files) is logged with its reason and leaves the queue', async () => {
+        const { client, logs } = harness({ skipped: [{ id: 'e2', reason: 'not_confirmed_or_unknown' }, { id: 'e3', reason: 'no_source_files' }] });
+        await confirm(client, ['e1', 'e2', 'e3']);
 
         const out = await client.commitRound();
 
-        const line = logs.find((l) => /kb_bible_commit skipped/.test(l));
+        const line = logs.find((l) => /kb_bible_commit skipped .* cannot succeed on a retry/.test(l));
         assert.ok(line, logs.join('\n'));
-        assert.match(line, /e2 \(basis_mismatch\)/);
-        assert.ok(!/not CONFIRMED in the maintainer's KB/.test(line), line);
+        assert.match(line, /e2 \(not_confirmed_or_unknown\)/);
+        assert.match(line, /e3 \(no_source_files\)/);
         assert.deepEqual(out, { committed: 1, pending: 0 });
         assert.deepEqual(client.pendingConfirmations(), []);
+    });
+
+    test('a basis_mismatch id stays queued, is re-offered at the next round and leaves the queue once merged', async () => {
+        // Round 1 skips e2 (its cited files at HEAD do not match yet); round 2
+        // finds them matching (e.g. the maintainer pulled the commits) and merges.
+        let round = 0;
+        const { client, events, logs } = harness({ skipped: () => (round === 1 ? [{ id: 'e2', reason: 'basis_mismatch' }] : []) });
+        await confirm(client, ['e1', 'e2']);
+
+        round = 1;
+        const first = await client.commitRound('review C1');
+        assert.deepEqual(first, { committed: 1, pending: 1 });
+        assert.deepEqual(client.pendingConfirmations(), ['e2']);
+        const kept = logs.find((l) => /kept queued for the next round/.test(l));
+        assert.ok(kept, logs.join('\n'));
+        assert.match(kept, /e2 \(basis_mismatch\)/);
+        assert.ok(!logs.some((l) => /WARN/.test(l)), 'a first transient skip is not a warning');
+
+        round = 2;
+        const mark = events.length;
+        const second = await client.commitRound('review C2');
+        const commits = events.slice(mark).filter((e) => e.ev === 'kb_bible_commit');
+        assert.deepEqual(commits.map((c) => c.args.ids), [['e2']], 'the skipped id is offered again');
+        assert.deepEqual(second, { committed: 1, pending: 0 });
+        assert.deepEqual(client.pendingConfirmations(), []);
+    });
+
+    test('the retry bound drops a permanently drifted id with a WARN naming the id and the reason', async () => {
+        const { client, events, logs } = harness({ skipped: [{ id: 'e2', reason: 'basis_mismatch' }], bibleSkipRetryRounds: 3 });
+        await confirm(client, ['e1', 'e2']);
+
+        const outs = [];
+        for (const label of ['C1', 'C2', 'C3', 'C4']) outs.push(await client.commitRound(label));
+
+        assert.deepEqual(outs, [
+            { committed: 1, pending: 1 },
+            { committed: 0, pending: 1 },
+            { committed: 0, pending: 0 },
+            { committed: 0, pending: 0 },
+        ]);
+        const offers = events.filter((e) => e.ev === 'kb_bible_commit').map((e) => e.args.ids);
+        assert.deepEqual(offers, [['e1', 'e2'], ['e2'], ['e2']], 'offered for exactly 3 rounds, then never again');
+        const warns = logs.filter((l) => /WARN: dropping e2 from the bible queue/.test(l));
+        assert.equal(warns.length, 1, logs.join('\n'));
+        assert.match(warns[0], /basis_mismatch for 3 round\(s\) in a row/);
+        assert.deepEqual(client.pendingConfirmations(), []);
+    });
+
+    test('bible entries the tool removed (superseded/invalidated) are named in the run log with their reasons', async () => {
+        const { client, logs } = harness({ removed: [{ id: 'old-1', reason: 'superseded' }, { id: 'old-2', reason: 'invalidated' }] });
+        await confirm(client, ['e1']);
+        await client.commitRound();
+        const line = logs.find((l) => /kb_bible_commit removed 2 superseded\/invalidated entry\(ies\)/.test(l));
+        assert.ok(line, logs.join('\n'));
+        assert.match(line, /old-1 \(superseded\), old-2 \(invalidated\)/);
+    });
+
+    test('no removal line when the tool removed nothing (or predates the removed field)', async () => {
+        for (const removed of [[], undefined]) {
+            const { client, logs } = harness({ removed });
+            await confirm(client, ['e1']);
+            await client.commitRound();
+            assert.ok(!logs.some((l) => /kb_bible_commit removed/.test(l)), logs.join('\n'));
+        }
+    });
+
+    test('the default retry bound is KB_BIBLE_SKIP_RETRY_ROUNDS', async () => {
+        const { client, events } = harness({ skipped: [{ id: 'e1', reason: 'basis_mismatch' }] });
+        await confirm(client, ['e1']);
+        for (let i = 0; i < KB_BIBLE_SKIP_RETRY_ROUNDS + 2; i++) await client.commitRound();
+        assert.equal(events.filter((e) => e.ev === 'kb_bible_commit').length, KB_BIBLE_SKIP_RETRY_ROUNDS);
+        assert.ok(KB_BIBLE_SKIP_RETRY_ROUNDS >= 2, 'a transient mismatch gets at least one retry');
     });
 
     test('a round with no confirmations makes no kb_bible_commit call and touches no git', async () => {
@@ -380,6 +457,190 @@ function branchesNamed(cmd) {
     for (const m of cmd.matchAll(/HEAD:(?:refs\/heads\/)?(\S+)/g)) out.push(m[1]);
     return out.filter((b) => b !== '--quiet');
 }
+
+// =============================================================================
+// Removal-only rounds: a discard (kb_invalidate) applied on the maintainer
+// retires a bible entry. kb_bible_commit removes retired entries at every
+// call, so a round that applied a discard but confirmed nothing still makes
+// one kb_bible_commit call, with ids [] -- otherwise the removal would wait
+// for some later round that happens to promote something.
+// =============================================================================
+
+async function discard(client, ids) {
+    offeredEntries = ids;
+    await client.promotionCandidates('reviewer-1');
+    await client.apply('reviewer', 'reviewer-1', { kb_discards: ids.map((id) => ({ id, reason: REASON })) });
+}
+
+describe('commitRound: removal-only bible commits (a discard applied, nothing confirmed)', () => {
+    test('one kb_bible_commit with ids [] on the kb_maintainer, between a G-pull and a G-push, when the tool reports a commit', async () => {
+        const { client, events, logs } = harness({ removed: [{ id: 'old-1', reason: 'invalidated' }] });
+        await discard(client, ['old-1']);
+        const mark = events.length;
+
+        const out = await client.commitRound('review C1');
+
+        const round = events.slice(mark);
+        assert.deepEqual(round.map((e) => e.ev), ['G-pull', 'kb_bible_commit', 'G-push'], JSON.stringify(round));
+        const commits = events.filter((e) => e.ev === 'kb_bible_commit');
+        assert.equal(commits.length, 1, 'exactly one kb_bible_commit call');
+        assert.deepEqual(commits[0].args, { ids: [], baseBranch: 'main', baseCommit: BASE.baseCommit });
+        assert.equal(commits[0].member, 'maint');
+        assert.ok(logs.some((l) => /kb_bible_commit removed 1 superseded\/invalidated entry\(ies\) .*old-1 \(invalidated\)/.test(l)), logs.join('\n'));
+        assert.ok(logs.some((l) => /removal-only bible commit .*1 removal\(s\) committed and pushed/.test(l)), logs.join('\n'));
+        assert.deepEqual(out, { committed: 0, pending: 0 });
+    });
+
+    test('the removal-only call carries the kb_maintainer grant', async () => {
+        const grants = [];
+        const client = createKbWorkClient({
+            memberCall: async (member, tool, args, callOpts) => {
+                if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
+                if (tool === 'kb_bible_commit') {
+                    grants.push(callOpts);
+                    return { content: [{ text: JSON.stringify({ merged: [], skipped: [], removed: [{ id: 'old-1', reason: 'invalidated' }], committed: true }) }] };
+                }
+                return {};
+            },
+            maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
+            gPull: async () => {},
+            gPush: async () => {},
+            bibleBase: async () => BASE,
+        });
+        await discard(client, ['old-1']);
+        await client.commitRound();
+        assert.equal(grants.length, 1);
+        assert.equal(grants[0] && grants[0].kbMaintainer, true, 'kb_bible_commit runs with the kbMaintainer grant');
+    });
+
+    test('nothing committed by the removal-only call: no G-push (origin already holds the bible)', async () => {
+        const { client, events } = harness({ committed: false, unpushed: false, removed: [] });
+        await discard(client, ['old-1']);
+        const mark = events.length;
+
+        const out = await client.commitRound();
+
+        assert.deepEqual(events.slice(mark).map((e) => e.ev), ['G-pull', 'kb_bible_commit', 'publication-check']);
+        assert.deepEqual(out, { committed: 0, pending: 0 });
+    });
+
+    test('the retirement is cleared by a successful call: the next round with nothing queued makes no call', async () => {
+        const { client, events } = harness({ removed: [{ id: 'old-1', reason: 'invalidated' }] });
+        await discard(client, ['old-1']);
+        await client.commitRound('C1');
+        const mark = events.length;
+
+        await client.commitRound('C2');
+
+        assert.deepEqual(events.slice(mark), [], 'no G-pull, no kb_bible_commit, no G-push');
+    });
+
+    test('a round with nothing queued (no discard, no confirmation) makes zero kb_bible_commit calls', async () => {
+        const { client, events } = harness();
+        offeredEntries = ['e1'];
+        await client.promotionCandidates('reviewer-1');
+        await client.apply('reviewer', 'reviewer-1', {});
+
+        await client.commitRound();
+
+        assert.equal(events.filter((e) => e.ev === 'kb_bible_commit').length, 0);
+        assert.deepEqual(events.filter((e) => /G-p(ull|ush)/.test(e.ev)), []);
+    });
+
+    test('a discard that the maintainer reports not found retires nothing: no bible call', async () => {
+        const events = [];
+        const client = createKbWorkClient({
+            memberCall: async (member, tool, args) => {
+                if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
+                events.push(tool);
+                if (tool === 'kb_invalidate') return { discarded: [], not_found: args.ids, already_discarded: [] };
+                return {};
+            },
+            maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
+            gPull: async () => {},
+            gPush: async () => {},
+            bibleBase: async () => BASE,
+        });
+        await discard(client, ['gone']);
+        await client.commitRound();
+        assert.deepEqual(events, ['kb_invalidate']);
+    });
+
+    test('a busy maintainer in a removal-only round gets no call and a WARN; the removal is attempted in the next round', async () => {
+        const { client, events, logs } = harness({ removed: [{ id: 'old-1', reason: 'invalidated' }] });
+        await discard(client, ['old-1']);
+        const mark = events.length;
+
+        await client.dispatchStarted('maint');
+        const busyOut = await client.commitRound('C1');
+        assert.deepEqual(events.slice(mark), [], 'no G-pull and no kb_bible_commit while the maintainer is mid-dispatch');
+        assert.deepEqual(busyOut, { committed: 0, pending: 0 });
+        assert.ok(logs.some((l) => /^\[kb-work\] WARN: maintainer 'maint' is mid-dispatch -- the pending bible removal\(s\) for .* stay queued/.test(l)), logs.join('\n'));
+        await client.dispatchEnded('maint');
+
+        await client.commitRound('C2');
+        const commits = events.slice(mark).filter((e) => e.ev === 'kb_bible_commit');
+        assert.equal(commits.length, 1, 'the removal is attempted in the next round');
+        assert.deepEqual(commits[0].args.ids, []);
+    });
+
+    test('the other guards apply to the removal-only call: sealed, no git sync wired', async () => {
+        // Sealed: nothing at all.
+        {
+            const { client, events } = harness();
+            await discard(client, ['old-1']);
+            client.seal('final review verdict FAIL');
+            const mark = events.length;
+            await client.commitRound();
+            assert.deepEqual(events.slice(mark), []);
+        }
+        // No git sync wired: a WARN, no call.
+        {
+            const logs = [];
+            const tools = [];
+            const client = createKbWorkClient({
+                memberCall: async (member, tool) => { if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) }; tools.push(tool); return {}; },
+                maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
+                log: (m) => logs.push(m),
+            });
+            await discard(client, ['old-1']);
+            await client.commitRound();
+            assert.ok(!tools.includes('kb_bible_commit'));
+            assert.ok(logs.some((l) => /WARN: no git sync wired for the bible commit -- the pending bible removal\(s\)/.test(l)), logs.join('\n'));
+        }
+    });
+
+    test('a maintainer on another branch gets no removal-only call and a WARN; the removal stays pending', async () => {
+        const logs = [];
+        const tools = [];
+        let branch = 'other';
+        const client = createKbWorkClient({
+            memberCall: async (member, tool) => {
+                if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
+                tools.push(tool);
+                if (tool === 'kb_bible_commit') return { content: [{ text: JSON.stringify({ merged: [], skipped: [], removed: [{ id: 'old-1', reason: 'invalidated' }], committed: true }) }] };
+                return {};
+            },
+            maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
+            gPull: async () => {},
+            gPush: async () => { tools.push('G-push'); },
+            bibleBase: async () => BASE,
+            checkedOutBranch: async () => ({ branch, sprintBranch: 'sprint' }),
+            log: (m) => logs.push(m),
+        });
+        // The discard's own batch pull is branch-guarded too: apply it on the sprint branch.
+        branch = 'sprint';
+        await discard(client, ['old-1']);
+        branch = 'other';
+        await client.commitRound('C1');
+        assert.ok(!tools.includes('kb_bible_commit'));
+        assert.ok(logs.some((l) => /WARN: maintainer 'maint' .* has 'other' checked out, not the sprint branch 'sprint' .* the pending bible removal\(s\) stay queued/.test(l)), logs.join('\n'));
+
+        branch = 'sprint';
+        await client.commitRound('C2');
+        assert.deepEqual(tools.filter((t) => t === 'kb_bible_commit' || t === 'G-push'), ['kb_bible_commit', 'G-push']);
+    });
+});
 
 describe('commitRound: the branch guard on the maintainer checkout', () => {
     test('a maintainer on another branch gets no commit, push or reset; a WARN names it and both branches; every id stays queued', async () => {

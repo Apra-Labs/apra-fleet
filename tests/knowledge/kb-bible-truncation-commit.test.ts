@@ -234,7 +234,7 @@ describe('apra-fleet-ong: global-scope shrink guard', () => {
     const status = git(repoDir, ['status', '--porcelain', '--', GLOBAL_BIBLE_REL]).trim();
     expect(status).toContain(GLOBAL_BIBLE_REL);
     const written = JSON.parse(fs.readFileSync(path.join(repoDir, GLOBAL_BIBLE_REL), 'utf-8'));
-    expect(written.version).toBe(2);
+    expect(written.version).toBe(3);
     expect(written.provenance.entry_count).toBe(2);
     expect(written.entries.map((e: { id: string }) => e.id)).toEqual(['aaa-present-1', 'bbb-present-2']);
   });

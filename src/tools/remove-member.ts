@@ -24,6 +24,7 @@ import { logLine } from '../utils/log-helpers.js';
 import { removeMemberFromOwnInstall, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
 import { invalidatePreflightCache } from '../services/preflight-check.js';
 import { removeComposedMemberConfig } from './compose-permissions.js';
+import { removeLocalSessionMcpConfig } from '../services/session-mcp-config.js';
 
 const vcsProviders: Record<string, VcsProviderService> = {
   github: githubProvider,
@@ -119,7 +120,9 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   if (agent.agentType === 'remote') {
     try {
       const r = await removeMemberFromOwnInstall(agent, getMemberFleetMcpDeps());
-      if (!r.removed && 'reason' in r) {
+      if ('skipped' in r && r.skipped) {
+        warnings.push(`Member-side registration removal skipped (${r.reason}): ${r.detail}`);
+      } else if (!r.removed && 'reason' in r) {
         warnings.push(`Could not remove the member's registration from its own apra-fleet install (${r.reason}): ${r.detail}`);
       }
     } catch (e: unknown) {
@@ -240,6 +243,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   }
 
   const removed = removeFromRegistry(agent.id);
+  removeLocalSessionMcpConfig(agent);
   invalidatePreflightCache(agent.id);
   getStallDetector().remove(agent.id);
   writeStatusline();

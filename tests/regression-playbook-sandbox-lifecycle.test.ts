@@ -472,13 +472,13 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
     // curl against the supervisor port in the three playbooks" -- deploy.md and
     // integ-test-playbook.md must be scanned too, not just this doc.
     //
-    // Falsifiability: reverting apra-fleet-ky2l.22's deploy.md edit (stripping
-    // the ` -H "Authorization: Bearer $(cat "$HOME/.apra-fleet/fleet.key")"`
-    // suffix back off the line-123 force-release curl and the line-166
-    // /api/sprints curl) makes the 'deploy.md' row below fail with an
-    // expect.fail listing both bare curls. Confirmed locally via
-    // `git stash push -- deploy.md` / restore; see this task's closing note
-    // for the observed failing message.
+    // Falsifiability: stripping the ` -H "Authorization: Bearer <token: ...>"`
+    // suffix off deploy.md's force-release curl makes the 'deploy.md' row
+    // below fail with an expect.fail listing the bare curl. (Since the 0.4.4
+    // main sync, deploy.md's shell blocks may not use command substitution --
+    // tests/deploy-md-commands.test.ts -- so the token is a placeholder there,
+    // and the active-sprints gate reads /api/sprints through
+    // scripts/check-foreign-sprints.mjs, which authenticates itself.)
     const AUTH_CURL_DOCS: Array<{ name: string; path: string }> = [
       { name: 'deploy.md', path: DEPLOY_PATH },
       { name: 'integ-test-playbook.md', path: INTEG_PLAYBOOK_PATH },

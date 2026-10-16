@@ -1,10 +1,16 @@
 // =============================================================================
 // ENGINE CI GATE.
 //
-// STATUS: DORMANT. Nothing in the sprint runtime calls this module: CI never
-// blocks or reaches doer/reviewer loops, no sprint arg configures a gate, and
-// no prompt carries a CI result. The module (and its unit tests) are kept as a
-// building block for a future design where CI is owned by a dedicated phase.
+// WHERE IT RUNS. Once per sprint, at Finalization, and only when the optional
+// `ci_gate` sprint arg is set (sprint-args.mjs validateCiGate). runner.js
+// starts the gate (startFinalizationCiGate below) right after
+// group('Finalization') on the sprint branch's remote head and does NOT await
+// it: Final Review, Regression Test and Harvest run while CI runs. Publish PR
+// (phases/publish-pr.mjs) awaits the in-flight result after its own branch
+// push, before raising/updating the PR, and renders it into the PR body
+// (formatCiGateReport below). CI never changes the sprint verdict, never
+// blocks PR creation and never reaches a doer or reviewer prompt. Without
+// `ci_gate` the gate is never constructed: no CI request, no log line.
 //
 // WHAT IT DOES. Triggers (or locates) a workflow run on a branch head with the
 // caller's VCS credential, awaits it with a bounded timeout and records run
@@ -267,7 +273,7 @@ export function createCiGate({ ciGate, branch, log = () => {}, resolveContext, g
         log(CI_GATE_NOT_CONFIGURED_LOG);
         return { configured: false, results, async check() { return null; } };
     }
-    log(`${LOG_PREFIX} configured: workflow '${ciGate.workflow}', timeout ${ciGate.timeoutS}s -- run before each reviewer dispatch on the ${branch} head.`);
+    log(`${LOG_PREFIX} configured: workflow '${ciGate.workflow}', timeout ${ciGate.timeoutS}s -- run once at Finalization on the ${branch} head (parallel with Final Review/Regression/Harvest; Publish PR awaits it).`);
     return {
         configured: true,
         results,
@@ -350,4 +356,150 @@ export function createCiGateContextResolver({ fleetApi, command, backlogMember, 
         };
         return { provider, providerLabel, repo, transport, credential, os, shell };
     };
+}
+
+/** The label the Finalization gate run is recorded under. */
+export const CI_GATE_FINALIZATION_LABEL = 'finalization';
+
+/**
+ * A sleep whose pending waits can all be cancelled at once. A cancelled wait
+ * (and every later one) REJECTS, which runCiGate's own try/catch turns into a
+ * FAILED-TO-RUN record -- so a sprint that ends early never leaves a gate
+ * polling (and a ref'd timer holding the process open) for up to timeout_s.
+ * `injected` is the test seam (a virtual clock); default is a real timer.
+ */
+function createCancellableSleep(injected) {
+    let reason = null;
+    const pending = new Set();
+    const sleep = (ms) => new Promise((resolve, reject) => {
+        if (reason !== null) { reject(new Error(reason)); return; }
+        let timer = null;
+        const entry = {};
+        entry.settle = (err) => {
+            if (!pending.delete(entry)) return;
+            if (timer !== null) clearTimeout(timer);
+            if (err) reject(err); else resolve();
+        };
+        pending.add(entry);
+        if (typeof injected === 'function') {
+            Promise.resolve().then(() => injected(ms)).then(
+                () => entry.settle(null),
+                (e) => entry.settle(e instanceof Error ? e : new Error(String(e))),
+            );
+        } else {
+            timer = setTimeout(() => entry.settle(null), ms);
+        }
+    });
+    const cancel = (why) => {
+        if (reason === null) reason = why || 'cancelled';
+        for (const entry of [...pending]) entry.settle(new Error(reason));
+    };
+    return { sleep, cancel };
+}
+
+function failedToRunRecord({ ciGate, branch, reason, label }) {
+    return {
+        outcome: CI_GATE_OUTCOME.FAILED_TO_RUN, workflow: ciGate ? ciGate.workflow : null, provider: null,
+        repo: null, branch, headSha: null, runId: null, runUrl: null, conclusion: null, jobs: [],
+        reason, label: label || null,
+    };
+}
+
+/**
+ * Start the sprint's ONE CI gate run at Finalization, in the background.
+ *
+ * Returns immediately with a handle whose `promise` NEVER rejects: it is
+ * guarded from the moment it is created, so a gate that throws (or a context
+ * resolver that throws) becomes a loud FAILED-TO-RUN record and can never
+ * surface as an unhandled rejection, even if nothing awaits it (a sprint that
+ * aborts before Publish PR). `cancel(reason)` stops any pending poll wait so
+ * the run settles promptly as FAILED-TO-RUN; it is a no-op once settled.
+ *
+ * Only call this when `ciGate` is configured -- the unconfigured sprint never
+ * constructs a gate (see this file's header).
+ *
+ * @param {{
+ *   ciGate: { workflow: string, timeoutS: number },
+ *   branch: string,
+ *   log?: Function,
+ *   resolveContext: () => Promise<object>,
+ *   gateOptions?: object,                    // test seam: sleep/now/pollIntervalMs
+ *   createGate?: Function,                   // test seam: defaults to createCiGate
+ * }} opts
+ * @returns {{ workflow: string, branch: string, promise: Promise<object>, cancel: (reason?: string) => void, settled: () => boolean }}
+ */
+export function startFinalizationCiGate({ ciGate, branch, log = () => {}, resolveContext, gateOptions = {}, createGate = createCiGate }) {
+    const label = CI_GATE_FINALIZATION_LABEL;
+    const cancellable = createCancellableSleep(gateOptions.sleep);
+    let isSettled = false;
+    const toFailed = (err) => {
+        const reason = `CI gate error: ${err && err.message ? err.message : String(err)}`;
+        log(`${LOG_PREFIX} ERROR: ${CI_GATE_OUTCOME.FAILED_TO_RUN} for workflow '${ciGate.workflow}' on ${branch}: ${reason}`);
+        return failedToRunRecord({ ciGate, branch, reason, label });
+    };
+    let promise;
+    try {
+        const gate = createGate({ ciGate, branch, log, resolveContext, gateOptions: { ...gateOptions, sleep: cancellable.sleep } });
+        log(`${LOG_PREFIX} started at Finalization on the ${branch} head; Final Review, Regression Test and Harvest continue while it runs. Publish PR awaits the result; CI never changes the sprint verdict.`);
+        promise = Promise.resolve()
+            .then(() => gate.check({ label }))
+            .then(
+                (record) => record || toFailed(new Error('the gate returned no result')),
+                toFailed,
+            );
+    } catch (err) {
+        promise = Promise.resolve(toFailed(err));
+    }
+    promise = promise.then((record) => { isSettled = true; return record; });
+    return {
+        workflow: ciGate.workflow,
+        branch,
+        promise,
+        cancel(reason) {
+            if (isSettled) return;
+            cancellable.cancel(reason || 'the sprint ended before the CI gate finished');
+        },
+        settled: () => isSettled,
+    };
+}
+
+/**
+ * Turn the awaited gate record into the PR-body lines and the loud log lines
+ * Publish PR emits. Pure. `branchHeadSha` is the head Publish PR just pushed
+ * (null when it could not be read); when it differs from the sha CI ran on,
+ * both say so explicitly -- the later commits were not covered by CI.
+ *
+ * @param {object|null} record the gate record (see runCiGate)
+ * @param {{ branchHeadSha?: string|null }} [opts]
+ * @returns {{ pass: boolean, lines: string[], logLines: string[], shaMismatch: string|null }}
+ */
+export function formatCiGateReport(record, { branchHeadSha = null } = {}) {
+    const r = record || failedToRunRecord({ ciGate: null, branch: null, reason: 'no CI gate result was recorded.' });
+    const outcome = r.outcome || CI_GATE_OUTCOME.FAILED_TO_RUN;
+    const pass = outcome === CI_GATE_OUTCOME.PASS;
+    const workflow = r.workflow || '(unknown workflow)';
+    const ranOn = r.headSha || null;
+    const head = branchHeadSha ? String(branchHeadSha).trim() : null;
+    let shaMismatch = null;
+    if (ranOn && head && ranOn.toLowerCase() !== head.toLowerCase()) {
+        shaMismatch = `CI ran on ${ranOn}; branch head is now ${head} (commits after CI started: not covered).`;
+    }
+    const lines = [
+        pass
+            ? `CI gate: PASS -- workflow '${workflow}'.`
+            : `CI gate: ${outcome} -- workflow '${workflow}' did NOT pass; CI has not verified this branch. (CI never changes the sprint verdict; review the run before merging.)`,
+        `CI run: ${r.runUrl || (r.runId ? `run ${r.runId} (no url)` : '(no run -- the gate did not reach a workflow run)')}`,
+        `CI ran on commit: ${ranOn || '(unknown -- the branch head could not be read)'}`,
+        `CI jobs: ${formatJobs(r.jobs)}`,
+    ];
+    if (!pass && r.reason) lines.push(`CI reason: ${r.reason}`);
+    if (shaMismatch) lines.push(shaMismatch);
+    const logLines = [];
+    if (pass) {
+        logLines.push(`${LOG_PREFIX} Finalization result: PASS for workflow '${workflow}' (${r.runUrl || 'no url'}) on ${ranOn}; jobs: ${formatJobs(r.jobs)}.`);
+    } else {
+        logLines.push(`${LOG_PREFIX} ERROR: Finalization result: ${outcome} for workflow '${workflow}'${ranOn ? ` on ${ranOn}` : ''}${r.runUrl ? ` (${r.runUrl})` : ''} -- CI did NOT pass. The PR is still raised and the sprint verdict is unchanged; the PR body states this result. Reason: ${r.reason || '(none recorded)'}`);
+    }
+    if (shaMismatch) logLines.push(`${LOG_PREFIX} WARNING: ${shaMismatch}`);
+    return { pass, lines, logLines, shaMismatch };
 }

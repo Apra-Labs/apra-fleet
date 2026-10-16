@@ -55,7 +55,7 @@ function defaultExec(
   options: { shell?: boolean; timeout?: number } = {},
 ): string {
   return String(
-    execFileSync(file, args, { encoding: 'utf-8', stdio: 'pipe', ...options }),
+    execFileSync(file, args, { encoding: 'utf-8', stdio: 'pipe', windowsHide: true, ...options }),
   );
 }
 

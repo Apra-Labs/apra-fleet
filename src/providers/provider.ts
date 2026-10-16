@@ -187,6 +187,10 @@ export interface PromptOptions {
   /** Provider project the run is bound to (AGY: `--project <id>`, from
    *  Agent.agyProjectId). Ignored by providers without {@link ProviderAdapter.projectFlag}. */
   projectId?: string;
+  /** Absolute member-side path of a per-session MCP config file (Claude:
+   *  `--mcp-config <file>`), already written by the caller. Ignored by
+   *  providers without {@link ProviderAdapter.mcpConfigFlag}. */
+  mcpConfigPath?: string;
 }
 
 /**
@@ -240,11 +244,34 @@ export function guessedUsageLimitSignal(message: string, now: number = Date.now(
  * (529 / "overloaded") deliberately does NOT match here -- that stays a
  * retryable overload, not a usage limit.
  */
-const USAGE_LIMIT_QUOTA_RE = /\b429\b|rate limit|quota exceeded|usage limit|credit limit|resource_exhausted/i;
+const USAGE_LIMIT_QUOTA_RE = /\b429\b|rate limit|quota (?:exceeded|reached)|usage limit|credit limit|resource(?:_|\s+(?:has\s+been\s+)?)exhausted/i;
 
 export function defaultUsageLimitSignal(output: string, now: number = Date.now()): UsageLimitSignal | null {
   if (!output || !USAGE_LIMIT_QUOTA_RE.test(output)) return null;
   return guessedUsageLimitSignal(output, now);
+}
+
+/**
+ * Token counts one dispatch reported. input_tokens/output_tokens are required;
+ * the cache fields are provider-optional -- an adapter whose CLI reports
+ * prompt-cache traffic (Claude: cache_read_input_tokens /
+ * cache_creation_input_tokens on the result event's usage) fills them, every
+ * other adapter leaves them absent and consumers treat absent as 0. They are
+ * billed input tokens that are NOT included in input_tokens, so a cost figure
+ * that ignores them undercounts a cache-heavy dispatch several-fold.
+ */
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  /** Prompt tokens served from the provider's prompt cache. */
+  cache_read_input_tokens?: number;
+  /** Prompt tokens written into the provider's prompt cache. */
+  cache_creation_input_tokens?: number;
+  /** USD this dispatch cost, as the provider CLI itself reported it (Claude:
+   *  the delta of the result's cumulative total_cost_usd, see
+   *  services/session-cost.ts). Absent when the provider reports no cost;
+   *  cost consumers then price the token counts from the rate table. */
+  cost_usd?: number;
 }
 
 export interface ParsedResponse {
@@ -252,7 +279,11 @@ export interface ParsedResponse {
   sessionId?: string;
   isError: boolean;
   raw: string;
-  usage?: { input_tokens: number; output_tokens: number };
+  usage?: TokenUsage;
+  /** The CLI's CUMULATIVE session cost in USD (Claude: total_cost_usd), when
+   *  reported. Not per dispatch: execute_prompt turns it into the dispatch's
+   *  usage.cost_usd. */
+  sessionCostUsd?: number;
   /** e.g. 'error_max_turns' -- the CLI result event's own subtype, when present. */
   subtype?: string;
   /** e.g. 'max_turns' -- the CLI result event's own terminal_reason, when present. */
@@ -274,6 +305,9 @@ export interface PermissionDenialItem {
   action: string;
   /** The concrete target, when the CLI named it, e.g. 'git status --short --branch'. */
   target?: string;
+  /** compose_permissions grants that would allow this one call, primary
+   *  first (empty when no grant maps to it). */
+  suggestedGrants?: string[];
 }
 
 /** Structured permission denial surfaced by execute_prompt as
@@ -283,19 +317,156 @@ export interface PermissionDenial {
   actions: string[];
   denials: PermissionDenialItem[];
   /** compose_permissions `grant` values that would allow the denied calls
-   *  (empty when there is no canonical mapping for an action). The primary
-   *  suggestion comes first; a narrower alternative may follow it. */
+   *  (empty when there is no canonical mapping for an action, and always
+   *  empty when healable is false). The primary suggestion comes first; a
+   *  narrower alternative may follow it. */
   suggestedGrants: string[];
   /** One-line remediation for a human or an orchestrator. */
   hint: string;
   /** Which of the CLI's signals reported the denial. */
   signals: Array<'result_json' | 'stderr' | 'transcript'>;
+  /** The permission mode the session ran in, when the provider knows it
+   *  (Claude: 'auto' | 'acceptEdits' | 'bypassPermissions'). */
+  permissionMode?: string;
+  /** false when no grant may ever be added for these denials: in Claude auto
+   *  mode a refusal comes from the safety classifier or a deny rule, not from
+   *  a missing allow rule; in any mode, a refusal of a fleet tool outside the
+   *  member allowlist is the member tool policy (cause 'policy_deny'). Absent
+   *  = a grant may heal it. */
+  healable?: boolean;
+  /** 'policy_deny': at least one refused call was a fleet tool outside the
+   *  member allowlist, denied by the deny rules compose writes on purpose.
+   *  Always comes with healable: false. */
+  cause?: 'policy_deny';
+}
+
+const SHELL_SEQUENCE_RE = /[;`]|&&/;
+const SHELL_CHAIN_RE = /[|;`]|&&|\$\(/;
+const PLAIN_COMMAND_WORD_RE = /^[a-zA-Z0-9_\-./+]+$/;
+
+/**
+ * Splits a command line into its pipeline stages (on pipe `|`), respecting
+ * single and double quotes, and ignoring logical OR `||`.
+ */
+export function splitPipelineStages(line: string): string[] {
+  const stages: string[] = [];
+  let current = '';
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let escape = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (escape) {
+      current += char;
+      escape = false;
+      continue;
+    }
+    if (char === '\\' && !inSingleQuote) {
+      escape = true;
+      current += char;
+      continue;
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+      current += char;
+      continue;
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      current += char;
+      continue;
+    }
+    if (!inSingleQuote && !inDoubleQuote) {
+      if (char === '|' && line[i + 1] !== '|' && line[i - 1] !== '|') {
+        if (current.trim()) stages.push(current.trim());
+        current = '';
+        continue;
+      }
+    }
+    current += char;
+  }
+  if (current.trim()) {
+    stages.push(current.trim());
+  }
+  return stages;
+}
+
+/** Extracts the base executable command from a single command or pipeline stage. */
+export function extractCommandFromStage(stage: string): string | undefined {
+  const trimmed = stage.trim().replace(/^['"]+|['"]+$/g, '');
+  if (!trimmed) return undefined;
+  const tokens = trimmed.split(/\s+/);
+  for (const token of tokens) {
+    const cleanToken = token.replace(/^['"]+|['"]+$/g, '');
+    if (/^[a-zA-Z_][a-zA-Z0-9_]*=/.test(cleanToken)) {
+      continue;
+    }
+    if (PLAIN_COMMAND_WORD_RE.test(cleanToken)) {
+      return cleanToken;
+    }
+    break;
+  }
+  return undefined;
+}
+
+export function suggestedGrantsForDenial(item: PermissionDenialItem): string[] {
+  const t = item.target?.trim();
+  if (item.action === 'command' || item.action === 'unsandboxed' || item.action === 'Bash') {
+    if (!t || SHELL_SEQUENCE_RE.test(t)) return [];
+    const stages = splitPipelineStages(t);
+    const out: string[] = [];
+    for (const stage of stages) {
+      const cmd = extractCommandFromStage(stage);
+      if (cmd && PLAIN_COMMAND_WORD_RE.test(cmd)) {
+        const grant = `Bash(${cmd}:*)`;
+        if (!out.includes(grant)) out.push(grant);
+      }
+    }
+    if (out.length === 0) return [];
+    if (!t.includes('|') && !SHELL_CHAIN_RE.test(t) && t !== stages[0]?.split(/\s+/)[0]) {
+      out.push(`Bash(${t})`);
+    }
+    return out;
+  }
+  const one = suggestedGrantForDenial(item);
+  return one ? [one] : [];
+}
+
+export function suggestedGrantForDenial(item: PermissionDenialItem): string | undefined {
+  const t = item.target?.trim();
+  switch (item.action) {
+    case 'command':
+    case 'unsandboxed':
+    case 'Bash':
+      return t && !SHELL_CHAIN_RE.test(t) ? `Bash(${t})` : undefined;
+    case 'read_file':
+    case 'Read':
+      return t ? `Read(${t})` : 'Read';
+    case 'write_file':
+    case 'Write':
+      return t ? `Write(${t})` : 'Write';
+    case 'mcp': {
+      const m = t ? /^([^/\s]+)\/([^/\s]+)$/.exec(t) : null;
+      return m ? `mcp__${m[1]}__${m[2]}` : undefined;
+    }
+    case 'read_url':
+    case 'WebSearch':
+      return 'WebSearch';
+    default:
+      if (item.action.startsWith('mcp__')) return item.action;
+      return undefined;
+  }
 }
 
 /** Context parseResponse may use; providers that do not need it ignore it. */
 export interface ParseResponseContext {
   /** The member's OS (e.g. agy's permission-denial hint differs on Windows). */
   agentOs?: 'linux' | 'macos' | 'windows';
+  /** The member's unattended setting and the model the dispatch ran with, so
+   *  a provider can tell which permission mode the session ran in. */
+  unattended?: false | 'auto' | 'dangerous';
+  model?: string;
 }
 
 /** Extra inputs to composePermissionConfig; providers that do not need them
@@ -328,9 +499,20 @@ export interface MemberMcpSyncContext {
   shell?: MemberShell;
   /** Out-of-band file channel for large home-anchored files (see WorkspaceTrustTransport). */
   transport?: WorkspaceTrustTransport;
+  /** Owner-only secret-file channel, tried when the file channel is unavailable
+   *  (see MemberSecretFileChannel). With neither, the write fails loudly. */
+  secretChannel?: MemberSecretFileChannel;
   /** The per-folder apra-fleet entry URL (.../mcp?member=<uuid>) to write, or null to REMOVE
    *  the entry this provider wrote for the member's folder (provider switch cleanup). */
   url: string | null;
+  /** HTTP headers the entry carries with `url` -- the member install's access
+   *  secret (member-access-secret.ts), without which its server refuses the
+   *  `?member=` session. A config carrying it is written only through a file
+   *  channel, never a command string. Absent when no secret is known. */
+  headers?: Record<string, string>;
+  /** With url null: remove the folder's apra-fleet entry only when it points at
+   *  THIS member (?member=<uuid>), leaving any other apra-fleet entry alone. */
+  removeOnlyOwnEntry?: boolean;
 }
 
 export interface MemberMcpSyncResult {
@@ -353,6 +535,15 @@ export type WorkspaceTrustExecFn =(command: string, timeoutMs?: number) => Promi
  *  failure so the adapter can fall back. */
 export type WorkspaceTrustWriteHomeFileFn = (relPath: string, content: string) => Promise<void>;
 export type WorkspaceTrustReadHomeFileFn = (relPath: string) => Promise<{ found: boolean; content?: string } | undefined>;
+
+/** Owner-only secret-file channel (writeMemberSecretFile): stages `content` in a
+ *  fresh owner-only file on the member WITHOUT a command line and returns its
+ *  absolute member-side path. Used when the home-anchored file channel is
+ *  unavailable; `remove` is best-effort cleanup of a staged file. */
+export interface MemberSecretFileChannel {
+  write(content: string): Promise<string>;
+  remove(filePath: string): Promise<void>;
+}
 
 export interface WorkspaceTrustTransport {
   writeHomeFile?: WorkspaceTrustWriteHomeFileFn;
@@ -392,6 +583,18 @@ export interface ProviderAdapter {
 
   // Prompt building
   buildPromptCommand(opts: PromptOptions): string;
+  /** The per-session MCP config flag for a resolved absolute member-side path,
+   *  quoted by the provider for the member's shell (`posix` false = PowerShell).
+   *  Callers append it after every positional argument: Claude's --mcp-config
+   *  is variadic and would swallow a following positional prompt. Optional:
+   *  providers without one never get a session config. */
+  mcpConfigFlag?(absPath: string, posix: boolean): string;
+  /** Minimum CLI version whose per-session MCP config accepts an always-load
+   *  option that keeps the server's tools out of tool-search deferral (Claude:
+   *  the `alwaysLoad` server key). The dispatcher probes the member's CLI
+   *  version and writes the option only at or above this, logging a WARN
+   *  otherwise. Optional: providers without one never get the option. */
+  mcpAlwaysLoadMinVersion?(): string;
 
   // Permission bypass flag
   skipPermissionsFlag(): string;
@@ -413,8 +616,10 @@ export interface ProviderAdapter {
    *  applies. This is the single source of truth for unattended-mode flag
    *  resolution: both buildPromptCommand() (POSIX, via os/linux.ts) and
    *  os/windows.ts call this instead of re-deriving the branching
-   *  themselves, so the two dispatch paths cannot diverge. */
-  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string;
+   *  themselves, so the two dispatch paths cannot diverge. `model` is the
+   *  model the dispatch runs (Claude falls back from auto to acceptEdits on a
+   *  model without auto-mode support). */
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined, model?: string): string;
 
   // Response parsing
   parseResponse(result: SSHExecResult, ctx?: ParseResponseContext): ParsedResponse;
@@ -618,7 +823,7 @@ export interface ProviderAdapter {
    *  `memberHomeDir` is the member home resolved in JavaScript (getMemberHomeDir); every
    *  member-side path is built from it, never from a shell home variable, and an adapter
    *  that needs it refuses (seeded: false, E-MEMBER-HOME-UNRESOLVED) when it is absent. */
-  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null): Promise<EnsureWorkspaceTrustedResult>;
+  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null, secretChannel?: MemberSecretFileChannel): Promise<EnsureWorkspaceTrustedResult>;
 }
 
 

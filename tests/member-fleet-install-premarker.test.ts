@@ -25,9 +25,8 @@ import type { Agent, FleetMcpStatus, SSHExecResult } from '../src/types.js';
 import {
   refreshMemberFleetMcp,
   ensureMemberFleetInstall,
-  memberHasInstallMarker,
+  probeMemberInstallMarker,
   memberInstallArgs,
-  MEMBER_TAKEOVER_COMMAND,
   NO_INSTALL_SENTINEL,
   type MemberFleetMcpDeps,
 } from '../src/services/member-fleet-install.js';
@@ -90,6 +89,8 @@ function deps(
         m.installed = orch;
         return ok('installed');
       }
+      // The member access secret read: an install without one (older than the secret).
+      if (c.includes('member-access.key')) return ok('');
       if (isMarkerCheck(c)) return m.marker ? ok('') : { stdout: '', stderr: '', code: 1 };
       if (c.includes('registry.json')) {
         return ok(JSON.stringify({ version: '1', agents: m.poisonedRegistry ? [{ id: agent.id, friendlyName: 'bella', agentType: 'local' }] : [] }));
@@ -148,7 +149,7 @@ function expectHumanInstallUntouched(m: Member, s: FleetMcpStatus): void {
   expect(m.marker).toBe(false);
   expect(registerRuns(m)).toHaveLength(0);
   expect(s).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
-  expect(s.detail).toContain(MEMBER_TAKEOVER_COMMAND);
+  expect(s.detail).toContain('uninstall --force --yes');
   expect(m.recorded.at(-1)).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
 }
 
@@ -163,7 +164,7 @@ describe('a human full install (no member-install marker) is never stopped', () 
         const m = newMember({ installed: memberVersion });
         const s = await refreshMemberFleetMcp(member(stamped ? STAMPED_STATUS : undefined), deps(m, { orch }), { install: true });
         expect(installRuns(m)).toHaveLength(0);
-        expect(m.transfers).toBe(0);
+        expect(m.transfers).toBe(1); // the current installer is staged for the owner's replacement steps, never run
         expect(m.installed).toBe(memberVersion);
         expectHumanInstallUntouched(m, s);
       });
@@ -172,13 +173,13 @@ describe('a human full install (no member-install marker) is never stopped', () 
         const m = newMember({ installed: memberVersion, unmarkedServerRunning: false });
         const s = await refreshMemberFleetMcp(member(stamped ? STAMPED_STATUS : undefined), deps(m, { orch }), { install: true });
         expect(installRuns(m)).toHaveLength(0);
-        expect(m.transfers).toBe(0);
+        expect(m.transfers).toBe(1); // the current installer is staged for the owner's replacement steps, never run
         expect(m.installed).toBe(memberVersion);
         expect(m.marker).toBe(false);
         expect(overrides(m)).toHaveLength(0);
         expect(registerRuns(m)).toHaveLength(0);
         expect(s).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
-        expect(s.detail).toContain(MEMBER_TAKEOVER_COMMAND);
+        expect(s.detail).toContain('uninstall --force --yes');
       });
     }
   }
@@ -257,7 +258,7 @@ describe('self-registration happens only into a marked member install', () => {
     const m = newMember({ installed: 'v0.4.4_aaaaaa' });
     await refreshMemberFleetMcp(member(), deps(m, { orch: 'v0.4.4_bbbbbb' }), { install: true });
     expect(registerRuns(m)).toHaveLength(0);
-    // owner ran MEMBER_TAKEOVER_COMMAND on the member
+    // owner ran the replacement steps on the member
     m.marker = true;
     m.unmarkedServerRunning = false;
     const s = await refreshMemberFleetMcp(member(m.recorded.at(-1)), deps(m, { orch: 'v0.4.4_bbbbbb' }), { install: true });
@@ -276,10 +277,12 @@ describe('self-registration happens only into a marked member install', () => {
     expectNoPosixExpansion(m.log);
   });
 
-  it('memberHasInstallMarker: a non-zero check reads as absent; a transport error is a probe failure, not a full install', async () => {
-    expect(await memberHasInstallMarker(member(), HOME, { exec: async () => ({ stdout: '', stderr: '', code: 0 }) })).toBe(true);
-    expect(await memberHasInstallMarker(member(), HOME, { exec: async () => ({ stdout: '', stderr: 'denied', code: 1 }) })).toBe(false);
-    await expect(memberHasInstallMarker(member(), HOME, { exec: async () => { throw new Error('transport down'); } })).rejects.toThrow('transport down');
+  it('probeMemberInstallMarker: exit 0 present, exit 1 absent, anything else a probe failure (never a full install)', async () => {
+    const probe = (r: SSHExecResult | Error) => probeMemberInstallMarker(member(), HOME, { exec: async () => { if (r instanceof Error) throw r; return r; } });
+    expect(await probe({ stdout: '', stderr: '', code: 0 })).toEqual({ kind: 'present' });
+    expect(await probe({ stdout: '', stderr: '', code: 1 })).toEqual({ kind: 'absent' });
+    expect(await probe({ stdout: '', stderr: 'denied', code: 255 })).toMatchObject({ kind: 'probe-failed', detail: expect.stringContaining('255') });
+    expect(await probe(new Error('transport down'))).toMatchObject({ kind: 'probe-failed', detail: expect.stringContaining('transport down') });
     const m = newMember({ installed: ORCH, marker: true });
     const d = deps(m);
     const exec = d.exec;

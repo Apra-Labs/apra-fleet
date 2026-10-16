@@ -145,7 +145,7 @@ describe('apra-fleet-i9ag.19.7: execBdSync() unconfigured (AC2 -- byte-for-byte 
         assert.deepEqual(calls[0], {
             cmd: process.execPath,
             args: ['C:\\fake\\npm\\node_modules\\@beads\\bd\\bin\\bd.js', 'list', '--json'],
-            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', encoding: 'utf-8', shell: false },
+            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, cwd: '/repo', encoding: 'utf-8', shell: false },
         });
     });
 
@@ -161,7 +161,7 @@ describe('apra-fleet-i9ag.19.7: execBdSync() unconfigured (AC2 -- byte-for-byte 
         assert.deepEqual(calls[0], {
             cmd: 'bd',
             args: ['dolt', 'remote', 'list', '--json'],
-            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', encoding: 'utf-8', shell: process.platform === 'win32' },
+            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, cwd: '/repo', encoding: 'utf-8', shell: process.platform === 'win32' },
         });
     });
 
@@ -197,7 +197,7 @@ describe('apra-fleet-i9ag.19.7: execBdSync() configured (AC1, AC3, AC4)', () => 
         assert.deepEqual(calls[0], {
             cmd: '/opt/apra-fleet/bin/bd',
             args: ['list', '--json'],
-            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', shell: process.platform === 'win32' },
+            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, cwd: '/repo', shell: process.platform === 'win32' },
         });
     });
 
@@ -217,7 +217,7 @@ describe('apra-fleet-i9ag.19.7: execBdSync() configured (AC1, AC3, AC4)', () => 
             assert.deepEqual(calls[0], {
                 cmd: '/opt/apra-fleet/bin/bd',
                 args: ['list', '--json'],
-                opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', shell: process.platform === 'win32' },
+                opts: { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, cwd: '/repo', shell: process.platform === 'win32' },
             });
         } finally {
             process.env.PATH = originalPath;
@@ -242,7 +242,7 @@ describe('apra-fleet-i9ag.19.7: execBdSync() configured (AC1, AC3, AC4)', () => 
         assert.deepEqual(calls[0], {
             cmd: 'C:\\recorded\\node.exe',
             args: ['C:\\Users\\Jane Doe\\AppData\\Roaming\\npm\\node_modules\\@beads\\bd\\bin\\bd.js', 'list', '--json'],
-            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, shell: false },
+            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, shell: false },
         });
     });
 
@@ -321,7 +321,7 @@ describe('apra-fleet-i9ag.19.26: execBdSync() configured non-shim fallback quote
         assert.deepEqual(calls[0], {
             cmd: '"C:\\Users\\Jane Doe\\AppData\\Roaming\\npm\\bd.exe"',
             args: ['--version'],
-            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, shell: true },
+            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, shell: true },
         }, 'the quoted file must be handed to a { shell: true } invocation, matching execBdAsync\'s already-fixed shape');
     });
 
@@ -350,7 +350,7 @@ describe('apra-fleet-i9ag.19.26: execBdSync() configured non-shim fallback quote
         assert.deepEqual(calls[0], {
             cmd: '/Users/Jane Doe/.npm-global/bin/bd',
             args: ['--version'],
-            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, shell: false },
+            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, shell: false },
         });
     });
 
@@ -392,7 +392,7 @@ describe('apra-fleet-i9ag.19.7 (D1 fix): POSIX PATH composition for a configured
                 cmd: '/opt/apra-fleet/bin/bd',
                 args: ['list', '--json'],
                 opts: {
-                    maxBuffer: BD_MAX_BUFFER_BYTES,
+                    maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true,
                     cwd: '/repo',
                     shell: false,
                     env: { ...process.env, PATH: '/opt/apra-fleet/node/bin:/usr/bin:/bin' },
@@ -414,7 +414,7 @@ describe('apra-fleet-i9ag.19.7 (D1 fix): POSIX PATH composition for a configured
         assert.deepEqual(calls[0], {
             cmd: '/opt/apra-fleet/bin/bd',
             args: ['list', '--json'],
-            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', shell: process.platform === 'win32' },
+            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, cwd: '/repo', shell: process.platform === 'win32' },
         });
         assert.ok(!('env' in calls[0].opts), 'no env key must be added when nodePath is not configured');
     });
@@ -432,7 +432,7 @@ describe('apra-fleet-i9ag.19.7 (D1 fix): POSIX PATH composition for a configured
             cmd: '/opt/apra-fleet/bin/bd',
             args: ['list', '--json'],
             opts: {
-                maxBuffer: BD_MAX_BUFFER_BYTES,
+                maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true,
                 cwd: '/repo',
                 shell: true,
                 env: { PATH: '/opt/apra-fleet/node/bin:/usr/bin:/bin' },
@@ -588,7 +588,7 @@ describe('apra-fleet-i9ag.19.7: execBdAsync() unconfigured (AC2 -- byte-for-byte
         assert.deepEqual(calls[0], {
             cmd: 'bd',
             args: ['list', '--json', '--limit', '0'],
-            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', encoding: 'utf-8', shell: true },
+            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, cwd: '/repo', encoding: 'utf-8', shell: true },
         });
     });
 
@@ -626,7 +626,7 @@ describe('apra-fleet-i9ag.19.7: execBdAsync() configured (AC1, AC4)', () => {
         assert.deepEqual(calls[0], {
             cmd: '/opt/apra-fleet/bin/bd',
             args: ['list', '--json'],
-            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', shell: true },
+            opts: { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, cwd: '/repo', shell: true },
         });
     });
 
@@ -646,7 +646,7 @@ describe('apra-fleet-i9ag.19.7: execBdAsync() configured (AC1, AC4)', () => {
             assert.deepEqual(calls[0], {
                 cmd: '/opt/apra-fleet/bin/bd',
                 args: ['list', '--json'],
-                opts: { maxBuffer: BD_MAX_BUFFER_BYTES, cwd: '/repo', shell: true },
+                opts: { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, cwd: '/repo', shell: true },
             });
         } finally {
             process.env.PATH = originalPath;

@@ -8,6 +8,7 @@ import { detectFleetSePrereqs, summarizeFleetSePrereqs } from './fleet-se-prereq
 import type { FleetSePrereqResult } from './fleet-se-prereqs.js';
 import { readStoppedMarker, describeStoppedMarker } from '../services/stopped-marker.js';
 import { serverVersion } from '../version.js';
+import { showPendingServiceNotice } from '../services/service-notice.js';
 
 /**
  * Injection seam for the fleet-se prerequisite probe (apra-fleet-i9ag.13.8).
@@ -111,6 +112,8 @@ export async function runStatus(
   _args: string[],
   deps: Partial<RunStatusDeps> = {},
 ): Promise<void> {
+  // Guidance a detached install (apra-fleet update) could not show.
+  showPendingServiceNotice();
   const instance = await checkRunningInstance();
   // GitHub #585: a stale server.json means the previous server died uncleanly.
   const previousNote = instance.state === 'gone' ? describePreviousServer(instance.previous) : null;
@@ -144,7 +147,8 @@ export async function runStatus(
   const supervisorStatus: ServiceStatus = await supervisorMgr.query()
     .catch(() => ({ installed: false, running: false }));
 
-  const serviceLabel = `${formatServiceLabel(svcStatus)}${runStateFor(svcStatus)}`;
+  const serviceLabel = `${formatServiceLabel(svcStatus)}${runStateFor(svcStatus)}`
+    + (svcStatus.notice ? '\n' + svcStatus.notice.split('\n').map(l => `            ${l}`).join('\n') : '');
   const supervisorLabel = `${formatServiceLabel(supervisorStatus)}${runStateFor(supervisorStatus)}`;
 
   if (instance.state === 'unresponsive') {

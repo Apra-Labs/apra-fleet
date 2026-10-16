@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- global dolt push mutex (apra-fleet-eft.9.2,
+// fleet-sprint supervisor -- global dolt push mutex (apra-fleet-eft.9.2,
 // Plan Part 3.4)
 // =============================================================================
 //

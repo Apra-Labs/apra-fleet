@@ -1,13 +1,15 @@
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { RegisterOptions, RegisterResult, ServiceDescriptor, ServiceId, ServiceManager, ServiceStatus } from './types.js';
 import { DEFAULT_SERVICE_ID, WINDOWS_TASK_NAME, SERVICE_ENV_MARKER, getServiceDescriptor } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 import { clearServiceStartFailures } from '../service-start-guard.js';
 import { readStoppedMarker } from '../stopped-marker.js';
+import { SERVICE_NOTICE_PATH, writeServiceNotice, clearServiceNotice } from '../service-notice.js';
 import { BIN_DIR } from '../../cli/config.js';
+import { selfInvocationLines } from '../../cli/install-guard.js';
+import { currentWindowsUser } from '../../utils/owner-only-fs.js';
 
 /** HKCU Run key used ONLY as the last-resort fallback (logon autostart, no restart). */
 export const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
@@ -33,7 +35,7 @@ export interface WindowsServiceOptions {
   env?: Record<string, string | undefined>;
   /** Clock for the time trigger's StartBoundary. */
   now?: () => Date;
-  /** Resolves DOMAIN\user when USERDOMAIN/USERNAME are missing (default: whoami). */
+  /** Resolves DOMAIN\user from the process token (default: whoami). */
   whoami?: () => string;
   /** Launch a command detached and hidden (default: child_process.spawn + unref). */
   spawnDetached?: (cmd: string, args: string[], verbatim?: boolean) => void;
@@ -49,6 +51,10 @@ export interface WindowsServiceOptions {
    * authority for task state, so the default probe is off.
    */
   probeTaskState?: (taskName: string) => string | null;
+  /** Whether install output reaches a console (default: stdout is a TTY; apra-fleet update runs install detached). */
+  interactive?: () => boolean;
+  /** Pending-notice file for guidance a detached install could not show (default: SERVICE_NOTICE_PATH). */
+  noticePath?: string;
 }
 
 // GitHub #585: every schtasks/taskkill/reg call pipes ALL stdio (stderr too)
@@ -63,6 +69,26 @@ function quietExec(cmd: string, args: string[]): Buffer {
 
 const defaultSchtasksRunner: SchtasksRunner = (args) => quietExec('schtasks', args);
 const defaultRegRunner: RegRunner = (args) => quietExec('reg', args);
+
+/**
+ * The schtasks error text of a failed run, without execFileSync's
+ * "Command failed: <command line>" prefix, on one line.
+ */
+export function schtasksErrorReason(msg: string): string {
+  const lines = msg.split(/\r?\n/).map(l => l.trim()).filter(l => l && !/^Command failed:/i.test(l));
+  return lines.join(' ') || msg.trim() || '(no error text)';
+}
+
+/** Append a timestamped install message to the service log (best-effort). */
+function appendServiceLog(logPath: string, text: string): void {
+  try {
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] apra-fleet install: ${text.replace(/\n/g, '\r\n')}\r\n`);
+  } catch { /* best-effort */ }
+}
+
+function indent(text: string, by = '    '): string {
+  return text.split('\n').map(l => by + l).join('\n');
+}
 
 function defaultSpawnDetached(cmd: string, args: string[], verbatim = false): void {
   const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: verbatim });
@@ -114,27 +140,16 @@ function xmlUnescape(s: string): string {
 }
 
 /**
- * DOMAIN\user of the current account, resolved in JS (never by shell
- * expansion). A standard user may only register a logon trigger scoped to
- * THEIR OWN account -- an unscoped LogonTrigger means "any user" and needs
- * elevation (verified in a Windows Sandbox spike, Win10 19041).
+ * DOMAIN\user of the current account, read from the process token (whoami),
+ * never from env USERDOMAIN (WORKGROUP under Win32-OpenSSH on a workgroup
+ * machine) and never by shell expansion. A standard user may only register a
+ * logon trigger scoped to THEIR OWN account -- an unscoped LogonTrigger means
+ * "any user" and needs elevation (verified in a Windows Sandbox spike, Win10 19041).
  */
 export function resolveTaskUserId(
-  env: Record<string, string | undefined> = process.env,
   whoami: () => string = () => decodeSchtasks(quietExec('whoami', [])),
 ): string {
-  const user = env.USERNAME?.trim();
-  const domain = env.USERDOMAIN?.trim();
-  if (user && domain) return `${domain}\\${user}`;
-  try {
-    const out = whoami().trim();
-    if (/^[^\\\s]+\\[^\\]+$/.test(out)) return out;
-  } catch { /* fall through */ }
-  let name = user;
-  if (!name) { try { name = os.userInfo().username; } catch { /* below */ } }
-  let dom = domain;
-  if (!dom) { try { dom = os.hostname(); } catch { /* below */ } }
-  return `${dom || '.'}\\${name || 'unknown'}`;
+  return currentWindowsUser(whoami);
 }
 
 /** Local wall-clock time as Task Scheduler's StartBoundary (no zone = local). */
@@ -250,6 +265,129 @@ export function launcherArguments(launcherPath: string): string {
 export function taskXmlArguments(raw: Buffer | string): string | null {
   const m = /<Arguments>([\s\S]*?)<\/Arguments>/i.exec(decodeSchtasks(raw));
   return m ? xmlUnescape(m[1].trim()) : null;
+}
+
+/** Whether a task action is wscript.exe running `launcherPath` (our hidden launcher). */
+function runsOurLauncher(command: string | null, args: string | null, launcherPath: string): boolean {
+  return command !== null && /wscript\.exe"?$/i.test(command.trim()) && args !== null
+    && normalizeTaskPath(args).includes(normalizeTaskPath(launcherPath));
+}
+
+/**
+ * What a legacy ApraFleet task (registered by apra-fleet 0.4.3 or earlier
+ * with `schtasks /sc onlogon`) lacks compared with the current definition:
+ *  - 'no-revive': no trigger with a repeating <Repetition><Interval> (nothing
+ *    revives a killed or crashed server);
+ *  - 'visible-console': the action is not wscript.exe + our hidden launcher
+ *    (the .bat runs in a visible console). Only reported when the launcher is
+ *    expected -- with Windows Script Host disabled the current task runs the
+ *    .bat directly too;
+ *  - 'split-path': the wrapper path was split at a space into <Command> +
+ *    <Arguments> (0.4.3 passed it to /tr unquoted, e.g. a "C:\Users\John
+ *    Smith" profile), so the task runs "C:\Users\John" and never starts the
+ *    server. Needs opts.wrapperPath;
+ *  - 'elevated': a LogonTrigger without <UserId> ("any user" logon), which only
+ *    an elevated shell can register -- so a normal shell can neither replace
+ *    nor disable it.
+ * Empty for the current definition, and for XML without a <Triggers> section
+ * (unreadable: never classed legacy). XML tag names are not localized.
+ */
+export type LegacyTaskProblem = 'no-revive' | 'visible-console' | 'split-path' | 'elevated';
+
+/** Whether the action is `wrapperPath` split at a space into Command + Arguments. */
+export function runsSplitWrapper(command: string | null, args: string | null, wrapperPath: string): boolean {
+  if (command === null || args === null || !args.trim()) return false;
+  return normalizeTaskPath(`${command} ${args}`) === normalizeTaskPath(wrapperPath)
+    && normalizeTaskPath(command) !== normalizeTaskPath(wrapperPath);
+}
+
+export function legacyTaskProblems(
+  raw: Buffer | string,
+  opts: { launcherPath: string; launcherExpected: boolean; wrapperPath?: string },
+): LegacyTaskProblem[] {
+  const xml = decodeSchtasks(raw);
+  const problems: LegacyTaskProblem[] = [];
+  // No <Triggers> section (truncated/unreadable output): no claim, so a
+  // parse problem never produces upgrade guidance.
+  const triggersMatch = /<Triggers>([\s\S]*?)<\/Triggers>/i.exec(xml);
+  if (!triggersMatch) return problems;
+  const triggers = triggersMatch[1];
+  const repeating = [...triggers.matchAll(/<(TimeTrigger|CalendarTrigger)\b[^>]*>([\s\S]*?)<\/\1>/gi)]
+    .some(m => /<Repetition>[\s\S]*?<Interval>\s*P[^<]*<\/Interval>/i.test(m[2]));
+  if (!repeating) problems.push('no-revive');
+  const command = taskXmlCommand(xml);
+  const args = taskXmlArguments(xml);
+  const split = !!opts.wrapperPath && runsSplitWrapper(command, args, opts.wrapperPath);
+  // A split task never starts the server, so it has no console to speak of.
+  if (!split && opts.launcherExpected && !runsOurLauncher(command, args, opts.launcherPath)) {
+    problems.push('visible-console');
+  }
+  if (split) problems.push('split-path');
+  const logonTriggers = [...triggers.matchAll(/<LogonTrigger\b[^>]*>([\s\S]*?)<\/LogonTrigger>|<LogonTrigger\b[^>]*\/>/gi)];
+  if (logonTriggers.some(m => !/<UserId>\s*\S[\s\S]*?<\/UserId>/i.test(m[1] ?? ''))) problems.push('elevated');
+  return problems;
+}
+
+const LEGACY_PROBLEM_TEXT: Record<LegacyTaskProblem, string> = {
+  'no-revive': 'no automatic revive after a crash',
+  'visible-console': 'the server runs in a visible console window',
+  'split-path': 'the task command is split at a space in the install path, so the server does not start',
+  'elevated': "'apra-fleet stop' cannot disable the task",
+};
+
+/** Short form for apra-fleet status: "legacy task (upgrade needed: ...)". */
+export function legacyTaskDetail(problems: LegacyTaskProblem[]): string {
+  return `legacy task (upgrade needed: ${problems.map(p => LEGACY_PROBLEM_TEXT[p]).join('; ')})`;
+}
+
+/**
+ * The exact manual fix, shared by install, status and stop. The elevated
+ * delete is only needed for an elevated-owned task ('elevated'); a user-owned
+ * old-form task is replaced by a plain re-install. apra-fleet never runs
+ * anything elevated itself and never needs an elevated install. --force: the
+ * server the old task started is normally still running, and install refuses
+ * to replace a running server without it.
+ */
+export function legacyTaskFix(problems: LegacyTaskProblem[], execPath: string = process.execPath): string {
+  const install = upgradeCommandLines(execPath).map(l => `    ${l}`);
+  if (!problems.includes('elevated')) {
+    return ['To upgrade it, run from a normal prompt:', ...install].join('\n');
+  }
+  return [
+    'To upgrade it, run once from an elevated prompt (Run as administrator):',
+    `    schtasks /delete /tn ${WINDOWS_TASK_NAME} /f`,
+    'then, from a normal prompt (do not run the install itself elevated):',
+    ...install,
+  ].join('\n');
+}
+
+/**
+ * `install --force` as a command that works where this runs. A standalone
+ * install does not put apra-fleet on PATH: the running installer names its
+ * own path (like the running-server refusal); the installed binary (status,
+ * stop) points at the downloaded installer; node (npm global/dev) has
+ * apra-fleet on PATH.
+ */
+export function upgradeCommandLines(execPath: string): string[] {
+  const base = path.win32.basename(execPath).toLowerCase();
+  if (base === 'node.exe' || base === 'node') return ['apra-fleet install --force'];
+  if (path.win32.resolve(execPath).toLowerCase() === path.win32.resolve(BIN_DIR, 'apra-fleet.exe').toLowerCase()) {
+    return ['<the apra-fleet installer .exe you downloaded> install --force'];
+  }
+  return selfInvocationLines({ platform: 'win32', execPath, sea: true, args: ['install', '--force'] });
+}
+
+/** Full actionable guidance: what is missing and the exact fix. */
+export function legacyTaskGuidance(problems: LegacyTaskProblem[]): string {
+  const intro = problems.includes('elevated')
+    ? [`The ${WINDOWS_TASK_NAME} scheduled task was registered by an older apra-fleet from an elevated prompt,`,
+      'so it cannot be replaced from a normal shell and is still in use. Missing:']
+    : [`The ${WINDOWS_TASK_NAME} scheduled task was registered by an older apra-fleet and is still in use. Missing:`];
+  return [
+    ...intro,
+    ...problems.map(p => `  - ${LEGACY_PROBLEM_TEXT[p]}`),
+    legacyTaskFix(problems),
+  ].join('\n');
 }
 
 export interface TaskXmlParams {
@@ -416,6 +554,8 @@ export class WindowsServiceManager implements ServiceManager {
   private readonly probeWsh: (env: Record<string, string | undefined>, dir: string) => boolean;
   private readonly stoppedByUser: () => boolean;
   private readonly probeTaskState: (taskName: string) => string | null;
+  private readonly interactive: () => boolean;
+  private readonly noticePath: string;
 
   constructor(
     serviceId: ServiceId = DEFAULT_SERVICE_ID,
@@ -437,6 +577,8 @@ export class WindowsServiceManager implements ServiceManager {
     this.stoppedByUser = opts.stoppedByUser ?? (() => readStoppedMarker() !== null);
     this.probeTaskState = opts.probeTaskState
       ?? (runSchtasks === defaultSchtasksRunner ? defaultProbeTaskState : () => null);
+    this.interactive = opts.interactive ?? (() => !!process.stdout.isTTY);
+    this.noticePath = opts.noticePath ?? SERVICE_NOTICE_PATH;
   }
 
   /** Only the MCP server has the server.json handshake, stop marker and start backoff. */
@@ -490,53 +632,95 @@ export class WindowsServiceManager implements ServiceManager {
     const xml = buildTaskXml({
       command: hidden ? wscriptPath(this.env) : this.wrapperPath,
       arguments: hidden ? launcherArguments(launcherPath) : undefined,
-      userId: resolveTaskUserId(this.env, this.whoami),
+      userId: resolveTaskUserId(this.whoami),
       startBoundary: localStartBoundary(this.now()),
       repeatMinutes: this.descriptor.restartOnFailure ? repeatMinutesFrom(this.env) : null,
       description: this.isMcpServer
         ? undefined
         : `${this.descriptor.description} (per-user). Managed by apra-fleet install/start/stop/uninstall.`,
     });
-    let createMsg: string;
-    try {
-      fs.writeFileSync(xmlPath, encodeTaskXml(xml));
-      this.runSchtasks(['/create', '/tn', this.taskName, '/xml', xmlPath, '/f']);
+    /** Registers the task from the XML; null on success, else the error message. */
+    const tryCreate = (): string | null => {
+      try {
+        fs.writeFileSync(xmlPath, encodeTaskXml(xml));
+        this.runSchtasks(['/create', '/tn', this.taskName, '/xml', xmlPath, '/f']);
+        return null;
+      } catch (createErr) {
+        return (createErr as Error).message;
+      } finally {
+        try { fs.unlinkSync(xmlPath); } catch { /* best-effort */ }
+      }
+    };
+    const created = (): RegisterResult => {
       // A task now covers logon autostart: drop a Run-key fallback left by an
       // earlier install so the service is not launched twice at logon.
       this.deleteRunKey();
+      this.clearOwnNotice();
       if (!hidden) visibleFallback();
       return 'created';
-    } catch (createErr) {
-      createMsg = (createErr as Error).message;
-    } finally {
-      try { fs.unlinkSync(xmlPath); } catch { /* best-effort */ }
-    }
+    };
+    const createMsg = tryCreate();
+    if (createMsg === null) return created();
 
     // /create failed (typically "Access is denied" -- localized, so not
     // matched -- when the existing task was created elevated): reuse the
     // existing task only if it already runs our wrapper.
     let command: string | null = null;
     let taskArgs: string | null = null;
+    let existing: Buffer | string = '';
     let taskFound = false;
     try {
-      const existing = this.runSchtasks(['/query', '/tn', this.taskName, '/xml']);
+      existing = this.runSchtasks(['/query', '/tn', this.taskName, '/xml']);
       command = taskXmlCommand(existing);
       taskArgs = taskXmlArguments(existing);
       taskFound = true;
     } catch { /* no task */ }
-    // Ours: the wrapper itself (tasks from earlier installs) or wscript
+    // Ours: the wrapper itself (tasks from earlier installs), the wrapper split
+    // at a space by 0.4.3's unquoted /tr (broken, so legacy), or wscript
     // running our hidden launcher.
     const runsWrapper = command !== null && normalizeTaskPath(command) === normalizeTaskPath(this.wrapperPath);
-    const runsLauncher = command !== null && /wscript\.exe"?$/i.test(command.trim()) && taskArgs !== null
-      && normalizeTaskPath(taskArgs).includes(normalizeTaskPath(launcherPath));
-    if (taskFound && (runsWrapper || runsLauncher)) {
+    const runsSplit = runsSplitWrapper(command, taskArgs, this.wrapperPath);
+    const runsLauncher = runsOurLauncher(command, taskArgs, launcherPath);
+    /** Prints the manual fix for a legacy task /create could not replace, and persists it. */
+    const reportLegacy = (problems: LegacyTaskProblem[]): void => {
+      // /create was just refused, so this task cannot be disabled either.
+      // apra-fleet never elevates: the user gets the exact manual fix.
+      if (!problems.includes('elevated')) problems.push('elevated');
+      const guidance = legacyTaskGuidance(problems);
+      console.warn(indent(guidance));
+      // A detached install (apra-fleet update) has no console: persist it
+      // for the next service verb (already shown when this one is
+      // interactive), and leave it in the service log.
+      if (this.isMcpServer) writeServiceNotice(guidance, this.noticePath, new Date(), this.interactive());
+      appendServiceLog(logPath, guidance);
+    };
+    // A split task runs "C:\Users\John" and never starts the server: reusing
+    // it would leave no autostart. Report it and fall through to the HKCU Run
+    // entry below until the user replaces the task.
+    // Legacy forms (split, old-style triggers) exist only for the MCP server
+    // task; every other service's task is judged by its own descriptor, so
+    // e.g. a supervisor task without a revive trigger is never "legacy".
+    const splitTask = this.isMcpServer && taskFound && runsSplit;
+    if (splitTask) {
+      const problems = legacyTaskProblems(existing, { launcherPath, launcherExpected: hidden, wrapperPath: this.wrapperPath });
+      if (!problems.includes('split-path')) problems.push('split-path');
+      reportLegacy(problems);
+    } else if (taskFound && (runsWrapper || runsLauncher)) {
+      const problems = this.isMcpServer
+        ? legacyTaskProblems(existing, { launcherPath, launcherExpected: hidden, wrapperPath: this.wrapperPath })
+        : [];
+      if (problems.length > 0) {
+        reportLegacy(problems);
+      } else {
+        this.clearOwnNotice();
+      }
       this.reusedExistingTask = true;
       // A reused launcher task needs the launcher (written above); a reused
       // .bat task runs visibly whatever the probe said.
       if (runsWrapper && !hidden) visibleFallback();
       return 'reused';
     }
-    if (taskFound) {
+    if (taskFound && !splitTask) {
       throw new Error(
         `schtasks /create failed and the existing ${this.taskName} task runs ${command ?? '(unknown)'}, ` +
         `not ${this.wrapperPath}: ${createMsg}`,
@@ -544,17 +728,60 @@ export class WindowsServiceManager implements ServiceManager {
     }
 
     // Last resort: a per-user HKCU Run entry. Logon autostart only -- nothing
-    // revives a service that dies mid-session.
+    // revives a service that dies mid-session. Say WHY the task was refused:
+    // without it the fallback is undiagnosable.
+    console.warn(`    schtasks /create failed: ${schtasksErrorReason(createMsg)}`);
     if (!hidden) visibleFallback();
+    if (!splitTask) this.clearOwnNotice();
     try {
       this.runReg(['add', RUN_KEY, '/v', this.runValue, '/t', 'REG_SZ', '/d', runValue, '/f']);
     } catch (regErr) {
       throw new Error(
-        `schtasks /create failed and no existing ${this.taskName} task was found: ${createMsg}; ` +
+        `schtasks /create failed and ${splitTask ? `the existing ${this.taskName} task cannot start the service`
+          : `no existing ${this.taskName} task was found`}: ${createMsg}; ` +
         `the HKCU Run fallback also failed: ${(regErr as Error).message}`,
       );
     }
     return 'run-key';
+  }
+
+  /**
+   * Clears the pending service notice -- only for the MCP server, whose legacy
+   * task guidance is the only thing written there, so registering or removing
+   * another service never erases it.
+   */
+  private clearOwnNotice(): void {
+    if (this.isMcpServer) clearServiceNotice(this.noticePath);
+  }
+
+  /** Problems of the installed task when it is a legacy one (empty: current or unreadable). */
+  private installedLegacyProblems(): LegacyTaskProblem[] {
+    // Only the MCP server task predates this release (0.4.3 registered no
+    // other service), so no other service has a legacy form to detect.
+    if (!this.isMcpServer) return [];
+    try {
+      const raw = this.runSchtasks(['/query', '/tn', this.taskName, '/xml']);
+      return this.legacyProblemsOf(raw);
+    } catch {
+      return [];
+    }
+  }
+
+  private legacyProblemsOf(raw: Buffer | string): LegacyTaskProblem[] {
+    const launcherPath = launcherPathFor(this.wrapperPath);
+    // Only OUR task (wrapper, split wrapper, or wscript + our launcher) gets
+    // upgrade advice: a foreign task named ApraFleet must not be told to
+    // delete itself.
+    const command = taskXmlCommand(raw);
+    const args = taskXmlArguments(raw);
+    const ours = (command !== null && normalizeTaskPath(command) === normalizeTaskPath(this.wrapperPath))
+      || runsSplitWrapper(command, args, this.wrapperPath)
+      || runsOurLauncher(command, args, launcherPath);
+    if (!ours) return [];
+    // install keeps the launcher only when the task should use it (WSH works).
+    let launcherExpected = false;
+    try { launcherExpected = fs.existsSync(launcherPath); } catch { /* treat as absent */ }
+    return legacyTaskProblems(raw, { launcherPath, launcherExpected, wrapperPath: this.wrapperPath });
   }
 
   async unregister(): Promise<void> {
@@ -586,6 +813,7 @@ export class WindowsServiceManager implements ServiceManager {
       // Tolerate task-not-found
     }
     this.deleteRunKey();
+    this.clearOwnNotice();
     try { fs.unlinkSync(this.wrapperPath); } catch {}
     try { fs.unlinkSync(launcherPathFor(this.wrapperPath)); } catch {}
   }
@@ -594,7 +822,13 @@ export class WindowsServiceManager implements ServiceManager {
     // An explicit start is never skipped by the MCP server's failed-start
     // backoff (the backoff state belongs to the MCP server only).
     if (this.isMcpServer) clearServiceStartFailures();
-    if (!this.taskExists()) {
+    const task = this.taskExists();
+    // A 0.4.3 task split at a space never starts the server: install then
+    // added the Run entry, which start must use instead of the task. (A task
+    // this install just reused is never a split one; only the MCP server can
+    // have such a legacy task -- installedLegacyProblems() is empty otherwise.)
+    if (!task || (!this.reusedExistingTask && this.runKeyExists()
+      && this.installedLegacyProblems().includes('split-path'))) {
       if (this.runKeyExists()) {
         // HKCU Run fallback: no task to run -- launch the way the Run entry
         // does: the hidden launcher, or (no launcher) cmd with the wrapper
@@ -676,9 +910,18 @@ export class WindowsServiceManager implements ServiceManager {
         try {
           this.runSchtasks(['/change', '/tn', this.taskName, '/disable']);
         } catch (err) {
+          console.warn(`Could not disable the ${this.taskName} task (${(err as Error).message.trim()}).`);
+          const problems = this.installedLegacyProblems();
+          if (problems.length > 0) {
+            // Disabling was just refused, whatever the XML says.
+            if (!problems.includes('elevated')) problems.push('elevated');
+            console.warn(legacyTaskGuidance(problems));
+          }
+          // The stopped-by-user marker (written by apra-fleet stop) makes every
+          // service launch exit without starting the server.
           console.warn(
-            `Could not disable the ${this.taskName} task (${(err as Error).message.trim()}); ` +
-            'its triggers may start the server again.',
+            "A stop made with 'apra-fleet stop' still holds: until 'apra-fleet start', every launch of the task " +
+            'exits without starting the server.',
           );
         }
       }
@@ -756,11 +999,20 @@ export class WindowsServiceManager implements ServiceManager {
       }
       return status;
     }
+    const details: string[] = [];
     if (status.enabled === false) {
-      status.detail = this.isMcpServer && this.stoppedByUser()
+      details.push(this.isMcpServer && this.stoppedByUser()
         ? "stopped by user -- 'apra-fleet start' re-enables it"
-        : "task disabled outside apra-fleet -- 'apra-fleet start' re-enables it";
+        : "task disabled outside apra-fleet -- 'apra-fleet start' re-enables it");
     }
+    // A legacy (0.4.3-era) task: only the MCP server can have one, so this is
+    // empty for every other service (installedLegacyProblems() gates it).
+    const legacy = this.installedLegacyProblems();
+    if (legacy.length > 0) {
+      details.push(legacyTaskDetail(legacy));
+      status.notice = legacyTaskFix(legacy);
+    }
+    if (details.length > 0) status.detail = details.join('; ');
     return status;
   }
 

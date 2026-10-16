@@ -486,9 +486,21 @@ inferred) when the sprint starts:
 enforces the precondition for whichever mode is selected, and refuses to
 start rather than silently degrading:
 
-- **`legacy` mode precondition** -- compares an identity signal
-  (`git rev-parse HEAD`) across every configured member and refuses to start
-  on a mismatch. Single-member sprints trivially pass (nothing to compare). A
+- **`legacy` mode precondition** -- first aligns every member to the
+  sprint base (`fleet-sprint/member-align.mjs`, `prepareLaunchTopology()`):
+  pass 1 checks every member read-only (reachable, same `origin` URL, base
+  fetchable, sprint branch not diverged, working-tree status readable) and
+  refuses -- naming member, cause and fix -- before ANY member is moved if
+  one fails; pass 2 preserves uncommitted work in a named
+  `fleet-sprint[<branch>] auto-stash ...` stash and checks out the sprint
+  branch (`origin/<branch>` when it exists, else cut from `origin/<base>`,
+  via the same `decideEnsureBranchAction()` the Ensure Sprint Branch phase
+  uses), logging one `[Align] member '<m>': <from> -> <to>` line per member.
+  Members that were merely on other commits therefore no longer block the
+  launch, and nobody aligns members by hand. It then compares an identity
+  signal (`git rev-parse HEAD`) across every configured member and refuses to
+  start on a residual mismatch (a member keeping local-only commits on the
+  sprint branch). Single-member sprints trivially pass (nothing to compare). A
   member whose signal cannot be obtained is treated as a refusal, not a
   silent skip. This is a best-effort heuristic checked once at start, not an
   ongoing guarantee: two independent checkouts that merely happen to sit on
@@ -779,7 +791,7 @@ Both primitives exist in **two independent implementations that must stay
 semantically identical**, not because of duplication oversight but because
 neither host alone can reach every launch topology:
 
-- The **supervisor** (`fleet-se-serve`) hosts the original mutex/allocator
+- The **supervisor** (`bin/serve.mjs`) hosts the original mutex/allocator
   (`src/supervisor/dolt-mutex.mjs`, `src/supervisor/id-allocator.mjs`) over
   its own HTTP routes, reachable by any sprint launched *through* the
   supervisor via `--service-url`. This covers supervisor-launched sprints
@@ -1078,7 +1090,8 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
    same cost block is rendered by the engine in the PR body (`### Cost`).
 3. **Publish PR** -- pushes the sprint branch (`git push -u origin
    <branch>`), then raises (never merges) a PR via `gh pr create`, whose
-   title (`Auto-sprint [PASS|FAIL]: <branch>`) and body state the final
+   title (`fleet-sprint [PASS|FAIL]: <branch>`; PRs from before the
+   rename carry `Auto-sprint [...]`) and body state the final
    verdict plainly, with the reviewer's (sanitized) notes appended. PR
    creation is idempotent: a `gh pr create` failure whose message matches
    `/already exists/i` is treated as success (the desired end state -- a PR
@@ -1132,7 +1145,7 @@ resume a crashed `fleet-sprint` invocation from the CLI today.
 
 ## Supervisor: reservation ledger and scope freshness (apra-fleet-eft.5)
 
-`fleet-se-serve` (`bin/serve.mjs`, `src/supervisor/`) is a separate, always-on
+The supervisor (`bin/serve.mjs`, `src/supervisor/`) is a separate, always-on
 process from the per-sprint `bin/cli.mjs` invocation described above. It owns
 one combined reservation ledger (`src/supervisor/ledger.mjs`) that claims two
 axes per launched sprint in lockstep -- the reserved member set and the
@@ -1324,7 +1337,7 @@ regresses to reporting false negatives.
 
 ## Supervisor: process model
 
-`fleet-se-serve` boots one always-on process that owns the reservation ledger
+The supervisor (`bin/serve.mjs`) boots one always-on process that owns the reservation ledger
 and an HTTP API, and never exits because a sprint finished or a sprint's child
 process crashed -- it exits only on an explicit shutdown request or signal.
 Each sprint runs as the *existing* per-sprint CLI, launched fully detached

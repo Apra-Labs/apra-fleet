@@ -9,6 +9,14 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const src = join(root, '.github', 'hooks');
 const dst = join(root, '.git', 'hooks');
 
+// npm runs `prepare` on `npm pack` / `npm publish` too (even with
+// --ignore-scripts, npm 10). Packing must not touch the packer's git hooks --
+// a test that packs the repo would otherwise write into the checkout.
+if (process.env.npm_command === 'pack' || process.env.npm_command === 'publish') {
+  console.log(`install-hooks: npm ${process.env.npm_command}, skipping`);
+  process.exit(0);
+}
+
 if (!existsSync(dst)) {
   console.log('install-hooks: no .git/hooks directory found, skipping');
   process.exit(0);

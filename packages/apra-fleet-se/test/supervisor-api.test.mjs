@@ -589,7 +589,10 @@ describe('api -- apra-fleet-i9ag.15.2 runner-resolution failure -> 503', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
-    test('a NON-resolution spawn failure keeps its existing (uncaught, 500-isolation-wrapper) behaviour', async () => {
+    // Since the 0.4.4 main sync, any other spawn failure is a 500 ApiError that
+    // names the failing step and the cause, instead of the generic
+    // 'internal supervisor error' the isolation wrapper used to answer.
+    test('a NON-resolution spawn failure is a 500 naming the step and its cause', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
         const spawner = createSpawner({
@@ -607,7 +610,8 @@ describe('api -- apra-fleet-i9ag.15.2 runner-resolution failure -> 503', () => {
 
         await assert.rejects(
             () => controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' }),
-            (err) => !(err instanceof ApiError) && /boom: unrelated spawn failure/.test(err.message),
+            (err) => err instanceof ApiError && err.status === 500
+                && /step 'spawn sprint child'/.test(err.message) && /boom: unrelated spawn failure/.test(err.message),
         );
         await fsp.rm(dir, { recursive: true, force: true });
     });

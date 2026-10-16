@@ -23,11 +23,20 @@ short-circuits before anything downstream runs:
    comma-split by `splitIssueIds()` (trim, drop empties) and then EACH id is
    validated with `validateIssueId`; `branch`/`base` via `validateBranchName`
    (both imported from `fleet-sprint/runner.js` -- the SAME regexes the CLI
-   and the engine itself re-check, single source of truth); `members` (a
+   and the engine itself re-check, single source of truth), and the pair via
+   `validateBranchPair` (`fleet-sprint/sprint-args.mjs`: `branch` equal to
+   `base`, ignoring case and `refs/heads/`/`origin/`/`refs/remotes/origin/`
+   prefixes, -> `400`, field `branch`); `members` (a
    string array or a comma-separated string) non-empty after normalization.
    Optional `phases` is validated too: only `{ "regression": "run" | "skip" }`
    is accepted (anything else -> `400`, field `phases`); `"skip"` forwards
    `--skip-regression` to the child.
+   Optional `ci_gate` (alias `ciGate`; an object or JSON string
+   `{ "workflow": "<file or id>", "timeout_s": <n> }`) is validated with the
+   engine's own `validateCiGate` (anything malformed -> `400`, field
+   `ci_gate`) and forwarded to the child as `--ci-gate` (normalized JSON):
+   the sprint runs that CI workflow once at Finalization and reports it in
+   the PR body (see `docs/cli-reference.md` `--ci-gate`).
    Optional `roleMap` (object or JSON string) is resolved too. The
    `roleMap.orchestrator` key is a DEPRECATED alias of `roleMap.backlog`:
    using it still works, and the response carries a top-level

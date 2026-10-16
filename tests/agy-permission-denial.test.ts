@@ -37,7 +37,7 @@ describe('detectAgyPermissionDenial -- recorded agy outputs', () => {
     const d = detectAgyPermissionDenial(r)!;
     expect(d).toBeDefined();
     expect(d.actions).toEqual(['command']);
-    expect(d.denials).toEqual([{ action: 'command', target: 'git status --short --branch' }]);
+    expect(d.denials).toEqual([{ action: 'command', target: 'git status --short --branch', suggestedGrants: ['Bash(git:*)', 'Bash(git status --short --branch)'] }]);
     expect(d.suggestedGrants).toEqual(['Bash(git:*)', 'Bash(git status --short --branch)']);
     expect(d.signals).toEqual(['result_json', 'stderr', 'transcript']);
     expect(d.hint).toContain('command "git status --short --branch"');
@@ -48,7 +48,7 @@ describe('detectAgyPermissionDenial -- recorded agy outputs', () => {
   it('JSON result alone (status SUCCESS, empty response, denied_actions) is a denial', () => {
     const d = detectAgyPermissionDenial(run(RESULT_JSON))!;
     expect(d.actions).toEqual(['command']);
-    expect(d.denials).toEqual([{ action: 'command' }]);
+    expect(d.denials).toEqual([{ action: 'command', suggestedGrants: [] }]);
     expect(d.signals).toEqual(['result_json']);
   });
 
@@ -60,7 +60,7 @@ describe('detectAgyPermissionDenial -- recorded agy outputs', () => {
 
   it('transcript alone (no JSON result on stdout, e.g. result went to CONOUT$) is a denial with its target', () => {
     const d = detectAgyPermissionDenial(run(transcriptBlock()))!;
-    expect(d.denials).toEqual([{ action: 'command', target: 'git status --short --branch' }]);
+    expect(d.denials).toEqual([{ action: 'command', target: 'git status --short --branch', suggestedGrants: ['Bash(git:*)', 'Bash(git status --short --branch)'] }]);
     expect(d.signals).toEqual(['transcript']);
   });
 
@@ -86,12 +86,63 @@ describe('detectAgyPermissionDenial -- recorded agy outputs', () => {
 
   it('refuses to suggest a grant for a chained command, and maps other actions', () => {
     const t = (err: string) => `{"type":"USER_INPUT","status":"DONE"}\n${JSON.stringify({ status: 'ERROR', error: err })}`;
-    const chained = detectAgyPermissionDenial(run(transcriptBlock(t('permission check failed for command "git status | head": user denied permission to run command'))))!;
+    const chained = detectAgyPermissionDenial(run(transcriptBlock(t('permission check failed for command "git status && rm x": user denied permission to run command'))))!;
     expect(chained.suggestedGrants).toEqual([]);
     expect(chained.hint).toContain('No compose_permissions grant maps');
     const mcp = detectAgyPermissionDenial(run(transcriptBlock(t('user denied permission for mcp(apra-fleet/kb_session_prime)'))))!;
-    expect(mcp.denials).toEqual([{ action: 'mcp', target: 'apra-fleet/kb_session_prime' }]);
+    expect(mcp.denials).toEqual([{ action: 'mcp', target: 'apra-fleet/kb_session_prime', suggestedGrants: ['mcp__apra-fleet__kb_session_prime'] }]);
     expect(mcp.suggestedGrants).toEqual(['mcp__apra-fleet__kb_session_prime']);
+  });
+
+  it('decomposes piped commands to suggest grants for constituent tools', () => {
+    const t = (err: string) => `{"type":"USER_INPUT","status":"DONE"}\n${JSON.stringify({ status: 'ERROR', error: err })}`;
+    const piped = detectAgyPermissionDenial(run(transcriptBlock(t('permission check failed for command "git status | head": user denied permission to run command'))))!;
+    expect(piped.suggestedGrants).toEqual(['Bash(git:*)', 'Bash(head:*)']);
+    expect(piped.hint).toContain('Bash(git:*)');
+
+    const psGrep = detectAgyPermissionDenial(run(transcriptBlock(t('permission check failed for command "ps aux | grep -iE \'dolt|bd\'": user denied permission to run command'))))!;
+    expect(psGrep.suggestedGrants).toEqual(['Bash(ps:*)', 'Bash(grep:*)']);
+  });
+  it('extracts denied command from pending tool_calls when headless AGY auto-denies without an ERROR step', () => {
+    const transcriptWithPendingToolCall = '{"type":"USER_INPUT","status":"DONE"}\n{"type":"MODEL_RESPONSE","source":"MODEL","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":"\\"cat << \'EOF\' > output.txt\\\\n{\\\\n}\\\\nEOF\\""}}]}';
+    const r = run(`FLEET_PID:4242\n${RESULT_JSON}\n${transcriptBlock(transcriptWithPendingToolCall)}`, STDERR);
+    const d = detectAgyPermissionDenial(r)!;
+    expect(d).toBeDefined();
+    expect(d.actions).toEqual(['command']);
+    expect(d.denials[0].action).toBe('command');
+    expect(d.denials[0].target).toContain("cat << 'EOF'");
+    expect(d.suggestedGrants).toContain('Bash(cat:*)');
+  });
+
+  it('extracts denied mcp tool from call_mcp_tool when headless AGY auto-denies mcp', () => {
+    const transcript = '{"type":"USER_INPUT","status":"DONE"}\n{"type":"MODEL_RESPONSE","source":"MODEL","status":"DONE","tool_calls":[{"name":"call_mcp_tool","args":{"ServerName":"apra-fleet","ToolName":"kb_capture"}}]}';
+    const stderr = '[agy:error] a tool required the "mcp" permission that headless mode cannot prompt for, so it was auto-denied';
+    const r = run(`FLEET_PID:4242\n${RESULT_JSON.replace('"action":"command"', '"action":"mcp"')}\n${transcriptBlock(transcript)}`, stderr);
+    const d = detectAgyPermissionDenial(r)!;
+    expect(d).toBeDefined();
+    expect(d.actions).toEqual(['mcp']);
+    expect(d.denials[0]).toEqual({ action: 'mcp', target: 'apra-fleet/kb_capture', suggestedGrants: ['mcp__apra-fleet__kb_capture'] });
+    expect(d.suggestedGrants).toEqual(['mcp__apra-fleet__kb_capture']);
+  });
+
+  it('extracts denied read_url tool from read_url_content when headless AGY auto-denies read_url', () => {
+    const transcript = '{"type":"USER_INPUT","status":"DONE"}\n{"type":"MODEL_RESPONSE","source":"MODEL","status":"DONE","tool_calls":[{"name":"read_url_content","args":{"Url":"https://example.com/api"}}]}';
+    const stderr = '[agy:error] a tool required the "read_url" permission that headless mode cannot prompt for, so it was auto-denied';
+    const r = run(`FLEET_PID:4242\n${RESULT_JSON.replace('"action":"command"', '"action":"read_url"')}\n${transcriptBlock(transcript)}`, stderr);
+    const d = detectAgyPermissionDenial(r)!;
+    expect(d).toBeDefined();
+    expect(d.actions).toEqual(['read_url']);
+    expect(d.denials[0]).toEqual({ action: 'read_url', target: 'https://example.com/api', suggestedGrants: ['WebSearch'] });
+  });
+
+  it('extracts denied write_file tool from write_to_file when headless AGY auto-denies write_file', () => {
+    const transcript = '{"type":"USER_INPUT","status":"DONE"}\n{"type":"MODEL_RESPONSE","source":"MODEL","status":"DONE","tool_calls":[{"name":"write_to_file","args":{"TargetFile":"C:/path/to/file.txt"}}]}';
+    const stderr = '[agy:error] a tool required the "write_file" permission that headless mode cannot prompt for, so it was auto-denied';
+    const r = run(`FLEET_PID:4242\n${RESULT_JSON.replace('"action":"command"', '"action":"write_file"')}\n${transcriptBlock(transcript)}`, stderr);
+    const d = detectAgyPermissionDenial(r)!;
+    expect(d).toBeDefined();
+    expect(d.actions).toEqual(['write_file']);
+    expect(d.denials[0]).toEqual({ action: 'write_file', target: 'C:/path/to/file.txt', suggestedGrants: ['Write(C:/path/to/file.txt)'] });
   });
 });
 
@@ -118,7 +169,8 @@ const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExec
 vi.mock('../src/services/strategy.js', () => ({
   getStrategy: () => ({ execCommand: mockExecCommand, testConnection: vi.fn(), transferFiles: vi.fn(), close: vi.fn() }),
 }));
-vi.mock('../src/services/agent-provisioner.js', () => ({
+vi.mock('../src/services/agent-provisioner.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/agent-provisioner.js')>()),
   provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
   remoteAgentsDir: vi.fn().mockReturnValue('.claude/agents/pm'),
 }));
@@ -144,10 +196,10 @@ describe('execute_prompt -- permission_denied', () => {
     expect(result.structuredContent.isError).toBe(true);
     expect(result.structuredContent.reason).toBe('permission_denied');
     expect(result.structuredContent.permissionDenied.actions).toEqual(['command']);
-    expect(result.structuredContent.permissionDenied.denials).toEqual([{ action: 'command', target: 'git status --short --branch' }]);
+    expect(result.structuredContent.permissionDenied.denials).toEqual([{ action: 'command', target: 'git status --short --branch', suggestedGrants: ['Bash(git:*)', 'Bash(git status --short --branch)'] }]);
     expect(result.structuredContent.permissionDenied.suggestedGrants).toEqual(['Bash(git:*)', 'Bash(git status --short --branch)']);
     expect(result.structuredContent.sessionId).toBe(CONV);
-    expect(result.structuredContent.usage).toEqual({ input_tokens: 17220, output_tokens: 68, total_tokens: 17288 });
+    expect(result.structuredContent.usage).toEqual({ input_tokens: 17220, output_tokens: 68, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, total_tokens: 17288 });
     expect(result.text).toContain('permission denied');
     expect(result.text).toContain('git status --short --branch');
   });

@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- operator HTTP endpoints (apra-fleet-eft.4.4)
+// fleet-sprint supervisor -- operator HTTP endpoints (apra-fleet-eft.4.4)
 // members / backlog / sprints CRUD / stop proxy
 // =============================================================================
 //
@@ -37,7 +37,7 @@
 // =============================================================================
 
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -46,6 +46,7 @@ import { validateIssueId, validateBranchName, validateBranchPair } from '../../f
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { resolveBacklogRoleAlias, ROLE_BACKLOG } from '../../fleet-sprint/backlog-role.mjs';
 import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
+import { validateCiGate } from '../../fleet-sprint/sprint-args.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
@@ -58,6 +59,26 @@ import { fleetMembersUnavailableReason, fleetMembersStoppedByUserReason } from '
 const API_MODULE_PATH = fileURLToPath(import.meta.url);
 
 /** A controller error carrying an HTTP status and (optionally) the bad field. */
+/** Hard cap on a generated sprint id's length (it is also the --run-id, ledger key and log file stem). */
+export const MAX_SPRINT_ID_LENGTH = 48;
+const SPRINT_ID_ROOT_LENGTH = 20;
+
+/**
+ * Bounded, launch-unique sprint id: `<first-root>-<count>-<hash>-<uuid8>`.
+ * The full issue list is NOT encoded in the id (it lives in the sprint
+ * record's issueRoots and the child argv), so the id -- and the log file name
+ * derived from it -- stays the same length for 1 or 100 roots. Uniqueness
+ * per launch comes from the uuid fragment.
+ * @param {string} issue - comma-joined issue roots
+ * @returns {string}
+ */
+export function defaultGenerateSprintId(issue) {
+    const roots = String(issue ?? '').split(',').map((r) => r.trim()).filter(Boolean);
+    const first = (roots[0] ?? 'sprint').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, SPRINT_ID_ROOT_LENGTH);
+    const hash = createHash('sha256').update(roots.join(',')).digest('hex').slice(0, 6);
+    return `${first}-${roots.length}-${hash}-${randomUUID().slice(0, 8)}`;
+}
+
 export class ApiError extends Error {
     /**
      * @param {number} status
@@ -414,7 +435,7 @@ export function createSprintController(deps = {}) {
     // their own beforeLaunch (e.g. to compose it with the eft.5.3 issue-scope
     // guard) -- this default is what runs when nothing is injected.
     const beforeLaunch = deps.beforeLaunch ?? defaultMemberOverlapGuard(ledger, listMembers);
-    const generateSprintId = deps.generateSprintId ?? ((issue) => `${issue}-${randomUUID()}`);
+    const generateSprintId = deps.generateSprintId ?? defaultGenerateSprintId;
     const resolvePort = deps.resolvePort
         ?? ((pid) => (pid != null && spawner.getLiveEntry ? spawner.getLiveEntry(pid)?.port : undefined));
     // apra-fleet-2l4.1: same collaborator watchdog.mjs's classifySprint() uses
@@ -495,11 +516,23 @@ export function createSprintController(deps = {}) {
             }
             skipRegression = phases.regression === 'skip';
         }
+        // ci_gate (optional; alias ciGate): the engine CI gate, an object or
+        // JSON string { workflow, timeout_s? }. Validated here with the SAME
+        // validator the runner uses, so a malformed value 400s before any
+        // spawn; forwarded to the child as a normalized --ci-gate JSON string.
+        let ciGate;
+        const rawCiGate = body.ci_gate ?? body.ciGate;
+        if (rawCiGate !== undefined && rawCiGate !== null) {
+            let parsedGate;
+            try { parsedGate = validateCiGate(rawCiGate); }
+            catch (err) { throw new ApiError(400, err.message, 'ci_gate'); }
+            if (parsedGate) ciGate = JSON.stringify({ workflow: parsedGate.workflow, timeout_s: parsedGate.timeoutS });
+        }
         // `issue` stays a single comma-joined string (the exact shape
         // buildSprintArgv/cli.mjs's --issue flag expects, and byte-identical
         // to the input for the single-id case); `issueIds` is the split array
         // callers use for issueRoots / per-root history lookups.
-        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression };
+        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, ciGate };
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
@@ -592,7 +625,7 @@ export function createSprintController(deps = {}) {
                 throw err;
             }
         }
-        const { issue, issueIds, branch, base, members, skipRegression } = validateLaunchRequest(body);
+        const { issue, issueIds, branch, base, members, skipRegression, ciGate } = validateLaunchRequest(body);
         // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
         // the supervisor read an arbitrary server-side path named by the request
         // body, and the alias warning could not be computed from it. Reject it.
@@ -777,6 +810,9 @@ export function createSprintController(deps = {}) {
             budget: body.budget,
             runId: sprintId,
             skipRegression,
+            // Set only when the launch carried ci_gate, so a launch without it
+            // produces the exact same spawnOpts shape as before.
+            ...(ciGate !== undefined ? { ciGate } : {}),
             ...(body.sync === true ? { extraArgs: ['--sync'] } : {}),
         };
         // apra-fleet-i9ag.15.2: a runner-resolution failure (spawner.mjs's
@@ -787,9 +823,9 @@ export function createSprintController(deps = {}) {
         // carrying the resolver's own operator-facing message (names every
         // candidate tried plus the Node.js version/PATH fix line) -- instead
         // of bubbling to server.mjs's generic 500 "internal supervisor
-        // error", which would tell the operator nothing actionable. Every
-        // other spawnSprint() failure is rethrown unchanged and keeps its
-        // existing (500, isolation-wrapper) behaviour.
+        // error", which would tell the operator nothing actionable. Any
+        // other spawnSprint() failure is answered as a 500 that names the
+        // failing step and its cause (an ApiError passes through as-is).
         //
         // apra-fleet-i9ag.15: this catch is KEPT even though launch() now
         // preflights the same resolution at its top -- it is the fallback
@@ -800,6 +836,7 @@ export function createSprintController(deps = {}) {
         try {
             spawned = await spawner.spawnSprint(spawnOpts);
         } catch (err) {
+            if (err instanceof ApiError) throw err;
             if (err instanceof SprintRunnerResolutionError) {
                 throw runnerResolutionApiError(err);
             }
@@ -807,7 +844,13 @@ export function createSprintController(deps = {}) {
                 console.error(`[spawner] sprint child could not be spawned -- launch refused: ${err.message}`);
                 throw new ApiError(500, err.message);
             }
-            throw err;
+            // Name the failing step and the underlying cause (code + message,
+            // e.g. an ENOENT on the log path) instead of letting the generic
+            // 'internal supervisor error' 500 hide it.
+            const code = err && err.code ? `${err.code}: ` : '';
+            const detail = err && err.message ? err.message : String(err);
+            console.error(`[supervisor] launch of '${sprintId}' failed at step 'spawn sprint child':`, err && err.stack ? err.stack : err);
+            throw new ApiError(500, `sprint launch failed at step 'spawn sprint child': ${code}${detail}`);
         }
         // apra-fleet-gey.2: best-effort stale-process detection -- compare
         // the build this supervisor process STAMPED at startup against

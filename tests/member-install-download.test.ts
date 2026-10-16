@@ -107,7 +107,7 @@ describe('download failures surface as typed, recoverable fleetMcp statuses', ()
 });
 
 describe('a refused install over a running full-install server is typed full-install-running', () => {
-  it('maps the installer refusal code and names the override', async () => {
+  it('maps the installer refusal code and gives the replacement steps', async () => {
     const ok = (stdout: string) => ({ stdout, stderr: '', code: 0 });
     let installed = false;
     const deps: MemberFleetInstallDeps = {
@@ -125,7 +125,7 @@ describe('a refused install over a running full-install server is typed full-ins
     const r = await ensureMemberFleetInstall(makeTestAgent({ os: 'linux' }), deps);
     expect(installed).toBe(true);
     expect(r).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
-    expect((r as { detail: string }).detail).toContain('--force-stop-full-install');
+    expect((r as { detail: string }).detail).toContain('uninstall --force --yes');
   });
 });
 

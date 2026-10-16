@@ -261,6 +261,7 @@ const realSeedProjectDirExec: SeedProjectDirExec = (file, args, options) =>
       stdio: 'pipe',
       encoding: 'utf-8',
       shell: file === 'bd',
+      windowsHide: true,
     }) ?? '',
   );
 

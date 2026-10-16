@@ -3,6 +3,8 @@ import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-sc
 import { computeFileHash } from '../services/knowledge/kb-service.js';
 import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
+import { memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
+import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import type { Author, CaptureSource } from '../services/knowledge/types.js';
 
 // D5 (T2.3): the full Author enum. Kept as a plain array (not a zod enum on
@@ -38,7 +40,7 @@ export const kbCaptureSchema = z.object({
   scope: z.enum(['project', 'global']).optional()
     .describe('Scope: project (default) or global for team-wide conventions'),
   supersedes: z.string().optional()
-    .describe('Id of an entry this capture REPLACES. Only honored when AUDN independently matches that same entry as a same-topic candidate (same type, overlapping symbols and source_files), so it cannot retire an arbitrary entry. Omit it unless you mean to retire something -- an ordinary refinement links to its predecessor and both stay live. The KB Agent sets this when resolving a flagged pair; doer/reviewer captures should not.'),
+    .describe('Id of an entry this capture REPLACES. Only honored when AUDN independently matches that same entry as a same-topic candidate (same type, overlapping symbols and source_files), so it cannot retire an arbitrary entry. Omit it unless you mean to retire something -- an ordinary refinement links to its predecessor and both stay live. The KB Agent sets this when resolving a flagged pair; doer/reviewer captures should not. In a MEMBER session without the kb_maintainer grant a CONFIRMED target is never retired: the capture links to it (refines, both stay live) and the response lists it in refused.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
   // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
   ...KB_REMOVED_SCOPE_KEYS_SHAPE,
@@ -156,7 +158,18 @@ export async function kbCapture(input: KbCaptureInput, anchor?: KbAnchor): Promi
       ? 'review'
       : 'session';
 
-  const { id, audn_decision } = await target.capture({
+  // A MEMBER session WITHOUT the kb_maintainer grant may not retire a
+  // CONFIRMED entry through supersedes (a retired entry leaves the bible at the
+  // next kb_bible_commit), whoever owns it -- AUDN matches candidates across the
+  // whole per-repo DB. Over the per-repo SqliteProvider the explicit supersede
+  // of a CONFIRMED target degrades to the implicit link (refines, both live);
+  // a non-CONFIRMED target is still retired. A remote provider cannot be told
+  // about the grant, so there supersedes is dropped (fail closed) and the id
+  // reported. `refused` (E-RETIRE-NEEDS-KB-MAINTAINER, response field, same as
+  // kb_invalidate) is present exactly when such a session passed supersedes.
+  const keepConfirmed = input.supersedes !== undefined && memberLacksKbMaintainer(anchor);
+  const remoteRefused = keepConfirmed && !isSqliteProject(target);
+  const entryInput = {
     type: input.type,
     title: input.title,
     summary: input.summary,
@@ -172,8 +185,18 @@ export async function kbCapture(input: KbCaptureInput, anchor?: KbAnchor): Promi
     source,
     confidence,
     scope,
-    supersedes: input.supersedes,
-  });
+    supersedes: remoteRefused ? undefined : input.supersedes,
+  };
+  const result = keepConfirmed && isSqliteProject(target)
+    ? await target.capture(entryInput, { keepConfirmed: true })
+    : await target.capture(entryInput);
+  const { id, audn_decision } = result;
 
+  if (keepConfirmed) {
+    const refused = remoteRefused
+      ? [input.supersedes!]
+      : ('refused' in result && Array.isArray(result.refused) ? result.refused : []);
+    return JSON.stringify({ id, audn_decision, confidence_clamped, refused });
+  }
   return JSON.stringify({ id, audn_decision, confidence_clamped });
 }

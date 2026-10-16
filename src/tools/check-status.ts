@@ -142,32 +142,37 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
     if (connResult.status === 'fulfilled' && connResult.value.ok) {
       row.status = 'online';
 
-      const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
       const provider = getProvider(agent.llmProvider);
 
-      // Run fleet process check and GPU utilization in parallel
-      const [busyResult, gpuResult] = await Promise.allSettled([
-        strategy.execCommand(cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName), 10000),
-        strategy.execCommand(cmds.gpuUtilization(), 10000),
-      ]);
-
-      if (busyResult.status === 'fulfilled') {
-        const output = busyResult.value.stdout.trim().toLowerCase();
-        if (output.includes('fleet-busy')) {
-          row.busy = busyLabel(agent.id);
-        } else if (output.includes('other-busy')) {
-          row.busy = 'idle*';
-        } else {
-          row.busy = 'idle';
-        }
+      if (agent.llmProvider === 'none' || !provider.processName) {
+        row.busy = 'idle';
       } else {
-        row.busy = 'unknown';
-      }
+        const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
 
-      if (gpuResult.status === 'fulfilled' && row.cloudInfo) {
-        const gpuNum = parseGpuUtilization(gpuResult.value.stdout);
-        if (gpuNum !== undefined) {
-          row.cloudInfo.gpuUtil = gpuNum;
+        // Run fleet process check and GPU utilization in parallel
+        const [busyResult, gpuResult] = await Promise.allSettled([
+          strategy.execCommand(cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName), 10000),
+          strategy.execCommand(cmds.gpuUtilization(), 10000),
+        ]);
+
+        if (busyResult.status === 'fulfilled') {
+          const output = busyResult.value.stdout.trim().toLowerCase();
+          if (output.includes('fleet-busy')) {
+            row.busy = busyLabel(agent.id);
+          } else if (output.includes('other-busy')) {
+            row.busy = 'idle*';
+          } else {
+            row.busy = 'idle';
+          }
+        } else {
+          row.busy = 'unknown';
+        }
+
+        if (gpuResult.status === 'fulfilled' && row.cloudInfo) {
+          const gpuNum = parseGpuUtilization(gpuResult.value.stdout);
+          if (gpuNum !== undefined) {
+            row.cloudInfo.gpuUtil = gpuNum;
+          }
         }
       }
     }
@@ -187,23 +192,27 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
     if (conn.ok) {
       row.status = 'online';
 
-      try {
-        const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
-        const provider = getProvider(agent.llmProvider);
-        const busyCheck = await strategy.execCommand(
-          cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),
-          10000,
-        );
-        const output = busyCheck.stdout.trim().toLowerCase();
-        if (output.includes('fleet-busy')) {
-          row.busy = 'BUSY';
-        } else if (output.includes('other-busy')) {
-          row.busy = 'idle*';
-        } else {
-          row.busy = 'idle';
+      const provider = getProvider(agent.llmProvider);
+      if (agent.llmProvider === 'none' || !provider.processName) {
+        row.busy = 'idle';
+      } else {
+        try {
+          const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
+          const busyCheck = await strategy.execCommand(
+            cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),
+            10000,
+          );
+          const output = busyCheck.stdout.trim().toLowerCase();
+          if (output.includes('fleet-busy')) {
+            row.busy = 'BUSY';
+          } else if (output.includes('other-busy')) {
+            row.busy = 'idle*';
+          } else {
+            row.busy = 'idle';
+          }
+        } catch {
+          row.busy = 'unknown';
         }
-      } catch {
-        row.busy = 'unknown';
       }
     }
   } catch {
@@ -265,7 +274,7 @@ function readGitNexusMeta(repoDir: string): GitNexusMeta | null {
 function currentHead(repoDir: string): string | null {
   try {
     return execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: repoDir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: repoDir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
   } catch {
     return null;
@@ -275,7 +284,7 @@ function currentHead(repoDir: string): string | null {
 function commitsBehindCount(repoDir: string, lastCommit: string, head: string): number | null {
   try {
     const out = execFileSync('git', ['rev-list', '--count', `${lastCommit}..${head}`], {
-      cwd: repoDir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: repoDir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
     const count = Number.parseInt(out, 10);
     return Number.isFinite(count) ? count : null;

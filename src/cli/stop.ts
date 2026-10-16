@@ -6,6 +6,7 @@ import { SERVER_INFO_PATH, FLEET_DIR, isNonDefaultInstance } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { isApraFleetProcess, isPidAlive, postShutdown } from '../utils/process-utils.js';
 import { writeStoppedMarker } from '../services/stopped-marker.js';
+import { showPendingServiceNotice } from '../services/service-notice.js';
 
 /**
  * Stop the fleet-supervisor service when it is registered. Best-effort and
@@ -45,6 +46,8 @@ export async function stopSupervisorServiceIfInstalled(opts: { strict?: boolean 
 }
 
 export async function runStop(_args: string[], opts: { strictSupervisor?: boolean } = {}): Promise<void> {
+  // Guidance a detached install (apra-fleet update) could not show.
+  showPendingServiceNotice();
   // A sandboxed instance (non-default port or data dir) must never touch the
   // machine-global service registrations (MCP server or fleet-supervisor) --
   // symmetric with runStart(). It stops only its own server via its data

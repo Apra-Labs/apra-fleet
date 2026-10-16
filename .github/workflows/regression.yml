@@ -197,3 +197,44 @@ jobs:
           path: ${{ runner.temp }}/fi-out
           retention-days: 14
           if-no-files-found: warn
+
+  # npm pack + npm install of this commit into a scratch consumer project,
+  # proving the undici 7.x pin propagates to an installed copy. Too slow for
+  # the per-PR vitest run (2-3 min on Windows), so vitest.config.ts excludes
+  # it unless APRA_RUN_PACK_INSTALL=1; this job is where it runs.
+  undici-pack-install:
+    name: undici-pack-install (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Configure Windows build tools
+        if: runner.os == 'Windows'
+        run: Add-Content $env:GITHUB_ENV "npm_config_msvs_version=2022"
+        shell: pwsh
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run undici pack/install test
+        timeout-minutes: 20
+        env:
+          APRA_RUN_PACK_INSTALL: '1'
+        run: npx vitest run tests/undici-pack-install.test.ts

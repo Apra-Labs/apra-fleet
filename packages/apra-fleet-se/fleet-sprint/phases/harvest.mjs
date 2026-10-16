@@ -46,9 +46,10 @@
 // import; dispatchRole/TURN_BASES and buildHarvesterPrompt live in real sibling
 // modules and are imported directly.
 //
-// THE COST BLOCK IS ENGINE-RENDERED, NOT HARVESTER-WRITTEN. It is appended
-// to analysisText (so the per-branch analysis document keeps a durable copy)
-// and returned for ./publish-pr.mjs to render in the PR body. The harvester no
+// THE COST BLOCK IS ENGINE-RENDERED, NOT HARVESTER-WRITTEN. It is NOT part of
+// analysisText (the harvester commits that text to the product branch, and
+// spend data does not belong there); it is returned for ./publish-pr.mjs to
+// render in the PR body. The harvester no
 // longer writes a CHANGELOG entry: a shared, prepend-only file conflicted on
 // every concurrent sprint PR merge.
 //
@@ -148,10 +149,10 @@ export async function runHarvestPhase({
         spend: integTestRunnerSpend,
         dispatchCount: integTestRunnerDispatchCount,
     });
-    // Fence built by repeat(): literal backtick runs here trip the shell-command
-    // guard's backtick-substitution check.
-    const fence = '`'.repeat(3);
-    const analysisText = [reportText, '## Cost', `${fence}\n${costAnalysis}\n${fence}`].join('\n\n');
+    // The harvester commits analysisText to the product branch, so it carries
+    // the sprint report ONLY: spend data stays out of the repository. The cost
+    // block is returned below for Publish PR, which renders it in the PR body.
+    const analysisText = reportText;
     const harvesterPrompt = buildHarvesterPrompt({
         branch: validated.branch,
         baseBranch: validated.baseBranch,

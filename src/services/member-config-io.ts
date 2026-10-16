@@ -16,10 +16,11 @@
 
 import type { Agent, SSHExecResult } from '../types.js';
 import type { MemberShell } from '../os/os-commands.js';
+import type { MemberMcpSyncContext } from '../providers/provider.js';
 import { isPosixShell } from '../utils/agent-helpers.js';
 import { escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { BUILTIN_DEFAULT_PORT, DEFAULT_PORT } from '../paths.js';
-import { MEMBER_DENIED_TOOLS } from './member-tool-allowlist.js';
+import { MEMBER_ALLOWED_TOOLS, MEMBER_DENIED_TOOLS } from './member-tool-allowlist.js';
 
 export type MemberExecFn = (command: string, timeoutMs?: number) => Promise<SSHExecResult>;
 
@@ -35,11 +36,15 @@ const FS_OP_TIMEOUT_MS = 15000;
  * machine. `?member=<uuid>` identifies the session as that member, which is
  * what reduces the served tool list to the member allowlist. A local member
  * shares this process's server, so it follows this process's port (honoring
- * an APRA_FLEET_PORT sandbox); a remote member talks to its own default
- * install.
+ * an APRA_FLEET_PORT sandbox); a remote member talks to its OWN install, on
+ * the port that install records in its member-install marker
+ * (agent.memberMcpPort, resolved on the member by the fleetMcp probe), or the
+ * built-in default when it recorded none (the probe reports that in fleetMcp
+ * detail). Two member installs on one host (one per Unix user) therefore each
+ * get their own server, never the other user's.
  */
-export function memberMcpUrl(agent: Pick<Agent, 'id' | 'agentType'>): string {
-  const port = agent.agentType === 'local' ? DEFAULT_PORT : BUILTIN_DEFAULT_PORT;
+export function memberMcpUrl(agent: Pick<Agent, 'id' | 'agentType' | 'memberMcpPort'>): string {
+  const port = agent.agentType === 'local' ? DEFAULT_PORT : (agent.memberMcpPort ?? BUILTIN_DEFAULT_PORT);
   return `http://localhost:${port}/mcp?member=${encodeURIComponent(agent.id)}`;
 }
 
@@ -47,6 +52,16 @@ export function memberMcpUrl(agent: Pick<Agent, 'id' | 'agentType'>): string {
  *  allowlist, on the member's apra-fleet server. Derived, never hand-listed. */
 export function claudeMemberDenyRules(): string[] {
   return MEMBER_DENIED_TOOLS.map(tool => `mcp__${MEMBER_MCP_SERVER_NAME}__${tool}`);
+}
+
+/** Allow rules, in Claude's mcp__<server>__<tool> form, for every fleet tool in
+ *  the member allowlist (kb_*, code_* and the self-reporting tools) -- never a
+ *  maintainer-only or never-served tool. compose_permissions adds them to every
+ *  composed profile so an acceptEdits session (a model without auto support)
+ *  is not refused a member tool for lack of an allow rule. Derived, never
+ *  hand-listed; agy maps the same tokens to mcp(<server>/<tool>). */
+export function memberMcpAllowRules(): string[] {
+  return MEMBER_ALLOWED_TOOLS.map(tool => `mcp__${MEMBER_MCP_SERVER_NAME}__${tool}`);
 }
 
 /** agy permission deny rules: same complement, in agy's mcp(<server>/<tool>) form. */
@@ -138,6 +153,23 @@ function dirOf(absPath: string, posix: boolean): string {
   return posix
     ? absPath.split('/').slice(0, -1).join('/')
     : absPath.replace(/\//g, '\\').split('\\').slice(0, -1).join('\\');
+}
+
+/**
+ * Command string that moves `staged` to `target`, making any missing parent
+ * directory along the way. Target directory permissions follow the member's
+ * default; only the staged file itself carries owner-only permissions
+ * (creating its directory). POSIX also forces 0600 on the result; the staged
+ * file is owner-only already. Carries resolved, quoted paths only.
+ */
+export function moveStagedFileCommand(staged: string, target: string, posix: boolean): string {
+  if (posix) {
+    const dir = target.split('/').slice(0, -1).join('/');
+    return `mkdir -p ${quotePosixPath(dir)} && mv -f ${quotePosixPath(staged)} ${quotePosixPath(target)} && chmod 600 ${quotePosixPath(target)}`;
+  }
+  const t = target.replace(/\//g, '\\');
+  const dir = t.split('\\').slice(0, -1).join('\\');
+  return `New-Item -ItemType Directory -Force -Path ${quotePwshPath(dir)} | Out-Null; Move-Item -Force -LiteralPath ${quotePwshPath(staged.replace(/\//g, '\\'))} -Destination ${quotePwshPath(t)}`;
 }
 
 /**
@@ -251,6 +283,48 @@ export async function isGitTracked(
   return r.code === 0;
 }
 
+/**
+ * The command that prints the git repository root of `workFolder` on the
+ * member. Resolved path, quoted per shell (quotePosixPath / quotePwshPath), no
+ * $VAR, ~ or backtick expansion for the member shell to perform.
+ */
+export function memberRepoRootCommand(workFolder: string, isWindows: boolean, posix: boolean): string {
+  const wf = isWindows && !posix ? workFolder.replace(/\//g, '\\') : workFolder.replace(/\\/g, '/');
+  const q = posix ? quotePosixPath : quotePwshPath;
+  return `git -C ${q(wf)} rev-parse --show-toplevel`;
+}
+
+/** Forward-slash, no trailing slash: the form Claude's project keys take. */
+export function normalizeProjectKey(p: string): string {
+  return p.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+/**
+ * The key Claude Code files a work folder's LOCAL-scope MCP servers under in
+ * its config file (projects[<key>].mcpServers): the git repository root of the
+ * folder, or the exact folder outside a git repo (git missing, not a repo, an
+ * unusable answer). The ONE resolver for both the writer (syncMemberMcpEntry)
+ * and the fleetMcp probe, so they can never disagree on the key.
+ */
+export async function resolveClaudeProjectKey(
+  exec: MemberExecFn,
+  workFolder: string,
+  isWindows: boolean,
+  posix: boolean,
+): Promise<string> {
+  const fallback = normalizeProjectKey(workFolder);
+  try {
+    const r = await exec(memberRepoRootCommand(workFolder, isWindows, posix), FS_OP_TIMEOUT_MS);
+    if (r.code !== 0) return fallback;
+    const root = (r.stdout ?? '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).pop();
+    if (!root) return fallback;
+    const absolute = root.startsWith('/') || /^[A-Za-z]:[\\/]/.test(root);
+    return absolute ? normalizeProjectKey(root) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 /** Reads and parses a member-side JSON file. Returns {} for a missing/empty
  *  file; THROWS a typed MemberConfigError for an unreadable file or a non-empty
  *  file that is not a JSON object, so a caller can never clobber a file it
@@ -303,6 +377,25 @@ export async function writeMemberFile(exec: MemberExecFn, absPath: string, conte
 /** Writes a JSON object to a member-side file (pretty-printed), verified. */
 export async function writeMemberJson(exec: MemberExecFn, absPath: string, obj: Record<string, unknown>, posix: boolean): Promise<void> {
   await writeMemberFile(exec, absPath, JSON.stringify(obj, null, 2), posix);
+}
+
+/**
+ * Writes a config file that carries a member access secret WITHOUT the
+ * content ever appearing in a command string: staged in an owner-only file
+ * through the secret-file channel, then moved into place by a content-free
+ * command (the file stays owner-only, 0600 on POSIX). No channel -> throws loudly;
+ * there is no inline fallback.
+ */
+export async function writeSecretBearingConfig(ctx: MemberMcpSyncContext, file: string, content: string, posix: boolean): Promise<void> {
+  if (!ctx.secretChannel) {
+    throw new Error(`E-MEMBER-CONFIG-NO-FILE-CHANNEL: cannot write ${file} on the member without putting the member access secret on a command line; no secret-file channel is available for this member. Enable the SFTP subsystem on the member's sshd, or use a member type with a file channel.`);
+  }
+  const staged = await ctx.secretChannel.write(content);
+  const r = await ctx.execCommand(moveStagedFileCommand(staged, file, posix), FS_OP_TIMEOUT_MS);
+  if (r.code !== 0) {
+    try { await ctx.secretChannel.remove(staged); } catch { /* best effort */ }
+    throw new Error(`moving the staged config into ${file} failed (exit ${r.code}): ${(r.stderr || r.stdout || '').trim().slice(0, 300)}`);
+  }
 }
 
 /** Deletes a member-side file (no error when it is already gone). */

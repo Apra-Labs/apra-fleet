@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- combined member + issue-scope reservation ledger
+// fleet-sprint supervisor -- combined member + issue-scope reservation ledger
 // (apra-fleet-eft.5.1, Plan Part 2.2)
 // =============================================================================
 //

@@ -85,10 +85,13 @@ function makeSlowCommandMock(slowMatch) {
     return { command, calls, resolveGate: gate.resolve, wasGateHit: () => gateHit };
 }
 
-// Yield the microtask queue a few times so an async function's execution
+// Yield the microtask queue enough times that an async function's execution
 // reaches (and blocks on) the gate before the test inspects bracket state.
+// Every awaited pre-push step (the sync.remote pre-gate, the D-push landed
+// check's pre-push read) costs a few hops; the mocks resolve without any
+// timer, so a fixed microtask budget stays deterministic.
 async function letMicrotasksDrain() {
-    for (let i = 0; i < 5; i++) await Promise.resolve();
+    for (let i = 0; i < 50; i++) await Promise.resolve();
 }
 
 describe('apra-fleet-3swo.4.2: the pause guard is false for the FULL duration of both known holes', () => {

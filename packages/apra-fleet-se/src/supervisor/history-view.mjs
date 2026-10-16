@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- process-free History view (apra-fleet-eft.6.5)
+// fleet-sprint supervisor -- process-free History view (apra-fleet-eft.6.5)
 // =============================================================================
 //
 // Renders a finished sprint's persisted terminal state
@@ -151,7 +151,7 @@ export function resolveOldSprintPath(sprintId, env) {
  * shape. Core now stores the workflow script's own return value WHOLESALE
  * and opaquely as `state.result` (docs/workflow-core-boundary-
  * refactoring.md M2), which is what both the generic Result strip and this
- * package's own verdict-badge/PR-link extension (auto-sprint/
+ * package's own verdict-badge/PR-link extension (fleet-sprint/
  * viewer-extensions.mjs's `renderResultExtrasHtml`) read. Backfilling
  * `state.result` here -- the se-owned reader shim -- is what lets a
  * pre-rename file's verdict/PR still render in the History view without

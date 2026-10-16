@@ -458,7 +458,7 @@ export function execBdSync(
         const scriptPath = resolveConfiguredWindowsBd(configuredInvocation.bdPath);
         if (scriptPath) {
             const nodeCmd = configuredInvocation.nodePath ?? process.execPath;
-            const out = execFileSyncImpl(nodeCmd, [scriptPath, ...args], { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: false });
+            const out = execFileSyncImpl(nodeCmd, [scriptPath, ...args], { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, ...options, shell: false });
             warnIfLargeBdOutput(args, out);
             return out;
         }
@@ -469,7 +469,7 @@ export function execBdSync(
         // win32 still needs `{ shell: true }` to get past CreateProcess's
         // cannot-exec-a-shebang-script limitation).
         const needsShellConfigured = (platform === 'win32');
-        const execOptionsConfigured = { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: needsShellConfigured };
+        const execOptionsConfigured = { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, ...options, shell: needsShellConfigured };
         // D1 fix (apra-fleet-i9ag.19.7 amended AC A1): on POSIX, when a
         // nodePath is also configured, prepend its directory to the child's
         // PATH -- see withConfiguredNodeDirOnPath()'s doc comment for why.
@@ -496,7 +496,7 @@ export function execBdSync(
     // Unconfigured (unchanged from before this fix).
     const scriptPath = resolveWindowsBd();
     if (scriptPath) {
-        const out = execFileSyncImpl(process.execPath, [scriptPath, ...args], { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: false });
+        const out = execFileSyncImpl(process.execPath, [scriptPath, ...args], { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, ...options, shell: false });
         warnIfLargeBdOutput(args, out);
         return out;
     }
@@ -510,7 +510,7 @@ export function execBdSync(
     // always be a no-op -- deliberately not applied, to keep this documented
     // byte-for-byte-unchanged case exactly that.
     const needsShell = (platform === 'win32');
-    const out = execFileSyncImpl('bd', args, { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: needsShell });
+    const out = execFileSyncImpl('bd', args, { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, ...options, shell: needsShell });
     warnIfLargeBdOutput(args, out);
     return out;
 }
@@ -661,7 +661,7 @@ export function execBdAsync(args, options = {}, execFileAsyncImpl = nodeExecFile
     // maxBuffer first so an explicit caller-supplied value still wins; without
     // it Node's 1MiB default kills the child on a large `bd list` (see the
     // BD_MAX_BUFFER_BYTES block above).
-    const asyncOptions = { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: true };
+    const asyncOptions = { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, ...options, shell: true };
     // D1 fix (apra-fleet-i9ag.19.7 amended AC A1): same POSIX PATH-prepend
     // strategy as execBdSync's configured branch (see
     // withConfiguredNodeDirOnPath()'s doc comment) -- a configured bdPath

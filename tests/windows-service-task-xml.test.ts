@@ -30,6 +30,7 @@ vi.mock('../src/services/service-start-guard.js', () => ({
 import {
   WindowsServiceManager, buildTaskXml, resolveTaskUserId, localStartBoundary, repeatMinutesFrom,
   RUN_KEY, RUN_VALUE, buildWrapperBat, buildLauncherJs, launcherPathFor, launcherArguments, wscriptPath, asciiJsString,
+  schtasksErrorReason,
 } from '../src/services/service-manager/windows.js';
 import { spawnSync } from 'node:child_process';
 import { formatServiceLabel } from '../src/cli/status.js';
@@ -90,14 +91,26 @@ describe('buildTaskXml', () => {
 });
 
 describe('task user, start boundary, repeat interval', () => {
-  it('resolves DOMAIN\\user from USERDOMAIN/USERNAME without a shell', () => {
-    const whoami = vi.fn(() => 'x\\y');
-    expect(resolveTaskUserId(USER_ENV, whoami)).toBe('BOX\\alice');
-    expect(whoami).not.toHaveBeenCalled();
+  it('resolves DOMAIN\\user from the process token (whoami), never env USERDOMAIN (WORKGROUP under SSH)', () => {
+    const saved = { d: process.env.USERDOMAIN, u: process.env.USERNAME };
+    process.env.USERDOMAIN = 'WORKGROUP';
+    process.env.USERNAME = 'alice';
+    try {
+      expect(resolveTaskUserId(() => 'box\\alice\r\n')).toBe('box\\alice');
+    } finally {
+      if (saved.d === undefined) delete process.env.USERDOMAIN; else process.env.USERDOMAIN = saved.d;
+      if (saved.u === undefined) delete process.env.USERNAME; else process.env.USERNAME = saved.u;
+    }
   });
 
-  it('falls back to whoami when the env lacks USERDOMAIN', () => {
-    expect(resolveTaskUserId({ USERNAME: 'alice' }, () => 'box\\alice\r\n')).toBe('box\\alice');
+  it('keeps a domain account from whoami', () => {
+    expect(resolveTaskUserId(() => 'corp\\alice')).toBe('corp\\alice');
+  });
+
+  it('falls back to the bare token user name when whoami fails', () => {
+    const name = resolveTaskUserId(() => { throw new Error('denied'); });
+    expect(name).not.toContain('\\');
+    expect(name.length).toBeGreaterThan(0);
   });
 
   it('formats a local StartBoundary', () => {
@@ -152,13 +165,16 @@ describe('WindowsServiceManager lifecycle', () => {
 
   function mgr(env: Record<string, string | undefined> = USER_ENV) {
     return new WindowsServiceManager('mcp-server', schtasks as any, wrapper, {
-      runReg: reg as any, env, now: () => NOW,
+      runReg: reg as any, env, now: () => NOW, whoami: () => 'BOX\\alice',
       spawnDetached: (c, a, v) => { spawned.push([c, a]); verbatim.push(!!v); order.push(`spawn ${c} ${a.join(' ')}`); },
       probeWsh: () => wsh, stoppedByUser: () => stoppedByUser,
     });
   }
 
+  let cwdEntriesBefore: string[];
+
   beforeEach(() => {
+    cwdEntriesBefore = fs.readdirSync(process.cwd());
     vi.clearAllMocks();
     order.length = 0;
     wsh = true;
@@ -198,6 +214,15 @@ describe('WindowsServiceManager lifecycle', () => {
 
   afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
+    // Nothing may leak into the cwd (relative '\\tmp\\fleet-wintask-*' launcher, 'C:\\' log dir).
+    const leaked = fs.readdirSync(process.cwd()).filter(n => !cwdEntriesBefore.includes(n));
+    for (const n of leaked) fs.rmSync(path.join(process.cwd(), n), { recursive: true, force: true });
+    expect(leaked).toEqual([]);
+  });
+
+  it('launcherPathFor keeps the launcher beside the wrapper for POSIX and Windows paths', () => {
+    expect(launcherPathFor('/tmp/x/apra-fleet-service.bat')).toBe('/tmp/x/apra-fleet-service.js');
+    expect(launcherPathFor('C:\\a\\apra-fleet-service.bat')).toBe('C:\\a\\apra-fleet-service.js');
   });
 
   it('register writes a UTF-16LE (BOM) task XML for the current user, /create /xml /f, then removes the XML', async () => {
@@ -332,6 +357,18 @@ describe('WindowsServiceManager lifecycle', () => {
       expect(fs.readFileSync(launcherPathFor(wrapper), 'utf8')).toContain(JSON.stringify(wrapper));
       expect(warn.mock.calls.join(' ')).not.toMatch(/Windows Script Host is unavailable/);
       warn.mockRestore();
+    });
+
+    it('says why the task could not be created before falling back to the Run entry', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect(await mgr().register('x.exe', [], 'l')).toBe('run-key');
+      expect(warn.mock.calls.join(' ')).toMatch(/schtasks \/create failed: ERROR: Access is denied\./);
+      warn.mockRestore();
+    });
+
+    it('drops the execFileSync command-line prefix from the reason', () => {
+      expect(schtasksErrorReason('Command failed: schtasks /create /tn ApraFleet /xml C:\\x.xml /f\nERROR: The task XML is malformed.\r\n(8,4):UserId:\r\n'))
+        .toBe('ERROR: The task XML is malformed. (8,4):UserId:');
     });
 
     it('XML create denied and no task to reuse -> per-user Run entry for the wrapper, result run-key', async () => {

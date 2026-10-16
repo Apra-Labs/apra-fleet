@@ -4,10 +4,14 @@ import path from 'node:path';
 import {
   REGISTERED_TOOL_NAMES,
   MEMBER_ALLOWED_TOOLS,
+  MEMBER_BASE_TOOLS,
   MEMBER_CHANNEL_TOOLS,
   MEMBER_DENIED_TOOLS,
   ORCHESTRATOR_ONLY_TOOLS,
+  MEMBER_MAINTAINER_TOOLS,
+  MEMBER_NEVER_TOOLS,
   isMemberAllowedTool,
+  isMemberMaintainerTool,
 } from '../../src/services/member-tool-allowlist.js';
 
 // Enumerate the registry's own registrations from source, so this test never
@@ -26,12 +30,35 @@ describe('member tool allowlist', () => {
     expect([...REGISTERED_TOOL_NAMES].sort()).toEqual([...registered].sort());
   });
 
-  it('contains every registered kb_* and code_* tool plus version, report_status and session_stats', () => {
-    const kbCode = registered.filter(t => t.startsWith('kb_') || t.startsWith('code_'));
-    expect(kbCode.length).toBeGreaterThan(0);
-    for (const t of [...kbCode, 'version', 'report_status', 'session_stats']) {
+  it('contains every registered code_* tool, the non-minting kb_* tools, and version, report_status and session_stats', () => {
+    const code = registered.filter(t => t.startsWith('code_'));
+    expect(code.length).toBeGreaterThan(0);
+    for (const t of [...code, 'version', 'report_status', 'session_stats']) expect(MEMBER_ALLOWED_TOOLS).toContain(t);
+    for (const t of ['kb_capture', 'kb_query', 'kb_list', 'kb_session_prime', 'kb_stats', 'kb_import', 'kb_bible_commit']) {
       expect(MEMBER_ALLOWED_TOOLS).toContain(t);
     }
+  });
+
+  it('never serves kb_setup or kb_export, and keeps the CONFIRMED-minting tools (kb_promote / kb_resolve_contradiction / kb_reconcile_prefilter) to the maintainer grant', () => {
+    expect([...MEMBER_NEVER_TOOLS].sort()).toEqual(['kb_export', 'kb_setup']);
+    expect([...MEMBER_MAINTAINER_TOOLS].sort()).toEqual(['kb_promote', 'kb_reconcile_prefilter', 'kb_resolve_contradiction']);
+    for (const t of [...MEMBER_NEVER_TOOLS, ...MEMBER_MAINTAINER_TOOLS]) {
+      expect(MEMBER_ALLOWED_TOOLS).not.toContain(t);
+      expect(isMemberAllowedTool(t)).toBe(false);
+      // Client-side deny rules (claude, agy) deny them on every agent session.
+      expect(MEMBER_DENIED_TOOLS).toContain(t);
+    }
+    for (const t of MEMBER_MAINTAINER_TOOLS) expect(isMemberMaintainerTool(t)).toBe(true);
+    for (const t of MEMBER_NEVER_TOOLS) expect(isMemberMaintainerTool(t)).toBe(false);
+  });
+
+  it('classifies every registered kb_* tool exactly once: base, maintainer-only or never', () => {
+    const kb = registered.filter(t => t.startsWith('kb_'));
+    for (const t of kb) {
+      const homes = [MEMBER_BASE_TOOLS, MEMBER_MAINTAINER_TOOLS, MEMBER_NEVER_TOOLS].filter(l => l.includes(t)).length;
+      expect(homes, t).toBe(1);
+    }
+    for (const t of [...MEMBER_BASE_TOOLS, ...MEMBER_MAINTAINER_TOOLS, ...MEMBER_NEVER_TOOLS]) expect(registered).toContain(t);
   });
 
   it('excludes dispatch, file-transfer, member, credential, admin and shutdown tools', () => {
@@ -49,14 +76,15 @@ describe('member tool allowlist', () => {
     for (const t of excluded) expect(MEMBER_ALLOWED_TOOLS).not.toContain(t);
   });
 
-  it('is exactly the registered tools that the rule allows (no unregistered names)', () => {
+  it('is exactly the registered tools in the explicit base list (no unregistered names)', () => {
     expect([...MEMBER_ALLOWED_TOOLS]).toEqual(registered.filter(isMemberAllowedTool).sort((a, b) =>
       REGISTERED_TOOL_NAMES.indexOf(a) - REGISTERED_TOOL_NAMES.indexOf(b)));
     for (const t of MEMBER_ALLOWED_TOOLS) expect(registered).toContain(t);
   });
 
-  it('allows not-yet-registered kb_/code_ tools and session_stats by rule', () => {
-    expect(isMemberAllowedTool('code_reindex')).toBe(true);
+  it('is explicit: an unlisted kb_/code_ name is not member-allowed', () => {
+    expect(isMemberAllowedTool('kb_some_future_tool')).toBe(false);
+    expect(isMemberAllowedTool('code_some_future_tool')).toBe(false);
     expect(isMemberAllowedTool('code_status')).toBe(true);
     expect(isMemberAllowedTool('session_stats')).toBe(true);
     expect(isMemberAllowedTool('execute_prompt')).toBe(false);
@@ -84,6 +112,22 @@ describe('member tool allowlist', () => {
     for (const t of MEMBER_CHANNEL_TOOLS) {
       expect(MEMBER_ALLOWED_TOOLS).not.toContain(t);
       expect(isMemberAllowedTool(t)).toBe(false);
+    }
+  });
+
+  it('the kb-reconciler tag profile grants a member agent session only tools a member session is served', () => {
+    const profile = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../skills/fleet/profiles/tag-kb-reconciler.json'), 'utf8')) as Record<string, string[]>;
+    const roles = Object.keys(profile);
+    expect(roles.length).toBeGreaterThan(0);
+    for (const role of roles) {
+      const fleetTools = profile[role]
+        .filter(g => g.startsWith('mcp__apra-fleet__'))
+        .map(g => g.slice('mcp__apra-fleet__'.length));
+      expect(fleetTools.length, role).toBeGreaterThan(0);
+      for (const t of fleetTools) {
+        expect(MEMBER_ALLOWED_TOOLS, `${role} grants ${t}`).toContain(t);
+        expect(MEMBER_DENIED_TOOLS, `${role} grants ${t}`).not.toContain(t);
+      }
     }
   });
 });

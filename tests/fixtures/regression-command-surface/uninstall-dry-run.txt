@@ -2,7 +2,6 @@
 Uninstalling Apra Fleet {VERSION}... (DRY RUN)
 
   - Removing MCP server service registration
-  - Removing fleet-supervisor service registration
 Cleaning up Claude...
   - Removing MCP server via Claude CLI
   - Removing PM skills: {PM_SKILLS_DIR}
@@ -15,6 +14,10 @@ Cleaning up workflow subsystem...
   - Removing workflow runtime: {NODE_MODULES_DIR}
   - Removing workflow schemas: {SCHEMAS_DIR}
   - Removing workflows directory: {WORKFLOWS_DIR}
+
+Kept (intentionally):
+  - {FLEET_DATA_DIR}: registry, logs and credentials (kept so a reinstall keeps your fleet)
+  - {FLEET_KEY_PATH}: JWT signing key -- lives OUTSIDE data/, so back it up separately from data/
 
 Uninstall complete.
 

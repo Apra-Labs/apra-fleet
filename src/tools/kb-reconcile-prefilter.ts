@@ -12,7 +12,9 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 // mechanically via resolveContradiction (evidence "hash-basis match on merged
 // worktree", the SAME single write path kb_resolve_contradiction exposes to
 // the reconciler agent). Both match, both mismatch, or either side has an
-// empty/missing basis -> left untouched for the agent rung. Pairs involving
+// empty/missing basis -> left untouched for the agent rung. A pair whose
+// would-be loser is CONFIRMED is likewise left for the agent rung (a CONFIRMED
+// entry is never retired by hash basis alone). Pairs involving
 // an ACTIVE user-directive are never touched (no resolve, no supersede, no
 // flag-clear) -- directives outrank mechanics.
 export const kbReconcilePrefilterSchema = z.object({

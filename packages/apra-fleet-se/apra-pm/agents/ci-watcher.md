@@ -34,12 +34,27 @@ continue without KB. A missing or failing KB or code tool is never a reason to s
 never report this dispatch as blocked because of it. From whichever source you have,
 trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
+If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
+your tool-loading tool first, before concluding they are unavailable.
+
 1. When the tools are present, call `kb_session_prime` with `hint_modules` naming the
    repo's CI workflow files. Known-flaky tests and known CI failure modes are the point
    here -- they change how you read a red run.
 2. Record nothing in the KB. You poll a status API; you verify no claim about this
    repository, so you have no basis to write one down. If a known failure mode explains
    a red run, say so in your `notes`.
+
+### Persistent Memories (operational rules)
+
+Before checking CI runs, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +ci-watcher+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+ci-watcher+`.
 
 ## Step 1 -- List recent CI runs
 
@@ -109,3 +124,7 @@ or as prose if you are answering a human directly.
 - Do NOT trigger CI manually unless explicitly asked
 - Do NOT interpret CI configuration files -- only observe run results
 - Time limit: 10 minutes total before returning `pending`
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.

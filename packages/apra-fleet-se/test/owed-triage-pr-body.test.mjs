@@ -150,7 +150,7 @@ async function publish({ verdict, owedTriage, member }) {
 describe('runPublishPrPhase passes owed triage to the VCS layer', () => {
     test('non-empty triage reaches the created PR body; the PASS title is unchanged', async () => {
         const pr = await publish({ verdict: 'PASS', owedTriage: fullTriage(), member: 'owed-pub-1' });
-        assert.equal(pr.title, 'Auto-sprint [PASS]: feat/x');
+        assert.equal(pr.title, 'fleet-sprint [PASS]: feat/x');
         assert.ok(pr.body.includes('### Owed triage'), pr.body);
         assert.ok(pr.body.includes('ROOT.1') && pr.body.includes('ROOT.2') && pr.body.includes('ROOT.3') && pr.body.includes('Rejected finding title'));
         assert.match(pr.body, /^## Sprint verdict: PASS \(owed triage: 4 item\(s\) -- PASS is NOT clean\)/);
