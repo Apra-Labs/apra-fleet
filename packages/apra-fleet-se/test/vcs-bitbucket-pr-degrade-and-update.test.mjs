@@ -117,7 +117,9 @@ async function abortRun({ bb, member }) {
     return { result, logs };
 }
 
-const REMEDY_URL = 'https://id.atlassian.com/manage-profile/security/api-tokens';
+// Regex (not substring) checks: these are log-text assertions, not URL validation.
+const REMEDY_URL_RE = /https:\/\/id\.atlassian\.com\/manage-profile\/security\/api-tokens/;
+const PR_URL_RE = /https:\/\/bitbucket\.org\/acme\/widgets\/pull-requests\/42/;
 
 describe('(a) no Bitbucket credential on the member degrades, never fails the sprint', () => {
     for (const [label, registered, credential] of [
@@ -131,7 +133,7 @@ describe('(a) no Bitbucket credential on the member degrades, never fails the sp
             assert.deepEqual(result, { pushed: true });
             const skipped = logs.find((m) => m.startsWith('[Publish PR Skipped]'));
             assert.ok(skipped, JSON.stringify(logs));
-            assert.ok(skipped.includes(credential) && skipped.includes(REMEDY_URL), skipped);
+            assert.ok(skipped.includes(credential) && REMEDY_URL_RE.test(skipped), skipped);
             assert.ok(skipped.includes(BitbucketVCS.authRemedy.hint), skipped);
             assert.deepEqual(bb.provisionCalls, [], 'the push+pr path must never dispatch provision_vcs_auth (no interactive prompt)');
         });
@@ -142,7 +144,7 @@ describe('(a) no Bitbucket credential on the member degrades, never fails the sp
         const { result, logs } = await abortRun({ bb, member: 'bb-abort-nocred' });
         assert.equal(result.reason, 'pr-auth-failed', JSON.stringify({ result, logs }));
         assert.equal(result.pushed, true);
-        assert.ok(logs.some((m) => m.includes(REMEDY_URL)), JSON.stringify(logs));
+        assert.ok(logs.some((m) => REMEDY_URL_RE.test(m)), JSON.stringify(logs));
     });
 });
 
@@ -156,7 +158,7 @@ describe('(b) a relaunch rewrites the open Bitbucket PR', () => {
         assert.deepEqual(bb.calls, ['POST', 'POST', 'GET', 'PUT']);
         assert.equal(bb.pr.title, 'fleet-sprint [PASS]: feat/x');
         assert.ok(bb.pr.description.includes('all good') && !bb.pr.description.includes('gate failed'), bb.pr.description);
-        assert.ok(logs.some((m) => m.includes('updated its title and body') && m.includes(PR_URL)), JSON.stringify(logs));
+        assert.ok(logs.some((m) => m.includes('updated its title and body') && PR_URL_RE.test(m)), JSON.stringify(logs));
         const find = bb.execCommands.find((c) => c.startsWith('curl -sS -X GET'));
         assert.ok(find.includes("-u '{{vcs_username_inline}}:{{vcs_token_inline}}'"), `find must authenticate with both halves: ${find}`);
     });
@@ -188,11 +190,11 @@ describe('(c) auth failures on a skip-provisioned provider', () => {
         assert.deepEqual(bb.calls, ['POST']);
         assert.deepEqual(bb.provisionCalls, []);
         const skipped = logs.find((m) => m.startsWith('[Publish PR Skipped]'));
-        assert.ok(skipped && skipped.includes('HTTP 401') && skipped.includes(REMEDY_URL), JSON.stringify(logs));
+        assert.ok(skipped && skipped.includes('HTTP 401') && REMEDY_URL_RE.test(skipped), JSON.stringify(logs));
     });
 
     test('the remedy points at Atlassian API tokens, not the retired app-password page', () => {
-        assert.ok(BitbucketVCS.authRemedy.hint.includes(REMEDY_URL));
+        assert.ok(REMEDY_URL_RE.test(BitbucketVCS.authRemedy.hint));
         assert.ok(BitbucketVCS.authRemedy.hint.includes('write:pullrequest:bitbucket'));
         assert.ok(!BitbucketVCS.authRemedy.hint.includes('account/settings/app-passwords'));
     });
