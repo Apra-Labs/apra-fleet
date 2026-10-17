@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
-import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 const L2_CONTENT_CAP = 3200;
 
@@ -63,8 +62,10 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // the confidence filter, so it is answered from the view too.
   // An explicit INFERRED/UNVERIFIED request in a MEMBER session goes to the
   // per-repo DB and sees only the caller's own captures (ownerTag).
-  const { providers, ownerTag } = await getSelfReadKb(anchor, input.flagged_only ? undefined : input.confidence);
-  if (ownerTag !== undefined) requireSqliteProject(providers.project, 'kb_query');
+  // Under an http project provider (serverRecall) a MEMBER read of any tier
+  // goes to the server; ownerTag is enforced the same way, fleet-side.
+  const { providers, ownerTag } = await getSelfReadKb(
+    anchor, input.flagged_only ? undefined : input.confidence, { serverRecall: true });
 
   if (input.flagged_only) {
     const flaggedOpts = {

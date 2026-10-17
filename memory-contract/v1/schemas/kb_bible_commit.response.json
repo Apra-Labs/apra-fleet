@@ -121,6 +121,13 @@
             },
             "committed": {
               "type": "boolean"
+            },
+            "bible_skipped": {
+              "type": "boolean",
+              "const": true
+            },
+            "reason": {
+              "type": "string"
             }
           },
           "required": [

@@ -1,0 +1,15 @@
+{
+  "tool": "kb_promote",
+  "case": "refusal-kb-http-unsupported",
+  "kind": "refusal",
+  "request": {
+    "id": "9d4e7a10-3b2c-4f5e-8a61-2c7d0e9b4f13",
+    "reason": "Attempting to promote an entry another member captured."
+  },
+  "error": {
+    "message": "E-KB-HTTP-UNSUPPORTED: member own-scope (the server returned entries without tags) is not supported by the http KB provider; nothing was promoted or read. Remediation: use a KB server that returns entry tags, or a local SQLite KB (kb_setup provider sqlite).",
+    "thrown": true
+  },
+  "expected_error_code": "E-KB-HTTP-UNSUPPORTED",
+  "session": "HTTP_UNTAGGED"
+}

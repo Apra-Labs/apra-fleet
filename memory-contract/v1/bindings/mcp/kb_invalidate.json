@@ -1,7 +1,7 @@
 {
   "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bindings/mcp/kb_invalidate.json#",
   "name": "kb_invalidate",
-  "description": "Mark context-cache entries stale for the given file paths (pass files), or discard entries by id (pass ids): discarding sets superseded_at so the entry drops out of every read. Exactly one of files or ids. ids returns {discarded, not_found, already_discarded}. In a MEMBER session both forms act only on entries tagged member:<caller uuid>: files leaves other entries for those files untouched, and with ids any other id is reported in not_found and changes nothing. A MEMBER session without the kb_maintainer grant cannot retire a CONFIRMED entry by either form (a retired entry leaves the bible at the next kb_bible_commit): such ids are left untouched and listed in refused, which the response carries exactly for such a session. Call after modifying files to ensure the KB reflects the current state. Scope: always the calling session's own KB -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument (the removed repo_path, repo and repo_remote_url keys fail with E-SCOPE-KEY-REMOVED). Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).",
+  "description": "Mark context-cache entries stale for the given file paths (pass files), or discard entries by id (pass ids): discarding sets superseded_at so the entry drops out of every read. Exactly one of files or ids. ids returns {discarded, not_found, already_discarded}. In a MEMBER session both forms act only on entries tagged member:<caller uuid>: files leaves other entries for those files untouched, and with ids any other id is reported in not_found and changes nothing. A MEMBER session without the kb_maintainer grant cannot retire a CONFIRMED entry by either form (a retired entry leaves the bible at the next kb_bible_commit): such ids are left untouched and listed in refused, which the response carries exactly for such a session. Under an http KB provider the ids form is refused with E-KB-HTTP-UNSUPPORTED and nothing is discarded. Call after modifying files to ensure the KB reflects the current state. Scope: always the calling session's own KB -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument (the removed repo_path, repo and repo_remote_url keys fail with E-SCOPE-KEY-REMOVED). Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).",
   "request": {
     "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_invalidate.request.json#"
   },
@@ -29,6 +29,9 @@
     },
     {
       "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-SELF-NO-REMOTE"
+    },
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-UNSUPPORTED"
     }
   ]
 }

@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
-import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 export const kbPromoteSchema = z.object({
   id: z.string().min(1).describe('ID of the KB entry to promote'),
@@ -17,10 +16,11 @@ export async function kbPromote(input: KbPromoteInput, anchor?: KbAnchor): Promi
   const providers = await getSelfKbProviders(anchor);
 
   // MEMBER session: only the caller's own captures (member:<uuid>) can be
-  // promoted; any other id is the same not-found as an unknown id.
+  // promoted; any other id is the same not-found as an unknown id. Both
+  // providers enforce it (the http one checks the entry's tags fleet-side).
   const ownerTag = memberOwnerTag(anchor);
   const result = ownerTag !== undefined
-    ? await requireSqliteProject(providers.project, 'kb_promote').promote(input.id, input.reason, { ownerTag })
+    ? await providers.project.promote(input.id, input.reason, { ownerTag })
     : await providers.project.promote(input.id, input.reason);
   return JSON.stringify({
     id: result.id,
