@@ -169,7 +169,8 @@ export async function runReviewPhase({
         ? await command(`bd show ${assignedBeadIds.join(' ')} --json`, { member_name: backlogMember, silent: true })
         : '[]';
 
-    // Empty-guard: when EVERY streak this round failed, assignedBeadIds
+    // Empty-guard: when no bead was verified closed this round (every
+    // streak failed before closing anything), assignedBeadIds
     // is [] and there is nothing for the Reviewer to look at. Skip the
     // dispatch entirely rather than sending an empty-scope review: an
     // empty review is prone to returning CHANGES_NEEDED with empty
@@ -180,7 +181,7 @@ export async function runReviewPhase({
     // still runs, so the loop correctly continues instead of prematurely
     // treating the cycle as organically complete.
     if (assignedBeadIds.length === 0) {
-        log(`Develop C${cycle} R${devRounds}: all streaks this round failed with no beadIds assigned -- skipping Review dispatch (nothing to review). Failed-streak beads remain ready for the next Develop round.`);
+        log(`Develop C${cycle} R${devRounds}: all streaks this round failed with no beadIds assigned -- skipping Review dispatch (nothing to review: no bead was verified closed this round). Failed-streak beads remain ready for the next Develop round.`);
     } else {
     // dispatchReview() applies the shared contract-violation
     // retry-once-then-throw rule (see its own doc comment and
