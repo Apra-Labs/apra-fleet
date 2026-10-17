@@ -228,16 +228,16 @@ test('vcs-bitbucket-publish-e2e: logSafeCommand - redacts both username and toke
         base: 'main',
         head: 'auto-sprint/feat-x',
         title: 'Test PR',
-        token: 'mock-bb-app-password',
+        token: 'mock-bb-api-token',
         username: 'bbuser@example.com',
         os: 'linux',
         shell: 'sh',
     });
 
-    check(built.command.includes('mock-bb-app-password'), `Expected command to carry real token, got: ${built.command}`);
+    check(built.command.includes('mock-bb-api-token'), `Expected command to carry real token, got: ${built.command}`);
     check(built.command.includes('bbuser@example.com'), `Expected command to carry real username, got: ${built.command}`);
     check(built.logSafeCommand.includes('***REDACTED***'), `Expected logSafeCommand to carry redaction marker, got: ${built.logSafeCommand}`);
-    check(!built.logSafeCommand.includes('mock-bb-app-password'), `Expected logSafeCommand to NOT contain token, got: ${built.logSafeCommand}`);
+    check(!built.logSafeCommand.includes('mock-bb-api-token'), `Expected logSafeCommand to NOT contain token, got: ${built.logSafeCommand}`);
     check(!built.logSafeCommand.includes('bbuser@example.com'), `Expected logSafeCommand to NOT contain username, got: ${built.logSafeCommand}`);
 });
 
@@ -297,7 +297,7 @@ test('finalizeAbort (Bitbucket): a canned 201 body maps to a PR URL constructed 
     // previously lacked. raiseVcsPrForMember's FIRST statement is the
     // just-in-time push+pr re-provision, so whatever it sends decides whether
     // a PR is ever attempted at all. BitbucketVCS.buildProvisionArgs answers
-    // `skip` at that git-access level (the app password has no scope axis to
+    // `skip` at that git-access level (the API token has no scope axis to
     // widen and cannot be re-assembled orchestrator-side), so the correct
     // dispatched-argument set here is the EMPTY one: nothing at all reaches
     // provision_vcs_auth, and the PR goes out on the credential already
@@ -347,7 +347,7 @@ test('finalizeAbort (Bitbucket): a canned 201 body maps to a PR URL constructed 
     // requires -- proving the bb-cred lane's placeholder substitution and
     // the bb-provider lane's builder actually meet.
     check(
-        prCmd.includes("-u 'mock-bitbucket-username:mock-bitbucket-app-password'"),
+        prCmd.includes("-u 'mock-bitbucket-username:mock-bitbucket-api-token'"),
         `Expected the curl -u argument to carry 'username:token' in that exact order after substitution, got: ${prCmd}`,
     );
     check(!prCmd.includes('{{vcs_username_inline}}') && !prCmd.includes('{{vcs_token_inline}}'), `Expected no unsubstituted placeholder in the dispatched command, got: ${prCmd}`);
@@ -445,7 +445,7 @@ test('BitbucketVCS.buildProvisionArgs: an UNREADABLE remote errors by its real c
 
 test('BitbucketVCS.authRemedy: declares a non-empty hint and serverSideReMintable:false', () => {
     check(!!BitbucketVCS.authRemedy, 'Expected BitbucketVCS to declare authRemedy');
-    check(BitbucketVCS.authRemedy.serverSideReMintable === false, `Bitbucket app passwords are minted by a human, never server-side; got: ${JSON.stringify(BitbucketVCS.authRemedy)}`);
+    check(BitbucketVCS.authRemedy.serverSideReMintable === false, `Bitbucket API tokens are minted by a human, never server-side; got: ${JSON.stringify(BitbucketVCS.authRemedy)}`);
     check(
         typeof BitbucketVCS.authRemedy.hint === 'string' && BitbucketVCS.authRemedy.hint.trim().length > 0,
         'Expected a non-empty authRemedy.hint -- the degrade path prints nothing without one',

@@ -344,7 +344,7 @@ function extractMockCurlJson(cmd) {
 const MOCK_VCS_CREDENTIAL_TOKENS = {
     github: 'mock-vcs-module-token',
     'azure-devops': 'mock-azure-devops-pat',
-    bitbucket: 'mock-bitbucket-app-password',
+    bitbucket: 'mock-bitbucket-api-token',
 };
 
 // apra-fleet-qeq1.6.1: the basic-auth USERNAME half of a label's credential,

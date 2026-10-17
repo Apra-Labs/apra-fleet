@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCreatePrCommand, capabilities } from '../fleet-sprint/vcs-module.mjs';
+import { buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, capabilities, PR_DESCRIPTION_MAX_LENGTH } from '../fleet-sprint/vcs-module.mjs';
 
 // =============================================================================
 // apra-fleet-qeq1.3 -- Bitbucket create-pull-request builder GOLDEN tests.
@@ -173,12 +173,75 @@ test('bitbucket create-pull-request: a stray slash in workspace or repo is rejec
 });
 
 // -----------------------------------------------------------------------------
-// (3) interpret contract -- no already-exists mapping.
+// (3) interpret contract -- no guessed already-exists dialect; the caller
+// probes for an existing open PR instead.
 // -----------------------------------------------------------------------------
 
-test('bitbucket create-pull-request: interpret declares ONLY 2xx success -- no already-exists mapping (unconfirmed dialect, see the epic)', () => {
+test('bitbucket create-pull-request: interpret declares 2xx success + probeExistingOnFailure, and NO guessed already-exists status/pattern', () => {
     const built = buildCreatePrCommand({ ...PR_PARAMS, os: 'linux' });
-    assert.deepEqual(built.interpret, { successStatusRange: [200, 299] });
+    assert.deepEqual(built.interpret, { successStatusRange: [200, 299], probeExistingOnFailure: true });
+});
+
+// -----------------------------------------------------------------------------
+// (3b) find-pull-request / update-pull-request (existing-PR update parity).
+// -----------------------------------------------------------------------------
+
+const FIND_PARAMS = Object.freeze({
+    provider: 'bitbucket', repoRef: REPO_REF, base: 'main', head: 'auto-sprint/feat-x', token: TOKEN, username: USERNAME,
+});
+
+test('bitbucket find-pull-request: GET open PRs filtered by source+destination branch, BBQL fully percent-encoded (no literal double quote reaches the shell)', () => {
+    for (const os of ['linux', 'windows']) {
+        const built = buildFindPrCommand({ ...FIND_PARAMS, os });
+        assert.equal(built.action, 'find-pull-request');
+        assert.match(built.command, os === 'linux' ? /^curl -sS -X GET / : /^curl\.exe -sS -X GET /);
+        assert.ok(built.command.includes(`-u '${USERNAME}:${TOKEN}'`), built.command);
+        const expectedUrl = `${API_BASE}/pullrequests?state=OPEN&q=`
+            + encodeURIComponent('source.branch.name="auto-sprint/feat-x" AND destination.branch.name="main"');
+        assert.ok(built.command.endsWith(` '${expectedUrl}'`), `unexpected URL: ${built.command}`);
+        assert.ok(!built.command.includes('"'), `no literal double quote may reach the member shell: ${built.command}`);
+        assert.ok(!built.logSafeCommand.includes(TOKEN) && !built.logSafeCommand.includes(USERNAME), built.logSafeCommand);
+    }
+});
+
+test('bitbucket find-pull-request: a double quote inside a branch name is BBQL-escaped, then percent-encoded', () => {
+    const built = buildFindPrCommand({ ...FIND_PARAMS, head: 'feat/"x"', os: 'linux' });
+    assert.ok(built.command.includes(encodeURIComponent('source.branch.name="feat/\\"x\\""')), built.command);
+});
+
+test('bitbucket find-pull-request: mapResponse reads values[] -> { id, title, body (description), url (links.html.href) }', () => {
+    const built = buildFindPrCommand({ ...FIND_PARAMS, os: 'linux' });
+    assert.deepEqual(built.mapResponse({
+        values: [
+            { id: 12, title: 'old', description: 'old body', links: { html: { href: 'https://bitbucket.org/kumaakh/apra-analytics/pull-requests/12' } } },
+            { title: 'no id' },
+        ],
+    }), [{ id: 12, title: 'old', body: 'old body', url: 'https://bitbucket.org/kumaakh/apra-analytics/pull-requests/12' }]);
+    assert.deepEqual(built.mapResponse({}), []);
+    assert.deepEqual(built.mapResponse(null), []);
+});
+
+test('bitbucket find/update: a missing username is a typed ERROR (HTTP Basic needs both halves)', () => {
+    assert.throws(() => buildFindPrCommand({ ...FIND_PARAMS, username: '' }), /bitbucket "find-pull-request" needs a username/);
+    assert.throws(() => buildUpdatePrCommand({ ...FIND_PARAMS, pull_request_id: 3, title: 't', username: '' }), /bitbucket "update-pull-request" needs a username/);
+});
+
+test('bitbucket update-pull-request: PUT (not PATCH) to /pullrequests/{id} with title + description, body cap applied', () => {
+    const built = buildUpdatePrCommand({ ...FIND_PARAMS, pull_request_id: 12, title: 'new title', body: 'new body', os: 'linux' });
+    assert.equal(built.action, 'update-pull-request');
+    assert.equal(
+        built.command,
+        "curl -sS -X PUT"
+        + ` -u '${USERNAME}:${TOKEN}'`
+        + " -H 'Content-Type: application/json'"
+        + " -H 'Accept: application/json'"
+        + " -d '{\"title\":\"new title\",\"description\":\"new body\"}'"
+        + " -w '\n%{http_code}'"
+        + ` ${API_BASE}/pullrequests/12`,
+    );
+    assert.throws(() => buildUpdatePrCommand({ ...FIND_PARAMS, pull_request_id: '12; rm', title: 't', os: 'linux' }), /a numeric "pull_request_id"/);
+    const long = buildUpdatePrCommand({ ...FIND_PARAMS, pull_request_id: 12, title: 't', body: 'x'.repeat(PR_DESCRIPTION_MAX_LENGTH + 3), os: 'linux' });
+    assert.deepEqual(long.descriptionTruncated, { originalLength: PR_DESCRIPTION_MAX_LENGTH + 3, maxLength: PR_DESCRIPTION_MAX_LENGTH });
 });
 
 function applyInterpret(interpret, status) {

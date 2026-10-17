@@ -7,18 +7,18 @@
  * vcs-module.mjs's now-deleted BUILDERS/DEFAULT_AUTH_MODES tables, which a
  * new provider had to also edit.
  *
- * No auth-mode axis of its own (Bitbucket authenticates via a single app
- * password / token field at provision_vcs_auth time, same as Azure DevOps --
+ * No auth-mode axis of its own (Bitbucket authenticates via a single
+ * Atlassian API token field at provision_vcs_auth time, same as Azure DevOps --
  * see ./azure-devops.mjs). Declaring `defaultAuthMode` (even as `null`) is
  * what makes 'bitbucket' part of resolveProvider()'s known vocabulary -- see
  * ./index.mjs's isAuthBackend().
  *
- * apra-fleet-qeq1.3: the create-pull-request builder + response dialect are
- * added below. apra-fleet-qeq1.4 adds capabilitiesForHost() returning
- * {canOpenPullRequest: true}, mirroring github.mjs and azure-devops.mjs, so
- * the Publish PR phase can now dispatch the builder (see ./index.mjs's
- * REQUIRED EXPORT SHAPE: a host never ADVERTISES a pull request it cannot
- * actually deliver).
+ * Bitbucket Cloud PR support (adapted from PR #513): create/find/update
+ * pull-request builders + response dialect below, and capabilitiesForHost()
+ * returning {canOpenPullRequest: true}, mirroring github.mjs and
+ * azure-devops.mjs (see ./index.mjs's REQUIRED EXPORT SHAPE: a host never
+ * ADVERTISES a pull request it cannot actually deliver). Bitbucket Cloud
+ * only -- a Data Center install has an arbitrary host and stays generic-git.
  *
  * Extends GenericGitVCS for stderr classification (Bitbucket speaks plain
  * git-over-HTTPS/SSH; it had no vendor-specific auth literal in the parity
@@ -26,10 +26,10 @@
  * what belongs portable vs. vendor-specific).
  *
  * apra-fleet-417.6: 'remote: Invalid or expired app password.' is
- * Bitbucket's own literal for a dead/rotated app password, reached without
- * git's generic "fatal: Authentication failed" tail (e.g. over a transport
- * that does not append it). The text says "expired" outright, and
- * re-provisioning a fresh app password is exactly the fix, so AUTH_EXPIRED
+ * Bitbucket's own literal for a dead/rotated (legacy) app password, reached
+ * without git's generic "fatal: Authentication failed" tail (e.g. over a
+ * transport that does not append it). The text says "expired" outright, and
+ * re-provisioning a fresh credential (an API token) is the fix, so AUTH_EXPIRED
  * (contrast Azure DevOps' TF401019, which is AUTH_DENIED -- see
  * ./azure-devops.mjs -- because re-minting the same credential there cannot
  * help).
@@ -194,7 +194,7 @@ const REPO_REF_HINT = 'git@bitbucket.org:WORKSPACE/REPO.git or https://bitbucket
 //   git_access 'push+pr' (the JUST-IN-TIME re-provision both PR-raising call
 //       sites run immediately before dispatching create-pull-request) ->
 //       SKIP. That re-provision exists to WIDEN a GitHub App token's scope
-//       for the duration of one PR call. A Bitbucket app password has no
+//       for the duration of one PR call. A Bitbucket API token has no
 //       scope axis to widen -- it carries whatever scopes it was minted with
 //       -- and cannot be re-assembled here anyway, so the step is both
 //       impossible and unnecessary. Skipping it leaves the operator-deployed
@@ -235,19 +235,22 @@ const DEFAULT_API_TOKEN_SECRET = 'bitbucket_api_token';
 const AUTH_REMEDY_HINT =
     'Bitbucket credentials cannot be minted or re-assembled by the fleet: '
     + 'provision_vcs_auth needs an "email" (the Atlassian account that owns the '
-    + 'app password) alongside the token, and only the token half can be passed '
+    + 'API token) alongside the token, and only the token half can be passed '
     + 'as a secret placeholder -- the email is never derivable from the member '
     + 'record. Deploy or refresh the credential out of band, once per member: '
-    + `credential_store_set name=${DEFAULT_API_TOKEN_SECRET}, then provision_vcs_auth `
+    + 'create an Atlassian API token at '
+    + 'https://id.atlassian.com/manage-profile/security/api-tokens ("Create API '
+    + 'token with scopes", app Bitbucket, scopes read:repository:bitbucket, '
+    + 'write:repository:bitbucket, read:pullrequest:bitbucket and '
+    + 'write:pullrequest:bitbucket), store it with '
+    + `credential_store_set name=${DEFAULT_API_TOKEN_SECRET}, then run provision_vcs_auth `
     + 'member_name=MEMBER provider=bitbucket email=ATLASSIAN_ACCOUNT_EMAIL '
     + `workspace=WORKSPACE api_token={{secret.${DEFAULT_API_TOKEN_SECRET}}}. `
-    + 'If the app password itself is invalid or expired, mint a replacement at '
-    + 'https://bitbucket.org/account/settings/app-passwords/ with '
-    + 'repository:write and pullrequest:write, store it under the same name and '
-    + 're-run provision_vcs_auth.';
+    + 'Bitbucket app passwords are deprecated: replace an existing one with an '
+    + 'API token the same way.';
 
 const authRemedy = Object.freeze({
-    // An app password is created by a human against an Atlassian identity;
+    // An API token is created by a human against an Atlassian identity;
     // nothing server-side can re-mint one. Same answer ./azure-devops.mjs
     // gives for its PATs, and what makes the shared self-heal print the hint
     // above BEFORE it attempts a re-provision that cannot help.
@@ -330,7 +333,7 @@ function buildProvisionArgs(ctx) {
 //             Bitbucket's own payload names them source/destination, mapped
 //             below.
 //   title/body  PR title and description.
-//   token     the app password / API token. REQUIRED -- assertToken() throws
+//   token     the Atlassian API token. REQUIRED -- assertToken() throws
 //             the shared typed ERROR.
 //   username  REQUIRED, unlike Azure DevOps/GitHub: Bitbucket's REST API
 //             takes HTTP Basic as 'username:token' (a bare ':token' is
@@ -432,17 +435,104 @@ function buildBitbucketCreatePrCommand(params) {
         // azure-devops.mjs use so a consumer reads it generically:
         //   - 2xx           -> success
         //   - anything else -> error
-        // NO already-exists mapping: apra-fleet-qeq1.3 could not CONFIRM
-        // Bitbucket's status/body for a duplicate source/destination pull
-        // request against a real API response this sprint (this module's
-        // stated convention is that an unverified dialect stays ABSENT
-        // rather than guessed -- a wrong field would silently swallow a
-        // real failure as success, while an absent field only degrades to
-        // "treat as an error", which is recoverable). The gap is recorded on
-        // the epic apra-fleet-qeq1.
+        // NO already-exists status/pattern: Bitbucket's API reference does
+        // not document the duplicate source/destination response (POST lists
+        // only 201/400/401), and an unverified dialect stays ABSENT rather
+        // than guessed. Instead `probeExistingOnFailure` asks the shared
+        // caller (vcs-auth.mjs raiseVcsPrForMember) to look up an open PR for
+        // head -> base via the find-pull-request builder below on any non-2xx,
+        // non-auth create failure, and treat a hit as already-exists.
         interpret: {
             successStatusRange: [200, 299],
+            probeExistingOnFailure: true,
         },
+    };
+}
+
+/** Escape a value for a double-quoted BBQL string literal. */
+function bbqlString(value) {
+    return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * Build the Bitbucket REST "find the open pull request for head -> base"
+ * curl command, used on the already-exists path to learn the existing PR's id
+ * and current description.
+ * GET .../pullrequests?state=OPEN&q=source.branch.name="H" AND destination.branch.name="B"
+ * -- see https://developer.atlassian.com/cloud/bitbucket/rest/intro/#filtering
+ * The whole BBQL expression is percent-encoded, so no literal double quote
+ * reaches the member shell (PowerShell 5.1 strips embedded double quotes from
+ * native-exe arguments); the URL carries '&', so it is quoted.
+ */
+function buildBitbucketFindPrCommand(params) {
+    const { base, head, token, username, os, shell } = params || {};
+    const coords = assertRepoCoords(params, 'find-pull-request');
+    const safeToken = assertToken(token);
+    const safeUsername = assertUsername(username, 'find-pull-request');
+    if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a find-pull-request command.');
+    if (!head) throw new Error('ERROR: VCSModule: "head" branch is required to build a find-pull-request command.');
+    const bbql = `source.branch.name=${bbqlString(head)} AND destination.branch.name=${bbqlString(base)}`;
+    const url = `${repoApiBase(coords)}/pullrequests?state=OPEN&q=${encodeURIComponent(bbql)}`;
+
+    const buildCurl = (authUsername, authToken) => [
+        `${curlBinary(os)} -sS -X GET`,
+        `-u ${shQuote(`${authUsername}:${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/json', os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        shQuote(url, os, shell),
+    ].join(' ');
+
+    return {
+        provider: 'bitbucket',
+        action: 'find-pull-request',
+        command: buildCurl(safeUsername, safeToken),
+        logSafeCommand: buildCurl(REDACTED, REDACTED),
+        interpret: { successStatusRange: [200, 299] },
+        /** 2xx body ({ values: [...] }) -> [{ id, title, body, url }]. */
+        mapResponse: (respBody) => {
+            const list = respBody && Array.isArray(respBody.values) ? respBody.values : [];
+            return list.map(mapBitbucketPull).filter((p) => p.id !== null);
+        },
+    };
+}
+
+/**
+ * Build the Bitbucket REST "update a pull request" curl command (title +
+ * description). Bitbucket uses PUT (not PATCH) and only open pull requests
+ * can be mutated: PUT .../pullrequests/{id} -- see
+ * https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/#api-repositories-workspace-repo-slug-pullrequests-pull-request-id-put
+ */
+function buildBitbucketUpdatePrCommand(params) {
+    const { pull_request_id: pullRequestId, title, body, token, username, os, shell } = params || {};
+    const coords = assertRepoCoords(params, 'update-pull-request');
+    const safeToken = assertToken(token);
+    const safeUsername = assertUsername(username, 'update-pull-request');
+    const id = String(pullRequestId ?? '').trim();
+    if (!/^\d+$/.test(id)) throw new Error('ERROR: VCSModule: a numeric "pull_request_id" is required to build an update-pull-request command.');
+    if (!title) throw new Error('ERROR: VCSModule: "title" is required to build an update-pull-request command.');
+
+    const payload = { title };
+    if (body !== undefined) payload.description = body;
+    const payloadJson = JSON.stringify(payload);
+    const url = `${repoApiBase(coords)}/pullrequests/${id}`;
+
+    const buildCurl = (authUsername, authToken) => [
+        `${curlBinary(os)} -sS -X PUT`,
+        `-u ${shQuote(`${authUsername}:${authToken}`, os, shell)}`,
+        `-H ${shQuote('Content-Type: application/json', os, shell)}`,
+        `-H ${shQuote('Accept: application/json', os, shell)}`,
+        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        url,
+    ].join(' ');
+
+    return {
+        provider: 'bitbucket',
+        action: 'update-pull-request',
+        command: buildCurl(safeUsername, safeToken),
+        logSafeCommand: buildCurl(REDACTED, REDACTED),
+        interpret: { successStatusRange: [200, 299] },
+        mapResponse: (respBody) => mapBitbucketPull(respBody),
     };
 }
 
@@ -477,6 +567,20 @@ function mapPullRequestResponse(body, _ctx) {
     return { id, url: typeof rawUrl === 'string' ? rawUrl : null };
 }
 
+/** One Bitbucket pull-request object (list entry or single) -> the
+ *  provider-neutral { id, title, body, url } shape the existing-PR update
+ *  path reads. */
+function mapBitbucketPull(pr) {
+    const src = (pr && typeof pr === 'object') ? pr : {};
+    const { id, url } = mapPullRequestResponse(src);
+    return {
+        id,
+        title: typeof src.title === 'string' ? src.title : '',
+        body: typeof src.description === 'string' ? src.description : '',
+        url,
+    };
+}
+
 const pullRequestResponse = Object.freeze({
     idField: PR_ID_FIELD,
     // The web URL is NESTED, not a flat field -- see the header note above.
@@ -501,15 +605,16 @@ export const BitbucketVCS = Object.freeze({
     // apra-fleet-qeq1.9: OPTIONAL descriptor hook -- see ./index.mjs and the
     // "Provisioning" section above for why the push+pr level skips.
     buildProvisionArgs,
-    // apra-fleet-qeq1.9: app passwords are never minted server-side -- see
+    // apra-fleet-qeq1.9: API tokens are never minted server-side -- see
     // above.
     authRemedy,
     defaultAuthMode: null,
-    // apra-fleet-qeq1.3: the create-pull-request builder. capabilitiesForHost
-    // is now available (apra-fleet-qeq1.4), so the Publish PR phase can
-    // dispatch the builder via VCSModule.capabilities().
+    // create/find/update pull-request builders; capabilitiesForHost lets the
+    // Publish PR phase dispatch them via VCSModule.capabilities().
     builders: Object.freeze({
         'create-pull-request': buildBitbucketCreatePrCommand,
+        'find-pull-request': buildBitbucketFindPrCommand,
+        'update-pull-request': buildBitbucketUpdatePrCommand,
     }),
     pullRequestResponse,
 });
