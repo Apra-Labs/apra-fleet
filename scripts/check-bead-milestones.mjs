@@ -5,8 +5,8 @@
 // phase, git hook, agent prompt or CI job.
 //
 // Convention it checks: every non-closed bead carries EXACTLY ONE label
-//   milestone:v0.4.4 | milestone:v0.5 | milestone:v0.5.1 | milestone:backlog
-// (v0.4.4 = bugs and small features; v0.5 = the v0.5.0 dashboard release;
+//   milestone:v0.4.4 | milestone:v0.4.5 | milestone:v0.5 | milestone:v0.5.1 | milestone:backlog
+// (v0.4.5 = bugs and small features after v0.4.4; v0.5 = the v0.5.0 dashboard release;
 // backlog = deliberately unscheduled). A shipped release is removed from
 // KNOWN_MILESTONES, so a bead still pointing at it is reported as unknown.
 // Children created with `bd create --parent` inherit the epic's labels;
@@ -35,7 +35,7 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 export const MILESTONE_PREFIX = 'milestone:';
-export const KNOWN_MILESTONES = ['v0.4.4', 'v0.5', 'v0.5.1', 'backlog'];
+export const KNOWN_MILESTONES = ['v0.4.4', 'v0.4.5', 'v0.5', 'v0.5.1', 'backlog'];
 
 /** @param {string} text JSONL from `bd export` */
 export function parseExport(text) {
