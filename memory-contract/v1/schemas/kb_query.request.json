@@ -62,6 +62,10 @@
           "type": "boolean",
           "description": "Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default true when confidence is omitted (CONFIRMED-undisputed default); default false when confidence is given explicitly. Ignored when flagged_only is true."
         },
+        "own_scope": {
+          "type": "boolean",
+          "description": "MEMBER session only. A default CONFIRMED read is answered from the checkout bible view, where every row is untagged -- a tag: \"member:<id>\" filter can never match there. Set true to force the per-repo DB instead, with the caller's own ownerTag applied, so a member can read back a CONFIRMED row it itself promoted (e.g. to check what it may kb_demote). No effect for a FULL session, an in-process caller passing an explicit anchor, or a request that already names INFERRED/UNVERIFIED -- those already read the per-repo DB. It changes which store answers and nothing else, so to span everything kb_demote accepts combine it with confidence: [\"CONFIRMED\"] and include_stale: true: a stale or contradiction-flagged CONFIRMED row is still demotable, but the default read drops stale rows and (with no explicit confidence list) disputed ones. The widened read also returns superseded rows, which kb_demote refuses -- drop those yourself."
+        },
         "repo_path": {
           "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
         },

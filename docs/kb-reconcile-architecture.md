@@ -86,6 +86,19 @@ wrong-branch claims. It reports `{imported, skipped, linked, flagged}` plus
 the sweep's `{checked, staled, unstaled}`. It is exposed both as an MCP tool and
 as `apra-fleet kb import [--repo <path>] [--path <file>]` for post-merge use.
 
+**Tombstones ride the same import, as a separate pass.** A bible can also carry
+an explicit `demotions: [{id, demoted_at}]` array (written by `kb_bible_commit`
+when a CONFIRMED entry is demoted). `kb_import` applies each tombstone to the
+local row sharing its id, lowering CONFIRMED to INFERRED only when that row's
+own `promoted_at` is strictly before the tombstone's `demoted_at` -- a row
+independently re-promoted on newer evidence survives. This is a distinct
+mechanism from entry import and from the freshness sweep: absence of an entry
+from the bible is never read as a demotion (a clone may hold a CONFIRMED row
+that was simply never exported), only an explicit tombstone is. See
+[kb-trust-model.md](kb-trust-model.md#bible-tombstones-demotions-cross-clones-by-explicit-record-never-by-absence)
+for the full rule, including why the member bible view and cold-seed apply the
+same exclusion to a FRESH in-memory read that has no local row to demote.
+
 **Trust boundary (stated honestly):** `kb_import` reads a caller-named local
 file, so a local caller with tool access could import a hand-crafted bible.
 This is equivalent in power to the already-exposed `kb_promote` surface -- it

@@ -31,6 +31,86 @@ export class KbBibleError extends Error {
 }
 
 /**
+ * An EXPLICIT demotion tombstone in the committed bible: this id was CONFIRMED
+ * here once and trust was withdrawn at demoted_at. A demotion is NEVER inferred
+ * from an entry merely being absent from the bible -- a clone legitimately holds
+ * CONFIRMED rows that were never exported (local-only promotions, basis_mismatch
+ * refusals), and those must never be demoted by an import.
+ */
+export interface BibleDemotion {
+  id: string;
+  demoted_at: string;
+}
+
+/**
+ * A parsed bible: its entries AND its demotion tombstones. The two readers that
+ * return entries only (readBibleEntries/parseBibleText here, readBibleEntries in
+ * src/tools/kb-export.ts) keep their existing signature and are implemented on
+ * top of the document readers, so no existing caller changes shape and a caller
+ * that needs tombstones has one to ask for. Both modules follow the same
+ * sibling-reader approach.
+ */
+export interface BibleDocument {
+  entries: unknown[];
+  demotions: BibleDemotion[];
+}
+
+/**
+ * The tombstones of an already-parsed bible value, in id order and deduped
+ * (last wins). Tolerant by design: the field is OPTIONAL, a reader that does not
+ * know it must keep working, and a malformed tombstone is dropped individually
+ * rather than failing the whole bible -- exactly how a malformed ENTRY is
+ * treated by importBibleEntries below. The one shared implementation of the
+ * tombstone-extraction rule; kb-export.ts's reader calls it too.
+ */
+export function extractBibleDemotions(parsed: unknown): BibleDemotion[] {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+  const raw = (parsed as { demotions?: unknown }).demotions;
+  if (!Array.isArray(raw)) return [];
+  const byId = new Map<string, BibleDemotion>();
+  for (const candidate of raw) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const r = candidate as Record<string, unknown>;
+    if (typeof r.id !== 'string' || r.id.length === 0) continue;
+    if (typeof r.demoted_at !== 'string' || r.demoted_at.length === 0) continue;
+    byId.set(r.id, { id: r.id, demoted_at: r.demoted_at });
+  }
+  return Array.from(byId.values()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/** The tombstoned ids of a parsed bible, as a set for membership tests. */
+export function tombstonedIds(demotions: BibleDemotion[]): Set<string> {
+  return new Set(demotions.map(d => d.id));
+}
+
+/**
+ * Drop every entry a tombstone names from a raw bible entry array.
+ *
+ * For the READ paths that build a view of the bible rather than merging it into
+ * an existing KB -- the member bible view, which imports into a FRESH empty
+ * in-memory provider. There is no local row there for a tombstone to demote, so
+ * the demotion can only be honoured by not listing the entry at all.
+ *
+ * Normally a committed bible holds no entry for a tombstoned id (kb_bible_commit
+ * removes it when it records the tombstone), so this is belt-and-braces against
+ * a hand-edited or partially merged bible -- the one place where "the file says
+ * both" must resolve to the demotion, because a view that lists a demoted entry
+ * is exactly the staleness the tombstone exists to stop.
+ *
+ * Entries too malformed to carry an id are left alone; importBibleEntries
+ * already tolerates and skips those.
+ */
+export function excludeTombstonedEntries(entries: unknown[], demotions: BibleDemotion[]): unknown[] {
+  if (demotions.length === 0) return entries;
+  const dropped = tombstonedIds(demotions);
+  return entries.filter(e => {
+    if (!e || typeof e !== 'object') return true;
+    const id = (e as { id?: unknown }).id;
+    return typeof id !== 'string' || !dropped.has(id);
+  });
+}
+
+/**
  * Read and parse a bible file into its raw entry array. Throws KbBibleError
  * when the file is not valid JSON or not a bible shape. `label` prefixes the
  * error message (e.g. 'kb_import'). A missing file surfaces as the fs error;
@@ -44,11 +124,21 @@ export class KbBibleError extends Error {
  * must never lag the writer.
  */
 export function readBibleEntries(biblePath: string, label: string): unknown[] {
-  return parseBibleText(fs.readFileSync(biblePath, 'utf-8'), biblePath, label);
+  return readBibleDocument(biblePath, label).entries;
 }
 
 /** Parse bible text already in memory (e.g. fetched from a remote member). */
 export function parseBibleText(raw: string, biblePath: string, label: string): unknown[] {
+  return parseBibleDocument(raw, biblePath, label).entries;
+}
+
+/** Entries AND tombstones of a bible file. Same parse, same refusals. */
+export function readBibleDocument(biblePath: string, label: string): BibleDocument {
+  return parseBibleDocument(fs.readFileSync(biblePath, 'utf-8'), biblePath, label);
+}
+
+/** Entries AND tombstones of bible text already in memory. */
+export function parseBibleDocument(raw: string, biblePath: string, label: string): BibleDocument {
   if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
   let parsed: unknown;
   try {
@@ -64,7 +154,8 @@ export function parseBibleText(raw: string, biblePath: string, label: string): u
   if (entries === null) {
     throw new KbBibleError(`${label}: bible file is not a JSON array of entries: ${biblePath}`, biblePath);
   }
-  return entries;
+  // A legacy bare array carries no demotions field; extract returns [] for it.
+  return { entries, demotions: extractBibleDemotions(parsed) };
 }
 
 const VALID_TYPES: readonly ContentType[] = ['context-cache', 'learning', 'knowledge', 'runbook', 'user-directive'];
@@ -142,6 +233,13 @@ export interface BibleImportCounts {
   linked: number;
   flagged: number;
   rejected: number;
+  /**
+   * Local rows actually taken CONFIRMED -> INFERRED by an explicit demotion
+   * tombstone in this bible. A tombstone that named no local row, or one whose
+   * row was re-promoted after the demotion, is NOT counted: this is how many
+   * rows changed, not how many tombstones were read.
+   */
+  demoted: number;
 }
 
 /**
@@ -158,6 +256,17 @@ export interface BibleImportOptions {
    * which must reproduce the reviewed bible rather than re-curate it.
    */
   verbatim?: boolean;
+  /**
+   * The EXPLICIT demotion tombstones of the same bible (parseBibleDocument /
+   * readBibleDocument return them alongside the entries). Applied AFTER the
+   * entry loop, against rows that already existed locally.
+   *
+   * Omitted (or empty) means "this bible carries no tombstones" -- NOT "demote
+   * whatever is missing". Absence is never evidence of demotion: a clone
+   * legitimately holds CONFIRMED rows that were never exported, and an import
+   * must leave those byte-unchanged.
+   */
+  demotions?: BibleDemotion[];
 }
 
 export async function importBibleEntries(
@@ -170,8 +279,25 @@ export async function importBibleEntries(
   let linked = 0;
   let flagged = 0;
   let rejected = 0;
+  let demoted = 0;
 
-  for (const candidate of bibleEntries) {
+  // A bible that carries BOTH an entry and a tombstone for the same id is
+  // self-contradictory, and "the file says both" must resolve to the DEMOTION
+  // -- the same rule the member bible view applies (excludeTombstonedEntries is
+  // called at member-bible-view.ts buildView for the local and the remote path).
+  // Without this filter a tombstoned id with NO local row is CREATED by the
+  // entry loop below, because the tombstone loop never creates a row: the import
+  // would resurrect, as a fresh CONFIRMED row, exactly the entry the tombstone
+  // withdrew trust from. A freshly imported row's created_at is import time, not
+  // evidence that the id was re-promoted after the tombstone, so the tombstone
+  // loop cannot undo it either.
+  //
+  // For every bible kb_bible_commit actually writes this is a no-op: recording a
+  // tombstone removes the entry. It is belt-and-braces against a hand-edited or
+  // partially merged bible.
+  const importable = excludeTombstonedEntries(bibleEntries, options.demotions ?? []);
+
+  for (const candidate of importable) {
     // Malformed entry -> tolerate and skip individually.
     if (!isValidBibleEntry(candidate)) {
       skipped++;
@@ -245,5 +371,18 @@ export async function importBibleEntries(
     else if (audn_decision === 'flagged') flagged++;
   }
 
-  return { imported, skipped, linked, flagged, rejected };
+  // TOMBSTONES, applied AFTER the entry loop. The entry loop can no longer have
+  // introduced a row for any id named here -- those entries were filtered out
+  // above -- so this loop only ever judges rows that ALREADY existed locally,
+  // which is the only population a tombstone is allowed to act on. The provider
+  // holds every rule -- never create, promotion-time comparison, no ownerTag
+  // check -- in applyBibleDemotion; this loop only counts what it changed.
+  //
+  // Note what is NOT here: nothing walks the local rows looking for ids missing
+  // from the bible. Only an id with an EXPLICIT tombstone is ever touched.
+  for (const tombstone of options.demotions ?? []) {
+    if (provider.applyBibleDemotion(tombstone.id, tombstone.demoted_at)) demoted++;
+  }
+
+  return { imported, skipped, linked, flagged, rejected, demoted };
 }

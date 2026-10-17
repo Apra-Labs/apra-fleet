@@ -101,6 +101,46 @@ describe.skipIf(process.platform === 'win32')('MEMBER session on a remote (non-l
     expect(execLog.filter(c => c.startsWith('cat ')).length).toBe(2);
   });
 
+  // The REMOTE half of the tombstone rule; the local half and the two-clone
+  // import live in tests/knowledge/kb-tombstone-import.test.ts. A demotion must
+  // not be visible on one transport and invisible on the other.
+  it('omits an entry carrying a demotion tombstone, over the member transport', async () => {
+    fs.writeFileSync(bible(), JSON.stringify({
+      version: 2,
+      entries: [entry('r-keep'), entry('r-gone')],
+      demotions: [{ id: 'r-gone', demoted_at: '2026-03-03T00:00:00.000Z' }],
+    }), 'utf-8');
+
+    const out = JSON.parse(await asMember(() => kbQuery({ query: 'sprocket gearbox' })));
+    expect(ids(out.l1_results)).toEqual(['r-keep']);
+    expect(ids(out.l1_results)).not.toContain('r-gone');
+    // The tombstoned entry is not merely ranked lower: it is not in the view at
+    // all, so it cannot be reached by any other read either.
+    expect(JSON.parse(await asMember(() => kbStats({}))).totals.by_confidence.CONFIRMED).toBe(1);
+  });
+
+  it('a bible REWRITTEN to add a tombstone is re-fetched, not served from the cached slot', async () => {
+    // What forces the reload: the remote view caches on the (mtime, size) the
+    // member's stat command reports, and rebuilds when EITHER differs. SIZE is
+    // the signal that can be relied on here -- recording a tombstone changes the
+    // file length, whereas the POSIX stat branch reports mtime in whole SECONDS
+    // (`stat -c '%Y %s'`), so two writes inside one second share an mtime.
+    fs.writeFileSync(bible(), JSON.stringify({ version: 2, entries: [entry('r-keep'), entry('r-gone')] }), 'utf-8');
+    const first = JSON.parse(await asMember(() => kbQuery({ query: 'sprocket gearbox' })));
+    expect(ids(first.l1_results)).toEqual(['r-gone', 'r-keep']);
+    const catsAfterFirst = execLog.filter(c => c.startsWith('cat ')).length;
+
+    fs.writeFileSync(bible(), JSON.stringify({
+      version: 2,
+      entries: [entry('r-keep')],
+      demotions: [{ id: 'r-gone', demoted_at: '2026-03-03T00:00:00.000Z' }],
+    }), 'utf-8');
+
+    const second = JSON.parse(await asMember(() => kbQuery({ query: 'sprocket gearbox' })));
+    expect(execLog.filter(c => c.startsWith('cat ')).length).toBe(catsAfterFirst + 1);
+    expect(ids(second.l1_results)).toEqual(['r-keep']);
+  });
+
   it('a malformed bible fails loudly instead of falling back to the per-repo DB', async () => {
     fs.rmSync(path.join(folder, '.fleet'), { recursive: true, force: true });
     fs.mkdirSync(path.join(folder, '.fleet'));

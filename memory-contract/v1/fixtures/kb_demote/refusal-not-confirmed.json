@@ -1,0 +1,14 @@
+{
+  "tool": "kb_demote",
+  "case": "refusal-not-confirmed",
+  "kind": "refusal",
+  "request": {
+    "id": "212a4796-bc68-497d-bdf9-b5aeeafa9970",
+    "reason": "Attempting to demote the same entry again, after the call above already lowered it to INFERRED."
+  },
+  "error": {
+    "message": "E-DEMOTE-NOT-CONFIRMED: kb_demote lowers CONFIRMED to INFERRED only; this entry is INFERRED. Entry: 212a4796-bc68-497d-bdf9-b5aeeafa9970",
+    "thrown": true
+  },
+  "expected_error_code": "E-DEMOTE-NOT-CONFIRMED"
+}

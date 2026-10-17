@@ -374,6 +374,102 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
 });
 
 // =============================================================================
+// demoted_ids: a round's successful kb_demote()s travel in the SAME
+// kb_bible_commit call as that round's confirmed ids (never a second call),
+// including through the G-push retry path above. See
+// kb-demotion-apply.test.mjs for the demotion-execution lane itself (apply()
+// routing, evidence_files, a failing kb_demote, the ping-pong guard); this
+// block only covers the bible-commit INTEGRATION this file already exercises
+// for promotions.
+// =============================================================================
+
+describe('commitRound: demoted_ids travels with ids in one kb_bible_commit call', () => {
+    /** Like harness() above, plus demotionCandidates' own_scope kb_query branch. */
+    function harnessWithDemotions({ pushFailures = 0 } = {}) {
+        const events = [];
+        const logs = [];
+        let offeredDemote = [];
+        let pushesLeftToFail = pushFailures;
+        const memberCall = async (member, tool, args) => {
+            if (tool === 'kb_query') {
+                return args.own_scope ? { l1_results: offeredDemote } : { l1_results: offeredEntries.map((id) => ({ id })) };
+            }
+            events.push({ ev: tool, member: member.name, args });
+            if (tool === 'kb_bible_commit') {
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            path: '.fleet/kb-canonical.json',
+                            merged: args.ids || [],
+                            demoted: args.demoted_ids || [],
+                            skipped: [],
+                            entry_count: (args.ids || []).length,
+                            committed: true,
+                        }),
+                    }],
+                };
+            }
+            return {};
+        };
+        const client = createKbWorkClient({
+            memberCall,
+            maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
+            gPull: async (m, opts = {}) => { events.push({ ev: opts.resetToRemoteTip ? 'G-pull(reset)' : 'G-pull', member: m }); },
+            gPush: async (m) => {
+                events.push({ ev: 'G-push', member: m });
+                if (pushesLeftToFail > 0) { pushesLeftToFail--; throw new Error('! [rejected] (non-fast-forward)'); }
+            },
+            abortRebase: async (m) => { events.push({ ev: 'rebase--abort', member: m }); return false; },
+            bibleBase: async () => BASE,
+            roundChangedFiles: async () => ['x.js'],
+            log: (m) => logs.push(m),
+        });
+        const confirmAndDemote = async ({ promote = [], demote = [] }) => {
+            await confirm(client, promote);
+            offeredDemote = demote.map((id) => ({ id, type: 'knowledge', confidence: 'CONFIRMED', source_files: ['x.js'] }));
+            await client.demotionCandidates('reviewer-1');
+            offeredDemote = [];
+            await client.apply('reviewer', 'reviewer-1', { kb_demotions: demote.map((id) => ({ id, reason: REASON })) });
+        };
+        return { client, events, logs, confirmAndDemote };
+    }
+
+    test('a round that both confirms and demotes produces exactly one kb_bible_commit call carrying both lists', async () => {
+        const { client, events, confirmAndDemote } = harnessWithDemotions();
+        await confirmAndDemote({ promote: ['e1'], demote: ['d1'] });
+
+        const out = await client.commitRound();
+
+        const commits = events.filter((e) => e.ev === 'kb_bible_commit');
+        assert.equal(commits.length, 1);
+        assert.deepEqual(commits[0].args.ids, ['e1']);
+        assert.deepEqual(commits[0].args.demoted_ids, ['d1']);
+        assert.deepEqual(out, { committed: 2, pending: 0 });
+    });
+
+    test('a rejected G-push is retried with BOTH ids and demoted_ids, the same as the promotion-only retry path', async () => {
+        const { client, events, logs, confirmAndDemote } = harnessWithDemotions({ pushFailures: 1 });
+        await confirmAndDemote({ promote: ['e1'], demote: ['d1'] });
+        const before = events.length;
+
+        const out = await client.commitRound();
+
+        assert.deepEqual(events.slice(before).map((e) => e.ev), [
+            'G-pull', 'kb_bible_commit', 'G-push',
+            'rebase--abort', 'G-pull(reset)', 'kb_bible_commit', 'G-push',
+        ]);
+        const commits = events.filter((e) => e.ev === 'kb_bible_commit');
+        assert.equal(commits.length, 2);
+        for (const c of commits) {
+            assert.deepEqual(c.args.ids, ['e1']);
+            assert.deepEqual(c.args.demoted_ids, ['d1']);
+        }
+        assert.deepEqual(out, { committed: 2, pending: 0 });
+        assert.ok(logs.some((l) => /retrying once/.test(l)));
+    });
+});
+
+// =============================================================================
 // The bible-commit branch guard. The engine side is the REAL createGitSync
 // (over the real syncMemberBefore/syncMemberAfter) wired into
 // createKbWorkClient the way runner.js wires it, driven by a fake command()
