@@ -156,6 +156,24 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'ok' });
     });
 
+    test('fleetSnapshot', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { members: [] };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const result = await fleet.fleetSnapshot();
+
+        assert.strictEqual(calledName, 'fleet_snapshot');
+        assert.deepStrictEqual(calledArgs, {});
+        assert.deepStrictEqual(result, { members: [] });
+    });
+
     test('memberDetail', async () => {
         let calledName, calledArgs;
         const mockClient = {

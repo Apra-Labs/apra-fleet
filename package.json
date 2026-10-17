@@ -43,7 +43,10 @@
     "packages/apra-fleet-workflow/src/",
     "packages/apra-fleet-workflow/package.json",
     "packages/apra-fleet-client/src/",
-    "packages/apra-fleet-client/package.json"
+    "packages/apra-fleet-client/package.json",
+    "plugins/claude-code/fleet-status/.claude-plugin/plugin.json",
+    "plugins/claude-code/fleet-status/hooks/",
+    "plugins/claude-code/fleet-status/types/"
   ],
   "publishConfig": {
     "access": "public"

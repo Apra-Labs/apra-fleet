@@ -39,6 +39,10 @@ import { writeServiceNotice, clearServiceNoticeContaining } from '../services/se
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
 import { codeIntelPathWarning } from '../utils/find-on-path.js';
 import { gitBashCandidates } from '../os/git-bash-candidates.js';
+import {
+  CLAUDE_MOD_PLUGIN, CLAUDE_MOD_SOURCE_DIR, claudeModRegistered, claudeModStepEnabled, installClaudeMod, isApraFleetStatusLine,
+  isClaudeModRuntimeFile, removeApraFleetStatusLine, type ClaudeModResult,
+} from './claude-mod.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -305,6 +309,12 @@ interface AssetManifest {
   // Optional for the same additive-only reason: older manifests (built before
   // this skill existed) simply omit it and the install step skips.
   fleetSupervisorSkill?: Record<string, string>;
+  // Optional for the same additive-only reason: older manifests (built before
+  // the fleet-status Claude Code mod shipped) simply omit it and the install
+  // keeps the statusLine script. Keys are '<plugin>/<path in plugin>'
+  // (e.g. 'fleet-status/hooks/register.tsx'), values the repo-relative asset
+  // path; only runtime files (isClaudeModRuntimeFile) are listed.
+  claudePlugins?: Record<string, string>;
 }
 
 import { fileURLToPath } from 'url';
@@ -548,11 +558,19 @@ export function buildDevManifest(root: string): AssetManifest {
     };
   }
 
+  // fleet-status Claude Code mod (mirrors scripts/gen-sea-config.mjs's
+  // claudePlugins section): runtime files only, keyed '<plugin>/<rel path>'.
+  const claudePlugins: Record<string, string> = {};
+  const modRaw = collectFilesRec(path.join(root, ...CLAUDE_MOD_SOURCE_DIR.split('/')), CLAUDE_MOD_SOURCE_DIR, CLAUDE_MOD_SOURCE_DIR);
+  for (const [rel, diskPath] of Object.entries(modRaw)) {
+    if (isClaudeModRuntimeFile(rel)) claudePlugins[`${CLAUDE_MOD_PLUGIN}/${rel}`] = diskPath;
+  }
+
   const vf = JSON.parse(fs.readFileSync(path.join(root, 'version.json'), 'utf-8'));
   return {
     version: vf.version, hooks, scripts, skills, fleetSkills, agents, workflows,
     workflowRuntime, agentSchemas, builtinWorkflows, autoSprintArgsSkill,
-    fleetSprintCliSkill, fleetSupervisorSkill,
+    fleetSprintCliSkill, fleetSupervisorSkill, claudePlugins,
   };
 }
 
@@ -757,8 +775,15 @@ function mergePermissions(paths: ProviderInstallConfig, extraPerms: string[] = [
   writeConfig(paths, settings);
 }
 
-function configureStatusline(paths: ProviderInstallConfig, scriptPath: string, llm?: LlmProvider): void {
+/**
+ * Point the provider's statusLine at apra-fleet's statusline script -- unless
+ * the user already has a statusLine of their own (one whose command is not
+ * apra-fleet's script), which is never overwritten. Returns 'kept-foreign'
+ * in that case so the caller can say so.
+ */
+function configureStatusline(paths: ProviderInstallConfig, scriptPath: string, llm?: LlmProvider): 'written' | 'kept-foreign' {
   const settings = readConfig(paths);
+  if (settings.statusLine && !isApraFleetStatusLine(settings.statusLine)) return 'kept-foreign';
   let command: string;
 
   if (process.platform === 'win32') {
@@ -784,6 +809,18 @@ function configureStatusline(paths: ProviderInstallConfig, scriptPath: string, l
     command,
   };
   writeConfig(paths, settings);
+  return 'written';
+}
+
+/**
+ * The fleet-status mod's runtime files from the asset manifest (SEA or dev),
+ * relative to the mod folder. Empty when this build does not package the mod.
+ */
+function claudeModFiles(manifest: AssetManifest): Array<{ relPath: string; content: Buffer }> {
+  const prefix = `${CLAUDE_MOD_PLUGIN}/`;
+  return Object.entries(manifest.claudePlugins ?? {})
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([key, assetKey]) => ({ relPath: key.slice(prefix.length), content: extractAssetBuffer(assetKey) }));
 }
 
 function mergeAgyConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
@@ -1688,6 +1725,7 @@ ${manualStopHint(pidsAfterStop)}
   }
 
   // --- Step 4: Configure hooks + statusline in settings.json ---
+  let claudeModResult: ClaudeModResult | null = null;
   console.log(`  [4/${totalSteps}] Configuring ${paths.name} settings...`);
   // OpenCode has a strict config schema -- hooks/statusLine/defaultModel are not valid keys
   if (memberMode) {
@@ -1698,8 +1736,29 @@ ${manualStopHint(pidsAfterStop)}
     );
     mergeHooksConfig(paths, installedHooksConfig, llm);
 
-    const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
-    configureStatusline(paths, statuslineScript, llm);
+    // Claude: install the fleet-status mod (status line entry + /fleet-status
+    // pane). Only when it installed does the statusLine script go away (and
+    // only apra-fleet's own entry); otherwise today's statusLine stays.
+    // Runs before configureStatusline and between the settings writes: the
+    // claude CLI edits the same settings.json, and every helper re-reads it.
+    if (llm === 'claude' && claudeModStepEnabled()) {
+      let modFiles: Array<{ relPath: string; content: Buffer }> = [];
+      try { modFiles = claudeModFiles(manifest); } catch { /* unreadable asset -> reported as not packaged */ }
+      claudeModResult = installClaudeMod(modFiles, { alreadyRegistered: claudeModRegistered(paths) });
+    }
+    if (claudeModResult?.status === 'installed') {
+      if (removeApraFleetStatusLine(paths)) {
+        console.log('    Removed the apra-fleet statusLine entry (the fleet-status mod replaces it).');
+      }
+    } else {
+      if (claudeModResult?.status === 'skipped') {
+        console.log(`    fleet-status mod not installed: ${claudeModResult.reason} -- keeping the statusLine script.`);
+      }
+      const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
+      if (configureStatusline(paths, statuslineScript, llm) === 'kept-foreign') {
+        console.log(`    Kept your existing statusLine in ${paths.settingsFile} (not apra-fleet's; left unchanged).`);
+      }
+    }
 
     const standardModel = PROVIDER_STANDARD_MODELS[llm] ?? PROVIDER_STANDARD_MODELS['claude'];
     writeDefaultModel(paths, standardModel);
@@ -2306,6 +2365,9 @@ ${restartHint}
     : '';
   const settingsLine = memberMode ? '' : `\n  Settings:    ${paths.settingsFile}`;
   const serviceState = serviceHealthy === true ? 'registered and running' : serviceHealthy === false ? 'registered, but NOT answering /health (see the warning above)' : 'registered (health not checked)';
+  const claudeModLine = claudeModResult
+    ? `\n  Claude mod:  fleet-status ${claudeModResult.status === 'installed' ? `installed (${claudeModResult.dir}${claudeModResult.note ? `; ${claudeModResult.note}` : ''})` : `skipped: ${claudeModResult.reason}`}`
+    : '';
   const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `${serviceState}${serviceReused ? ' (existing task reused)' : ''}${serviceRunKey ? ' (logon autostart via HKCU Run, no automatic restart)' : ''}` : 'registration skipped'}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
@@ -2313,7 +2375,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}${settingsLine}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}${installAgents ? `\n  Agents:      ${paths.agentsDir}` : ''}
   Beads:       ${beadsVersion}
-  Dolt:        ${doltVersion}${serviceLine}
+  Dolt:        ${doltVersion}${claudeModLine}${serviceLine}
 
 ${instructions}${forceNote}${accessNote}
 `);
