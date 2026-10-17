@@ -69,13 +69,24 @@ export function bdMode() {
     return 'replay';
 }
 
+// On a host that exports BEADS_DIR globally (bd resolves
+// it BEFORE looking at cwd), every real `bd` spawn below would otherwise
+// inherit it verbatim and hit that ambient workspace instead of the
+// scratch `cwd` tempDir this harness built for the scenario -- this already
+// rewrote the real repo's own beads remote twice via the f34 test. Strip it
+// from the child env so every real spawn is genuinely scoped to `cwd`,
+// mirroring the proven BD_CHILD_ENV idiom in
+// tests/2cc-win-bd-invocation-integ.test.ts / tests/check-sandbox-sync-remote.test.ts.
+export function bdChildEnv() {
+    const env = { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' };
+    delete env.BEADS_DIR;
+    return env;
+}
+
 // The original mock-sprint-harness runCmd body, unchanged: resolve (never
 // reject) with { err, stdout, stderr } from a real child process.
-// `stripBeadsDir`: drop an ambient BEADS_DIR so bd resolves `cwd` only.
-export const execCmd = (cmd, cwd, { stripBeadsDir = false } = {}) => new Promise((resolve) => {
-    const env = { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' };
-    if (stripBeadsDir) delete env.BEADS_DIR;
-    exec(cmd, { cwd, windowsHide: true, env }, (err, stdout, stderr) => {
+export const execCmd = (cmd, cwd) => new Promise((resolve) => {
+    exec(cmd, { cwd, windowsHide: true, env: bdChildEnv() }, (err, stdout, stderr) => {
         resolve({ err, stdout, stderr });
     });
 });
@@ -450,7 +461,7 @@ async function createBdInitTemplate(templateDir) {
     await fs.promises.mkdir(os.tmpdir(), { recursive: true });
     const staging = await fs.promises.mkdtemp(`${templateDir}-staging-`);
     bdInitTemplateSpawns += 1;
-    const res = await execCmd('bd init', staging, { stripBeadsDir: true });
+    const res = await execCmd('bd init', staging);
     if (res.err) {
         await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
         return { ...res, templateDir };

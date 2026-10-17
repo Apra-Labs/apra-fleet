@@ -94,6 +94,19 @@ const OWNER_REPO = (cfg.toy.match(/github\.com[/:]([^/]+\/[^/.]+)/) || [])[1] ||
 
 function ghEnv(token) { return token ? { ...process.env, GH_TOKEN: token } : process.env; }
 
+// bd resolves BEADS_DIR before it ever looks at cwd. On a
+// host that exports BEADS_DIR globally (e.g. an operator's own beads
+// workspace), every real `bd` child this runner spawns into a throwaway e2e
+// clone (`repo`/`work` above) would otherwise inherit it verbatim and hit
+// that ambient workspace instead -- the exact shape that corrupted a real
+// beads remote elsewhere in this repo's test harness. Strip it so each bd
+// spawn below is genuinely scoped to its own `cwd`.
+function bdChildEnv() {
+  const e = { ...process.env };
+  delete e.BEADS_DIR;
+  return e;
+}
+
 // LLM processes must not inherit write-access tokens on public runners -- the
 // token is already embedded in the git remote URL before the sprint starts.
 // Set PMLITE_E2E_TRUST_LLM=1 on self-hosted (private) runners where leakage
@@ -183,11 +196,11 @@ function healDoltSeed(token) {
     git(['-C', repo, 'remote', 'remove', 'origin']);
     try { fs.rmSync(path.join(repo, '.beads', 'embeddeddolt'), { recursive: true, force: true }); } catch {}
     try { fs.rmSync(path.join(repo, '.beads', '.local_version'), { force: true }); } catch {}
-    spawnSync('bd', ['init', '-p', 'gh-toy', '--non-interactive'], { cwd: repo, encoding: 'utf-8' });
-    spawnSync('bd', ['import', '.beads/issues.jsonl'], { cwd: repo, encoding: 'utf-8' });
+    spawnSync('bd', ['init', '-p', 'gh-toy', '--non-interactive'], { cwd: repo, encoding: 'utf-8', env: bdChildEnv() });
+    spawnSync('bd', ['import', '.beads/issues.jsonl'], { cwd: repo, encoding: 'utf-8', env: bdChildEnv() });
     // Guard: refuse to push unless the rebuilt seed is all-open and non-empty. This stops a
     // corrupt rebuild (e.g. a polluted JSONL) from being force-pushed over the good remote.
-    const listed = spawnSync('bd', ['list', '--status', 'all', '--json'], { cwd: repo, encoding: 'utf-8' });
+    const listed = spawnSync('bd', ['list', '--status', 'all', '--json'], { cwd: repo, encoding: 'utf-8', env: bdChildEnv() });
     let issues = [];
     try { const j = JSON.parse(listed.stdout); issues = j.issues || j; } catch { issues = []; }
     const openCount = issues.filter((i) => i.status !== 'closed').length;
@@ -197,8 +210,8 @@ function healDoltSeed(token) {
     }
     // Force-push the golden seed, overwriting refs/dolt/data. bd dolt (git-backed) shells to
     // git, so the token embeds in the remote URL just like the suite's git origin push.
-    spawnSync('bd', ['dolt', 'remote', 'add', 'origin', `git+https://x-access-token:${token}@github.com/${OWNER_REPO}`], { cwd: repo, encoding: 'utf-8' });
-    const push = spawnSync('bd', ['dolt', 'push', '--force', '--remote', 'origin'], { cwd: repo, encoding: 'utf-8' });
+    spawnSync('bd', ['dolt', 'remote', 'add', 'origin', `git+https://x-access-token:${token}@github.com/${OWNER_REPO}`], { cwd: repo, encoding: 'utf-8', env: bdChildEnv() });
+    const push = spawnSync('bd', ['dolt', 'push', '--force', '--remote', 'origin'], { cwd: repo, encoding: 'utf-8', env: bdChildEnv() });
     if (push.status === 0) console.log(`[heal-seed] golden seed restored (${issues.length} open issues)`);
     else console.log(`[heal-seed] push failed (exit ${push.status}): ${((push.stderr || push.stdout) || '').trim().slice(0, 200)}`);
   } catch (e) {
@@ -306,7 +319,7 @@ function runSuite(suite, timeoutS, keepPr, keepInstall) {
   // beads needs issue_prefix set before the model can run bd commands.
   // The toy repo commits .beads/issues.jsonl but not git config, so initialize
   // here with the toy's prefix so `bd ready` and `bd list` work out of the box.
-  spawnSync('bd', ['init', '-p', 'gh-toy', '--non-interactive'], { cwd: repo, encoding: 'utf-8' });
+  spawnSync('bd', ['init', '-p', 'gh-toy', '--non-interactive'], { cwd: repo, encoding: 'utf-8', env: bdChildEnv() });
 
   // bd init ADOPTS the shared Dolt seed from the toy's refs/dolt/data (the "issues shared
   // between team members without a database" model) -- that's the intended read path. But bd
@@ -318,7 +331,7 @@ function runSuite(suite, timeoutS, keepPr, keepInstall) {
   // closure gates read); the toy's main config keeps sync.remote so future clones still adopt.
   // Defense in depth: this prevents drift DURING the run; healDoltSeed() at teardown then
   // force-restores the shared seed to golden, so any drift that slips through heals next run.
-  spawnSync('bd', ['dolt', 'remote', 'remove', 'origin'], { cwd: repo, encoding: 'utf-8' });
+  spawnSync('bd', ['dolt', 'remote', 'remove', 'origin'], { cwd: repo, encoding: 'utf-8', env: bdChildEnv() });
 
   // The sprint pushes and raises a PR, so keep origin. If a token is provided, wire
   // it into the push URL (gh reads GH_TOKEN from the environment on its own).
