@@ -197,7 +197,8 @@ test('bitbucket find-pull-request: GET open PRs filtered by source+destination b
         assert.match(built.command, os === 'linux' ? /^curl -sS -X GET / : /^curl\.exe -sS -X GET /);
         assert.ok(built.command.includes(`-u '${USERNAME}:${TOKEN}'`), built.command);
         const expectedUrl = `${API_BASE}/pullrequests?state=OPEN&q=`
-            + encodeURIComponent('source.branch.name="auto-sprint/feat-x" AND destination.branch.name="main"');
+            + encodeURIComponent('source.branch.name="auto-sprint/feat-x" AND destination.branch.name="main"')
+            + '&fields=' + encodeURIComponent('values.id,values.title,values.description,values.summary.raw,values.links.html.href,values.source.repository.full_name');
         assert.ok(built.command.endsWith(` '${expectedUrl}'`), `unexpected URL: ${built.command}`);
         assert.ok(!built.command.includes('"'), `no literal double quote may reach the member shell: ${built.command}`);
         assert.ok(!built.logSafeCommand.includes(TOKEN) && !built.logSafeCommand.includes(USERNAME), built.logSafeCommand);

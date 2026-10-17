@@ -370,8 +370,26 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // that stable code rather than by its message text.
     let provider;
     let authMode;
+    // PR-raising (push+pr) calls act on the TARGET repo, so the provider whose
+    // host serves that remote wins over the member's registered one: a
+    // GitHub-registered backlog member publishing a bitbucket.org sprint must
+    // use Bitbucket's provider (and its own credential label), never mint a
+    // GitHub credential for a Bitbucket repo. Only an anchored auth-provider
+    // host match counts (detectVcsProviderFromRemote); anything else keeps
+    // the registry answer.
+    const hostProvider = (gitAccess === 'push+pr' && !resolvedProvider && !remoteReadFailed && remoteUrl)
+        ? detectVcsProviderFromRemote(remoteUrl)
+        : null;
+    let registeredMismatch = null;
     try {
         ({ provider, authMode } = resolvedProvider || await resolveProvider(member, { fleetApi }));
+        if (hostProvider && hostProvider !== provider) {
+            registeredMismatch = provider;
+            provider = hostProvider;
+            const impl = getVcsProvider(provider);
+            authMode = isAuthBackend(impl) ? impl.defaultAuthMode : null;
+            log(`${logPrefix}: member '${member}' is registered for VCS provider '${registeredMismatch}', but the target remote is served by '${provider}'; using '${provider}' for this pull-request call.`);
+        }
     } catch (resolveErr) {
         if (!resolveErr || resolveErr.code !== VCS_NO_REGISTERED_PROVIDER) throw resolveErr;
         const detected = (!remoteReadFailed && remoteUrl)
@@ -421,6 +439,13 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     if (provisionArgs === null) {
         log(`${logPrefix}: provider '${provider}' has nothing to re-provision for member '${member}'; continuing on its already-deployed credential without calling provision_vcs_auth.`);
         return { expiresAt: null, repo: derivedRepo, provider, provisionSkipped: true };
+    }
+    // A member holds one VCS credential: provisioning the host's provider
+    // here would revoke the credential of the provider it is registered for
+    // (provision_vcs_auth swaps labels) and break that provider's sprints.
+    // Refuse with a typed error instead; the PR callers degrade on it.
+    if (registeredMismatch) {
+        throw new Error(`member '${member}' is registered for VCS provider '${registeredMismatch}', which does not serve this '${provider}' remote; not provisioning '${provider}' on it, because that would revoke the member's '${registeredMismatch}' credential. Use a backlog member dedicated to '${provider}' for this repository.`);
     }
     const provisionRes = await fleetApi.provisionVcsAuth(provisionArgs);
     const provisionText = resultText(provisionRes);
@@ -969,7 +994,10 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 const message = `No usable '${credentialLabel}' VCS credential is deployed on member '${member}' `
                     + `(vcs_credential_exec reason: ${handoff.reason})${skippedRemedy()}`;
                 log(`${logPrefix}: ${message}`);
-                return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: true };
+                // credentialAbsent: no PR was possible at all (nothing is
+                // deployed), as opposed to a deployed credential that failed.
+                // Publish PR keeps the pre-PR-support behaviour for it.
+                return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: true, credentialAbsent: true };
             }
             throw new Error(
                 `Failed to read VCS credential token for member '${member}' from the `

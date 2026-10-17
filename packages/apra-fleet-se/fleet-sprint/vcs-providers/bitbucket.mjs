@@ -247,7 +247,15 @@ const AUTH_REMEDY_HINT =
     + 'member_name=MEMBER provider=bitbucket email=ATLASSIAN_ACCOUNT_EMAIL '
     + `workspace=WORKSPACE api_token={{secret.${DEFAULT_API_TOKEN_SECRET}}}. `
     + 'Bitbucket app passwords are deprecated: replace an existing one with an '
-    + 'API token the same way.';
+    + 'API token the same way. Two cautions: (1) a member holds ONE VCS '
+    + 'credential, so provisioning Bitbucket on a backlog member already '
+    + 'provisioned for another provider (e.g. GitHub) replaces that credential '
+    + '-- use a backlog member dedicated to Bitbucket; (2) on a LOCAL member '
+    + 'provision_vcs_auth rewrites the host\'s own global bitbucket.org git '
+    + 'credential helper, which can break the operator\'s HTTPS git -- provision '
+    + 'a non-local member, or keep the local member on SSH. Without a deployed '
+    + 'credential the sprint still completes: no PR is opened and target '
+    + 'issues are closed directly on PASS.';
 
 const authRemedy = Object.freeze({
     // An API token is created by a human against an Atlassian identity;
@@ -472,7 +480,16 @@ function buildBitbucketFindPrCommand(params) {
     if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a find-pull-request command.');
     if (!head) throw new Error('ERROR: VCSModule: "head" branch is required to build a find-pull-request command.');
     const bbql = `source.branch.name=${bbqlString(head)} AND destination.branch.name=${bbqlString(base)}`;
-    const url = `${repoApiBase(coords)}/pullrequests?state=OPEN&q=${encodeURIComponent(bbql)}`;
+    // `fields` asks for exactly what the update path needs, so the existing
+    // description (which carries the run history) is never left out of a
+    // partial list representation, plus the source repository for the
+    // fork filter in mapResponse.
+    const fields = [
+        'values.id', 'values.title', 'values.description', 'values.summary.raw',
+        'values.links.html.href', 'values.source.repository.full_name',
+    ].join(',');
+    const url = `${repoApiBase(coords)}/pullrequests?state=OPEN&q=${encodeURIComponent(bbql)}&fields=${encodeURIComponent(fields)}`;
+    const ownFullName = `${coords.workspace}/${coords.repo}`.toLowerCase();
 
     const buildCurl = (authUsername, authToken) => [
         `${curlBinary(os)} -sS -X GET`,
@@ -489,9 +506,18 @@ function buildBitbucketFindPrCommand(params) {
         logSafeCommand: buildCurl(REDACTED, REDACTED),
         interpret: { successStatusRange: [200, 299] },
         /** 2xx body ({ values: [...] }) -> [{ id, title, body, url }]. */
+        // A PR from a FORK with the same branch name is not this sprint's PR:
+        // drop any entry whose source repository is a different repo
+        // (compared case-insensitively; an entry without the field is kept).
         mapResponse: (respBody) => {
             const list = respBody && Array.isArray(respBody.values) ? respBody.values : [];
-            return list.map(mapBitbucketPull).filter((p) => p.id !== null);
+            return list
+                .filter((pr) => {
+                    const fullName = pr && pr.source && pr.source.repository && pr.source.repository.full_name;
+                    return typeof fullName !== 'string' || fullName.toLowerCase() === ownFullName;
+                })
+                .map(mapBitbucketPull)
+                .filter((p) => p.id !== null);
         },
     };
 }
@@ -576,7 +602,9 @@ function mapBitbucketPull(pr) {
     return {
         id,
         title: typeof src.title === 'string' ? src.title : '',
-        body: typeof src.description === 'string' ? src.description : '',
+        // description, falling back to summary.raw (same markdown source).
+        body: typeof src.description === 'string' ? src.description
+            : (src.summary && typeof src.summary.raw === 'string') ? src.summary.raw : '',
         url,
     };
 }

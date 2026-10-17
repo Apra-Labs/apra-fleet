@@ -5,6 +5,9 @@ import { runPublishPrPhase } from '../fleet-sprint/phases/publish-pr.mjs';
 import { finalizeAbort } from '../fleet-sprint/runner.js';
 import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
 import { BitbucketVCS } from '../fleet-sprint/vcs-providers/bitbucket.mjs';
+import { raiseVcsPrForMember } from '../fleet-sprint/vcs-auth.mjs';
+import { buildFindPrCommand } from '../fleet-sprint/vcs-module.mjs';
+import { ApraFleet } from '@apralabs/apra-fleet-client';
 
 // =============================================================================
 // Bitbucket Cloud PR publishing: degrade + existing-PR update parity.
@@ -33,8 +36,8 @@ function posixDashD(command) {
     return JSON.parse(m[1].replace(/'\\''/g, "'"));
 }
 
-function fakeBitbucket({ registered = true, credential = 'ok', existing = null, postStatus = null } = {}) {
-    const state = { pr: existing ? { id: 42, ...existing } : null, calls: [], provisionCalls: [], execCommands: [] };
+function fakeBitbucket({ registered = true, registeredAs = 'bitbucket', credential = 'ok', existing = null, postStatus = null } = {}) {
+    const state = { pr: existing ? { id: 42, ...existing } : null, calls: [], provisionCalls: [], execCommands: [], execLabels: [] };
     const respond = (status, body) => ({ content: [{ text: '' }], structuredContent: { ok: true, reason: 'ok', exitCode: 0, stdout: `${JSON.stringify(body)}\n${status}`, stderr: '' } });
     const pull = () => ({ id: state.pr.id, title: state.pr.title, description: state.pr.description, links: { html: { href: PR_URL } } });
     state.exec = (cmd) => {
@@ -61,14 +64,17 @@ function fakeBitbucket({ registered = true, credential = 'ok', existing = null, 
     };
     state.callTool = async (name, toolArgs) => {
         if (name === 'member_detail') {
-            return { content: [{ text: JSON.stringify({ ...(registered ? { vcsProvider: 'bitbucket' } : {}), os: 'linux', shell: '' }) }] };
+            return { content: [{ text: JSON.stringify({ ...(registered ? { vcsProvider: registeredAs } : {}), os: 'linux', shell: '' }) }] };
         }
         if (name === 'provision_vcs_auth') {
             state.provisionCalls.push(toolArgs);
             return { content: [{ text: '[FAIL] unexpected provision' }], structuredContent: { ok: false, reason: 'credential_assembly_failed' } };
         }
         if (name === 'credential_store_list') return { content: [{ text: '[]' }] };
-        if (name === 'vcs_credential_exec') return state.exec(toolArgs.command);
+        if (name === 'vcs_credential_exec') {
+            state.execLabels.push(toolArgs.label);
+            return state.exec(toolArgs.command);
+        }
         throw new Error(`unexpected tool ${name}`);
     };
     return state;
@@ -78,15 +84,15 @@ const remoteCommand = async (cmd) => (cmd === 'git remote get-url origin'
     ? { ok: true, output: BB_ORIGIN, error: null }
     : { ok: true, output: '', error: null });
 
-async function publish({ bb, verdict = 'PASS', notes = 'ok', runId, member }) {
+async function publish({ bb, verdict = 'PASS', notes = 'ok', runId, member, targetIssues = [], commands = [] }) {
     const logs = [];
     const result = await runPublishPrPhase({
         phase: () => {},
         log: (m) => logs.push(m),
-        command: remoteCommand,
+        command: async (cmd, opts) => { commands.push(cmd); return remoteCommand(cmd, opts); },
         args: { callTool: bb.callTool, run_id: runId },
         validated: { branch: 'feat/x', baseBranch: 'main', goal: 'Ship X', runId },
-        targetIssues: [],
+        targetIssues,
         backlogMember: member,
         finalCycleLabel: '1',
         gitSync: { pushGitAfter: async () => {}, syncBeadsAfter: async () => {} },
@@ -197,5 +203,108 @@ describe('(c) auth failures on a skip-provisioned provider', () => {
         assert.ok(REMEDY_URL_RE.test(BitbucketVCS.authRemedy.hint));
         assert.ok(BitbucketVCS.authRemedy.hint.includes('write:pullrequest:bitbucket'));
         assert.ok(!BitbucketVCS.authRemedy.hint.includes('account/settings/app-passwords'));
+    });
+});
+
+describe('(F1) the PR provider follows the target remote host, not the member registry', () => {
+    test('a GitHub-registered backlog member on a bitbucket.org sprint: no provision_vcs_auth call, the bitbucket label, a Bitbucket PR', async () => {
+        const bb = fakeBitbucket({ registeredAs: 'github' });
+        const { result, logs } = await publish({ bb, runId: 'run-f1', member: 'bb-gh-registered' });
+        assert.deepEqual(result, { pushed: true });
+        assert.deepEqual(bb.provisionCalls, [], 'the member\'s GitHub credential must never be minted for, or replaced by, a Bitbucket repo');
+        assert.deepEqual(bb.execLabels, ['bitbucket']);
+        assert.deepEqual(bb.calls, ['POST']);
+        assert.ok(logs.some((m) => m.includes("registered for VCS provider 'github'") && m.includes("served by 'bitbucket'")), JSON.stringify(logs));
+    });
+
+    test('a GitHub-registered member with no Bitbucket credential degrades with the BITBUCKET remedy, not GitHub\'s', async () => {
+        const bb = fakeBitbucket({ registeredAs: 'github', credential: 'credential_read_failed' });
+        const { logs } = await publish({ bb, runId: 'run-f1b', member: 'bb-gh-registered-nocred' });
+        assert.deepEqual(bb.provisionCalls, []);
+        const skipped = logs.find((m) => m.startsWith('[Publish PR Skipped]'));
+        assert.ok(skipped && skipped.includes(BitbucketVCS.authRemedy.hint), JSON.stringify(logs));
+    });
+
+    test('a provider that WOULD provision is never minted on a member registered for another provider (typed degrade, no provision call)', async () => {
+        const calls = [];
+        const callTool = async (name, toolArgs) => {
+            calls.push(name);
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'bitbucket', os: 'linux', shell: '' }) }] };
+            if (name === 'credential_store_list') return { content: [{ text: '[]' }] };
+            throw new Error(`unexpected tool ${name} ${JSON.stringify(toolArgs)}`);
+        };
+        const result = await raiseVcsPrForMember({
+            fleetApi: new ApraFleet({ callTool }),
+            command: async () => { throw new Error('no command expected'); },
+            member: 'bb-registered-on-github-repo',
+            base: 'main', head: 'feat/x', title: 't', body: 'b',
+            logPrefix: '[Publish PR]',
+            remoteUrlOverride: 'https://github.com/acme/widgets.git',
+        });
+        assert.equal(result.ok, false);
+        assert.equal(result.authFailure, true);
+        assert.match(result.error, /registered for VCS provider 'bitbucket', which does not serve this 'github' remote/);
+        assert.ok(!calls.includes('provision_vcs_auth'), JSON.stringify(calls));
+    });
+});
+
+describe('(F2) PASS with no Bitbucket credential keeps closing target issues directly', () => {
+    test('PASS + no credential -> bd close for each target, loud "no pull request was opened" log', async () => {
+        const bb = fakeBitbucket({ credential: 'credential_read_failed' });
+        const commands = [];
+        const { result, logs } = await publish({ bb, runId: 'run-f2', member: 'bb-f2-pass', targetIssues: ['t-1', 't-2'], commands });
+        assert.deepEqual(result, { pushed: true });
+        assert.deepEqual(commands.filter((c) => c.startsWith('bd close')), ['bd close t-1', 'bd close t-2']);
+        assert.ok(logs.some((m) => m.startsWith('[Publish PR Skipped] NO pull request was opened') && m.includes('closing target issue(s) directly')), JSON.stringify(logs));
+        assert.ok(logs.some((m) => m.includes("closed target issue 't-1' directly")), JSON.stringify(logs));
+    });
+
+    test('FAIL + no credential -> targets stay open', async () => {
+        const bb = fakeBitbucket({ credential: 'credential_read_failed' });
+        const commands = [];
+        await publish({ bb, verdict: 'FAIL', runId: 'run-f2f', member: 'bb-f2-fail', targetIssues: ['t-1'], commands });
+        assert.deepEqual(commands.filter((c) => c.startsWith('bd close')), []);
+    });
+
+    test('a DEPLOYED credential that fails (401) keeps targets open (closure waits for a PR)', async () => {
+        const bb = fakeBitbucket({ postStatus: 401 });
+        const commands = [];
+        await publish({ bb, runId: 'run-f2-401', member: 'bb-f2-401', targetIssues: ['t-1'], commands });
+        assert.deepEqual(commands.filter((c) => c.startsWith('bd close')), []);
+    });
+
+    test('a created PR keeps targets open (closure waits for the PR)', async () => {
+        const bb = fakeBitbucket();
+        const commands = [];
+        await publish({ bb, runId: 'run-f2-ok', member: 'bb-f2-ok', targetIssues: ['t-1'], commands });
+        assert.deepEqual(commands.filter((c) => c.startsWith('bd close')), []);
+    });
+});
+
+describe('(F3/F4/F5) remedy cautions, fork filter, description retention', () => {
+    test('the remedy warns about replacing another provider\'s credential and about local members', () => {
+        assert.ok(BitbucketVCS.authRemedy.hint.includes('backlog member dedicated to Bitbucket'));
+        assert.ok(BitbucketVCS.authRemedy.hint.includes('LOCAL member'));
+    });
+
+    const FIND = { provider: 'bitbucket', repoRef: { workspace: 'acme', repo: 'widgets' }, base: 'main', head: 'feat/x', token: 't', username: 'u', os: 'linux' };
+
+    test('find drops a PR whose source repository is a fork', () => {
+        const built = buildFindPrCommand(FIND);
+        const mapped = built.mapResponse({
+            values: [
+                { id: 7, title: 'fork', description: 'x', source: { repository: { full_name: 'someone/widgets' } } },
+                { id: 8, title: 'own', description: 'y', source: { repository: { full_name: 'ACME/Widgets' } } },
+            ],
+        });
+        assert.deepEqual(mapped.map((p) => p.id), [8]);
+    });
+
+    test('find asks for the description explicitly, and falls back to summary.raw', () => {
+        const built = buildFindPrCommand(FIND);
+        const fields = encodeURIComponent('values.id,values.title,values.description,values.summary.raw,values.links.html.href,values.source.repository.full_name');
+        assert.ok(built.command.includes(`&fields=${fields}`), built.command);
+        const [pr] = built.mapResponse({ values: [{ id: 9, title: 't', summary: { raw: 'history body' } }] });
+        assert.equal(pr.body, 'history body');
     });
 });
