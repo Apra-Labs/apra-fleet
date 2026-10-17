@@ -64,12 +64,8 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // immediately after confirming the failure; `git status --porcelain` was
 // clean before and after.
 //
-// OUTSTANDING LIVE CHECK: the opt-in live scenario (opening a real Bitbucket
-// PR against apra-analytics) has not been run in this dispatch -- see
-// helpers/bitbucket-real-e2e.mjs and bitbucket-real-e2e.test.mjs for the
-// gated scenario and helpers/bitbucket-real-e2e-runbook.md for the
-// configuration contract. Recorded as outstanding on this bead's notes and
-// on the epic apra-fleet-qeq1's notes.
+// OUTSTANDING LIVE CHECK: no run against a real bitbucket.org repository has
+// been made yet; this suite is fully mocked.
 // =============================================================================
 
 const BB_ORIGIN = 'git@bitbucket.org:kumaakh/apra-analytics.git';
