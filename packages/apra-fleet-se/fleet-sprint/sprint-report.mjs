@@ -246,8 +246,8 @@ function kbBibleLines(unpublished) {
 }
 
 /**
- * Builds the sprint cost block (appended to the analysis document and rendered
- * in the PR body) from the live `budget` object. Reports only what is known:
+ * Builds the sprint cost block (rendered in the PR body and logged to the run
+ * log, never written to a committed file) from the live `budget` object. Reports only what is known:
  * an unset ceiling, an absent spent() and an unpriced-model spend gap are each
  * stated as such rather than backfilled with a fabricated number, since the
  * block is published verbatim and never recomputed. The remaining budget is derived from

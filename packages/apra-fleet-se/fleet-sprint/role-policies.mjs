@@ -1291,6 +1291,24 @@ harvester.secondary = secondary(harvester, 'harvester', 'max-turns-resume', {
     preDispatch: ['kill-stale-session'],
 });
 
+// The harvester row for the no-write harvest modes ('pr-body-only' and 'off',
+// see the harvest_mode launch option in sprint-args.mjs). Identical to the
+// 'harvester' row except that neither its main dispatch nor its max_turns
+// resume G-pushes code: in those modes the harvester must not change the
+// target repository, so the bracket never publishes a commit it may have made
+// anyway. Beads still D-push (the backlog-confirmation defers are not
+// repository writes). phases/harvest.mjs selects it through dispatchRole's
+// ctx.policies seam and ALSO verifies the member's HEAD and working tree
+// around the dispatch, resetting any write it finds -- this row only
+// guarantees nothing is pushed. Deliberately NOT a ROLE_NAMES row: it is a
+// variant of the harvester's dispatch, not a separate role with its own
+// ladder anchors.
+const harvesterNoWrite = {
+    ...harvester,
+    bracket: bracketed(false, true),
+    secondary: { ...harvester.secondary, bracket: bracketed(false, true) },
+};
+
 // -----------------------------------------------------------------------------
 // Usage-limit pause/resume engine budgets (apra-fleet-hzeb.4.1)
 // -----------------------------------------------------------------------------
@@ -1360,6 +1378,16 @@ export const ROLE_POLICIES = freezeDeep({
     'integ-test-runner': integTestRunner,
     'regression-test-runner': regressionTestRunner,
     harvester,
+});
+
+/**
+ * The policy table for a no-write harvest ('pr-body-only' / 'off'): the real
+ * table with its 'harvester' row swapped for harvesterNoWrite (above). Passed
+ * as dispatchRole's ctx.policies by phases/harvest.mjs.
+ */
+export const HARVESTER_NO_WRITE_POLICIES = freezeDeep({
+    ...ROLE_POLICIES,
+    harvester: harvesterNoWrite,
 });
 
 /** Every role name in the table, in table order. */

@@ -98,6 +98,12 @@ const KNOWN_ARG_KEYS = new Set([
     // Never silent: the engine logs it and the sprint report and PR body say
     // "skipped by launch option". The integration-test phase is unaffected.
     'skip_regression',
+    // What the end-of-sprint harvester may write into the TARGET repo
+    // (launch option: the CLI's --harvest-mode / --harvest-docs-dir, the
+    // supervisor's harvestMode / harvestDocsDir). See validateHarvestOptions
+    // and docs/generic-engine-boundary.md. Unset means 'full'.
+    'harvest_mode',
+    'harvest_docs_dir',
     // Multi-streak worklist dispatch mode when a develop round has more ready
     // streaks than doers. 'resume' (default): per-streak dispatches that resume
     // the SAME doer session by explicit session id (warm-context carryover,
@@ -297,6 +303,73 @@ export function validateBranchPair(branch, base) {
  *   budget: number|undefined
  * }}
  */
+// --- harvest_mode / harvest_docs_dir ----------------------------------------
+// What the end-of-sprint harvester may write into the target repo:
+//   full          -- (default) sprint analysis under docs/, durable docs under
+//                    docs/, README edits.
+//   docs-dir      -- sprint analysis and durable docs under harvest_docs_dir
+//                    only; no README edits.
+//   pr-body-only  -- no harvester file writes or commits; the engine puts the
+//                    sprint analysis in the PR body instead.
+//   off           -- no harvester file writes or commits and no analysis in
+//                    the PR body. KB capture and low-priority backlog
+//                    confirmation still run.
+// The engine's cost block is never part of a committed file in any mode (it
+// goes to the PR body and the run log only).
+export const HARVEST_MODES = Object.freeze(['off', 'pr-body-only', 'docs-dir', 'full']);
+export const HARVEST_DOCS_DIR_MAX_LENGTH = 200;
+const HARVEST_DOCS_DIR_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
+// Windows reserved device names, with or without an extension ("nul.md").
+const HARVEST_DOCS_DIR_RESERVED_RE = /^(con|nul|aux|prn|com[1-9]|lpt[1-9])(\..*)?$/i;
+
+/**
+ * Validates the harvest launch options. harvest_docs_dir is required if and
+ * only if harvest_mode is 'docs-dir', and must be a plain repo-relative path:
+ * '/'-separated segments of [A-Za-z0-9._-] only -- no absolute path, drive
+ * letter or UNC prefix, no backslash, no '..', no '.' or empty segment, no
+ * '.git' segment, no segment starting with '-' or ending with '.', and no
+ * Windows reserved device name (con, nul, aux, prn, com1-9, lpt1-9, with or
+ * without an extension, any case). A single trailing '/' is dropped. Anything else throws an
+ * [Arg Contract] error naming the offending value.
+ *
+ * @param {unknown} mode raw harvest_mode (undefined -> 'full')
+ * @param {unknown} docsDir raw harvest_docs_dir
+ * @returns {{ harvestMode: string, harvestDocsDir: string|null }}
+ */
+export function validateHarvestOptions(mode, docsDir) {
+    const harvestMode = mode === undefined ? 'full' : mode;
+    if (typeof harvestMode !== 'string' || !HARVEST_MODES.includes(harvestMode)) {
+        throw new Error(`[Arg Contract] Invalid harvest_mode "${harvestMode}": must be one of ${HARVEST_MODES.map((m) => "'" + m + "'").join(', ')} (default 'full').`);
+    }
+    if (harvestMode !== 'docs-dir') {
+        if (docsDir !== undefined && docsDir !== null) {
+            throw new Error(`[Arg Contract] Invalid harvest_docs_dir "${docsDir}": harvest_docs_dir is only valid with harvest_mode "docs-dir" (got harvest_mode "${harvestMode}").`);
+        }
+        return { harvestMode, harvestDocsDir: null };
+    }
+    if (docsDir === undefined || docsDir === null) {
+        throw new Error('[Arg Contract] Invalid harvest_mode "docs-dir": harvest_docs_dir is required with harvest_mode "docs-dir" (a repo-relative directory such as "notes/sprints").');
+    }
+    const fail = (why) => {
+        throw new Error(`[Arg Contract] Invalid harvest_docs_dir ${JSON.stringify(docsDir)}: ${why}. It must be a repo-relative directory of '/'-separated segments using only letters, digits, '.', '_' and '-' (e.g. "notes/sprints").`);
+    };
+    if (typeof docsDir !== 'string' || docsDir.length === 0) fail('must be a non-empty string');
+    if (docsDir.length > HARVEST_DOCS_DIR_MAX_LENGTH) fail(`longer than ${HARVEST_DOCS_DIR_MAX_LENGTH} characters`);
+    if (docsDir.startsWith('/') || docsDir.startsWith('\\') || /^[A-Za-z]:/.test(docsDir)) fail('absolute paths are not allowed');
+    if (docsDir.includes('\\')) fail("use '/' as the separator, not a backslash");
+    if (docsDir.includes('..')) fail("'..' is not allowed");
+    const normalized = docsDir.endsWith('/') ? docsDir.slice(0, -1) : docsDir;
+    for (const seg of normalized.split('/')) {
+        if (seg === '' || seg === '.') fail('empty or "." path segments are not allowed');
+        if (seg.toLowerCase() === '.git') fail('a ".git" segment is not allowed');
+        if (!HARVEST_DOCS_DIR_SEGMENT_RE.test(seg)) fail(`segment "${seg}" contains a character outside [A-Za-z0-9._-]`);
+        if (seg.startsWith('-')) fail(`segment "${seg}" starts with '-', which a command line would read as an option`);
+        if (seg.endsWith('.')) fail(`segment "${seg}" ends with '.', which Windows silently strips`);
+        if (HARVEST_DOCS_DIR_RESERVED_RE.test(seg)) fail(`segment "${seg}" is a reserved Windows device name`);
+    }
+    return { harvestMode, harvestDocsDir: normalized };
+}
+
 export function validateArgs(args) {
     if (!args || typeof args !== 'object' || Array.isArray(args)) {
         throw new Error('[Arg Contract] args must be an object.');
@@ -508,6 +581,9 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid skip_regression "${skipRegression}": must be a boolean.`);
     }
 
+    // --- harvest_mode / harvest_docs_dir (optional, default 'full') --------
+    const { harvestMode, harvestDocsDir } = validateHarvestOptions(args.harvest_mode, args.harvest_docs_dir);
+
     // --- resume_model_switch (optional, default false) ---------------------
     const resumeModelSwitch = args.resume_model_switch === undefined ? false : args.resume_model_switch;
     if (typeof resumeModelSwitch !== 'boolean') {
@@ -581,6 +657,8 @@ export function validateArgs(args) {
         doerWorklistMode,
         resumeModelSwitch,
         skipRegression,
+        harvestMode,
+        harvestDocsDir,
         worklistEffortBudget: args.worklist_effort_budget,
         usageLimitMaxWaitS: args.usage_limit_max_wait_s,
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,

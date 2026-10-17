@@ -285,6 +285,44 @@ export class GitSyncError extends WorkflowError {
 }
 
 /**
+ * Thrown by the Harvest phase when the harvester wrote despite a no-write
+ * harvest mode and the engine cannot undo it: the harvester PUSHED to the
+ * sprint branch on origin (`kind: 'remote-push'` -- the engine never rewrites
+ * origin), or it committed locally and HEAD could not be moved back safely
+ * (`kind: 'local-unrestorable'`). Publish PR would publish the write, so the
+ * sprint stops here.
+ *
+ * A WorkflowError, so runner.js's terminal path writes the terminal history
+ * record with this error's code as the reason. Deliberately NOT a typed abort
+ * (see abort.mjs isTypedAbortError): the abort path's finalizeAbort pushes the
+ * branch and raises an [ABORTED] PR, which would publish exactly the write
+ * this error refuses to publish.
+ *
+ * @property {string|null} harvestMode - the active no-write mode
+ * @property {string|null} member - the harvester's member
+ * @property {string|null} branch - the sprint branch
+ * @property {'remote-push'|'local-unrestorable'|null} kind
+ */
+export class HarvestWriteViolationError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ harvestMode?: string|null, member?: string|null, branch?: string|null, kind?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { harvestMode = null, member = null, branch = null, kind = null, details, cause } = opts;
+        super(message, {
+            code: 'HARVEST_WRITE_VIOLATION',
+            details: { harvestMode, member, branch, kind, ...details },
+            cause,
+        });
+        this.harvestMode = harvestMode;
+        this.member = member;
+        this.branch = branch;
+        this.kind = kind;
+    }
+}
+
+/**
  * apra-fleet-eft.9.1 (Plan Part 3.3) -- thrown when an orchestrator-bracketed
  * DOLT sync (D-pull / D-push of the shared beads database) discovers a
  * divergence that the fixed, mechanical conflict policy could NOT close: a

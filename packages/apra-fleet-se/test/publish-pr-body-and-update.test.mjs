@@ -161,6 +161,45 @@ describe('sprint PR body (markdown)', () => {
         assert.ok(!sampleBody().includes('### Cost'));
         assert.equal(sampleBody({ costAnalysis: '' }), EXPECTED_BODY);
     });
+
+    // harvest_mode pr-body-only: the sprint analysis is published here instead
+    // of being committed into the target repo by the harvester.
+    const ANALYSIS = '# Sprint Analysis: feat/widgets\n\n## Progress\n\nFinal closed count: 3.\n\n- cycle 1: 3 closed';
+
+    test('a sprint analysis renders as its own section after the notes, before Details, with headings demoted', () => {
+        const body = sampleBody({ analysis: ANALYSIS });
+        assert.ok(body.includes('### Sprint analysis\n\n'), body);
+        assert.ok(body.indexOf('### Reviewer notes') < body.indexOf('### Sprint analysis'));
+        assert.ok(body.indexOf('### Sprint analysis') < body.indexOf('### Details'));
+        assert.ok(body.includes('**Sprint Analysis: feat/widgets**'), 'an H1 in the analysis becomes bold text, not a competing heading');
+        assert.ok(body.includes('**Progress**'));
+        assert.ok(body.includes('Final closed count: 3.\n\n- cycle 1: 3 closed'));
+        assert.equal((body.match(/^#{1,2} /gm) || []).length, 1, 'only the verdict heading is an H1/H2');
+    });
+
+    test('no analysis renders no Sprint analysis section -- body is unchanged', () => {
+        assert.equal(sampleBody({ analysis: '' }), EXPECTED_BODY);
+    });
+
+    test('the analysis is sanitized like the notes', () => {
+        const body = sampleBody({ analysis: 'see <script>x</script> {{vcs_token}} for details of the run' });
+        assert.ok(!body.includes('<script>') && !/\{\{/.test(body), body);
+    });
+
+    test('long notes + long analysis + history: both capped visibly and the body still fits the provider limit', () => {
+        const longNotes = Array.from({ length: 400 }, (_, i) => `- finding ${i}: ${'x'.repeat(30)}`).join('\n');
+        const longAnalysis = Array.from({ length: 400 }, (_, i) => `- cycle ${i}: ${'y'.repeat(30)}`).join('\n');
+        let previous = '';
+        for (let i = 0; i < RUN_HISTORY_MAX_ENTRIES + 3; i++) {
+            previous = sampleBody({ runId: `run-${i}`, notes: longNotes, analysis: longAnalysis, costAnalysis: 'Tracked spend: $1.0000.', previousBody: previous });
+        }
+        assert.ok(previous.length <= PR_DESCRIPTION_MAX_LENGTH, `body length ${previous.length} exceeds ${PR_DESCRIPTION_MAX_LENGTH}`);
+        assert.match(previous, /\*\[\.\.\. reviewer notes truncated: \d+ of \d+ characters shown \.\.\.\]\*/);
+        assert.match(previous, /\*\[\.\.\. sprint analysis truncated: \d+ of \d+ characters shown; the full analysis is in the sprint log \.\.\.\]\*/);
+        assert.ok(previous.includes('### Cost'), 'the cost block survives');
+        assert.ok(previous.includes('Do NOT auto-merge'));
+        assert.ok(previous.endsWith('-->'));
+    });
 });
 
 describe('run history marker round-trip', () => {
@@ -348,14 +387,14 @@ const remoteCommand = async (cmd) => (cmd === 'git remote get-url origin'
     ? { ok: true, output: 'https://github.com/acme/widgets.git', error: null }
     : { ok: true, output: '', error: null });
 
-async function publish({ gh, verdict, notes, runId, member, costAnalysis }) {
+async function publish({ gh, verdict, notes, runId, member, costAnalysis, harvestAnalysis, harvestMode, harvestDocsDir, harvestWriteCheck }) {
     const logs = [];
     const result = await runPublishPrPhase({
         phase: () => {},
         log: (m) => logs.push(m),
         command: remoteCommand,
         args: { callTool: gh.callTool, run_id: runId },
-        validated: { branch: 'feat/x', baseBranch: 'main', goal: 'Ship X', runId },
+        validated: { branch: 'feat/x', baseBranch: 'main', goal: 'Ship X', runId, ...(harvestMode ? { harvestMode } : {}), ...(harvestDocsDir ? { harvestDocsDir } : {}) },
         targetIssues: [],
         backlogMember: member,
         finalCycleLabel: '1',
@@ -363,6 +402,8 @@ async function publish({ gh, verdict, notes, runId, member, costAnalysis }) {
         getMemberForRole: () => member,
         finalVerdictResult: { verdict, notes },
         costAnalysis,
+        harvestAnalysis,
+        harvestWriteCheck,
     });
     return { result, logs };
 }
@@ -386,6 +427,100 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
         const gh = fakeGitHub();
         await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-c', member: 'pub-cost', costAnalysis: 'Tracked spend (priced dispatches only): $2.5000.' });
         assert.ok(gh.pr.body.includes('### Cost\n\n```\nTracked spend (priced dispatches only): $2.5000.\n```'), gh.pr.body);
+    });
+
+    test('harvest_mode pr-body-only: the harvest analysis reaches the created PR body and the mode is stated', async () => {
+        const gh = fakeGitHub();
+        await publish({
+            gh, verdict: 'PASS', notes: 'ok', runId: 'run-h', member: 'pub-harvest',
+            costAnalysis: 'Tracked spend (priced dispatches only): $2.5000.',
+            harvestAnalysis: '# Sprint Analysis: feat/x\n\nFinal closed count: 4.',
+            harvestMode: 'pr-body-only',
+            harvestWriteCheck: { status: 'clean', detail: 'HEAD abc1234 unchanged and no new working-tree changes' },
+        });
+        assert.ok(gh.pr.body.includes('### Sprint analysis'), gh.pr.body);
+        assert.ok(gh.pr.body.includes('Final closed count: 4.'), gh.pr.body);
+        assert.ok(gh.pr.body.includes('- Harvest mode: pr-body-only -- no harvester commits (engine-verified: HEAD, remote branch tip and working tree unchanged); the sprint analysis is in this PR body.'), gh.pr.body);
+        assert.ok(gh.pr.body.includes('### Cost'), gh.pr.body);
+    });
+
+    test('harvest_mode off / docs-dir are stated in Details; full (the default) adds no line', async () => {
+        const off = fakeGitHub();
+        await publish({
+            gh: off, verdict: 'PASS', notes: 'ok', runId: 'run-o', member: 'pub-harvest-off', harvestMode: 'off',
+            harvestWriteCheck: { status: 'clean', detail: 'HEAD abc1234 unchanged and no new working-tree changes' },
+        });
+        assert.ok(off.pr.body.includes('- Harvest mode: off -- the harvester wrote nothing to the repository (engine-verified: HEAD, remote branch tip and working tree unchanged).'), off.pr.body);
+        assert.ok(!off.pr.body.includes('### Sprint analysis'));
+        const full = fakeGitHub();
+        await publish({ gh: full, verdict: 'PASS', notes: 'ok', runId: 'run-f', member: 'pub-harvest-full', harvestMode: 'full' });
+        assert.ok(!full.pr.body.includes('Harvest mode'), full.pr.body);
+    });
+
+    test('no-write harvest modes never claim "wrote nothing" unless the engine verified it', async () => {
+        for (const mode of ['pr-body-only', 'off']) {
+            const violation = fakeGitHub();
+            await publish({
+                gh: violation, verdict: 'PASS', notes: 'ok', runId: `run-v-${mode}`, member: `pub-harvest-v-${mode}`, harvestMode: mode,
+                harvestWriteCheck: { status: 'violation', restored: true, detail: 'HEAD moved from aaaaaaa to bbbbbbb; member reset to aaaaaaa' },
+            });
+            assert.ok(violation.pr.body.includes(`- Harvest mode: ${mode} -- VIOLATION: the harvester changed the repository despite the no-write mode (HEAD moved from aaaaaaa to bbbbbbb; member reset to aaaaaaa). The engine discarded the change and did not push it.`), violation.pr.body);
+            assert.ok(!violation.pr.body.includes('wrote nothing') && !violation.pr.body.includes('no harvester commits'), violation.pr.body);
+            // A violation the engine could NOT fully undo never says "discarded".
+            for (const restored of [false, undefined]) {
+                const partial = fakeGitHub();
+                await publish({
+                    gh: partial, verdict: 'PASS', notes: 'ok', runId: `run-p-${mode}`, member: `pub-harvest-p-${mode}-${String(restored)}`, harvestMode: mode,
+                    harvestWriteCheck: { status: 'violation', restored, detail: 'working tree changed: some/file; member NOT restored to its pre-harvest state (residual paths: some/file)' },
+                });
+                assert.ok(partial.pr.body.includes(`- Harvest mode: ${mode} -- VIOLATION: the harvester changed the repository despite the no-write mode (working tree changed: some/file; member NOT restored to its pre-harvest state (residual paths: some/file)). The engine did not push it, but the harvester's member was NOT restored to its pre-harvest state`), partial.pr.body);
+                assert.ok(!partial.pr.body.includes('discarded') && !partial.pr.body.includes('member reset'), partial.pr.body);
+            }
+            // Restored locally, but the remote branch could not be read: never
+            // "NOT restored" (the member WAS restored), never "discarded"
+            // (a push cannot be ruled out).
+            const remoteUnread = fakeGitHub();
+            await publish({
+                gh: remoteUnread, verdict: 'PASS', notes: 'ok', runId: `run-r-${mode}`, member: `pub-harvest-r-${mode}`, harvestMode: mode,
+                harvestWriteCheck: {
+                    status: 'violation', restored: false, localRestored: true, remoteUnverified: true,
+                    detail: "HEAD moved from aaaaaaa to bbbbbbb; member reset to aaaaaaa, but could not read the tip of origin/b from member 'm' after the dispatch, so a push by the harvester cannot be ruled out",
+                },
+            });
+            assert.ok(remoteUnread.pr.body.includes(`- Harvest mode: ${mode} -- VIOLATION: the harvester changed the repository despite the no-write mode (HEAD moved from aaaaaaa to bbbbbbb; member reset to aaaaaaa, but could not read the tip of origin/b from member 'm' after the dispatch, so a push by the harvester cannot be ruled out). The engine restored the harvester's member to its pre-harvest state and did not push the change, but could not read the remote branch to confirm the harvester did not push -- check the remote branch before merging.`), remoteUnread.pr.body);
+            assert.ok(!remoteUnread.pr.body.includes('NOT restored') && !remoteUnread.pr.body.includes('discarded'), remoteUnread.pr.body);
+            for (const check of [{ status: 'unverified', detail: "could not read HEAD on member 'm'" }, undefined]) {
+                const unverified = fakeGitHub();
+                await publish({
+                    gh: unverified, verdict: 'PASS', notes: 'ok', runId: `run-u-${mode}`, member: `pub-harvest-u-${mode}-${check ? 'u' : 'none'}`, harvestMode: mode,
+                    harvestWriteCheck: check,
+                });
+                assert.ok(unverified.pr.body.includes(`- Harvest mode: ${mode} -- repository writes were not requested, but the engine could not verify the harvester's member`), unverified.pr.body);
+                assert.ok(!unverified.pr.body.includes('wrote nothing') && !unverified.pr.body.includes('no harvester commits'), unverified.pr.body);
+            }
+        }
+    });
+
+    test('harvest_mode docs-dir: the engine check of the harvester commits is stated, a violation is never called discarded', async () => {
+        const clean = fakeGitHub();
+        await publish({
+            gh: clean, verdict: 'PASS', notes: 'ok', runId: 'run-dc', member: 'pub-harvest-docs-clean', harvestMode: 'docs-dir', harvestDocsDir: 'notes',
+            harvestWriteCheck: { status: 'clean', detail: 'commits aaaaaaa..bbbbbbb touch only paths under notes/' },
+        });
+        assert.ok(clean.pr.body.includes('- Harvest mode: docs-dir -- sprint analysis and durable docs written under notes/ only; no README edits (engine-verified: commits aaaaaaa..bbbbbbb touch only paths under notes/).'), clean.pr.body);
+        const bad = fakeGitHub();
+        await publish({
+            gh: bad, verdict: 'PASS', notes: 'ok', runId: 'run-dv', member: 'pub-harvest-docs-violation', harvestMode: 'docs-dir', harvestDocsDir: 'notes',
+            harvestWriteCheck: { status: 'violation', restored: false, pushed: true, detail: 'commits aaaaaaa..bbbbbbb touch paths outside notes/ or a README: README.md, src/a.js' },
+        });
+        assert.ok(bad.pr.body.includes('- Harvest mode: docs-dir -- VIOLATION: the harvester committed outside notes/ despite the docs-dir mode (commits aaaaaaa..bbbbbbb touch paths outside notes/ or a README: README.md, src/a.js). These commits are on this branch; revert them before merging.'), bad.pr.body);
+        assert.ok(!bad.pr.body.includes('discarded') && !bad.pr.body.includes('engine-verified'), bad.pr.body);
+        const unverified = fakeGitHub();
+        await publish({
+            gh: unverified, verdict: 'PASS', notes: 'ok', runId: 'run-du', member: 'pub-harvest-docs-unverified', harvestMode: 'docs-dir', harvestDocsDir: 'notes',
+            harvestWriteCheck: { status: 'unverified', detail: "could not read HEAD on member 'm' before the dispatch" },
+        });
+        assert.ok(unverified.pr.body.includes("- Harvest mode: docs-dir -- sprint analysis and durable docs written under notes/ only; no README edits, but the engine could not verify the harvester's commits (could not read HEAD on member 'm' before the dispatch)."), unverified.pr.body);
     });
 
     test('PASS -> FAIL: the stale PASS title is replaced too', async () => {

@@ -290,6 +290,11 @@ export async function runEnsureSprintBranchPhase({
         maxCycles: validated.maxCycles,
         requirementsFile: validated.requirementsFile || null,
         regression: validated.skipRegression ? 'skip' : 'run',
+        // The harvest launch option (what the end-of-sprint harvester may
+        // write into the target repo), published so the viewer and API show
+        // the effective value, never a guess.
+        harvestMode: validated.harvestMode ?? 'full',
+        harvestDocsDir: validated.harvestDocsDir ?? null,
     });
     endGroup();
 }

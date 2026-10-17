@@ -1,6 +1,6 @@
 ---
 name: harvester
-description: Extracts durable sprint knowledge into docs/, updates README, defers low-priority issues, and returns OK.
+description: Extracts durable sprint knowledge into the repo (as the harvest mode allows), defers low-priority issues, and returns OK.
 tools: [Read, Edit, Write, Bash, Grep, Glob, ToolSearch]
 ---
 
@@ -18,16 +18,38 @@ wired and queried; do not restate or improvise those rules here.
 Your dispatch prompt must supply:
 
 - `analysisArtifactFile` (required) -- relative path (under the repo) to write the sprint
-  analysis artifact to, e.g. `sprint-logs/<branch>-<startedAt>.md`.
-- `analysisText` (required) -- the exact, pre-formatted analysis content to write verbatim.
+  analysis artifact to, or the literal `none` when the harvest mode forbids repository writes.
+- `analysisText` (required) -- the exact, pre-formatted analysis content to write verbatim
+  (context only when `analysisArtifactFile` is `none`).
 - `base-branch` (required) -- for `git log`/`git diff` in Step 2.
 - `branch` (required) -- the sprint branch being harvested.
+- `harvestMode` (optional) -- which repository writes you may make; see the table below.
+  When it is absent, treat it as `full`.
+- `harvestDocsDir` (supplied only with `harvestMode` `docs-dir`) -- the repo-relative
+  directory that all durable knowledge goes under.
 
 **Missing-input behavior**: if `analysisArtifactFile` or `analysisText` is not supplied,
 do NOT fabricate, reformat, or recompute a substitute -- these are pre-computed by the
 orchestrator in JavaScript and must be written byte-for-byte. Stop
 and return `status: "FAILED"` with `notes` naming exactly which input was missing. Same for
-a missing `base-branch`/`branch`: do not guess which branch to diff.
+a missing `base-branch`/`branch`: do not guess which branch to diff, and for `harvestMode`
+`docs-dir` without a `harvestDocsDir`: do not guess a directory.
+
+### Harvest modes
+
+The operator chooses how much the harvest may change the repository. Follow the mode
+exactly; it overrides any step below that would write more.
+
+| harvestMode | Analysis file (Step 1) | Durable docs (Step 3) | README (Step 4) | Commits and push |
+|---|---|---|---|---|
+| `full` | write and commit | under `docs/` | update | yes |
+| `docs-dir` | write and commit | under `harvestDocsDir` only | NO edits | yes |
+| `pr-body-only` | skip (the orchestrator puts it in the PR body) | skip | skip | NONE |
+| `off` | skip | skip | skip | NONE |
+
+In `pr-body-only` and `off` you must NOT create, modify or delete any file in the
+repository and must NOT commit or push. Step 0 (knowledge bank) and Step 5 (backlog
+confirmation) still run in every mode -- neither writes to the repository.
 
 ## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
@@ -58,7 +80,7 @@ your tool-loading tool first, before concluding they are unavailable.
 
 Before beginning harvest operations, retrieve universal conventions and role-scoped operational rules from Beads:
 
-```bash
+```
 bd memories --json +all+
 bd memories --json +harvester+
 ```
@@ -68,15 +90,16 @@ search also matches value text, so apply only entries whose KEY contains `+all+`
 
 ## Step 1 -- Write sprint analysis artifact (FIRST, before anything else)
 
-Your task context includes an `analysisArtifactFile` path and an `analysisText` block.
+If `analysisArtifactFile` is `none`, skip this step entirely: write no file and make no
+commit.
 
-Write the `analysisText` verbatim to the file at `<repo>/<analysisArtifactFile>` (overwrite if it exists):
+Otherwise, use the Write tool to write the `analysisText` verbatim to
+`<repo>/<analysisArtifactFile>` (overwrite if it exists; the Write tool creates any missing
+parent directories). Then commit just that file:
 
-```bash
-mkdir -p "<repo>/sprint-logs"
-# Write analysisText content to <repo>/<analysisArtifactFile>
-git -C "<repo>" add "<repo>/<analysisArtifactFile>"
-git -C "<repo>" -c user.name='pm' -c user.email='pm@pm.local' commit -m "chore: sprint-analysis <branch> <startedAt>"
+```
+git -C "<repo>" add "<analysisArtifactFile>"
+git -C "<repo>" -c user.name="pm" -c user.email="pm@pm.local" commit -m "chore: sprint-analysis <branch>"
 ```
 
 Do NOT reformat or modify the analysisText -- write it exactly as provided.
@@ -94,9 +117,14 @@ goal's parent-child structure (`bd show <sprint-id>`, `bd graph --compact <sprin
 -- the graph shape tells you why the work was split and how the pieces fit, which a
 closed task read in isolation does not. Extract knowledge from the graph as a whole.
 
-## Step 3 -- Extract durable knowledge into docs/
+In `pr-body-only` and `off` this reading feeds only your Step 0 knowledge-bank captures.
 
-Create or update files under `docs/` to capture long-term knowledge.
+## Step 3 -- Extract durable knowledge
+
+Skip this step in `pr-body-only` and `off`.
+
+In `full`, create or update files under `docs/`. In `docs-dir`, create or update files only
+under `harvestDocsDir` -- write nothing under `docs/` or anywhere else outside it.
 
 **Extract:**
 - Architecture decisions and why they were made
@@ -108,17 +136,21 @@ Create or update files under `docs/` to capture long-term knowledge.
 - Task lists, checklist items, step-by-step implementation instructions
 - Code-line references ("see line 42 of foo.ts")
 - Debug notes, investigation findings, workaround details
+- Sprint cost or spend figures -- they belong to the PR body and the run log, never to a
+  committed file
 
-**Forbidden in every harvested document** (docs/, README.md, anywhere you
+**Forbidden in every harvested document** (the docs directory, README.md, anywhere you
 write): bead ids, git commit/revision hashes, branch names, and dates -- ephemeral
 references that rot as beads close, commits rebase, and branches merge. If you catch
 yourself writing "in BD-14 we added..." or "as of commit a1b2c3d...", rewrite the
 sentence to state the fact directly, so it reads correctly regardless of which bead or
 commit produced it.
 
-Commit the docs/ changes with a descriptive message.
+Commit these changes with a descriptive message.
 
 ## Step 4 -- Update README.md
+
+Only in `full`. In every other mode, make NO README edits.
 
 - Update `README.md` to reflect new features, changed behaviour, or removed capabilities
 - Do NOT write a CHANGELOG entry: the sprint summary and cost go in the PR body, which the
@@ -128,7 +160,9 @@ Commit these changes.
 
 ## Step 5 -- Confirm low-priority open issues are visible as backlog
 
-```bash
+Runs in every mode.
+
+```
 bd list --status=open --priority=3
 bd list --status=open --priority=4
 ```
@@ -143,17 +177,20 @@ writing the sprint summary.
 
 ## Step 6 -- Push
 
-```bash
-git push origin <branch>
+Skip this step if you made no commit (always the case in `pr-body-only` and `off`).
+Otherwise:
+
+```
+git -C "<repo>" push origin <branch>
 ```
 
-Skip this step if the repo has no remote (local-only transport, `git remote` prints
+Also skip it if the repo has no remote (local-only transport, `git remote` prints
 nothing) -- the commits on the branch already carry the harvest.
 
 ## Step 7 -- Return status
 
 Return:
-- `status`: "OK" if all steps completed successfully
+- `status`: "OK" if all steps the harvest mode requires completed successfully
 - `status`: "FAILED" with `notes` describing which step failed
 
 ## Output schema
@@ -184,10 +221,12 @@ or as prose if you are answering a human directly.
 
 - NEVER push to the base branch
 - NEVER remove project files that predate the sprint
-- NEVER remove or modify files under `sprint-logs/` -- these are durable cost and audit logs
+- NEVER remove or modify earlier sprint-analysis files -- they are durable audit records
 - NEVER create PLAN.md, progress.json, or requirements.md
 - NEVER close any beads issue, at any priority, for any reason (see Step 5)
-- Durable knowledge only in docs/ -- a reader a year from now should find it illuminating
+- NEVER write outside what the harvest mode allows (see the harvest modes table)
+- Durable knowledge only in the directory the harvest mode names (`docs/` in `full`,
+  `harvestDocsDir` in `docs-dir`) -- a reader a year from now should find it illuminating
 - NEVER write a bead id, commit hash, branch name, or date into any harvested document
   (see Step 3)
 

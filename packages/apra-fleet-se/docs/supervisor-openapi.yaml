@@ -384,6 +384,39 @@ paths:
                       type: string
                       enum: [run, skip]
                       default: run
+                harvestMode:
+                  type: string
+                  enum: [full, docs-dir, pr-body-only, off]
+                  default: full
+                  description: >
+                    What the end-of-sprint harvester may write into the target
+                    repo; forwarded as --harvest-mode. It governs the
+                    harvester's writes only: the engine's knowledge-bank bible
+                    commits (.fleet/kb-canonical.json) continue in every mode,
+                    including off. full: sprint analysis
+                    and durable docs under docs/ plus README updates. docs-dir:
+                    the same under harvestDocsDir only, no README edits (the
+                    engine checks the harvester's commits and reports any path
+                    outside it as a violation in the PR body). pr-body-only:
+                    no harvester commits, the sprint analysis goes in the PR
+                    body. off: no harvester repository writes; knowledge-bank capture
+                    and backlog deferral still run. In pr-body-only and off
+                    the engine verifies the harvester's member (HEAD, working
+                    tree, remote branch tip) and ends the sprint with terminal
+                    reason HARVEST_WRITE_VIOLATION if the harvester pushed. The cost block is never committed
+                    in any mode. Unknown value -> 400 (field harvestMode).
+                harvestDocsDir:
+                  type: string
+                  maxLength: 200
+                  description: >
+                    Repo-relative directory for harvestMode docs-dir, forwarded
+                    as --harvest-docs-dir. Required if and only if harvestMode
+                    is docs-dir. '/'-separated segments of [A-Za-z0-9._-]
+                    only: no absolute path, backslash, '..', '.' or empty
+                    segment, '.git' segment, segment starting with '-' or
+                    ending with '.', or Windows reserved device name; a single
+                    trailing '/' is dropped. Anything else -> 400 (field
+                    harvestDocsDir).
                 overrideRelaunchGate:
                   type: boolean
                   description: >

@@ -209,12 +209,14 @@ export async function allocateFreePort(opts = {}) {
  *   requirementsFile?: string, roleMap?: object|string, budget?: number|string,
  *   viewerPort: number, serviceUrl?: string, runId?: string, expectBeads?: string,
  *   extraArgs?: string[], skipRegression?: boolean,
+ *   harvestMode?: string, harvestDocsDir?: string,
  * }} opts
  * @returns {string[]}
  */
 export function buildSprintArgv(opts = {}) {
     const { issue, members, branch, base, goal, maxCycles, allowMissingMembers,
-        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs, skipRegression } = opts;
+        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs, skipRegression,
+        harvestMode, harvestDocsDir } = opts;
 
     if (!issue || !members || !branch || !base) {
         throw new Error('buildSprintArgv requires issue, members, branch, and base');
@@ -239,6 +241,10 @@ export function buildSprintArgv(opts = {}) {
     }
     if (budget !== undefined) args.push('--budget', String(budget));
     if (skipRegression === true) args.push('--skip-regression');
+    // Harvest launch options: forwarded only when set (the child defaults to
+    // harvest mode 'full'). Values were validated by the launch API.
+    if (harvestMode !== undefined) args.push('--harvest-mode', harvestMode);
+    if (harvestDocsDir !== undefined) args.push('--harvest-docs-dir', harvestDocsDir);
     // apra-fleet-f34.1: when this supervisor instance has a known --service-url
     // (its own HTTP listen address, wired in from createSpawner()'s deps.serviceUrl
     // below), forward it so the spawned cli.mjs child threads it into

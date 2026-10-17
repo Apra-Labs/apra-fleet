@@ -18,6 +18,7 @@ import {
 import { beadsExtension, kbCodeIntelExtension } from '../fleet-sprint/viewer-extensions.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
+import { validateHarvestOptions } from '../fleet-sprint/sprint-args.mjs';
 import { prepareLaunchTopology, toAlignCommandResult } from '../fleet-sprint/member-align.mjs';
 import { ROLE_BACKLOG, resolveBacklogRoleAlias, selectBacklogMember, formatBacklogSelection } from '../fleet-sprint/backlog-role.mjs';
 import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
@@ -181,6 +182,12 @@ export function buildOptionsSpec() {
         // body's phases.regression:"skip"). Never silent: logged, and reported in
         // the sprint analysis and the PR body.
         'skip-regression': { type: 'boolean' },
+        // What the end-of-sprint harvester may write into the target repo
+        // (forwarded as the runner's harvest_mode / harvest_docs_dir args; the
+        // supervisor sets them from the launch body's harvestMode /
+        // harvestDocsDir). Omitted means 'full'.
+        'harvest-mode': { type: 'string' },
+        'harvest-docs-dir': { type: 'string' },
         // --ci-gate is DELIBERATELY NOT WIRED (2026-10-01): the runner's
         // ci_gate arg is disabled until the CI-as-quality-resource epic
         // (apra-fleet-dv8i) designs the flow -- see fleet-sprint/sprint-args.mjs.
@@ -237,6 +244,20 @@ Options:
                                 uses legacy shared-workspace mode (all members on the same HEAD).
       --skip-regression        Skip the once-per-sprint regression pass. Logged, and stated in the
                                 sprint analysis and the PR body. Integration tests still run.
+      --harvest-mode <mode>    What the end-of-sprint harvester may write into the repo:
+                                full (default) - sprint analysis + durable docs under docs/,
+                                README edits; docs-dir - the same under --harvest-docs-dir
+                                only, no README edits; pr-body-only - no harvester commits,
+                                the sprint analysis goes in the PR body; off - no harvester
+                                commits and no analysis in the PR body. The mode governs the
+                                harvester's writes only: the engine's knowledge-bank bible
+                                commits (.fleet/kb-canonical.json) continue in every mode,
+                                including off. Knowledge-bank capture and low-priority backlog
+                                confirmation run in every mode. The cost block is never
+                                committed (PR body and log only).
+      --harvest-docs-dir <dir> Repo-relative directory for --harvest-mode docs-dir (required
+                                with it, rejected otherwise). '/'-separated segments of
+                                letters, digits, '.', '_' and '-' only; no absolute path, no '..'.
   -h, --help                   Show this help message.
 `.trim();
 
@@ -353,7 +374,7 @@ export async function resolveRoleMapWithWarnings(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, ciGate }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, harvestMode, harvestDocsDir, ciGate }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -385,6 +406,10 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     if (runId !== undefined) args.run_id = runId;
     // Only forwarded when set, so a default launch's runner args are unchanged.
     if (skipRegression === true) args.skip_regression = true;
+    // Same: only forwarded when set, so an unset launch keeps the runner's
+    // default harvest_mode ('full').
+    if (harvestMode !== undefined) args.harvest_mode = harvestMode;
+    if (harvestDocsDir !== undefined) args.harvest_docs_dir = harvestDocsDir;
     // The raw --expect-beads JSON, forwarded verbatim; runner.js's
     // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
     if (expectBeads !== undefined) args.expect_beads = expectBeads;
@@ -738,6 +763,16 @@ async function main() {
 
     if (budget !== undefined && (!Number.isFinite(budget) || budget < 0)) {
         console.error(`Error: --budget must be a non-negative finite number (USD ceiling), got "${values.budget}".`);
+        process.exit(1);
+    }
+
+    // --harvest-mode / --harvest-docs-dir: validated here with the runner's
+    // own validator (single source of truth) so a bad value fails before any
+    // fleet connection; the runner re-validates what it is handed.
+    try {
+        validateHarvestOptions(values['harvest-mode'], values['harvest-docs-dir']);
+    } catch (err) {
+        console.error(`Error: ${err.message}`);
         process.exit(1);
     }
 
@@ -1159,6 +1194,8 @@ async function main() {
                 runId: effectiveRunId,
                 expectBeads,
                 skipRegression: Boolean(values['skip-regression']),
+                harvestMode: values['harvest-mode'],
+                harvestDocsDir: values['harvest-docs-dir'],
                 // ciGate: values['ci-gate'],  -- not wired (apra-fleet-dv8i)
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
