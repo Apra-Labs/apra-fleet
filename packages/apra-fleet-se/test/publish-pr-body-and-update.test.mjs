@@ -300,7 +300,9 @@ describe('find/update-pull-request builders', () => {
 
     test('a non-numeric PR id is a typed ERROR, and a provider without the builders fails closed', () => {
         assert.throws(() => buildUpdatePrCommand({ provider: 'github', repo: 'a/b', pull_request_id: '5; rm', title: 't', body: 'b', token: 'tok' }), /^Error: ERROR: VCSModule: a numeric "pull_request_id"/);
-        assert.throws(() => buildFindPrCommand({ provider: 'bitbucket', repo: 'a/b', base: 'main', head: 'x', token: 'tok' }), /does not yet implement action "find-pull-request"/);
+        // Every PR-capable provider now ships find/update builders; a call
+        // missing its required coordinates still fails closed with a typed ERROR.
+        assert.throws(() => buildFindPrCommand({ provider: 'bitbucket', repo: 'a/b', base: 'main', head: 'x', token: 'tok' }), /^Error: ERROR: VCSModule: bitbucket "find-pull-request" needs workspace and repo/);
     });
 });
 
