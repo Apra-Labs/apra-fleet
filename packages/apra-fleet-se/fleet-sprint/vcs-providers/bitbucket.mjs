@@ -178,8 +178,8 @@ const REPO_REF_HINT = 'git@bitbucket.org:WORKSPACE/REPO.git or https://bitbucket
 //               `token`/`api_token`/`pat` fields. Same secret transport
 //               ./azure-devops.mjs documents at length; the orchestrator
 //               process never holds, logs or transports the plaintext.
-//   email       NO. It is the Atlassian account identity that OWNS the app
-//               password (it becomes the git-credential-helper username, and
+//   email       NO. It is the Atlassian account identity that OWNS the API
+//               token (it becomes the git-credential-helper username, and
 //               the HTTP Basic username the REST builder below sends). It is
 //               NOT persisted on the member record (src/types.ts keeps only
 //               vcsProvider/expiry/label/scopeUrl), credential_store_list
