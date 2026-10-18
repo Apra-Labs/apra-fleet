@@ -156,6 +156,16 @@ const KNOWN_ARG_KEYS = new Set([
     // (azdevops_pat). No CLI flag sets this today; only test/programmatic callers
     // pass it.
     'azdevops_pat_secret_name',
+    // Per-sprint Bitbucket pull-request credential: the NAME of a
+    // credential-store secret holding an Atlassian API token (never the
+    // value), plus the Atlassian account email that owns it. With an email,
+    // Bitbucket PRs authenticate with that stored token, resolved server-side
+    // at call time, instead of whatever helper is deployed on the backlog
+    // member -- so two projects can use two Bitbucket accounts on one fleet.
+    // The name defaults to 'bitbucket_api_token'. CLI: --bitbucket-secret-name /
+    // --bitbucket-email; supervisor: bitbucketSecretName / bitbucketEmail.
+    'bitbucket_secret_name',
+    'bitbucket_email',
     // The beads identity every member must resolve to (JSON string from
     // `--expect-beads`, env fallback FLEET_SPRINT_EXPECT_BEADS, or an already
     // parsed record from a programmatic caller). Consumed by the
@@ -184,6 +194,49 @@ export function validateExpectBeads(raw) {
         throw new Error('[Arg Contract] Invalid expect_beads: must carry at least one of prefix, syncRemote, repoRemote.');
     }
     return parsed;
+}
+
+/** Credential-store name used when bitbucket_email is given without bitbucket_secret_name. */
+const DEFAULT_BITBUCKET_SECRET_NAME = 'bitbucket_api_token';
+const SECRET_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+// Known Atlassian credential prefixes (API token, repository/workspace access
+// token, OAuth consumer token) -- a value, not a name.
+const ATLASSIAN_TOKEN_PREFIX = /^(ATATT|ATBB|ATCTT|ATOAT)/;
+
+/**
+ * Validates the Bitbucket pull-request credential pair and returns the
+ * per-provider PR credential map raiseVcsPrForMember consumes, or undefined
+ * when neither option is set (PRs then use the helper deployed on the backlog
+ * member, unchanged). `bitbucket_secret_name` must be a credential-store NAME:
+ * anything shaped like a credential value is refused, and a rejected value is
+ * never echoed back (it may be the secret itself).
+ * @returns {{ bitbucket: { secret: string, username: string } }|undefined}
+ */
+export function validateBitbucketPrCredential(secretName, email) {
+    if (secretName !== undefined) {
+        const why = typeof secretName !== 'string' || !SECRET_NAME_PATTERN.test(secretName)
+            ? 'it must be a credential-store secret name (letters, digits, "_" or "-", 1-64 chars)'
+            : (ATLASSIAN_TOKEN_PREFIX.test(secretName)
+                || (secretName.length >= 20 && !/[_-]/.test(secretName)
+                    && /[a-z]/.test(secretName) && /[A-Z]/.test(secretName) && /[0-9]/.test(secretName)))
+                ? 'it looks like a credential VALUE; pass the NAME of the credential-store entry that holds the token (e.g. bitbucket_work), never the token itself'
+                : null;
+        if (why) {
+            throw new Error(`[Arg Contract] Invalid bitbucket_secret_name (value not shown): ${why}.`);
+        }
+    }
+    if (email !== undefined
+        && (typeof email !== 'string' || email.length > 254 || !/^[^\s:'"`$@]+@[^\s:'"`$@]+$/.test(email))) {
+        throw new Error('[Arg Contract] Invalid bitbucket_email (value not shown): must be the Atlassian account email that owns the API token, e.g. name@example.com.');
+    }
+    if (secretName !== undefined && email === undefined) {
+        throw new Error(
+            `[Arg Contract] bitbucket_secret_name '${secretName}' needs bitbucket_email: Bitbucket authenticates an API token `
+            + 'as <Atlassian account email>:<token>, so pass the email of the account that owns the token.',
+        );
+    }
+    if (email === undefined) return undefined;
+    return { bitbucket: { secret: secretName ?? DEFAULT_BITBUCKET_SECRET_NAME, username: email } };
 }
 
 /** Default CI gate timeout (seconds) when ci_gate omits timeout_s. */
@@ -555,6 +608,9 @@ export function validateArgs(args) {
         validateCredentialStoreName(args.azdevops_pat_secret_name, 'azdevops_pat_secret_name');
     }
 
+    // --- bitbucket_secret_name / bitbucket_email (optional) -----------------
+    const prCredentials = validateBitbucketPrCredential(args.bitbucket_secret_name, args.bitbucket_email);
+
     // --- expect_beads (optional) ------------------------------------------
     const expectBeads = validateExpectBeads(args.expect_beads);
 
@@ -578,6 +634,8 @@ export function validateArgs(args) {
         assignee: args.assignee,
         dispatchTimeoutS,
         azdevopsPatSecretName: args.azdevops_pat_secret_name,
+        bitbucketSecretName: prCredentials ? prCredentials.bitbucket.secret : undefined,
+        prCredentials,
         doerWorklistMode,
         resumeModelSwitch,
         skipRegression,

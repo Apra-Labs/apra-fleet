@@ -138,16 +138,16 @@ async function listCredentialStoreNames(fleetApi) {
  * exactly like any other advisory.
  *
  * @param {{ provider: string, base: object, repoRef: object|null, fleetApi: object,
- *           secretName?: string, remoteUrl?: string, remoteReadError?: string|null,
+ *           secretName?: string, bitbucketSecretName?: string, remoteUrl?: string, remoteReadError?: string|null,
  *           log?: Function, logPrefix?: string }} ctx
  * @returns {Promise<object|null>} the arguments to send, or null to skip provisioning entirely
  */
-async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi, secretName, remoteUrl, remoteReadError, log = () => {}, logPrefix = '' }) {
+async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi, secretName, bitbucketSecretName, remoteUrl, remoteReadError, log = () => {}, logPrefix = '' }) {
     const impl = getVcsProvider(provider);
     if (!impl || typeof impl.buildProvisionArgs !== 'function') return base;
 
     const availableSecrets = await listCredentialStoreNames(fleetApi);
-    const built = impl.buildProvisionArgs({ base, repoRef, availableSecrets, secretName, remoteUrl, remoteReadError });
+    const built = impl.buildProvisionArgs({ base, repoRef, availableSecrets, secretName, bitbucketSecretName, remoteUrl, remoteReadError });
     if (built && typeof built.error === 'string') throw new Error(built.error);
     const skipped = !!(built && built.skip === true);
     if (!built || (!skipped && (!built.args || typeof built.args !== 'object'))) {
@@ -270,7 +270,7 @@ function detectVcsProviderFromRemote(remoteUrl) {
     return (impl && impl.name) || null;
 }
 
-async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = DEFAULT_SYNC_GIT_ACCESS, azdevopsPatSecretName, remoteUrlOverride, resolvedProvider }) {
+async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = DEFAULT_SYNC_GIT_ACCESS, azdevopsPatSecretName, bitbucketSecretName, remoteUrlOverride, resolvedProvider }) {
     let repos;
     let derivedRepo = null;
     let derivedRef = null;
@@ -418,6 +418,7 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         repoRef: derivedRef,
         fleetApi,
         secretName: azdevopsPatSecretName,
+        bitbucketSecretName,
         remoteUrl,
         remoteReadError,
         log,
@@ -727,10 +728,10 @@ function isPrAuthFailure(status, errorText) {
 // the caller to log as a WARNING, leaving the PR as it was. Without
 // `updateExisting` the returned shape is exactly the historical one.
 /**
- * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string, updateExisting?: Function }} opts
+ * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string, updateExisting?: Function, prCredentials?: Object<string, { secret: string, username: string }> }} opts
  * @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean, updated?: boolean, updateError?: string|null }>}
  */
-export async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride, updateExisting }) {
+export async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride, updateExisting, prCredentials }) {
     let repo;
     // Set when the provider's buildProvisionArgs hook answered `skip` (its
     // credential is deployed out of band only -- see provisionVcsAuthForMember).
@@ -800,9 +801,28 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     // resolveProvider() throw here -- use the provider the skip named instead.
     const { provider } = skippedProvider ? { provider: skippedProvider } : await resolveProvider(member, { fleetApi });
     const credentialLabel = vcsCredentialLabelForProvider(provider);
+    // A per-sprint credential-store entry chosen for this provider's PRs
+    // (`prCredentials[provider]` = { secret: NAME, username }): the token is
+    // resolved server-side by NAME at each call instead of read from the
+    // member's deployed helper, so two projects can use two accounts on the
+    // same backlog member. Nothing is re-provisioned for it, so it is handled
+    // like an out-of-band credential below: no self-heal, typed degrade.
+    const storeCred = (prCredentials && prCredentials[provider]
+        && typeof prCredentials[provider].secret === 'string') ? prCredentials[provider] : null;
+    const credentialSource = storeCred
+        ? { secret: storeCred.secret, username: storeCred.username }
+        : { label: credentialLabel };
+    if (storeCred) {
+        log(`${logPrefix}: using credential-store entry '${storeCred.secret}' (chosen for this sprint) for the '${provider}' pull request, not a credential deployed on member '${member}'.`);
+    }
+    const storeRemedy = () => (storeCred
+        ? ` -- the '${provider}' pull-request token comes from credential-store entry '${storeCred.secret}', chosen for this sprint; `
+            + `store or replace it with: credential_store_set name=${storeCred.secret} persist=true network_policy=allow`
+        : '');
     // The provider's operator-facing remedy, appended to every degraded
     // (authFailure) outcome below when the credential is out-of-band only.
     const skippedRemedy = () => {
+        if (storeCred) return storeRemedy();
         const impl = getVcsProvider(provider);
         return impl && impl.authRemedy && impl.authRemedy.hint ? ` -- ${impl.authRemedy.hint}` : '';
     };
@@ -866,7 +886,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         // eslint-disable-next-line no-constant-condition
         while (true) {
             const b = buildFn();
-            const res = await fleetApi.vcsCredentialExec({ member_name: member, label: credentialLabel, command: b.command });
+            const res = await fleetApi.vcsCredentialExec({ member_name: member, ...credentialSource, command: b.command });
             const h = (res && res.structuredContent) || {};
             if (!h.ok || (typeof h.exitCode === 'number' && h.exitCode !== 0)) {
                 return { ok: false, error: `${what} dispatch failed (${h.reason || 'nonzero exit'}): ${h.stderr || resultText(res) || '(no detail)'}` };
@@ -878,7 +898,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             const msg = (parsed.body && typeof parsed.body.message === 'string') ? parsed.body.message
                 : (parsed.body && parsed.body.error && typeof parsed.body.error.message === 'string') ? parsed.body.error.message
                     : (parsed.bodyText || '');
-            if (isPrAuthFailure(parsed.status, msg) && !healed && !skippedProvider) {
+            if (isPrAuthFailure(parsed.status, msg) && !healed && !skippedProvider && !storeCred) {
                 healed = true;
                 log(`${logPrefix}: ${what} returned an auth-classified failure (HTTP ${parsed.status ?? '(unknown)'}) for member '${member}'; re-provisioning a push+pr credential and retrying once (command: ${b.logSafeCommand}): ${msg}`);
                 try {
@@ -889,7 +909,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 }
                 continue;
             }
-            return { ok: false, error: `${what} failed: HTTP ${parsed.status ?? '(unknown)'}: ${msg}${skippedProvider && isPrAuthFailure(parsed.status, msg) ? skippedRemedy() : ''}` };
+            return { ok: false, error: `${what} failed: HTTP ${parsed.status ?? '(unknown)'}: ${msg}${(skippedProvider || storeCred) && isPrAuthFailure(parsed.status, msg) ? skippedRemedy() : ''}` };
         }
     };
     const coords = () => ({ provider, ...(repoRef ? { repoRef } : { repo }), token, username, os, shell });
@@ -974,7 +994,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         }
         const execRes = await fleetApi.vcsCredentialExec({
             member_name: member,
-            label: credentialLabel,
+            ...credentialSource,
             command: built.command,
         });
         const handoff = (execRes && execRes.structuredContent) || {};
@@ -986,6 +1006,17 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         // failure, so it degrades the same way a failed command() dispatch
         // did: returned, not thrown.
         if (!handoff.ok && handoff.reason !== 'dispatch_failed') {
+            // The credential-store entry chosen for this sprint is missing or
+            // unusable: an explicit choice that is broken, so the PR is
+            // skipped loudly (authFailure) and targets stay open -- unlike
+            // credentialAbsent below, which is "nothing configured at all".
+            if (storeCred) {
+                const message = `The '${provider}' pull-request credential chosen for this sprint (credential-store entry `
+                    + `'${storeCred.secret}') is unusable (vcs_credential_exec reason: ${handoff.reason || '(none)'}): `
+                    + `${handoffText || '(no detail)'}${storeRemedy()}`;
+                log(`${logPrefix}: ${message}`);
+                return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: true };
+            }
             // Out-of-band-only credential (provision skipped) that is absent:
             // the operator has not deployed it yet. Degrade to a skipped PR
             // naming the fix instead of failing the sprint. A just-in-time
@@ -1048,7 +1079,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         }
 
         const authFailed = isPrAuthFailure(status, errorText);
-        if (authFailed && skippedProvider) {
+        if (authFailed && (skippedProvider || storeCred)) {
             // Nothing to re-provision (the provider skipped it), so a retry
             // would resend the same credential: report it with the remedy.
             return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}${skippedRemedy()}`, authFailure: true };
@@ -1155,7 +1186,7 @@ export function createMemberVcsProviderResolver(opts = {}) {
  * @returns {((info: { member: string, label: string, cmd?: string, error: string, source?: 'git'|'dolt', failureKind?: string }) => Promise<void>) & { recordHealOutcome: (info: { member: string, label: string, error: string, recovered: boolean }) => Promise<void> }}
  */
 export function createVcsAuthSelfHealCallback(opts = {}) {
-    const { callTool, command, log = () => {}, azdevopsPatSecretName, now = () => Date.now(), futileHealTtlMs = FUTILE_HEAL_TTL_MS } = opts;
+    const { callTool, command, log = () => {}, azdevopsPatSecretName, bitbucketSecretName, now = () => Date.now(), futileHealTtlMs = FUTILE_HEAL_TTL_MS } = opts;
     const fleetApi = new ApraFleet({ callTool });
     // GitHub #616: last-resort heals of UNCLASSIFIED failures that ran and did
     // NOT recover, keyed by member + normalised error, so the same futile
@@ -1219,7 +1250,7 @@ export function createVcsAuthSelfHealCallback(opts = {}) {
             log(`[Sync] self-heal: could not resolve member '${member}' (${label})'s VCS provider to check for an auth remedy hint (continuing with the self-heal attempt): ${resolveErr.message}`);
         }
 
-        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName, resolvedProvider: resolved });
+        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName, bitbucketSecretName, resolvedProvider: resolved });
 
         log(`[Sync] self-heal: credentials re-provisioned for member '${member}' (${label}); the failed command will be retried once.`);
     }
@@ -1297,7 +1328,7 @@ const VCS_AUTH_EXPIRY_PREFLIGHT_MS = 10 * 60 * 1000; // 10 minutes
  * @returns {(member: string) => Promise<void>}
  */
 export function createVcsAuthPreflightCallback(opts = {}) {
-    const { callTool, command, log = () => {}, now = () => Date.now(), azdevopsPatSecretName } = opts;
+    const { callTool, command, log = () => {}, now = () => Date.now(), azdevopsPatSecretName, bitbucketSecretName } = opts;
     const fleetApi = new ApraFleet({ callTool });
     /** @type {Map<string, Date|null>} member -> last-known expiresAt (null = no expiry tracked, e.g. PAT mode). */
     const knownGoodUntil = new Map();
@@ -1318,7 +1349,7 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         }
         log(`[Sync] preflight: ensuring member '${member}' has a fresh VCS credential before dispatch; calling provision_vcs_auth.`);
         try {
-            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName });
+            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName, bitbucketSecretName });
             knownGoodUntil.set(member, expiresAt);
             log(`[Sync] preflight: provision_vcs_auth succeeded for member '${member}'${expiresAt ? ` (expires ${expiresAt.toISOString()})` : ''}.`);
         } catch (err) {

@@ -370,6 +370,21 @@ paths:
                 budget:
                   type: number
                   description: USD ceiling forwarded into the child's --budget argv
+                bitbucketSecretName:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]{1,64}$'
+                  description: >
+                    Secret NAME of the fleet credential-store entry holding the
+                    Atlassian API token for this sprint's Bitbucket pull
+                    requests -- never the token. Defaults to bitbucket_api_token
+                    when only bitbucketEmail is given; requires bitbucketEmail.
+                    Token-shaped values -> 400 (value not echoed). Forwarded as
+                    --bitbucket-secret-name.
+                bitbucketEmail:
+                  type: string
+                  description: >
+                    Atlassian account email that owns that token. Turns on
+                    credential-store PR auth. Forwarded as --bitbucket-email.
                 phases:
                   type: object
                   additionalProperties: false

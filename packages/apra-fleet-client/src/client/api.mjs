@@ -532,6 +532,14 @@
  * @property {string} [label] - Credential label provision_vcs_auth deployed the helper under
  *   (it defaults to the provider name there, e.g. "github" or "azure-devops"). Omit for the
  *   unlabelled helper.
+ * @property {string} [secret] - Credential-store secret NAME (never a value; must match
+ *   /^[a-zA-Z0-9_-]{1,64}$/) to take the token from instead of the member's deployed credential
+ *   helper. Resolved server-side at call time and redacted from the output; `label` is then
+ *   ignored. The entry's network_policy must be "allow" (the call runs unattended), else reason
+ *   "secret_denied"; a missing entry is reason "secret_not_found". Nothing is dispatched on either.
+ * @property {string} [username] - Basic-auth username for {{vcs_username}}/{{vcs_username_inline}}
+ *   when `secret` is set (e.g. the Atlassian account email owning a Bitbucket API token). No
+ *   whitespace, ':' or quotes. Redacted from the output. Ignored without `secret`.
  * @property {number} [timeout_s] - Inactivity timeout in seconds for the command (default: 120).
  *   On expiry the command's remote process tree is killed and the result is reason
  *   'dispatch_failed' with a "Command timed out" message.
@@ -543,7 +551,7 @@
  *   exitCode for the command's own outcome.
  * @property {"ok" | "member_not_found" | "placeholder_missing" | "unsupported_member_os" |
  *   "credential_read_failed" | "credential_empty" | "username_empty" |
- *   "dispatch_failed"} reason - Machine-readable
+ *   "secret_not_found" | "secret_denied" | "dispatch_failed"} reason - Machine-readable
  *   outcome code. Branch on this, never on the text.
  * @property {number|null} exitCode - Exit code of the dispatched command, null if it never ran.
  * @property {string} stdout - Command stdout, with every occurrence of the credential redacted.
@@ -551,7 +559,7 @@
  * @property {number} tokenRedactions - How many times credential material had to be redacted out
  *   of stdout+stderr -- the token, plus the basic-auth username when the command substituted one.
  *   Normally 0; nonzero means the command echoed its own credential back.
- * @property {string|null} credentialLabel - Credential label used, or null for the unlabelled helper.
+ * @property {string|null} credentialLabel - Credential label used, or null for the unlabelled helper or a `secret`-sourced call.
  * @property {string|null} memberId - Registry id of the resolved member, or null.
  * @property {string|null} memberName - Friendly name of the resolved member, or null.
  *
