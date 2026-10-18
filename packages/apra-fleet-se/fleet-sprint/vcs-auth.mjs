@@ -815,6 +815,14 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     if (storeCred) {
         log(`${logPrefix}: using credential-store entry '${storeCred.secret}' (chosen for this sprint) for the '${provider}' pull request, not a credential deployed on member '${member}'.`);
     }
+    // An older server strips the unknown `secret` input and silently reads a
+    // helper instead; it also never echoes credentialSecret back. Treat a
+    // missing echo as a loud failure rather than trusting the result.
+    const secretUnconfirmed = (h) => (storeCred && h && h.ok && h.credentialSecret !== storeCred.secret
+        ? `the fleet server did not confirm it used credential-store entry '${storeCred.secret}' for this '${provider}' call `
+            + '(it predates the vcs_credential_exec `secret` input); upgrade the fleet server -- the call may have run with a '
+            + `credential deployed on member '${member}' instead`
+        : null);
     const storeRemedy = () => (storeCred
         ? ` -- the '${provider}' pull-request token comes from credential-store entry '${storeCred.secret}', chosen for this sprint; `
             + `store or replace it with: credential_store_set name=${storeCred.secret} persist=true network_policy=allow`
@@ -888,6 +896,8 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             const b = buildFn();
             const res = await fleetApi.vcsCredentialExec({ member_name: member, ...credentialSource, command: b.command });
             const h = (res && res.structuredContent) || {};
+            const unconfirmed = secretUnconfirmed(h);
+            if (unconfirmed) return { ok: false, error: `${what}: ${unconfirmed}` };
             if (!h.ok || (typeof h.exitCode === 'number' && h.exitCode !== 0)) {
                 return { ok: false, error: `${what} dispatch failed (${h.reason || 'nonzero exit'}): ${h.stderr || resultText(res) || '(no detail)'}` };
             }
@@ -999,6 +1009,11 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         });
         const handoff = (execRes && execRes.structuredContent) || {};
         const handoffText = resultText(execRes);
+        const unconfirmed = secretUnconfirmed(handoff);
+        if (unconfirmed) {
+            log(`${logPrefix}: ${unconfirmed}`);
+            return { ok: false, alreadyExists: false, prUrl: null, error: unconfirmed, authFailure: true };
+        }
         // A credential-side failure HARD-FAILS, exactly as reading the token
         // ourselves used to throw -- never an advisory warning that lets the
         // sprint carry on with no credential. 'dispatch_failed' is the one

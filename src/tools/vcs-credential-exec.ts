@@ -193,6 +193,12 @@ interface VcsCredentialExecFields {
   tokenRedactions: number;
   /** Credential label used, or null for the unlabelled helper. */
   credentialLabel: string | null;
+  /**
+   * Credential-store secret NAME the token came from (the `secret` input),
+   * or null when it came from a credential helper. Lets a caller confirm the
+   * server honoured `secret` rather than silently reading a helper.
+   */
+  credentialSecret: string | null;
   /** Registry id of the resolved member, or null. */
   memberId: string | null;
   /** Friendly name of the resolved member, or null. */
@@ -229,6 +235,7 @@ function execResult(
       stderr: fields.stderr ?? '',
       tokenRedactions: fields.tokenRedactions ?? 0,
       credentialLabel: fields.credentialLabel ?? null,
+      credentialSecret: fields.credentialSecret ?? null,
       memberId: fields.memberId ?? null,
       memberName: fields.memberName ?? null,
     },
@@ -252,7 +259,12 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
     });
   }
   const agent = agentOrError as Agent;
-  const who = { memberId: agent.id, memberName: agent.friendlyName, credentialLabel: input.label ?? null };
+  const who = {
+    memberId: agent.id,
+    memberName: agent.friendlyName,
+    credentialLabel: input.secret !== undefined ? null : (input.label ?? null),
+    credentialSecret: input.secret ?? null,
+  };
 
   // Refusing a command with neither placeholder is what keeps this tool a
   // credential handoff rather than a second, unguarded execute_command.
@@ -290,7 +302,6 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
   // any credential deployed on the member. Error texts name the entry, never
   // its value.
   if (input.secret !== undefined) {
-    who.credentialLabel = null;
     const entry = credentialResolve(input.secret, agent.friendlyName);
     if (!entry) {
       return execResult(

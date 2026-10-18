@@ -560,6 +560,9 @@
  *   of stdout+stderr -- the token, plus the basic-auth username when the command substituted one.
  *   Normally 0; nonzero means the command echoed its own credential back.
  * @property {string|null} credentialLabel - Credential label used, or null for the unlabelled helper or a `secret`-sourced call.
+ * @property {string|null} credentialSecret - Credential-store secret NAME the token came from (the
+ *   `secret` input), or null when it came from a credential helper. A caller that passed `secret`
+ *   can check this to confirm the server honoured it.
  * @property {string|null} memberId - Registry id of the resolved member, or null.
  * @property {string|null} memberName - Friendly name of the resolved member, or null.
  *

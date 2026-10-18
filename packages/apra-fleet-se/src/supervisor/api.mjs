@@ -722,8 +722,9 @@ export function createSprintController(deps = {}) {
             budget: body.budget,
             runId: sprintId,
             skipRegression,
-            bitbucketSecretName,
-            bitbucketEmail,
+            // Only present when set, so a default launch's spawn opts are unchanged.
+            ...(bitbucketSecretName !== undefined ? { bitbucketSecretName } : {}),
+            ...(bitbucketEmail !== undefined ? { bitbucketEmail } : {}),
         };
         let spawned;
         try {

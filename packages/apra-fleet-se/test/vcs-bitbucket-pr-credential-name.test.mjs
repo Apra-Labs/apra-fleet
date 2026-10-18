@@ -7,7 +7,13 @@ import { validateBitbucketPrCredential } from '../fleet-sprint/sprint-args.mjs';
 import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
 import { BitbucketVCS } from '../fleet-sprint/vcs-providers/bitbucket.mjs';
 import { buildRunnerArgs } from '../bin/cli.mjs';
-import { buildSprintArgv } from '../src/supervisor/spawner.mjs';
+import { buildSprintArgv, createSpawner } from '../src/supervisor/spawner.mjs';
+import { createSprintController, ApiError } from '../src/supervisor/api.mjs';
+import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
+import { createHistory, HISTORY_FILENAME } from '../src/supervisor/history.mjs';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
 
 // =============================================================================
 // Per-project Bitbucket PR credential: the sprint names a credential-store
@@ -25,9 +31,10 @@ import { buildSprintArgv } from '../src/supervisor/spawner.mjs';
 const BB_ORIGIN = 'git@bitbucket.org:acme/widgets.git';
 const EMAIL = 'owner@example.invalid';
 
-function fakeFleet({ registeredAs = 'bitbucket', store = [], helper = 'credential_read_failed', postStatus = null } = {}) {
+function fakeFleet({ registeredAs = 'bitbucket', store = [], helper = 'credential_read_failed', postStatus = null, echoSecret = true } = {}) {
     const state = { execArgs: [], provisionCalls: [], prs: 0 };
-    const respond = (status, body) => ({ content: [{ text: '' }], structuredContent: { ok: true, reason: 'ok', exitCode: 0, stdout: `${JSON.stringify(body)}\n${status}`, stderr: '' } });
+    let lastSecret = null;
+    const respond = (status, body) => ({ content: [{ text: '' }], structuredContent: { ok: true, reason: 'ok', exitCode: 0, stdout: `${JSON.stringify(body)}\n${status}`, stderr: '', credentialSecret: echoSecret ? lastSecret : null } });
     state.callTool = async (name, toolArgs) => {
         if (name === 'member_detail') {
             return { content: [{ text: JSON.stringify({ ...(registeredAs ? { vcsProvider: registeredAs } : {}), os: 'linux', shell: '' }) }] };
@@ -39,6 +46,7 @@ function fakeFleet({ registeredAs = 'bitbucket', store = [], helper = 'credentia
         if (name === 'credential_store_list') return { content: [{ text: JSON.stringify(store.map((n) => ({ name: n }))) }] };
         if (name === 'vcs_credential_exec') {
             state.execArgs.push(toolArgs);
+            lastSecret = toolArgs.secret ?? null;
             if (toolArgs.secret !== undefined) {
                 // Mirrors src/tools/vcs-credential-exec.ts's secret source.
                 if (!store.includes(toolArgs.secret)) {
@@ -181,6 +189,15 @@ describe('Publish PR: the named credential is what the PR call uses', () => {
         assert.ok(logs.some((m) => m.startsWith('[Publish PR Skipped]') && m.includes('credential_store_set name=bitbucket_kumaakh')));
     });
 
+    test('a server that does not echo the secret name (predates `secret`) fails loudly, not silently', async () => {
+        const fleet = fakeFleet({ store: ['bitbucket_kumaakh'], helper: 'ok', echoSecret: false });
+        const commands = [];
+        const { result, logs } = await publish({ fleet, member: 'bb-old-server', prCredentials: creds('bitbucket_kumaakh'), targetIssues: ['t-1'], commands });
+        assert.deepEqual(result, { pushed: true });
+        assert.ok(logs.some((m) => m.startsWith('[Publish PR Skipped]') && /did not confirm it used credential-store entry 'bitbucket_kumaakh'/.test(m)));
+        assert.deepEqual(commands.filter((c) => c.startsWith('bd close')), []);
+    });
+
     test('no option: the deployed helper (label bitbucket) is read exactly as before', async () => {
         const fleet = fakeFleet({ helper: 'ok' });
         const { result } = await publish({ fleet, member: 'bb-default' });
@@ -207,6 +224,58 @@ describe('Publish PR: the named credential is what the PR call uses', () => {
         });
         assert.match(String(result.prUrl), /pull-requests\/1$/);
         assert.equal(fleet.execArgs.find((x) => / -X POST /.test(x.command)).secret, 'bitbucket_work');
+    });
+});
+
+describe('supervisor POST /api/sprints: bitbucketSecretName / bitbucketEmail', () => {
+    async function makeController(captured) {
+        const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'bbcred-api-'));
+        const ledger = createLedger({ filePath: path.join(dir, LEDGER_FILENAME), now: () => '2026-10-01T00:00:00.000Z' });
+        await ledger.start();
+        const history = createHistory({ filePath: path.join(dir, HISTORY_FILENAME), now: () => '2026-10-01T00:00:00.000Z' });
+        await history.start();
+        let nextPid = 7100;
+        const spawner = createSpawner({
+            basePort: 9400,
+            isPortAvailable: async () => true,
+            dataDir: 'fake-data-dir',
+            fs: { mkdirSync() {}, openSync() { return 3; }, closeSync() {} },
+            spawn: (command, args) => {
+                captured.push({ command, args });
+                return { pid: nextPid++, once() { return this; }, unref() {} };
+            },
+        });
+        const controller = createSprintController({ ledger, history, spawner, listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }) });
+        return { controller, dir };
+    }
+    const LAUNCH = { issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' };
+
+    test('the secret name and email reach the child argv; omitted, neither flag is sent', async () => {
+        const captured = [];
+        const { controller, dir } = await makeController(captured);
+        await controller.launch({ ...LAUNCH, bitbucketSecretName: 'bitbucket_kumaakh', bitbucketEmail: EMAIL });
+        await controller.launch({ ...LAUNCH, branch: 'feat/y', issue: 'PROJ-2', members: ['bob'] });
+        const [withCred, without] = captured.map((c) => c.args);
+        assert.equal(withCred[withCred.indexOf('--bitbucket-secret-name') + 1], 'bitbucket_kumaakh');
+        assert.equal(withCred[withCred.indexOf('--bitbucket-email') + 1], EMAIL);
+        assert.ok(!without.includes('--bitbucket-secret-name') && !without.includes('--bitbucket-email'));
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a token-shaped bitbucketSecretName is a 400 that does not echo it, and spawns nothing', async () => {
+        const captured = [];
+        const { controller, dir } = await makeController(captured);
+        const value = 'ATATT3xFfGF0SENTINEL';
+        await assert.rejects(
+            () => controller.launch({ ...LAUNCH, bitbucketSecretName: value, bitbucketEmail: EMAIL }),
+            (err) => err instanceof ApiError && err.status === 400 && err.field === 'bitbucketSecretName' && !err.message.includes(value),
+        );
+        await assert.rejects(
+            () => controller.launch({ ...LAUNCH, bitbucketSecretName: 'bitbucket_kumaakh' }),
+            (err) => err instanceof ApiError && err.status === 400 && err.field === 'bitbucketEmail',
+        );
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
     });
 });
 

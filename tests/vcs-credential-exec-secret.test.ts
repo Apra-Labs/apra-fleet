@@ -79,6 +79,8 @@ describe('vcs_credential_exec: credential-store `secret` source', () => {
     expect(unwrapPidCapture(sent[0])).toBe(`curl -sS -u '${escapeShellArgInner(USER)}:${escapeShellArgInner(TOKEN_A)}' https://api.bitbucket.org/2.0/user`);
     expect(unwrapPidCapture(sent[1])).toBe(`curl -sS -u '${escapeShellArgInner(USER)}:${escapeShellArgInner(TOKEN_B)}' https://api.bitbucket.org/2.0/user`);
     expect(a.structuredContent.credentialLabel).toBeNull();
+    expect(a.structuredContent.credentialSecret).toBe('bitbucket_project_a');
+    expect(b.structuredContent.credentialSecret).toBe('bitbucket_project_b');
     expect(mockResolve).toHaveBeenCalledWith('bitbucket_project_a', 'store-two');
   });
 
@@ -153,6 +155,7 @@ describe('vcs_credential_exec: credential-store `secret` source', () => {
     const r = await vcsCredentialExec({ member_id: member.id, command: COMMAND, label: 'bitbucket' });
     expect(r.structuredContent.reason).toBe('ok');
     expect(r.structuredContent.credentialLabel).toBe('bitbucket');
+    expect(r.structuredContent.credentialSecret).toBeNull();
     expect(mockResolve).not.toHaveBeenCalled();
   });
 });

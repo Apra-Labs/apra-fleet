@@ -302,7 +302,7 @@ function buildProvisionArgs(ctx) {
     if (base.git_access === 'push+pr') {
         return {
             skip: true,
-            note: `member '${base.member_name}' is on Bitbucket, whose credential has no just-in-time scope axis to widen and cannot be re-assembled by the fleet; keeping the credential already deployed for workspace '${workspace}' and going straight to the pull-request call`,
+            note: `member '${base.member_name}' is on Bitbucket, whose credential has no just-in-time scope axis to widen and cannot be re-assembled by the fleet; nothing is provisioned for workspace '${workspace}' -- going straight to the pull-request call, which uses the credential-store entry named for this sprint if one was, else the credential already deployed on the member`,
         };
     }
 
