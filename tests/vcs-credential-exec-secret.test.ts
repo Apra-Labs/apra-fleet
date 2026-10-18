@@ -128,6 +128,18 @@ describe('vcs_credential_exec: credential-store `secret` source', () => {
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
+  it('a token-shaped `secret` is refused without echoing it or touching the store', async () => {
+    const member = makeTestAgent({ friendlyName: 'store-tokenshape', os: 'linux' });
+    addAgent(member);
+    for (const value of ['ATATT3xFfGF0SENTINEL', 'Ab1cD2eF3gH4iJ5kL6mN']) {
+      const r = await vcsCredentialExec({ member_id: member.id, command: COMMAND, secret: value, username: USER });
+      expect(r.structuredContent.reason).toBe('secret_denied');
+      expect(JSON.stringify(r)).not.toContain(value);
+    }
+    expect(mockResolve).not.toHaveBeenCalled();
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
   it('a member-scoped denial is secret_denied', async () => {
     const member = makeTestAgent({ friendlyName: 'store-scoped', os: 'linux' });
     addAgent(member);

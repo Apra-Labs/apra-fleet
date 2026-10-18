@@ -243,13 +243,14 @@ Options:
                                 uses legacy shared-workspace mode (all members on the same HEAD).
       --skip-regression        Skip the once-per-sprint regression pass. Logged, and stated in the
                                 sprint analysis and the PR body. Integration tests still run.
-      --bitbucket-email <email> Atlassian account email that owns the Bitbucket API token used for
+      --bitbucket-email <email>
+                                Atlassian account email that owns the Bitbucket API token used for
                                 this sprint's pull requests. Turns on credential-store PR auth.
       --bitbucket-secret-name <name>
                                 NAME of the credential-store entry holding that API token (never
                                 the token itself). Default: bitbucket_api_token. Needs
                                 --bitbucket-email. Lets each project use its own Bitbucket account.
-  -h, --help                  Show this help message.
+  -h, --help                   Show this help message.
 `.trim();
 
 /**

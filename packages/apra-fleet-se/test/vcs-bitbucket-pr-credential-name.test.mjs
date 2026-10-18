@@ -50,10 +50,10 @@ function fakeFleet({ registeredAs = 'bitbucket', store = [], helper = 'credentia
             if (toolArgs.secret !== undefined) {
                 // Mirrors src/tools/vcs-credential-exec.ts's secret source.
                 if (!store.includes(toolArgs.secret)) {
-                    return { content: [{ text: `[FAIL] The credential store has no entry named '${toolArgs.secret}'. Store it first: credential_store_set name=${toolArgs.secret} persist=true network_policy=allow` }], structuredContent: { ok: false, reason: 'secret_not_found', exitCode: null, stdout: '', stderr: '' } };
+                    return { content: [{ text: `[FAIL] The credential store has no entry named '${toolArgs.secret}'. Store it first: credential_store_set name=${toolArgs.secret} persist=true network_policy=allow` }], structuredContent: { ok: false, reason: 'secret_not_found', exitCode: null, stdout: '', stderr: '', credentialSecret: toolArgs.secret } };
                 }
             } else if (helper !== 'ok') {
-                return { content: [{ text: `[FAIL] helper (${helper})` }], structuredContent: { ok: false, reason: helper, exitCode: null, stdout: '', stderr: '' } };
+                return { content: [{ text: `[FAIL] helper (${helper})` }], structuredContent: { ok: false, reason: helper, exitCode: null, stdout: '', stderr: '', credentialSecret: null } };
             }
             const method = /^curl -sS -X (\w+)/.exec(toolArgs.command)[1];
             if (method === 'POST') {
@@ -196,6 +196,9 @@ describe('Publish PR: the named credential is what the PR call uses', () => {
         assert.deepEqual(result, { pushed: true });
         assert.ok(logs.some((m) => m.startsWith('[Publish PR Skipped]') && /did not confirm it used credential-store entry 'bitbucket_kumaakh'/.test(m)));
         assert.deepEqual(commands.filter((c) => c.startsWith('bd close')), []);
+        // Caught by the read-only probe: no PR is ever created under the wrong account.
+        assert.equal(fleet.prs, 0);
+        assert.equal(fleet.execArgs.filter((x) => / -X POST /.test(x.command)).length, 0);
     });
 
     test('no option: the deployed helper (label bitbucket) is read exactly as before', async () => {

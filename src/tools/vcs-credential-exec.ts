@@ -242,6 +242,19 @@ function execResult(
   };
 }
 
+/**
+ * True for a `secret` that is shaped like a credential VALUE rather than a
+ * store name: a known Atlassian token prefix, or a long mixed-case
+ * alphanumeric run with no separator (app-password shape). Such a value is
+ * refused without being echoed. Same heuristic as fleet-sprint's
+ * bitbucket_secret_name validator.
+ */
+function looksLikeCredentialValue(name: string): boolean {
+  if (/^(ATATT|ATBB|ATCTT|ATOAT|ghp_|ghs_|github_pat_)/.test(name)) return true;
+  return name.length >= 20 && !/[_-]/.test(name)
+    && /[a-z]/.test(name) && /[A-Z]/.test(name) && /[0-9]/.test(name);
+}
+
 /** Replace every occurrence of `secret` in `output`, and report how many. */
 function redactSecret(output: string, secret: string, marker: string): { text: string; count: number } {
   if (!secret) return { text: output, count: 0 };
@@ -302,6 +315,12 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
   // any credential deployed on the member. Error texts name the entry, never
   // its value.
   if (input.secret !== undefined) {
+    if (looksLikeCredentialValue(input.secret)) {
+      return execResult(
+        '[FAIL] `secret` must be the NAME of a credential-store entry (e.g. bitbucket_work); the value passed looks like a credential itself and is not shown or used.',
+        { ...who, credentialSecret: null, reason: 'secret_denied' },
+      );
+    }
     const entry = credentialResolve(input.secret, agent.friendlyName);
     if (!entry) {
       return execResult(

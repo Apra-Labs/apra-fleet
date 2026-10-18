@@ -897,7 +897,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             const res = await fleetApi.vcsCredentialExec({ member_name: member, ...credentialSource, command: b.command });
             const h = (res && res.structuredContent) || {};
             const unconfirmed = secretUnconfirmed(h);
-            if (unconfirmed) return { ok: false, error: `${what}: ${unconfirmed}` };
+            if (unconfirmed) return { ok: false, error: `${what}: ${unconfirmed}`, unconfirmed };
             if (!h.ok || (typeof h.exitCode === 'number' && h.exitCode !== 0)) {
                 return { ok: false, error: `${what} dispatch failed (${h.reason || 'nonzero exit'}): ${h.stderr || resultText(res) || '(no detail)'}` };
             }
@@ -968,6 +968,19 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         }
     };
 
+    // A credential-store entry must be confirmed BEFORE anything with side
+    // effects: an older server would ignore `secret` and create the PR under
+    // the member's deployed credential. The read-only find call is the probe;
+    // any other probe failure falls through to the create call, which reports
+    // it with its own remedy.
+    if (storeCred) {
+        const probe = await findOpenPrs();
+        if (probe.unconfirmed) {
+            log(`${logPrefix}: ${probe.unconfirmed}`);
+            return { ok: false, alreadyExists: false, prUrl: null, error: probe.unconfirmed, authFailure: true };
+        }
+    }
+
     let authHealAttempted = false;
     // apra-fleet PR-body length fix: buildCreatePrCommand deterministically
     // truncates `body` to PR_DESCRIPTION_MAX_LENGTH and reports it back via
@@ -1025,6 +1038,11 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             // unusable: an explicit choice that is broken, so the PR is
             // skipped loudly (authFailure) and targets stay open -- unlike
             // credentialAbsent below, which is "nothing configured at all".
+            if (storeCred && !('credentialSecret' in handoff)) {
+                const message = `the fleet server does not support credential-store PR credentials (vcs_credential_exec has no \`secret\` input; reason: ${handoff.reason || '(none)'}); upgrade the fleet server to use credential-store entry '${storeCred.secret}'`;
+                log(`${logPrefix}: ${message}`);
+                return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: true };
+            }
             if (storeCred) {
                 const message = `The '${provider}' pull-request credential chosen for this sprint (credential-store entry `
                     + `'${storeCred.secret}') is unusable (vcs_credential_exec reason: ${handoff.reason || '(none)'}): `
