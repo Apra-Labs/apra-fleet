@@ -1165,7 +1165,7 @@ async function runSprintCycle(context) {
     //      'function'`.
     const onAuthFailure = context.onAuthFailure ?? (
         (args && typeof args.callTool === 'function')
-            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validated.azdevopsPatSecretName })
+            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validated.azdevopsPatSecretName, bitbucketSecretName: validated.bitbucketSecretName })
             : undefined
     );
 
@@ -1219,7 +1219,7 @@ async function runSprintCycle(context) {
     //      auth-recovery path.
     const ensureVcsAuthFresh = context.ensureVcsAuthFresh ?? (
         (args && typeof args.callTool === 'function')
-            ? createVcsAuthPreflightCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validated.azdevopsPatSecretName })
+            ? createVcsAuthPreflightCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validated.azdevopsPatSecretName, bitbucketSecretName: validated.bitbucketSecretName })
             : async (member) => {
                 log(`[Sync] preflight: provision_vcs_auth skipped for member '${member}': no callTool wired -- no proactive preflight (the reactive self-heal is the only auth recovery).`);
             }
@@ -3917,7 +3917,7 @@ export async function main(context) {
     //      through to finalizeAbort()'s existing throw-and-fall-back path.
     const abortOnAuthFailure = context.onAuthFailure ?? (
         (args && typeof args.callTool === 'function')
-            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validatedForLock.azdevopsPatSecretName })
+            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validatedForLock.azdevopsPatSecretName, bitbucketSecretName: validatedForLock.bitbucketSecretName })
             : undefined
     );
 
@@ -3993,6 +3993,7 @@ export async function main(context) {
                     onAuthFailure: abortOnAuthFailure,
                     callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
                     runId: (args && typeof args.run_id === 'string') ? args.run_id : undefined,
+                    prCredentials: validatedForLock.prCredentials,
                 });
             } catch (finalizeErr) {
                 log(

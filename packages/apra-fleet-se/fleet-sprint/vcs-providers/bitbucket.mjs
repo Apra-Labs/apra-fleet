@@ -223,39 +223,47 @@ const REPO_REF_HINT = 'git@bitbucket.org:WORKSPACE/REPO.git or https://bitbucket
  *  naming the entry after the provision_vcs_auth field it feeds. Deliberately
  *  does NOT honour ctx.secretName: that value is threaded from a sprint
  *  argument scoped to Azure DevOps' PAT, so consuming it here would point
- *  Bitbucket at another provider's secret. */
+ *  Bitbucket at another provider's secret. The per-sprint
+ *  `bitbucket_secret_name` argument arrives as ctx.bitbucketSecretName. */
 const DEFAULT_API_TOKEN_SECRET = 'bitbucket_api_token';
 
 /** Remedy text for a Bitbucket auth failure, surfaced through the generic
  *  `authRemedy` descriptor field (below) so the shared self-heal and the
  *  PR-raising degrade path print it without a provider-name conditional of
- *  their own. Names the ONLY fix: deploy the credential out of band, because
- *  the fleet cannot assemble one. No secret VALUE appears here or anywhere
- *  else -- the token is always a credential-store name or a placeholder. */
-const AUTH_REMEDY_HINT =
-    'Bitbucket credentials cannot be minted or re-assembled by the fleet: '
-    + 'provision_vcs_auth needs an "email" (the Atlassian account that owns the '
-    + 'API token) alongside the token, and only the token half can be passed '
-    + 'as a secret placeholder -- the email is never derivable from the member '
-    + 'record. Deploy or refresh the credential out of band, once per member: '
-    + 'create an Atlassian API token at '
+ *  their own. Leads with the per-sprint credential-store option (nothing is
+ *  deployed on a member), then the out-of-band deploy. No secret VALUE
+ *  appears here or anywhere else -- only credential-store names and
+ *  placeholders. `name` is the credential-store entry the sprint uses. */
+const remedyHintFor = (name) =>
+    'To raise Bitbucket pull requests, create an Atlassian API token at '
     + 'https://id.atlassian.com/manage-profile/security/api-tokens ("Create API '
     + 'token with scopes", app Bitbucket, scopes read:repository:bitbucket, '
     + 'write:repository:bitbucket, read:pullrequest:bitbucket and '
-    + 'write:pullrequest:bitbucket), store it with '
-    + `credential_store_set name=${DEFAULT_API_TOKEN_SECRET}, then run provision_vcs_auth `
+    + 'write:pullrequest:bitbucket), store it under a NAME with '
+    + `credential_store_set name=${name} persist=true network_policy=allow, and launch `
+    + 'the sprint with bitbucket_email=ATLASSIAN_ACCOUNT_EMAIL and '
+    + `bitbucket_secret_name=${name} (CLI --bitbucket-email / --bitbucket-secret-name); `
+    + 'each project may name its own entry, and nothing is deployed on any member. '
+    + 'Alternatively deploy a credential on the backlog member out of band. '
+    + 'Bitbucket credentials cannot be minted or re-assembled by the fleet: '
+    + 'provision_vcs_auth needs an "email" (the Atlassian account that owns the '
+    + 'API token) alongside the token, and the email is never derivable from '
+    + 'the member record. To deploy out of band, once per member: store the '
+    + 'token as above, then run provision_vcs_auth '
     + 'member_name=MEMBER provider=bitbucket email=ATLASSIAN_ACCOUNT_EMAIL '
-    + `workspace=WORKSPACE api_token={{secret.${DEFAULT_API_TOKEN_SECRET}}}. `
+    + `workspace=WORKSPACE api_token={{secret.${name}}}. `
     + 'Bitbucket app passwords are deprecated: replace an existing one with an '
-    + 'API token the same way. Two cautions: (1) a member holds ONE VCS '
+    + 'API token the same way. Two cautions for that deploy: (1) a member holds ONE VCS '
     + 'credential, so provisioning Bitbucket on a backlog member already '
     + 'provisioned for another provider (e.g. GitHub) replaces that credential '
     + '-- use a backlog member dedicated to Bitbucket; (2) on a LOCAL member '
     + 'provision_vcs_auth rewrites the host\'s own global bitbucket.org git '
     + 'credential helper, which can break the operator\'s HTTPS git -- provision '
-    + 'a non-local member, or keep the local member on SSH. Without a deployed '
-    + 'credential the sprint still completes: no PR is opened and target '
+    + 'a non-local member, or keep the local member on SSH. With neither '
+    + 'configured the sprint still completes: no PR is opened and target '
     + 'issues are closed directly on PASS.';
+
+const AUTH_REMEDY_HINT = remedyHintFor(DEFAULT_API_TOKEN_SECRET);
 
 const authRemedy = Object.freeze({
     // An API token is created by a human against an Atlassian identity;
@@ -272,12 +280,12 @@ const authRemedy = Object.freeze({
  * See the section header above for the full reasoning behind each branch.
  *
  * @param {{ base: object, repoRef: ({ workspace: string }|null|undefined),
- *           availableSecrets: string[]|null, remoteUrl?: string,
+ *           availableSecrets: string[]|null, bitbucketSecretName?: string, remoteUrl?: string,
  *           remoteReadError?: string|null }} ctx
  * @returns {{ args: object, note?: string }|{ skip: true, note?: string }|{ error: string }}
  */
 function buildProvisionArgs(ctx) {
-    const { base = {}, repoRef, availableSecrets, remoteUrl, remoteReadError } = ctx || {};
+    const { base = {}, repoRef, availableSecrets, bitbucketSecretName, remoteUrl, remoteReadError } = ctx || {};
     const workspace = repoRef && typeof repoRef.workspace === 'string' ? repoRef.workspace.trim() : '';
     if (!workspace) {
         const raw = typeof remoteUrl === 'string' ? remoteUrl.trim() : '';
@@ -294,14 +302,14 @@ function buildProvisionArgs(ctx) {
     if (base.git_access === 'push+pr') {
         return {
             skip: true,
-            note: `member '${base.member_name}' is on Bitbucket, whose credential has no just-in-time scope axis to widen and cannot be re-assembled by the fleet; keeping the credential already deployed for workspace '${workspace}' and going straight to the pull-request call`,
+            note: `member '${base.member_name}' is on Bitbucket, whose credential has no just-in-time scope axis to widen and cannot be re-assembled by the fleet; nothing is provisioned for workspace '${workspace}' -- going straight to the pull-request call, which uses the credential-store entry named for this sprint if one was, else the credential already deployed on the member`,
         };
     }
 
-    const name = DEFAULT_API_TOKEN_SECRET;
+    const name = (typeof bitbucketSecretName === 'string' && bitbucketSecretName.trim()) ? bitbucketSecretName.trim() : DEFAULT_API_TOKEN_SECRET;
     if (Array.isArray(availableSecrets) && !availableSecrets.includes(name)) {
         return {
-            error: `ERROR: cannot provision Bitbucket auth for member '${base.member_name}': the credential store has no entry named '${name}'. ${AUTH_REMEDY_HINT}`,
+            error: `ERROR: cannot provision Bitbucket auth for member '${base.member_name}': the credential store has no entry named '${name}'. ${remedyHintFor(name)}`,
         };
     }
 
@@ -317,7 +325,7 @@ function buildProvisionArgs(ctx) {
             // unreachable from this path.
             api_token: `{{secret.${name}}}`,
         },
-        note: `member '${base.member_name}' is on Bitbucket: the fleet can supply workspace '${workspace}' and the '${name}' credential-store token, but not the Atlassian account email provision_vcs_auth also requires -- if this call reports a missing "email" field, deploy the credential out of band instead. ${AUTH_REMEDY_HINT}`,
+        note: `member '${base.member_name}' is on Bitbucket: the fleet can supply workspace '${workspace}' and the '${name}' credential-store token, but not the Atlassian account email provision_vcs_auth also requires -- if this call reports a missing "email" field, deploy the credential out of band instead. ${remedyHintFor(name)}`,
     };
 }
 

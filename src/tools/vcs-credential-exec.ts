@@ -5,6 +5,7 @@ import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { escapeShellArg, escapePowerShellArg, escapeShellArgInner, escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { logLine } from '../utils/log-helpers.js';
+import { credentialResolve } from '../services/credential-store.js';
 import type { Agent } from '../types.js';
 
 /**
@@ -120,6 +121,22 @@ export const vcsCredentialExecSchema = z.object({
     'Credential label the helper was deployed under by provision_vcs_auth (defaults to the '
     + 'provider name there, e.g. "github" or "azure-devops"). Omit to use the unlabelled helper.'
   ),
+  // Grammar is checked in vcsCredentialExec (isSecretName), not here, so a
+  // rejected value is never echoed back by a schema validation error.
+  secret: z.string().optional().describe(
+    'Credential-store secret NAME (never a value) to take the token from, instead of the member\'s '
+    + 'deployed credential helper -- e.g. "bitbucket_work". Must be a name: a letter first, then words of '
+    + 'letters/digits joined by "_" or "-" (each word at most 20 chars, words over 12 chars letters only); '
+    + 'anything else is refused without being echoed (reason secret_denied). The value is resolved server-side from the '
+    + 'credential store at call time and redacted from the output. Its network_policy must be "allow": '
+    + 'this tool runs unattended, so "confirm" and "deny" are refused (reason secret_denied). '
+    + 'When set, `label` is ignored and no credential helper is read.'
+  ),
+  username: z.string().min(1).max(256).regex(/^[^\s:'"`$]+$/).optional().describe(
+    'Basic-auth username substituted for {{vcs_username}}/{{vcs_username_inline}} when `secret` is set '
+    + '(e.g. the Atlassian account email that owns a Bitbucket API token). Not a secret, but redacted '
+    + 'from the output like the helper\'s username. Ignored without `secret`.'
+  ),
   timeout_s: z.number().int().positive().max(600).optional().describe(
     'Inactivity timeout in seconds for the credential-requiring command (default: 120). '
     + 'On expiry the command\'s remote process tree is killed and the result is reason dispatch_failed '
@@ -149,6 +166,13 @@ export type VcsCredentialExecReason =
    * consults it.
    */
   | 'username_empty'
+  /** `secret` named no credential-store entry. Nothing was dispatched. */
+  | 'secret_not_found'
+  /**
+   * `secret` exists but may not be used here: expired, not scoped to this
+   * member, or its network_policy is not "allow". Nothing was dispatched.
+   */
+  | 'secret_denied'
   /** Dispatching the credential-requiring command threw. */
   | 'dispatch_failed';
 
@@ -173,6 +197,12 @@ interface VcsCredentialExecFields {
   tokenRedactions: number;
   /** Credential label used, or null for the unlabelled helper. */
   credentialLabel: string | null;
+  /**
+   * Credential-store secret NAME the token came from (the `secret` input),
+   * or null when it came from a credential helper. Lets a caller confirm the
+   * server honoured `secret` rather than silently reading a helper.
+   */
+  credentialSecret: string | null;
   /** Registry id of the resolved member, or null. */
   memberId: string | null;
   /** Friendly name of the resolved member, or null. */
@@ -209,10 +239,28 @@ function execResult(
       stderr: fields.stderr ?? '',
       tokenRedactions: fields.tokenRedactions ?? 0,
       credentialLabel: fields.credentialLabel ?? null,
+      credentialSecret: fields.credentialSecret ?? null,
       memberId: fields.memberId ?? null,
       memberName: fields.memberName ?? null,
     },
   };
+}
+
+/**
+ * Allow-list grammar for the `secret` input (a credential-store NAME): a
+ * letter first, then words of letters/digits joined by '_' or '-', at most 64
+ * chars; each word at most 20 chars, and a word longer than 12 chars must be
+ * letters only; known token prefixes refused. Anything else (hex, base64,
+ * JWTs, long random runs) is refused WITHOUT being echoed, so a pasted token
+ * never appears in a result. Identical to fleet-sprint's sprint-args.mjs
+ * isSecretName; keep the two in step.
+ */
+const SECRET_NAME_GRAMMAR = /^[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)*$/;
+const TOKEN_PREFIX = /^(ATATT|ATBB|ATCTT|ATOAT|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xox)/;
+export function isSecretName(name: string): boolean {
+  if (name.length < 1 || name.length > 64) return false;
+  if (!SECRET_NAME_GRAMMAR.test(name) || TOKEN_PREFIX.test(name)) return false;
+  return name.split(/[_-]/).every((w) => w.length <= 20 && (w.length <= 12 || /^[A-Za-z]+$/.test(w)));
 }
 
 /** Replace every occurrence of `secret` in `output`, and report how many. */
@@ -232,7 +280,12 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
     });
   }
   const agent = agentOrError as Agent;
-  const who = { memberId: agent.id, memberName: agent.friendlyName, credentialLabel: input.label ?? null };
+  const who = {
+    memberId: agent.id,
+    memberName: agent.friendlyName,
+    credentialLabel: input.secret !== undefined ? null : (input.label ?? null),
+    credentialSecret: input.secret ?? null,
+  };
 
   // Refusing a command with neither placeholder is what keeps this tool a
   // credential handoff rather than a second, unguarded execute_command.
@@ -253,19 +306,6 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
   const cmds = getOsCommands(agentOs, agentShell);
   const strategy = getStrategy(agent);
 
-  // A member OS/shell with no credential-read implementation is a HARD
-  // failure with a surfaced error, never an advisory warning that lets the
-  // caller proceed credential-less.
-  let read: { command: string; path: string };
-  try {
-    read = cmds.gitCredentialHelperRead(input.label);
-  } catch (err: any) {
-    return execResult(
-      `[FAIL] Cannot read a VCS credential on "${agent.friendlyName}" (os=${agentOs} shell=${agentShell ?? 'default'}): ${err.message}`,
-      { ...who, reason: 'unsupported_member_os' },
-    );
-  }
-
   // Only a command that actually references a username placeholder consults
   // the username= line, so every existing token-only call site (GitHub,
   // Azure DevOps) keeps its exact previous behaviour and cannot reach the
@@ -273,42 +313,105 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
   const needsUsername = input.command.includes(VCS_USERNAME_PLACEHOLDER)
     || input.command.includes(VCS_USERNAME_INLINE_PLACEHOLDER);
 
-  // STEP 1 -- read the credential SERVER-SIDE. This result is consumed
-  // in-process and is never placed in the payload returned below.
   let token = '';
   let username = '';
-  try {
-    const readRes = await strategy.execCommand(read.command, 15000);
-    if (readRes.code !== 0) {
+
+  // `secret` set: the token comes from the fleet credential store by NAME,
+  // resolved here at call time, and the username from `username`. No
+  // credential helper is read and `label` plays no part, so a caller can
+  // pick one of several stored accounts per call (e.g. per project) without
+  // any credential deployed on the member. Error texts name the entry, never
+  // its value.
+  if (input.secret !== undefined) {
+    if (!isSecretName(input.secret)) {
       return execResult(
-        `[FAIL] Failed to read the VCS credential for "${agent.friendlyName}" from '${read.path}' (exit ${readRes.code}).`,
-        { ...who, reason: 'credential_read_failed', exitCode: readRes.code },
+        '[FAIL] `secret` must be the NAME of a credential-store entry (a letter first, then words of letters/digits '
+        + 'joined by "_" or "-", each word at most 20 chars and words over 12 chars letters only, e.g. bitbucket_work); '
+        + 'the value passed is not a valid name and is not shown or used.',
+        { ...who, credentialSecret: null, reason: 'secret_denied' },
       );
     }
-    const m = /^password=(.*)$/m.exec(readRes.stdout || '');
-    token = m ? m[1].trim() : '';
-    const u = /^username=(.*)$/m.exec(readRes.stdout || '');
-    username = u ? u[1].trim() : '';
-  } catch (err: any) {
-    return execResult(
-      `[FAIL] Failed to read the VCS credential for "${agent.friendlyName}" from '${read.path}': ${err.message}`,
-      { ...who, reason: 'credential_read_failed' },
-    );
-  }
-  if (!token) {
-    return execResult(
-      `[FAIL] The VCS credential for "${agent.friendlyName}" was empty or unreadable (expected a 'password=' line from '${read.path}'). Re-run provision_vcs_auth.`,
-      { ...who, reason: 'credential_empty' },
-    );
-  }
-  // Substituting an empty username would silently dispatch ':<token>' and
-  // surface much later as a confusing 401, so this is a typed refusal that
-  // never dispatches anything.
-  if (needsUsername && !username) {
-    return execResult(
-      `[FAIL] The VCS credential for "${agent.friendlyName}" carries no basic-auth username (expected a 'username=' line from '${read.path}'), but the command references ${VCS_USERNAME_PLACEHOLDER}. Re-run provision_vcs_auth for a provider that records one.`,
-      { ...who, reason: 'username_empty' },
-    );
+    const entry = credentialResolve(input.secret, agent.friendlyName);
+    if (!entry) {
+      return execResult(
+        `[FAIL] The credential store has no entry named '${input.secret}'. Store it first: `
+        + `credential_store_set name=${input.secret} persist=true network_policy=allow `
+        + `(CLI: apra-fleet secret --set ${input.secret} --persist, then credential_store_update name=${input.secret} network_policy=allow).`,
+        { ...who, reason: 'secret_not_found' },
+      );
+    }
+    if ('denied' in entry) return execResult(`[FAIL] ${entry.denied}`, { ...who, reason: 'secret_denied' });
+    if ('expired' in entry) return execResult(`[FAIL] ${entry.expired}`, { ...who, reason: 'secret_denied' });
+    if (entry.meta.network_policy !== 'allow') {
+      return execResult(
+        `[FAIL] Credential '${input.secret}' has network_policy=${entry.meta.network_policy}; vcs_credential_exec runs `
+        + `unattended and needs "allow". Run: credential_store_update name=${input.secret} network_policy=allow`,
+        { ...who, reason: 'secret_denied' },
+      );
+    }
+    token = entry.plaintext.trim();
+    username = (input.username ?? '').trim();
+    if (!token) {
+      return execResult(
+        `[FAIL] Credential '${input.secret}' is empty. Re-set it with credential_store_set name=${input.secret}.`,
+        { ...who, reason: 'credential_empty' },
+      );
+    }
+    if (needsUsername && !username) {
+      return execResult(
+        `[FAIL] The command references ${VCS_USERNAME_PLACEHOLDER} but no \`username\` was passed alongside \`secret\`.`,
+        { ...who, reason: 'username_empty' },
+      );
+    }
+  } else {
+    // A member OS/shell with no credential-read implementation is a HARD
+    // failure with a surfaced error, never an advisory warning that lets the
+    // caller proceed credential-less.
+    let read: { command: string; path: string };
+    try {
+      read = cmds.gitCredentialHelperRead(input.label);
+    } catch (err: any) {
+      return execResult(
+        `[FAIL] Cannot read a VCS credential on "${agent.friendlyName}" (os=${agentOs} shell=${agentShell ?? 'default'}): ${err.message}`,
+        { ...who, reason: 'unsupported_member_os' },
+      );
+    }
+
+    // STEP 1 -- read the credential SERVER-SIDE. This result is consumed
+    // in-process and is never placed in the payload returned below.
+    try {
+      const readRes = await strategy.execCommand(read.command, 15000);
+      if (readRes.code !== 0) {
+        return execResult(
+          `[FAIL] Failed to read the VCS credential for "${agent.friendlyName}" from '${read.path}' (exit ${readRes.code}).`,
+          { ...who, reason: 'credential_read_failed', exitCode: readRes.code },
+        );
+      }
+      const m = /^password=(.*)$/m.exec(readRes.stdout || '');
+      token = m ? m[1].trim() : '';
+      const u = /^username=(.*)$/m.exec(readRes.stdout || '');
+      username = u ? u[1].trim() : '';
+    } catch (err: any) {
+      return execResult(
+        `[FAIL] Failed to read the VCS credential for "${agent.friendlyName}" from '${read.path}': ${err.message}`,
+        { ...who, reason: 'credential_read_failed' },
+      );
+    }
+    if (!token) {
+      return execResult(
+        `[FAIL] The VCS credential for "${agent.friendlyName}" was empty or unreadable (expected a 'password=' line from '${read.path}'). Re-run provision_vcs_auth.`,
+        { ...who, reason: 'credential_empty' },
+      );
+    }
+    // Substituting an empty username would silently dispatch ':<token>' and
+    // surface much later as a confusing 401, so this is a typed refusal that
+    // never dispatches anything.
+    if (needsUsername && !username) {
+      return execResult(
+        `[FAIL] The VCS credential for "${agent.friendlyName}" carries no basic-auth username (expected a 'username=' line from '${read.path}'), but the command references ${VCS_USERNAME_PLACEHOLDER}. Re-run provision_vcs_auth for a provider that records one.`,
+        { ...who, reason: 'username_empty' },
+      );
+    }
   }
 
   // STEP 2 -- substitute, escaped for the member's OWN shell. A Windows
@@ -344,7 +447,8 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
 
   // STEP 3 -- dispatch. Only the log-safe form (placeholder still in place) is
   // ever logged; `finalCommand` is never written anywhere.
-  logLine('vcs_credential_exec', `label=${input.label ?? '(default)'} command=${input.command.slice(0, 120)}`, agent);
+  const source = input.secret !== undefined ? `secret=${input.secret}` : `label=${input.label ?? '(default)'}`;
+  logLine('vcs_credential_exec', `${source} command=${input.command.slice(0, 120)}`, agent);
   let code: number;
   let stdout: string;
   let stderr: string;

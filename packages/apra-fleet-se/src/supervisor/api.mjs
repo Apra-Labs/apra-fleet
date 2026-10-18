@@ -46,6 +46,7 @@ import { validateIssueId, validateBranchName, validateBranchPair } from '../../f
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { resolveBacklogRoleAlias, ROLE_BACKLOG } from '../../fleet-sprint/backlog-role.mjs';
 import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
+import { validateBitbucketPrCredential } from '../../fleet-sprint/sprint-args.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
@@ -491,11 +492,19 @@ export function createSprintController(deps = {}) {
             }
             skipRegression = phases.regression === 'skip';
         }
+        // Bitbucket PR credential (optional): a credential-store secret NAME
+        // (never a value) plus the Atlassian account email that owns it.
+        // Checked here with the runner's own validator so a bad value 400s
+        // before any spawn; a rejected value is never echoed back.
+        const bitbucketSecretName = body.bitbucketSecretName ?? body.bitbucket_secret_name;
+        const bitbucketEmail = body.bitbucketEmail ?? body.bitbucket_email;
+        try { validateBitbucketPrCredential(bitbucketSecretName, bitbucketEmail); }
+        catch (err) { throw new ApiError(400, err.message, /(Invalid|needs) bitbucket_email/.test(err.message) ? 'bitbucketEmail' : 'bitbucketSecretName'); }
         // `issue` stays a single comma-joined string (the exact shape
         // buildSprintArgv/cli.mjs's --issue flag expects, and byte-identical
         // to the input for the single-id case); `issueIds` is the split array
         // callers use for issueRoots / per-root history lookups.
-        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression };
+        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, bitbucketSecretName, bitbucketEmail };
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
@@ -536,7 +545,7 @@ export function createSprintController(deps = {}) {
 
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
     async function launch(body = {}) {
-        const { issue, issueIds, branch, base, members, skipRegression } = validateLaunchRequest(body);
+        const { issue, issueIds, branch, base, members, skipRegression, bitbucketSecretName, bitbucketEmail } = validateLaunchRequest(body);
         // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
         // the supervisor read an arbitrary server-side path named by the request
         // body, and the alias warning could not be computed from it. Reject it.
@@ -713,6 +722,9 @@ export function createSprintController(deps = {}) {
             budget: body.budget,
             runId: sprintId,
             skipRegression,
+            // Only present when set, so a default launch's spawn opts are unchanged.
+            ...(bitbucketSecretName !== undefined ? { bitbucketSecretName } : {}),
+            ...(bitbucketEmail !== undefined ? { bitbucketEmail } : {}),
         };
         let spawned;
         try {

@@ -31,6 +31,11 @@ short-circuits before anything downstream runs:
    Optional `phases` is validated too: only `{ "regression": "run" | "skip" }`
    is accepted (anything else -> `400`, field `phases`); `"skip"` forwards
    `--skip-regression` to the child.
+   Optional `bitbucketSecretName` (a credential-store secret NAME, never a
+   value) and `bitbucketEmail` select this sprint's Bitbucket PR credential;
+   they are checked with the runner's own validator (bad or token-shaped
+   value -> `400`, field `bitbucketSecretName`/`bitbucketEmail`, value not
+   echoed) and forwarded as `--bitbucket-secret-name`/`--bitbucket-email`.
    Optional `roleMap` (object or JSON string) is resolved too. The
    `roleMap.orchestrator` key is a DEPRECATED alias of `roleMap.backlog`:
    using it still works, and the response carries a top-level

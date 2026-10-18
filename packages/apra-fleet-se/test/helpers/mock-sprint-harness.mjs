@@ -395,10 +395,10 @@ function redactVcsCredentialUsername(output, secret) {
 }
 
 /**
- * Builds a vcs_credential_exec result with EXACTLY the nine
+ * Builds a vcs_credential_exec result with EXACTLY the ten
  * structuredContent fields execResult() emits in
  * src/tools/vcs-credential-exec.ts (ok, reason, exitCode, stdout, stderr,
- * tokenRedactions, credentialLabel, memberId, memberName) -- field for
+ * tokenRedactions, credentialLabel, credentialSecret, memberId, memberName) -- field for
  * field, so a scenario asserting on this mock's shape is asserting on the
  * real tool's contract.
  */
@@ -413,6 +413,7 @@ function vcsCredentialExecResult(text, fields) {
             stderr: fields.stderr ?? '',
             tokenRedactions: fields.tokenRedactions ?? 0,
             credentialLabel: fields.credentialLabel ?? null,
+            credentialSecret: fields.credentialSecret ?? null,
             memberId: fields.memberId ?? null,
             memberName: fields.memberName ?? null,
         },

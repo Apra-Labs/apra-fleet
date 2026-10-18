@@ -278,6 +278,34 @@ GitHub repo, opening the PR needs a GitHub App configured on the fleet
 with only a PAT the sprint pushes the branch but logs `[Publish PR Skipped]
 ... GitHub App not configured` and opens no PR.
 
+For a **Bitbucket Cloud** repo, the PR is raised with an Atlassian API token
+kept in the fleet credential store and chosen per project at launch -- nothing
+is deployed on the member, so one backlog member (even a GitHub-provisioned one)
+can serve several Bitbucket projects under different accounts:
+
+1. Create an API token at https://id.atlassian.com/manage-profile/security/api-tokens
+   ("Create API token with scopes", app Bitbucket; scopes
+   `read:repository:bitbucket`, `write:repository:bitbucket`,
+   `read:pullrequest:bitbucket`, `write:pullrequest:bitbucket`).
+2. Store it once under a name of your choice, e.g. one per account:
+   `apra-fleet secret --set bitbucket_work --persist`, then
+   `credential_store_update name=bitbucket_work network_policy=allow`
+   (the PR call runs unattended, so the entry must allow network use). Trade-off:
+   with `allow`, any orchestrator `execute_command` can also send `{{secret.bitbucket_work}}`
+   to a network tool without the out-of-band confirm, so keep this entry dedicated
+   to Bitbucket PRs and scope it with `members` where possible.
+3. Launch each project's sprint with the entry's NAME and the email of the
+   Atlassian account that owns it: CLI `--bitbucket-secret-name bitbucket_work
+   --bitbucket-email you@example.com`, or supervisor
+   `{"bitbucketSecretName":"bitbucket_work","bitbucketEmail":"you@example.com"}`.
+   The name defaults to `bitbucket_api_token` when only the email is given.
+   Pass the name only -- a value shaped like a token is rejected at launch.
+
+If the named entry is missing or unusable, the sprint still finishes, logs
+`[Publish PR Skipped]` naming the entry and the `credential_store_set` command
+that fixes it, and leaves the target issues open. With neither option, the PR
+uses a Bitbucket credential deployed on the backlog member, as before.
+
 ### 2.5 Scale sideways: one member per sprint, several sprints at once
 
 The way to get more work done in parallel is **more sprints, not more agents
