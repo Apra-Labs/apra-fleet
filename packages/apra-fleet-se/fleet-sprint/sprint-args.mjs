@@ -198,10 +198,25 @@ export function validateExpectBeads(raw) {
 
 /** Credential-store name used when bitbucket_email is given without bitbucket_secret_name. */
 const DEFAULT_BITBUCKET_SECRET_NAME = 'bitbucket_api_token';
-const SECRET_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-// Known Atlassian credential prefixes (API token, repository/workspace access
-// token, OAuth consumer token) -- a value, not a name.
-const ATLASSIAN_TOKEN_PREFIX = /^(ATATT|ATBB|ATCTT|ATOAT)/;
+/**
+ * Allow-list grammar for a credential-store secret NAME used as a launch
+ * option: a letter first, then words of letters/digits joined by '_' or '-',
+ * at most 64 chars; each word at most 20 chars, and a word longer than 12
+ * chars must be letters only. Anything else -- hex, base64, JWTs, values with
+ * ':' or '@', long random runs -- is refused, so a pasted token can never pass
+ * as a name (and is therefore never echoed). Known token prefixes are refused
+ * too. The same grammar is enforced by vcs_credential_exec's `secret` input
+ * (src/tools/vcs-credential-exec.ts isSecretName); keep the two identical.
+ */
+const SECRET_NAME_GRAMMAR = /^[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)*$/;
+const TOKEN_PREFIX = /^(ATATT|ATBB|ATCTT|ATOAT|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xox)/;
+const SECRET_NAME_RULE = 'a letter first, then words of letters/digits joined by "_" or "-" (at most 64 chars; '
+    + 'each word at most 20 chars, words over 12 chars letters only), e.g. bitbucket_work';
+function isSecretName(name) {
+    if (typeof name !== 'string' || name.length < 1 || name.length > 64) return false;
+    if (!SECRET_NAME_GRAMMAR.test(name) || TOKEN_PREFIX.test(name)) return false;
+    return name.split(/[_-]/).every((w) => w.length <= 20 && (w.length <= 12 || /^[A-Za-z]+$/.test(w)));
+}
 
 /**
  * Validates the Bitbucket pull-request credential pair and returns the
@@ -213,17 +228,11 @@ const ATLASSIAN_TOKEN_PREFIX = /^(ATATT|ATBB|ATCTT|ATOAT)/;
  * @returns {{ bitbucket: { secret: string, username: string } }|undefined}
  */
 export function validateBitbucketPrCredential(secretName, email) {
-    if (secretName !== undefined) {
-        const why = typeof secretName !== 'string' || !SECRET_NAME_PATTERN.test(secretName)
-            ? 'it must be a credential-store secret name (letters, digits, "_" or "-", 1-64 chars)'
-            : (ATLASSIAN_TOKEN_PREFIX.test(secretName)
-                || (secretName.length >= 20 && !/[_-]/.test(secretName)
-                    && /[a-z]/.test(secretName) && /[A-Z]/.test(secretName) && /[0-9]/.test(secretName)))
-                ? 'it looks like a credential VALUE; pass the NAME of the credential-store entry that holds the token (e.g. bitbucket_work), never the token itself'
-                : null;
-        if (why) {
-            throw new Error(`[Arg Contract] Invalid bitbucket_secret_name (value not shown): ${why}.`);
-        }
+    if (secretName !== undefined && !isSecretName(secretName)) {
+        throw new Error(
+            '[Arg Contract] Invalid bitbucket_secret_name (value not shown): it must be the NAME of the credential-store '
+            + `entry that holds the token, never the token itself -- ${SECRET_NAME_RULE}.`,
+        );
     }
     if (email !== undefined
         && (typeof email !== 'string' || email.length > 254 || !/^[^\s:'"`@$]+@[^\s:'"`@$]+$/.test(email))) {

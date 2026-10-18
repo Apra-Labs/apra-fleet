@@ -814,6 +814,8 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         : { label: credentialLabel };
     if (storeCred) {
         log(`${logPrefix}: using credential-store entry '${storeCred.secret}' (chosen for this sprint) for the '${provider}' pull request, not a credential deployed on member '${member}'.`);
+    } else if (prCredentials && Object.keys(prCredentials).length) {
+        log(`${logPrefix}: pull-request credential option(s) were set for ${Object.keys(prCredentials).join(', ')}, but this repository is served by '${provider}'; ignoring them.`);
     }
     // An older server strips the unknown `secret` input and silently reads a
     // helper instead; it also never echoes credentialSecret back. Treat a
@@ -823,9 +825,13 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             + '(it predates the vcs_credential_exec "secret" input); upgrade the fleet server -- the call may have run with a '
             + `credential deployed on member '${member}' instead`
         : null);
-    const storeRemedy = () => (storeCred
+    // `reason` 'secret_denied' (wrong policy/scope/expiry) gets the update
+    // form; anything else the set form, which (re)stores the token.
+    const storeRemedy = (reason) => (storeCred
         ? ` -- the '${provider}' pull-request token comes from credential-store entry '${storeCred.secret}', chosen for this sprint; `
-            + `store or replace it with: credential_store_set name=${storeCred.secret} persist=true network_policy=allow`
+            + (reason === 'secret_denied'
+                ? `make it usable with: credential_store_update name=${storeCred.secret} network_policy=allow (and check its members scope and expiry)`
+                : `store or replace it with: credential_store_set name=${storeCred.secret} persist=true network_policy=allow`)
         : '');
     // The provider's operator-facing remedy, appended to every degraded
     // (authFailure) outcome below when the credential is out-of-band only.
@@ -899,7 +905,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             const unconfirmed = secretUnconfirmed(h);
             if (unconfirmed) return { ok: false, error: `${what}: ${unconfirmed}`, unconfirmed };
             if (!h.ok || (typeof h.exitCode === 'number' && h.exitCode !== 0)) {
-                return { ok: false, error: `${what} dispatch failed (${h.reason || 'nonzero exit'}): ${h.stderr || resultText(res) || '(no detail)'}` };
+                return { ok: false, error: `${what} dispatch failed (${h.reason || 'nonzero exit'}): ${h.stderr || resultText(res) || '(no detail)'}`, handoffFailed: true, handoff: h };
             }
             const parsed = parseVcsCurlOutput(h.stdout);
             const [lo, hi] = b.interpret.successStatusRange;
@@ -970,14 +976,25 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
 
     // A credential-store entry must be confirmed BEFORE anything with side
     // effects: an older server would ignore `secret` and create the PR under
-    // the member's deployed credential. The read-only find call is the probe;
-    // any other probe failure falls through to the create call, which reports
-    // it with its own remedy.
+    // the member's deployed credential. The read-only find call is the probe.
+    // If the probe's own handoff fails (missing/denied entry, dispatch or
+    // transient error), no POST is attempted at all: the credential was never
+    // confirmed, so version skew plus a transient failure can never open a PR
+    // under the wrong account. An HTTP-level answer on a confirmed handoff
+    // (the server echoed the entry) proves the credential, so creation goes on.
     if (storeCred) {
         const probe = await findOpenPrs();
         if (probe.unconfirmed) {
             log(`${logPrefix}: ${probe.unconfirmed}`);
-            return { ok: false, alreadyExists: false, prUrl: null, error: probe.unconfirmed, authFailure: true };
+            return { ok: false, alreadyExists: false, prUrl: null, error: probe.unconfirmed, authFailure: true, reason: 'pr-credential-unconfirmed' };
+        }
+        if (probe.handoffFailed) {
+            const h = probe.handoff || {};
+            const message = !('credentialSecret' in h)
+                ? `the fleet server does not support credential-store PR credentials (vcs_credential_exec has no 'secret' input; reason: ${h.reason || '(none)'}); upgrade the fleet server to use credential-store entry '${storeCred.secret}'. No pull request was attempted.`
+                : `The '${provider}' pull-request credential chosen for this sprint (credential-store entry '${storeCred.secret}') could not be confirmed by a read-only call, so no pull request was attempted: ${probe.error}${storeRemedy(h.reason)}`;
+            log(`${logPrefix}: ${message}`);
+            return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: true, reason: 'pr-credential-unconfirmed' };
         }
     }
 
@@ -1046,7 +1063,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             if (storeCred) {
                 const message = `The '${provider}' pull-request credential chosen for this sprint (credential-store entry `
                     + `'${storeCred.secret}') is unusable (vcs_credential_exec reason: ${handoff.reason || '(none)'}): `
-                    + `${handoffText || '(no detail)'}${storeRemedy()}`;
+                    + `${handoffText || '(no detail)'}${storeRemedy(handoff.reason)}`;
                 log(`${logPrefix}: ${message}`);
                 return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: true };
             }

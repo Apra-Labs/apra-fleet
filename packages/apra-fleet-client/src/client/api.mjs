@@ -532,8 +532,10 @@
  * @property {string} [label] - Credential label provision_vcs_auth deployed the helper under
  *   (it defaults to the provider name there, e.g. "github" or "azure-devops"). Omit for the
  *   unlabelled helper.
- * @property {string} [secret] - Credential-store secret NAME (never a value; must match
- *   /^[a-zA-Z0-9_-]{1,64}$/) to take the token from instead of the member's deployed credential
+ * @property {string} [secret] - Credential-store secret NAME (never a value; a letter first, then
+ *   words of letters/digits joined by "_" or "-", at most 64 chars, each word at most 20 chars and
+ *   words over 12 chars letters only -- anything else is refused as "secret_denied" without being
+ *   echoed) to take the token from instead of the member's deployed credential
  *   helper. Resolved server-side at call time and redacted from the output; `label` is then
  *   ignored. The entry's network_policy must be "allow" (the call runs unattended), else reason
  *   "secret_denied"; a missing entry is reason "secret_not_found". Nothing is dispatched on either.

@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { escapeShellArgInner, escapePowerShellArgInner } from '../src/utils/shell-escape.js';
-import { vcsCredentialExec } from '../src/tools/vcs-credential-exec.js';
+import { vcsCredentialExec, isSecretName } from '../src/tools/vcs-credential-exec.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const { mockExecCommand, mockResolve } = vi.hoisted(() => ({
@@ -131,13 +131,23 @@ describe('vcs_credential_exec: credential-store `secret` source', () => {
   it('a token-shaped `secret` is refused without echoing it or touching the store', async () => {
     const member = makeTestAgent({ friendlyName: 'store-tokenshape', os: 'linux' });
     addAgent(member);
-    for (const value of ['ATATT3xFfGF0SENTINEL', 'Ab1cD2eF3gH4iJ5kL6mN']) {
+    for (const value of [
+      'ATATT3xFfGF0SENTINEL', 'Ab1cD2eF3gH4iJ5kL6mN',
+      'a3f9c1e07b2d4f6a8c0e1b3d5f7a9c1e3b5d7f90', 'k2j4h6g8f0d2s4a6p8o0',
+      'c2VjcmV0dG9rZW4=', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig', 'me@example.com', 'u:p', 'ghp_SENTINEL',
+    ]) {
       const r = await vcsCredentialExec({ member_id: member.id, command: COMMAND, secret: value, username: USER });
       expect(r.structuredContent.reason).toBe('secret_denied');
       expect(JSON.stringify(r)).not.toContain(value);
     }
     expect(mockResolve).not.toHaveBeenCalled();
     expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('isSecretName accepts ordinary names and matches the fleet-sprint grammar', () => {
+    for (const n of ['bitbucket_kumaakh', 'bitbucket_api_token', 'bitbucket-work', 'BitbucketWork', 'bb2', 'acme_bitbucket_2024']) {
+      expect(isSecretName(n)).toBe(true);
+    }
   });
 
   it('a member-scoped denial is secret_denied', async () => {

@@ -290,7 +290,10 @@ can serve several Bitbucket projects under different accounts:
 2. Store it once under a name of your choice, e.g. one per account:
    `apra-fleet secret --set bitbucket_work --persist`, then
    `credential_store_update name=bitbucket_work network_policy=allow`
-   (the PR call runs unattended, so the entry must allow network use).
+   (the PR call runs unattended, so the entry must allow network use). Trade-off:
+   with `allow`, any orchestrator `execute_command` can also send `{{secret.bitbucket_work}}`
+   to a network tool without the out-of-band confirm, so keep this entry dedicated
+   to Bitbucket PRs and scope it with `members` where possible.
 3. Launch each project's sprint with the entry's NAME and the email of the
    Atlassian account that owns it: CLI `--bitbucket-secret-name bitbucket_work
    --bitbucket-email you@example.com`, or supervisor

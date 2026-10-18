@@ -121,9 +121,13 @@ export const vcsCredentialExecSchema = z.object({
     'Credential label the helper was deployed under by provision_vcs_auth (defaults to the '
     + 'provider name there, e.g. "github" or "azure-devops"). Omit to use the unlabelled helper.'
   ),
-  secret: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional().describe(
+  // Grammar is checked in vcsCredentialExec (isSecretName), not here, so a
+  // rejected value is never echoed back by a schema validation error.
+  secret: z.string().optional().describe(
     'Credential-store secret NAME (never a value) to take the token from, instead of the member\'s '
-    + 'deployed credential helper -- e.g. "bitbucket_work". The value is resolved server-side from the '
+    + 'deployed credential helper -- e.g. "bitbucket_work". Must be a name: a letter first, then words of '
+    + 'letters/digits joined by "_" or "-" (each word at most 20 chars, words over 12 chars letters only); '
+    + 'anything else is refused without being echoed (reason secret_denied). The value is resolved server-side from the '
     + 'credential store at call time and redacted from the output. Its network_policy must be "allow": '
     + 'this tool runs unattended, so "confirm" and "deny" are refused (reason secret_denied). '
     + 'When set, `label` is ignored and no credential helper is read.'
@@ -243,16 +247,20 @@ function execResult(
 }
 
 /**
- * True for a `secret` that is shaped like a credential VALUE rather than a
- * store name: a known Atlassian token prefix, or a long mixed-case
- * alphanumeric run with no separator (app-password shape). Such a value is
- * refused without being echoed. Same heuristic as fleet-sprint's
- * bitbucket_secret_name validator.
+ * Allow-list grammar for the `secret` input (a credential-store NAME): a
+ * letter first, then words of letters/digits joined by '_' or '-', at most 64
+ * chars; each word at most 20 chars, and a word longer than 12 chars must be
+ * letters only; known token prefixes refused. Anything else (hex, base64,
+ * JWTs, long random runs) is refused WITHOUT being echoed, so a pasted token
+ * never appears in a result. Identical to fleet-sprint's sprint-args.mjs
+ * isSecretName; keep the two in step.
  */
-function looksLikeCredentialValue(name: string): boolean {
-  if (/^(ATATT|ATBB|ATCTT|ATOAT|ghp_|ghs_|github_pat_)/.test(name)) return true;
-  return name.length >= 20 && !/[_-]/.test(name)
-    && /[a-z]/.test(name) && /[A-Z]/.test(name) && /[0-9]/.test(name);
+const SECRET_NAME_GRAMMAR = /^[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)*$/;
+const TOKEN_PREFIX = /^(ATATT|ATBB|ATCTT|ATOAT|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xox)/;
+export function isSecretName(name: string): boolean {
+  if (name.length < 1 || name.length > 64) return false;
+  if (!SECRET_NAME_GRAMMAR.test(name) || TOKEN_PREFIX.test(name)) return false;
+  return name.split(/[_-]/).every((w) => w.length <= 20 && (w.length <= 12 || /^[A-Za-z]+$/.test(w)));
 }
 
 /** Replace every occurrence of `secret` in `output`, and report how many. */
@@ -315,9 +323,11 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
   // any credential deployed on the member. Error texts name the entry, never
   // its value.
   if (input.secret !== undefined) {
-    if (looksLikeCredentialValue(input.secret)) {
+    if (!isSecretName(input.secret)) {
       return execResult(
-        '[FAIL] `secret` must be the NAME of a credential-store entry (e.g. bitbucket_work); the value passed looks like a credential itself and is not shown or used.',
+        '[FAIL] `secret` must be the NAME of a credential-store entry (a letter first, then words of letters/digits '
+        + 'joined by "_" or "-", each word at most 20 chars and words over 12 chars letters only, e.g. bitbucket_work); '
+        + 'the value passed is not a valid name and is not shown or used.',
         { ...who, credentialSecret: null, reason: 'secret_denied' },
       );
     }

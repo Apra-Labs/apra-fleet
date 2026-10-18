@@ -31,7 +31,7 @@ import os from 'node:os';
 const BB_ORIGIN = 'git@bitbucket.org:acme/widgets.git';
 const EMAIL = 'owner@example.invalid';
 
-function fakeFleet({ registeredAs = 'bitbucket', store = [], helper = 'credential_read_failed', postStatus = null, echoSecret = true } = {}) {
+function fakeFleet({ registeredAs = 'bitbucket', store = [], helper = 'credential_read_failed', postStatus = null, echoSecret = true, denied = [], getFails = null } = {}) {
     const state = { execArgs: [], provisionCalls: [], prs: 0 };
     let lastSecret = null;
     const respond = (status, body) => ({ content: [{ text: '' }], structuredContent: { ok: true, reason: 'ok', exitCode: 0, stdout: `${JSON.stringify(body)}\n${status}`, stderr: '', credentialSecret: echoSecret ? lastSecret : null } });
@@ -51,6 +51,12 @@ function fakeFleet({ registeredAs = 'bitbucket', store = [], helper = 'credentia
                 // Mirrors src/tools/vcs-credential-exec.ts's secret source.
                 if (!store.includes(toolArgs.secret)) {
                     return { content: [{ text: `[FAIL] The credential store has no entry named '${toolArgs.secret}'. Store it first: credential_store_set name=${toolArgs.secret} persist=true network_policy=allow` }], structuredContent: { ok: false, reason: 'secret_not_found', exitCode: null, stdout: '', stderr: '', credentialSecret: toolArgs.secret } };
+                }
+                if (denied.includes(toolArgs.secret)) {
+                    return { content: [{ text: `[FAIL] Credential '${toolArgs.secret}' has network_policy=confirm; vcs_credential_exec runs unattended and needs "allow". Run: credential_store_update name=${toolArgs.secret} network_policy=allow` }], structuredContent: { ok: false, reason: 'secret_denied', exitCode: null, stdout: '', stderr: '', credentialSecret: toolArgs.secret } };
+                }
+                if (getFails && / -X GET /.test(toolArgs.command)) {
+                    return { content: [{ text: `[FAIL] Command dispatch failed: ${getFails}` }], structuredContent: { ok: false, reason: 'dispatch_failed', exitCode: null, stdout: '', stderr: getFails, credentialSecret: echoSecret ? toolArgs.secret : null } };
                 }
             } else if (helper !== 'ok') {
                 return { content: [{ text: `[FAIL] helper (${helper})` }], structuredContent: { ok: false, reason: helper, exitCode: null, stdout: '', stderr: '', credentialSecret: null } };
@@ -110,6 +116,13 @@ describe('sprint args: bitbucket_secret_name takes a credential-store NAME only'
         ['an email:token pair', 'me@x.io:SENTINEL'],
         ['a value with spaces', 'not a name'],
         ['a 65-char string', 'x'.repeat(65)],
+        ['a 40-char lowercase hex token', 'a3f9c1e07b2d4f6a8c0e1b3d5f7a9c1e3b5d7f90'],
+        ['a 20-char lowercase alphanumeric token', 'k2j4h6g8f0d2s4a6p8o0'],
+        ['a base64 value', 'c2VjcmV0dG9rZW4='],
+        ['a JWT', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig'],
+        ['an email', 'me@example.com'],
+        ['a GitHub token', 'ghp_SENTINEL'],
+        ['a leading digit', '1bitbucket'],
     ]) {
         test(`rejects ${label} with a typed error that never echoes it`, () => {
             assert.throws(() => validateBitbucketPrCredential(value, EMAIL), (err) => {
@@ -119,6 +132,12 @@ describe('sprint args: bitbucket_secret_name takes a credential-store NAME only'
             });
         });
     }
+
+    test('ordinary secret names are accepted', () => {
+        for (const n of ['bitbucket_kumaakh', 'bitbucket_api_token', 'bitbucket-work', 'BitbucketWork', 'bb2', 'acme_bitbucket_2024']) {
+            assert.deepEqual(validateBitbucketPrCredential(n, EMAIL), { bitbucket: { secret: n, username: EMAIL } }, n);
+        }
+    });
 
     test('a secret name without an email fails loudly at arg-contract time', () => {
         assert.throws(() => validateBitbucketPrCredential('bitbucket_kumaakh', undefined), /needs bitbucket_email/);
@@ -199,6 +218,30 @@ describe('Publish PR: the named credential is what the PR call uses', () => {
         // Caught by the read-only probe: no PR is ever created under the wrong account.
         assert.equal(fleet.prs, 0);
         assert.equal(fleet.execArgs.filter((x) => / -X POST /.test(x.command)).length, 0);
+    });
+
+    test('a failing read-only probe (transient dispatch error) skips the PR: no POST, typed reason', async () => {
+        const fleet = fakeFleet({ store: ['bitbucket_kumaakh'], helper: 'ok', getFails: 'ssh: connection reset' });
+        const commands = [];
+        const { result, logs } = await publish({ fleet, member: 'bb-probe-fail', prCredentials: creds('bitbucket_kumaakh'), targetIssues: ['t-1'], commands });
+        assert.deepEqual(result, { pushed: true });
+        assert.equal(fleet.execArgs.filter((x) => / -X POST /.test(x.command)).length, 0);
+        assert.ok(logs.some((m) => m.startsWith('[Publish PR Skipped]') && /could not be confirmed by a read-only call, so no pull request was attempted/.test(m)));
+        assert.deepEqual(commands.filter((c) => c.startsWith('bd close')), []);
+    });
+
+    test('old server + transient probe failure still never POSTs', async () => {
+        const fleet = fakeFleet({ store: ['bitbucket_kumaakh'], helper: 'ok', getFails: 'timeout', echoSecret: false });
+        await publish({ fleet, member: 'bb-old-transient', prCredentials: creds('bitbucket_kumaakh') });
+        assert.equal(fleet.execArgs.filter((x) => / -X POST /.test(x.command)).length, 0);
+    });
+
+    test('a denied entry (policy) gets the credential_store_update remedy, not a re-set', async () => {
+        const fleet = fakeFleet({ store: ['bitbucket_kumaakh'], denied: ['bitbucket_kumaakh'] });
+        const { logs } = await publish({ fleet, member: 'bb-denied', prCredentials: creds('bitbucket_kumaakh') });
+        const skipped = logs.find((m) => m.startsWith('[Publish PR Skipped]'));
+        assert.match(skipped, /make it usable with: credential_store_update name=bitbucket_kumaakh network_policy=allow/);
+        assert.doesNotMatch(skipped, /credential_store_set name=bitbucket_kumaakh/);
     });
 
     test('no option: the deployed helper (label bitbucket) is read exactly as before', async () => {
