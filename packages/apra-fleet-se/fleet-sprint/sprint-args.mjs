@@ -226,7 +226,7 @@ export function validateBitbucketPrCredential(secretName, email) {
         }
     }
     if (email !== undefined
-        && (typeof email !== 'string' || email.length > 254 || !/^[^\s:'"`$@]+@[^\s:'"`$@]+$/.test(email))) {
+        && (typeof email !== 'string' || email.length > 254 || !/^[^\s:'"`@$]+@[^\s:'"`@$]+$/.test(email))) {
         throw new Error('[Arg Contract] Invalid bitbucket_email (value not shown): must be the Atlassian account email that owns the API token, e.g. name@example.com.');
     }
     if (secretName !== undefined && email === undefined) {

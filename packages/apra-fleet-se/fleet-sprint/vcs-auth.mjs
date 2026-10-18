@@ -820,7 +820,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     // missing echo as a loud failure rather than trusting the result.
     const secretUnconfirmed = (h) => (storeCred && h && h.ok && h.credentialSecret !== storeCred.secret
         ? `the fleet server did not confirm it used credential-store entry '${storeCred.secret}' for this '${provider}' call `
-            + '(it predates the vcs_credential_exec `secret` input); upgrade the fleet server -- the call may have run with a '
+            + '(it predates the vcs_credential_exec "secret" input); upgrade the fleet server -- the call may have run with a '
             + `credential deployed on member '${member}' instead`
         : null);
     const storeRemedy = () => (storeCred
@@ -1039,7 +1039,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             // skipped loudly (authFailure) and targets stay open -- unlike
             // credentialAbsent below, which is "nothing configured at all".
             if (storeCred && !('credentialSecret' in handoff)) {
-                const message = `the fleet server does not support credential-store PR credentials (vcs_credential_exec has no \`secret\` input; reason: ${handoff.reason || '(none)'}); upgrade the fleet server to use credential-store entry '${storeCred.secret}'`;
+                const message = `the fleet server does not support credential-store PR credentials (vcs_credential_exec has no 'secret' input; reason: ${handoff.reason || '(none)'}); upgrade the fleet server to use credential-store entry '${storeCred.secret}'`;
                 log(`${logPrefix}: ${message}`);
                 return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: true };
             }
