@@ -18,7 +18,7 @@ wired and queried; do not restate or improvise those rules here.
 Your dispatch prompt must supply:
 
 - `analysisArtifactFile` (required) -- relative path (under the repo) to write the sprint
-  analysis artifact to, e.g. `sprint-logs/<branch>-<startedAt>.md`.
+  analysis artifact to, e.g. `docs/sprint-analysis-<slug>.md`. Written, never committed.
 - `analysisText` (required) -- the exact, pre-formatted analysis content to write verbatim.
 - `base-branch` (required) -- for `git log`/`git diff` in Step 2.
 - `branch` (required) -- the sprint branch being harvested.
@@ -70,16 +70,14 @@ search also matches value text, so apply only entries whose KEY contains `+all+`
 
 Your task context includes an `analysisArtifactFile` path and an `analysisText` block.
 
-Write the `analysisText` verbatim to the file at `<repo>/<analysisArtifactFile>` (overwrite if it exists):
-
-```bash
-mkdir -p "<repo>/sprint-logs"
-# Write analysisText content to <repo>/<analysisArtifactFile>
-git -C "<repo>" add "<repo>/<analysisArtifactFile>"
-git -C "<repo>" -c user.name='pm' -c user.email='pm@pm.local' commit -m "chore: sprint-analysis <branch> <startedAt>"
-```
+Write the `analysisText` verbatim to the file at `<repo>/<analysisArtifactFile>` (overwrite
+if it exists; create its parent directory if missing).
 
 Do NOT reformat or modify the analysisText -- write it exactly as provided.
+
+**Do NOT `git add` or commit this file.** It is a local record that stays untracked in the
+working tree; the orchestrator keeps it out of `git status` and out of every commit. Never
+force-add it (`git add -f`), and do not stage it in any later step.
 
 ## Step 2 -- Read sprint context
 

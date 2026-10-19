@@ -28,8 +28,8 @@ test('harvester prompt Step 1 says to write analysis artifact before anything el
   const harvestLabel = src.indexOf("label: harvestLabel");
   const region = src.slice(Math.max(0, harvestLabel - 2000), harvestLabel);
 
-  // The instruction must say to write and commit the artifact before doing other things.
-  assert.match(region, /before doing anything else|commit it before/i,
+  // The instruction must say to write the artifact before doing other things.
+  assert.match(region, /before doing anything else/i,
     'harvester prompt must instruct writing the artifact before any other action');
 });
 
@@ -72,14 +72,35 @@ test('JS fallback writes summaryText from sprintSummary (not a bare analysisText
     'JS fallback must write sprintSummary.summaryText to the artifact file');
 });
 
-test('JS fallback commits the analysis artifact', () => {
+test('JS fallback writes the analysis artifact but never stages or commits it', () => {
   const fallbackIdx = src.indexOf('harvest-analysis-fallback');
-  const region = src.slice(Math.max(0, fallbackIdx - 1500), fallbackIdx);
+  const start = src.lastIndexOf('// JS fallback:', fallbackIdx);
+  assert.ok(start >= 0 && start < fallbackIdx, 'fallback block comment must precede its dispatch');
+  const region = src.slice(start, fallbackIdx);
 
-  assert.match(region, /git.*commit/,
-    'JS fallback must commit the analysis artifact');
-  assert.match(region, /sprint-analysis fallback/,
-    'JS fallback commit message must include "sprint-analysis fallback"');
+  assert.match(region, /printf/, 'JS fallback must still write the artifact');
+  assert.doesNotMatch(region, /git[^\n]*\badd\b/, 'JS fallback must not git add the analysis artifact');
+  assert.doesNotMatch(region, /git[^\n]*\bcommit\b/, 'JS fallback must not commit the analysis artifact');
+});
+
+// ---- the analysis file is git-excluded before anything writes it -----------
+
+test('analysis pattern is git-excluded before the harvester dispatch, failure stops harvest', () => {
+  const excludeIdx = src.indexOf("label: 'analysis-git-exclude'");
+  const harvestIdx = src.indexOf('label: harvestLabel');
+  assert.ok(excludeIdx >= 0, 'analysis-git-exclude dispatch must exist');
+  assert.ok(excludeIdx < harvestIdx, 'exclude must run before the harvester dispatch');
+  const region = src.slice(excludeIdx, harvestIdx);
+  assert.match(region, /if \(!gitExcludeSucceeded\(analysisExcludeRes\)\)[\s\S]*?harvest: 'failed'/,
+    'an exclude failure must stop the harvest');
+  assert.match(src, /const ANALYSIS_EXCLUDE_PATTERN = 'sprint-logs\/\*\.analysis\.md';/);
+});
+
+test('harvester prompt tells the harvester not to git add or commit the artifact', () => {
+  const harvestLabel = src.indexOf('label: harvestLabel');
+  const region = src.slice(Math.max(0, harvestLabel - 2000), harvestLabel);
+  assert.match(region, /Do NOT git add or commit it/);
+  assert.doesNotMatch(region, /and commit it before/);
 });
 
 test('JS fallback returns early with harvest:"failed" after writing artifact', () => {
