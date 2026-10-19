@@ -675,34 +675,40 @@ describe('createRoundChangedFiles (the per-round diff, not the cumulative one)',
 
 describe('vetKbWork: kb_demotions', () => {
     const REASON = 'checked the same cited test this review and it now fails';
+    const EVIDENCE = ['test/foo.test.ts'];
 
     test('kb_demotions is reviewer-only: a non-reviewer role is refused wholesale and nothing is executed', () => {
-        const result = vetKbWork('doer', { kb_demotions: [{ id: 'kb-aaa', reason: REASON }] });
+        const result = vetKbWork('doer', { kb_demotions: [{ id: 'kb-aaa', reason: REASON, evidence_files: EVIDENCE }] });
         assert.deepEqual(result.demotions, []);
         assert.ok(result.refused.some((r) => r === 'doer: kb_demotions refused -- demotion is reviewer-only'));
     });
 
     test('a demotion with a missing id is refused; the rest of the list is still processed', () => {
-        const result = vetKbWork('reviewer', { kb_demotions: [{ reason: REASON }, { id: 'kb-bbb', reason: REASON }] });
+        const result = vetKbWork('reviewer', { kb_demotions: [{ reason: REASON, evidence_files: EVIDENCE }, { id: 'kb-bbb', reason: REASON, evidence_files: EVIDENCE }] });
         assert.deepEqual(result.demotions.map((d) => d.id), ['kb-bbb']);
         assert.ok(result.refused.some((r) => r === 'reviewer: demotion missing id'));
     });
 
     test('a 19-character reason is refused; a 20-character reason is accepted', () => {
-        const short = vetKbWork('reviewer', { kb_demotions: [{ id: 'kb-aaa', reason: 'x'.repeat(19) }] });
+        const short = vetKbWork('reviewer', { kb_demotions: [{ id: 'kb-aaa', reason: 'x'.repeat(19), evidence_files: EVIDENCE }] });
         assert.deepEqual(short.demotions, []);
         assert.ok(short.refused.some((r) => r === 'reviewer: demotion kb-aaa has no recorded evidence'));
 
-        const exact = vetKbWork('reviewer', { kb_demotions: [{ id: 'kb-aaa', reason: 'x'.repeat(KB_MIN_PROMOTE_REASON) }] });
+        const exact = vetKbWork('reviewer', { kb_demotions: [{ id: 'kb-aaa', reason: 'x'.repeat(KB_MIN_PROMOTE_REASON), evidence_files: EVIDENCE }] });
         assert.deepEqual(exact.demotions.map((d) => d.id), ['kb-aaa']);
     });
 
-    test('evidence_files is carried through when present and omitted (not an empty array) when absent', () => {
-        const withEvidence = vetKbWork('reviewer', { kb_demotions: [{ id: 'kb-aaa', reason: REASON, evidence_files: ['test/foo.test.ts'] }] });
-        assert.deepEqual(withEvidence.demotions[0].evidence_files, ['test/foo.test.ts']);
+    test('evidence_files is carried through, and a demotion with none is refused', () => {
+        const withEvidence = vetKbWork('reviewer', { kb_demotions: [{ id: 'kb-aaa', reason: REASON, evidence_files: EVIDENCE }] });
+        assert.deepEqual(withEvidence.demotions[0].evidence_files, EVIDENCE);
 
-        const withoutEvidence = vetKbWork('reviewer', { kb_demotions: [{ id: 'kb-bbb', reason: REASON }] });
-        assert.ok(!('evidence_files' in withoutEvidence.demotions[0]), 'evidence_files must be omitted, not sent as []');
+        for (const evidence of [undefined, [], [''], [42]]) {
+            const item = { id: 'kb-bbb', reason: REASON };
+            if (evidence !== undefined) item.evidence_files = evidence;
+            const result = vetKbWork('reviewer', { kb_demotions: [item] });
+            assert.deepEqual(result.demotions, [], JSON.stringify(evidence));
+            assert.ok(result.refused.includes('reviewer: demotion kb-bbb names no evidence file'), JSON.stringify(result.refused));
+        }
     });
 
     test('the pre-existing two-way promote/discard refusal messages are byte-identical to the pre-kb_demotions wording', () => {
@@ -719,7 +725,7 @@ describe('vetKbWork: kb_demotions', () => {
     test('three-way collision guard: an id in kb_promotions and kb_demotions is refused in both', () => {
         const result = vetKbWork('reviewer', {
             kb_promotions: [{ id: 'kb-x', reason: REASON }],
-            kb_demotions: [{ id: 'kb-x', reason: REASON }],
+            kb_demotions: [{ id: 'kb-x', reason: REASON, evidence_files: EVIDENCE }],
         });
         assert.deepEqual(result.promotions, []);
         assert.deepEqual(result.demotions, []);
@@ -730,7 +736,7 @@ describe('vetKbWork: kb_demotions', () => {
     test('three-way collision guard: an id in kb_discards and kb_demotions is refused in both', () => {
         const result = vetKbWork('reviewer', {
             kb_discards: [{ id: 'kb-y', reason: REASON }],
-            kb_demotions: [{ id: 'kb-y', reason: REASON }],
+            kb_demotions: [{ id: 'kb-y', reason: REASON, evidence_files: EVIDENCE }],
         });
         assert.deepEqual(result.discards, []);
         assert.deepEqual(result.demotions, []);
@@ -742,7 +748,7 @@ describe('vetKbWork: kb_demotions', () => {
         const result = vetKbWork('reviewer', {
             kb_promotions: [{ id: 'kb-z', reason: REASON }],
             kb_discards: [{ id: 'kb-z', reason: REASON }],
-            kb_demotions: [{ id: 'kb-z', reason: REASON }],
+            kb_demotions: [{ id: 'kb-z', reason: REASON, evidence_files: EVIDENCE }],
         });
         assert.deepEqual(result.promotions, []);
         assert.deepEqual(result.discards, []);
@@ -755,7 +761,7 @@ describe('vetKbWork: kb_demotions', () => {
     test('an unrelated id in only one list is unaffected by the collision guard', () => {
         const result = vetKbWork('reviewer', {
             kb_promotions: [{ id: 'kb-shared', reason: REASON }, { id: 'kb-solo', reason: REASON }],
-            kb_demotions: [{ id: 'kb-shared', reason: REASON }],
+            kb_demotions: [{ id: 'kb-shared', reason: REASON, evidence_files: EVIDENCE }],
         });
         assert.deepEqual(result.promotions.map((p) => p.id), ['kb-solo']);
         assert.deepEqual(result.demotions, []);

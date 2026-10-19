@@ -201,21 +201,19 @@ directly.
    confirm is not wrong: leave it INFERRED. Never list the same id in both
    `kb_promotions` and `kb_discards` -- the orchestrator refuses both.
    `kb_discards: []` is a valid, common answer.
-6. **Demote** a CONFIRMED entry ONLY for the one case this is for: its basis (the cited
-   files/tests) is UNCHANGED, but re-checking it during THIS review shows the claim no
-   longer holds. Read the **KNOWLEDGE BANK -- demotion candidates** block in your
-   dispatch prompt (if absent, there is nothing to demote: return `kb_demotions: []`).
-   A drifted or removed basis (the cited code changed or vanished) is NOT a demote case
-   -- the freshness sweep and the bible basis predicate already handle that without
-   you. Route accordingly when an entry looks wrong: merely less certain than CONFIRMED
-   demands -> `kb_demotions` here; actually PROVEN wrong is different work entirely,
-   handled outside this role by a separate downvote/contradiction-resolution mechanism
-   you do not have and must not attempt -- leave it alone and say so in `notes` instead;
-   discarding an unconfirmed (INFERRED) capture you showed wrong is `kb_discards` above,
-   never a demotion, since demotion only ever applies to an already-CONFIRMED entry. Return
-   demotions in the `kb_demotions` field as `[{id, reason, evidence_files?}]` with the
-   same evidence bar (minimum 20 characters, stating what you re-checked this review
-   that no longer holds). Demoting nothing is a valid, common answer: `kb_demotions: []`.
+6. **Demote** a CONFIRMED entry when re-checking it during THIS review shows the claim
+   does not hold -- whether you are now less certain of it or have shown it wrong, it is
+   one judgement and one route. Read the **KNOWLEDGE BANK -- demotion candidates** block
+   in your dispatch prompt (if absent, there is nothing to demote: return
+   `kb_demotions: []`). A drifted or removed basis (the cited code changed or vanished)
+   is NOT a demote case -- the freshness sweep and the bible basis predicate already
+   handle that without you. Discarding an unconfirmed (INFERRED) capture you showed wrong
+   is `kb_discards` above, never a demotion, since demotion only ever applies to an
+   already-CONFIRMED entry. Return demotions in the `kb_demotions` field as
+   `[{id, reason, evidence_files}]`: the same reason bar (minimum 20 characters, stating
+   what you re-checked this review that the claim does not hold up against), and
+   `evidence_files` naming the files you re-checked -- at least one, each a real file in
+   the repo. A demotion without one is refused. Demoting nothing is a valid, common answer: `kb_demotions: []`.
    Never list the same id in more than one of `kb_promotions`, `kb_discards` and
    `kb_demotions` -- the orchestrator refuses it in every list it appears in.
 
@@ -303,7 +301,7 @@ placeholder):
     { "id": "kb-0051", "reason": "src/auth/session.ts:40 refreshes eagerly; the entry's lazy-refresh claim is wrong" }
   ],
   "kb_demotions": [
-    { "id": "kb-0033", "reason": "re-ran the reopen test this entry cites and it now fails" }
+    { "id": "kb-0033", "reason": "re-ran the reopen test this entry cites and it now fails", "evidence_files": ["test/reopen.test.mjs"] }
   ],
   "kb_captures": [
     {

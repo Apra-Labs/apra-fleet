@@ -429,7 +429,7 @@ describe('commitRound: demoted_ids travels with ids in one kb_bible_commit call'
             offeredDemote = demote.map((id) => ({ id, type: 'knowledge', confidence: 'CONFIRMED', source_files: ['x.js'] }));
             await client.demotionCandidates('reviewer-1');
             offeredDemote = [];
-            await client.apply('reviewer', 'reviewer-1', { kb_demotions: demote.map((id) => ({ id, reason: REASON })) });
+            await client.apply('reviewer', 'reviewer-1', { kb_demotions: demote.map((id) => ({ id, reason: REASON, evidence_files: ['src/a.ts'] })) });
         };
         return { client, events, logs, confirmAndDemote };
     }

@@ -190,10 +190,11 @@ export function vetKbWork(role, result) {
         }
     }
 
-    // kb_demotions: the reviewer's DEMOTE judgement -- a CONFIRMED entry whose
-    // basis is unchanged but a re-check shows the claim no longer holds, sent
-    // back to INFERRED for a fresh look. Same role gate and evidence bar as
-    // kb_promotions and kb_discards.
+    // kb_demotions: the reviewer's DEMOTE judgement -- a CONFIRMED entry a
+    // re-check shows does not hold (less certain, or shown wrong), sent back to
+    // INFERRED for a fresh look. Same role gate and reason bar as kb_promotions
+    // and kb_discards, plus at least one evidence file: kb_demote refuses a
+    // demotion without one, so it is refused here before any call.
     const rawDemotions = (result && Array.isArray(result.kb_demotions)) ? result.kb_demotions : [];
     if (rawDemotions.length > 0 && !KB_PROMOTER_ROLES.has(role)) {
         refused.push(`${role}: kb_demotions refused -- demotion is reviewer-only`);
@@ -207,9 +208,14 @@ export function vetKbWork(role, result) {
                 refused.push(`${role}: demotion ${d.id} has no recorded evidence`);
                 continue;
             }
-            const entry = { id: d.id, reason: d.reason.trim() };
-            if (Array.isArray(d.evidence_files)) entry.evidence_files = d.evidence_files;
-            demotions.push(entry);
+            const evidenceFiles = Array.isArray(d.evidence_files)
+                ? d.evidence_files.filter((f) => typeof f === 'string' && f.length > 0)
+                : [];
+            if (evidenceFiles.length === 0) {
+                refused.push(`${role}: demotion ${d.id} names no evidence file`);
+                continue;
+            }
+            demotions.push({ id: d.id, reason: d.reason.trim(), evidence_files: evidenceFiles });
         }
     }
 
@@ -2114,10 +2120,10 @@ export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'pri
  *
  * Demotion is CONFIRMED -> INFERRED only, and only for an id actually
  * offered here (the engine refuses any other id, same as promotion/discard).
- * The ONE case this is for: the entry's basis is UNCHANGED but a re-check
- * during this review shows the claim no longer holds. A drifted or removed
- * basis is NOT a demote case -- the freshness sweep and the bible basis
- * predicate already handle that without reviewer judgment.
+ * ONE judgement: a re-check during this review shows the claim does not hold
+ * -- the reviewer is less certain of it, or has shown it wrong. A drifted or
+ * removed basis is NOT a demote case -- the freshness sweep and the bible
+ * basis predicate already handle that without reviewer judgment.
  *
  * @param {object[]|undefined} kbCandidates
  * @returns {string[]}
@@ -2128,19 +2134,16 @@ export function kbDemotionBlock(kbCandidates) {
         'KNOWLEDGE BANK -- demotion candidates. These entries are currently CONFIRMED. You are '
         + 'the only role that can demote one back to INFERRED for a fresh look. Do NOT call any '
         + 'kb_* tool yourself: return your decisions in your structured output and the '
-        + 'orchestrator executes them -- `kb_demotions` as [{id, reason, evidence_files?}] for '
+        + 'orchestrator executes them -- `kb_demotions` as [{id, reason, evidence_files}] for '
         + 'entries to demote back to INFERRED.\n'
-        + 'Demote ONLY the one case this is for: the entry\'s basis is UNCHANGED but a re-check '
-        + 'during THIS review shows the claim no longer holds -- you checked the same files/tests '
-        + 'the entry already cites and the claim does not hold up. This is NOT the route for a '
+        + 'Demote when a re-check during THIS review shows the claim does not hold -- whether '
+        + 'you are now less certain of it or have shown it wrong, it is the same judgement and '
+        + 'the same route. `evidence_files` names the files you re-checked: at least one, each a '
+        + 'real file in the repo; a demotion without one is refused. This is NOT the route for a '
         + 'drifted or removed basis (the cited code changed or vanished) -- freshness staling and '
-        + 'the bible basis predicate already handle that case without you.\n'
-        + 'Routing when an entry looks wrong: if you are merely LESS CERTAIN than CONFIRMED '
-        + 'demands, demote it here (`kb_demotions`). If you have PROVEN it wrong, that is '
-        + 'different work entirely, handled outside this role -- leave it alone and say so in '
-        + 'your notes; you have no tool for that. Discarding an unconfirmed (INFERRED) capture '
-        + 'you showed to be wrong is `kb_discards` (Step 5), never a demotion -- demotion only '
-        + 'ever applies to an already-CONFIRMED entry.\n'
+        + 'the bible basis predicate already handle that case without you. Discarding an '
+        + 'unconfirmed (INFERRED) capture you showed to be wrong is `kb_discards` (Step 5), never '
+        + 'a demotion -- demotion only ever applies to an already-CONFIRMED entry.\n'
         + 'The `reason` must state what you checked this review that contradicts the claim '
         + '(at least 20 characters, e.g. "re-ran the reopen test cited by this entry and it now '
         + 'fails"). Demoting nothing is a valid outcome; return [] in that case. Never list the '

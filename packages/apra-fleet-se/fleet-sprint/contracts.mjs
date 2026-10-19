@@ -799,7 +799,7 @@ export const finalVerdict = {
         // test/kb-review-judgements.test.mjs.
         kb_demotions: {
             type: 'array',
-            description: 'CONFIRMED entries whose basis is UNCHANGED but a re-check shows the claim no longer holds, demoted back to INFERRED for a fresh look. Same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in every list it appears in. The engine makes the demotion calls.',
+            description: 'CONFIRMED entries a re-check during this review shows do not hold -- whether you are now less certain of the claim or have shown it wrong -- demoted back to INFERRED for a fresh look. Not for a drifted or removed basis. Same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in every list it appears in. The engine makes the demotion calls.',
             items: {
                 type: 'object',
                 properties: {
@@ -810,16 +810,17 @@ export const finalVerdict = {
                     },
                     reason: {
                         type: 'string',
-                        description: 'The evidence that the claim no longer holds despite its basis being unchanged -- what you actually checked.',
+                        description: 'What you re-checked this review that the claim does not hold up against.',
                         minLength: 20,
                     },
                     evidence_files: {
                         type: 'array',
-                        description: 'Optional files that support this demotion.',
-                        items: { type: 'string' },
+                        description: 'The repo-relative files you re-checked -- at least one, each a real file in the repo.',
+                        minItems: 1,
+                        items: { type: 'string', minLength: 1 },
                     },
                 },
-                required: ['id', 'reason'],
+                required: ['id', 'reason', 'evidence_files'],
             },
         },
     },

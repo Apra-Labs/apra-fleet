@@ -523,6 +523,7 @@ if (idFoo) {
     await recordRefusal('kb_demote', 'refusal-not-confirmed', {
       id: idDemote,
       reason: 'Attempting to demote the same entry again, after the call above already lowered it to INFERRED.',
+      evidence_files: ['src/demote-basis.ts'],
     }, 'E-DEMOTE-NOT-CONFIRMED');
 
     // --- kb_bible_commit tombstone ------------------------------------------

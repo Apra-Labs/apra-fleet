@@ -110,8 +110,8 @@ describe('apply(): kb_demotions routed to kb_demote, filtered against demotionCa
 
         const out = await client.apply('reviewer', 'reviewer-1', {
             kb_demotions: [
-                { id: 'kb-ok', reason: REASON },
-                { id: 'kb-not-offered', reason: REASON },
+                { id: 'kb-ok', reason: REASON, evidence_files: [CHANGED_FILE] },
+                { id: 'kb-not-offered', reason: REASON, evidence_files: [CHANGED_FILE] },
             ],
         });
 
@@ -134,7 +134,7 @@ describe('apply(): kb_demotions routed to kb_demote, filtered against demotionCa
         await offerPromotions(client, [entry]);
 
         const demoteAttempt = await client.apply('reviewer', 'reviewer-1', {
-            kb_demotions: [{ id: 'kb-x', reason: REASON }],
+            kb_demotions: [{ id: 'kb-x', reason: REASON, evidence_files: [CHANGED_FILE] }],
         });
         assert.equal(demoteAttempt.demoted, 0);
         assert.equal(demoteAttempt.refused, 1);
@@ -150,23 +150,23 @@ describe('apply(): kb_demotions routed to kb_demote, filtered against demotionCa
 });
 
 describe('a successful demotion reaches memberCall with tool kb_demote on the MAINTAINER session', () => {
-    test('evidence_files is carried through when present and omitted when absent', async () => {
+    test('evidence_files is carried through, and a demotion without it never reaches kb_demote', async () => {
         const { client, events } = harness();
-        await offerDemotions(client, [demotable('kb-with-evidence'), demotable('kb-no-evidence')]);
+        await offerDemotions(client, [demotable('kb-with-evidence'), demotable('kb-no-evidence'), demotable('kb-empty-evidence')]);
 
-        await client.apply('reviewer', 'reviewer-1', {
+        const out = await client.apply('reviewer', 'reviewer-1', {
             kb_demotions: [
                 { id: 'kb-with-evidence', reason: REASON, evidence_files: [CHANGED_FILE] },
                 { id: 'kb-no-evidence', reason: REASON },
+                { id: 'kb-empty-evidence', reason: REASON, evidence_files: [] },
             ],
         });
 
         const demotes = events.filter((e) => e.ev === 'kb_demote');
-        assert.equal(demotes.length, 2);
+        assert.equal(demotes.length, 1);
         assert.equal(demotes[0].member, 'maint', "routed to the maintainer session, not the reviewer's own");
         assert.deepEqual(demotes[0].args, { id: 'kb-with-evidence', reason: REASON, evidence_files: [CHANGED_FILE] });
-        assert.deepEqual(demotes[1].args, { id: 'kb-no-evidence', reason: REASON });
-        assert.ok(!('evidence_files' in demotes[1].args), 'evidence_files is omitted, never sent as undefined/empty');
+        assert.equal(out.refused, 2, 'both evidence-less demotions are vetKbWork refusals');
     });
 });
 
@@ -178,7 +178,7 @@ describe('kb_bible_commit receives demoted_ids in the SAME call as confirmed ids
 
         await client.apply('reviewer', 'reviewer-1', {
             kb_promotions: [{ id: 'kb-promo', reason: REASON }],
-            kb_demotions: [{ id: 'kb-demo', reason: REASON }],
+            kb_demotions: [{ id: 'kb-demo', reason: REASON, evidence_files: [CHANGED_FILE] }],
         });
         const out = await client.commitRound();
 
@@ -193,7 +193,7 @@ describe('kb_bible_commit receives demoted_ids in the SAME call as confirmed ids
         const { client, events } = harness();
         await offerDemotions(client, [demotable('kb-demo-only')]);
 
-        await client.apply('reviewer', 'reviewer-1', { kb_demotions: [{ id: 'kb-demo-only', reason: REASON }] });
+        await client.apply('reviewer', 'reviewer-1', { kb_demotions: [{ id: 'kb-demo-only', reason: REASON, evidence_files: [CHANGED_FILE] }] });
         const out = await client.commitRound();
 
         const commits = events.filter((e) => e.ev === 'kb_bible_commit');
@@ -213,8 +213,8 @@ describe('a failing kb_demote does not abort the other demotions or the bible co
 
         const out = await client.apply('reviewer', 'reviewer-1', {
             kb_demotions: [
-                { id: 'kb-fail', reason: REASON },
-                { id: 'kb-ok2', reason: REASON },
+                { id: 'kb-fail', reason: REASON, evidence_files: [CHANGED_FILE] },
+                { id: 'kb-ok2', reason: REASON, evidence_files: [CHANGED_FILE] },
             ],
         });
 
@@ -249,7 +249,7 @@ describe('IN-SPRINT PING-PONG: a round-1 demotion is not re-offered for promotio
 
         // Round 1: the reviewer demotes 'kb-ping'.
         await offerDemotions(client, [demotable('kb-ping')]);
-        await client.apply('reviewer', 'reviewer-1', { kb_demotions: [{ id: 'kb-ping', reason: REASON }] });
+        await client.apply('reviewer', 'reviewer-1', { kb_demotions: [{ id: 'kb-ping', reason: REASON, evidence_files: [CHANGED_FILE] }] });
         assert.ok(events.some((e) => e.ev === 'kb_demote' && e.args.id === 'kb-ping'), 'the demotion actually ran');
 
         // Round 2: promotionCandidates() reads the SAME id back, now
