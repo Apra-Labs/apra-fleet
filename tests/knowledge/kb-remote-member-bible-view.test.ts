@@ -106,9 +106,9 @@ describe.skipIf(process.platform === 'win32')('MEMBER session on a remote (non-l
   // not be visible on one transport and invisible on the other.
   it('omits an entry carrying a demotion tombstone, over the member transport', async () => {
     fs.writeFileSync(bible(), JSON.stringify({
-      version: 2,
+      version: 3,
       entries: [entry('r-keep'), entry('r-gone')],
-      demotions: [{ id: 'r-gone', demoted_at: '2026-03-03T00:00:00.000Z' }],
+      demotions: [{ id: 'r-gone', at: '2026-03-03T00:00:00.000Z', reason: 'demoted' }],
     }), 'utf-8');
 
     const out = JSON.parse(await asMember(() => kbQuery({ query: 'sprocket gearbox' })));
@@ -131,9 +131,9 @@ describe.skipIf(process.platform === 'win32')('MEMBER session on a remote (non-l
     const catsAfterFirst = execLog.filter(c => c.startsWith('cat ')).length;
 
     fs.writeFileSync(bible(), JSON.stringify({
-      version: 2,
+      version: 3,
       entries: [entry('r-keep')],
-      demotions: [{ id: 'r-gone', demoted_at: '2026-03-03T00:00:00.000Z' }],
+      demotions: [{ id: 'r-gone', at: '2026-03-03T00:00:00.000Z', reason: 'demoted' }],
     }), 'utf-8');
 
     const second = JSON.parse(await asMember(() => kbQuery({ query: 'sprocket gearbox' })));

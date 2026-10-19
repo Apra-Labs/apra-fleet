@@ -104,6 +104,7 @@ describe(
             const demoteResult = await fleetApi.kbDemote({
                 id,
                 reason: 'Re-checked the cited basis for the real client kbDemote test; it holds in fewer cases than the promotion claimed.',
+                evidence_files: ['src/demote-client-basis.ts'],
             });
             const parsed = parseToolJson(demoteResult);
             assert.deepStrictEqual(parsed, { id, previous_confidence: 'CONFIRMED', new_confidence: 'INFERRED' });
@@ -143,6 +144,7 @@ describe(
             await fleetApi.kbDemote({
                 id,
                 reason: 'Demoting before the kbBibleCommit demoted_ids forwarding assertion below.',
+                evidence_files: ['src/demote-client-bible-basis.ts'],
             });
 
             const commitResult = await fleetApi.kbBibleCommit({
