@@ -730,7 +730,7 @@
  *   written to provenance.commit.
  * @property {string[]} [demoted_ids] - Ids demoted this round (kb_demote). An id whose
  *   local row carries a demoted_at and is now below CONFIRMED is REMOVED from entries and
- *   recorded as an explicit tombstone {id, demoted_at} in the bible's optional top-level
+ *   recorded as an explicit tombstone {id, at, reason} in the bible's optional top-level
  *   demotions array; any other id is skipped with reason not_demoted_or_unknown. Existing
  *   tombstones are preserved, and re-committing a tombstoned id through ids (a
  *   re-promotion) restores its entry and clears its tombstone.
@@ -1307,7 +1307,7 @@ export class ApraFleet {
      * that can open a FULL session or write the KB directly.
      * A CONFIRMED id is admitted only if it passes the same basis rule as kb_export.
      * demoted_ids records EXPLICIT demotion tombstones: an admitted id is removed from
-     * entries and tombstoned as {id, demoted_at}; entry_count counts entries only.
+     * entries and tombstoned as {id, at, reason}; entry_count counts entries only.
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
      * @param {KbBibleCommitOptions} options

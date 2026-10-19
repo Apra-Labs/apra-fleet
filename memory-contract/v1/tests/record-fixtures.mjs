@@ -528,7 +528,7 @@ if (idFoo) {
     // --- kb_bible_commit tombstone ------------------------------------------
     // Exercises demoted_ids end to end in ONE call: idDemote is now INFERRED
     // (demoted just above) with a demoted_at, so it is admitted -- removed from
-    // entries and recorded as an {id, demoted_at} tombstone in the bible's
+    // entries and recorded as an {id, at, reason} tombstone in the bible's
     // demotions array. idFoo (still CONFIRMED at this point -- this call does
     // not touch it) was never demoted, so it is reported SKIPPED with reason
     // not_demoted_or_unknown rather than as an error. ids is empty: this round

@@ -45,7 +45,7 @@ const DEMOTE_REASON = 'the cited behaviour did not hold on the case checked this
 // kb_demote requires evidence (Rulebook P-1, 2026-10-13); README.md is the seed file every clone holds.
 const DEMOTE_EVIDENCE = ['README.md'];
 
-interface Tombstone { id: string; demoted_at: string }
+interface Tombstone { id: string; at: string; reason: string }
 interface BibleFile {
   version?: number;
   provenance?: { commit: string | null; branch: string | null; entry_count: number };
@@ -167,7 +167,7 @@ describe('bible demotion tombstones', () => {
     expect(onDisk.provenance!.entry_count).toBe(1);
   });
 
-  it('scenario 2: after kb_demote, demoted_ids removes the entry and records {id, demoted_at} from the LOCAL row', async () => {
+  it('scenario 2: after kb_demote, demoted_ids removes the entry and records {id, at, reason} from the LOCAL row', async () => {
     const id = await confirmedCiting('Alpha', 'src/alpha.ts');
     const other = await confirmedCiting('Beta', 'src/beta.ts');
     await kbBibleCommit({ ids: [id, other], ...BASE }, { folder: clone });
@@ -185,7 +185,7 @@ describe('bible demotion tombstones', () => {
 
     const onDisk = readBibleFile();
     expect(onDisk.entries.map(e => e.id)).toEqual([other]);
-    expect(onDisk.demotions).toEqual([{ id, demoted_at: localDemotedAt }]);
+    expect(onDisk.demotions).toEqual([{ id, at: localDemotedAt, reason: 'demoted' }]);
     // entry_count counts ENTRIES only -- a tombstone is not an entry.
     expect(onDisk.provenance!.entry_count).toBe(1);
     expect(r.entry_count).toBe(1);
@@ -197,7 +197,7 @@ describe('bible demotion tombstones', () => {
     await kbDemote({ id: demotedId, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: clone });
     await kbBibleCommit({ ids: [], demoted_ids: [demotedId], ...BASE }, { folder: clone });
     const tombstone = bibleTombstones();
-    expect(tombstone).toEqual([{ id: demotedId, demoted_at: rowDemotedAt(demotedId) }]);
+    expect(tombstone).toEqual([{ id: demotedId, at: rowDemotedAt(demotedId), reason: 'demoted' }]);
 
     // A completely unrelated round: new confirmations, no demoted_ids at all.
     const unrelated = await confirmedCiting('Gamma', 'src/gamma.ts');

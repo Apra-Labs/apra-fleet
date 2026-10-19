@@ -31,55 +31,89 @@ export class KbBibleError extends Error {
 }
 
 /**
- * An EXPLICIT demotion tombstone in the committed bible: this id was CONFIRMED
- * here once and trust was withdrawn at demoted_at. A demotion is NEVER inferred
- * from an entry merely being absent from the bible -- a clone legitimately holds
- * CONFIRMED rows that were never exported (local-only promotions, basis_mismatch
- * refusals), and those must never be demoted by an import.
+ * An EXPLICIT tombstone in the committed bible: this id was removed from the
+ * bible at `at`, for `reason`. Only `reason: 'demoted'` (TOMBSTONE_DEMOTED)
+ * lowers a local row on import; every reason keeps the entry out of a bible view
+ * and stops kb_export re-adding it. Readers tolerate reason strings they do not
+ * know, so new removal reasons can be added without breaking older readers.
+ *
+ * A removal is NEVER inferred from an entry merely being absent from the bible
+ * -- a clone legitimately holds CONFIRMED rows that were never exported
+ * (local-only promotions, basis_mismatch refusals), and those must never be
+ * demoted by an import.
  */
-export interface BibleDemotion {
+export interface BibleTombstone {
   id: string;
-  demoted_at: string;
+  at: string;
+  reason: string;
 }
 
+/** The tombstone reason a kb_demote produces; the only one that demotes on import. */
+export const TOMBSTONE_DEMOTED = 'demoted';
+
 /**
- * A parsed bible: its entries AND its demotion tombstones. The two readers that
- * return entries only (readBibleEntries/parseBibleText here, readBibleEntries in
+ * A parsed bible: its entries AND its tombstones. The two readers that return
+ * entries only (readBibleEntries/parseBibleText here, readBibleEntries in
  * src/tools/kb-export.ts) keep their existing signature and are implemented on
- * top of the document readers, so no existing caller changes shape and a caller
- * that needs tombstones has one to ask for. Both modules follow the same
- * sibling-reader approach.
+ * top of the document readers, so no existing caller changes shape.
  */
 export interface BibleDocument {
   entries: unknown[];
-  demotions: BibleDemotion[];
+  demotions: BibleTombstone[];
 }
 
 /**
  * The tombstones of an already-parsed bible value, in id order and deduped
- * (last wins). Tolerant by design: the field is OPTIONAL, a reader that does not
- * know it must keep working, and a malformed tombstone is dropped individually
- * rather than failing the whole bible -- exactly how a malformed ENTRY is
- * treated by importBibleEntries below. The one shared implementation of the
- * tombstone-extraction rule; kb-export.ts's reader calls it too.
+ * (last wins). Only a v3 envelope may carry them: a legacy bare array or a v2
+ * envelope yields none, whatever it holds. Tolerant otherwise: the field is
+ * OPTIONAL, and a malformed tombstone is dropped individually rather than
+ * failing the whole bible -- exactly how a malformed ENTRY is treated by
+ * importBibleEntries below. kb-export.ts's reader calls this too.
  */
-export function extractBibleDemotions(parsed: unknown): BibleDemotion[] {
+export function extractBibleDemotions(parsed: unknown): BibleTombstone[] {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
-  const raw = (parsed as { demotions?: unknown }).demotions;
-  if (!Array.isArray(raw)) return [];
-  const byId = new Map<string, BibleDemotion>();
-  for (const candidate of raw) {
+  const doc = parsed as { version?: unknown; demotions?: unknown };
+  if (doc.version !== 3 || !Array.isArray(doc.demotions)) return [];
+  const byId = new Map<string, BibleTombstone>();
+  for (const candidate of doc.demotions) {
     if (!candidate || typeof candidate !== 'object') continue;
     const r = candidate as Record<string, unknown>;
     if (typeof r.id !== 'string' || r.id.length === 0) continue;
-    if (typeof r.demoted_at !== 'string' || r.demoted_at.length === 0) continue;
-    byId.set(r.id, { id: r.id, demoted_at: r.demoted_at });
+    if (typeof r.at !== 'string' || r.at.length === 0) continue;
+    if (typeof r.reason !== 'string' || r.reason.length === 0) continue;
+    byId.set(r.id, { id: r.id, at: r.at, reason: r.reason });
   }
   return Array.from(byId.values()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
+/**
+ * How a local row stands against a tombstone for the same id. The ONE rule both
+ * directions use -- kb_import demotes only on 'withdrawn', kb_export re-adds
+ * only on 'repromoted', and 'unknown' makes neither act.
+ *
+ * `trustTime` is the time this clone's trust in the row dates from, AS A BIBLE
+ * RECORDS IT (SqliteProvider.getBibleTrustTimes): the local promotion time, else
+ * the `updated_at` the bible carried when the row was imported -- never the
+ * local import time, which says nothing about when the entry was promoted.
+ *  - null (a row imported before that time was kept) -> 'withdrawn': its trust
+ *    came from a bible, and a later bible withdrew it.
+ *  - strictly after `at` -> 'repromoted': newer evidence than the tombstone.
+ *  - at or before `at` -> 'withdrawn'.
+ *  - either time unparseable -> 'unknown'.
+ */
+export type TombstoneStanding = 'repromoted' | 'withdrawn' | 'unknown';
+
+export function standingAgainstTombstone(trustTime: string | null, at: string): TombstoneStanding {
+  const tombstoneTime = Date.parse(at);
+  if (Number.isNaN(tombstoneTime)) return 'unknown';
+  if (trustTime === null) return 'withdrawn';
+  const rowTime = Date.parse(trustTime);
+  if (Number.isNaN(rowTime)) return 'unknown';
+  return rowTime > tombstoneTime ? 'repromoted' : 'withdrawn';
+}
+
 /** The tombstoned ids of a parsed bible, as a set for membership tests. */
-export function tombstonedIds(demotions: BibleDemotion[]): Set<string> {
+export function tombstonedIds(demotions: BibleTombstone[]): Set<string> {
   return new Set(demotions.map(d => d.id));
 }
 
@@ -100,7 +134,7 @@ export function tombstonedIds(demotions: BibleDemotion[]): Set<string> {
  * Entries too malformed to carry an id are left alone; importBibleEntries
  * already tolerates and skips those.
  */
-export function excludeTombstonedEntries(entries: unknown[], demotions: BibleDemotion[]): unknown[] {
+export function excludeTombstonedEntries(entries: unknown[], demotions: BibleTombstone[]): unknown[] {
   if (demotions.length === 0) return entries;
   const dropped = tombstonedIds(demotions);
   return entries.filter(e => {
@@ -266,7 +300,7 @@ export interface BibleImportOptions {
    * legitimately holds CONFIRMED rows that were never exported, and an import
    * must leave those byte-unchanged.
    */
-  demotions?: BibleDemotion[];
+  demotions?: BibleTombstone[];
 }
 
 export async function importBibleEntries(
@@ -351,6 +385,7 @@ export async function importBibleEntries(
         preferredId: entry.id,
         verbatim: options.verbatim === true,
         carriedBasis: carriedBasisOf(entry),
+        carriedUpdatedAt: typeof entry.updated_at === 'string' && entry.updated_at.length > 0 ? entry.updated_at : undefined,
       }));
     } catch (err) {
       if (err instanceof KbCaptureRejected) {
@@ -375,13 +410,16 @@ export async function importBibleEntries(
   // introduced a row for any id named here -- those entries were filtered out
   // above -- so this loop only ever judges rows that ALREADY existed locally,
   // which is the only population a tombstone is allowed to act on. The provider
-  // holds every rule -- never create, promotion-time comparison, no ownerTag
+  // holds every rule -- never create, standingAgainstTombstone, no ownerTag
   // check -- in applyBibleDemotion; this loop only counts what it changed.
+  // Only a 'demoted' tombstone lowers a row: another removal reason keeps the
+  // entry out of the bible without saying anything about this clone's trust.
   //
   // Note what is NOT here: nothing walks the local rows looking for ids missing
   // from the bible. Only an id with an EXPLICIT tombstone is ever touched.
   for (const tombstone of options.demotions ?? []) {
-    if (provider.applyBibleDemotion(tombstone.id, tombstone.demoted_at)) demoted++;
+    if (tombstone.reason !== TOMBSTONE_DEMOTED) continue;
+    if (provider.applyBibleDemotion(tombstone.id, tombstone.at)) demoted++;
   }
 
   return { imported, skipped, linked, flagged, rejected, demoted };

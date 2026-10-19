@@ -129,6 +129,11 @@ export interface CaptureOpts {
   // re-exported until it is recaptured. Left undefined, capture()
   // computes the basis from local files as for every normal capture.
   carriedBasis?: Record<string, string> | null;
+  // kb_import / member bible view only, honoured only together with importMode:
+  // the bible entry's updated_at, i.e. when the exporting clone promoted it.
+  // Stored (bible_updated_at) on the 'add' path so a later tombstone is judged
+  // against when the entry was promoted, never against the local import time.
+  carriedUpdatedAt?: string;
   // A member session without the kb_maintainer grant (kb_capture sets it):
   // an explicit `supersedes` whose matched target is CONFIRMED does NOT retire
   // it -- the capture takes the implicit path instead (new entry linked

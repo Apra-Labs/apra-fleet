@@ -618,7 +618,7 @@ Optional `demoted_ids` records DEMOTIONS explicitly. An id is admitted only when
 its local row carries a `demoted_at` and is now below CONFIRMED (`kb_demote` ran
 on it); any other id is skipped with reason `not_demoted_or_unknown` and nothing
 changes for it. An admitted id is removed from `entries` and upserted into the
-bible's optional top-level `demotions` array as `{id, demoted_at}`, so another
+bible's optional top-level `demotions` array as `{id, at, reason}`, so another
 clone applies the demotion explicitly instead of inferring it from an absence.
 Tombstones already in the file survive a later commit carrying unrelated ids, and
 re-committing a tombstoned id through `ids` (a re-promotion) restores its entry
