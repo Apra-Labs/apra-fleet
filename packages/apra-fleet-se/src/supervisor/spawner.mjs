@@ -209,14 +209,12 @@ export async function allocateFreePort(opts = {}) {
  *   requirementsFile?: string, roleMap?: object|string, budget?: number|string,
  *   viewerPort: number, serviceUrl?: string, runId?: string, expectBeads?: string,
  *   extraArgs?: string[], skipRegression?: boolean,
- *   bitbucketSecretName?: string, bitbucketEmail?: string,
  * }} opts
  * @returns {string[]}
  */
 export function buildSprintArgv(opts = {}) {
     const { issue, members, branch, base, goal, maxCycles, allowMissingMembers,
-        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs, skipRegression,
-        bitbucketSecretName, bitbucketEmail } = opts;
+        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs, skipRegression } = opts;
 
     if (!issue || !members || !branch || !base) {
         throw new Error('buildSprintArgv requires issue, members, branch, and base');
@@ -241,9 +239,6 @@ export function buildSprintArgv(opts = {}) {
     }
     if (budget !== undefined) args.push('--budget', String(budget));
     if (skipRegression === true) args.push('--skip-regression');
-    // A credential-store secret NAME and an email -- never a credential value.
-    if (bitbucketSecretName !== undefined) args.push('--bitbucket-secret-name', bitbucketSecretName);
-    if (bitbucketEmail !== undefined) args.push('--bitbucket-email', bitbucketEmail);
     // apra-fleet-f34.1: when this supervisor instance has a known --service-url
     // (its own HTTP listen address, wired in from createSpawner()'s deps.serviceUrl
     // below), forward it so the spawned cli.mjs child threads it into

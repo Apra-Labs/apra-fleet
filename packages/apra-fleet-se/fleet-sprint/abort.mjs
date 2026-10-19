@@ -302,11 +302,10 @@ export function isTypedAbortError(err) {
  *   log?: (msg: string) => void,
  *   onAuthFailure?: (info: { member: string, label: string, cmd?: string, error: string, source: 'git'|'dolt', failureKind: string }) => Promise<void>,
  *   callTool?: (name: string, args: object) => Promise<any>,
- *   prCredentials?: Object<string, { secret: string, username: string }>,
  * }} opts
  * @returns {Promise<{ prUrl: string|null, reason: string, pushed: boolean, commitCount: number }>}
  */
-export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure, callTool, runId, prCredentials }) {
+export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure, callTool, runId }) {
     // Built up-front (not just at the PR-creation step further down) so the
     // SAME ApraFleet client can also resolve `member`'s VCS provider
     // (apra-fleet-417.7) for the runGitStep calls below -- avoids
@@ -482,7 +481,6 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         // have no git checkout of its own to read a remote from.
         remoteUrlOverride: originUrl,
         updateExisting: ({ body: oldBody }) => ({ title: prTitle, body: buildAbortBody(oldBody) }),
-        prCredentials,
     });
 
     if (!prResult.ok) {

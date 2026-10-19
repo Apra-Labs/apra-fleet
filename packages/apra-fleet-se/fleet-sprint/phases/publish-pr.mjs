@@ -316,7 +316,6 @@ export async function runPublishPrPhase({
                 // PR's title and body for THIS run's verdict, carrying the
                 // earlier runs forward from the old body's history block.
                 updateExisting: ({ body: oldBody }) => ({ title: prTitle, body: buildBody(oldBody) }),
-                prCredentials: validated.prCredentials,
             });
             if (!prResult.ok) {
                 if (prResult.credentialAbsent) {
