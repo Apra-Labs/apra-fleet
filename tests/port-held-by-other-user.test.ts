@@ -69,10 +69,28 @@ describe('apra-fleet start: configured port held', () => {
     expect(msg).toContain(PORT_HELD_BY_OTHER_USER_CODE);
     expect(msg).toContain('"fleet-other-user"');
     expect(msg).toContain('pid 4321');
-    expect(msg).toContain('install --member --port');
+    // No member-install marker: a full install's remedy, never --member.
+    expect(msg).toContain('"apra-fleet stop"');
+    expect(msg).not.toContain('--member');
     expect(probeCalls).toHaveLength(1);
     expect(vi.mocked(spawn)).not.toHaveBeenCalled();
     expect(mockSvcMgr.start).not.toHaveBeenCalled();
+  });
+
+  it('member install (marker present) -> the --member --port remedy', async () => {
+    const fs = await import('node:fs');
+    const { memberInstallMarkerPath } = await import('../src/cli/install-guard.js');
+    const marker = memberInstallMarkerPath();
+    fs.mkdirSync((await import('node:path')).dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, '{}');
+    try {
+      _setPortHolderProbeOverride(async () => OTHER);
+      await runStart([]);
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(errText()).toContain('install --member --port');
+    } finally {
+      fs.rmSync(marker, { force: true });
+    }
   });
 
   it('by this user\'s process outside this data dir -> exit 1 with the generic message plus the holder pid', async () => {

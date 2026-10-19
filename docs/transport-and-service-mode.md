@@ -18,7 +18,8 @@ apra-fleet start                 # Start HTTP server (default)
 apra-fleet start --transport http # Explicitly use HTTP
 ```
 
-When the server starts, it writes a `server.json` file to `~/.apra-fleet/` containing:
+When the server starts, it writes a `server.json` file to its data dir (`~/.apra-fleet/data/`,
+or `$APRA_FLEET_DATA_DIR`) containing:
 ```json
 {
   "pid": 12345,
@@ -60,10 +61,20 @@ installs -- so systemd/launchd do not restart a server that cannot start in a lo
 Every other launch (terminal, CI, nohup, containers, scripts) exits 1. The same
 applies to refusing because an unresponsive server holds the data dir. It does not fall back to a random port: every configured MCP
 client only knows the configured port, so a re-homed server would be unreachable.
-Free the port, or set `APRA_FLEET_PORT` to a free port and re-run `apra-fleet install`
-so the MCP clients point at it. `apra-fleet start` and `apra-fleet install` check the
-port up front and print the same message. (Only an explicit port 0 -- used
-internally and in tests -- binds an OS-assigned port.)
+Free the port. `APRA_FLEET_PORT` is read from each process's own environment and a
+full install does not record it: the OS service it registers does not receive it and
+listens on the default port, so a port set only for the install command is not a
+lasting fix (a member install records its port: `apra-fleet install --member --port
+<port>`). `apra-fleet start` and `apra-fleet install` check the port up front and
+print the same message. (Only an explicit port 0 -- used internally and in tests --
+binds an OS-assigned port.)
+
+**Two OS users on one machine.** Each user's full install wants the same default port,
+so only one of them can serve it at a time. When apra-fleet can tell that another OS
+user's process holds the port, `apra-fleet start` and the standalone installer exit 1
+with `E-PORT-HELD-BY-OTHER-USER`, naming the holder (the user and pid when visible);
+the remedy is for that user to stop (`apra-fleet stop`) or uninstall their server. When
+the holder cannot be identified, you get the generic port-in-use error above instead.
 
 **Singleton probe states.** Before starting, `start`, `run`, `status` and `stop` probe
 `server.json`:
@@ -144,14 +155,17 @@ apra-fleet status   # state, PID, port, uptime, version, and OS service status
 registers and starts the OS service automatically -- no extra step.
 `apra-fleet uninstall` stops and deregisters the service before removing files.
 Service registration failures are non-fatal: a warning is printed and the install
-continues.
+continues. The exception is a port held by another OS user's server: install exits 1
+with `E-PORT-HELD-BY-OTHER-USER` (see above).
 
 ### Windows task definition
 
 Install registers the task from a UTF-16 XML (`schtasks /create /tn ApraFleet /xml <file> /f`);
 `/sc onlogon /rl limited` is "Access is denied" for a standard user. The XML has:
 
-- a LogonTrigger scoped to the current `DOMAIN\user` (the only form a standard user may register)
+- a LogonTrigger scoped to the current `DOMAIN\user` (the only form a standard user may register; over SSH,
+  a network logon, even this can be refused for a standard user with "Access is denied", and install
+  falls back to the HKCU Run entry below)
 - a TimeTrigger repeating every 5 minutes indefinitely, which revives a server that was killed or crashed
 - `MultipleInstancesPolicy` IgnoreNew (the repeat is a no-op while the server runs)
 - `ExecutionTimeLimit` PT0S, `StartWhenAvailable`, no stop on battery, InteractiveToken + LeastPrivilege
@@ -178,6 +192,9 @@ If the XML create fails and an existing `ApraFleet` task already runs our wrappe
 Only when there is no reusable task does install fall back to a per-user
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` entry (value `ApraFleet`) that starts the
 wrapper at logon: autostart without automatic restart. Install and status say so; uninstall removes it.
+With this fallback, a server started from an SSH session (by install or `apra-fleet start`) runs
+inside that session and stops when the session ends; it comes back only at the next interactive
+logon.
 
 ### Stop, start, status
 

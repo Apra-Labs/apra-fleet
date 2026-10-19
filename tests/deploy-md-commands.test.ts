@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -9,6 +9,8 @@ import {
   parseArgs,
   main,
   DeployInstallError,
+  installArgs,
+  memberAccessKeyPath,
   // @ts-expect-error -- plain .mjs helper, no type declarations
 } from '../scripts/deploy-install.mjs';
 
@@ -77,6 +79,25 @@ describe('scripts/deploy-install.mjs', () => {
     expect(() => assertMacOS('darwin')).not.toThrow();
     await expect(main(['--launchagent'], { platform: 'win32', arch: 'x64' })).rejects.toThrow(DeployInstallError);
     await expect(main(['--launchagent'], { platform: 'linux', arch: 'x64' })).rejects.toThrow(/macOS only/);
+  });
+
+  it('adds --ignore-running-sprints only when a member access key already exists', async () => {
+    expect(installArgs(['--llm', 'agy'], true)).toEqual(['--llm', 'agy', '--ignore-running-sprints']);
+    expect(installArgs(['--llm', 'agy'], false)).toEqual(['--llm', 'agy']);
+    expect(installArgs(['--ignore-running-sprints'], true)).toEqual(['--ignore-running-sprints']);
+    expect(memberAccessKeyPath({ APRA_FLEET_DATA_DIR: '/d' }, '/h')).toBe(path.join('/d', 'member-access.key'));
+    expect(memberAccessKeyPath({}, '/h')).toBe(path.join('/h', '.apra-fleet', 'data', 'member-access.key'));
+
+    const calls: string[][] = [];
+    const run = async (_installer: string, extra: string[]) => { calls.push(extra); return { code: 0, seen: '' }; };
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(await main([], { platform: 'linux', arch: 'x64', memberKeyExists: () => true, run })).toBe(0);
+      expect(await main([], { platform: 'linux', arch: 'x64', memberKeyExists: () => false, run })).toBe(0);
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(calls).toEqual([['--ignore-running-sprints'], []]);
   });
 
   it('parses flags and passthrough args, rejects unknown ones', () => {

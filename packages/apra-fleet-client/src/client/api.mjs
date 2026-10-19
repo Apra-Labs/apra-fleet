@@ -1,4 +1,21 @@
 /**
+ * @typedef {Object} FleetSnapshotMember
+ * @property {string} id
+ * @property {string} name
+ * @property {string} icon
+ * @property {string|null} category
+ * @property {'busy'|'idle'|'offline'|'unknown'} status
+ * @property {number} [quietForS] While busy: seconds since the task last showed activity.
+ * @property {string} [reservedBy] Holder of the member reservation, when held.
+ */
+
+/**
+ * @typedef {Object} FleetSnapshot
+ * @property {string} version Server version.
+ * @property {FleetSnapshotMember[]} members
+ */
+
+/**
  * @typedef {Object} ExecutePromptOptions
  * @property {string} prompt - The prompt to send to the LLM on the remote member
  * @property {string} [agent] - Optional agent name to activate
@@ -14,7 +31,8 @@
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [model] - Model tier ("cheap", "standard", "premium") or a specific model ID
- * @property {boolean|string} [resume] - Resume the previous session if one exists. Defaults to
+ * @property {boolean|string} [resume] - Resume the previous session if one exists (`true` starts
+ *   fresh instead when the stored session was recorded by a different server build). Defaults to
  *   true at this client/transport layer when the field is omitted entirely. NOTE: the
  *   FleetWorkflow.agent() workflow layer (packages/apra-fleet-workflow/src/workflow/index.mjs)
  *   always sends this field explicitly, defaulting it to `false` for workflow-authored
@@ -324,7 +342,7 @@
  * @typedef {Object} UpdateMemberOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
- * @property {"auto" | "skip" | "replace-full"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed; a full install without the member-install marker is never touched. "replace-full": "auto" plus an explicit opt-in to replace such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register). "skip": never install. Omit: install only on a provider change. A requested install/upgrade that cannot happen never fails the update: the result adds a WARNING (consequence, exact reason, OS-correct manual install steps; also fleetMcp.manualInstall). Unknown input keys are rejected by the server.
+ * @property {"auto" | "skip" | "replace-full"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member's permission allow-list through compose_permissions grant mode, keeping its role and grants (a NOTICE says so; a failure is a WARNING); a full install without the member-install marker is never touched. "replace-full": "auto" plus an explicit opt-in to replace such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register). "skip": never install. Omit: install only on a provider change. A requested install/upgrade that cannot happen never fails the update: the result adds a WARNING (consequence, exact reason, OS-correct manual install steps; also fleetMcp.manualInstall). Unknown input keys are rejected by the server.
  * @property {string} [friendly_name] - New friendly name
  * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {string} [host] - New host
@@ -501,6 +519,16 @@
  *   with the value escaped for the interior of a single-quoted string, with no quotes of its
  *   own, for interpolating the token into a larger already-quoted value (e.g. an Authorization
  *   header) where a bare, self-quoting substitution cannot compose.
+ *   For a provider that authenticates with basic auth (user:token, e.g. Bitbucket) two further
+ *   OPTIONAL placeholders substitute the credential helper's username under exactly the same two
+ *   dialects: {{vcs_username}}, referenced BARE -- already escaped AND quoted for that member's
+ *   shell; and {{vcs_username_inline}}, referenced INSIDE your own single quotes (e.g.
+ *   -u '{{vcs_username_inline}}:{{vcs_token_inline}}') -- escaped for the interior of a
+ *   single-quoted string, with no quotes of its own. A username placeholder may not appear on
+ *   its own: a token placeholder is still required, or the call is refused with
+ *   reason "placeholder_missing". If the command references a username placeholder and the
+ *   helper prints no username= line, the call fails with reason "username_empty" and dispatches
+ *   nothing.
  * @property {string} [label] - Credential label provision_vcs_auth deployed the helper under
  *   (it defaults to the provider name there, e.g. "github" or "azure-devops"). Omit for the
  *   unlabelled helper.
@@ -514,13 +542,15 @@
  * @property {boolean} ok - True when the credential-requiring command was dispatched. Read
  *   exitCode for the command's own outcome.
  * @property {"ok" | "member_not_found" | "placeholder_missing" | "unsupported_member_os" |
- *   "credential_read_failed" | "credential_empty" | "dispatch_failed"} reason - Machine-readable
+ *   "credential_read_failed" | "credential_empty" | "username_empty" |
+ *   "dispatch_failed"} reason - Machine-readable
  *   outcome code. Branch on this, never on the text.
  * @property {number|null} exitCode - Exit code of the dispatched command, null if it never ran.
  * @property {string} stdout - Command stdout, with every occurrence of the credential redacted.
  * @property {string} stderr - Command stderr, with every occurrence of the credential redacted.
- * @property {number} tokenRedactions - How many times the credential had to be redacted out of
- *   stdout+stderr. Normally 0; nonzero means the command echoed its own credential back.
+ * @property {number} tokenRedactions - How many times credential material had to be redacted out
+ *   of stdout+stderr -- the token, plus the basic-auth username when the command substituted one.
+ *   Normally 0; nonzero means the command echoed its own credential back.
  * @property {string|null} credentialLabel - Credential label used, or null for the unlabelled helper.
  * @property {string|null} memberId - Registry id of the resolved member, or null.
  * @property {string|null} memberName - Friendly name of the resolved member, or null.
@@ -1061,6 +1091,16 @@ export class ApraFleet {
     }
 
     /**
+     * Cheap read-only fleet view for status displays (the Claude Code
+     * fleet-status mod polls it). The result text is the JSON of a
+     * {@link FleetSnapshot}: every member's last-known status from local
+     * state only -- no SSH probes, no writes. Use fleetStatus for a live check.
+     */
+    async fleetSnapshot() {
+        return this.mcpClient.callTool('fleet_snapshot', {});
+    }
+
+    /**
      * Get detailed status for one member: connectivity, session, work folder, provider, registered shell (Windows).
      * @param {{ member_id?: string, member_name?: string, format?: 'compact'|'json', refresh?: boolean }} options
      * @returns {Promise<string|MemberDetailResult>} A compact text summary when format is
@@ -1191,6 +1231,12 @@ export class ApraFleet {
      * escaped for that interior with no quotes of its own) -- dispatches the
      * command, and redacts the value from the returned stdout/stderr. The
      * plaintext appears in no field of the result.
+     *
+     * For basic-auth providers (user:token, e.g. Bitbucket) the optional
+     * {{vcs_username}} / {{vcs_username_inline}} pair substitutes the
+     * credential helper's username under the same two dialects, and is
+     * redacted on the same footing as the token. A username placeholder
+     * never stands alone -- the command must still carry a token one.
      *
      * @param {VcsCredentialExecOptions} options
      * @returns {Promise<{ content: Array<{type: string, text: string}>,

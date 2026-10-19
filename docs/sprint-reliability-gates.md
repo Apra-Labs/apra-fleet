@@ -20,6 +20,8 @@ invariant a future contributor must preserve.
 ## Preflight
 
 - A member that reads beads has beads set up before dispatch, or preflight fails.
+- A member without `bd` (not installed or not on PATH) fails preflight before any
+  dispatch, naming the member and the fix; it is never retried or "healed".
 - A dispatch member's missing permission config is re-composed before dispatch.
 - The VCS preflight states its outcome; the "no callTool" skip log applies only to
   the VCS credential fallback. The backlog beads sync refreshes credentials.

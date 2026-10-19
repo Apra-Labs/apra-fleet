@@ -22,6 +22,11 @@ export interface Agent {
   keyPath?: string;
   workFolder: string;
   sessionId?: string;
+  /** Server build (serverVersion) that recorded sessionId. A default resume
+   *  (resume=true) of a session recorded under another build -- or with no
+   *  stamp, i.e. before this field existed -- starts fresh instead: the old
+   *  session's transcript lists tools/MCP config that build no longer serves. */
+  sessionServerVersion?: string;
   os?: 'windows' | 'macos' | 'linux';
   /** Windows shell this member's OS commands should target. Only meaningful
    *  when os is 'windows' -- non-windows members leave this unset. Set by

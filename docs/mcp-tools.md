@@ -36,7 +36,7 @@ this pair as "member identifier" rather than repeating it.
 **Authentication and git:** `provision_llm_auth`, `setup_ssh_key`, `setup_git_app`,
 `provision_vcs_auth`, `revoke_vcs_auth`, `vcs_credential_exec`.
 
-**Status and maintenance:** `fleet_status`, `member_detail`, `session_stats`,
+**Status and maintenance:** `fleet_status`, `fleet_snapshot`, `member_detail`, `session_stats`,
 `update_llm_cli`, `shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
 
 **Credential store:** `credential_store_set`, `credential_store_list`,
@@ -166,7 +166,7 @@ Modifies an existing member's registration. All fields except `member_id` are op
 | `shell` | `"gitbash"` \| `"pwsh7"` \| `"powershell5"` | no | Override the probed Windows shell |
 | `unreservable` | boolean | no | Make the member shareable across sprints |
 | `cloud_region` / `cloud_profile` / `cloud_idle_timeout_min` / `cloud_activity_command` | - | no | Cloud settings; pass an empty string to clear `cloud_activity_command` |
-| `fleet_install` | `"auto"` \| `"skip"` \| `"replace-full"` | no | `"auto"`: for a remote member, installs or upgrades its own apra-fleet when missing or older (build-aware) even when nothing else changed, then self-registers and verifies; a local member gets only the MEMBER-session probe; the result carries the `fleetMcp` line. `"skip"`: never installs (a refresh triggered by another change runs with install off). Omitted: install only on a provider change. A member whose apra-fleet lacks the member-install marker is not touched and records `full-install-running` (see docs/member-fleet-mcp-wiring.md). `"replace-full"`: everything `"auto"` does, plus an explicit opt-in to REPLACE such an unmarked (full) install with a member install. Allowed only when the marker probe answers cleanly "absent" on a working install; a marker probe failure refuses with no destructive command (`probe-failed`). The installer is fetched and staged first; then, each command built per member OS/shell: (1) copy `<home>/.apra-fleet/data` and `<home>/.apra-fleet/fleet.key` into `<home>/.apra-fleet-replace-backup-<UTC stamp>`; (2) `<home>/.apra-fleet/bin/apra-fleet uninstall --force --yes` with the installed binary; (3) linux: stop and disable the `fleet-supervisor` user unit if its unit file exists, move the file into the backup, `daemon-reload`; (4) move `data` aside to `<home>/.apra-fleet/data.replaced-<stamp>`; (5) run the staged current installer `install --member --llm <provider> --force`; then self-register and write the per-folder MCP entry as `"auto"` does. The `fleetMcp` line and `fleetMcp.replacedFullInstall` report what was removed, the backup path and the new version. A failure records `replace-failed` naming the failed step and, from step 2 on, the rollback commands. A marked install is upgraded as with `"auto"` (no replace). `register_member` accepts the same value |
+| `fleet_install` | `"auto"` \| `"skip"` \| `"replace-full"` | no | `"auto"`: for a remote member, installs or upgrades its own apra-fleet when missing or older (build-aware) even when nothing else changed, then self-registers and verifies; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member's permission allow-list through `compose_permissions` grant mode, keeping its role and grants (a `NOTICE` says so; a failure is a `WARNING`); a local member gets only the MEMBER-session probe; the result carries the `fleetMcp` line. `"skip"`: never installs (a refresh triggered by another change runs with install off). Omitted: install only on a provider change. A member whose apra-fleet lacks the member-install marker is not touched and records `full-install-running` (see docs/member-fleet-mcp-wiring.md). `"replace-full"`: everything `"auto"` does, plus an explicit opt-in to REPLACE such an unmarked (full) install with a member install. Allowed only when the marker probe answers cleanly "absent" on a working install; a marker probe failure refuses with no destructive command (`probe-failed`). The installer is fetched and staged first; then, each command built per member OS/shell: (1) copy `<home>/.apra-fleet/data` and `<home>/.apra-fleet/fleet.key` into `<home>/.apra-fleet-replace-backup-<UTC stamp>`; (2) `<home>/.apra-fleet/bin/apra-fleet uninstall --force --yes` with the installed binary; (3) linux: stop and disable the `fleet-supervisor` user unit if its unit file exists, move the file into the backup, `daemon-reload`; (4) move `data` aside to `<home>/.apra-fleet/data.replaced-<stamp>`; (5) run the staged current installer `install --member --llm <provider> --force`; then self-register and write the per-folder MCP entry as `"auto"` does. The `fleetMcp` line and `fleetMcp.replacedFullInstall` report what was removed, the backup path and the new version. A failure records `replace-failed` naming the failed step and, from step 2 on, the rollback commands. A marked install is upgraded as with `"auto"` (no replace). `register_member` accepts the same value |
 
 **What it does:**
 
@@ -278,7 +278,7 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 | member identifier | string | yes | `member_id` or `member_name` |
 | `prompt` | string | yes | The prompt text to send to the LLM agent |
 | `session_id` | string | no | Shorthand for explicit session resume; equivalent to `resume: "<session_id>"` and takes precedence over `resume` |
-| `resume` | boolean \| string | no | Default: `true`. `true` continues the member's most recently stored session if one exists. A string value is an explicit session id to resume instead -- used when a caller must target one specific prior session rather than "whatever the member last used" (e.g. a retry that must reattach to the exact session that produced a prior failed attempt). An explicit-id resume that the provider reports as not found is terminal for that dispatch, not silently retried as a fresh session -- callers needing a fallback must re-dispatch with `resume: false` themselves. |
+| `resume` | boolean \| string | no | Default: `true`. `true` continues the member's most recently stored session if one exists; a stored session recorded by a different server build (for example before an upgrade) is not resumed -- a fresh session starts and a warning is logged. A string value is an explicit session id to resume instead -- used when a caller must target one specific prior session rather than "whatever the member last used" (e.g. a retry that must reattach to the exact session that produced a prior failed attempt). An explicit-id resume that the provider reports as not found is terminal for that dispatch, not silently retried as a fresh session -- callers needing a fallback must re-dispatch with `resume: false` themselves. |
 | `fork` | boolean \| string | no | Default: unset. Branches a NEW session from an existing one instead of continuing it in place -- mirrors `resume`'s shape, but the source session is left untouched and the dispatch gets a distinct new session id seeded from the source's context. `true` forks the member's stored last session (best-effort: a stale/unknown stored session logs a warning and falls back to a plain fresh session, never a hard error). A string value forks exactly that source session id (explicit: an unknown/expired source is a TERMINAL `session_not_found`, no LLM call, no fresh-session fallback). Mutually exclusive with `resume` (any non-default value) and with `session_id` -- specifying `fork` together with either is rejected as a validation error before member resolution or any LLM call. Requires a fork-capable provider; a `fork` request against a provider that does not support fork-mode dispatch is rejected with `reason: "fork_unsupported"` and no LLM call, never silently downgraded to a plain resume/fresh dispatch. |
 | `timeout_s` | number | no | Default: 300 (5 min). **Inactivity timeout** -- resets on every output chunk; kills the session only when silent for this many seconds |
 | `max_total_s` | number | no | Default: none. **Hard ceiling** -- kills the session after this total elapsed time in seconds regardless of activity |
@@ -465,6 +465,24 @@ Updates -- or, on request, installs -- the LLM provider CLI on a member.
 ## 4. Observability Tools
 
 Two-layer monitoring -- a fleet-wide summary and a per-member deep dive.
+
+### `fleet_snapshot`
+
+A cheap, read-only fleet view for status displays -- the Claude Code
+fleet-status mod polls it. Takes no arguments and returns JSON:
+
+```json
+{ "version": "0.5.0",
+  "members": [ { "id": "...", "name": "alice", "icon": "...", "category": "build",
+                 "status": "busy", "quietForS": 134, "reservedBy": "run-1" } ] }
+```
+
+`status` is the last-known state (`busy`, `idle`, `offline`, `unknown`) that
+`execute_prompt`, the stall detector and `fleet_status` persist; `quietForS`
+(busy only) is seconds since the task last showed activity. It reads local
+state only -- no SSH probes and no writes -- so it is safe to poll. Use
+`fleet_status` when you need a live check. FULL sessions only; member
+sessions are not served it.
 
 ### `fleet_status`
 

@@ -769,18 +769,33 @@ async function syncMemberMcpConfig(
   // role's `git add -A`). Listed before the sync so the recoverable
   // member-config error path below excludes it too.
   if (agent.agentType !== 'local' && provider.mcpConfigFlag) workFolderFiles.push(REMOTE_SESSION_MCP_FILE);
+  let noMemberInstall = false;
   try {
     // A local claude member gets the member config per dispatch session
     // (--mcp-config), so no folder entry is written for it: the sync runs in
     // remove mode instead, pruning legacy entries and a folder entry an older
     // compose wrote for THIS member (so the human's own sessions in that
     // clone get their user-scope server back), and nothing else.
-    const perFolder = perFolderMcpEntryNeeded(agent);
+    let perFolder = perFolderMcpEntryNeeded(agent);
     if (provider.syncMemberMcpEntry) {
       // The member MCP wiring touches home-anchored files too (~/.claude.json,
       // agy/opencode global MCP configs), so resolve the home here when the
       // permission paths did not already need it.
       const homeDir = memberHomeDir ?? await getMemberHomeDir(agent);
+      // A remote member with no apra-fleet MEMBER install (fleet_install
+      // "skip", a full install, or none at all) has no server that would
+      // accept ?member=<uuid>: write no entry there, and remove one an earlier
+      // compose wrote for this member (any other apra-fleet entry, e.g. the
+      // owner's full install, is left alone). The marker probe is built for
+      // the member's own OS/shell. A failed probe keeps the previous behaviour.
+      if (perFolder && agent.agentType !== 'local' && homeDir) {
+        const { probeMemberInstallMarker } = await import('../services/member-fleet-install.js');
+        const marker = await probeMemberInstallMarker(agent, homeDir, { exec: (_a, cmd, t) => exec(cmd, t) });
+        if (marker.kind === 'absent') {
+          perFolder = false;
+          noMemberInstall = true;
+        }
+      }
       const result = await provider.syncMemberMcpEntry({
         agent,
         execCommand: exec,
@@ -815,6 +830,12 @@ async function syncMemberMcpConfig(
       };
     }
     return { failure: `[FAIL] Failed to write the apra-fleet member MCP entry on "${agent.friendlyName}" (${provider.name}): ${e?.message ?? String(e)}` };
+  }
+  if (noMemberInstall) {
+    // register_member/update_member run compose BEFORE their fleet_install
+    // step and do not show this note; their install step writes the entry once
+    // the member install exists. So this only states the current state.
+    return { note: 'Member MCP entry not written yet: the member has no apra-fleet member install now; the fleet_install "auto" step of register_member/update_member installs one and then writes the entry. Any entry an earlier compose wrote for this member was removed.' };
   }
   // Read the CURRENT record (the caller's agent object may predate it).
   const recorded = getAgent(agent.id)?.fleetMcp;
@@ -977,6 +998,39 @@ function memberMcpFailureResult(failure: string, projectFolder: string | undefin
   return `${failure}\n  The permission config files were written${projectFolder ? ' and recorded in the ledger' : ''}; the apra-fleet member MCP entry was NOT written.`;
 }
 
+/** Reads a claude member's <workFolder>/.claude/settings.local.json -- the
+ *  file the grant path merges into. Missing or non-JSON content reads as an
+ *  empty allow list. */
+async function readClaudeSettingsLocal(agent: Agent, strategy: ReturnType<typeof getStrategy>, agentShell: MemberShell | undefined): Promise<any> {
+  const isWindowsAgent = (agent.os ?? 'linux') === 'windows';
+  const absSettingsPath = resolveRemotePath(agent.workFolder, '.claude/settings.local.json', isWindowsAgent, agentShell);
+  // Branched on the member's SHELL, not just its OS: a gitbash Windows
+  // member cannot run Get-Content (apra-fleet-7dir.1.3).
+  const readResult = isPosixShell(isWindowsAgent, agentShell)
+    ? await strategy.execCommand(`cat ${quotePosixPath(absSettingsPath)} 2>/dev/null || echo "{}"`, LOCAL_FS_OP_TIMEOUT_MS)
+    : await strategy.execCommand(`Get-Content -Raw ${quotePwshPath(absSettingsPath.replace(/\//g, '\\'))} -ErrorAction SilentlyContinue`, LOCAL_FS_OP_TIMEOUT_MS);
+  try {
+    return JSON.parse(readResult.stdout.trim());
+  } catch {
+    return { permissions: { allow: [] } };
+  }
+}
+
+/** The given rules a claude member's settings.local.json allow list does not
+ *  hold yet. Any read failure returns every rule (the caller then grants,
+ *  which is additive); never throws. Lets a caller skip a grant that would
+ *  only rewrite the file -- a grant also resets the deny list to the
+ *  composed one. */
+export async function missingClaudeAllowRules(agent: Agent, rules: string[]): Promise<string[]> {
+  try {
+    const current = await readClaudeSettingsLocal(agent, getStrategy(agent), getAgentShell(agent));
+    const allow = new Set<string>(Array.isArray(current?.permissions?.allow) ? current.permissions.allow : []);
+    return rules.filter(r => !allow.has(r));
+  } catch {
+    return [...rules];
+  }
+}
+
 export async function composePermissions(input: ComposePermissionsInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
@@ -1061,19 +1115,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       // wholesale (see deepMerge doc comment), so an `allow` computed from the
       // wrong file here would silently discard every pre-existing grant in the
       // real settings.local.json once the write lands at the correct path.
-      const isWindowsAgent = (agent.os ?? 'linux') === 'windows';
-      const absSettingsPath = resolveRemotePath(agent.workFolder, '.claude/settings.local.json', isWindowsAgent, agentShell);
-      // Branched on the member's SHELL, not just its OS: a gitbash Windows
-      // member cannot run Get-Content (apra-fleet-7dir.1.3).
-      const readResult = isPosixShell(isWindowsAgent, agentShell)
-        ? await strategy.execCommand(`cat ${quotePosixPath(absSettingsPath)} 2>/dev/null || echo "{}"`, LOCAL_FS_OP_TIMEOUT_MS)
-        : await strategy.execCommand(`Get-Content -Raw ${quotePwshPath(absSettingsPath.replace(/\//g, '\\'))} -ErrorAction SilentlyContinue`, LOCAL_FS_OP_TIMEOUT_MS);
-      let current: any;
-      try {
-        current = JSON.parse(readResult.stdout.trim());
-      } catch {
-        current = { permissions: { allow: [] } };
-      }
+      const current = await readClaudeSettingsLocal(agent, strategy, agentShell);
       const existingAllow = new Set<string>(current?.permissions?.allow ?? []);
       for (const p of expanded) existingAllow.add(p);
       allow = [...existingAllow];
