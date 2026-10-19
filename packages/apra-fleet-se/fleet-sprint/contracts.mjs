@@ -787,6 +787,42 @@ export const finalVerdict = {
                 required: ['id', 'reason'],
             },
         },
+        // The Final Review's DEMOTE judgement, mirroring reviewer-output.json's
+        // kb_demotions: same {id, reason, evidence_files?} shape as kb_discards,
+        // executed by the same kbWork.apply path. Optional: demoting nothing is
+        // the common answer. CONFIRMED to INFERRED only, and only for ids
+        // actually offered to this review round -- the basis-unchanged case,
+        // not drifted-or-removed basis (freshness staling already handles
+        // that). The reason minLength is the engine's evidence bar (kb.mjs
+        // KB_MIN_PROMOTE_REASON, enforced in vetKbWork); kept as a literal so
+        // this schema module stays dependency-free, pinned equal by
+        // test/kb-review-judgements.test.mjs.
+        kb_demotions: {
+            type: 'array',
+            description: 'CONFIRMED entries a re-check during this review shows do not hold -- whether you are now less certain of the claim or have shown it wrong -- demoted back to INFERRED for a fresh look. Not for a drifted or removed basis. Same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in every list it appears in. The engine makes the demotion calls.',
+            items: {
+                type: 'object',
+                properties: {
+                    id: {
+                        type: 'string',
+                        description: "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. Never invent one.",
+                        minLength: 1,
+                    },
+                    reason: {
+                        type: 'string',
+                        description: 'What you re-checked this review that the claim does not hold up against.',
+                        minLength: 20,
+                    },
+                    evidence_files: {
+                        type: 'array',
+                        description: 'The repo-relative files you re-checked -- at least one, each a real file in the repo.',
+                        minItems: 1,
+                        items: { type: 'string', minLength: 1 },
+                    },
+                },
+                required: ['id', 'reason', 'evidence_files'],
+            },
+        },
     },
     required: ['verdict', 'notes'],
 };

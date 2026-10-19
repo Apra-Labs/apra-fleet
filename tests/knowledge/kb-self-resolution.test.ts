@@ -227,7 +227,7 @@ describe('kb (self): a FULL session resolves the server working folder', () => {
 describe('kb (self): the removed scope keys are refused, never silently stripped', () => {
   it('every kb_* tool listed over HTTP carries repo, repo_path, repo_remote_url only as REMOVED markers', async () => {
     const tools = (await (await connect()).listTools()).tools.filter(t => t.name.startsWith('kb_'));
-    expect(tools.length).toBe(17);
+    expect(tools.length).toBe(18);
     const offenders = tools.flatMap(t => SCOPE_FIELDS
       .filter(f => !/^REMOVED -- /.test(((t.inputSchema as { properties?: Record<string, { description?: string }> }).properties ?? {})[f]?.description ?? ''))
       .map(f => `${t.name}.${f}`));

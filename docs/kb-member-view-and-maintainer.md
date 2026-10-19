@@ -29,6 +29,64 @@ own tag, so a member cannot promote or discard another member's entries.
 `kb_feedback` is rejected in a member session with
 `E-MEMBER-VIEW-READ-ONLY`, since the view is a read-only projection.
 
+### `own_scope`: the opt-in escape hatch from the bible view
+
+A plain CONFIRMED read in a MEMBER session is answered from the checkout
+bible view above, and every row of that view is stamped `tags: []` on import
+-- so a read filtered by `tag: member:<uuid>` can never match anything there,
+no matter how it is phrased. `own_scope: true` on `kb_query` is the fix: it
+routes the read to the PER-REPO DATABASE instead of the bible view, with the
+caller's own `ownerTag` applied server-side, which is the only row set
+`kb_demote`'s ownership check can act on. This is why a demotion-candidate
+read (below) must pass `own_scope: true` explicitly -- without it, the read
+is silently answered from a view that can never contain a demotable row.
+`own_scope` only changes which store answers a CONFIRMED read in a MEMBER
+session; it does not add a new write capability.
+
+## Reviewer demotions (the fleet-sprint engine's write-back for `kb_demote`)
+
+The engine, not the reviewer, holds the authority to call `kb_demote` and to
+commit the resulting tombstone -- the reviewer only names which offered id to
+demote and why, exactly like `kb_promotions`/`kb_discards`.
+
+1. **Offer.** Before a review dispatch, `demotionCandidates(member, {scope})`
+   reads the maintainer's own CONFIRMED rows tagged to that maintainer
+   (`own_scope: true`, `confidence: ['CONFIRMED']`, `include_stale: true`,
+   `exclude_disputed: false` -- a stale or contradiction-flagged row is
+   explicitly demotable, not excluded), reading wide (up to 500 rows) BEFORE
+   filtering eligibility (not superseded, not a user-directive) and relevance
+   (the entry's `source_files` overlap this review scope's changed files),
+   and only THEN caps the survivors to the prompt-sized offer limit. Filtering
+   after capping would let an arbitrary slice of a maintainer's rows crowd out
+   the ones actually relevant to this round. The offered id set is recorded
+   per repository and reset at the start of every call, so a failed read
+   never leaves a stale offer and the FINAL (sprint-scope) review never
+   inherits a round's leftover offer.
+2. **Judge.** The reviewer returns `kb_demotions: [{id, reason,
+   evidence_files?}]`, structurally identical to `kb_promotions`/`kb_discards`.
+   An id is accepted only if it was in THIS dispatch's own offered set --
+   checked against the demotion offer specifically, never against the
+   promotion offer, since being offered for one is not being offered for the
+   other. An id named in more than one of `kb_promotions`, `kb_discards` and
+   `kb_demotions` is refused in every list it appears in.
+3. **Apply and publish atomically.** Accepted demotions are applied via
+   `kb_demote` on the maintainer (a member-scoped `memberCall`, never a
+   direct DB write), and the resulting ids are passed as `kb_bible_commit`'s
+   `demoted_ids` in the SAME pull/commit/push cycle as that round's
+   `kb_promotions` ids -- never a separate write-back pass. A push failure
+   resets and retries with the same `ids` and `demoted_ids` together, exactly
+   like a promotion-only round (see "Round bible commit" above).
+4. **In-sprint ping-pong guard.** A row demoted earlier in the same sprint is
+   excluded from being re-offered unless its cited basis has visibly changed
+   since the demotion: the guard compares `demoted_basis_hashes` (the
+   on-disk hash of every cited file AT DEMOTE TIME) against a fresh re-hash,
+   and only lets the entry back onto the offer list if at least one cited
+   file's hash differs. An entry with no recorded basis, a re-hash that could
+   not be computed, or a cited file that vanished from disk is NEVER treated
+   as "unchanged" by this guard -- it stays offered rather than being
+   silently ping-ponged out forever on a basis the guard cannot actually
+   verify.
+
 ## One kb_maintainer per repository (writes)
 
 Every sprint KB write for a repository is routed to a single member, the

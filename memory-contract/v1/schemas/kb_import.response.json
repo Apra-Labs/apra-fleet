@@ -72,6 +72,9 @@
             "rejected": {
               "type": "number"
             },
+            "demoted": {
+              "type": "number"
+            },
             "sweep": {
               "type": "object",
               "properties": {
