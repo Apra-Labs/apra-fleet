@@ -23,6 +23,7 @@ import {
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
 import { validateFilePaths } from './path-validation.js';
+import { standingAgainstTombstone } from './bible-import.js';
 import { KbCaptureRejected, type DiscardResult, type RetireOptions } from './types.js';
 import type {
   MemoryProvider,
@@ -105,22 +106,6 @@ function buildDemotionNote(normalizedReason: string, evidence: string[], author:
  * bible rather than a local kb_demote. Must clear MIN_DEMOTE_REASON_LENGTH.
  */
 export const BIBLE_DEMOTION_REASON = 'demoted in the project bible';
-
-/**
- * Is `a` strictly earlier than `b`? Both are expected to be ISO-8601 strings
- * (every timestamp this store writes comes from Date.toISOString()). Parsed
- * numerically rather than compared as strings so a hand-written bible carrying
- * a non-UTC offset still orders correctly; when either side is unparseable the
- * answer is false, i.e. "do not act" -- a tombstone whose time cannot be read
- * must never demote anything.
- */
-function isStrictlyBefore(a: string | undefined, b: string | undefined): boolean {
-  if (!a || !b) return false;
-  const ta = Date.parse(a);
-  const tb = Date.parse(b);
-  if (Number.isNaN(ta) || Number.isNaN(tb)) return false;
-  return ta < tb;
-}
 
 class NotImplementedError extends Error {
   constructor(method: string) {
@@ -321,6 +306,15 @@ export class SqliteProvider implements MemoryProvider {
     } catch {}
     try {
       this.db.exec("ALTER TABLE entries ADD COLUMN demoted_basis_hashes TEXT NOT NULL DEFAULT '{}'");
+    } catch {}
+
+    // The updated_at a bible carried for an entry this clone imported (capture
+    // opts.carriedUpdatedAt): when the exporting clone promoted it. Tombstones
+    // are judged against it (getBibleTrustTimes), never against the local
+    // import time. Internal only: never surfaced on KBEntry. NULL on every row
+    // that was not imported, and on rows imported before the column existed.
+    try {
+      this.db.exec('ALTER TABLE entries ADD COLUMN bible_updated_at TEXT');
     } catch {}
 
     // kb_import trust anchor: git blob ids of bibles the maintainer side wrote
@@ -662,6 +656,42 @@ export class SqliteProvider implements MemoryProvider {
       for (const row of rows) out.set(row.id, row.local_basis_only ? null : this.parseBasis(row.source_file_hashes));
     }
     return out;
+  }
+
+  /**
+   * The bible trust time of each given id that exists: when this clone's trust
+   * in the row dates from, as a bible records it. promoted_at when the row was
+   * promoted here; else the updated_at the bible carried when the row was
+   * imported (bible_updated_at); else null for an imported row from before that
+   * column existed -- its trust came from a bible, and the local import time
+   * says nothing about when it was promoted. Any other row falls back to
+   * created_at. An unknown id is absent from the map. Fed to
+   * standingAgainstTombstone (bible-import.ts) by kb_export, and used for the
+   * updated_at a bible writer records, so every clone compares the same value.
+   * Internal to this provider, not an MCP surface.
+   */
+  getBibleTrustTimes(ids: string[]): Map<string, string | null> {
+    const out = new Map<string, string | null>();
+    if (ids.length === 0) return out;
+    const db = this.getDb();
+    // Chunk to stay well under SQLite's bound-parameter limit (as above).
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const rows = db.prepare(
+        `SELECT id, promoted_at, bible_updated_at, source, created_at FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
+      ).all(...chunk) as Record<string, unknown>[];
+      for (const row of rows) out.set(row.id as string, this.bibleTrustTimeOf(row));
+    }
+    return out;
+  }
+
+  /** getBibleTrustTimes' rule for one raw row (needs promoted_at, bible_updated_at, source, created_at). */
+  private bibleTrustTimeOf(row: Record<string, unknown>): string | null {
+    if (typeof row.promoted_at === 'string') return row.promoted_at;
+    if (typeof row.bible_updated_at === 'string') return row.bible_updated_at;
+    if (row.source === 'import') return null;
+    return typeof row.created_at === 'string' ? row.created_at : null;
   }
 
   /**
@@ -1220,6 +1250,9 @@ export class SqliteProvider implements MemoryProvider {
     // resolved by AUDN under a new id, never by overwriting the preserved id.
     const id = opts?.preferredId ?? randomUUID();
     this.insertEntry(db, id, input, content, now, sourceFileHashes, localBasisOnly);
+    if (opts?.importMode === true && opts.carriedUpdatedAt !== undefined) {
+      db.prepare('UPDATE entries SET bible_updated_at = ? WHERE id = ?').run(opts.carriedUpdatedAt, id);
+    }
     this.wireLinks(db, id, input);
     return { id, audn_decision: 'add' };
   }
@@ -2037,10 +2070,11 @@ export class SqliteProvider implements MemoryProvider {
    *
    *  - NEVER CREATE. A tombstoned id with no local row stays absent. A
    *    tombstone withdraws trust in a row; it is not a way to author one.
-   *  - PROMOTION TIME WINS TIES AND LATER. Demote only when the row's promotion
-   *    time (promoted_at when set, else created_at) is STRICTLY OLDER than the
-   *    tombstone's demoted_at. A row re-promoted at or after the demotion is
-   *    newer evidence and keeps its CONFIRMED standing.
+   *  - ONE RE-PROMOTION RULE. Demote only when standingAgainstTombstone
+   *    (bible-import.ts) says 'withdrawn' for the row's bible trust time
+   *    (getBibleTrustTimes): promoted_at, else the updated_at the bible carried
+   *    at import -- never the local import time. kb_export uses the same rule to
+   *    decide whether to re-add a tombstoned entry, so the two never disagree.
    *  - demoted_at is stamped with the TOMBSTONE's value, not now(): it records
    *    when trust was withdrawn, which happened on the other clone.
    *  - NO ownerTag CHECK. Bible-imported rows carry no member tag (see
@@ -2060,7 +2094,7 @@ export class SqliteProvider implements MemoryProvider {
    * user-directive is human-terminal in both directions -- a bible must not be
    * able to deactivate a directive a human set here.
    */
-  applyBibleDemotion(id: string, tombstoneDemotedAt: string): boolean {
+  applyBibleDemotion(id: string, tombstoneAt: string): boolean {
     const db = this.getDb();
     const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     // NEVER CREATE.
@@ -2071,8 +2105,7 @@ export class SqliteProvider implements MemoryProvider {
     if (entry.superseded_at) return false;
     if (entry.type === 'user-directive') return false;
 
-    const promotionTime = entry.promoted_at ?? entry.created_at;
-    if (!isStrictlyBefore(promotionTime, tombstoneDemotedAt)) return false;
+    if (standingAgainstTombstone(this.bibleTrustTimeOf(row), tombstoneAt) !== 'withdrawn') return false;
 
     const demotionNote = buildDemotionNote(BIBLE_DEMOTION_REASON, [], entry.author);
     const newContent = truncateContent(entry.content + demotionNote);
@@ -2083,7 +2116,7 @@ export class SqliteProvider implements MemoryProvider {
       'UPDATE entries SET confidence = ?, demoted_at = ?, demoted_basis_hashes = ?, content = ? WHERE id = ?'
     ).run(
       'INFERRED',
-      tombstoneDemotedAt,
+      tombstoneAt,
       JSON.stringify(this.demoteBasisHashes(entry.source_files)),
       newContent,
       id,

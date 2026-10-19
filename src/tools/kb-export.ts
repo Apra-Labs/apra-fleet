@@ -10,7 +10,7 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 import { filterProjectBibleCandidates } from '../services/knowledge/bible-basis-filter.js';
-import { extractBibleDemotions, type BibleDemotion } from '../services/knowledge/bible-import.js';
+import { extractBibleDemotions, standingAgainstTombstone, type BibleTombstone } from '../services/knowledge/bible-import.js';
 import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import type { KBEntry } from '../services/knowledge/types.js';
 
@@ -97,17 +97,17 @@ export interface CanonicalBible {
   };
   entries: CanonicalEntry[];
   /**
-   * OPTIONAL demotion tombstones, sorted by id. Absent when the bible carries
-   * none, so a reader that does not know the field (and every bible written
-   * before it existed) keeps working unchanged.
+   * OPTIONAL tombstones {id, at, reason}, sorted by id. v3 only. Absent when the
+   * bible carries none, so a reader that does not know the field (and every
+   * bible written before it existed) keeps working unchanged.
    */
-  demotions?: BibleDemotion[];
+  demotions?: BibleTombstone[];
 }
 
 /** Entries AND tombstones of a bible already on disk. */
 export interface CanonicalBibleDocument {
   entries: CanonicalEntry[];
-  demotions: BibleDemotion[];
+  demotions: BibleTombstone[];
 }
 
 /** A basis map with its keys in sorted order, so serialization is byte-stable. */
@@ -132,7 +132,13 @@ export function withSourceFileHashes(entry: CanonicalEntry, basis: Record<string
  * predicate admitted it against); when given and non-empty it is written as
  * source_file_hashes (format v3). Nothing is hashed here.
  */
-export function toCanonicalEntry(e: KBEntry, basis?: Record<string, string> | null): CanonicalEntry {
+/**
+ * `trustTime` is the row's bible trust time (SqliteProvider.getBibleTrustTimes)
+ * when the caller has it, so an entry this clone imported keeps the updated_at
+ * its bible carried instead of taking the local import time. null/undefined
+ * falls back to promoted_at, then created_at.
+ */
+export function toCanonicalEntry(e: KBEntry, basis?: Record<string, string> | null, trustTime?: string | null): CanonicalEntry {
   const entry: CanonicalEntry = {
     id: e.id,
     type: e.type,
@@ -141,7 +147,7 @@ export function toCanonicalEntry(e: KBEntry, basis?: Record<string, string> | nu
     symbols: e.symbols,
     source_files: e.source_files,
     confidence: e.confidence,
-    updated_at: e.promoted_at || e.created_at,
+    updated_at: trustTime || e.promoted_at || e.created_at,
   };
   if (basis && Object.keys(basis).length > 0) entry.source_file_hashes = sortedBasis(basis);
   return entry;
@@ -467,7 +473,7 @@ function byId(a: { id?: unknown }, b: { id?: unknown }): number {
  */
 function readExistingBibleDocument(
   outPath: string,
-): { entries: Array<Record<string, unknown>>; demotions: BibleDemotion[] } {
+): { entries: Array<Record<string, unknown>>; demotions: BibleTombstone[] } {
   if (!fs.existsSync(outPath)) return { entries: [], demotions: [] };
   let parsed: unknown;
   try {
@@ -487,19 +493,6 @@ function readExistingBibleDocument(
   return { entries: list as Array<Record<string, unknown>>, demotions: extractBibleDemotions(parsed) };
 }
 
-/**
- * Is `later` strictly after `earlier`? Both are ISO-8601 instants written by
- * this codebase (toISOString), but a bible is edited by humans and merged across
- * clones, so an unparseable value degrades to a plain string comparison rather
- * than silently answering "no".
- */
-function isStrictlyAfter(later: string | undefined, earlier: string): boolean {
-  if (!later) return false;
-  const a = Date.parse(later);
-  const b = Date.parse(earlier);
-  if (Number.isNaN(a) || Number.isNaN(b)) return later > earlier;
-  return a > b;
-}
 
 // PROJECT-SCOPE EXPORT: basis filter + additive merge.
 //
@@ -535,14 +528,15 @@ async function exportProjectBible(
   // TOMBSTONE GATE, before the basis filter. An id another clone demoted is not
   // re-added just because this clone still holds it CONFIRMED -- that is how a
   // demotion would be silently undone on the next export. The ONE exception is a
-  // local row promoted AFTER the tombstone was recorded: that is a deliberate
-  // re-promotion on newer evidence, so the entry comes back and its tombstone is
-  // cleared in the same write.
-  const newCandidates = confirmed.filter(e => {
-    if (existingIds.has(e.id)) return false;
+  // row standingAgainstTombstone calls 'repromoted' -- the same rule kb_import
+  // applies -- so the entry comes back and its tombstone is cleared in the same
+  // write.
+  const notInBible = confirmed.filter(e => !existingIds.has(e.id));
+  const trustTimes = source.getBibleTrustTimes(notInBible.map(e => e.id));
+  const newCandidates = notInBible.filter(e => {
     const tombstone = tombstones.get(e.id);
     if (!tombstone) return true;
-    return isStrictlyAfter(e.promoted_at, tombstone.demoted_at);
+    return standingAgainstTombstone(trustTimes.get(e.id) ?? null, tombstone.at) === 'repromoted';
   });
   const bases = source.getSourceFileBases(newCandidates.map(e => e.id));
   const qualifying = await filterProjectBibleCandidates(newCandidates, bases, repoPath);
@@ -554,7 +548,7 @@ async function exportProjectBible(
   for (const e of qualifying) tombstones.delete(e.id);
 
   // Each added entry carries the exact stored basis it was just admitted against.
-  const merged = [...existing, ...qualifying.map(e => toCanonicalEntry(e, bases.get(e.id)))].sort(byId);
+  const merged = [...existing, ...qualifying.map(e => toCanonicalEntry(e, bases.get(e.id), trustTimes.get(e.id)))].sort(byId);
   assertNoDuplicateBibleIds(merged, 'kb_export');
   const nextDemotions = Array.from(tombstones.values()).sort(compareById);
   const bible = {

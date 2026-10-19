@@ -95,13 +95,29 @@ backwards.
 So a demotion is carried by an EXPLICIT tombstone instead: `kb_bible_commit`'s
 optional `demoted_ids` input removes a demoted id from the bible's `entries`
 list and records it in a separate, optional top-level `demotions` array as
-`{id, demoted_at}`. **Absence from the bible is never, by itself, evidence of
-a demotion** -- only an explicit tombstone entry is. When another clone
-imports that bible (`kb_import`), it applies each tombstone to its own local
-row, lowering it from CONFIRMED to INFERRED only when that row's own
-`promoted_at` is strictly BEFORE the tombstone's `demoted_at` -- so a row that
-was independently re-promoted on newer evidence, after the tombstone's time,
-is left alone rather than being silently re-demoted.
+`{id, at, reason: "demoted"}` (v3 bibles only), and on every call it does
+the same for each bible entry the local KB already holds as demoted. **Absence
+from the bible is never, by itself, evidence of a demotion** -- only an
+explicit tombstone entry is. When another clone imports that bible
+(`kb_import`), it applies each tombstone to its own local row, lowering it
+from CONFIRMED to INFERRED only when the row was promoted at or before the
+tombstone's `at` -- so a row that was independently re-promoted on newer
+evidence, after the tombstone's time, is left alone rather than being silently
+re-demoted.
+
+One rule decides "re-promoted after the tombstone" for both `kb_import` and
+`kb_export`, and it compares when the row was PROMOTED, as a bible records it:
+the row's own `promoted_at`, or, for a row this clone imported, the
+`updated_at` its bible carried. It never uses the local import time -- a clone
+that imported an older bible after the demotion happened elsewhere would
+otherwise look re-promoted and keep the entry. (Spec: memory-contract
+`spec.md` 2.6.)
+
+**Upgrade everyone who exports to the same repo together.** A 0.4.4 or older
+`kb_export`/`kb_bible_commit` rewrites the bible without `demotions`, and its
+`kb_export` re-adds a demoted id from any clone still holding it CONFIRMED.
+After that happens, the next `kb_bible_commit` from a clone holding the entry
+as demoted removes it again and restores the tombstone.
 
 ## Forward-only enforcement (no migration)
 

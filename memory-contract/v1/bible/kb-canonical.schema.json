@@ -16,8 +16,7 @@
       "properties": {
         "version": { "const": 2 },
         "provenance": { "$ref": "#/$defs/provenance" },
-        "entries": { "type": "array", "items": { "$ref": "#/$defs/entryWithoutHashes" } },
-        "demotions": { "$ref": "#/$defs/demotions" }
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/entryWithoutHashes" } }
       }
     },
     {
@@ -35,13 +34,14 @@
   "$defs": {
     "demotions": {
       "type": "array",
-      "description": "Optional demotion tombstones written by kb_bible_commit demoted_ids. Each names an id whose CONFIRMED entry was withdrawn by kb_demote; that id is absent from entries. Omitted entirely when there are none. Never inferred from an absence: kb_import lowers a local CONFIRMED row only for an explicit tombstone newer than its promotion. See spec.md section 2.8.",
+      "description": "v3 only. Optional tombstones written by kb_bible_commit: each names an id removed from entries at `at` for `reason`. reason \"demoted\" (a kb_demote) is the only one kb_import applies to a local row, and only when that row is withdrawn under the one re-promotion rule; readers keep reasons they do not know. Omitted entirely when there are none. Never inferred from an absence. See spec.md section 2.6.",
       "items": {
         "type": "object",
-        "required": ["id", "demoted_at"],
+        "required": ["id", "at", "reason"],
         "properties": {
           "id": { "type": "string", "minLength": 1 },
-          "demoted_at": { "type": "string", "minLength": 1 }
+          "at": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 }
         }
       }
     },

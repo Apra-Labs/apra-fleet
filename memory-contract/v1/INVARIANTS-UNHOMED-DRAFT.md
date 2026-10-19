@@ -248,6 +248,36 @@ that does not exist -- that precedent no longer applies to the demotion half,
 since `kb_demote` shipped (`4.2`) and this draft is amended below to describe
 it rather than its absence.
 
+**THE REVERSAL.** This draft used to say there is NO demote, and closed on:
+"the surface looks like it is missing an obvious operation, and the missing
+operation is the guarantee." The guarantee it meant: a demote would manufacture
+the low-tier, low-attention rows the freshness and admission mechanisms were
+built to make impossible, and nothing would ever look at them again. That
+argument is answered, not dropped -- `kb_demote` exists because a CONFIRMED
+entry that turns out weaker than its promotion claimed had no honest exit, and
+each part of the guarantee is kept by a rule on the operation itself:
+
+- MAINTAINER-ONLY. `kb_demote` is never served to a plain member session: it
+  is in `MEMBER_MAINTAINER_TOOLS` (`src/services/member-tool-allowlist.ts`),
+  served only to a session carrying the kb_maintainer grant, exactly like
+  `kb_promote`. Withdrawing trust is as gated as granting it.
+- EVIDENCE REQUIRED. A demote with no evidence file, or one that does not
+  resolve to a regular file in the worktree, is refused with
+  `E-DEMOTE-EVIDENCE-UNRESOLVED` and writes nothing. A demotion is a claim
+  about the tree, checked like promote's basis, never a bare opinion.
+- DEMOTED ROWS RE-ENTER THE PROMOTION POOL. A demote lands at INFERRED and
+  nowhere lower, keeps the entry's id, links, cited files and promotion
+  history, and does not stale it. The row is an ordinary INFERRED candidate
+  that `kb_promote` can raise again; because it still cites files it is outside
+  the zero-basis decay sweep, so it is neither low-attention nor on the way
+  out. It is not the row the old argument feared.
+- TOMBSTONES STOP OTHER CLONES RE-PROMOTING. A demotion crosses clones only as
+  an explicit bible tombstone (`spec.md` 2.6). Another clone's `kb_export` does
+  not put the entry back, and its `kb_import` lowers its own copy, unless that
+  clone promoted the entry after the tombstone -- one rule, judged on when the
+  entry was promoted as its bible recorded it. Without this, the next export
+  from any clone still holding the row would quietly undo the demotion.
+
 **THE RULE.** Contradiction detection at capture time MUST FLAG and MUST NOT
 resolve: both entries stay live, the newer one recording that it disputes the
 older. Resolution MUST be a single explicit operation, and it MUST REFUSE,

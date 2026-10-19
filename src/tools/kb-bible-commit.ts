@@ -7,7 +7,7 @@ import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js
 import { filterProjectBibleCandidates, hasCarriedBasis, selectLegacyBibleBackfill } from '../services/knowledge/bible-basis-filter.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
-import type { BibleDemotion } from '../services/knowledge/bible-import.js';
+import { TOMBSTONE_DEMOTED, type BibleTombstone } from '../services/knowledge/bible-import.js';
 import { bibleBytesBlobId } from '../services/knowledge/bible-blob-id.js';
 import { memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import {
@@ -69,7 +69,7 @@ export const kbBibleCommitSchema = z.object({
   ids: z.array(z.string().min(1))
     .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB whose recorded file basis still matches the cited files at the repo\'s HEAD commit (the same rule kb_export applies; uncommitted edits are ignored); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown, no_source_files for a CONFIRMED entry citing no source file, or basis_mismatch). Independently of the ids, every bible entry this KB holds as superseded or invalidated is removed and reported in removed; an empty list with no such entry makes no commit.'),
   demoted_ids: z.array(z.string().min(1)).optional()
-    .describe('Ids demoted this round (kb_demote). Each must name a local entry that HAS a demoted_at and is now below CONFIRMED; any other id is skipped and reported in skipped with reason not_demoted_or_unknown. An admitted id is REMOVED from entries and recorded as an explicit tombstone {id, demoted_at} in the bible demotions array, so other clones can apply the demotion instead of inferring it from an absence. Re-admitting the same id through ids (a re-promotion) clears its tombstone.'),
+    .describe('Ids demoted this round (kb_demote). Each must name a local entry that HAS a demoted_at and is now below CONFIRMED; any other id is skipped and reported in skipped with reason not_demoted_or_unknown. An admitted id is REMOVED from entries and recorded as an explicit tombstone {id, at, reason: "demoted"} in the bible demotions array, so other clones can apply the demotion instead of inferring it from an absence. Independently, every call does the same for each bible entry this KB holds as demoted. Re-admitting the same id through ids (a re-promotion) clears its tombstone.'),
   baseBranch: z.string().min(1)
     .describe('The sprint\'s target base branch (the branch the work merges into). Written to provenance.branch.'),
   baseCommit: z.string().min(1)
@@ -165,7 +165,8 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   const confirmed = new Map<string, CanonicalEntry>();
   // Format v3: each merged entry carries the exact stored basis it was just
   // admitted against (never re-hashed here).
-  for (const e of qualifying) confirmed.set(e.id, toCanonicalEntry(e, bases.get(e.id)));
+  const trustTimes = project.getBibleTrustTimes(qualifying.map(e => e.id));
+  for (const e of qualifying) confirmed.set(e.id, toCanonicalEntry(e, bases.get(e.id), trustTimes.get(e.id)));
 
   const merged: string[] = [];
   const skipped: KbBibleCommitSkip[] = [];
@@ -184,20 +185,33 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
 
   // DEMOTION ADMISSION. A tombstone asserts "this clone withdrew trust", so the
   // local row must actually say so: it exists, it carries a demoted_at, and its
-  // confidence is now below CONFIRMED. Anything else -- unknown id, never
-  // demoted, or demoted and since re-promoted back to CONFIRMED -- is skipped
-  // with a reason and leaves the file untouched for that id. The state is read
-  // straight from the row (not through list()) so a demoted entry that has since
-  // gone stale can still be tombstoned: other clones' bibles still carry it.
-  const demotionState = project.getDemotionState(requestedDemotions);
-  const admittedDemotions: BibleDemotion[] = [];
-  for (const id of requestedDemotions) {
+  // confidence is now below CONFIRMED. The state is read straight from the row
+  // (not through list()) so a demoted entry that has since gone stale can still
+  // be tombstoned: other clones' bibles still carry it.
+  //
+  // Two sources, one rule. A demoted_ids id that does not qualify -- unknown,
+  // never demoted, or demoted and since re-promoted -- is skipped with a reason.
+  // And on EVERY call, each entry already in the bible that this KB holds as
+  // demoted is tombstoned too, named or not: that is what restores a demotion
+  // after an older writer (0.4.4) rewrote the bible without its tombstones.
+  const bibleIds = (existingDoc?.entries ?? []).map(e => e.id);
+  const demotionState = project.getDemotionState([...requestedDemotions, ...bibleIds]);
+  const tombstoneFor = (id: string): BibleTombstone | null => {
     const state = demotionState.get(id);
-    if (state && state.demoted_at && state.confidence !== 'CONFIRMED' && !qualifyingIds.has(id)) {
-      admittedDemotions.push({ id, demoted_at: state.demoted_at });
-    } else {
-      skipped.push({ id, reason: 'not_demoted_or_unknown' });
-    }
+    if (!state || !state.demoted_at || state.confidence === 'CONFIRMED' || qualifyingIds.has(id)) return null;
+    return { id, at: state.demoted_at, reason: TOMBSTONE_DEMOTED };
+  };
+  const admittedDemotions: BibleTombstone[] = [];
+  for (const id of requestedDemotions) {
+    const tombstone = tombstoneFor(id);
+    if (tombstone) admittedDemotions.push(tombstone);
+    else skipped.push({ id, reason: 'not_demoted_or_unknown' });
+  }
+  const requestedDemotionSet = new Set(requestedDemotions);
+  for (const id of bibleIds) {
+    if (requestedDemotionSet.has(id)) continue;
+    const tombstone = tombstoneFor(id);
+    if (tombstone) admittedDemotions.push(tombstone);
   }
   const demoted = admittedDemotions.map(d => d.id);
 
@@ -249,8 +263,7 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   }
   for (const r of removed) byId.delete(r.id);
   for (const id of merged) byId.set(id, confirmed.get(id)!);
-  // An admitted demotion REMOVES the entry -- the only path by which this tool
-  // drops one, and only on an explicit demoted_ids instruction.
+  // An admitted demotion REMOVES the entry.
   for (const id of demoted) byId.delete(id);
   const entries = Array.from(byId.values()).sort(compareById);
   assertNoDuplicateBibleIds(entries, 'kb_bible_commit');
@@ -260,7 +273,7 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   // other clones), the admitted ones are upserted, and an id re-admitted as a
   // CONFIRMED entry has its tombstone CLEARED -- it was re-promoted, so the
   // demotion no longer holds.
-  const tombstones = new Map<string, BibleDemotion>();
+  const tombstones = new Map<string, BibleTombstone>();
   for (const d of existingDoc?.demotions ?? []) tombstones.set(d.id, d);
   for (const d of admittedDemotions) tombstones.set(d.id, d);
   for (const id of merged) tombstones.delete(id);

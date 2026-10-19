@@ -323,41 +323,64 @@ working folder, which is typically a feature branch.
   rejected push can be retried with no manual merge. An existing bible that
   cannot be parsed is refused (thrown), never overwritten.
 
-The v2 envelope also carries an OPTIONAL top-level `demotions` array of
-`{id, demoted_at}` tombstones, sorted by id. It is absent when the bible holds
-none, so a reader that does not know the field -- and every bible written before
-it existed -- keeps working. `provenance.entry_count` counts ENTRIES only: a
-tombstone is not an entry.
+The v3 envelope also carries an OPTIONAL top-level `demotions` array of
+`{id, at, reason}` tombstones, sorted by id: the id left the bible at `at` for
+`reason`. Only a v3 envelope may carry it; a reader ignores `demotions` on a v2
+envelope or a legacy bare array. It is absent when the bible holds none, so a
+reader that does not know the field -- and every bible written before it
+existed -- keeps working. Readers keep tombstones whose `reason` they do not
+know. `provenance.entry_count` counts ENTRIES only: a tombstone is not an
+entry.
 
 A demotion is NEVER inferred from an entry being absent from the bible. A clone
 legitimately holds CONFIRMED rows that were never exported (local-only
 promotions, `basis_mismatch` refusals), and those must not be demoted by an
 import, so withdrawal of trust is only ever carried by an explicit tombstone.
 
+ONE RE-PROMOTION RULE governs both directions. A row's bible trust time is when
+its trust dates from as a bible records it: its `promoted_at` when it was
+promoted on this clone, else the `updated_at` the bible carried when the row
+was imported. It is never the local import time. A row imported before that
+value was kept has no trust time and counts as withdrawn: its trust came from a
+bible, and a later bible withdrew it. Against a tombstone, a row whose trust
+time is strictly after `at` is RE-PROMOTED; at or before `at` it is WITHDRAWN;
+either timestamp failing to parse decides nothing. Bible writers record that
+same trust time as the entry's `updated_at`, so every clone compares the same
+value.
+
 - `kb_bible_commit` takes an optional `demoted_ids`. An id is admitted only when
   the LOCAL row exists, carries a `demoted_at` and is now below CONFIRMED;
   anything else is skipped with reason `not_demoted_or_unknown` and the file is
-  unchanged for that id. An admitted id is REMOVED from `entries` and its
-  tombstone upserted with the LOCAL row's `demoted_at`. Tombstones already in the
+  unchanged for that id. Independently, on EVERY call each entry already in the
+  bible that the local KB holds as demoted is admitted the same way. An admitted
+  id is REMOVED from `entries` and its tombstone upserted as
+  `{id, at: <local demoted_at>, reason: "demoted"}`. Tombstones already in the
   file are preserved when a later commit carries unrelated ids, and an id
   re-admitted through `ids` (a re-promotion) has its tombstone CLEARED.
 - `kb_export` (scope=project) honours tombstones: it does not re-add a tombstoned
-  id unless the local row was promoted AFTER the tombstone's `demoted_at`, in
-  which case it re-adds the entry and clears the tombstone in the same write.
-- `kb_import` applies the same tombstones on the READ side, to a local row --
-  this is the counterpart of the `kb_export`/`kb_bible_commit` write-side rules
-  above, and it is the only place a bible import can lower an already-CONFIRMED
-  row's own confidence. For each tombstone in the imported bible's `demotions`,
-  the local row is lowered from CONFIRMED to INFERRED ONLY when it still exists,
-  is CONFIRMED, is not superseded, is not a `user-directive`, AND its own
-  `promoted_at` (or `created_at` when it was never promoted) is STRICTLY BEFORE
-  the tombstone's `demoted_at`; a local row re-promoted at or after the
-  tombstone's time is left untouched (it is newer evidence than the tombstone),
-  and a tombstoned id with no local row creates none. Either timestamp failing
-  to parse refuses the demotion rather than guessing. The demoted row gets the
-  same single-line content note as a local `kb_demote` (`BIBLE_DEMOTION_REASON`,
-  "demoted in the project bible", standing in for the caller-supplied reason),
-  and `promoted_at`/`source` stay untouched, exactly as a local demotion.
+  id unless the local row is RE-PROMOTED under the rule above, in which case it
+  re-adds the entry and clears the tombstone in the same write.
+- `kb_import` applies `reason: "demoted"` tombstones on the READ side, to a local
+  row -- the counterpart of the write-side rules above, and the only place a
+  bible import can lower an already-CONFIRMED row's own confidence. The local
+  row is lowered from CONFIRMED to INFERRED ONLY when it still exists, is
+  CONFIRMED, is not superseded, is not a `user-directive`, and is WITHDRAWN under
+  the rule above; a RE-PROMOTED row is left untouched (it is newer evidence than
+  the tombstone), and a tombstoned id with no local row creates none. The demoted
+  row gets the same single-line content note as a local `kb_demote`
+  (`BIBLE_DEMOTION_REASON`, "demoted in the project bible", standing in for the
+  caller-supplied reason), and `promoted_at`/`source` stay untouched, exactly as
+  a local demotion. A tombstone with any other reason only keeps its entry out
+  of the member bible view and the cold seed.
+
+MIXED VERSIONS. A writer that predates tombstones (0.4.4 and earlier `kb_export`
+/ `kb_bible_commit`) rewrites the bible WITHOUT `demotions`, and its
+`kb_export` re-adds a demoted id from any clone still holding it CONFIRMED.
+Upgrade every clone that exports to the same repository together. If an older
+writer has already run, the next `kb_bible_commit` from a clone holding the
+entry as demoted removes the entry and restores its tombstone (the every-call
+rule above); a clone that imported the rewritten bible in between does not lose
+its own demotion, because import never raises confidence on an existing row.
 
 ### 2.7 Every code_* call is scoped to the calling session (code constraint)
 
@@ -686,8 +709,8 @@ every import. This clamp is the only route by which `capture()` itself could
 mint or preserve CONFIRMED; it never LOWERS an existing CONFIRMED row. A local
 CONFIRMED row IS still lowered on import, but through a separate path outside
 this clamp entirely (2.6): `kb_import` applies the bible's tombstones to
-already-stored rows, and only when an explicit tombstone's `demoted_at`
-postdates that row's own `promoted_at`. `importMode` is the SECOND parameter of `capture()`, never a
+already-stored rows, and only when the row is WITHDRAWN under 2.6's
+re-promotion rule. `importMode` is the SECOND parameter of `capture()`, never a
 field of the deserialized request body, so no caller reaching `capture()`
 through a route can set it (same comment block). Provenance: `AUTHOR_VALUES`
 (`src/tools/kb-capture.ts:11`) and `validateAuthor`
