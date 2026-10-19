@@ -6,9 +6,29 @@ which skills are installed, uninstalling, and self-updating.
 ## Requirements
 
 - An AI coding agent CLI on the machine where you run Fleet - Claude Code,
-  Antigravity (agy), Codex, Copilot, or OpenCode.
+  Antigravity (agy), Codex, Copilot, or OpenCode. For Claude Code, use
+  Anthropic's installer: see https://code.claude.com/docs/en/setup for the
+  macOS/Linux, Windows PowerShell (`irm https://claude.ai/install.ps1 | iex`)
+  and Windows CMD commands. If it warns that
+  `~/.local/bin` (Windows: `%USERPROFILE%\.local\bin`) is not on PATH, add it
+  and open a new terminal.
+- Node.js 22.16+ and npm on PATH, for the default install. They are needed by
+  fleet-se (fleet-sprint, supervisor, bd), and the installer fails up front if
+  they are missing. Get Node.js from https://nodejs.org (LTS installer on
+  Windows and macOS; your package manager or nodejs.org on Linux), then open a
+  new terminal. With the standalone installer, `--workflows none` installs
+  the core only and needs no Node.js (the npm install path always needs it).
+  - Windows PowerShell: with the default `Restricted` execution policy, any
+    npm-global command fails with "<name>.ps1 cannot be loaded" -- `npm -v`,
+    and also `bd` when the installer put it in the npm global folder. The
+    installer is not affected. Call the `.cmd` shim instead (`npm.cmd -v`,
+    `bd.cmd --version`), or run
+    `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
 - SSH access to any remote machines you want to register as members. The local
   machine needs nothing extra; remote members need only an SSH server.
+- Windows: if Git for Windows is installed, a local or remote Windows member
+  runs commands in Git Bash by default, not PowerShell (probe order and the `shell`
+  override: [windows-shell-selection.md](windows-shell-selection.md)).
 
 ## Quick install
 
@@ -27,13 +47,21 @@ curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra
 
 **Windows (x64)** -- download `apra-fleet-installer-win-x64.exe` and double-click it, or run in PowerShell:
 ```powershell
-Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe
+curl.exe -fL -o apra-fleet-installer.exe https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe; .\apra-fleet-installer.exe
 ```
+(`curl.exe` ships with Windows 10 1803+. With `Invoke-WebRequest` on Windows
+PowerShell 5.1, set `$ProgressPreference='SilentlyContinue'` first, or the
+download can take minutes.)
 
 **macOS (Intel, x64)**
 ```bash
 curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-darwin-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer
 ```
+
+After install, `apra-fleet` is in `~/.apra-fleet/bin/`, which is not added to
+PATH. Run it by full path, for example `~/.apra-fleet/bin/apra-fleet status`
+(PowerShell: `& "$HOME\.apra-fleet\bin\apra-fleet.exe" status`), or add that
+directory to your PATH.
 
 ## Manual install
 
@@ -80,6 +108,7 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
 | `~/.claude/skills/auto-sprint-args/` | Args contract for the `/auto-sprint` workflow (Claude only) |
 | `~/.claude/skills/fleet-sprint-cli/` | How to launch `apra-fleet workflow fleet-sprint` -- flag contract, preconditions, detached launch (all providers) |
 | `~/.claude/agents/` | PM role-agent files (planner, doer, reviewer, etc.), plus `schemas/` and `_shared/` -- written whenever PM is installed and the provider has an agents directory (not codex/copilot) |
+| `~/.apra-fleet/claude-plugins/` | Local Claude Code plugin marketplace `apra-fleet-local` holding the fleet-status mod (Claude only; see below) |
 
 For other providers, these are written to that provider's skill/config directories. For example, for Antigravity (`agy`), settings are written to `~/.gemini/antigravity-cli/settings.json`, and hooks / MCP configs are merged into `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json`. These configure the agy CLI you run the orchestrator in; agy members get their grants in their own agy project instead (see [Antigravity (agy) provider](agy-provider.md)).
 
@@ -149,8 +178,22 @@ described in `packages/apra-fleet-se/docs/cli-reference.md`).
 - No system-level changes -- no `/usr/local`, no PATH modification, no
   admin/sudo required.
 - The MCP registration makes no network calls -- the binary stays local.
-- No background services or daemons -- the fleet server starts on demand when
-  your AI coding agent connects.
+- No system service. The standalone installer (HTTP transport, the default)
+  registers and starts a user-level service -- a Scheduled Task on Windows, a
+  systemd user unit on Linux, a LaunchAgent on macOS -- so the server is
+  already running when install finishes. An npm install registers no service:
+  run `apra-fleet start` yourself. With the HTTP transport your AI coding agent
+  never starts the server (a `--transport stdio` install has no shared server;
+  each agent session runs its own). See
+  [transport-and-service-mode.md](transport-and-service-mode.md#service-mode).
+
+**Windows: standard (non-admin) user, or install over SSH.** Install from a
+desktop logon when you can. Over SSH (a network logon), a standard user's
+scheduled-task creation can be refused ("Access is denied"); install then
+falls back to a per-user HKCU Run entry. That entry starts the server only at
+the next interactive logon and never restarts it, and a server started from
+the SSH session stops when that session ends. `apra-fleet status` shows which
+one you got.
 
 ## The `--skill` flag
 
@@ -165,6 +208,40 @@ control exactly which skills are installed:
 | `install --skill pm` | fleet + pm (pm depends on fleet) |
 | `install --skill none` | neither |
 | `install --no-skill` | neither (same as `--skill none`) |
+
+## The fleet-status mod (Claude Code)
+
+`apra-fleet install --llm claude` (the default) installs **fleet-status**, a
+Claude Code mod that shows apra-fleet member status in Claude Code's status
+line and adds a `/fleet-status` pane (it polls the read-only `fleet_snapshot`
+and `credential_store_list` MCP tools; removing a member and managing secrets
+run only on a press in the pane, see
+[design-fleet-status-mod.md](design-fleet-status-mod.md)). The installer copies the mod into a local plugin marketplace,
+`~/.apra-fleet/claude-plugins/` (marketplace `apra-fleet-local`, plugin
+`fleet-status`), then runs:
+
+```bash
+claude plugin marketplace add ~/.apra-fleet/claude-plugins --scope user
+claude plugin install fleet-status@apra-fleet-local --scope user
+```
+
+Both are idempotent, and Claude Code reads the plugin straight from that folder,
+so re-running `install` (or upgrading apra-fleet) just refreshes the files; run
+`/reload-plugins` or start a new session to pick them up. When both succeed,
+apra-fleet stops writing `settings.statusLine` and removes the statusLine entry
+it wrote earlier (the one running `fleet-statusline.sh`). When either fails --
+`claude` not on PATH, a `claude` too old to have the `plugin` command, or a
+non-zero exit -- install prints one line with the reason and keeps the
+statusLine script. The install summary shows `Claude mod: fleet-status
+installed` or `skipped: <reason>`.
+
+For every provider, install never overwrites a statusLine you configured
+yourself: it only writes (or replaces) the entry that runs apra-fleet's own
+`fleet-statusline.sh`, and otherwise prints that your statusLine was kept.
+`apra-fleet uninstall` runs `claude plugin uninstall
+fleet-status@apra-fleet-local --scope user` and `claude plugin marketplace
+remove apra-fleet-local` (best-effort), then deletes
+`~/.apra-fleet/claude-plugins/`.
 
 ## Install for other providers (Antigravity, Codex, Copilot, OpenCode)
 
@@ -212,7 +289,9 @@ are written and how permission denials are reported is described in
 ## Uninstall
 
 The built-in uninstall command surgically removes MCP registration,
-permissions, hooks, status line, skill directories, and PM agent files
+permissions, hooks, status line (only apra-fleet's own entry), the
+fleet-status Claude Code mod and its `~/.apra-fleet/claude-plugins/`
+marketplace, skill directories, and PM agent files
 (`~/.claude/agents/`, or the equivalent provider directory) without touching
 your other settings:
 

@@ -3,10 +3,10 @@ name: CI - Build & Test
 on:
   workflow_dispatch:
   push:
-    # feat/kb-redesign pushes also publish an unsigned prerelease (job
+    # stabilize_0.4.4 pushes also publish an unsigned prerelease (job
     # prerelease below) so member installs of its builds have an anonymous
     # download source.
-    branches: [main, feat/kb-redesign]
+    branches: [main, stabilize_0.4.4]
     tags: ['v*']
     paths-ignore:
       - '.github/e2e/**'
@@ -187,6 +187,22 @@ jobs:
           path: ${{ env.TARBALL_NAME }}
           retention-days: 30
 
+      # Same npm pack guard as the tag-only npm-publish job, on every push/PR,
+      # so a size regression fails here instead of first surfacing on a tag.
+      # npm-publish packs after prepublishOnly (dist-pm + build); Build already
+      # ran above, so only dist-pm is needed here to match its payload.
+      - name: npm pack guard (stale SEA artifacts + size)
+        run: |
+          set -o pipefail
+          npm run dist-pm
+          npm pack --dry-run 2>&1 | tee pack-check.txt
+          if grep -qE '\.(exe)$|sea-prep\.blob|sea-bundle\.cjs' pack-check.txt; then
+            echo "::error::Pack contains stale SEA build artifacts (exe/sea-prep.blob/sea-bundle.cjs)."
+            grep -E '\.(exe)$|sea-prep\.blob|sea-bundle\.cjs' pack-check.txt
+            exit 1
+          fi
+          node scripts/check-pack-size.mjs
+
   build-binary:
     needs: build-and-test
     strategy:
@@ -227,7 +243,7 @@ jobs:
 
       # Cached install + workspace link check; key design lives in the action.
       # Shipped binaries come from a clean npm ci (no cache restore or save):
-      # every push build (v* tag releases, main / feat/kb-redesign
+      # every push build (v* tag releases, main / stabilize_0.4.4
       # prereleases) and ANY build of a tag ref, including a workflow_dispatch
       # re-run on a v* tag, which the tag-gated sign/release/npm-publish jobs
       # would ship. Only pull_request and branch workflow_dispatch builds, which
@@ -633,7 +649,7 @@ jobs:
             release-binaries/apra-fleet-installer-win-x64.exe
           generate_release_notes: true
 
-  # Unsigned prerelease of every build pushed to main / feat/kb-redesign, so a
+  # Unsigned prerelease of every build pushed to main / stabilize_0.4.4, so a
   # member install of an unreleased orchestrator build has an anonymous
   # download source (Actions artifacts need auth and expire). Tag = the exact
   # build version the binaries report (e.g. v0.4.4_d1e339). Never signed (no
@@ -654,7 +670,7 @@ jobs:
     needs: [package, build-binary]
     # push only: push builds use a clean npm ci (no node_modules cache, see
     # build-binary), dispatch/PR builds may use the cache and never publish.
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/kb-redesign')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/stabilize_0.4.4')
     runs-on: ubuntu-latest
     permissions:
       contents: write

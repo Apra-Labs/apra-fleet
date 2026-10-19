@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { getAgentOrFail, getAgentOS, touchAgent, checkVcsTokenExpiry, getStoredPid, setStoredPid, clearStoredPid } from '../src/utils/agent-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import type { Agent } from '../src/types.js';
+import { serverVersion } from '../src/version.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 
 const makeAgent = makeTestAgent;
@@ -59,6 +60,14 @@ describe('touchAgent', () => {
     addAgent(makeAgent({ id: 'no-sess-test', sessionId: 'keep-me' }));
     touchAgent('no-sess-test');
     expect(getAgent('no-sess-test')!.sessionId).toBe('keep-me');
+  });
+
+  it('stamps the recording server build with a new sessionId; a bare touch keeps the stamp', () => {
+    addAgent(makeAgent({ id: 'stamp-test', sessionId: 'old', sessionServerVersion: 'v0.4.3_f390e2' }));
+    touchAgent('stamp-test');
+    expect(getAgent('stamp-test')!.sessionServerVersion).toBe('v0.4.3_f390e2');
+    touchAgent('stamp-test', 'new-session');
+    expect(getAgent('stamp-test')!.sessionServerVersion).toBe(serverVersion);
   });
 });
 

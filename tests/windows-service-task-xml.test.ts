@@ -91,14 +91,26 @@ describe('buildTaskXml', () => {
 });
 
 describe('task user, start boundary, repeat interval', () => {
-  it('resolves DOMAIN\\user from USERDOMAIN/USERNAME without a shell', () => {
-    const whoami = vi.fn(() => 'x\\y');
-    expect(resolveTaskUserId(USER_ENV, whoami)).toBe('BOX\\alice');
-    expect(whoami).not.toHaveBeenCalled();
+  it('resolves DOMAIN\\user from the process token (whoami), never env USERDOMAIN (WORKGROUP under SSH)', () => {
+    const saved = { d: process.env.USERDOMAIN, u: process.env.USERNAME };
+    process.env.USERDOMAIN = 'WORKGROUP';
+    process.env.USERNAME = 'alice';
+    try {
+      expect(resolveTaskUserId(() => 'box\\alice\r\n')).toBe('box\\alice');
+    } finally {
+      if (saved.d === undefined) delete process.env.USERDOMAIN; else process.env.USERDOMAIN = saved.d;
+      if (saved.u === undefined) delete process.env.USERNAME; else process.env.USERNAME = saved.u;
+    }
   });
 
-  it('falls back to whoami when the env lacks USERDOMAIN', () => {
-    expect(resolveTaskUserId({ USERNAME: 'alice' }, () => 'box\\alice\r\n')).toBe('box\\alice');
+  it('keeps a domain account from whoami', () => {
+    expect(resolveTaskUserId(() => 'corp\\alice')).toBe('corp\\alice');
+  });
+
+  it('falls back to the bare token user name when whoami fails', () => {
+    const name = resolveTaskUserId(() => { throw new Error('denied'); });
+    expect(name).not.toContain('\\');
+    expect(name.length).toBeGreaterThan(0);
   });
 
   it('formats a local StartBoundary', () => {
@@ -129,7 +141,7 @@ describe('WindowsServiceManager lifecycle', () => {
 
   function mgr(env: Record<string, string | undefined> = USER_ENV) {
     return new WindowsServiceManager(schtasks as any, wrapper, {
-      runReg: reg as any, env, now: () => NOW,
+      runReg: reg as any, env, now: () => NOW, whoami: () => 'BOX\\alice',
       spawnDetached: (c, a, v) => { spawned.push([c, a]); verbatim.push(!!v); order.push(`spawn ${c} ${a.join(' ')}`); },
       probeWsh: () => wsh, stoppedByUser: () => stoppedByUser,
     });

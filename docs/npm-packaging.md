@@ -212,12 +212,21 @@ codebase. The `--help` text does not list them.
   "scripts/agy-settings-merge.js",
   "scripts/agy-transcript-reader.js",
   "skills/",
-  "version.json"
+  "version.json",
+  "plugins/claude-code/fleet-status/.claude-plugin/plugin.json",
+  "plugins/claude-code/fleet-status/hooks/",
+  "plugins/claude-code/fleet-status/types/"
 ]
 ```
 
+The `plugins/claude-code/fleet-status/` entries ship only the fleet-status
+Claude Code mod's runtime files (its generated type stubs, tests and tsconfig
+are authoring-only); `install --llm claude` copies them into
+`~/.apra-fleet/claude-plugins/`. The SEA binary embeds the same files as the
+`claudePlugins` manifest section (scripts/gen-sea-config.mjs).
+
 **What is shipped:** compiled JS (`dist/`), hooks config, three runtime scripts,
-skills (fleet + pm), and `version.json`.
+skills (fleet + pm), `version.json`, and the fleet-status Claude Code mod.
 
 **Workspace packages are intentionally private** (apra-fleet-3ns.4):
 `packages/apra-fleet-se`, `packages/apra-fleet-workflow`, and

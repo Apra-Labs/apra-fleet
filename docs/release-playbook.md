@@ -77,4 +77,13 @@ gh release edit vX.Y.Z --notes "..."   # replace with a clean summary
 Keep the summary short: what changed and why. It's fine to leave GitHub's
 "Full Changelog" link at the bottom for anyone who wants the raw commit diff.
 
+## 5. Pin the new release as the upgrade baseline
+
+The nightly install/upgrade proof (`regression.yml`) starts its upgrade
+passes from the newest baseline in `tests/integration/fresh-install/pins.json`
+and reports INCONCLUSIVE once a newer release exists. Add the new release
+there (its installer digests from
+`gh api repos/Apra-Labs/apra-fleet/releases/tags/vX.Y.Z --jq '.assets[] | "\(.name) \(.digest)"'`)
+in a PR to main.
+
 Done.

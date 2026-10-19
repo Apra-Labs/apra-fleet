@@ -5,6 +5,7 @@ import type { Agent } from '../types.js';
 import type { RemoteOS } from './platform.js';
 import type { MemberShell } from '../os/os-commands.js';
 import { getAgent, findAgentByName, updateAgent } from '../services/registry.js';
+import { serverVersion } from '../version.js';
 
 /**
  * Look up an agent by ID or return a formatted error string.
@@ -184,6 +185,7 @@ export function touchAgent(agentId: string, sessionId?: string): void {
   const updates: Record<string, unknown> = { lastUsed: new Date().toISOString() };
   if (sessionId !== undefined) {
     updates.sessionId = sessionId;
+    updates.sessionServerVersion = serverVersion;
   }
   updateAgent(agentId, updates);
   idleTouchHook?.(agentId); // T7: notify idle manager to reset idle timer

@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { restrictToOwner, ensureOwnerOnlyDir, openOwnerOnlyAppend } from '../src/utils/owner-only-fs.js';
+import { restrictToOwner, ensureOwnerOnlyDir, openOwnerOnlyAppend, currentWindowsUser, ownerOnlyInstallWarnings } from '../src/utils/owner-only-fs.js';
 
 const tmpDirs: string[] = [];
 afterEach(() => {
@@ -24,6 +24,36 @@ describe('owner-only-fs on Windows (execFile mocked)', () => {
       ['icacls', ['C:\\fleet\\fleet.log', '/inheritance:r', '/grant:r', 'CORP\\alice:F']],
       ['icacls', ['C:\\fleet', '/inheritance:r', '/grant:r', 'CORP\\alice:(OI)(CI)F']],
     ]);
+  });
+
+  it('currentWindowsUser reads the process token (whoami), not env USERDOMAIN=WORKGROUP', () => {
+    const saved = process.env.USERDOMAIN;
+    process.env.USERDOMAIN = 'WORKGROUP';
+    try {
+      expect(currentWindowsUser(() => 'desktop-1\\alice\r\n')).toBe('desktop-1\\alice');
+    } finally {
+      if (saved === undefined) delete process.env.USERDOMAIN; else process.env.USERDOMAIN = saved;
+    }
+    expect(currentWindowsUser(() => { throw new Error('no whoami'); })).toBe(os.userInfo().username);
+    expect(currentWindowsUser(() => 'garbled-no-domain')).toBe(os.userInfo().username);
+  });
+
+  it('ownerOnlyInstallWarnings prints a loud [!] line naming the file and the icacls fix on failure', () => {
+    const root = tmp();
+    const key = path.join(root, 'member-access.key');
+    fs.writeFileSync(key, 'x');
+    const execFile = () => { throw new Error('No mapping between account names and security IDs'); };
+    const lines = ownerOnlyInstallWarnings(
+      [{ path: root, kind: 'dir' }, { path: key, kind: 'file' }, { path: path.join(root, 'missing'), kind: 'file' }],
+      { platform: 'win32', execFile, windowsUser: 'desktop-1\\alice' },
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^ {4}\[!\] /);
+    expect(lines[0]).toContain(`icacls "${root}" /inheritance:r /grant:r "desktop-1\\alice:(OI)(CI)F"`);
+    expect(lines[1]).toContain(key);
+    expect(lines[1]).toContain('No mapping between account names');
+    expect(lines[1]).toContain(`icacls "${key}" /inheritance:r /grant:r "desktop-1\\alice:F"`);
+    expect(ownerOnlyInstallWarnings([{ path: key, kind: 'file' }], { platform: 'win32', execFile: () => {}, windowsUser: 'a' })).toEqual([]);
   });
 
   it('reports an icacls failure as a reason instead of throwing', () => {

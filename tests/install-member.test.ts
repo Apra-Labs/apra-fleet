@@ -295,6 +295,18 @@ describe('install --member when another user holds the port', () => {
     expect(labels.at(-1)![0]).toBe(total); // the service step label printed, nothing inserted
   });
 
+  it('FULL install: fails non-zero with a full-install remedy, never --member', async () => {
+    mockPortInUse.mockResolvedValue(true);
+    _setPortHolderProbeOverride(async () => ({ pid: 4321, user: 'fleet-other-user', uid: 987654, command: 'apra-fleet' }));
+    await runInstall(['--transport', 'http', '--skill', 'none', '--workflows', 'none']);
+    expect(process.exitCode).toBe(1);
+    const err = vi.mocked(console.error).mock.calls.flat().join('\n');
+    expect(err).toContain(PORT_HELD_BY_OTHER_USER_CODE);
+    expect(err).toContain('"apra-fleet stop"');
+    expect(err).not.toContain('--member');
+    expect(mockSvcMgr.register).not.toHaveBeenCalled();
+  });
+
   it('a holder that is this user keeps the warning and still registers the service', async () => {
     mockPortInUse.mockResolvedValue(true);
     const { currentUser } = await import('../src/services/port-holder.js');
