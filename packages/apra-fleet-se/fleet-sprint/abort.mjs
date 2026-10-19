@@ -628,6 +628,10 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     });
 
     if (!prResult.ok) {
+        if (prResult.credentialAbsent) {
+            log(`finalizeAbort: [Publish Abort PR] NO [ABORTED] pull request was opened for branch '${branch}' -> '${baseBranch}': no PR credential is deployed (branch is pushed). Deploy a credential to get PRs: ${prResult.error}`);
+            return { prUrl: null, reason: 'pr-auth-failed', pushed: true, commitCount };
+        }
         if (prResult.authFailure) {
             // apra-fleet-647.1.1.1: a PR auth failure survives the reactive
             // one-shot self-heal+retry inside raiseVcsPrForMember (i.e. the

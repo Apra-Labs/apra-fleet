@@ -1040,7 +1040,7 @@
   <ul>
     <li>Your repo has a new branch with a series of reviewed commits and an open PR against the base branch you chose.</li>
     <li>Your issue tracker (beads &mdash; see Section 2) has the sprint's issues decomposed, worked, and closed-with-evidence or left open with filed bugs explaining why.</li>
-    <li>A sprint analysis document is committed to the branch (<code>docs/sprint-analysis-&lt;branch&gt;-&lt;hash&gt;.md</code>: <code>/</code> in the branch name becomes <code>-</code>, plus an 8-character hash), and the run's raw log is retained on disk. No <code>CHANGELOG.md</code> entry is written; the cost breakdown is in the PR body.</li>
+    <li>A sprint analysis document is written to the harvester member's working tree (<code>docs/sprint-analysis-&lt;branch&gt;-&lt;hash&gt;.md</code>: <code>/</code> in the branch name becomes <code>-</code>, plus an 8-character hash) but never committed -- the engine lists <code>docs/sprint-analysis-*.md</code> in that clone's <code>.git/info/exclude</code> -- and the run's raw log is retained on disk. No <code>CHANGELOG.md</code> entry is written; the cost breakdown is in the PR body.</li>
   </ul>
 
   <p>What it is <em>not</em>: it does not invent product scope (the planner is explicitly forbidden from adding work beyond the issues you gave it), it does not merge its own PRs, and it does not know how to deploy or verify your software unless you write down how (Section 2).</p>
