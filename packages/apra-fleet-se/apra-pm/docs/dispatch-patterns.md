@@ -144,8 +144,11 @@ There is no separate sprint-analysis-write dispatch in `auto-sprint.js`. Instead
   (Step 1 of `agents/harvester.md`) before any other doc updates.
 - If the harvester returns `null` (crash or timeout), the JS workflow writes
   `.analysis.md` itself via a `dispatchShell` using the pre-computed
-  `analysisText`. This guarantees the artifact is always committed to the
-  branch, independent of harvester success.
+  `analysisText`. This guarantees the local artifact exists independent of
+  harvester success. Neither path stages or commits it: before the harvester
+  dispatch the workflow adds `sprint-logs/*.analysis.md` to the clone's
+  `.git/info/exclude` (`buildGitExcludeCmd`, idempotent), and a failure there
+  stops the harvest.
 
 The analysis file path is `sprint-logs/<branch>-<timestamp>.analysis.md`.
 
