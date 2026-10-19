@@ -125,10 +125,22 @@ async function listCredentialStoreNames(fleetApi) {
  * advisory the operator should see (e.g. an ssh remote the PAT cannot
  * serve) that is NOT a failure.
  *
+ * apra-fleet-qeq1.9: a hook may also answer `{ skip: true }` -- "this
+ * provider has nothing to provision for THIS request, proceed on the
+ * credential already deployed". That is a third answer, distinct from both
+ * `args` (dispatch these) and `error` (fail): a provider whose credential is
+ * deployed out of band and carries no scope axis has no meaningful
+ * just-in-time re-provision to run, and forcing a doomed one would abort the
+ * very call it is supposed to enable. Reported to the caller as a `null`
+ * return -- no provider ever legitimately produces null `args`, and the
+ * no-hook path above returns `base`, so null is unambiguous. The skip is
+ * never silent: a hook taking it should also return a `note`, logged below
+ * exactly like any other advisory.
+ *
  * @param {{ provider: string, base: object, repoRef: object|null, fleetApi: object,
  *           secretName?: string, remoteUrl?: string, remoteReadError?: string|null,
  *           log?: Function, logPrefix?: string }} ctx
- * @returns {Promise<object>} the arguments to send
+ * @returns {Promise<object|null>} the arguments to send, or null to skip provisioning entirely
  */
 async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi, secretName, remoteUrl, remoteReadError, log = () => {}, logPrefix = '' }) {
     const impl = getVcsProvider(provider);
@@ -137,13 +149,14 @@ async function buildProvisionArgsForProvider({ provider, base, repoRef, fleetApi
     const availableSecrets = await listCredentialStoreNames(fleetApi);
     const built = impl.buildProvisionArgs({ base, repoRef, availableSecrets, secretName, remoteUrl, remoteReadError });
     if (built && typeof built.error === 'string') throw new Error(built.error);
-    if (!built || !built.args || typeof built.args !== 'object') {
+    const skipped = !!(built && built.skip === true);
+    if (!built || (!skipped && (!built.args || typeof built.args !== 'object'))) {
         throw new Error(`ERROR: VCS provider '${provider}' returned no provision arguments for member '${base.member_name}'.`);
     }
     if (typeof built.note === 'string' && built.note.trim()) {
         log(`${logPrefix}: note: ${built.note.trim()}`);
     }
-    return built.args;
+    return skipped ? null : built.args;
 }
 
 // apra-fleet-3swo.13: provision_vcs_auth / provision_llm_auth used to be
@@ -357,8 +370,26 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // that stable code rather than by its message text.
     let provider;
     let authMode;
+    // PR-raising (push+pr) calls act on the TARGET repo, so the provider whose
+    // host serves that remote wins over the member's registered one: a
+    // GitHub-registered backlog member publishing a bitbucket.org sprint must
+    // use Bitbucket's provider (and its own credential label), never mint a
+    // GitHub credential for a Bitbucket repo. Only an anchored auth-provider
+    // host match counts (detectVcsProviderFromRemote); anything else keeps
+    // the registry answer.
+    const hostProvider = (gitAccess === 'push+pr' && !resolvedProvider && !remoteReadFailed && remoteUrl)
+        ? detectVcsProviderFromRemote(remoteUrl)
+        : null;
+    let registeredMismatch = null;
     try {
         ({ provider, authMode } = resolvedProvider || await resolveProvider(member, { fleetApi }));
+        if (hostProvider && hostProvider !== provider) {
+            registeredMismatch = provider;
+            provider = hostProvider;
+            const impl = getVcsProvider(provider);
+            authMode = isAuthBackend(impl) ? impl.defaultAuthMode : null;
+            log(`${logPrefix}: member '${member}' is registered for VCS provider '${registeredMismatch}', but the target remote is served by '${provider}'; using '${provider}' for this pull-request call.`);
+        }
     } catch (resolveErr) {
         if (!resolveErr || resolveErr.code !== VCS_NO_REGISTERED_PROVIDER) throw resolveErr;
         const detected = (!remoteReadFailed && remoteUrl)
@@ -392,6 +423,30 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         log,
         logPrefix,
     });
+    // apra-fleet-qeq1.9: the hook answered "nothing to provision for this
+    // request" (see buildProvisionArgsForProvider's own doc for the null
+    // contract). Dispatch nothing, claim no new expiry -- the credential in
+    // place is whatever it already was -- and still hand back the derived
+    // repo, which is the other half of this function's return contract and is
+    // what the PR-raising call sites need to build their command.
+    //
+    // `provider` + `provisionSkipped` are returned too: with no
+    // provision_vcs_auth call, a member that had no registered vcsProvider
+    // (detected from its remote above) is never persisted, so a caller's
+    // later resolveProvider() would throw VCS_NO_REGISTERED_PROVIDER. And a
+    // skipped provision means the credential exists only if an operator
+    // deployed it, so its absence is an operator fix, not an internal fault.
+    if (provisionArgs === null) {
+        log(`${logPrefix}: provider '${provider}' has nothing to re-provision for member '${member}'; continuing on its already-deployed credential without calling provision_vcs_auth.`);
+        return { expiresAt: null, repo: derivedRepo, provider, provisionSkipped: true };
+    }
+    // A member holds one VCS credential: provisioning the host's provider
+    // here would revoke the credential of the provider it is registered for
+    // (provision_vcs_auth swaps labels) and break that provider's sprints.
+    // Refuse with a typed error instead; the PR callers degrade on it.
+    if (registeredMismatch) {
+        throw new Error(`member '${member}' is registered for VCS provider '${registeredMismatch}', which does not serve this '${provider}' remote; not provisioning '${provider}' on it, because that would revoke the member's '${registeredMismatch}' credential. Use a backlog member dedicated to '${provider}' for this repository.`);
+    }
     const provisionRes = await fleetApi.provisionVcsAuth(provisionArgs);
     const provisionText = resultText(provisionRes);
     // provision_vcs_auth NEVER throws on failure -- it reports failure via
@@ -677,8 +732,13 @@ function isPrAuthFailure(status, errorText) {
  */
 export async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride, updateExisting }) {
     let repo;
+    // Set when the provider's buildProvisionArgs hook answered `skip` (its
+    // credential is deployed out of band only -- see provisionVcsAuthForMember).
+    let skippedProvider = null;
     try {
-        ({ repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride }));
+        const provisioned = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
+        repo = provisioned.repo;
+        if (provisioned.provisionSkipped && provisioned.provider) skippedProvider = provisioned.provider;
     } catch (provisionErr) {
         // apra-fleet-5co8.15: provisionPrCapableAuthForMember has no failSoft
         // of its own (by design -- see its doc comment above), so a
@@ -734,8 +794,18 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     // stale GitHub token left over from an earlier provider and send it to
     // dev.azure.com). `credentialLabel` is threaded into every
     // vcsCredentialExec() call below for exactly that reason.
-    const { provider } = await resolveProvider(member, { fleetApi });
+    //
+    // A skipped provision never persisted a vcsProvider, so a member that had
+    // none registered (provider detected from its remote) would make
+    // resolveProvider() throw here -- use the provider the skip named instead.
+    const { provider } = skippedProvider ? { provider: skippedProvider } : await resolveProvider(member, { fleetApi });
     const credentialLabel = vcsCredentialLabelForProvider(provider);
+    // The provider's operator-facing remedy, appended to every degraded
+    // (authFailure) outcome below when the credential is out-of-band only.
+    const skippedRemedy = () => {
+        const impl = getVcsProvider(provider);
+        return impl && impl.authRemedy && impl.authRemedy.hint ? ` -- ${impl.authRemedy.hint}` : '';
+    };
 
     // apra-fleet-3swo.7.6: the orchestrator never learns the token at all now.
     // It passes the INLINE placeholder as the `token` parameter, so each
@@ -751,6 +821,15 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     // top-level declarations symbol-for-symbol and a new const desyncs that
     // census.
     const token = '{{vcs_token_inline}}';
+    // apra-fleet-qeq1.3: Bitbucket REST needs basic auth 'username:token'
+    // (unlike Azure DevOps/GitHub, which pass an empty or no username at
+    // all) -- see the PLANNER DECISION note on the epic apra-fleet-qeq1.
+    // Passed the same INLINE-placeholder way as `token` above: a provider
+    // that does not read `username` (github.mjs, azure-devops.mjs) simply
+    // ignores it, so this is additive. Inlined here rather than hoisted to a
+    // module constant for the SAME reason `token` is -- see the comment
+    // above it.
+    const username = '{{vcs_username_inline}}';
     // Both os AND shell feed the command builder: os picks the curl binary
     // token (curl.exe vs curl), shell picks the quoting dialect. A Windows
     // member whose registered shell is gitbash needs POSIX quoting, not
@@ -795,8 +874,11 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             const parsed = parseVcsCurlOutput(h.stdout);
             const [lo, hi] = b.interpret.successStatusRange;
             if (parsed.status !== null && parsed.status >= lo && parsed.status <= hi) return { ok: true, built: b, body: parsed.body };
-            const msg = (parsed.body && typeof parsed.body.message === 'string') ? parsed.body.message : (parsed.bodyText || '');
-            if (isPrAuthFailure(parsed.status, msg) && !healed) {
+            // Bitbucket nests its error text at error.message.
+            const msg = (parsed.body && typeof parsed.body.message === 'string') ? parsed.body.message
+                : (parsed.body && parsed.body.error && typeof parsed.body.error.message === 'string') ? parsed.body.error.message
+                    : (parsed.bodyText || '');
+            if (isPrAuthFailure(parsed.status, msg) && !healed && !skippedProvider) {
                 healed = true;
                 log(`${logPrefix}: ${what} returned an auth-classified failure (HTTP ${parsed.status ?? '(unknown)'}) for member '${member}'; re-provisioning a push+pr credential and retrying once (command: ${b.logSafeCommand}): ${msg}`);
                 try {
@@ -807,19 +889,33 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 }
                 continue;
             }
-            return { ok: false, error: `${what} failed: HTTP ${parsed.status ?? '(unknown)'}: ${msg}` };
+            return { ok: false, error: `${what} failed: HTTP ${parsed.status ?? '(unknown)'}: ${msg}${skippedProvider && isPrAuthFailure(parsed.status, msg) ? skippedRemedy() : ''}` };
         }
     };
-    const updateExistingPr = async () => {
+    const coords = () => ({ provider, ...(repoRef ? { repoRef } : { repo }), token, username, os, shell });
+    // Open PRs for head -> base: { ok: true, prs } or { ok: false, error }.
+    // Never throws (a missing builder comes back as { ok: false }).
+    const findOpenPrs = async () => {
         try {
-            const coords = () => ({ provider, ...(repoRef ? { repoRef } : { repo }), token, os, shell });
             const found = await runUpdatePathCall(() => buildFindPrCommand({ ...coords(), base, head }), 'find-pull-request');
-            if (!found.ok) return { updated: false, updateError: found.error, prUrl: null };
-            const prs = found.built.mapResponse(found.body);
-            if (!prs.length) {
-                return { updated: false, updateError: `no open pull request found for '${head}' -> '${base}'`, prUrl: null };
+            if (!found.ok) return found;
+            return { ok: true, prs: found.built.mapResponse(found.body) };
+        } catch (err) {
+            return { ok: false, error: (err && err.message) ? err.message : String(err) };
+        }
+    };
+    // `knownPr` skips the lookup when the caller already found the PR.
+    const updateExistingPr = async (knownPr = null) => {
+        try {
+            let pr = knownPr;
+            if (!pr) {
+                const found = await findOpenPrs();
+                if (!found.ok) return { updated: false, updateError: found.error, prUrl: null };
+                if (!found.prs.length) {
+                    return { updated: false, updateError: `no open pull request found for '${head}' -> '${base}'`, prUrl: null };
+                }
+                pr = found.prs[0];
             }
-            const pr = prs[0];
             const next = updateExisting({ title: pr.title, body: pr.body }) || {};
             let warned = false;
             const upd = await runUpdatePathCall(() => {
@@ -854,7 +950,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         const built = buildCreatePrCommand({
             provider,
             ...(repoRef ? { repoRef } : { repo }),
-            base, head, title, body, token, os, shell,
+            base, head, title, body, token, username, os, shell,
         });
 
         if (built.descriptionTruncated && !truncationWarned) {
@@ -890,6 +986,19 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         // failure, so it degrades the same way a failed command() dispatch
         // did: returned, not thrown.
         if (!handoff.ok && handoff.reason !== 'dispatch_failed') {
+            // Out-of-band-only credential (provision skipped) that is absent:
+            // the operator has not deployed it yet. Degrade to a skipped PR
+            // naming the fix instead of failing the sprint. A just-in-time
+            // minted credential that cannot be read is still a hard failure.
+            if (skippedProvider && ['credential_read_failed', 'credential_empty', 'username_empty'].includes(handoff.reason)) {
+                const message = `No usable '${credentialLabel}' VCS credential is deployed on member '${member}' `
+                    + `(vcs_credential_exec reason: ${handoff.reason})${skippedRemedy()}`;
+                log(`${logPrefix}: ${message}`);
+                // credentialAbsent: no PR was possible at all (nothing is
+                // deployed), as opposed to a deployed credential that failed.
+                // Publish PR keeps the pre-PR-support behaviour for it.
+                return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: true, credentialAbsent: true };
+            }
             throw new Error(
                 `Failed to read VCS credential token for member '${member}' from the `
                 + `'${credentialLabel}'-labelled credential helper via vcs_credential_exec `
@@ -921,6 +1030,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
 
         const errorMessages = [];
         if (respBody && typeof respBody.message === 'string') errorMessages.push(respBody.message);
+        if (respBody && respBody.error && typeof respBody.error.message === 'string') errorMessages.push(respBody.error.message);
         if (respBody && Array.isArray(respBody.errors)) {
             for (const e of respBody.errors) {
                 if (e && typeof e.message === 'string') errorMessages.push(e.message);
@@ -937,7 +1047,33 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             return { ...existing, prUrl: upd.prUrl || existingUrl, updated: upd.updated, updateError: upd.updateError };
         }
 
-        if (isPrAuthFailure(status, errorText) && !authHealAttempted) {
+        const authFailed = isPrAuthFailure(status, errorText);
+        if (authFailed && skippedProvider) {
+            // Nothing to re-provision (the provider skipped it), so a retry
+            // would resend the same credential: report it with the remedy.
+            return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}${skippedRemedy()}`, authFailure: true };
+        }
+
+        // A provider whose duplicate-PR response is unverified declares
+        // `probeExistingOnFailure` instead of an alreadyExists dialect: on any
+        // other non-2xx create failure, look for an open PR for head -> base,
+        // and treat a hit as already-exists (then update it like above).
+        if (!authFailed && built.interpret.probeExistingOnFailure) {
+            const found = await findOpenPrs();
+            if (found.ok && found.prs.length) {
+                const pr = found.prs[0];
+                log(`${logPrefix}: PR creation for '${head}' -> '${base}' failed (HTTP ${status ?? '(unknown)'}: ${errorText}) but an open PR already exists for it${pr.url ? `: ${pr.url}` : ''} -- treating as already-exists.`);
+                const existing = { ok: true, alreadyExists: true, prUrl: pr.url, error: null, authFailure: false };
+                if (typeof updateExisting !== 'function') return existing;
+                const upd = await updateExistingPr(pr);
+                return { ...existing, prUrl: upd.prUrl || pr.url, updated: upd.updated, updateError: upd.updateError };
+            }
+            if (!found.ok) {
+                log(`${logPrefix}: could not check for an existing open PR after the create failure (${found.error}); reporting the create failure.`);
+            }
+        }
+
+        if (authFailed && !authHealAttempted) {
             authHealAttempted = true;
             log(`${logPrefix}: PR creation returned an auth-classified failure (HTTP ${status ?? '(unknown)'}) for member '${member}'; re-provisioning a push+pr credential and retrying once (command: ${built.logSafeCommand}): ${errorText}`);
             try {

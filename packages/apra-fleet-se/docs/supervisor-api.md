@@ -23,7 +23,10 @@ short-circuits before anything downstream runs:
    comma-split by `splitIssueIds()` (trim, drop empties) and then EACH id is
    validated with `validateIssueId`; `branch`/`base` via `validateBranchName`
    (both imported from `fleet-sprint/runner.js` -- the SAME regexes the CLI
-   and the engine itself re-check, single source of truth); `members` (a
+   and the engine itself re-check, single source of truth), and the pair via
+   `validateBranchPair` (`fleet-sprint/sprint-args.mjs`: `branch` equal to
+   `base`, ignoring case and `refs/heads/`/`origin/`/`refs/remotes/origin/`
+   prefixes, -> `400`, field `branch`); `members` (a
    string array or a comma-separated string) non-empty after normalization.
    Optional `phases` is validated too: only `{ "regression": "run" | "skip" }`
    is accepted (anything else -> `400`, field `phases`); `"skip"` forwards

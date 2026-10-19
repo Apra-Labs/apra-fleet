@@ -22,8 +22,10 @@
 //   5. planner-created-tasks  a "plan:" commit exists in the branch history
 //   6. beads-closed           P1 issues were closed (from any durable source)
 //   7. beads-sprint-closed    P1 closures evidenced in committed branch .beads/*.jsonl
-//   8. harvester-ran          a harvest artifact (docs/, .analysis.md) is in
-//                             the net diff
+//   8. harvester-ran          a harvest artifact (docs/ or README.md) is in the
+//                             net diff, and no sprint analysis file
+//                             (docs/sprint-analysis-*.md, sprint-logs/*.analysis.md)
+//                             was committed -- it is local-only
 //
 // evaluateGates() is pure (takes gathered facts, returns verdicts) so it is unit
 // testable; validateSprint() gathers those facts from a git clone + the PR object.
@@ -84,12 +86,18 @@ export function evaluateGates(d) {
       ? `${sprintClosed.length} P1 issue(s) closed in committed branch jsonl: ${sprintClosed.join(', ')}`
       : `only ${sprintClosed.length}/${expected} P1 closures found in committed .beads/*.jsonl (sprint must commit beads state via bd export)`);
 
+  // The sprint analysis file is written locally and never committed, so it is not
+  // harvest evidence; finding it in the net diff is itself a failure.
+  const isAnalysisFile = (f) => /(^|\/)docs\/sprint-analysis-[^/]*\.md$/i.test(f) || /(^|\/)sprint-logs\/[^/]*\.analysis\.md$/i.test(f);
+  const committedAnalysis = (d.finalFiles || []).filter(isAnalysisFile);
   const hasHarvestArtifact = (d.finalFiles || []).some(f =>
-    /^docs\//i.test(f) || /\.analysis\.md$/i.test(f));
-  add('harvester-ran', hasHarvestArtifact,
-    hasHarvestArtifact
-      ? 'harvest artifact found in net diff (docs/ or .analysis.md)'
-      : 'no harvest artifact in net diff -- harvester may not have run');
+    !isAnalysisFile(f) && (/^docs\//i.test(f) || /^readme\.md$/i.test(f)));
+  add('harvester-ran', hasHarvestArtifact && committedAnalysis.length === 0,
+    committedAnalysis.length
+      ? `sprint analysis file committed (must stay local): ${committedAnalysis.join(', ')}`
+      : hasHarvestArtifact
+        ? 'harvest artifact found in net diff (docs/ or README.md)'
+        : 'no harvest artifact in net diff (docs/ or README.md) -- harvester may not have run');
 
   // Suites that drive the /auto-sprint workflow (s10) additionally assert the
   // auto-sprint-args helper skill is BOTH installed AND actually exercised, so the
