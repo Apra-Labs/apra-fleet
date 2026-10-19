@@ -13,4 +13,4 @@ Run the pm commands in order: **plan** (with those 3 issues as the requirement),
 - `requirements.md` and `feedback.md` do NOT appear in `git diff main...{{BRANCH}} --name-only`.
 - `.beads/issues.jsonl` on the branch reflects gh-toy-mi2, gh-toy-7rp, and gh-toy-4ef as closed.
 - A pull request exists for branch `{{BRANCH}}` targeting `main`.
-- `docs/` appears in `git diff main...{{BRANCH}} --name-only` (harvester ran). `docs/sprint-analysis-*.md` must NOT appear there: it is written locally and never committed.
+- `docs/` or `README.md` appears in `git diff main...{{BRANCH}} --name-only` (harvester ran). `docs/sprint-analysis-*.md` must NOT appear there: it is written locally and never committed.
