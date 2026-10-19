@@ -314,7 +314,7 @@ test('placeholder asymmetry: {{vcs_token}} substitutes a shell-quoted token, {{v
 // -----------------------------------------------------------------------
 // Property 2: real-tool field parity.
 // -----------------------------------------------------------------------
-test('real-tool field parity: structuredContent carries exactly the ten fields execResult() emits (src/tools/vcs-credential-exec.ts execResult)', async () => {
+test('real-tool field parity: structuredContent carries exactly the nine fields execResult() emits (src/tools/vcs-credential-exec.ts:147-161)', async () => {
     const { mockFleetApi } = freshMockFleetApi();
     const callTool = defaultMockCallTool({ executeCommand: mockFleetApi.executeCommand });
 
@@ -325,12 +325,12 @@ test('real-tool field parity: structuredContent carries exactly the ten fields e
         member_name: 'local',
     });
 
-    const EXPECTED_FIELDS = ['ok', 'reason', 'exitCode', 'stdout', 'stderr', 'tokenRedactions', 'credentialLabel', 'credentialSecret', 'memberId', 'memberName'];
+    const EXPECTED_FIELDS = ['ok', 'reason', 'exitCode', 'stdout', 'stderr', 'tokenRedactions', 'credentialLabel', 'memberId', 'memberName'];
     const actualFields = Object.keys(res.structuredContent);
     assert.deepEqual(
         [...actualFields].sort(),
         [...EXPECTED_FIELDS].sort(),
-        `expected exactly the real tool's ten structuredContent fields (key SET, order-independent), got: ${JSON.stringify(actualFields)}`,
+        `expected exactly the real tool's nine structuredContent fields (key SET, order-independent), got: ${JSON.stringify(actualFields)}`,
     );
 });
 

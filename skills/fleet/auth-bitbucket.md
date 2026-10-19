@@ -55,10 +55,6 @@ execute_command  command="git remote set-url origin https://me@example.com:{{sec
 
 The token is resolved server-side and redacted in output (`[REDACTED:bitbucket_token]`) - it never appears in the LLM conversation or command logs.
 
-## fleet-sprint PRs: pick the account per project
-
-Store each account's API token once under its own NAME (`credential_store_set name=bitbucket_work persist=true network_policy=allow`), then launch the sprint with that NAME and the owning email: `--bitbucket-secret-name bitbucket_work --bitbucket-email me@example.com` (supervisor: `bitbucketSecretName` / `bitbucketEmail`). Pass the name, never the token. The PR call resolves the token server-side (`vcs_credential_exec` `secret`); nothing is deployed on a member. `network_policy=allow` also lets any orchestrator `execute_command` send that secret to a network tool without the out-of-band confirm, so keep the entry dedicated to PRs.
-
 ## Troubleshooting
 
 | Symptom | Fix |
