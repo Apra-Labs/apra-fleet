@@ -14,6 +14,7 @@ test('harvester-ran passes on docs/ or README.md changes', () => {
 
 test('harvester-ran does not count an analysis file as harvest evidence', () => {
   assert.equal(gate(['src/a.js']).pass, false);
+  assert.equal(gate(['docs/sprint-analysis-x-1234abcd.md']).pass, false);
 });
 
 test('harvester-ran fails when a sprint analysis file was committed', () => {
