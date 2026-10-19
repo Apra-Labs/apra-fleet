@@ -28,7 +28,7 @@ in v0.5.
     child process spawns. A deprecated alias yields a `warnings[]` array in the response. The
     original map (alias intact) is passed to the child so the child's own run log also warns.
     A string `@file` roleMap is rejected with 400 over HTTP (file expansion is CLI-only).
-- **Supervisor launches hard-pin the backlog role.** `fleet-se serve` ensures its own LLM-less,
+- **Supervisor launches hard-pin the backlog role.** The supervisor (`bin/serve.mjs`) ensures its own LLM-less,
   `unreservable` backlog member for its project folder at startup
   (`src/supervisor/backlog-member.mjs`). `POST /api/sprints` then injects that member as
   `backlog` when the request names no backlog role, accepts it when named (via either

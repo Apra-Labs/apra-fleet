@@ -99,7 +99,7 @@ workflow reliably across your fleet (see **Any domain** above).
 
 ## Quick start (5 minutes)
 
-**1. Install** -- one command via npm (Node.js 22+), or grab the
+**1. Install** -- one command via npm (Node.js 22.16+), or grab the
 standalone installer binary for your platform from
 [Releases](https://github.com/Apra-Labs/apra-fleet/releases) and
 double-click it (installation is the default action):
@@ -108,13 +108,31 @@ double-click it (installation is the default action):
 npm install -g @apralabs/apra-fleet
 apra-fleet install           # installs for Claude Code (default)
 apra-fleet install --llm agy # or --llm opencode / codex / copilot
-cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
+apra-fleet start             # npm install registers no OS service: start the server (again after reboot)
 ```
+
+The standalone installer instead registers and starts a user-level service
+(no `start` needed) and does not add anything to PATH: the binary is
+`~/.apra-fleet/bin/apra-fleet` (Windows PowerShell:
+`& "$HOME\.apra-fleet\bin\apra-fleet.exe" status`). See
+[docs/install.md](docs/install.md).
 
 The default install includes fleet-se (fleet-sprint, supervisor, bd), which requires a system Node.js 22.16+ and npm on PATH; the installer fails up front if they are missing. Use `apra-fleet install --workflows none` to install the core only.
 
+For Claude Code, `install` also adds the **fleet-status mod** -- a Claude Code
+plugin that shows every member's state in the status line and opens a
+`/fleet-status` pane where you can also remove a member and list, add,
+replace or delete secrets (a secret's value is typed in another terminal or
+the server's one-time form, never in Claude Code). It is installed through the `claude` CLI from a local
+marketplace in `~/.apra-fleet/claude-plugins/` and replaces the old statusLine
+script. If the `claude` CLI is missing or too old to install plugins, install
+says why and keeps the statusLine script instead. A statusLine of your own is
+never overwritten. See [docs/install.md](docs/install.md#the-fleet-status-mod-claude-code).
+
 **2. Connect your agent.** Load the fleet server in Claude Code with
-`/mcp` (or restart your provider CLI). Your agent now has a fleet.
+`/mcp` (or restart your provider CLI). Your agent now has a fleet. To check
+from a shell, `claude mcp list` should show a line like
+`apra-fleet: http://localhost:7523/mcp (HTTP) - ... Connected` (7523 is the default port).
 
 **3. Register members -- in plain language.** apra-fleet is driven
 conversationally through any MCP-capable agent:
@@ -147,7 +165,7 @@ Open the dashboard, watch your fleet PLAN->BUILD->REVIEW->TEST->SHIP in a loop t
 > **New to fleet-sprint?** Read the
 > [fleet-sprint Getting Started Guide](https://apra-labs.github.io/apra-fleet/fleet-sprint-getting-started.html)
 > ([Markdown](docs/fleet-sprint-getting-started.md) if you're reading this on
-> GitHub -- [PDF](docs/fleet-sprint-getting-started.pdf)) -- a plain-English walkthrough
+> GitHub) -- a plain-English walkthrough
 > of what it does, what you need to prepare (beads backlog, `deploy.md`,
 > test playbooks, member registration), how to launch and monitor a sprint,
 > and what's automated versus what's still your call.
@@ -156,7 +174,9 @@ Open the dashboard, watch your fleet PLAN->BUILD->REVIEW->TEST->SHIP in a loop t
 fleet-sprint ...` command above is the same one command for everyone --
 whether you installed via `npm install -g @apralabs/apra-fleet`, the
 standalone binary, or a git-clone dev checkout. There is no separate
-`fleet-sprint` command to install or remember. See
+`fleet-sprint` command to install or remember. (Standalone installer: the
+binary is not on PATH, so use `~/.apra-fleet/bin/apra-fleet` or add
+`~/.apra-fleet/bin` to PATH -- see step 1.) See
 [the full flag reference](packages/apra-fleet-se/fleet-sprint/docs/README.md)
 for every option.
 
@@ -458,7 +478,7 @@ third-party verticals.
 
 | Topic | Link |
 |-------|------|
-| **fleet-sprint Getting Started Guide (start here, plain English)** | [Website](https://apra-labs.github.io/apra-fleet/fleet-sprint-getting-started.html) - [Markdown](docs/fleet-sprint-getting-started.md) - [PDF](docs/fleet-sprint-getting-started.pdf) |
+| **fleet-sprint Getting Started Guide (start here, plain English)** | [Website](https://apra-labs.github.io/apra-fleet/fleet-sprint-getting-started.html) - [Markdown](docs/fleet-sprint-getting-started.md) |
 | Codebase wiki (architecture, internals, AI Q&A) | [DeepWiki](https://deepwiki.com/Apra-Labs/apra-fleet) |
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
 | Choosing a provider (roles, gotchas, mixing providers, OpenCode/local models) | [docs/provider-guide.md](docs/provider-guide.md) |

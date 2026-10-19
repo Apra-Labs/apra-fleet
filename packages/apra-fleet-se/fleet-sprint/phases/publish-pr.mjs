@@ -202,25 +202,22 @@ export async function runPublishPrPhase({
     const publishPrCapabilities = vcsCapabilities(originUrl);
     const hostedRemote = publishPrCapabilities.canOpenPullRequest;
 
-    if (!hostedRemote) {
-        log(`Publish PR: origin remote '${originUrl || '(unresolved)'}' cannot open a pull request (host: ${publishPrCapabilities.host || 'unknown'}) -- ` +
-            'skipping PR creation entirely (no dependency on any VCS provider\'s auth for this path).');
-        // A non-hosted remote can never complete PR creation, so target-issue
-        // closure cannot be gated on it -- close the target issue(s) directly,
-        // but only when the sprint's own final verdict actually passed. A FAIL
-        // verdict must never be masked by closing the issue anyway; it still
-        // ends the sprint 'failed' via the return value below, same as the
-        // hosted-remote path.
+    // With no PR possible, target-issue closure cannot be gated on one --
+    // close the target issue(s) directly, but only when the sprint's own final
+    // verdict actually passed. A FAIL verdict must never be masked by closing
+    // the issue anyway; it still ends the sprint 'failed' via the return value
+    // below, same as the PR path. `why` names the no-PR cause in the log.
+    const closeTargetsDirectly = async (why) => {
         if (finalVerdictResult.verdict === 'PASS') {
             for (const id of targetIssues) {
                 const closeRes = await command(`bd close ${id}`, {
                     member_name: backlogMember,
                     silent: true,
                     failSoft: true,
-                    label: `Close target issue '${id}' directly (non-hosted remote, no PR gate)`,
+                    label: `Close target issue '${id}' directly (${why}, no PR gate)`,
                 });
                 if (closeRes.ok) {
-                    log(`Publish PR: closed target issue '${id}' directly (non-hosted remote, PASS verdict).`);
+                    log(`Publish PR: closed target issue '${id}' directly (${why}, PASS verdict).`);
                 } else {
                     log(`Publish PR: failed to close target issue '${id}' directly (non-fatal, continuing): ${closeRes.error}`);
                 }
@@ -229,6 +226,12 @@ export async function runPublishPrPhase({
         } else {
             log('Publish PR: final verdict is FAIL -- leaving target issue(s) open (not closing on a non-PASS verdict).');
         }
+    };
+
+    if (!hostedRemote) {
+        log(`Publish PR: origin remote '${originUrl || '(unresolved)'}' cannot open a pull request (host: ${publishPrCapabilities.host || 'unknown'}) -- ` +
+            'skipping PR creation entirely (no dependency on any VCS provider\'s auth for this path).');
+        await closeTargetsDirectly('non-hosted remote');
     } else {
         // finalVerdictResult.notes is LLM-authored free text. It used to go
         // through sanitizePrText() (a single-line shell-argument sanitizer
@@ -315,7 +318,15 @@ export async function runPublishPrPhase({
                 updateExisting: ({ body: oldBody }) => ({ title: prTitle, body: buildBody(oldBody) }),
             });
             if (!prResult.ok) {
-                if (prResult.authFailure) {
+                if (prResult.credentialAbsent) {
+                    // No PR credential is deployed at all for a provider whose
+                    // credential is out-of-band only, so no PR is possible:
+                    // keep the no-PR behaviour (close targets directly on
+                    // PASS) instead of leaving them open with nothing to gate
+                    // on. A deployed-but-failing credential is the branch below.
+                    log(`[Publish PR Skipped] NO pull request was opened for branch '${validated.branch}' -> '${validated.baseBranch}' (branch is pushed): no PR credential is deployed -- closing target issue(s) directly on PASS as for a remote that cannot open a PR. Deploy a credential to get PRs: ${prResult.error}`);
+                    await closeTargetsDirectly('no PR credential deployed');
+                } else if (prResult.authFailure) {
                     // apra-fleet-5co8.15: an auth failure raiseVcsPrForMember
                     // could not clear -- including one that never got past
                     // credential provisioning, e.g. a missing Azure DevOps PAT

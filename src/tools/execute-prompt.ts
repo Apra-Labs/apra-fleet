@@ -38,6 +38,7 @@ import { recordKnownSession, isKnownSession } from '../services/known-sessions.j
 import { resolveBudgetScope, evaluateBudget, recordAndEvaluate, type BudgetUsageBlock } from '../services/budget-awareness.js';
 import { dispatchCostFromCumulative } from '../services/session-cost.js';
 import { sendMessage } from './send-message.js';
+import { serverVersion } from '../version.js';
 import { registerPending } from '../services/pending-responses.js';
 import { inFlightAgents } from '../services/in-flight-agents.js';
 import type { Agent, SSHExecResult } from '../types.js';
@@ -144,7 +145,7 @@ export const executePromptSchema = z.object({
   session_id: z.string().optional().describe('Shorthand for explicit session resume. Equivalent to resume: "<session_id>". If provided, takes precedence over resume.'),
   resume: z.union([z.boolean(), z.string()]).default(true).describe(
     'Session-resume control (default: true). ' +
-    'true = best-effort resume of the member\'s stored last session (a stale/unknown stored session transparently falls back to a fresh session). ' +
+    'true = best-effort resume of the member\'s stored last session (a stale/unknown stored session, or one recorded by a different server build, transparently falls back to a fresh session). ' +
     'false = always start a fresh session. ' +
     'A session-id STRING = EXPLICIT resume of exactly that session, preferred over the member\'s stored session -- the caller asserts this prompt depends on that session\'s prior context, so an unknown/expired id is a TERMINAL error ' +
     '(structured {isError, reason: "session_not_found"}, NO LLM call, and NO fresh-session fallback) rather than a silent wrong-context dispatch.'
@@ -1129,7 +1130,17 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // fresh session: that is exactly the wrong-context dispatch this feature
   // forbids. resume=true/false and fork=true keep their transparent recovery.
   const allowFreshSessionFallback = explicitResumeId === undefined && explicitForkId === undefined;
-  const resuming = !!(resumeRequested && resumeTargetId && provider.supportsResume());
+  // A DEFAULT resume (resume=true) of a stored session recorded under another
+  // server build -- or before builds were stamped -- starts fresh: that
+  // session's transcript lists tools/MCP config this build no longer serves,
+  // and resuming it can end with no tool run yet a "successful" reply.
+  // Explicit-id resumes are the caller's assertion and are left alone.
+  const staleBuildSession = input.resume === true && explicitResumeId === undefined && !forkRequested
+    && !!agent.sessionId && agent.sessionServerVersion !== serverVersion;
+  if (staleBuildSession) {
+    logWarn('execute_prompt', `"${agent.friendlyName}": stored session "${agent.sessionId}" was recorded by server build ${agent.sessionServerVersion ?? '(unrecorded, older build)'}, this server is ${serverVersion} -- starting a fresh session instead of resuming it`, agent);
+  }
+  const resuming = !!(resumeRequested && resumeTargetId && provider.supportsResume()) && !staleBuildSession;
   const isCallerMinted = provider.sessionIdStrategy().type === 'caller-minted';
   const mintedId = isCallerMinted
     ? (resuming ? resumeTargetId! : uuid())

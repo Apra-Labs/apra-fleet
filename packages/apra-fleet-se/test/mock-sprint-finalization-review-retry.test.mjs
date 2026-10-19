@@ -4,6 +4,8 @@ import { CommandError } from '@apralabs/apra-fleet-workflow';
 import { sanitizePrText } from '../fleet-sprint/runner.js';
 import { sanitizePrMarkdown } from '../fleet-sprint/pr-body.mjs';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { getSeCommands } from '../fleet-sprint/se-os-commands.mjs';
+import { SPRINT_ANALYSIS_EXCLUDE_PATTERN } from '../fleet-sprint/phases/harvest.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -275,9 +277,15 @@ function isPrRestCurl(cmd) {
         && /(?:https:\/\/api\.github\.com\/repos\/[\w.-]+\/[\w.-]+\/pulls\b|https:\/\/dev\.azure\.com\/[^ ']+\/pullrequests\b)/.test(cmd);
 }
 
+// The Harvest phase's engine-built git-exclude script, byte-for-byte: built
+// from a constant pattern by se-os-commands (no sprint-derived text), and its
+// `$(...)` reads only a script-local value git itself prints.
+const HARVEST_GIT_EXCLUDE = getSeCommands({ os: 'linux', shell: 'bash' }).ensureGitExcluded(SPRINT_ANALYSIS_EXCLUDE_PATTERN);
+
 function assertNoShellSubstitution(commandLog) {
     for (const cmd of commandLog) {
         if (isPrRestCurl(cmd)) continue;
+        if (cmd === HARVEST_GIT_EXCLUDE) continue;
         check(!cmd.includes('$('), `No dispatched command outside the PR REST calls may contain '$(' (found in: ${cmd})`);
         check(!/`/.test(cmd), `No dispatched command outside the PR REST calls may contain a backtick (found in: ${cmd})`);
     }

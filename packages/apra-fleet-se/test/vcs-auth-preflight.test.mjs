@@ -269,18 +269,34 @@ describe('createVcsAuthPreflightCallback', () => {
 
         await ensureVcsAuthFresh('bb-member');
 
-        assert.equal(calls.length, 1, `expected exactly one provision_vcs_auth call, got ${calls.length}`);
-        assert.equal(calls[0].name, 'provision_vcs_auth');
-        assert.deepEqual(calls[0].args, {
+        // apra-fleet-qeq1.9: bitbucket now declares its own buildProvisionArgs
+        // hook, so the preflight call SEQUENCE gained the credential-store
+        // lookup every hook-bearing provider makes, and the argument shape is
+        // the provider's own rather than the shared GitHub-App default. The
+        // property THIS test exists for -- the registry lookup is plumbed
+        // through and no 'github' literal leaks into a non-GitHub member's
+        // call -- is unchanged, and is asserted below in its new form rather
+        // than loosened. Kept in step with the structurally identical
+        // self-heal twin in test/vcs-auth-self-heal.test.mjs.
+        assert.deepEqual(calls.map((c) => c.name), ['credential_store_list', 'provision_vcs_auth']);
+        const provisionCall = calls.find((c) => c.name === 'provision_vcs_auth');
+        assert.deepEqual(provisionCall.args, {
             member_name: 'bb-member',
             provider: 'bitbucket',
             git_access: 'push',
             repos: ['acme/widgets'],
+            // Derived from the member's own remote by the provider's
+            // parseRepoRef, and a {{secret.NAME}} PLACEHOLDER (never a value)
+            // -- without the token field, provision_vcs_auth's Bitbucket path
+            // opens an out-of-band operator prompt mid-sprint, which is
+            // exactly what an unattended preflight must never do.
+            workspace: 'acme',
+            api_token: '{{secret.bitbucket_api_token}}',
         });
-        assert.ok(!('github_mode' in calls[0].args), `expected no github_mode field for a non-GitHub provider, got: ${JSON.stringify(calls[0].args)}`);
+        assert.ok(!('github_mode' in provisionCall.args), `expected no github_mode field for a non-GitHub provider, got: ${JSON.stringify(provisionCall.args)}`);
         assert.ok(
-            JSON.stringify(calls[0].args).indexOf('github') === -1,
-            `expected no 'github' literal anywhere in a bitbucket member's preflight call, got: ${JSON.stringify(calls[0].args)}`,
+            JSON.stringify(provisionCall.args).indexOf('github') === -1,
+            `expected no 'github' literal anywhere in a bitbucket member's preflight call, got: ${JSON.stringify(provisionCall.args)}`,
         );
     });
 

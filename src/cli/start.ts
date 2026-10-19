@@ -115,7 +115,8 @@ export async function runStart(_args: string[]): Promise<void> {
     // this host) gets its own refusal with the remedy; otherwise the holder
     // pid is appended when it is visible.
     const { findPortHolder, describePortConflict } = await import('../services/port-holder.js');
-    const conflict = describePortConflict(serverPort, portInUseMessage(serverPort, readServerInfoPid()), await findPortHolder(serverPort));
+    const { hasMemberInstallMarker } = await import('./install-guard.js');
+    const conflict = describePortConflict(serverPort, portInUseMessage(serverPort, readServerInfoPid()), await findPortHolder(serverPort), hasMemberInstallMarker() ? 'member' : 'full');
     console.error(conflict.message);
     process.exit(1);
     return;

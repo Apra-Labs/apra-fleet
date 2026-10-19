@@ -15,11 +15,19 @@ Check first: `curl -s -m 5 http://localhost:8787/api/sprints`. Connection
 refused/timeout = not running. `{"sprints": [...]}` = already up, skip this.
 
 Start it detached (it runs indefinitely -- exits only on `POST
-/api/shutdown` or SIGINT/SIGTERM, never on its own):
+/api/shutdown` or SIGINT/SIGTERM, never on its own). `apra-fleet install`
+puts it under the user's home (needs Node.js 22.16+):
 
 ```bash
-node packages/apra-fleet-se/bin/serve.mjs   # background/detached, from repo root
+node ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs              # macOS / Linux
 ```
+
+```powershell
+node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs"    # Windows PowerShell
+```
+
+(From a source checkout of apra-fleet the same file is
+`packages/apra-fleet-se/bin/serve.mjs`.)
 
 Start it from INSIDE the target project (any folder under it): the
 supervisor resolves the project's `.beads` by walking up from its cwd,
@@ -31,20 +39,33 @@ top of the dashboard, and every sprint it launches is told to verify its
 members against it. If NO `.beads` is found (or its probe fails) it still
 starts, but logs `[supervisor] WARNING: no beads database found walking up
 from <cwd> ... To fix: ...`, reports `beads: null` plus `beadsWarning` on
-`/api/health`, shows an amber `Beads: NOT RESOLVED -- ...` header on the
-dashboard, and launches sprints WITHOUT `--expect-beads` (they then verify
-members against the backlog member's own beads). Treat that as
-"restart from the right folder / with `--beads-dir`", or fix the
-environment and hit `GET /api/health?refresh=1` to recover without a
-restart. `--port <n>` overrides the default (8787). Self-logs to
+`/api/health`, and shows an amber `Beads: NOT RESOLVED -- ...` header on the
+dashboard. With NO `.beads` found it also has no backlog member, so every
+launch answers `503` until you restart it from the right folder or with
+`--beads-dir`. With a `.beads` found but a failed probe, launches still
+work (without `--expect-beads`); fix the environment and hit
+`GET /api/health?refresh=1` to recover without a restart. `--port <n>`
+overrides the default (8787). Self-logs to
 `<dataDir>/logs/supervisor.log` in addition to stdout.
+
+**Backlog member.** At startup the supervisor ensures its own backlog
+member: a local member with no LLM whose work folder is the project folder.
+It adopts an LLM-less local member already registered for that folder (name
+kept; adds the `backlog` tag and `unreservable` when missing), or registers
+`backlog-<camelCaseFolderName>`. It logs `[supervisor] backlog member:
+'<name>' (ready)`; `GET /api/health` reports `backlogMember: {status, name,
+reason}`. It refuses to start (exit 1) if that name is taken by a member
+for another folder. Fleet unreachable at startup is not fatal: status is
+`degraded`, launches answer `503`, and a background retry fixes it.
 
 Smoke test (a few seconds after launch -- give it time to bind):
 ```bash
 curl -s -m 5 http://localhost:8787/api/sprints   # expect {"sprints":[],...}
 curl -s -m 5 http://localhost:8787/api/members   # expect the registered fleet, non-empty
-curl -s -m 5 http://localhost:8787/api/health    # check `beads.dir`/`beads.prefix` is the intended tracker
+curl -s -m 5 http://localhost:8787/api/health    # check `beads.dir`/`beads.prefix` is the intended tracker, `backlogMember.status` is "ready"
 ```
+(Windows PowerShell 5.1: `curl` is an alias of `Invoke-WebRequest`; use
+`curl.exe` with the same arguments, or `Invoke-RestMethod <url>`.)
 Both must succeed before treating the supervisor as up -- a bound port with
 a 500 on `/api/members` still means something is broken. A wrong
 `beads.prefix` means it was started from the wrong folder: stop it and
@@ -146,15 +167,24 @@ restart command exists:
    run its smoke test (`GET /api/sprints`, `GET /api/members`) to confirm the
    new process is actually serving before treating the restart as done.
 
+**Upgrading apra-fleet.** A running supervisor keeps the code it started
+with. Before upgrading, let running sprints finish (or stop them) and stop
+the supervisor; start it again afterwards. A
+supervisor started under 0.4.3 does not send the install's access secret, so
+a 0.4.4 fleet server refuses its requests with HTTP 401. If a sprint was
+still running during the upgrade, the first launch may 409 on its stale
+member reservations -- see "Common launch-time crashes" below.
+
 ## Auto-start on login/boot
 
-Instead of a human running `node bin/serve.mjs` by hand each session, the
+Instead of a human running `serve.mjs` by hand each session, the
 supervisor can be registered with the OS to start automatically on
 login/boot. Resolve commands per the target member's own OS (`agent.os`) --
 do not assume the orchestrator's shell; some members run PowerShell, not
-POSIX. Every example below assumes the repo root is
-`/path/to/apra-fleet` (POSIX) or `C:\path\to\apra-fleet` (Windows) --
-substitute the real path on the target member. After registering (any OS),
+POSIX. A service manager does not start in your project folder, so every
+example passes `--beads-dir`. Substitute the real paths: the user's home
+(`/Users/<user>`, `/home/<user>` or `C:\Users\<user>`) and the target
+project folder (`/path/to/project` or `C:\path\to\project`). After registering (any OS),
 run the same-process smoke test from section 0 above (`GET /api/sprints`,
 `GET /api/members`) against the newly auto-started instance to confirm it is
 actually serving, not just that the OS accepted the registration.
@@ -166,7 +196,7 @@ user's own session):
 
 Register:
 ```cmd
-schtasks /Create /TN "ApraFleetSupervisor" /TR "node C:\path\to\apra-fleet\packages\apra-fleet-se\bin\serve.mjs" /SC ONLOGON /RL LIMITED
+schtasks /Create /TN "ApraFleetSupervisor" /TR "node C:\Users\<user>\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs --beads-dir C:\path\to\project" /SC ONLOGON /RL LIMITED
 ```
 De-register:
 ```cmd
@@ -182,8 +212,8 @@ in; requires NSSM installed and on PATH):
 
 Register:
 ```cmd
-nssm install ApraFleetSupervisor node "C:\path\to\apra-fleet\packages\apra-fleet-se\bin\serve.mjs"
-nssm set ApraFleetSupervisor AppDirectory "C:\path\to\apra-fleet"
+nssm install ApraFleetSupervisor node "C:\Users\<user>\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs" --beads-dir "C:\path\to\project"
+nssm set ApraFleetSupervisor AppDirectory "C:\path\to\project"
 nssm start ApraFleetSupervisor
 ```
 De-register:
@@ -206,7 +236,9 @@ Create `~/Library/LaunchAgents/com.apra-fleet.supervisor.plist`:
   <key>ProgramArguments</key>
   <array>
     <string>/usr/local/bin/node</string>
-    <string>/path/to/apra-fleet/packages/apra-fleet-se/bin/serve.mjs</string>
+    <string>/Users/<user>/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs</string>
+    <string>--beads-dir</string>
+    <string>/path/to/project</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -246,9 +278,9 @@ Create `~/.config/systemd/user/apra-fleet-supervisor.service`:
 Description=Apra Fleet supervisor
 
 [Service]
-ExecStart=/usr/bin/node /path/to/apra-fleet/packages/apra-fleet-se/bin/serve.mjs
+ExecStart=/usr/bin/node /home/<user>/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs --beads-dir /path/to/project
 Restart=no
-WorkingDirectory=/path/to/apra-fleet
+WorkingDirectory=/path/to/project
 
 [Install]
 WantedBy=default.target
@@ -306,18 +338,24 @@ Field names, exactly as the API expects them:
 | Field | Required | Notes |
 |---|---|---|
 | `issue` | yes | comma-separated bead root IDs (parent/epic OR a standalone leaf bead). Alias: `target_issue`. |
-| `branch` | yes | created from `base` if it doesn't exist yet. Must differ from `base` (an equal pair is a 400). |
+| `branch` | yes | created from `base` if it doesn't exist yet. Must differ from `base` (an equal pair is a 400; case and `origin/`/`refs/heads/` prefixes are ignored). |
 | `base` | yes | alias: `base_branch`. This is what the sprint branches FROM -- pass the branch you actually want, not always `main`. |
 | `members` | yes | array of registered member names. One member = safest default. |
 | `goal` | no | `P1`, `P1/P2` (default), or `P1/P2/P3`. |
 | `maxCycles` | no | default 5. |
 | `allowMissingMembers` | no | bool. |
-| `requirementsFile` | no | path. |
-| `roleMap` | no | `{"doer":["m1","m2"], "reviewer":["m3"]}`. |
+| `requirementsFile` | no | path on the supervisor's machine; a relative path resolves against the supervisor's project folder. Not found = a run-log warning only, so prefer an absolute path. |
+| `roleMap` | no | `{"doer":["m1","m2"], "reviewer":["m3"]}`. Leave out `backlog`: the supervisor injects its own backlog member; naming any other member there is a 400. `orchestrator` is the deprecated alias of `backlog` (removed in v0.5). |
 | `budget` | no | USD cap. |
+| `phases` | no | `{"regression": "skip"}` skips the regression pass (`"run"` is the default). Any other key or value is a 400. |
 | `overrideRelaunchGate` | no | bool. See below. |
 
-Response has `sprintId`, `pid`, `port` (its own dashboard), `logPath`.
+Response has `sprintId`, `pid`, `port` (its own dashboard), `logPath`, and
+`warnings` (e.g. the deprecation notice when `roleMap.orchestrator` was
+used). A `503` means nothing was launched: the backlog member is not ready,
+the fleet member list could not be read, the fleet server was stopped by its
+user (`apra-fleet stop`), or the beads could not be verified fresh -- the
+`error` says which.
 **A 201 response does NOT mean the sprint is alive** -- it can crash in the
 first few seconds (bad topology, bad member, etc). Always verify (step 3)
 a few seconds after launch.
@@ -354,13 +392,25 @@ only use it once you know why the prior run died.
 
 ## Common launch-time crashes
 
-- **Topology mismatch**: members are on different git commits. Fix: use one
-  member, or align them first (`git fetch && git checkout <branch>` on
-  each), or pass whatever sync option the engine currently exposes -- check
-  `docs/architecture.md` "Multi-member topology" section, don't guess.
+- **Topology refusal**: members are aligned automatically (section 1), so
+  this names what could not be reconciled -- an unreachable member,
+  differing origin URLs, a base missing on origin, a fetch auth failure or
+  a diverged sprint branch. Fix what it names and relaunch; do not align
+  members by hand.
+- **Beads identity** (`BeadsIdentityError`, before any dispatch): `bd`
+  missing on a member, a member resolving to a different beads project, or
+  a failed automatic beads set-up on a beads-reading member. The message
+  names the member and the fix.
 - **Unregistered member**: `GET /api/members` to see valid names.
 - **Stale LLM auth**: dispatch fails with `empty_response`. Re-run
   `provision_llm_auth` for that member.
+- **Stale member reservation** (`409 member overlap rejects launch: sprint
+  '<id or branch>' already claims [...]` while `GET /api/sprints` shows no
+  such sprint): a sprint died uncleanly (crash, or an upgrade with
+  `--ignore-running-sprints`) and left its members reserved on the fleet
+  server. Clear each listed member with the fleet MCP tool
+  `member_reservation {member_name: "<member>", action: "force_release"}`
+  (no supervisor HTTP route does this), then relaunch.
 
 ## Member layout: isolate deploy/test roles from dev roles
 
