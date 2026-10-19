@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { Agent, SSHExecResult } from '../src/types.js';
+import { serverVersion } from '../src/version.js';
 import { MEMBER_SECRET_HEADER, getOrCreateMemberAccessSecret } from '../src/services/member-access-secret.js';
 
 /**
@@ -92,6 +93,9 @@ export function makeTestAgent(overrides: Partial<Agent> = {}): Agent {
     encryptedPassword: 'fake-encrypted',
     workFolder: '/home/testuser/project',
     createdAt: new Date().toISOString(),
+    // A seeded sessionId counts as recorded by THIS build, so resume=true
+    // resumes it (a different/missing stamp starts fresh; see execute-prompt).
+    ...(overrides.sessionId !== undefined && !('sessionServerVersion' in overrides) ? { sessionServerVersion: serverVersion } : {}),
     ...overrides,
   };
 }

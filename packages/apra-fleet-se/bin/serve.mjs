@@ -20,7 +20,7 @@
 import { parseArgs } from 'node:util';
 import path from 'node:path';
 import fs from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
@@ -61,7 +61,7 @@ import {
 import { formatBeadsIdentity, serializeExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 
 const SERVE_USAGE = `
-Usage: fleet-se serve [options]
+Usage: node "${fileURLToPath(import.meta.url)}" [options]
 
 Starts the always-on fleet-sprint supervisor. Runs until POST /api/shutdown or a
 termination signal (Ctrl-C / SIGTERM).

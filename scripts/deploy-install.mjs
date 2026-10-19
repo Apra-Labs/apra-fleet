@@ -19,6 +19,31 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+// install refuses (E-FLEET-SE-RUNNING) while a fleet-sprint supervisor or
+// sprint runs for this user -- and a deploy dispatched by a sprint always has
+// its own sprint and supervisor running. deploy.md's active-sprints gate has
+// already admitted only that own sprint, and replacing the server under it is
+// the documented deploy contract, so the refusal is overridden -- but ONLY when
+// <data dir>/member-access.key already exists: then the installed fleet is
+// 0.4.4+ and every supervisor/sprint started from it reads that key per
+// connection and survives the restart. Without it (the 0.4.3 -> 0.4.4 hop)
+// the running supervisor/sprint is old code that would get HTTP 401, so the
+// guard stays on and its refusal, with the exact stop steps, is surfaced.
+export const IGNORE_RUNNING_SPRINTS = '--ignore-running-sprints';
+
+/** Mirrors src/paths.ts FLEET_DIR + member-access-secret.ts MEMBER_ACCESS_SECRET_FILE. */
+export function memberAccessKeyPath(env = process.env, home = os.homedir()) {
+  return path.join(env.APRA_FLEET_DATA_DIR ?? path.join(home, '.apra-fleet', 'data'), 'member-access.key');
+}
+
+export function installArgs(extra, memberKeyExists) {
+  if (!memberKeyExists || extra.includes(IGNORE_RUNNING_SPRINTS)) return extra;
+  return [...extra, IGNORE_RUNNING_SPRINTS];
+}
 
 export const LAUNCHD_LABEL = 'com.apra-fleet.server';
 
@@ -87,7 +112,11 @@ function runInstaller(installer, extra) {
   });
 }
 
-export async function main(argv, { platform = process.platform, arch = process.arch, getuid = () => process.getuid?.() } = {}) {
+export async function main(argv, {
+  platform = process.platform, arch = process.arch, getuid = () => process.getuid?.(),
+  memberKeyExists = () => fs.existsSync(memberAccessKeyPath()),
+  run = runInstaller,
+} = {}) {
   const args = parseArgs(argv);
   const installer = installerPath(platform, arch);
   if (args.printPath) { process.stdout.write(`${installer}\n`); return 0; }
@@ -102,7 +131,12 @@ export async function main(argv, { platform = process.platform, arch = process.a
     spawnSync('launchctl', ['bootout', target], { stdio: 'inherit' });
   }
 
-  const { code, seen } = await runInstaller(installer, args.extra);
+  const keyExists = memberKeyExists();
+  if (!keyExists) {
+    process.stderr.write('deploy-install: no member access key yet (first 0.4.4+ install here): if a fleet-sprint '
+      + 'supervisor or sprint is running it is old code and install refuses -- stop it as the installer says, then rerun.\n');
+  }
+  const { code, seen } = await run(installer, installArgs(args.extra, keyExists));
   if (code !== 0) return code;
 
   if (args.launchagent && /registration skipped/i.test(seen)) {
