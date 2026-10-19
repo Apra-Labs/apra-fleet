@@ -211,7 +211,8 @@ MANDATORY CHECKLIST -- verify each before exiting:
    from `<skillDir>/cost.js` (the extracted module installed alongside this skill on
    every provider -- see `cost.md`) to produce `sprint-logs/<branch>-<startedAt>.analysis.md` and
    update `sprint-logs/calibration.json` with actual token data from this sprint.
-   Commit both. See `cost.md` Harvest.
+   Commit `calibration.json` only; the `.analysis.md` stays local and git-excluded,
+   never committed. See `cost.md` Harvest.
 5. **Close the sprint root and the delivered issues** -- `bd close <sprint-id>`; also close
    any source beads issues this sprint implemented -- the ready backlog items the
    requirement was drawn from -- with `bd close <issue-id> ...`. Closing the sprint root

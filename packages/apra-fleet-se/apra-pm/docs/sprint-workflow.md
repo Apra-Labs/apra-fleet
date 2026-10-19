@@ -389,8 +389,9 @@ At the end of each cycle, the full dispatch ledger is written as JSONL to
 the ledgers accumulate per run with no bound, and they embed the operator's
 home path (redaction still leaves the username inside the dash-encoded Claude
 project slug), so they are not safe to publish from a public repo. What is
-committed is the distilled output -- `calibration.json` and the
-`<timestamp>.analysis.md` summary, both described below. The branch name is
+committed is the distilled `calibration.json`; the `<timestamp>.analysis.md`
+summary is written locally and never committed (git-excluded in the clone).
+Both are described below. The branch name is
 sanitized (path separators and special characters replaced with dashes) and a
 `yyyymmdd_hhmmss` timestamp is appended, so that parallel sprints on the same or different
 branches never write to the same file. Each line records:
@@ -449,9 +450,10 @@ When the sprint goal is met:
 - `sprint-logs/<branch>-<timestamp>.jsonl` is written locally with per-dispatch cost
   data (gitignored -- see the sprint-log note above)
 - `sprint-logs/calibration.json` is committed with the updated historical averages
-- `sprint-logs/<branch>-<timestamp>.analysis.md` is committed with a Sprint Execution
-  Summary: cycles, per-phase token/cost/dispatch table, failures/retries, and
-  remaining risks at close
+- `sprint-logs/<branch>-<timestamp>.analysis.md` is written locally (never committed;
+  `sprint-logs/*.analysis.md` is added to the clone's `.git/info/exclude` before harvest)
+  with a Sprint Execution Summary: cycles, per-phase token/cost/dispatch table,
+  failures/retries, and remaining risks at close
 - A cost summary table is printed in the workflow output
 
 If the sprint exits via `max_cycles` without meeting the goal:
