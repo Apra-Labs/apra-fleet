@@ -76,7 +76,7 @@ Required:
 
 Optional (defaults applied inside `validateArgs()`):
 - `goal` -- default `'P1/P2'`; must match `GOAL_PATTERN`.
-- `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `usage_limit_max_wait_s`, `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `expect_beads`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `azdevops_pat_secret_name`, `bitbucket_secret_name`, `bitbucket_email`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only. `usage_limit_max_wait_s` (integer >= 60) and `usage_limit_max_reprobes` (integer >= 1) are the CLI-overridable usage-limit pause budgets (`--usage-limit-max-wait-s` / `--usage-limit-max-reprobes`); omitted, they fall back to `role-policies.mjs`'s `USAGE_LIMIT_BUDGET_DEFAULTS`.
+- `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `usage_limit_max_wait_s`, `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `expect_beads`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `azdevops_pat_secret_name`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only. `usage_limit_max_wait_s` (integer >= 60) and `usage_limit_max_reprobes` (integer >= 1) are the CLI-overridable usage-limit pause budgets (`--usage-limit-max-wait-s` / `--usage-limit-max-reprobes`); omitted, they fall back to `role-policies.mjs`'s `USAGE_LIMIT_BUDGET_DEFAULTS`.
 
 **NOT WIRED (2026-10-01).** `ci_gate` / `--ci-gate` are disabled: `ci_gate` is
 not in `KNOWN_ARG_KEYS` (passing it fails as an unknown arg) and the CLI has no
