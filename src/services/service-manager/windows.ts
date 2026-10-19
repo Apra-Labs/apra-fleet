@@ -1,6 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { RegisterResult, ServiceManager, ServiceStatus } from './types.js';
 import { WINDOWS_TASK_NAME, SERVICE_ENV_MARKER } from './types.js';
@@ -9,6 +8,8 @@ import { clearServiceStartFailures } from '../service-start-guard.js';
 import { readStoppedMarker } from '../stopped-marker.js';
 import { SERVICE_NOTICE_PATH, writeServiceNotice, clearServiceNotice } from '../service-notice.js';
 import { BIN_DIR } from '../../cli/config.js';
+import { selfInvocationLines } from '../../cli/install-guard.js';
+import { currentWindowsUser } from '../../utils/owner-only-fs.js';
 
 const WRAPPER_PATH = path.join(BIN_DIR, 'apra-fleet-service.bat');
 
@@ -35,7 +36,7 @@ export interface WindowsServiceOptions {
   env?: Record<string, string | undefined>;
   /** Clock for the time trigger's StartBoundary. */
   now?: () => Date;
-  /** Resolves DOMAIN\user when USERDOMAIN/USERNAME are missing (default: whoami). */
+  /** Resolves DOMAIN\user from the process token (default: whoami). */
   whoami?: () => string;
   /** Launch a command detached and hidden (default: child_process.spawn + unref). */
   spawnDetached?: (cmd: string, args: string[], verbatim?: boolean) => void;
@@ -132,27 +133,16 @@ function xmlUnescape(s: string): string {
 }
 
 /**
- * DOMAIN\user of the current account, resolved in JS (never by shell
- * expansion). A standard user may only register a logon trigger scoped to
- * THEIR OWN account -- an unscoped LogonTrigger means "any user" and needs
- * elevation (verified in a Windows Sandbox spike, Win10 19041).
+ * DOMAIN\user of the current account, read from the process token (whoami),
+ * never from env USERDOMAIN (WORKGROUP under Win32-OpenSSH on a workgroup
+ * machine) and never by shell expansion. A standard user may only register a
+ * logon trigger scoped to THEIR OWN account -- an unscoped LogonTrigger means
+ * "any user" and needs elevation (verified in a Windows Sandbox spike, Win10 19041).
  */
 export function resolveTaskUserId(
-  env: Record<string, string | undefined> = process.env,
   whoami: () => string = () => decodeSchtasks(quietExec('whoami', [])),
 ): string {
-  const user = env.USERNAME?.trim();
-  const domain = env.USERDOMAIN?.trim();
-  if (user && domain) return `${domain}\\${user}`;
-  try {
-    const out = whoami().trim();
-    if (/^[^\\\s]+\\[^\\]+$/.test(out)) return out;
-  } catch { /* fall through */ }
-  let name = user;
-  if (!name) { try { name = os.userInfo().username; } catch { /* below */ } }
-  let dom = domain;
-  if (!dom) { try { dom = os.hostname(); } catch { /* below */ } }
-  return `${dom || '.'}\\${name || 'unknown'}`;
+  return currentWindowsUser(whoami);
 }
 
 /** Local wall-clock time as Task Scheduler's StartBoundary (no zone = local). */
@@ -340,16 +330,33 @@ export function legacyTaskDetail(problems: LegacyTaskProblem[]): string {
  * server the old task started is normally still running, and install refuses
  * to replace a running server without it.
  */
-export function legacyTaskFix(problems: LegacyTaskProblem[]): string {
+export function legacyTaskFix(problems: LegacyTaskProblem[], execPath: string = process.execPath): string {
+  const install = upgradeCommandLines(execPath).map(l => `    ${l}`);
   if (!problems.includes('elevated')) {
-    return ['To upgrade it, run from a normal prompt:', '    apra-fleet install --force'].join('\n');
+    return ['To upgrade it, run from a normal prompt:', ...install].join('\n');
   }
   return [
     'To upgrade it, run once from an elevated prompt (Run as administrator):',
     `    schtasks /delete /tn ${WINDOWS_TASK_NAME} /f`,
     'then, from a normal prompt (do not run the install itself elevated):',
-    '    apra-fleet install --force',
+    ...install,
   ].join('\n');
+}
+
+/**
+ * `install --force` as a command that works where this runs. A standalone
+ * install does not put apra-fleet on PATH: the running installer names its
+ * own path (like the running-server refusal); the installed binary (status,
+ * stop) points at the downloaded installer; node (npm global/dev) has
+ * apra-fleet on PATH.
+ */
+export function upgradeCommandLines(execPath: string): string[] {
+  const base = path.win32.basename(execPath).toLowerCase();
+  if (base === 'node.exe' || base === 'node') return ['apra-fleet install --force'];
+  if (path.win32.resolve(execPath).toLowerCase() === path.win32.resolve(BIN_DIR, 'apra-fleet.exe').toLowerCase()) {
+    return ['<the apra-fleet installer .exe you downloaded> install --force'];
+  }
+  return selfInvocationLines({ platform: 'win32', execPath, sea: true, args: ['install', '--force'] });
 }
 
 /** Full actionable guidance: what is missing and the exact fix. */
@@ -512,7 +519,7 @@ export class WindowsServiceManager implements ServiceManager {
     const xml = buildTaskXml({
       command: hidden ? wscriptPath(this.env) : this.wrapperPath,
       arguments: hidden ? launcherArguments(launcherPath) : undefined,
-      userId: resolveTaskUserId(this.env, this.whoami),
+      userId: resolveTaskUserId(this.whoami),
       startBoundary: localStartBoundary(this.now()),
       repeatMinutes: repeatMinutesFrom(this.env),
     });

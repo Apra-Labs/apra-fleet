@@ -197,7 +197,7 @@ import { runRegressionTestPhase } from './phases/regression-test.mjs';
 // return value is its own contract, and group('Finalization')/endGroup() wrap
 // all four Finalization phases rather than either of these two). Their ORDER
 // is load-bearing: the harvester is a code-writing role whose
-// docs/sprint-analysis commits must be G-pushed by its own policy
+// docs/README commits must be G-pushed by its own policy
 // bracket before Publish PR pushes the branch and raises the PR a human reads.
 // See each module's header for where its boundary is drawn.
 import { runHarvestPhase } from './phases/harvest.mjs';
@@ -3804,9 +3804,10 @@ async function runSprintCycle(context) {
     }
 
     // The phase body lives in ./phases/harvest.mjs (apra-fleet-3swo.6.9). The
-    // sprint-analysis document, the docs commits and the issue deferrals are
-    // all written by the DISPATCHED harvester in its own repo, and the
-    // 'harvester' policy row's pushCode/pushBeads bracket publishes them. The
+    // sprint-analysis document (written locally, never committed), the docs
+    // commits and the issue deferrals are all made by the DISPATCHED harvester
+    // in its own repo, and the 'harvester' policy row's pushCode/pushBeads
+    // bracket publishes the commits and deferrals. The
     // only value it returns is the cost block Publish PR renders. It must
     // nonetheless run HERE, after Regression Test (whose summary it folds into
     // the analysis document) and before Publish PR (which pushes the branch the
@@ -3820,6 +3821,7 @@ async function runSprintCycle(context) {
         finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds, regressionResult, regressionSkippedBy,
         dispatchToolCalls: sprintState.dispatchToolCalls,
         kbWork,
+        command, memberSeCommands,
         computeBranchSlug, buildAnalysisText, buildCostAnalysis,
     });
 

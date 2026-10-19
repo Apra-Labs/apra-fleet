@@ -29,7 +29,10 @@ apra-fleet workflow fleet-sprint \
 This is the ONE command for every install method -- git-clone dev checkout,
 `npm install -g @apralabs/apra-fleet`, and the pre-built standalone binary
 all resolve it identically; there is no separate npm-only invocation to
-learn. The launcher resolves the workflow from
+learn. The standalone installer does not add `apra-fleet` to PATH: run it
+as `~/.apra-fleet/bin/apra-fleet` (PowerShell:
+`& "$HOME\.apra-fleet\bin\apra-fleet.exe"`) or add that folder to PATH.
+The launcher resolves the workflow from
 `~/.apra-fleet/workflows/fleet-sprint` (installed by `apra-fleet install`,
 self-healed on demand). Everything after the workflow name is passed
 through verbatim, so `apra-fleet workflow fleet-sprint --help` prints the
@@ -81,16 +84,19 @@ Watch progress there rather than tailing raw stdout.
 |---|---|---|---|---|
 | `--issue <ids>` | `-i` | yes | -- | Target issue ID(s), comma separated (e.g. `epic-1,epic-2`). Scope resolves to each id's full descendant subtree -- see the epics section below. |
 | `--members <ids>` | `-m` | yes | -- | Member IDs/names to use, comma separated. Members act as repo targets for parallelism. |
-| `--branch <name>` | `-b` | yes | -- | Sprint branch to develop on. Created from `--base` if it does not exist; reused as-is if it does. |
+| `--branch <name>` | `-b` | yes | -- | Sprint branch to develop on. Created from `--base` if it does not exist; reused as-is if it does. Must differ from `--base`: the comparison ignores case and `refs/heads/`, `origin/` and `refs/remotes/origin/` prefixes, and an equal pair is rejected at launch. |
 | `--base <name>` | `-B` | yes | -- | Base branch the sprint branch is created from, and the branch the eventual PR targets. |
 | `--goal <goal>` | `-g` | no | `P1/P2` | Sprint goal constraint. One of `P1`, `P1/P2`, `P1/P2/P3`. |
 | `--max-cycles <n>` | `-c` | no | `5` | Max plan/develop/review cycles. |
 | `--allow-missing-members` | | no | off | Warn and continue if some `--members` are not registered with the fleet. Without it, any missing member aborts the sprint. |
 | `--requirements-file <path>` | | no | -- | Path to a requirements file threaded into the planner's prompt. |
-| `--role-map <json\|@file>` | | no | -- | JSON object mapping role -> member[], e.g. `'{"doer":["m1","m2"]}'`. Inline JSON or `@path/to/file.json`. |
+| `--role-map <json\|@file>` | | no | -- | JSON object mapping role -> member[], e.g. `'{"doer":["m1","m2"]}'`. Inline JSON or `@path/to/file.json`. The `backlog` key names the member whose beads clone the engine runs its own `bd`/`git` commands against (`orchestrator` is its deprecated alias: accepted with a warning in 0.4.4, removed in v0.5). Without `backlog` the engine picks one and logs `backlog: <member> (auto-selected: <reason>)`. |
 | `--viewer-port <port>` | | no | `8080` | Port for the local dashboard viewer. |
 | `--budget <usd>` | | no | unlimited | USD ceiling for this run's total estimated spend. |
 | `--dispatch-timeout-s <s>` | | no | `9000` | Per-dispatch total time budget in seconds -- the hard ceiling on every agent dispatch (integ-test dispatch ceiling is 2x, regression-test ceiling is 3x). Minimum 60. The inactivity/stall threshold used to detect a hung dispatch is derived from this value but capped separately at 30 minutes, so raising this budget for a large sprint does not also grant a stalled dispatch a correspondingly longer grace period before it is killed. Lower it for small sprints so a hung dispatch costs minutes, not 2.5 hours. |
+| `--usage-limit-max-wait-s <s>` | | no | engine default | Total seconds a dispatch may stay paused on a provider usage limit, across all reprobes, before the run ends with a typed abort. Minimum 60. |
+| `--usage-limit-max-reprobes <n>` | | no | engine default | Max usage-limit reprobes before giving up, independent of elapsed wait. Minimum 1. |
+| `--skip-regression` | | no | off | Skip the once-per-sprint regression pass. Logged, and stated in the sprint analysis and the PR body. Integration tests still run. |
 | `--sync` | | no | off | Synced topology mode (orchestrator-bracketed git sync): members may sit on differing HEADs but must share the same origin URL and pass a `bd dolt pull` probe. Omitted uses shared-workspace mode: at launch every member is aligned to the sprint branch automatically (WIP preserved in a named stash), then must share the same HEAD. |
 | `--help` | `-h` | | | Show the engine's help. |
 
@@ -115,6 +121,14 @@ resumed sprint's resync step still runs real git commands against every
 - Every `--members` name must be registered with the fleet
   (`list_members`); an unregistered member aborts the sprint unless
   `--allow-missing-members` is passed.
+- Every member the sprint uses (including the backlog member and
+  deployer/ci-watcher-only members) needs `bd` runnable in its work folder
+  (`apra-fleet install` provides it). Before any dispatch the engine checks
+  each member's beads: a missing `bd` aborts the sprint, a beads-reading
+  member with no beads
+  database yet is set up from the expected beads remote (or the sprint aborts
+  if that set-up fails), and a member resolving to a different beads project
+  aborts. Each error names the member and the fix.
 - Multi-member sprints do not need members aligned by hand: at launch
   (without `--sync`) every member is fetched and checked out on the sprint
   branch (from `origin/<branch>`, else `origin/<base>`), uncommitted work is
@@ -124,6 +138,11 @@ resumed sprint's resync step still runs real git commands against every
   cannot be reconciled: an unreachable member, differing origin URLs, a base
   missing on origin, a fetch auth failure, or a diverged sprint branch. See
   `fleet-sprint-diagram.md` for the supported-topology notes.
+- A GitHub target needs a GitHub App configured on the fleet
+  (`setup_git_app`; see `docs/github-app-setup.md` in the apra-fleet repo):
+  the publish step mints its own `push+pr` credential through it. With only
+  a PAT the sprint still pushes the branch, but logs `[Publish PR Skipped]
+  ... GitHub App not configured` and opens no PR.
 - If a member's LLM session is stale or unauthenticated (dispatch fails with
   `empty_response`, or "member CLI likely died"), re-run `provision_llm_auth`
   for that member before retrying.
@@ -170,8 +189,12 @@ the full algorithm and worked examples.
 
 ## Recovering a wedged member reservation (launched via the supervisor)
 
-If a sprint was launched through the supervisor (`bin/serve.mjs`, installed
-as `fleet-se-serve`; `POST /api/sprints`) and its child process crashes or is killed, the supervisor's
+If a sprint was launched through the supervisor (`POST /api/sprints`; the
+supervisor is `bin/serve.mjs`, which no install puts on PATH -- start it with
+`node ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs`, or in PowerShell
+`node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs"`, from the
+project folder holding `.beads` or with `--beads-dir <project folder>`)
+and its child process crashes or is killed, the supervisor's
 reservation ledger does **not** release that sprint's claim on its own during
 normal runtime -- only a supervisor restart, or an explicit operator call,
 clears it. Symptom: relaunching against the same member(s) is rejected with
@@ -207,5 +230,15 @@ mcp__apra-fleet__member_reservation  action: "force_release"  member_name: "<mem
 ```
 
 A crashed sprint can leave either axis wedged independently of the other --
-check both. See `packages/apra-fleet-se/docs/architecture.md` ("Supervisor:
+check both.
+
+After a supervisor restart or an apra-fleet upgrade (for example one run
+with `--ignore-running-sprints` while a sprint was live), the ledger is
+already empty, so the curl above answers `404 no live reservation for
+sprint '<id>'` -- that axis is clear, skip it. The 409 then comes only from
+the fleet server's `reservedBy`, and the name it prints is whatever id the
+dead sprint reserved with (often its branch name), so it does not appear in
+`GET /api/sprints`. Run the `member_reservation` force_release above once
+per member listed in the 409. It is a fleet MCP tool (call it from your
+agent); the supervisor has no HTTP route for it. See `packages/apra-fleet-se/docs/architecture.md` ("Supervisor:
 process model" / "Manual force-release") for the full mechanism.

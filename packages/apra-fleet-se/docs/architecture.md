@@ -751,7 +751,7 @@ Both primitives exist in **two independent implementations that must stay
 semantically identical**, not because of duplication oversight but because
 neither host alone can reach every launch topology:
 
-- The **supervisor** (`fleet-se-serve`) hosts the original mutex/allocator
+- The **supervisor** (`bin/serve.mjs`) hosts the original mutex/allocator
   (`src/supervisor/dolt-mutex.mjs`, `src/supervisor/id-allocator.mjs`) over
   its own HTTP routes, reachable by any sprint launched *through* the
   supervisor via `--service-url`. This covers supervisor-launched sprints
@@ -1046,8 +1046,15 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
    tracked"/"unlimited" rather than fabricating a number when the budget
    ceiling is unset or spend tracking is unavailable). The harvester's own
    contract (`harvester.md`) says to write `analysisText` verbatim -- never
-   reformat or recompute it. The harvester writes no CHANGELOG entry; the
-   same cost block is rendered by the engine in the PR body (`### Cost`).
+   reformat or recompute it -- and never to `git add` or commit it: the
+   file stays an untracked local record. Before the dispatch the engine
+   adds `docs/sprint-analysis-*.md` to the harvester clone's
+   `.git/info/exclude` (`ensureGitExcluded`, built for the member's
+   OS/shell; idempotent), so the file never shows as dirty, is never
+   auto-stashed by a later branch ensure, and is never swept into a
+   commit; if that step fails the harvester is not dispatched. The
+   harvester writes no CHANGELOG entry; the cost block is rendered by
+   the engine in the PR body (`### Cost`).
 3. **Publish PR** -- pushes the sprint branch (`git push -u origin
    <branch>`), then raises (never merges) a PR via `gh pr create`, whose
    title (`fleet-sprint [PASS|FAIL]: <branch>`; PRs from before the
@@ -1105,7 +1112,7 @@ resume a crashed `fleet-sprint` invocation from the CLI today.
 
 ## Supervisor: reservation ledger and scope freshness (apra-fleet-eft.5)
 
-`fleet-se-serve` (`bin/serve.mjs`, `src/supervisor/`) is a separate, always-on
+The supervisor (`bin/serve.mjs`, `src/supervisor/`) is a separate, always-on
 process from the per-sprint `bin/cli.mjs` invocation described above. It owns
 one combined reservation ledger (`src/supervisor/ledger.mjs`) that claims two
 axes per launched sprint in lockstep -- the reserved member set and the
@@ -1175,7 +1182,7 @@ bug.
 
 ## Supervisor: process model
 
-`fleet-se-serve` boots one always-on process that owns the reservation ledger
+The supervisor (`bin/serve.mjs`) boots one always-on process that owns the reservation ledger
 and an HTTP API, and never exits because a sprint finished or a sprint's child
 process crashed -- it exits only on an explicit shutdown request or signal.
 Each sprint runs as the *existing* per-sprint CLI, launched fully detached

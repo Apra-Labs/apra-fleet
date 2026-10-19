@@ -20,6 +20,8 @@ invariant a future contributor must preserve.
 ## Preflight
 
 - A member that reads beads has beads set up before dispatch, or preflight fails.
+- A member without `bd` (not installed or not on PATH) fails preflight before any
+  dispatch, naming the member and the fix; it is never retried or "healed".
 - A dispatch member's missing permission config is re-composed before dispatch.
 - The VCS preflight states its outcome; the "no callTool" skip log applies only to
   the VCS credential fallback. The backlog beads sync refreshes credentials.
@@ -130,8 +132,14 @@ Design record for sprint-engine hardening around work that gets stranded mid-run
 - **Salvage before reset.** Before a retry hard-resets a member workspace, member
   sync pins unpushed commits and tracked working-tree changes on a local
   `fleet-salvage/` ref. If the pin fails the reset is refused (fail closed).
-- **Harvester analysis excludes cost.** The committed sprint-analysis artifact
-  carries no cost block; cost lives only in the PR body.
+- **Harvester analysis excludes cost.** The sprint-analysis artifact carries no
+  cost block; cost lives only in the PR body.
+- **Harvester analysis is never committed.** The harvester writes
+  `docs/sprint-analysis-<slug>.md` to its working tree only. Before dispatching
+  it, the engine adds `docs/sprint-analysis-*.md` to that clone's
+  `.git/info/exclude` (idempotent, local, per member OS/shell), so the file is
+  never dirty, never auto-stashed and never swept into `git add -A`. If that
+  step fails the harvester is not dispatched, and the log says so.
 - **newTask titles.** Leading dashes are stripped from reviewer-proposed task titles
   (they parse as CLI flags); the original title is preserved in the description.
 - **deploy.md command discipline.** deploy.md steps contain no `$(...)` substitution

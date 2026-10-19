@@ -31,12 +31,18 @@ import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { installBeads, type BeadsInstallDeps } from './beads-install.js';
 import {
-  classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText,
+  classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText, selfInvocationLines,
   writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG,
 } from './install-guard.js';
+import { detectRunningFleetSe, fleetSeRefusalText, realFleetSeProbes, IGNORE_RUNNING_SPRINTS_FLAG, type FleetSeProbes } from './fleet-se-guard.js';
+import { writeServiceNotice, clearServiceNoticeContaining } from '../services/service-notice.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
 import { codeIntelPathWarning } from '../utils/find-on-path.js';
 import { gitBashCandidates } from '../os/git-bash-candidates.js';
+import {
+  CLAUDE_MOD_PLUGIN, CLAUDE_MOD_SOURCE_DIR, claudeModRegistered, claudeModStepEnabled, installClaudeMod, isApraFleetStatusLine,
+  isClaudeModRuntimeFile, removeApraFleetStatusLine, type ClaudeModResult,
+} from './claude-mod.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -126,6 +132,25 @@ export function _setFleetSePrereqProbes(overrides: Partial<FleetSePrereqProbes>)
 /** Test-only: restore the real fleet-se prerequisite probes. */
 export function _resetFleetSePrereqProbes(): void {
   fleetSePrereqProbes = realFleetSePrereqProbes;
+}
+
+// Running fleet-sprint supervisor/sprint guard (fleet-se-guard.ts): same
+// injectable-probes + NODE_ENV=test gate as the prereq check above, so unit
+// tests never probe the real port 8787 or tmp lock dir.
+let fleetSeProbes: FleetSeProbes = realFleetSeProbes;
+/** Test-only: inject fake probes for the running fleet-sprint guard. */
+export function _setFleetSeProbes(overrides: Partial<FleetSeProbes>): void {
+  fleetSeProbes = { ...realFleetSeProbes, ...overrides };
+}
+/** Test-only: restore the real running fleet-sprint guard probes. */
+export function _resetFleetSeProbes(): void {
+  fleetSeProbes = realFleetSeProbes;
+}
+/** The probes the running fleet-sprint guard uses (shared with update.ts). */
+export function currentFleetSeProbes(): FleetSeProbes { return fleetSeProbes; }
+export function fleetSeGuardEnabled(): boolean {
+  if (process.env.NODE_ENV !== 'test') return true;
+  return process.env.APRA_FLEET_ENABLE_FLEET_SE_GUARD === '1';
 }
 
 function fleetSePrereqCheckEnabled(): boolean {
@@ -284,6 +309,12 @@ interface AssetManifest {
   // Optional for the same additive-only reason: older manifests (built before
   // this skill existed) simply omit it and the install step skips.
   fleetSupervisorSkill?: Record<string, string>;
+  // Optional for the same additive-only reason: older manifests (built before
+  // the fleet-status Claude Code mod shipped) simply omit it and the install
+  // keeps the statusLine script. Keys are '<plugin>/<path in plugin>'
+  // (e.g. 'fleet-status/hooks/register.tsx'), values the repo-relative asset
+  // path; only runtime files (isClaudeModRuntimeFile) are listed.
+  claudePlugins?: Record<string, string>;
 }
 
 import { fileURLToPath } from 'url';
@@ -527,11 +558,19 @@ export function buildDevManifest(root: string): AssetManifest {
     };
   }
 
+  // fleet-status Claude Code mod (mirrors scripts/gen-sea-config.mjs's
+  // claudePlugins section): runtime files only, keyed '<plugin>/<rel path>'.
+  const claudePlugins: Record<string, string> = {};
+  const modRaw = collectFilesRec(path.join(root, ...CLAUDE_MOD_SOURCE_DIR.split('/')), CLAUDE_MOD_SOURCE_DIR, CLAUDE_MOD_SOURCE_DIR);
+  for (const [rel, diskPath] of Object.entries(modRaw)) {
+    if (isClaudeModRuntimeFile(rel)) claudePlugins[`${CLAUDE_MOD_PLUGIN}/${rel}`] = diskPath;
+  }
+
   const vf = JSON.parse(fs.readFileSync(path.join(root, 'version.json'), 'utf-8'));
   return {
     version: vf.version, hooks, scripts, skills, fleetSkills, agents, workflows,
     workflowRuntime, agentSchemas, builtinWorkflows, autoSprintArgsSkill,
-    fleetSprintCliSkill, fleetSupervisorSkill,
+    fleetSprintCliSkill, fleetSupervisorSkill, claudePlugins,
   };
 }
 
@@ -736,8 +775,15 @@ function mergePermissions(paths: ProviderInstallConfig, extraPerms: string[] = [
   writeConfig(paths, settings);
 }
 
-function configureStatusline(paths: ProviderInstallConfig, scriptPath: string, llm?: LlmProvider): void {
+/**
+ * Point the provider's statusLine at apra-fleet's statusline script -- unless
+ * the user already has a statusLine of their own (one whose command is not
+ * apra-fleet's script), which is never overwritten. Returns 'kept-foreign'
+ * in that case so the caller can say so.
+ */
+function configureStatusline(paths: ProviderInstallConfig, scriptPath: string, llm?: LlmProvider): 'written' | 'kept-foreign' {
   const settings = readConfig(paths);
+  if (settings.statusLine && !isApraFleetStatusLine(settings.statusLine)) return 'kept-foreign';
   let command: string;
 
   if (process.platform === 'win32') {
@@ -763,6 +809,18 @@ function configureStatusline(paths: ProviderInstallConfig, scriptPath: string, l
     command,
   };
   writeConfig(paths, settings);
+  return 'written';
+}
+
+/**
+ * The fleet-status mod's runtime files from the asset manifest (SEA or dev),
+ * relative to the mod folder. Empty when this build does not package the mod.
+ */
+function claudeModFiles(manifest: AssetManifest): Array<{ relPath: string; content: Buffer }> {
+  const prefix = `${CLAUDE_MOD_PLUGIN}/`;
+  return Object.entries(manifest.claudePlugins ?? {})
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([key, assetKey]) => ({ relPath: key.slice(prefix.length), content: extractAssetBuffer(assetKey) }));
 }
 
 function mergeAgyConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
@@ -1263,6 +1321,11 @@ Options:
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
                           With --member, only a server a previous member install left behind
                           is stopped; anything else is refused (E-FULL-INSTALL-RUNNING).
+  --ignore-running-sprints
+                          Install even while a fleet-sprint supervisor or sprint is running for this
+                          user; the server is replaced underneath them (ones started under 0.4.3 or
+                          earlier then fail with HTTP 401 until restarted). Without it install
+                          refuses (E-FLEET-SE-RUNNING); --force does not override this.
   --force-stop-full-install
                           With --member --force: also stop a running server that was not started
                           by a member install (e.g. a full install on a shared machine).
@@ -1387,7 +1450,7 @@ Options:
   }
 
   const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows=', '--port='];
-  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, '--transport', '--port', '--help', '-h']);
+  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, IGNORE_RUNNING_SPRINTS_FLAG, '--transport', '--port', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -1423,6 +1486,42 @@ Options:
       process.exit(1);
     }
   }
+
+  // Running fleet-sprint supervisor/sprint guard: before the running-server
+  // guard so a refusal stops and writes nothing. --force does not bypass it
+  // (update always passes --force); only the dedicated flag does. A member
+  // install is exempt: it installs no fleet-se and is driven remotely by the
+  // orchestrator, whose own host runs the sprints.
+  if (!memberMode && !args.includes(IGNORE_RUNNING_SPRINTS_FLAG)
+      && (isSea() || isNpmGlobalInstall()) && fleetSeGuardEnabled()) {
+    let found: Awaited<ReturnType<typeof detectRunningFleetSe>> | null = null;
+    try {
+      found = await detectRunningFleetSe(fleetSeProbes);
+    } catch (err) {
+      console.warn(`WARNING: could not check for a running fleet-sprint supervisor or sprint (${(err as Error).message}). If one is running, stop it before upgrading.`);
+    }
+    for (const w of found?.warnings ?? []) console.warn(`WARNING: ${w}`);
+    if (found && (found.supervisor || found.sprints.length > 0)) {
+      const self = (a: string[]) => selfInvocationLines({
+        platform: process.platform, execPath: process.execPath, scriptPath: process.argv[1], sea: isSea(), args: ['install', ...a],
+      });
+      const text = fleetSeRefusalText(found, {
+        platform: process.platform,
+        rerunLines: self(args),
+        ignoreLines: self([...args, IGNORE_RUNNING_SPRINTS_FLAG]),
+      });
+      console.error(text);
+      // apra-fleet update runs install detached with no console: persist it
+      // for the next service verb.
+      writeServiceNotice(text.trim(), undefined, new Date(), Boolean(process.stderr.isTTY));
+      process.exit(1);
+      return;
+    }
+  }
+  // Past the guard: a refusal persisted by an earlier (detached) install is
+  // obsolete and must not be shown after this install succeeds. All OSes --
+  // only the Windows service manager clears notices on registration.
+  clearServiceNoticeContaining('E-FLEET-SE-RUNNING');
 
   const serviceStep = isSea() && transport === 'http';
   // A member install exists to leave an auto-starting server behind. With no
@@ -1471,12 +1570,21 @@ Nothing was installed.
       const killHint = process.platform === 'win32'
         ? '    taskkill /F /IM apra-fleet.exe'
         : '    pkill -x apra-fleet';
+      // Name THIS executable, not "apra-fleet": a downloaded installer is
+      // usually not on PATH, and PATH may resolve to the older installed one.
+      const forceHint = selfInvocationLines({
+        platform: process.platform,
+        execPath: process.execPath,
+        scriptPath: process.argv[1],
+        sea: isSea(),
+        args: ['install', ...args.filter(a => a !== '--force'), '--force'],
+      }).map(l => `    ${l}`).join('\n');
       console.error(`
 Error: apra-fleet is currently running. Stop the server before installing.
   (${runningScope.detail})
 
   Run with --force to stop it automatically:
-    apra-fleet install --force
+${forceHint}
 
   Or stop it manually:
 ${killHint}
@@ -1617,6 +1725,7 @@ ${manualStopHint(pidsAfterStop)}
   }
 
   // --- Step 4: Configure hooks + statusline in settings.json ---
+  let claudeModResult: ClaudeModResult | null = null;
   console.log(`  [4/${totalSteps}] Configuring ${paths.name} settings...`);
   // OpenCode has a strict config schema -- hooks/statusLine/defaultModel are not valid keys
   if (memberMode) {
@@ -1627,8 +1736,29 @@ ${manualStopHint(pidsAfterStop)}
     );
     mergeHooksConfig(paths, installedHooksConfig, llm);
 
-    const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
-    configureStatusline(paths, statuslineScript, llm);
+    // Claude: install the fleet-status mod (status line entry + /fleet-status
+    // pane). Only when it installed does the statusLine script go away (and
+    // only apra-fleet's own entry); otherwise today's statusLine stays.
+    // Runs before configureStatusline and between the settings writes: the
+    // claude CLI edits the same settings.json, and every helper re-reads it.
+    if (llm === 'claude' && claudeModStepEnabled()) {
+      let modFiles: Array<{ relPath: string; content: Buffer }> = [];
+      try { modFiles = claudeModFiles(manifest); } catch { /* unreadable asset -> reported as not packaged */ }
+      claudeModResult = installClaudeMod(modFiles, { alreadyRegistered: claudeModRegistered(paths) });
+    }
+    if (claudeModResult?.status === 'installed') {
+      if (removeApraFleetStatusLine(paths)) {
+        console.log('    Removed the apra-fleet statusLine entry (the fleet-status mod replaces it).');
+      }
+    } else {
+      if (claudeModResult?.status === 'skipped') {
+        console.log(`    fleet-status mod not installed: ${claudeModResult.reason} -- keeping the statusLine script.`);
+      }
+      const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
+      if (configureStatusline(paths, statuslineScript, llm) === 'kept-foreign') {
+        console.log(`    Kept your existing statusLine in ${paths.settingsFile} (not apra-fleet's; left unchanged).`);
+      }
+    }
 
     const standardModel = PROVIDER_STANDARD_MODELS[llm] ?? PROVIDER_STANDARD_MODELS['claude'];
     writeDefaultModel(paths, standardModel);
@@ -2119,6 +2249,21 @@ ${manualStopHint(pidsAfterStop)}
   } catch (err) {
     console.warn('    [!] member access secret not created:', err instanceof Error ? err.message : String(err));
   }
+  // Windows: make the data dir and the secret owner-only NOW, and say so
+  // loudly when icacls fails (the server only logs it). POSIX keeps its
+  // chmod path (0600 file mode, 0700 dirs at server start).
+  if (process.platform === 'win32') {
+    try {
+      const { ownerOnlyInstallWarnings } = await import('../utils/owner-only-fs.js');
+      const { memberAccessSecretPath } = await import('../services/member-access-secret.js');
+      const dataDir = getInstallDataDir();
+      for (const line of ownerOnlyInstallWarnings([{ path: dataDir, kind: 'dir' }, { path: memberAccessSecretPath(dataDir), kind: 'file' }])) {
+        console.warn(line);
+      }
+    } catch (err) {
+      console.warn('    [!] owner-only permissions not checked:', err instanceof Error ? err.message : String(err));
+    }
+  }
 
   // --- Step N: Register and start service (SEA + HTTP mode only) ---
   let serviceRegistered = false;
@@ -2136,7 +2281,7 @@ ${manualStopHint(pidsAfterStop)}
       const serverPort = resolveServerPort();
       if (probe.state === 'gone' && await isPortInUse(serverPort, DEFAULT_HOST)) {
         const { findPortHolder, describePortConflict } = await import('../services/port-holder.js');
-        const conflict = describePortConflict(serverPort, portInUseMessage(serverPort, readServerInfoPid()), await findPortHolder(serverPort));
+        const conflict = describePortConflict(serverPort, portInUseMessage(serverPort, readServerInfoPid()), await findPortHolder(serverPort), memberMode ? 'member' : 'full');
         // Another user's process holds this install's port (a second member
         // install on this host): the server can never start here, so fail
         // now with who holds it and the remedy, not after a dead service.
@@ -2220,6 +2365,9 @@ ${restartHint}
     : '';
   const settingsLine = memberMode ? '' : `\n  Settings:    ${paths.settingsFile}`;
   const serviceState = serviceHealthy === true ? 'registered and running' : serviceHealthy === false ? 'registered, but NOT answering /health (see the warning above)' : 'registered (health not checked)';
+  const claudeModLine = claudeModResult
+    ? `\n  Claude mod:  fleet-status ${claudeModResult.status === 'installed' ? `installed (${claudeModResult.dir}${claudeModResult.note ? `; ${claudeModResult.note}` : ''})` : `skipped: ${claudeModResult.reason}`}`
+    : '';
   const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `${serviceState}${serviceReused ? ' (existing task reused)' : ''}${serviceRunKey ? ' (logon autostart via HKCU Run, no automatic restart)' : ''}` : 'registration skipped'}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
@@ -2227,7 +2375,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}${settingsLine}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}${installAgents ? `\n  Agents:      ${paths.agentsDir}` : ''}
   Beads:       ${beadsVersion}
-  Dolt:        ${doltVersion}${serviceLine}
+  Dolt:        ${doltVersion}${claudeModLine}${serviceLine}
 
 ${instructions}${forceNote}${accessNote}
 `);
