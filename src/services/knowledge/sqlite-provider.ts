@@ -310,7 +310,7 @@ export class SqliteProvider implements MemoryProvider {
     // withdrawn, demoted_basis_hashes the sha256 of each cited source file AS
     // IT WAS ON DISK AT DEMOTE TIME. The second column is deliberately NOT a
     // copy of source_file_hashes (which is the CAPTURE-time basis): the
-    // ping-pong guard built on top of it asks "has the tree moved on since we
+    // question it exists to answer is "has the tree moved on since we
     // demoted?", and a capture-time copy answers the wrong question, so a file
     // edited between capture and demote would look unchanged forever. Same
     // guarded-ALTER pattern as scope/source_file_hashes above: it runs on a
@@ -1891,8 +1891,8 @@ export class SqliteProvider implements MemoryProvider {
    *
    * This MUST NOT be derived from the source_file_hashes column. That column
    * is the CAPTURE-time basis; copying it was the defect in the superseded
-   * upstream attempt, and it silently breaks the ping-pong guard that asks
-   * whether the tree has moved on SINCE the demotion. Files that cannot be
+   * upstream attempt, and it cannot answer whether the tree has moved on
+   * SINCE the demotion. Files that cannot be
    * read are simply absent from the map (a demote is still allowed on an
    * entry whose basis has since disappeared -- unlike promote, which refuses).
    *
