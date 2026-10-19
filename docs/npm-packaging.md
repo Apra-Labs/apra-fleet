@@ -230,8 +230,8 @@ are authoring-only); `install --llm claude` copies them into
 
 **What is shipped:** compiled JS (`dist/`), hooks config, runtime scripts,
 skills (fleet + pm), `version.json`, the fleet-sprint engine subtree (see
-below), and the built console shell (`packages/apra-fleet-shell-ui/dist/`,
-see 7.1a).
+below), the built console shell (`packages/apra-fleet-shell-ui/dist/`,
+see 7.1a), and the fleet-status Claude Code mod.
 
 **Workspace packages are intentionally private** (apra-fleet-3ns.4):
 `packages/apra-fleet-se`, `packages/apra-fleet-workflow`, and

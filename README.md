@@ -134,6 +134,16 @@ script. If the `claude` CLI is missing or too old to install plugins, install
 says why and keeps the statusLine script instead. A statusLine of your own is
 never overwritten. See [docs/install.md](docs/install.md#the-fleet-status-mod-claude-code).
 
+For Claude Code, `install` also adds the **fleet-status mod** -- a Claude Code
+plugin that shows every member's state in the status line and opens a
+`/fleet-status` pane where you can also remove a member and list, add,
+replace or delete secrets (a secret's value is typed in another terminal or
+the server's one-time form, never in Claude Code). It is installed through the `claude` CLI from a local
+marketplace in `~/.apra-fleet/claude-plugins/` and replaces the old statusLine
+script. If the `claude` CLI is missing or too old to install plugins, install
+says why and keeps the statusLine script instead. A statusLine of your own is
+never overwritten. See [docs/install.md](docs/install.md#the-fleet-status-mod-claude-code).
+
 **2. Connect your agent.** Load the fleet server in Claude Code with
 `/mcp` (or restart your provider CLI). Your agent now has a fleet. To check
 from a shell, `claude mcp list` should show a line like
