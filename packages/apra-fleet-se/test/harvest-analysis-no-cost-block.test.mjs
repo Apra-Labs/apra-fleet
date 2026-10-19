@@ -5,8 +5,8 @@ import { buildSprintPrBody } from '../fleet-sprint/pr-body.mjs';
 import { createRecordingCtx } from './helpers/dispatch-role-harness.mjs';
 
 // =============================================================================
-// The harvester commits its analysisText to the product branch, so that text
-// must carry no Cost heading and no spend figures. The Publish PR body still
+// The harvester writes its analysisText into the target repo's tree, so that
+// text must carry no Cost heading and no spend figures. The Publish PR body still
 // renders the Cost section from the cost block the Harvest phase returns.
 // =============================================================================
 
@@ -35,6 +35,8 @@ async function runHarvest() {
         finalOpenAtGoalCount: 0,
         finalDeferredAtGoalIds: [],
         regressionResult: null,
+        command: async () => ({ ok: true, output: '' }),
+        memberSeCommands: async () => ({ ensureGitExcluded: (e) => `exclude ${e}` }),
         computeBranchSlug: (b) => b.replace(/[^A-Za-z0-9]+/g, '-'),
         buildAnalysisText: () => `# Sprint analysis\n\n${REPORT_MARKER}`,
         buildCostAnalysis: () => COST_MARKER,

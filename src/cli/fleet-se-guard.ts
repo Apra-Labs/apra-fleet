@@ -71,6 +71,8 @@ export interface FleetSeProbes {
   commandLine: (pid: number) => string | null;
   /** Parsed JSON body of a 200 response, or null (refused, timeout, non-200, bad JSON). */
   getJson: (url: string) => Promise<unknown>;
+  /** This process's own pid; a lock holding it is never a running sprint. */
+  selfPid: () => number;
 }
 
 async function getJsonWithTimeout(url: string): Promise<unknown> {
@@ -97,6 +99,7 @@ export const realFleetSeProbes: FleetSeProbes = {
   isPidAlive,
   commandLine: processCommandLine,
   getJson: getJsonWithTimeout,
+  selfPid: () => process.pid,
 };
 
 function isEnoent(err: unknown): boolean {
@@ -127,7 +130,7 @@ export async function detectRunningFleetSe(probes: FleetSeProbes = realFleetSePr
     const lockFile = path.join(lockDir, f);
     let pid: number;
     try { pid = parseInt(probes.readFile(lockFile).trim(), 10); } catch (err) { if (isEnoent(err)) continue; throw err; }
-    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || !probes.isPidAlive(pid)) continue;
+    if (!Number.isInteger(pid) || pid <= 0 || pid === probes.selfPid() || !probes.isPidAlive(pid)) continue;
     const cmd = probes.commandLine(pid);
     if (cmd === null) {
       warnings.push(`could not read the command line of pid ${pid} (sprint lock ${lockFile}), so it is not treated as a running sprint. If it is one, stop it before upgrading.`);

@@ -1394,6 +1394,41 @@ function exportGuardLogLine(detected, stepLabel) {
   return null;
 }
 
+// The sprint analysis summary (sprint-logs/<branch>-<ts>.analysis.md) is written to the
+// working tree but NEVER committed. This builds the one command that lists its pattern
+// in the target clone's local git exclude file, so every later `git add -A` /
+// `git add sprint-logs/` skips it and it never shows as a local change. Same contract as
+// fleet-sprint's ensureGitExcluded: the exclude file is resolved by git itself
+// (`git rev-parse --git-path info/exclude`, so linked worktrees work), its directory is
+// created when missing, a missing trailing newline is repaired, and the line is
+// appended only when not already present (idempotent). Runs unchanged in a POSIX shell
+// and in PowerShell: node with argv (no inner shell), no `$`, no backticks, no double
+// quotes inside the program. Prints exactly one GIT_EXCLUDE_OK: or GIT_EXCLUDE_ERROR:
+// line. Pure -- builds a string only.
+const ANALYSIS_EXCLUDE_PATTERN = 'sprint-logs/*.analysis.md';
+function buildGitExcludeCmd(repoPath, pattern) {
+  return `node -e "` +
+    `const{execFileSync}=require('child_process');` +
+    `const fs=require('fs');const path=require('path');` +
+    `const repo=process.argv[1];const pat=process.argv[2];const NL=String.fromCharCode(10);` +
+    `try{` +
+      `const rel=execFileSync('git',['rev-parse','--git-path','info/exclude'],{cwd:repo,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();` +
+      `if(!rel)throw new Error('git printed no exclude path');` +
+      `const f=path.resolve(repo,rel);` +
+      `fs.mkdirSync(path.dirname(f),{recursive:true});` +
+      `let t='';try{t=fs.readFileSync(f,'utf8');}catch(e){}` +
+      `if(t.split(/\\r?\\n/).includes(pat)){console.log('GIT_EXCLUDE_OK: already listed '+pat);}` +
+      `else{fs.appendFileSync(f,(t.length>0&&!t.endsWith(NL)?NL:'')+pat+NL);console.log('GIT_EXCLUDE_OK: added '+pat);}` +
+    `}catch(e){console.log('GIT_EXCLUDE_ERROR: '+String((e&&(e.stderr||e.message))||e).trim().split(NL)[0]);}` +
+  `" "${repoPath}" "${pattern}"`;
+}
+
+// True only when a dispatch result carries GIT_EXCLUDE_OK and no GIT_EXCLUDE_ERROR. Pure.
+function gitExcludeSucceeded(result) {
+  const text = typeof result === 'string' ? result : JSON.stringify(result || '');
+  return text.includes('GIT_EXCLUDE_OK:') && !text.includes('GIT_EXCLUDE_ERROR:');
+}
+
 // PURE_FUNCTIONS_END
 
 // ROLE_SCHEMAS_GENERATED_BEGIN -- do not hand-edit; run `node scripts/gen-auto-sprint-schemas.mjs` to regenerate from agents/schemas/*.json
@@ -4060,6 +4095,22 @@ sprintSummary.summaryText += '\n' + executionSummary.summaryText;
 log('Sprint summary:\n' + sprintSummary.summaryText);
 const analysisArtifactFile = `sprint-logs/${sprintLogBranch}-${effectiveStartedAt}.analysis.md`;
 
+// The analysis file is written locally and never committed: list its pattern in this
+// clone's git exclude file BEFORE anything writes it, so the harvester's commits, the
+// fallback and beads-export-cleanup's `git add -A` / `git add sprint-logs/` all skip it.
+// Without the exclude those would sweep it in, so a failure stops the harvest loudly.
+const analysisExcludeRes = await dispatchShell(
+  [buildGitExcludeCmd(repo, ANALYSIS_EXCLUDE_PATTERN)],
+  { model: MODEL_HAIKU, label: 'analysis-git-exclude', phase: 'Harvest' }
+);
+if (!gitExcludeSucceeded(analysisExcludeRes)) {
+  log(`ERROR: could not add ${ANALYSIS_EXCLUDE_PATTERN} to the local git exclude file of ${repo} -- ` +
+    `harvest NOT run (its commits could sweep the uncommitted analysis file in). ` +
+    `Result: ${JSON.stringify(analysisExcludeRes)}`);
+  await clearSprintState(stateFileRel, 'state-clear-harvestfailed');
+  return { cycles: cycleCount, goalMet, goal, harvest: 'failed' };
+}
+
 const harvestLabel = 'harvester';
 const harvestResult = await dispatch(
   kbContext +
@@ -4070,7 +4121,8 @@ const harvestResult = await dispatch(
   `The sprint is complete. Harvest the sprint artefacts.\n` +
   `Follow your runbook (agents/harvester.md).\n\n` +
   `IMPORTANT: Your FIRST action (Step 1 of your runbook) is to write the analysis artifact below ` +
-  `to "${repo}/${analysisArtifactFile}" and commit it before doing anything else.\n\n` +
+  `to "${repo}/${analysisArtifactFile}" before doing anything else. Do NOT git add or commit it: ` +
+  `it stays a local, git-excluded file.\n\n` +
   `analysisText (write this verbatim to ${analysisArtifactFile}):\n` +
   sprintSummary.summaryText + `\n\n` +
   `Regression pass (once-per-sprint, informational -- does not gate this sprint):\n` +
@@ -4082,15 +4134,14 @@ await runKbWork(repo, 'harvester', harvestResult);
 
 if (!harvestResult || harvestResult.status !== 'OK') {
   log(`Harvest failed: ${(harvestResult && harvestResult.notes) || 'null'} -- writing analysis fallback`);
-  // JS fallback: write .analysis.md directly from in-memory analysisText so the artifact
-  // is preserved in branch history even when the harvester agent is killed or crashes.
+  // JS fallback: write .analysis.md directly from in-memory analysisText so the local
+  // record exists even when the harvester agent is killed or crashes. Never staged or
+  // committed: the file is git-excluded above.
   const safeContent = sprintSummary.summaryText.replace(/'/g, "'\\''");
   await dispatchShell(
     [
       `mkdir -p "${repo}/sprint-logs"`,
       `printf '%s' '${safeContent}' > "${repo}/${analysisArtifactFile}"`,
-      `git -C "${repo}" add "${analysisArtifactFile}"`,
-      `git -C "${repo}" -c user.name='pm' -c user.email='pm@pm.local' commit --allow-empty -m "chore: sprint-analysis fallback ${branch} ${effectiveStartedAt}"`,
     ],
     { model: MODEL_HAIKU, label: 'harvest-analysis-fallback', phase: 'Harvest' }
   );
