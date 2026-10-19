@@ -94,16 +94,12 @@ const OWNER_REPO = (cfg.toy.match(/github\.com[/:]([^/]+\/[^/.]+)/) || [])[1] ||
 
 function ghEnv(token) { return token ? { ...process.env, GH_TOKEN: token } : process.env; }
 
-// bd resolves BEADS_DIR before it ever looks at cwd. On a
-// host that exports BEADS_DIR globally (e.g. an operator's own beads
-// workspace), every real `bd` child this runner spawns into a throwaway e2e
-// clone (`repo`/`work` above) would otherwise inherit it verbatim and hit
-// that ambient workspace instead -- the exact shape that corrupted a real
-// beads remote elsewhere in this repo's test harness. Strip it so each bd
-// spawn below is genuinely scoped to its own `cwd`.
+// bd resolves BEADS_DIR / BEADS_DB / BD_DB before cwd. Drop them so each bd
+// spawn into the throwaway e2e clone is scoped to its own `cwd`, never to a
+// workspace the host exports globally.
 function bdChildEnv() {
   const e = { ...process.env };
-  delete e.BEADS_DIR;
+  for (const k of ['BEADS_DIR', 'BEADS_DB', 'BD_DB']) delete e[k];
   return e;
 }
 

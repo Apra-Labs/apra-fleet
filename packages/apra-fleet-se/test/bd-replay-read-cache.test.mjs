@@ -34,9 +34,6 @@ import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 // all but name.
 function resolveBdBinary() {
     try {
-        // This probe would otherwise inherit a
-        // globally-exported BEADS_DIR verbatim via shell: true -- strip it
-        // like every other real bd spawn in this file (runCmd already does).
         const res = spawnSync('bd --version', { encoding: 'utf8', timeout: 30000, shell: true, env: bdChildEnv() });
         return res.status === 0 ? 'bd' : null;
     } catch {

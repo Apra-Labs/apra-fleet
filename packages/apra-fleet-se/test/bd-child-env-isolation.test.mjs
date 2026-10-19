@@ -5,37 +5,19 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { runCmd, bdChildEnv } from './helpers/bd-replay.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 // =============================================================================
-// Permanent regression protection for the BEADS_DIR
-// leak fixed in bd-replay.mjs's execCmd (the single
-// real-bd-spawn choke point every mock-sprint/golden-transcript/f34 scenario
-// funnels through via runCmd(); see that function's own header comment).
+// bd resolves BEADS_DIR / BEADS_DB / BD_DB before cwd. bd-replay.mjs's execCmd
+// (the real-bd choke point every mock-sprint scenario reaches via runCmd)
+// drops them, so a `bd` spawn reaches the scratch dir the test built, never a
+// workspace the host exports globally.
 //
-// bd resolves BEADS_DIR before it ever looks at cwd. On a host that exports
-// it globally (e.g. via a shell profile), a test harness `bd` spawn
-// that hands the child process.env unmodified silently queries/mutates the
-// OPERATOR'S REAL workspace instead of the scratch tempDir the test built --
-// this already rewrote a real beads remote twice via the f34 test.
-//
-// FALSIFIABILITY (confirmed by hand when this was written):
-// temporarily reverting execCmd in bd-replay.mjs back
-// to `exec(cmd, { cwd, env: { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' } })`
-// (i.e. removing `delete env.BEADS_DIR` and the `bdChildEnv()` export this
-// test imports) makes the integration-level test below FAIL at its
-// "sentinel must be byte-for-byte unchanged" assertions: with BEADS_DIR
-// POLLUTED to point at an unrelated sentinel workspace, the "attack"
-// commands issued against a DIFFERENT, perfectly valid scratch clone land on
-// the SENTINEL instead (bd resolves BEADS_DIR over cwd), mutating it. With
-// the fix in place, bd resolves purely from cwd and the sentinel is provably
-// untouched. Verified locally: `git stash` the bd-replay.mjs fix, re-run this
-// file in isolation -- the integration test fails with a "sentinel
-// config.yaml must be byte-for-byte unchanged" AssertionError (remote list
-// and config.yaml both differ, matching the real f34 incident shape exactly);
-// restoring the fix makes it pass again. See this bead's notes for the full
-// before/after command transcript.
+// Without that strip, the integration test below fails at its "sentinel must
+// be byte-for-byte unchanged" assertions: commands run against the scratch
+// clone land on the sentinel that BEADS_DIR points at.
 // =============================================================================
 
 function resolveBdBinary() {
@@ -56,13 +38,15 @@ const BD_SKIP = BD_BIN
 // Unit level: bdChildEnv() itself.
 // ---------------------------------------------------------------------------
 
-test('bdChildEnv() strips BEADS_DIR but leaves every other env var -- including BD_ALLOW_REMOTE_MIGRATE -- intact', () => {
-    const prevBeadsDir = process.env.BEADS_DIR;
+const BEADS_VARS = ['BEADS_DIR', 'BEADS_DB', 'BD_DB'];
+
+test('bdChildEnv() strips BEADS_DIR, BEADS_DB and BD_DB but leaves every other env var -- including BD_ALLOW_REMOTE_MIGRATE -- intact', () => {
+    const prev = Object.fromEntries(BEADS_VARS.map((k) => [k, process.env[k]]));
     const prevPath = process.env.PATH;
-    process.env.BEADS_DIR = '/some/polluted/ambient/beads/workspace/.beads';
+    for (const k of BEADS_VARS) process.env[k] = `/some/polluted/ambient/beads/workspace/${k}`;
     try {
         const env = bdChildEnv();
-        assert.equal(env.BEADS_DIR, undefined, 'BEADS_DIR must be stripped from the child env');
+        for (const k of BEADS_VARS) assert.equal(env[k], undefined, `${k} must be stripped from the child env`);
         assert.equal(
             env.BD_ALLOW_REMOTE_MIGRATE,
             '1',
@@ -75,8 +59,10 @@ test('bdChildEnv() strips BEADS_DIR but leaves every other env var -- including 
         env.BD_ALLOW_REMOTE_MIGRATE = 'mutated';
         assert.notEqual(process.env.BD_ALLOW_REMOTE_MIGRATE, 'mutated');
     } finally {
-        if (prevBeadsDir === undefined) delete process.env.BEADS_DIR;
-        else process.env.BEADS_DIR = prevBeadsDir;
+        for (const k of BEADS_VARS) {
+            if (prev[k] === undefined) delete process.env[k];
+            else process.env[k] = prev[k];
+        }
     }
 });
 
@@ -93,7 +79,7 @@ test('bdChildEnv() is also BEADS_DIR-free when the ambient env never had it set 
 });
 
 // ---------------------------------------------------------------------------
-// Integration level: the actual f34 remote-rewrite shape.
+// Integration level: a remote rewrite through a polluted BEADS_DIR.
 // ---------------------------------------------------------------------------
 
 // Direct, independent read path (NOT through runCmd/execCmd) used only to
@@ -147,19 +133,15 @@ test(
             assert.deepEqual(JSON.parse(before.remoteListStdout || '[]'), []);
             assert.equal(before.issueCount, 0);
 
-            // Pollute BEADS_DIR to point at the sentinel -- exactly the
-            // ambient-env shape that caused the real incident (a shell
-            // profile that exports BEADS_DIR globally).
+            // Pollute BEADS_DIR to point at the sentinel, as a shell profile
+            // that exports it globally would.
             process.env.BEADS_DIR = path.join(sentinelDir, '.beads');
 
-            // The exact damaging command SHAPE that actually corrupted a real
-            // remote via the f34 test (bd dolt remote add + bd config set
-            // sync.remote), issued through the SAME harness entry point
-            // (runCmd -> bd-replay.mjs's execCmd) every mock-sprint/
-            // golden-transcript/f34 scenario uses -- against scratchDir, a
-            // DIFFERENT, perfectly valid bd workspace of its own, never named
-            // by BEADS_DIR.
-            const remoteUrl = `file://${remoteDir}`;
+            // A remote rewrite (bd dolt remote add + bd config set
+            // sync.remote) through the harness entry point (runCmd ->
+            // execCmd), against scratchDir, a valid workspace of its own that
+            // BEADS_DIR never names.
+            const remoteUrl = pathToFileURL(remoteDir).href;
             const addRes = await runCmd(`bd dolt remote add origin ${remoteUrl}`, scratchDir);
             const setRes = await runCmd('bd config set sync.remote origin', scratchDir);
 

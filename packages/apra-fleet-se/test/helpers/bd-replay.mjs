@@ -4,6 +4,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 import { createHash } from 'crypto';
+import { BEADS_WORKSPACE_ENV } from '../../../../scripts/test-sandbox.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -69,17 +70,12 @@ export function bdMode() {
     return 'replay';
 }
 
-// On a host that exports BEADS_DIR globally (bd resolves
-// it BEFORE looking at cwd), every real `bd` spawn below would otherwise
-// inherit it verbatim and hit that ambient workspace instead of the
-// scratch `cwd` tempDir this harness built for the scenario -- this already
-// rewrote the real repo's own beads remote twice via the f34 test. Strip it
-// from the child env so every real spawn is genuinely scoped to `cwd`,
-// mirroring the proven BD_CHILD_ENV idiom in
-// tests/2cc-win-bd-invocation-integ.test.ts / tests/check-sandbox-sync-remote.test.ts.
+// bd resolves BEADS_DIR / BEADS_DB / BD_DB before cwd. Drop them so every
+// real spawn is scoped to the scratch `cwd` this harness built, never to a
+// workspace the host exports globally.
 export function bdChildEnv() {
     const env = { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' };
-    delete env.BEADS_DIR;
+    for (const k of BEADS_WORKSPACE_ENV) delete env[k];
     return env;
 }
 

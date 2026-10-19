@@ -175,14 +175,12 @@ function readBeadsDisk(repo) {
 // jsonl-native or dolt-backed (the dolt backend leaves issues.jsonl stale, so this is
 // the only on-disk source of truth). Returns false if bd is absent or the query fails.
 // NOTE: `bd show --json` returns a single-element ARRAY, not an object.
-// bd resolves BEADS_DIR before it ever looks at cwd. On a
-// host that exports BEADS_DIR globally, this spawn would otherwise inherit
-// it verbatim and query that ambient workspace instead of `repo` (the
-// scratch e2e clone), silently returning the wrong answer. Strip it so the
-// child is genuinely scoped to `repo`.
+// bd resolves BEADS_DIR / BEADS_DB / BD_DB before cwd. Drop them so this
+// query reads `repo` (the scratch e2e clone), not a workspace the host
+// exports globally.
 function bdChildEnv() {
   const e = { ...process.env };
-  delete e.BEADS_DIR;
+  for (const k of ['BEADS_DIR', 'BEADS_DB', 'BD_DB']) delete e[k];
   return e;
 }
 

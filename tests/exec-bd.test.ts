@@ -12,15 +12,7 @@ import {
 } from '../scripts/lib/exec-bd.mjs';
 import { bdChildEnv } from './helpers/bd-child-env.js';
 
-// On a host that exports BEADS_DIR globally, the real
-// (uninjected-impl) execBdSync/execBdAsync calls below would otherwise
-// inherit it verbatim and hit that ambient workspace instead of whatever bd
-// resolves from cwd -- same class of leak as the test-harness BEADS_DIR leak. These calls
-// only ever run `bd --version` / a bogus `bd list --parent`, so the blast
-// radius here was always read-only, but the static bd-env-strip guard
-// (scripts/check-bd-env-strip.mjs) flags any real bd invocation missing
-// env: bdChildEnv() regardless, so it stays correct if a later edit here
-// adds a write.
+// Real bd calls below run without the host's beads workspace variables.
 const BD_CHILD_ENV: NodeJS.ProcessEnv = bdChildEnv();
 
 // Tests for apra-fleet-2cc.1: scripts/lib/exec-bd.mjs -- the single shared

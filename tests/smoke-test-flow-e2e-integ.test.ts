@@ -231,13 +231,7 @@ describe.skipIf(!BD_AVAILABLE)(
     });
 
     function runGuard(repoPath: string, sandboxPath: string): { status: number; stdout: string; stderr: string } {
-      // check-sandbox-sync-remote.mjs itself shells out to
-      // the real `bd` CLI internally (e.g. `bd config get sync.remote`). This
-      // spawn is a plain `node <script>` invocation, not a direct `bd` spawn,
-      // so without an explicit env it silently inherits the ambient BEADS_DIR
-      // -- and so does the `bd` child the script spawns in turn -- making the
-      // guard read the operator's real workspace config instead of `repoPath`'s
-      // sandbox-local one. Strip it from the guard subprocess's env too.
+      // The guard script spawns bd itself; its child inherits this env.
       const res = spawnSync(process.execPath, [CHECK_SCRIPT_PATH, repoPath, sandboxPath], {
         encoding: 'utf-8',
         env: bdChildEnv(),
