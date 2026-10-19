@@ -444,7 +444,8 @@ When the sprint goal is met:
   missing remote logs a warning but does not abort harvest)
 - A reviewed pull request is open against `base_branch`
 - `docs/` is updated with architecture decisions and feature documentation
-- `docs/sprint-analysis-<slug>.md` summarises the sprint (with its cost block)
+- `docs/sprint-analysis-<slug>.md` summarises the sprint (fleet-sprint: written to the
+  working tree, never committed, git-excluded locally; no cost block -- cost is in the PR body)
 - `sprint-logs/<branch>-<timestamp>.jsonl` is written locally with per-dispatch cost
   data (gitignored -- see the sprint-log note above)
 - `sprint-logs/calibration.json` is committed with the updated historical averages

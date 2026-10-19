@@ -44,7 +44,7 @@ CLAUDE.md
 #   calibration.json          TRACKED. The blended historical averages future
 #                             cost quotes read; one bounded file per package.
 #   <branch>-<ts>.analysis.md TRACKED. The human-readable Sprint Execution
-#                             Summary, same class as docs/sprint-analysis-*.md.
+#                             Summary written by the auto-sprint workflow.
 #   <branch>-<ts>.jsonl       IGNORED (below). Raw per-dispatch ledgers: they
 #                             accumulate per run with no bound, and they embed
 #                             the operator's home path -- redaction still
@@ -59,6 +59,11 @@ CLAUDE.md
 # unstageable without 'git add -f' no matter what a narrower pattern says.
 **/sprint-logs/*.jsonl
 **/sprint-logs/sprint_*.json
+
+# fleet-sprint harvester's per-sprint analysis: written to the working tree,
+# never committed (the engine also lists this in each target clone's
+# .git/info/exclude). Already-tracked copies are unaffected.
+docs/sprint-analysis-*.md
 
 # Provider agent context files are tracked project deliverables (git add -f was used).
 # These entries prevent sprint-injected replacements from being accidentally staged.
