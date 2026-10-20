@@ -1522,8 +1522,9 @@ export class SqliteProvider implements MemoryProvider {
   // CONFIRMED set what we think it is") which should not perturb that
   // telemetry. A dedicated method keeps the two contracts textually distinct
   // instead of an easy-to-miss opt-out flag threaded through query(). Always
-  // excludes superseded and stale entries (no override -- this is an
-  // audit-the-live-set tool, not a full-history query).
+  // excludes superseded entries, and stale ones unless include_stale is set
+  // (kb_list never sets it -- it is an audit-the-live-set tool, not a
+  // full-history query; the kb-server ownership lookup does).
   async list(opts: {
     confidence?: Confidence[];
     type?: KBEntry['type'];
@@ -1534,9 +1535,12 @@ export class SqliteProvider implements MemoryProvider {
     exclude_disputed?: boolean;
     /** MEMBER own-scope: only entries tagged with this value (ANDed with `tag`). */
     owner_tag?: string;
+    /** Also list stale entries (kb_list never sets it; the kb-server ownership lookup does). */
+    include_stale?: boolean;
   }): Promise<KBEntry[]> {
     const db = this.getDb();
-    const conditions: string[] = ['e.superseded_at IS NULL', 'e.stale = 0'];
+    const conditions: string[] = ['e.superseded_at IS NULL'];
+    if (!opts.include_stale) conditions.push('e.stale = 0');
     const params: SQLInputValue[] = [];
     if (opts.exclude_disputed) {
       conditions.push('e.flagged_for_review = 0 AND e.contradiction_of IS NULL');

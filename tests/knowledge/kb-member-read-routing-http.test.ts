@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,6 +20,7 @@ import { kbList } from '../../src/tools/kb-list.js';
 import { kbStats } from '../../src/tools/kb-stats.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
+import * as logHelpers from '../../src/utils/log-helpers.js';
 
 // MEMBER-session recall under the http project provider. kb_query,
 // kb_session_prime and kb_context must reach the KB server for every tier
@@ -98,7 +99,7 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse, raw: string
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(body));
   };
-  if (req.method === 'GET' && url.pathname === '/api/kb/query') {
+  if (req.method === 'GET' && (url.pathname === '/api/kb/query' || url.pathname === '/api/kb/list')) {
     const tiers = (url.searchParams.get('confidence') ?? 'CONFIRMED').split(',');
     // Deliberately ignores the tag parameter: the client must re-filter.
     const results = [...SERVER_CONFIRMED, ...serverInferred()]
@@ -120,6 +121,8 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse, raw: string
       results: files.map(file => {
         if (file === 'src/gizmo.ts') return { file, status: 'fresh', entry_id: SERVER_CTX_ID, summary: 'Gizmo summary from the server.' };
         if (file === 'src/other.ts' && tiers.includes('INFERRED')) return { file, status: 'fresh', entry_id: 'srv-i-other', summary: 'Another member summary.' };
+        // A summary with no entry id: its owner cannot be decided.
+        if (file === 'src/noid.ts' && tiers.includes('INFERRED')) return { file, status: 'fresh', summary: 'Summary with no entry id.' };
         return { file, status: 'missing' };
       }),
     });
@@ -275,6 +278,13 @@ describe('MEMBER recall under the http provider reaches the KB server', () => {
     expect(out.missing).toEqual(['src/other.ts']);
   });
 
+  it('3b. kb_context drops an own-scope summary that carries no entry id', async () => {
+    await configureHttp();
+    const out = JSON.parse(await asMember(() => kbContext({ files: ['src/noid.ts'] })));
+    expect(out.fresh).toEqual([]);
+    expect(out.missing).toEqual(['src/noid.ts']);
+  });
+
   it('4. kb_query INFERRED returns only the caller\'s own captures, asking the server for its owner tag', async () => {
     await configureHttp();
     const out = JSON.parse(await asMember(() => kbQuery({ query: 'gizmo', confidence: ['INFERRED'] })));
@@ -338,11 +348,18 @@ describe('routing that must not change', () => {
     expect(requests).toEqual([]);
   });
 
-  it('7. server stopped: MEMBER CONFIRMED kb_query under http resolves from the local fallback store', async () => {
+  it('7. server stopped: MEMBER CONFIRMED kb_query under http answers from the checkout bible, with a warning, never the per-repo DB', async () => {
     await configureHttp();
     await stopServer();
-    const out = JSON.parse(await asMember(() => kbQuery({ query: 'gizmo', confidence: ['CONFIRMED'] })));
-    expect(ids(out.l1_results)).toEqual([FALLBACK_ENTRY_ID]);
-    expect(requests).toEqual([]);
+    const warnSpy = vi.spyOn(logHelpers, 'logWarn');
+    try {
+      const out = JSON.parse(await asMember(() => kbQuery({ query: 'gizmo', confidence: ['CONFIRMED'] })));
+      expect(ids(out.l1_results)).toContain('bible-1');
+      expect(ids(out.l1_results)).not.toContain(FALLBACK_ENTRY_ID);
+      expect(requests).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledWith('kb-http', expect.stringMatching(/KB server unreachable: .*checkout bible/));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

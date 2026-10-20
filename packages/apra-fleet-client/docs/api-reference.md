@@ -559,6 +559,13 @@ session's `kb_query` / `kb_session_prime` / `kb_stats`), `E-MEMBER-VIEW-REMOTE`
 and `E-BIBLE-BASIS-NOT-GIT` (`kb_export` / `kb_bible_commit` in a folder that is
 not a git work tree).
 
+Under the http KB provider (`kb_setup provider http`), two more codes from the
+same file can be thrown: `E-KB-HTTP-UNSUPPORTED` (an operation the http
+provider cannot serve: `kb_invalidate` with `ids`, or a member `kb_promote`
+whose ownership check got entries without tags from the server; nothing is
+changed) and `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
+different project; nothing is read or written).
+
 `kb_import` in a member session without the kb_maintainer grant fails with
 `E-KB-MAINTAINER-REQUIRED` and imports nothing when: it names an explicit
 `path` other than its own `.fleet/kb-canonical.json`; the own bible has no
@@ -613,6 +620,11 @@ CONFIRMED id citing no source file is skipped with its own reason
 entry set (nothing merged, nothing removed) makes no commit. Re-running with the same ids after resetting to a
 newer HEAD re-merges, so a rejected push can be retried without a manual
 merge. Result JSON: `{path, merged, skipped, removed, entry_count, committed}`.
+Under the http KB provider the call is skipped, never an error: the result is
+`{path, merged: [], skipped: [], removed: [], entry_count, backfilled: 0,
+committed: false, bible_skipped: true, reason}`, where `entry_count` counts
+the entries of the existing bible file (0 when it is absent or unreadable);
+the KB is not read and nothing is written or committed.
 Called from the kb_maintainer session or a FULL session, it also records the
 git blob id of the bible it wrote as trusted in the hub-side KB, which is what
 lets a member session without the grant `kb_import` that bible once it is

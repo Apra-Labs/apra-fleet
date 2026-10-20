@@ -7,8 +7,8 @@ import crypto from 'node:crypto';
 import { startKbServer, KbServerHttpProviderRefusedError } from '../../src/commands/kb-server.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { encryptPassword } from '../../src/utils/crypto.js';
-import { resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
-import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
+import { resetKbProviders, getProjectSlug } from '../../src/services/knowledge/kb-providers.js';
+import { HttpKbProvider, KbHttpProjectMismatchError, redactUrlUserinfo } from '../../src/services/knowledge/http-provider.js';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 
 const TEST_PORT = 17878;
@@ -17,17 +17,23 @@ const TOKEN_PATH = path.join(TOKEN_DIR, 'kb-server.token');
 
 let server: http.Server;
 let testToken: string;
+// The project the server serves: startKbServer builds its providers for
+// process.cwd(), the same folder getProjectSlug() defaults to.
+const SERVER_PROJECT = getProjectSlug();
 
 function request(
   method: string,
   urlPath: string,
-  opts?: { body?: any; token?: string | null }
+  opts?: { body?: any; raw?: string; token?: string | null; project?: string | null }
 ): Promise<{ status: number; body: any; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
-    const data = opts?.body ? JSON.stringify(opts.body) : undefined;
+    const data = opts?.raw ?? (opts?.body ? JSON.stringify(opts.body) : undefined);
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (opts?.token !== null) {
       headers['Authorization'] = `Bearer ${opts?.token ?? testToken}`;
+    }
+    if (opts?.project !== null) {
+      headers['X-KB-Project'] = opts?.project ?? SERVER_PROJECT;
     }
     if (data) headers['Content-Length'] = Buffer.byteLength(data).toString();
 
@@ -115,6 +121,32 @@ describe('kb-server promote and tag filter', () => {
     expect(after.body.results.map((e: { id: string; confidence: string }) => [e.id, e.confidence])).toEqual([[id, 'INFERRED']]);
   });
 
+  it('answers 400 BAD_REQUEST for a promote body that is not JSON', async () => {
+    const res = await request('POST', '/api/kb/promote', { raw: '{"id": "x", reason' });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: 'BAD_REQUEST', error: 'Request body is not valid JSON' });
+  });
+
+  it('GET /api/kb/list reads an owner\'s entries without bumping use_count; GET /api/kb/query does bump it', async () => {
+    const tag = `member:${crypto.randomUUID()}`;
+    const id = await captureTagged([tag]);
+    const store = new SqliteProvider(path.join(FLEET_DIR, 'knowledge', SERVER_PROJECT, 'kb.sqlite'));
+    await store.init();
+    const useCount = () => ((store as any).getDb().prepare('SELECT use_count FROM entries WHERE id = ?').get(id) as { use_count: number }).use_count;
+    try {
+      const before = useCount();
+      const listed = await request('GET', `/api/kb/list?tag=${encodeURIComponent(tag)}&confidence=INFERRED&include_stale=true`);
+      expect(listed.status).toBe(200);
+      expect(listed.body.results.map((e: { id: string; tags: string[] }) => [e.id, e.tags])).toEqual([[id, [tag]]]);
+      expect(useCount()).toBe(before);
+
+      await request('GET', `/api/kb/query?tag=${encodeURIComponent(tag)}&confidence=INFERRED`);
+      expect(useCount()).toBe(before + 1);
+    } finally {
+      store.close();
+    }
+  });
+
   it('answers 400 BAD_REQUEST without an id', async () => {
     const res = await request('POST', '/api/kb/promote', { body: { reason: PROMOTE_REASON } });
     expect(res.status).toBe(400);
@@ -136,7 +168,7 @@ describe('kb-server promote and tag filter', () => {
     const id = await captureTagged([owner]);
     const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-http-provider-'));
     const provider = new HttpKbProvider(
-      `http://127.0.0.1:${TEST_PORT}`, testToken, new SqliteProvider(path.join(fallbackDir, 'kb.sqlite')),
+      `http://127.0.0.1:${TEST_PORT}`, testToken, new SqliteProvider(path.join(fallbackDir, 'kb.sqlite')), SERVER_PROJECT,
     );
     try {
       await expect(provider.promote(id, PROMOTE_REASON, { ownerTag: `member:${crypto.randomUUID()}` }))
@@ -150,6 +182,73 @@ describe('kb-server promote and tag filter', () => {
       provider.dispose();
       fs.rmSync(fallbackDir, { recursive: true, force: true });
     }
+  });
+});
+
+// One server serves one project. Declared before the main suite for the same
+// rate-limit reason as the block above.
+describe('kb-server refuses a client for another project on every route', () => {
+  const OTHER = 'some-other-repo-slug';
+  const ROUTES: Array<[string, string, unknown]> = [
+    ['POST', '/api/kb/capture', { type: 'knowledge', title: 't', summary: 's', content: 'c', source_files: [], symbols: [], tags: [] }],
+    ['GET', '/api/kb/query?query=x', undefined],
+    ['GET', '/api/kb/list?tag=x', undefined],
+    ['POST', '/api/kb/promote', { id: 'x', reason: 'a reason long enough to pass the floor' }],
+    ['POST', '/api/kb/invalidate', { files: ['src/a.ts'] }],
+    ['GET', '/api/kb/context?files=src/a.ts', undefined],
+    ['POST', '/api/kb/prime', {}],
+  ];
+
+  it.each(ROUTES)('%s %s: 409 naming both projects, for another project and for none', async (method, urlPath, body) => {
+    for (const project of [OTHER, null]) {
+      const res = await request(method, urlPath, { body, project });
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({
+        code: 'PROJECT_MISMATCH',
+        server_project: SERVER_PROJECT,
+        client_project: project ?? '(none)',
+      });
+    }
+  });
+
+  it('an HttpKbProvider for another project gets E-KB-HTTP-PROJECT-MISMATCH from every call, never its fallback store', async () => {
+    const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-other-project-'));
+    const fallback = new SqliteProvider(path.join(fallbackDir, 'kb.sqlite'));
+    const provider = new HttpKbProvider(`http://127.0.0.1:${TEST_PORT}`, testToken, fallback, OTHER);
+    try {
+      await provider.init();
+      const calls: Array<[string, () => Promise<unknown>]> = [
+        ['capture', () => provider.capture({
+          type: 'knowledge', title: 'Other project capture', summary: 'Must never land on this server.', content: 'c',
+          source_files: [], symbols: [], tags: [], content_hash: '', content_hash_type: 'sha256',
+          flagged_for_review: false, author: 'test', source: 'doer', confidence: 'INFERRED',
+        } as any)],
+        ['query', () => provider.query({ query: 'x' })],
+        ['context', () => provider.context(['src/a.ts'])],
+        ['invalidate', () => provider.invalidate(['src/a.ts'])],
+        ['prime', () => provider.prime({ session_files: [] } as any)],
+        ['promote', () => provider.promote('x', 'a reason long enough to pass the floor')],
+        ['promote (member)', () => provider.promote('x', 'a reason long enough to pass the floor', { ownerTag: 'member:x' })],
+      ];
+      for (const [name, call] of calls) {
+        const err = await call().then(() => null, (e: unknown) => e);
+        expect(err, name).toBeInstanceOf(KbHttpProjectMismatchError);
+        expect((err as Error).message, name).toMatch(
+          new RegExp(`^E-KB-HTTP-PROJECT-MISMATCH: .*serves project "${SERVER_PROJECT}", not "${OTHER}"`));
+      }
+      expect(provider.offlineQueue).toEqual([]);
+    } finally {
+      provider.dispose();
+      fallback.close();
+      fs.rmSync(fallbackDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('redactUrlUserinfo', () => {
+  it('drops user and password from a KB server url and leaves a plain url unchanged', () => {
+    expect(redactUrlUserinfo('https://alice:s3cret@kb.example.test:7878/base')).toBe('https://kb.example.test:7878/base');
+    expect(redactUrlUserinfo('http://127.0.0.1:7878')).toBe('http://127.0.0.1:7878');
   });
 });
 

@@ -510,9 +510,9 @@ point is `/pm kb-reconcile`.
 
 ### 1. Quick start (SQLite, local)
 
-No setup required. The KB initializes automatically on first use at:
+No setup required. Each repo's KB initializes automatically on first use at:
 ```
-~/.apra-fleet/data/knowledge/kb.sqlite
+~/.apra-fleet/data/knowledge/<project-slug>/kb.sqlite
 ```
 
 Staleness needs no git hook: `context-cache` entries store a per-file hash
@@ -762,13 +762,20 @@ Design notes:
 #### Promote and member recall under HTTP
 
 - `kb_promote` stays gated to the `kb_maintainer` grant but no longer needs a
-  SQLite project: under http it calls the provider's `promote` directly. An
-  owner tag is applied only on the SQLite path, so member sessions on http
-  still reach the server.
+  SQLite project: under http it calls the provider's `promote` directly. A
+  member's owner tag is checked fleet-side first, through the server's no-bump
+  `/api/kb/list` route, so a member can promote only its own captures.
 - Member reads of every tier (`kb_query`, `kb_session_prime`, `kb_context`) are
-  routed to the http provider (`serverRecall` in `src/tools/kb-self.ts`), because
-  the server, not a local store, holds the confirmed entries. `kb_list` and
-  `kb_stats` are unchanged.
+  routed to the http provider (`serverRecall` in
+  `src/services/knowledge/kb-self.ts`), because the server, not a local store,
+  holds the confirmed entries. `kb_list` and `kb_stats` are unchanged.
+- Server down: a member CONFIRMED read falls back to the checkout bible (the
+  same view a SQLite member reads) and logs a warning; it never falls back to
+  the per-repo database. Other reads keep the per-repo fallback store.
+- Every request carries the project slug in `X-KB-Project`. `kb-server` serves
+  one project and answers any other (or a missing header) with 409 naming
+  both slugs, surfaced as `E-KB-HTTP-PROJECT-MISMATCH`, never as a fallback
+  to the local store.
 - Invariant: promote has no offline queue or local fallback, since the entry id
   only exists on the server. A malformed or non-JSON error body still surfaces as
   a thrown error rather than a silent success.
@@ -780,8 +787,12 @@ Design notes:
 
 To redirect every repo on a fleet install to a central KB server (fleet's own
 `kb-server`, or any server that implements the same HTTP routes), configure
-the HTTP provider from a FULL session (orchestrator or local CLI). This setting is install-wide: one config file covers every repo
-served by the fleet install, though each repo retains its own KB database.
+the HTTP provider from a FULL session (orchestrator or local CLI). The setting
+is install-wide (one config file covers every repo the install serves), but a
+`kb-server` serves ONE project: requests carry their repo's project slug
+(`X-KB-Project`), and a repo whose slug differs from the server's gets
+`E-KB-HTTP-PROJECT-MISMATCH` on every call. Use the http provider on an
+install that serves that one repo.
 
 **Command:**
 
@@ -797,12 +808,14 @@ kb_setup with provider='http', remote='<server-url>', token='<bearer-token>'
 
 2. On each client machine (one per fleet install), call the `kb_setup` MCP tool
    from a FULL session (orchestrator or local session) with the server URL and
-   token. The tool encrypts the token into the fleet config at
+   token. That includes every member host: a member's kb tools run on its own
+   host and read that host's config, so a member host without it keeps using
+   SQLite. The tool encrypts the token into the fleet config at
    `~/.apra-fleet/data/knowledge/config.json`. `kb_setup` is MCP-only: there is
    no `kb-setup` CLI command.
 
-3. Every repo on that fleet install now reads and writes its KB to the central
-   server. To switch back to local SQLite, call `kb_setup` with
+3. The repo on that fleet install whose project the server serves now reads
+   and writes its KB to the central server. To switch back to local SQLite, call `kb_setup` with
    `provider='sqlite'`.
 
 **Scope**: the provider setting is install-wide, not per-repo or per-sprint. All

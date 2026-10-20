@@ -75,7 +75,7 @@ async function createKbProvidersForSlug(slug: string, repoPath: string): Promise
 
 async function withSelectedProject(base: KbBaseProviders, slug: string, configFingerprint: string): Promise<KbProviders> {
   return {
-    project: await selectProjectProvider(base.projectSqlite, configFingerprint),
+    project: await selectProjectProvider(base.projectSqlite, configFingerprint, slug),
     global: base.global,
     projectSlug: slug,
   };
@@ -132,7 +132,7 @@ function kbConfigFingerprint(): string {
  * HttpKbProvider's default is a NO-ARG `new SqliteProvider()`, which resolves its
  * database from process.cwd() rather than this repo's path.
  */
-async function selectProjectProvider(projectProvider: SqliteProvider, configFingerprint: string): Promise<MemoryProvider> {
+async function selectProjectProvider(projectProvider: SqliteProvider, configFingerprint: string, slug: string): Promise<MemoryProvider> {
   let config: KbConfigResult;
   try {
     config = readKbConfigFromDisk();
@@ -157,7 +157,9 @@ async function selectProjectProvider(projectProvider: SqliteProvider, configFing
   // tests/knowledge/kb-providers-http-selection.test.ts) -- and any setup
   // HttpKbProvider.init() grows later runs here instead of being skipped.
   // readKbConfigFromDisk throws on http-without-url/token, so both are present here.
-  const httpProvider = new HttpKbProvider(config.url!, config.token!, projectProvider);
+  // The slug goes on every request (X-KB-Project) so a server for another
+  // project refuses it instead of answering with that project's KB.
+  const httpProvider = new HttpKbProvider(config.url!, config.token!, projectProvider, slug);
   try {
     await httpProvider.init();
   } catch (err) {

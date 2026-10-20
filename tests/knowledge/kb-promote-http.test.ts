@@ -92,7 +92,8 @@ function startServer(listenPort: number): Promise<void> {
         serverIds.add(id, Array.isArray(body?.tags) ? (body!.tags as string[]) : []);
         res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id, audn_decision: 'add' }));
-      } else if (req.url?.startsWith('/api/kb/query') && req.method === 'GET') {
+      } else if (req.url?.startsWith('/api/kb/list') && req.method === 'GET') {
+        // The owner-tag lookup reads the no-bump list route.
         const tag = new URL(req.url, 'http://stand-in').searchParams.get('tag');
         const results = [...serverEntries]
           .filter(([, tags]) => tag === null || tags.includes(tag))

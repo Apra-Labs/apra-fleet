@@ -9,6 +9,7 @@ import { HttpKbProvider } from '../services/knowledge/http-provider.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
+import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import type { KBEntryInput, Confidence } from '../services/knowledge/types.js';
 
 // my-beads-db-0cd.15 (reopened): startKbServer is an exported library function
@@ -28,6 +29,9 @@ export class KbServerHttpProviderRefusedError extends Error {
 }
 
 const MAX_BODY_SIZE = 1_048_576; // 1MB
+
+/** Header every HttpKbProvider request carries: the project slug it is for. */
+export const KB_PROJECT_HEADER = 'x-kb-project';
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 100;
 
@@ -145,7 +149,8 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
     (providers as any).project = overrideProvider;
   }
   const provider = providers.project;
-  process.stderr.write('[kb-server] project=' + providers.projectSlug + '\n');
+  const serverProject = providers.projectSlug;
+  process.stderr.write('[kb-server] project=' + serverProject + '\n');
 
   const server = http.createServer(async (req, res) => {
     const ip = getClientIp(req);
@@ -172,6 +177,20 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
     const token = authHeader.slice(7);
     if (token !== serverToken) {
       return jsonResponse(res, 401, { error: 'Invalid token', code: 'UNAUTHORIZED' });
+    }
+
+    // One server serves one project. A request for another project (or one
+    // that names none) is refused on every route, so a client pointed at the
+    // wrong server never reads or writes another repo's KB.
+    const clientProject = req.headers[KB_PROJECT_HEADER];
+    if (clientProject !== serverProject) {
+      const named = typeof clientProject === 'string' ? clientProject : '(none)';
+      return jsonResponse(res, 409, {
+        error: `KB project mismatch: this server serves "${serverProject}", the request is for "${named}"`,
+        code: 'PROJECT_MISMATCH',
+        server_project: serverProject,
+        client_project: named,
+      });
     }
 
     try {
@@ -207,6 +226,25 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
           query, type, tag, limit, l1_only, confidence, exclude_disputed, include_stale, include_superseded,
         });
         return jsonResponse(res, 200, result as unknown as Record<string, unknown>);
+      }
+
+      // GET /api/kb/list -- the no-bump read (provider.list): use_count and
+      // last_accessed are left alone. HttpKbProvider's member own-scope lookup
+      // uses it, so checking ownership is not counted as a retrieval.
+      if (pathname === '/api/kb/list' && method === 'GET') {
+        if (!isSqliteProject(provider)) {
+          return jsonResponse(res, 501, { error: 'list is served only from a local SQLite KB', code: 'NOT_IMPLEMENTED' });
+        }
+        const confidence = url.searchParams.get('confidence')
+          ?.split(',')
+          .filter((c): c is Confidence => c === 'CONFIRMED' || c === 'INFERRED' || c === 'UNVERIFIED');
+        const results = await provider.list({
+          tag: url.searchParams.get('tag') || undefined,
+          confidence,
+          limit: url.searchParams.has('limit') ? parseInt(url.searchParams.get('limit')!, 10) : undefined,
+          include_stale: url.searchParams.get('include_stale') === 'true',
+        });
+        return jsonResponse(res, 200, { results, total: results.length });
       }
 
       // POST /api/kb/promote  {id, reason} -> {id, previous_confidence, new_confidence}
@@ -286,6 +324,10 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
       // rule lives in the provider and only its presentation lives here.
       if (err instanceof KbCaptureRejected) {
         return jsonResponse(res, 400, { error: err.message, code: 'CAPTURE_REJECTED', reason: err.reason });
+      }
+      // A request body that is not JSON is the caller's fault, on every route.
+      if (err instanceof SyntaxError) {
+        return jsonResponse(res, 400, { error: 'Request body is not valid JSON', code: 'BAD_REQUEST' });
       }
       if (err instanceof Error) {
         if (err.message === 'BODY_TOO_LARGE') {

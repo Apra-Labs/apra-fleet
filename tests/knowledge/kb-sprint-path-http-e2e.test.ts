@@ -137,6 +137,14 @@ function respond(method: string, pathname: string, params: URLSearchParams, body
     entry.confidence = 'CONFIRMED';
     return [200, { id: entry.id, previous_confidence: previous, new_confidence: 'CONFIRMED' }];
   }
+  if (method === 'GET' && pathname === '/api/kb/list') {
+    // The member owner-tag lookup (no-bump read).
+    const tag = params.get('tag');
+    const results = [...stored.values()]
+      .filter(tierFilter(params.get('confidence')))
+      .filter(e => tag === null || (Array.isArray(e.tags) && (e.tags as string[]).includes(tag)));
+    return [200, { results, total: results.length }];
+  }
   if (method === 'GET' && pathname === '/api/kb/query') {
     const results = [...stored.values()].filter(tierFilter(params.get('confidence')));
     return [200, { results, total: results.length, l1_only: params.get('l1_only') === 'true' }];

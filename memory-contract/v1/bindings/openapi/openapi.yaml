@@ -200,6 +200,11 @@
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-UNSUPPORTED",
       "title": "The project KB is backed by the http provider and the operation cannot be served there: kb_invalidate with ids (id-level discard; the http provider has no discard operation, and nothing is discarded, on the remote or in the local fallback store), or a MEMBER kb_promote whose own-scope check got entries without tags back from the server (ownership cannot be decided, so nothing is promoted).",
       "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-PROJECT-MISMATCH",
+      "title": "The project KB is backed by the http provider and the KB server it points at serves a different project: every request carries the caller project slug (X-KB-Project) and the server answered 409 naming both slugs. Nothing is read or written, and the local fallback store is not used: the server is reachable, it is the wrong one.",
+      "status": 500
     }
   ]
 }

@@ -254,6 +254,15 @@ A MEMBER session is served an explicit tool list
   with `E-KB-HTTP-UNSUPPORTED` (thrown): the http provider has no discard
   operation, and nothing is discarded, on the remote or in the local fallback
   store. `kb_invalidate {files}` is unaffected.
+- Under an http project KB, every request carries the project slug
+  (`X-KB-Project`). Fleet's `kb-server` serves one project and answers a
+  request for another project (or naming none) with 409 naming both slugs,
+  surfaced by every provider call (capture, query, context, invalidate, prime,
+  promote) as `E-KB-HTTP-PROJECT-MISMATCH` (thrown); nothing is read or written
+  and the local fallback store is not used. When the server is unreachable, a
+  MEMBER CONFIRMED read (`kb_query`, `kb_session_prime`, `kb_context`) is
+  answered from the checkout bible with a logged warning, never from the
+  per-repo database.
 - `kb_invalidate` retires entries (`ids` discards them; `files` marks
   context-cache entries invalidated), and `kb_bible_commit` removes retired
   entries from the bible, so in a member session WITHOUT the grant neither

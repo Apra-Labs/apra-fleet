@@ -30,6 +30,7 @@ import { knownRepoRemoteUrl } from '../member-remote-url.js';
 import { getKbProviders, getGlobalKbProvider, getProjectSlug, kbConfigSelectsHttp, type KbProviders } from './kb-providers.js';
 import { getMemberBibleView } from './member-bible-view.js';
 import { isSqliteProject } from './require-sqlite-project.js';
+import { HttpKbProvider } from './http-provider.js';
 
 /** Explicit KB anchor for in-process callers. Not exposed on any tool schema. */
 export interface KbAnchor {
@@ -245,8 +246,10 @@ export interface SelfReadKb {
  * provider, a MEMBER session reads that provider for every tier, CONFIRMED
  * included -- the checkout bible is not fed from the server. A request naming
  * INFERRED/UNVERIFIED carries ownerTag exactly as on SQLite; the http provider
- * enforces it fleet-side on the entries' tags. kb_list and kb_stats do not
- * pass it and keep the routing above under either provider.
+ * enforces it fleet-side on the entries' tags. A CONFIRMED read whose server
+ * is unreachable is answered from the checkout bible (withOfflineReads), never
+ * the per-repo database. kb_list and kb_stats do not pass it and keep the
+ * routing above under either provider.
  */
 export interface SelfReadKbOptions {
   serverRecall?: boolean;
@@ -264,8 +267,19 @@ export async function getSelfReadKb(
   if (isMemberSelf && opts.serverRecall && kbConfigSelectsHttp()) {
     const providers = await getKbProviders(resolved.folder, resolved.remoteUrl);
     if (!isSqliteProject(providers.project)) {
-      const ownerTag = namesUnconfirmedTier ? memberOwnerTag(anchor) : undefined;
-      return { providers, anchor: resolved, memberView: false, ...(ownerTag !== undefined ? { ownerTag } : {}) };
+      if (namesUnconfirmedTier) {
+        const ownerTag = memberOwnerTag(anchor);
+        return { providers, anchor: resolved, memberView: false, ...(ownerTag !== undefined ? { ownerTag } : {}) };
+      }
+      // A CONFIRMED read whose server is unreachable is answered from the
+      // checkout bible (with a warning), never from the per-repo database.
+      const project = providers.project instanceof HttpKbProvider
+        ? providers.project.withOfflineReads(
+          () => getMemberBibleView(resolved),
+          'KB server unreachable: answering this MEMBER CONFIRMED read from the checkout bible',
+        )
+        : providers.project;
+      return { providers: { ...providers, project }, anchor: resolved, memberView: false };
     }
   }
   if (isMemberSelf && !namesUnconfirmedTier) {

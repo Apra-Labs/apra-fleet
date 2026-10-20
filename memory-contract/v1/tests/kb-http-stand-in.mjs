@@ -1,6 +1,7 @@
 // A minimal KB server stand-in for the http-backed fixture sessions.
 //
-// It answers only GET <variant>/api/kb/query, with one INFERRED entry that
+// It answers only GET <variant>/api/kb/query and GET <variant>/api/kb/list (the
+// no-bump read the member owner-tag lookup uses), with one INFERRED entry that
 // belongs to a member none of the fixture sessions are. Two variants, chosen
 // by the URL path prefix the session's KB config points at:
 //   /tagged    the entry carries its tags (owner tag of another member)
@@ -41,7 +42,7 @@ function handle(req, res) {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(body));
   };
-  if (req.method === 'GET' && route === '/api/kb/query' && HTTP_STAND_IN_VARIANTS.includes(variant)) {
+  if (req.method === 'GET' && (route === '/api/kb/query' || route === '/api/kb/list') && HTTP_STAND_IN_VARIANTS.includes(variant)) {
     const results = [foreignEntry(variant === 'tagged')];
     send(200, { results, total: results.length });
     return;

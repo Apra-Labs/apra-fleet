@@ -2,6 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { randomBytes } from 'node:crypto';
 import { SqliteProvider } from './sqlite-provider.js';
+import { logWarn } from '../../utils/log-helpers.js';
 import type {
   MemoryProvider,
   KBEntry,
@@ -80,6 +81,33 @@ function describeErrorBody(data: string): string {
   return boundErrorText(parts.length > 0 ? parts.join(' - ') : data);
 }
 
+/** `url` with any user:password removed, for error text. */
+export function redactUrlUserinfo(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.username === '' && parsed.password === '') return url;
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return url.replace(/\/\/[^/@]*@/, '//');
+  }
+}
+
+/**
+ * The two project slugs of a kb-server 409 PROJECT_MISMATCH body, or null for
+ * any other 409 (which is then reported as a plain HTTP error).
+ */
+function projectMismatchOf(data: string): { server: string; client: string } | null {
+  try {
+    const body = JSON.parse(data) as Record<string, unknown>;
+    if (body.code !== 'PROJECT_MISMATCH') return null;
+    return { server: String(body.server_project), client: String(body.client_project) };
+  } catch {
+    return null;
+  }
+}
+
 /** True when the entry carries `tag`; an entry without a tags array is never owned. */
 function hasTag(entry: { tags?: unknown }, tag: string): boolean {
   return Array.isArray(entry.tags) && entry.tags.includes(tag);
@@ -104,17 +132,51 @@ export class KbHttpUnsupportedError extends Error {
   }
 }
 
+/**
+ * Typed refusal for a KB server that serves a different project than the one
+ * the request is for (HTTP 409). Never answered from the local fallback store:
+ * the server is reachable, it is just the wrong one.
+ */
+export class KbHttpProjectMismatchError extends Error {
+  readonly code = 'E-KB-HTTP-PROJECT-MISMATCH';
+  constructor(serverUrl: string, serverProject: string, clientProject: string) {
+    super(
+      `E-KB-HTTP-PROJECT-MISMATCH: the KB server at ${serverUrl} serves project "${serverProject}", `
+      + `not "${clientProject}"; nothing was read or written. `
+      + 'Remediation: point this repo at the KB server for its own project (kb_setup provider http), '
+      + 'or use a local SQLite KB (kb_setup provider sqlite).',
+    );
+    this.name = 'KbHttpProjectMismatchError';
+  }
+}
+
+/** Header carrying the project slug on every request (checked by kb-server). */
+export const KB_PROJECT_HEADER = 'X-KB-Project';
+
 export class HttpKbProvider implements MemoryProvider {
   private baseUrl: string;
+  /** baseUrl with any user:password removed: the only form put in error text. */
+  private readonly displayUrl: string;
   private readonly token: string;
+  private readonly projectSlug: string | undefined;
   private readonly fallback: SqliteProvider;
   readonly offlineQueue: QueuedOperation[] = [];
   private readonly beforeExitHandler: () => void;
+  /**
+   * Where query/context/prime are answered when the server is unreachable:
+   * the per-repo fallback store, unless withOfflineReads() replaced it.
+   */
+  private offlineReads: () => Promise<MemoryProvider>;
+  private offlineReadWarning: string | undefined;
 
-  constructor(url: string, token: string, fallback?: SqliteProvider) {
+  constructor(url: string, token: string, fallback?: SqliteProvider, projectSlug?: string) {
     this.baseUrl = url.replace(/\/$/, '');
+    this.displayUrl = redactUrlUserinfo(this.baseUrl);
     this.token = token;
+    this.projectSlug = projectSlug;
     this.fallback = fallback ?? new SqliteProvider();
+    const fallbackStore = this.fallback;
+    this.offlineReads = async () => fallbackStore;
 
     this.beforeExitHandler = () => {
       if (this.offlineQueue.length > 0) {
@@ -129,6 +191,26 @@ export class HttpKbProvider implements MemoryProvider {
 
   dispose(): void {
     process.removeListener('beforeExit', this.beforeExitHandler);
+  }
+
+  /**
+   * This provider, with query/context/prime answered by `reads` (and a
+   * warning logged) when the server is unreachable, instead of by the per-repo
+   * fallback store. Used for MEMBER CONFIRMED reads, whose offline answer is
+   * the checkout bible. The view shares this provider's connection settings,
+   * offline queue and exit hook (prototype delegation), so it is not a second
+   * client.
+   */
+  withOfflineReads(reads: () => Promise<MemoryProvider>, warning: string): HttpKbProvider {
+    const view = Object.create(this) as HttpKbProvider;
+    view.offlineReads = reads;
+    view.offlineReadWarning = warning;
+    return view;
+  }
+
+  private async offlineReadProvider(): Promise<MemoryProvider> {
+    if (this.offlineReadWarning !== undefined) logWarn('kb-http', this.offlineReadWarning);
+    return this.offlineReads();
   }
 
   private enqueue(op: QueuedOperation): void {
@@ -158,6 +240,7 @@ export class HttpKbProvider implements MemoryProvider {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.token}`,
       };
+      if (this.projectSlug !== undefined) headers[KB_PROJECT_HEADER] = this.projectSlug;
       if (bodyStr) headers['Content-Length'] = Buffer.byteLength(bodyStr).toString();
 
       const options = {
@@ -176,6 +259,13 @@ export class HttpKbProvider implements MemoryProvider {
         res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
         res.on('end', () => {
           const status = res.statusCode;
+          if (status === 409) {
+            const mismatch = projectMismatchOf(data);
+            if (mismatch) {
+              reject(new KbHttpProjectMismatchError(this.displayUrl, mismatch.server, mismatch.client));
+              return;
+            }
+          }
           if (status !== undefined && status >= 400) {
             const httpErr = new Error(`HTTP ${status}: ${describeErrorBody(data)}`) as NodeJS.ErrnoException;
             httpErr.code = `HTTP_${status}`;
@@ -214,7 +304,9 @@ export class HttpKbProvider implements MemoryProvider {
         }
         this.offlineQueue.shift();
       } catch (err) {
-        if (isConnectionError(err)) {
+        // Unreachable, or the wrong project's server: keep the queue for the
+        // right server rather than dropping what could not be sent.
+        if (isConnectionError(err) || err instanceof KbHttpProjectMismatchError) {
           break;
         }
         this.offlineQueue.shift();
@@ -262,7 +354,7 @@ export class HttpKbProvider implements MemoryProvider {
       return opts.owner_tag ? this.keepOwned(result, opts.owner_tag, opts.tag) : result;
     } catch (err) {
       if (isConnectionError(err)) {
-        return this.fallback.query(opts);
+        return (await this.offlineReadProvider()).query(opts);
       }
       throw err;
     }
@@ -286,7 +378,7 @@ export class HttpKbProvider implements MemoryProvider {
       return this.keepOwnedSummaries(result.results, await this.ownedIds(ownerTag));
     } catch (err) {
       if (isConnectionError(err)) {
-        return this.fallback.context(files, confidence, excludeDisputed, ownerTag);
+        return (await this.offlineReadProvider()).context(files, confidence, excludeDisputed, ownerTag);
       }
       throw err;
     }
@@ -353,7 +445,7 @@ export class HttpKbProvider implements MemoryProvider {
       };
     } catch (err) {
       if (isConnectionError(err)) {
-        return this.fallback.prime(opts);
+        return (await this.offlineReadProvider()).prime(opts);
       }
       throw err;
     }
@@ -378,7 +470,7 @@ export class HttpKbProvider implements MemoryProvider {
     } catch (err) {
       if (isConnectionError(err)) {
         throw new Error(
-          `kb_promote failed: KB server at ${this.baseUrl} is unreachable (${(err as Error).message}); `
+          `kb_promote failed: KB server at ${this.displayUrl} is unreachable (${(err as Error).message}); `
           + 'nothing was promoted and no offline fallback is used for promote.',
         );
       }
@@ -388,7 +480,7 @@ export class HttpKbProvider implements MemoryProvider {
     const after = result?.new_confidence;
     if (typeof before !== 'string' || typeof after !== 'string') {
       throw new Error(
-        `kb_promote: KB server at ${this.baseUrl} returned a promote response without `
+        `kb_promote: KB server at ${this.displayUrl} returned a promote response without `
         + `previous_confidence/new_confidence: ${JSON.stringify(result)}`,
       );
     }
@@ -400,14 +492,15 @@ export class HttpKbProvider implements MemoryProvider {
   }
 
   /**
-   * Every live entry the server holds with `ownerTag`, any tier. Asks the
-   * server to narrow on the tag and re-checks each entry, so a server that
-   * ignores the tag parameter cannot widen the result. Throws
+   * Every live entry the server holds with `ownerTag`, any tier. Reads the
+   * no-bump list route, so an ownership check is not counted as a retrieval.
+   * Asks the server to narrow on the tag and re-checks each entry, so a server
+   * that ignores the tag parameter cannot widen the result. Throws
    * KbHttpUnsupportedError when the server returns entries without a tags
    * array: ownership cannot be decided then.
    */
   private async ownedEntries(ownerTag: string): Promise<KBEntry[]> {
-    const result = await this.rawRequest<KBResult>('GET', '/api/kb/query', undefined, {
+    const result = await this.rawRequest<{ results?: KBEntry[] }>('GET', '/api/kb/list', undefined, {
       tag: ownerTag,
       confidence: 'CONFIRMED,INFERRED,UNVERIFIED',
       include_stale: 'true',
@@ -446,13 +539,13 @@ export class HttpKbProvider implements MemoryProvider {
 
   /**
    * Context summaries carry only an entry id, so ownership is decided against
-   * the caller's own entry ids. A summary from another member's entry is
-   * reported as missing for that file, as the SQLite provider does when the
-   * caller has no entry for it.
+   * the caller's own entry ids. A summary from another member's entry, or one
+   * with no entry id (ownership unknown), is reported as missing for that
+   * file, as the SQLite provider does when the caller has no entry for it.
    */
   private keepOwnedSummaries(results: FileContextResult[], owned: Set<string>): FileContextResult[] {
     return results.map(r =>
-      r.entry_id !== undefined && !owned.has(r.entry_id) ? { file: r.file, status: 'missing' as const } : r);
+      r.entry_id === undefined || !owned.has(r.entry_id) ? { file: r.file, status: 'missing' as const } : r);
   }
 
   async sync(_opts?: SyncOptions): Promise<SyncResult> {
