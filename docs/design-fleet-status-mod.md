@@ -95,6 +95,10 @@ places, neither of which is Claude Code:
    typed into a masked field and posted straight to the server. The pane
    shows the link with Copy, and warns when it is plain http to a
    non-loopback host (the value would cross the network unencrypted).
+   A 0.4.x server has no `return_url`: it collects the value out of band
+   itself (a hidden-input terminal window, or a request for the CLI command
+   when it has no terminal). The pane reports "NAME stored" and re-lists,
+   or points back to the command.
 
 Claude Code's own `Input` is never used for a value: it is unmasked, and
 any other plugin's `ui.input` hooks would see the text. Canary check

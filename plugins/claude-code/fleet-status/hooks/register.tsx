@@ -278,8 +278,10 @@ export function entryLinkWarning(link: string): string | undefined {
  * failure line. The server sends both a text block and structuredContent
  * ({ absoluteUrl, expiresAt }); Claude Code 2.1.301 hands a plugin the
  * structured form as the only text block, so JSON is read first.
+ * A server without return_url (0.4.x) ignores it and collects the value out of
+ * band itself (a hidden-input terminal); its "NAME stored" reply is `stored`.
  */
-export function parseEntryLink(replies: string[], structured?: unknown): { link: string; expires?: string } | { error: string } {
+export function parseEntryLink(replies: string[], structured?: unknown): { link: string; expires?: string } | { stored: true } | { error: string } {
   const fromJson = (d: unknown) => {
     const o = d as { absoluteUrl?: unknown; url?: unknown; expiresAt?: unknown } | null
     const link = typeof o?.absoluteUrl === 'string' ? o.absoluteUrl : typeof o?.url === 'string' && /^https?:/.test(o.url) ? o.url : undefined
@@ -299,6 +301,7 @@ export function parseEntryLink(replies: string[], structured?: unknown): { link:
   const all = replies.join('\n')
   if (/^\s*\[FAIL\]/.test(all)) return { error: all.trim().split('\n')[0]!.replace(/^\s*\[FAIL\]\s*/, '') }
   const link = /(https?:\/\/[^\s"'<>]+)/.exec(all)?.[1]
+  if (!link && /^\W*[\w-]+ stored\b/m.test(all)) return { stored: true }
   if (!link) return { error: 'the server did not return an entry link' }
   const expires = /\(expires ([^)]+)\)/.exec(all)?.[1]
   return expires ? { link, expires } : { link }
@@ -382,10 +385,15 @@ async function requestEntryLink($: EngineInterface): Promise<void> {
   }
   const ttl = TTL_SECONDS[f.ttl]
   if (ttl !== undefined) args.ttl_seconds = ttl
+  await setNote($, 'Asking the server for a secure entry\u2026')
   try {
     const res = await $.mcp.call(SERVER, SET_TOOL, args)
     const got = parseEntryLink(texts(res), res.structuredContent)
-    if ('error' in got) return setNote($, `No link: ${got.error}`)
+    if ('stored' in got) {
+      await update($, secretForm, () => ({ ...CLOSED_FORM, note: `${f.name} stored.` }))
+      return refreshSecrets($)
+    }
+    if ('error' in got) return setNote($, `No browser link from this server; use the command above. (${got.error})`)
     await update($, secretForm, cur => ({
       ...cur,
       mode: 'link' as const,

@@ -1,0 +1,182 @@
+# Manual npm publish of an EXISTING release tag, for when ci.yml's tag-only
+# npm-publish job failed on that tag (e.g. v0.4.4 failed the pack-size guard).
+# Mirrors ci.yml's npm-publish job step for step, but checks out the given tag
+# instead of running on a tag push. Never modifies the tagged content.
+#
+# Run: gh workflow run npm-publish-tag.yml -f tag=v0.4.4
+name: npm publish (existing tag)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to publish to npm, e.g. v0.4.4'
+        required: true
+        type: string
+
+jobs:
+  npm-publish-tag:
+    runs-on: ubuntu-latest
+    # No id-token: this one-off publishes without provenance (see Publish).
+    permissions:
+      contents: read
+    environment: npm
+    env:
+      # Input passed via env, never interpolated into shell text.
+      INPUT_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Validate tag input
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$INPUT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag '$INPUT_TAG' must match ^v[0-9]+.[0-9]+.[0-9]+\$ (no prerelease '_' tags)"
+            exit 1
+          fi
+          if ! gh release view "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null; then
+            echo "::error::no GitHub release exists for $INPUT_TAG"
+            exit 1
+          fi
+          VER="${INPUT_TAG#v}"
+          if npm view "@apralabs/apra-fleet@${VER}" version 2>/dev/null | grep -q .; then
+            echo "::error::@apralabs/apra-fleet@${VER} is already published to npm -- refusing"
+            exit 1
+          fi
+          echo "Tag $INPUT_TAG validated: release exists, not yet on npm"
+
+      - name: Checkout repository at tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Assert HEAD is the tag commit
+        run: |
+          set -euo pipefail
+          HEAD_SHA=$(git rev-parse HEAD)
+          TAG_SHA=$(git rev-parse "refs/tags/${INPUT_TAG}^{commit}")
+          if [ "$HEAD_SHA" != "$TAG_SHA" ]; then
+            echo "::error::HEAD $HEAD_SHA is not tag $INPUT_TAG ($TAG_SHA)"
+            exit 1
+          fi
+          echo "HEAD $HEAD_SHA == $INPUT_TAG"
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Inject version from tag
+        run: |
+          TAG="${INPUT_TAG#v}"
+          TAG="$TAG" node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json','utf-8'));
+            const ver = JSON.parse(fs.readFileSync('version.json','utf-8'));
+            pkg.version = process.env.TAG;
+            ver.version = process.env.TAG;
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            fs.writeFileSync('version.json', JSON.stringify(ver, null, 2) + '\n');
+          "
+          echo "Injected version: ${TAG}"
+
+      - name: Version lockstep guard
+        run: |
+          TAG="${INPUT_TAG#v}"
+          PKG_VER=$(node -e "console.log(JSON.parse(require('fs').readFileSync('package.json','utf-8')).version)")
+          VER_VER=$(node -e "console.log(JSON.parse(require('fs').readFileSync('version.json','utf-8')).version)")
+          echo "Tag=$TAG  package.json=$PKG_VER  version.json=$VER_VER"
+          if [ "$TAG" != "$PKG_VER" ] || [ "$TAG" != "$VER_VER" ]; then
+            echo "::error::Version mismatch! tag=$TAG package.json=$PKG_VER version.json=$VER_VER"
+            exit 1
+          fi
+
+      - name: Build
+        # Explicit prepublishOnly, as in ci.yml: npm only fires it on
+        # `npm publish`, not `npm pack`.
+        run: npm run prepublishOnly
+
+      - name: Verify shebang
+        run: |
+          head -1 dist/index.js | grep -q '^#!/usr/bin/env node'
+          head -1 packages/apra-fleet-se/bin/cli.mjs | grep -q '^#!/usr/bin/env node'
+
+      - name: Dry-run pack verification
+        run: |
+          set -o pipefail
+          npm pack --dry-run 2>&1 | tee pack-output.txt
+          grep -q 'dist/index.js' pack-output.txt
+          grep -q 'version.json' pack-output.txt
+          grep -q 'hooks/hooks-config.json' pack-output.txt
+          grep -q 'skills/pm/' pack-output.txt || grep -q 'skills/fleet/' pack-output.txt
+          grep -q 'packages/apra-fleet-se/bin/cli.mjs' pack-output.txt
+          grep -q 'packages/apra-fleet-se/fleet-sprint/runner.js' pack-output.txt
+          grep -q 'packages/apra-fleet-se/workflow.json' pack-output.txt
+          grep -q 'dist/agents/schemas/' pack-output.txt
+          echo "Pack verification passed"
+
+      - name: Clean-pack guard -- reject stale SEA build artifacts
+        env:
+          # Raised for this one-off only: tags cut before dist/**/*.map was
+          # excluded from "files" ship source maps (v0.4.4 measured 10436935
+          # bytes unpacked vs the 10000000 default). The tagged content is
+          # published as-is; the SEA-artifact check below still applies.
+          PACK_SIZE_THRESHOLD: '12000000'
+        run: |
+          set -o pipefail
+          npm pack --dry-run 2>&1 | tee pack-check.txt
+          if grep -qE '\.(exe)$|sea-prep\.blob|sea-bundle\.cjs' pack-check.txt; then
+            echo "::error::Pack contains stale SEA build artifacts (exe/sea-prep.blob/sea-bundle.cjs). Clean dist/ and retry."
+            grep -E '\.(exe)$|sea-prep\.blob|sea-bundle\.cjs' pack-check.txt
+            exit 1
+          fi
+          node scripts/check-pack-size.mjs
+          echo "Clean-pack guard passed"
+
+      - name: Pack + install into a clean temp prefix (fleet-sprint smoke test)
+        run: |
+          TMP_INSTALL=$(mktemp -d)
+          npm pack --pack-destination "$TMP_INSTALL"
+          TARBALL=$(ls "$TMP_INSTALL"/apralabs-apra-fleet-*.tgz)
+
+          INSTALL_PREFIX=$(mktemp -d)
+          npm install --prefix "$INSTALL_PREFIX" "$TARBALL" --no-save --no-audit --no-fund
+          PKG_DIR="$INSTALL_PREFIX/node_modules/@apralabs/apra-fleet"
+          BIN="$INSTALL_PREFIX/node_modules/.bin/apra-fleet"
+
+          test -d "$PKG_DIR/dist/agents/schemas" || { echo "::error::dist/agents/schemas/ missing from the packed tarball."; exit 1; }
+          SCHEMA_COUNT=$(ls "$PKG_DIR/dist/agents/schemas/"*.json 2>/dev/null | wc -l)
+          if [ "$SCHEMA_COUNT" -eq 0 ]; then
+            echo "::error::dist/agents/schemas/ is present but contains no *.json files."
+            exit 1
+          fi
+
+          FAKEHOME=$(mktemp -d)
+          export HOME="$FAKEHOME"
+          export USERPROFILE="$FAKEHOME"
+          export APRA_FLEET_DATA_DIR="$FAKEHOME/data"
+
+          "$BIN" install --skill none --workflows all --transport stdio
+
+          "$BIN" workflow fleet-sprint --help > "$TMP_INSTALL/se-help-stdout.txt" 2> "$TMP_INSTALL/se-help-stderr.txt"
+          grep -q 'Usage: fleet-se sprint' "$TMP_INSTALL/se-help-stdout.txt" || {
+            echo "::error::fleet-sprint --help did not produce the expected usage text."
+            cat "$TMP_INSTALL/se-help-stdout.txt"
+            exit 1
+          }
+          if grep -q 'Using the local apra-pm copy' "$TMP_INSTALL/se-help-stderr.txt"; then
+            echo "::error::apra-fleet workflow fleet-sprint fell back to the local apra-pm dev path instead of resolving the packaged dist/agents/schemas/."
+            cat "$TMP_INSTALL/se-help-stderr.txt"
+            exit 1
+          fi
+          echo "Clean install smoke test passed"
+
+      - name: Publish to npm
+        # No --provenance: from a dispatch run it attests the workflow ref (main), not the tag commit.
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

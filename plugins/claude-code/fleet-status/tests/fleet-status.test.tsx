@@ -268,6 +268,9 @@ describe('fleet-status secrets formatting', () => {
     expect(parseEntryLink([JSON.stringify({ url: '/ui/#/secret-entry/abc', expiresAt: 'T1', absoluteUrl: LINK })])).toEqual({ link: LINK, expires: 'T1' })
     expect(parseEntryLink([], { absoluteUrl: LINK, expiresAt: 'T2' })).toEqual({ link: LINK, expires: 'T2' })
     expect('error' in parseEntryLink(['nothing here'])).toBe(true)
+    // A 0.4.x server has no return_url: it collected the value out of band itself.
+    expect(parseEntryLink(['\u2713 NEW_KEY stored [persistent]. Use {{secret.NEW_KEY}} in commands.'])).toEqual({ stored: true })
+    expect('error' in parseEntryLink(['\uD83D\uDD10 Run this in a separate terminal to provide the credential:\n  ! apra-fleet secret --set NEW_KEY'])).toBe(true)
   })
 
   test('removeNote reports removal, or the server refusal without the force hint', async () => {
@@ -322,6 +325,28 @@ describe('fleet-status secrets pane', () => {
     expect(set?.args).toEqual({ name: 'NEW_KEY', prompt: 'Value for NEW_KEY', persist: true, members: '*', return_url: true, ttl_seconds: 86400 })
     expect(await ui.find({ type: 'Link' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Careful: plain http to 10\.0\.0\.5/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a server without entry links stores out of band; the pane says so and re-lists', async ($, on) => {
+    let listed = '[]'
+    const seen = serveSnapshot(on, OK, {
+      credential_store_list: () => text(listed),
+      credential_store_set: () => {
+        listed = JSON.stringify([{ name: 'NEW_KEY', scope: 'persistent', policy: 'allow', members: '*', expiry: 'none' }])
+        return text('\u2713 NEW_KEY stored [persistent]. Use {{secret.NEW_KEY}} in commands.')
+      },
+    })
+    await $.command.run(RUN)
+    const ui = await $.ui.mount(MOUNT)
+    await ui.press({ key: 'fold-secrets' })
+    await ui.press({ key: 'secret-add' })
+    await ui.input({ key: 'secret-name', text: 'NEW_KEY', kind: 'submit' })
+    await ui.press({ key: 'secret-link' })
+    expect(seen.calls.filter(c => c.tool === 'credential_store_set')).toHaveLength(1)
+    expect(await ui.find({ type: 'Link' })).toBe(undefined)
+    expect(await ui.find({ type: 'Text', text: /NEW_KEY stored\./ })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'secret-insert:NEW_KEY' })).toBeDefined()
     await ui.unmount()
   })
 
