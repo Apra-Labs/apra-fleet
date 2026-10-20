@@ -2298,8 +2298,10 @@ async function runSprintCycle(context) {
             // on the first round of any cycle (roundSessions never resumes
             // across cycles) and cleared on a failed round by the policy's
             // 'clear-round-session' degrade step. The max_turns-exhaustion
-            // resume overrides this to `resume: true`, which is an in-dispatch
-            // continuation, not a cross-round one.
+            // resume overrides this with the exhausted dispatch's OWN session
+            // id (`resume: "<sessionId>"`, never `resume: true`, which the
+            // server resolves to the member's last session, whichever role ran
+            // it) -- an in-dispatch continuation, not a cross-round one.
             resumeArg: roundSessions.resumeArgFor('reviewer', cycle),
             onSessionId: (id, meta) => roundSessions.record('reviewer', cycle, id, meta),
             onResultRejected: (reason) => new ReviewerContractViolationError(
