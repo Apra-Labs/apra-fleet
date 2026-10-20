@@ -111,8 +111,9 @@ test('in-run reclaim: a BLOCKED doer\'s claim is re-laned next cycle and its dep
         assert.equal(run.finalBeadsById.get(y.id).status, 'closed', 'Y must become ready once X closes and close in the same sprint');
         assert.notEqual(run.result.verdict, 'FAIL', `the sprint must not end FAIL for the orphaned claim: ${JSON.stringify(run.result)}`);
         assert.ok(run.commandLog.some(reopenCommandFor(x.id)), 'the orphaned claim must be reset to open');
-        assert.ok(run.logs.some((l) => /in-run reclaim/.test(l) && l.includes(x.id) && /confirmed by a fresh read/.test(l)),
-            `expected the reclaim log line, logs: ${JSON.stringify(run.logs.filter((l) => /reclaim/i.test(l)))}`);
+        assert.ok(run.logs.some((l) => /in-run reclaim/.test(l) && l.includes(x.id) && /confirmed by a fresh read/.test(l)
+            && l.includes(`Downstream bead(s) waiting on it: ${y.id}`)),
+            `expected the reclaim log line naming the downstream bead it unblocks, logs: ${JSON.stringify(run.logs.filter((l) => /reclaim/i.test(l)))}`);
         // The write was preceded by a fresh read of exactly that bead.
         const writeIdx = run.commandLog.findIndex(reopenCommandFor(x.id));
         const freshIdx = run.commandLog.slice(0, writeIdx).lastIndexOf(`bd show ${x.id} --json`);

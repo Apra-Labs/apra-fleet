@@ -61,8 +61,10 @@ standard $15/M, premium $25/M output tokens.
 
 Sprint logs are durable per-branch outputs named
 `sprint-logs/<branch>-<yyyymmdd_hhmmss>.jsonl` and are never deleted. The `.jsonl`
-ledgers stay local (gitignored); the committed deliverables are `calibration.json`
-and the `<timestamp>.analysis.md` summary.
+ledgers stay local (gitignored); the only committed deliverable is
+`calibration.json`. The `<timestamp>.analysis.md` summary is written locally and
+never committed (auto-sprint adds `sprint-logs/*.analysis.md` to the clone's
+`.git/info/exclude`).
 
 ### Harvest: dolt push and execution summary
 

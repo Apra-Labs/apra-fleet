@@ -416,6 +416,11 @@ function build3BeadFleetApi(tempDir, epicBead, dispatchLog) {
                 return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
             }
 
+            // Harvest's git-exclude script: hermetic success, never the host shell.
+            if (/^if excl=\$\(git rev-parse --git-path info\/exclude /.test(opts.command)) {
+                return mockCmdResult(0, '', '');
+            }
+
             const { err, stdout, stderr } = await runCmd(opts.command, tempDir);
             if (err) {
                 // apra-fleet-1cb.1: only a genuine spawn failure is an MCP-level

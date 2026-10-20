@@ -203,9 +203,13 @@ export async function runPlanPhase({
             // prior-round session by explicit session id so a re-plan keeps
             // warm context. False on the first round of any cycle
             // (roundSessions never resumes across cycles). The
-            // max_turns-exhaustion path overrides this to `resume: true` --
-            // an in-dispatch continuation of the session just run,
-            // orthogonal to cross-round resume.
+            // max_turns-exhaustion path does not use this value: its
+            // secondary dispatch resumes the EXHAUSTED attempt's own session
+            // by the explicit id reported on its error (resume:
+            // "<exhausted session id>"), or starts a fresh session with the
+            // full prompt when no id was reported or the server answers
+            // session_not_found -- an in-dispatch continuation, orthogonal
+            // to cross-round resume.
             resumeArg: roundSessions.resumeArgFor('planner', cycle),
             onSessionId: (id, meta) => roundSessions.record('planner', cycle, id, meta),
             attemptOptions: ({ attempt }) => ({

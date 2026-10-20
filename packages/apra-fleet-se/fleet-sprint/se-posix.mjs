@@ -42,6 +42,25 @@ export function assertSafeRelativePath(relPath, what = 'path') {
   return p;
 }
 
+/**
+ * Validate a git-exclude entry before it is interpolated into a member-bound
+ * command string: the same rules as assertSafeRelativePath plus the glob '*'
+ * (e.g. 'docs/sprint-analysis-*.md'). '*' is inert in every dialect's use of
+ * the entry -- always single-quoted, matched as a fixed string (grep -qxF /
+ * PowerShell -notcontains) and appended literally -- so it is allowed here
+ * only, never in the file-path primitives.
+ * @param {string} entry
+ * @param {string} what caller-facing name for the error message
+ * @returns {string} the validated entry
+ */
+export function assertSafeExcludePattern(entry, what = 'git-exclude entry') {
+  const e = String(entry ?? '');
+  if (!/^[A-Za-z0-9._/*-]+$/.test(e) || e.startsWith('/') || e.startsWith('-') || e.split('/').includes('..')) {
+    throw new Error(`Refusing to build a member command for unsafe ${what} '${entry}' (allowed: work-folder-relative, letters, digits, '.', '_', '-', '/', '*'; no '..' segment, no leading '/' or '-').`);
+  }
+  return e;
+}
+
 /** Markers printed by every dialect's fileExistsProbe(). */
 export const FILE_PROBE_PRESENT = 'present';
 export const FILE_PROBE_ABSENT = 'absent';
@@ -196,7 +215,7 @@ export class SePosixCommands {
    * @returns {string}
    */
   ensureGitExcluded(entry) {
-    const e = assertSafeRelativePath(entry, 'git-exclude entry');
+    const e = assertSafeExcludePattern(entry, 'git-exclude entry');
     const script = `if excl=$(git rev-parse --git-path info/exclude 2>/dev/null) && [ -n "$excl" ]; then `
       + `mkdir -p "$(dirname "$excl")" && `
       + `{ grep -qxF -- '${e}' "$excl" 2>/dev/null || { `
