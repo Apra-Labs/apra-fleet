@@ -1,6 +1,6 @@
 # Design: per-project VCS credentials (v0.5)
 
-Status: DRAFT for owner approval -- no code until approved.
+Status: all owner questions answered -- awaiting final approval; no code until approved.
 Covers: the per-project credential binding, and the dashboard pick-a-secret
 flow that fills it. Supersedes the per-sprint shape of #758 (reverted by #762).
 
@@ -196,23 +196,36 @@ On the project page (not the launch form -- the choice is per project):
 - A VCS secret is an ordinary secret: usable in any `execute_command` under
   its own `network_policy`. No VCS-only restriction.
 
-## Open question for the owner
+- Repo-local credential helper is the default for members that sprints
+  provision, for all three providers (GitHub, Bitbucket, Azure DevOps).
 
-1. Where should a sprint-provisioned member's git credential live?
+## Repo-local helper: what it takes (all three providers)
 
-   Today `provision_vcs_auth` registers a "git credential helper" in the
-   member's GLOBAL git config (`~/.gitconfig` of the OS user the member runs
-   as), keyed by host. Two side effects:
-   - The backlog member is a local member running as the operator, so
-     provisioning it for a project's account replaces the operator's own
-     login for that host (e.g. their personal bitbucket.org login for every
-     repo on that machine).
-   - One member can hold only one account per host, so two projects with
-     different accounts on the same host overwrite each other on a shared
-     member.
+`scope: 'repo'` registers the git credential helper with `git config --local`
+in the member's checkout instead of `--global`. Four places must be handled
+so it never silently falls back to global:
 
-   Proposal: register the helper in the project checkout's own
-   `.git/config` (`git config --local`) instead. Only that repository uses
-   the project's account; the operator's global config and other repos are
-   untouched. Git authenticates the same way either way. OK to make this
-   the default for members that sprints provision?
+1. GitHub `gh` login. Provisioning today also runs `gh auth login`, which
+   writes gh's own global store (`~/.config/gh/hosts.yml`); that cannot be
+   per-repo. The sprint engine does not use `gh` (git + REST only), so
+   repo-local mode skips the global gh login. An agent that runs `gh`
+   itself on that member is not logged in by fleet; the provision result
+   says so.
+2. Helper script location. The script now lives at
+   `~/.fleet-git-credential-<label>` with label = provider, so two projects
+   on one host would still overwrite one file. In repo-local mode it lives
+   inside the checkout's git dir (`.git/fleet-credential-<provider>`, mode
+   0600), and `vcs_credential_exec` reads it from there.
+3. Beads sync. bd/dolt pushes `refs/dolt/data` from its own git context,
+   not the project checkout. If the project's beads remote is https on the
+   same host, the same helper must be configured where dolt pushes (verified
+   in implementation with a real push), never by falling back to global.
+4. A checkout must exist. Sprint members are registered on an existing
+   clone, so this holds today; provisioning refuses with a clear error when
+   the work folder is not a git checkout instead of writing globally.
+
+Revoke removes exactly what provision wrote (the local config entry and the
+script in the git dir). A member provisioned the old (global) way keeps
+working; the next sprint provision writes repo-local and removes the global
+entry only if fleet wrote it.
+
