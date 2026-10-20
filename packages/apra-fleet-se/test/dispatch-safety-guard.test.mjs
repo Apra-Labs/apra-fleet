@@ -983,12 +983,14 @@ test('every command() call site in phases/regression-test.mjs passes member_name
 // last two, which complete the runSprintCycle slice. Unlike every pair before
 // them these two get DIFFERENT baselines, and the difference is the point.
 //
-// phases/harvest.mjs is a zero baseline: it issues no command() at all. The
-// docs/sprint-analysis commits it exists to produce are made by the
+// phases/harvest.mjs has a baseline of ONE: the pre-dispatch git exclude of
+// the (never committed) docs/sprint-analysis-*.md document on the harvester's
+// member. The docs/README commits the harvest produces are made by the
 // DISPATCHED harvester inside its own repo, and they reach the remote through
 // the 'harvester' policy row's pushCode/pushBeads bracket -- never through an
-// orchestrator-side command() here. A command() appearing in this module would
-// mean the orchestrator had started committing or pushing the harvest itself.
+// orchestrator-side command() here. A second command() appearing in this
+// module would mean the orchestrator had started committing or pushing the
+// harvest itself.
 //
 // phases/publish-pr.mjs is the opposite: it is the ONE phase module that took
 // real member_name-bearing command() sites out of runner.js, and both are
@@ -1002,7 +1004,7 @@ test('every command() call site in phases/regression-test.mjs passes member_name
 // raiseVcsPrForMember, not by an agent.
 // =============================================================================
 const HARVEST_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/harvest.mjs');
-const EXPECTED_HARVEST_PHASE_COMMAND_COUNT = 0;
+const EXPECTED_HARVEST_PHASE_COMMAND_COUNT = 1;
 
 const PUBLISH_PR_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/publish-pr.mjs');
 // 3 = the two sites above plus the CI gate's `git rev-parse HEAD` on

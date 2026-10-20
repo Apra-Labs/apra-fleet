@@ -132,8 +132,14 @@ Design record for sprint-engine hardening around work that gets stranded mid-run
 - **Salvage before reset.** Before a retry hard-resets a member workspace, member
   sync pins unpushed commits and tracked working-tree changes on a local
   `fleet-salvage/` ref. If the pin fails the reset is refused (fail closed).
-- **Harvester analysis excludes cost.** The committed sprint-analysis artifact
-  carries no cost block; cost lives only in the PR body.
+- **Harvester analysis excludes cost.** The sprint-analysis artifact carries no
+  cost block; cost lives only in the PR body.
+- **Harvester analysis is never committed.** The harvester writes
+  `docs/sprint-analysis-<slug>.md` to its working tree only. Before dispatching
+  it, the engine adds `docs/sprint-analysis-*.md` to that clone's
+  `.git/info/exclude` (idempotent, local, per member OS/shell), so the file is
+  never dirty, never auto-stashed and never swept into `git add -A`. If that
+  step fails the harvester is not dispatched, and the log says so.
 - **newTask titles.** Leading dashes are stripped from reviewer-proposed task titles
   (they parse as CLI flags); the original title is preserved in the description.
 - **deploy.md command discipline.** deploy.md steps contain no `$(...)` substitution

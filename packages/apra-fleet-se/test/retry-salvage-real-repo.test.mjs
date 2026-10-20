@@ -28,7 +28,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { syncMemberBefore } from '../fleet-sprint/member-sync.mjs';
+import { syncMemberBefore, syncMemberAfter } from '../fleet-sprint/member-sync.mjs';
 import { GitSyncError } from '../fleet-sprint/errors.mjs';
 import { createGitRepoFixture, probeGitRepoFixtureSupport } from './helpers/git-repo-fixture.mjs';
 
@@ -141,7 +141,7 @@ describe('retry salvage against a real git repo (no network, no credentials)', {
         assert.equal(readIn('.env'), ENV_BODY, 'the untracked file is untouched');
     });
 
-    test('reset failure: the sprint branch stays at its prior tip (not a salvage commit) and the work tree keeps its edit', async () => {
+    test('reset failure: the sprint branch stays at its prior tip (not a salvage commit), tracked and untracked work survives, and a later normal push never publishes the WIP', async () => {
         fixture = createGitRepoFixture({ member: 'reset-fail-member', prefix: 'retry-salvage-3-' });
         const { c2 } = dirtyClone();
         const failingReset = async (cmd, opts) => {
@@ -160,8 +160,47 @@ describe('retry salvage against a real git repo (no network, no credentials)', {
         assert.equal(fixture.localTip(), c2, 'HEAD is exactly the prior tip');
         const refs = await salvageRefs();
         assert.equal(refs.length, 1, 'the salvage ref was still created before the attempted reset');
-        assert.notEqual(fixture.localTip(), await gitOut('rev-parse', refs[0]), 'HEAD is not the salvage commit');
+        const wipSha = await gitOut('rev-parse', refs[0]);
+        assert.notEqual(fixture.localTip(), wipSha, 'HEAD is not the salvage commit');
         assert.equal(readIn('README.md'), 'seed\nuncommitted tracked edit\n', 'the tracked edit is still in the work tree');
+        assert.equal(readIn('.env'), ENV_BODY, 'the untracked .env survives the failed reset');
+        assert.equal(readIn(path.join('.claude', 'settings.local.json')), SETTINGS_BODY, 'the untracked provider file survives the failed reset');
+        assert.equal(await gitOut('rev-list', '--all', '--', '.env'), '', '.env appears in no commit');
+
+        // The next NORMAL dispatch (ff-only G-pull, then G-push) must publish
+        // only real commits -- never the WIP snapshot and never the side ref.
+        await syncMemberBefore(fixture.member, { command: fixture.command, branch: fixture.branch });
+        const after = await syncMemberAfter(fixture.member, { command: fixture.command, branch: fixture.branch });
+        assert.ok(after.ok && after.pushed, `the next dispatch's push succeeds: ${JSON.stringify(after)}`);
+        assert.equal(fixture.originTip(), c2, 'origin receives exactly the real commits, ending at the prior tip');
+        assert.equal(fixture.isAncestor(wipSha, fixture.originTip()), false, 'the WIP snapshot is never published by a later push');
+        assert.deepEqual(fixture.originRefNames().filter((r) => r.includes('fleet-salvage')), [], 'the side ref never reaches origin');
+    });
+
+    test('a submodule whose only change is its own dirty work tree: no side ref, no failure, the reset proceeds and the submodule edit is left alone', async () => {
+        fixture = createGitRepoFixture({ member: 'submodule-member', prefix: 'retry-salvage-7-' });
+        // A real, published submodule, so the only local state is the dirty
+        // submodule work tree.
+        const subSrc = path.join(fixture.root, 'sub-src');
+        fs.mkdirSync(subSrc);
+        fixture.gitSetup(['init', '-q'], subSrc);
+        fs.writeFileSync(path.join(subSrc, 'f.txt'), 'sub\n', 'utf-8');
+        fixture.gitSetup(['add', '--', 'f.txt'], subSrc);
+        fixture.gitSetup(['commit', '-q', '-m', 'sub-seed'], subSrc);
+        fixture.gitSetup(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subSrc, 'sub']);
+        fixture.gitSetup(['commit', '-q', '-m', 'add-submodule']);
+        fixture.gitSetup(['push', '-q', 'origin', `HEAD:refs/heads/${fixture.branch}`]);
+        fixture.gitSetup(['fetch', '-q', 'origin']);
+        const tip = fixture.localTip();
+        writeIn(path.join('sub', 'f.txt'), 'dirty inside the submodule\n');
+
+        const res = await syncMemberBefore(fixture.member, { command: fixture.command, branch: fixture.branch, resetToRemoteTip: true });
+
+        assert.equal(res.salvageRef, undefined, 'nothing salvageable at the superproject level');
+        assert.deepEqual(await salvageRefs(), [], 'no side ref');
+        assert.equal(fixture.commandsOf('git reset --hard').length, 1, 'the reset ran');
+        assert.equal(fixture.localTip(), tip);
+        assert.equal(readIn(path.join('sub', 'f.txt')), 'dirty inside the submodule\n', 'the submodule work tree is not touched');
     });
 
     test('pre-existing conflicting ref name (D/F conflict): fails closed with an actionable message and never resets', async () => {

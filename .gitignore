@@ -38,7 +38,7 @@ CLAUDE.md
 # E2E test fixtures (local only, never commit)
 .e2e-fixtures/
 
-# sprint-logs/ holds three kinds of file and only two are deliverables. Keep
+# sprint-logs/ holds four kinds of file and only one is a deliverable. Keep
 # this split in sync with apra-pm/skills/pm/cost.md and
 # apra-pm/docs/sprint-workflow.md, which tell the harvester what to commit --
 # a rule here that contradicts those docs is silently unstageable output, and
@@ -46,8 +46,12 @@ CLAUDE.md
 #
 #   calibration.json          TRACKED. The blended historical averages future
 #                             cost quotes read; one bounded file per package.
-#   <branch>-<ts>.analysis.md TRACKED. The human-readable Sprint Execution
-#                             Summary, same class as docs/sprint-analysis-*.md.
+#   <branch>-<ts>.analysis.md IGNORED (below). The Sprint Execution Summary the
+#                             auto-sprint / pm workflows write locally; never
+#                             committed (auto-sprint also lists
+#                             sprint-logs/*.analysis.md in each target clone's
+#                             .git/info/exclude). Already-tracked copies are
+#                             unaffected.
 #   <branch>-<ts>.jsonl       IGNORED (below). Raw per-dispatch ledgers: they
 #                             accumulate per run with no bound, and they embed
 #                             the operator's home path -- redaction still
@@ -58,10 +62,16 @@ CLAUDE.md
 #                             by bin/cli.mjs on every sprint exit; pure scratch.
 #
 # Do NOT reintroduce a blanket '/sprint-logs/' directory rule: a directory-level
-# ignore shadows everything inside it, so the two tracked kinds above become
+# ignore shadows everything inside it, so the tracked kind above becomes
 # unstageable without 'git add -f' no matter what a narrower pattern says.
 **/sprint-logs/*.jsonl
 **/sprint-logs/sprint_*.json
+**/sprint-logs/*.analysis.md
+
+# fleet-sprint harvester's per-sprint analysis: written to the working tree,
+# never committed (the engine also lists this in each target clone's
+# .git/info/exclude). Already-tracked copies are unaffected.
+docs/sprint-analysis-*.md
 
 # Provider agent context files are tracked project deliverables (git add -f was used).
 # These entries prevent sprint-injected replacements from being accidentally staged.

@@ -50,6 +50,8 @@ function fakeProbes(o: {
       const table = m[2] === 'health' ? o.health : o.sprints;
       return table?.[Number(m[1])] ?? null;
     },
+    // Never a fake lock pid, so the real worker pid can never collide.
+    selfPid: () => 1,
   };
 }
 
@@ -74,6 +76,11 @@ describe('detectRunningFleetSe', () => {
     const r = await detectRunningFleetSe(fakeProbes({ locks: { 'a.lock': '111' }, alive: [111], cmd: { 111: null } }));
     expect(r.sprints).toEqual([]);
     expect(r.warnings?.[0]).toContain('could not read the command line of pid 111');
+  });
+
+  it('a lock holding our own pid is skipped', async () => {
+    const r = await detectRunningFleetSe({ ...fakeProbes({ locks: { 'a.lock': '111', 'b.lock': '222' }, alive: [111, 222] }), selfPid: () => 222 });
+    expect(r.sprints).toEqual([{ pid: 111, lockFile: path.join(LOCK_DIR, 'a.lock') }]);
   });
 
   it('a live sprint lock is a running sprint; a dead pid (or another user, EPERM) is not', async () => {

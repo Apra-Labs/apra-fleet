@@ -65,9 +65,11 @@ Concretely, after a run finishes, here is what has changed in your world:
   against the base branch you chose.
 - Your issue tracker (beads -- see Section 2) has the sprint's issues decomposed,
   worked, and closed-with-evidence or left open with filed bugs explaining why.
-- A sprint analysis document is committed to the branch
-  (`docs/sprint-analysis-<branch>-<hash>.md`: `/` in the branch name becomes
-  `-`, plus an 8-character hash), and the run's raw log is retained on
+- A sprint analysis document is written to the harvester member's working
+  tree (`docs/sprint-analysis-<branch>-<hash>.md`: `/` in the branch name
+  becomes `-`, plus an 8-character hash) but never committed -- the engine
+  lists `docs/sprint-analysis-*.md` in that clone's `.git/info/exclude` so it
+  never shows as a local change -- and the run's raw log is retained on
   disk. No `CHANGELOG.md` entry is written; the cost breakdown is in the PR body.
 
 What it is *not*: it does not invent product scope (the planner is explicitly
