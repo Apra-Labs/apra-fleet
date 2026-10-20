@@ -99,7 +99,10 @@ function ghEnv(token) { return token ? { ...process.env, GH_TOKEN: token } : pro
 // workspace the host exports globally.
 function bdChildEnv() {
   const e = { ...process.env };
-  for (const k of ['BEADS_DIR', 'BEADS_DB', 'BD_DB']) delete e[k];
+  // Case-insensitive: a copy of the Windows env keeps the stored spelling.
+  for (const k of Object.keys(e)) {
+    if (['BEADS_DIR', 'BEADS_DB', 'BD_DB'].includes(k.toUpperCase())) delete e[k];
+  }
   return e;
 }
 

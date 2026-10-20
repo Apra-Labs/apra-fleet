@@ -10,7 +10,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 // @ts-expect-error -- plain .mjs helper
-import { assertNotRealProfile, REAL_HOME_ENV, SANDBOX_ROOT_ENV } from '../scripts/test-sandbox.mjs';
+import { assertNotRealProfile, dropBeadsWorkspaceEnv, REAL_HOME_ENV, SANDBOX_ROOT_ENV } from '../scripts/test-sandbox.mjs';
 import { FLEET_DIR, SERVER_INFO_PATH } from '../src/paths.js';
 import { BIN_DIR, FLEET_BASE } from '../src/cli/config.js';
 
@@ -44,6 +44,11 @@ describe('test sandbox', () => {
     expect(() => assertNotRealProfile(
       { [REAL_HOME_ENV]: real, APRA_FLEET_DATA_DIR: path.join(os.tmpdir(), 'sbx', 'data') }, () => path.join(os.tmpdir(), 'sbx'),
     )).not.toThrow();
+  });
+
+  it('dropBeadsWorkspaceEnv removes the beads variables whatever their case and keeps the rest', () => {
+    const env = { Beads_Dir: '/a', beads_db: '/b', BD_DB: '/c', BEADS_DIR_EXTRA: 'keep', Path: '/bin' };
+    expect(dropBeadsWorkspaceEnv(env)).toEqual({ BEADS_DIR_EXTRA: 'keep', Path: '/bin' });
   });
 
   it.each([

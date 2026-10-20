@@ -4,7 +4,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 import { createHash } from 'crypto';
-import { BEADS_WORKSPACE_ENV } from '../../../../scripts/test-sandbox.mjs';
+import { dropBeadsWorkspaceEnv } from '../../../../scripts/test-sandbox.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -74,9 +74,7 @@ export function bdMode() {
 // real spawn is scoped to the scratch `cwd` this harness built, never to a
 // workspace the host exports globally.
 export function bdChildEnv() {
-    const env = { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' };
-    for (const k of BEADS_WORKSPACE_ENV) delete env[k];
-    return env;
+    return dropBeadsWorkspaceEnv({ ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' });
 }
 
 // The original mock-sprint-harness runCmd body, unchanged: resolve (never

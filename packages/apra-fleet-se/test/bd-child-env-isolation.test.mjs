@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runCmd, bdChildEnv } from './helpers/bd-replay.mjs';
+import { execBdSync } from '../src/supervisor/lib/exec-bd.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 // =============================================================================
@@ -22,8 +22,8 @@ import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 function resolveBdBinary() {
     try {
-        const res = spawnSync('bd', ['--version'], { encoding: 'utf8', timeout: 15000, env: bdChildEnv() });
-        return res.status === 0 ? 'bd' : null;
+        execBdSync(['--version'], { encoding: 'utf8', timeout: 15000, env: bdChildEnv() });
+        return 'bd';
     } catch {
         return null;
     }
@@ -42,7 +42,8 @@ const BEADS_VARS = ['BEADS_DIR', 'BEADS_DB', 'BD_DB'];
 
 test('bdChildEnv() strips BEADS_DIR, BEADS_DB and BD_DB but leaves every other env var -- including BD_ALLOW_REMOTE_MIGRATE -- intact', () => {
     const prev = Object.fromEntries(BEADS_VARS.map((k) => [k, process.env[k]]));
-    const prevPath = process.env.PATH;
+    const prevCanary = process.env.BD_CHILD_ENV_CANARY;
+    process.env.BD_CHILD_ENV_CANARY = 'passes-through';
     for (const k of BEADS_VARS) process.env[k] = `/some/polluted/ambient/beads/workspace/${k}`;
     try {
         const env = bdChildEnv();
@@ -52,13 +53,15 @@ test('bdChildEnv() strips BEADS_DIR, BEADS_DB and BD_DB but leaves every other e
             '1',
             'BD_ALLOW_REMOTE_MIGRATE must still be set -- execCmd relies on it for dolt remote migrations',
         );
-        assert.equal(env.PATH, prevPath, 'every other env var (e.g. PATH) must pass through unmodified');
+        assert.equal(env.BD_CHILD_ENV_CANARY, 'passes-through', 'every other env var must pass through unmodified');
 
         // bdChildEnv() must return a genuine clone, not a live reference into
         // process.env -- mutating the result must never leak back.
         env.BD_ALLOW_REMOTE_MIGRATE = 'mutated';
         assert.notEqual(process.env.BD_ALLOW_REMOTE_MIGRATE, 'mutated');
     } finally {
+        if (prevCanary === undefined) delete process.env.BD_CHILD_ENV_CANARY;
+        else process.env.BD_CHILD_ENV_CANARY = prevCanary;
         for (const k of BEADS_VARS) {
             if (prev[k] === undefined) delete process.env[k];
             else process.env[k] = prev[k];
@@ -85,23 +88,24 @@ test('bdChildEnv() is also BEADS_DIR-free when the ambient env never had it set 
 // Direct, independent read path (NOT through runCmd/execCmd) used only to
 // snapshot the sentinel's real on-disk state -- always with BEADS_DIR
 // stripped via bdChildEnv() so these reads are themselves immune to whatever
-// this process's ambient BEADS_DIR is doing.
+// this process's ambient BEADS_DIR is doing. execBdSync handles the Windows
+// bd.cmd shim and throws on a non-zero exit, so a failed read fails the test.
 function bdDirect(args, cwd) {
-    return spawnSync('bd', args, { cwd, encoding: 'utf-8', env: bdChildEnv(), timeout: 15000 });
+    return execBdSync(args, { cwd, encoding: 'utf-8', env: bdChildEnv(), timeout: 15000 });
 }
 
 function sentinelSnapshot(sentinelDir) {
     const configYaml = fs.readFileSync(path.join(sentinelDir, '.beads', 'config.yaml'), 'utf-8');
-    const remoteList = bdDirect(['dolt', 'remote', 'list', '--json'], sentinelDir);
-    const issues = bdDirect(['list', '--all', '--json'], sentinelDir);
+    const remoteListStdout = bdDirect(['dolt', 'remote', 'list', '--json'], sentinelDir);
+    const issuesStdout = bdDirect(['list', '--all', '--json'], sentinelDir);
     let issueCount = -1; // -1 (never a real count) if unparsable, so a parse failure never masquerades as "unchanged"
     try {
-        const parsed = JSON.parse(issues.stdout || '[]');
+        const parsed = JSON.parse(issuesStdout || '[]');
         issueCount = (Array.isArray(parsed) ? parsed : parsed.issues || []).length;
     } catch {
         issueCount = -1;
     }
-    return { configYaml, remoteListStdout: remoteList.stdout, issueCount };
+    return { configYaml, remoteListStdout, issueCount };
 }
 
 test(
@@ -159,7 +163,7 @@ test(
 
             const after = sentinelSnapshot(sentinelDir);
 
-            // THE invariant this whole bead exists to protect: the sentinel
+            // THE invariant this test exists to protect: the sentinel
             // -- reachable ONLY via the polluted BEADS_DIR, never via cwd --
             // is byte-for-byte untouched by commands that never named it.
             assert.equal(after.configYaml, before.configYaml, 'sentinel config.yaml must be byte-for-byte unchanged');

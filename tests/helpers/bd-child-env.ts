@@ -1,5 +1,5 @@
 // @ts-expect-error -- plain .mjs helper, no type declarations
-import { BEADS_WORKSPACE_ENV } from '../../scripts/test-sandbox.mjs';
+import { dropBeadsWorkspaceEnv } from '../../scripts/test-sandbox.mjs';
 
 /**
  * Child env for a test that spawns the real `bd` CLI into a scratch directory.
@@ -8,7 +8,5 @@ import { BEADS_WORKSPACE_ENV } from '../../scripts/test-sandbox.mjs';
  * host exports globally.
  */
 export function bdChildEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const k of BEADS_WORKSPACE_ENV as string[]) delete env[k];
-  return env;
+  return dropBeadsWorkspaceEnv({ ...process.env });
 }
