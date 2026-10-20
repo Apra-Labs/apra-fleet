@@ -80,7 +80,7 @@ import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
 import { buildFinalVerdictPrompt } from '../prompts.mjs';
 import { applyGuardedReopens, parseIdWithReasonEntry } from '../beads-transitions.mjs';
 import {
-    validateNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
+    validateNewTask, buildFallbackNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
 } from '../abort.mjs';
 import { buildSettleCallback } from '../dolt-settle.mjs';
 // apra-fleet-rp7a.1: the SAME deferred split Cycle Evaluation applies. Shared
@@ -347,7 +347,23 @@ export async function runFinalReviewPhase({
         const createdIds = [];
         let createdCountUnknownId = 0;
         for (const newTask of finalNewTasks) {
-            const validation = validateNewTask(newTask);
+            let validation = validateNewTask(newTask);
+            if (!validation.ok) {
+                // Final Review findings are the handoff to the next sprint's
+                // planner and there is no later review round to resubmit
+                // them, so a finding whose only problem is a title the
+                // sanitiser could not rescue is still filed as a bead: under
+                // a catch-all-stripped fallback title, with the ORIGINAL
+                // title preserved (ASCII-escaped) in the description, which
+                // still travels via --body-file. Priority/description
+                // failures are not rescued and fall through to the rejection
+                // path below.
+                const fallback = buildFallbackNewTask(newTask);
+                if (fallback) {
+                    log(`Final Review newTasks: title failed the allowlist (${validation.reason}); filing under fallback title ${JSON.stringify(fallback.title)} with the original title escaped into the description.`);
+                    validation = fallback;
+                }
+            }
             if (!validation.ok) {
                 log(`Final Review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
                 rejectedNewTasks.push({ cycle: finalCycleLabel, reason: validation.reason, raw: newTask });
