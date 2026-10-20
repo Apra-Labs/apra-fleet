@@ -316,13 +316,14 @@ for you to approve.
 
 **Manual edits.** Commit any manual change in the member's folder before the next
 sprint, ideally with a short note in the relevant bead. If uncommitted changes
-block the sprint from checking out its branch, the sprint saves them (untracked
-files included) into a git stash named
+block the sprint from checking out its branch, the sprint saves all of the
+folder's uncommitted changes (untracked files included, not only the blocking
+ones) into a git stash named
 `fleet-sprint[<branch>] auto-stash of orphaned WIP blocking branch ensure` and
 continues. (On a multi-member launch, a member with any uncommitted changes has
 them stashed as `fleet-sprint[<branch>] auto-stash of uncommitted work before
-launch alignment`.) Changes that do not block the checkout stay in the working
-tree. Run `git stash list` in that folder to find stashed work.
+launch alignment`.) If nothing blocks the checkout, your changes stay in the
+working tree. Run `git stash list` in that folder to find stashed work.
 
 Future direction: [projects declaring their environment needs](https://github.com/Apra-Labs/apra-fleet/discussions/770).
 
