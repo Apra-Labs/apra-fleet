@@ -150,6 +150,11 @@ export function turnExhaustionError(message = 'max turns spent', sessionId = FAI
     return new AgentDispatchError(message, { details: { reason: 'max_turns_exhausted', ...(sessionId ? { sessionId } : {}) } });
 }
 
+/** The server refused an explicit-id resume: that session is gone or unknown. */
+export function sessionNotFoundError(sessionId = FAILED_SESSION_ID, message = 'session not found') {
+    return new AgentDispatchError(message, { details: { reason: 'session_not_found', sessionId } });
+}
+
 /** An LLM-credential dispatch failure (self-healable, and non-retryable). */
 export function authError(message = 'authentication failed for member') {
     return new AgentDispatchError(message, { details: { reason: 'auth' } });
@@ -184,10 +189,13 @@ export function postDispatchSyncError(message = 'post-dispatch sync failed') {
  * An INFRASTRUCTURE dispatch failure: the member CLI never delivered a result
  * envelope, so no verdict of any kind was produced. 'empty_response' is one
  * of errors.mjs's real INFRA_DISPATCH_REASONS, so isInfraDispatchFailure()
- * classifies this exactly as production would.
+ * classifies this exactly as production would. Like turnExhaustionError, it
+ * carries the session id the server reported for the failed run (pass `null`
+ * for a run that reported none), because the recovery resume continues that
+ * exact session by explicit id.
  */
-export function infraError(message = 'member produced no result envelope') {
-    return new AgentDispatchError(message, { details: { reason: 'empty_response' } });
+export function infraError(message = 'member produced no result envelope', sessionId = FAILED_SESSION_ID) {
+    return new AgentDispatchError(message, { details: { reason: 'empty_response', ...(sessionId ? { sessionId } : {}) } });
 }
 
 /** The read-side git sync bracket around a dispatch failed (not a divergence). */
