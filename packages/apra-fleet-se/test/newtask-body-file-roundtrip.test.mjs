@@ -145,6 +145,7 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
             title: 'Retry a -> b when x >= 3',
             description: 'Flow: queue \u2192 worker \u21D2 store.',
             priority: 'P2',
+            dedupCheck: { query: 'q', candidateIds: [], verdict: 'no-overlap' },
         });
         assert.strictEqual(validation.ok, true, validation.reason);
         assert.strictEqual(validation.title, 'Retry a to b when x at least 3');
@@ -167,7 +168,7 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
 
     test('a fallback newTask (unsanitisable title) carries the ASCII-escaped original title via --body-file', async () => {
         const original = 'Leak in "$HOME" path \u2192 caf\u00E9';
-        const fallback = buildFallbackNewTask({ title: original, description: 'Body text.', priority: 'P1' });
+        const fallback = buildFallbackNewTask({ title: original, description: 'Body text.', priority: 'P1', dedupCheck: { query: 'q', candidateIds: [], verdict: 'no-overlap' } });
         assert.ok(fallback && fallback.ok);
         assert.strictEqual(fallback.title, 'Leak in HOME path to caf');
         const { command, calls, readBodyOf } = makeMemberEmulatingCommand();
