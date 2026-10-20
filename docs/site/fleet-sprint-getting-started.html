@@ -1565,12 +1565,9 @@ apra-fleet start      <span class="cm"># npm install registers no OS service: st
 
   <h3 id="s2-6">2.6 Prepare the member before your first sprint</h3>
 
-  <p>A fleet member is a folder you already use for day-to-day development. fleet-sprint assumes its environment works &mdash; compilers, SDKs, package managers, services &mdash; and does not guess which tools your project needs. Two ways to make sure it does:</p>
+  <p>A fleet member is a folder you already use for day-to-day development. fleet-sprint assumes its environment works &mdash; compilers, SDKs, package managers, services &mdash; and does not guess which tools your project needs.</p>
 
-  <ul>
-    <li><strong>Exercise it once, interactively.</strong> Before the first sprint on a member, ask Claude to deploy the project on that member in the deployer role (following your <code>deploy.md</code>), or to run the integration tests in the integration test runner role (following <code>integ-test-playbook.md</code>). This runs the real toolchain; Claude usually fixes the environment or tells you exactly what to install.</li>
-    <li><strong>Make the environment part of the plan.</strong> Add a bead such as "make sure the .NET 8 SDK is installed, otherwise install it" and make the other beads depend on it. Caveats: on Windows, an installer that needs admin rights shows a UAC prompt and waits for someone to click it, so this suits attended runs; and an unattended member's permission mode may refuse install commands, in which case the bead comes back BLOCKED with the reason.</li>
-  </ul>
+  <p>To prepare it, do one interactive dry run before the first sprint on a member: ask Claude to deploy the project on that member in the deployer role (following your <code>deploy.md</code>), or to run the integration tests in the integration test runner role (following <code>integ-test-playbook.md</code>). This runs the real toolchain; Claude usually fixes the environment or tells you exactly what to install. Environment setup belongs to these roles, not to sprint doers, which stay inside the repo's working copy. On Windows, an installer that needs admin rights shows a UAC prompt for you to approve.</p>
 
   <p><strong>Manual edits.</strong> Commit any manual change in the member's folder before the next sprint, ideally with a short note in the relevant bead. If uncommitted changes block the sprint from checking out its branch, the sprint saves them (untracked files included) into a git stash named <code>fleet-sprint[&lt;branch&gt;] auto-stash of orphaned WIP blocking branch ensure</code> and continues. (On a multi-member launch, a member with any uncommitted changes has them stashed as <code>fleet-sprint[&lt;branch&gt;] auto-stash of uncommitted work before launch alignment</code>.) Changes that do not block the checkout stay in the working tree. Run <code>git stash list</code> in that folder to find stashed work.</p>
 

@@ -303,20 +303,16 @@ Start with one member per sprint and add sprints, not doers.
 
 A fleet member is a folder you already use for day-to-day development.
 fleet-sprint assumes its environment works -- compilers, SDKs, package managers,
-services -- and does not guess which tools your project needs. Two ways to make
-sure it does:
+services -- and does not guess which tools your project needs.
 
-- **Exercise it once, interactively.** Before the first sprint on a member, ask
-  Claude to deploy the project on that member in the deployer role (following
-  your `deploy.md`), or to run the integration tests in the integration test
-  runner role (following `integ-test-playbook.md`). This runs the real toolchain;
-  Claude usually fixes the environment or tells you exactly what to install.
-- **Make the environment part of the plan.** Add a bead such as "make sure the
-  .NET 8 SDK is installed, otherwise install it" and make the other beads depend
-  on it. Caveats: on Windows, an installer that needs admin rights shows a UAC
-  prompt and waits for someone to click it, so this suits attended runs; and an
-  unattended member's permission mode may refuse install commands, in which case
-  the bead comes back BLOCKED with the reason.
+To prepare it, do one interactive dry run before the first sprint on a member:
+ask Claude to deploy the project on that member in the deployer role (following
+your `deploy.md`), or to run the integration tests in the integration test runner
+role (following `integ-test-playbook.md`). This runs the real toolchain; Claude
+usually fixes the environment or tells you exactly what to install. Environment
+setup belongs to these roles, not to sprint doers, which stay inside the repo's
+working copy. On Windows, an installer that needs admin rights shows a UAC prompt
+for you to approve.
 
 **Manual edits.** Commit any manual change in the member's folder before the next
 sprint, ideally with a short note in the relevant bead. If uncommitted changes
