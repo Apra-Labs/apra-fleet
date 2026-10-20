@@ -1,7 +1,7 @@
 // Verification task closing the client-and-docs lane (memory-contract/v1
 // kb_demote epic): drives kbDemote through the REAL apra-fleet-client client
-// (ApraFleet + McpClient + StdioTransport, via the package's own
-// connectFleet()) against the REAL kb_demote tool on a REAL, freshly spawned
+// (ApraFleet + McpClient + StdioTransport, wired the way the package's own
+// connectFleet() wires them for stdio) against the REAL kb_demote tool on a REAL, freshly spawned
 // apra-fleet server instance (dist/index.js) -- no mock MCP client, no stub
 // tool, same shape as tests/regression-command-surface.test.ts's real-server
 // stdio handshake test and test/auto-start-real-server.test.mjs's real-server
@@ -20,8 +20,9 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { connectFleet } from '../src/client/server-resolution.mjs';
-import { parseToolJson, KB_REMOVED_SCOPE_KEYS } from '../src/client/api.mjs';
+import { StdioTransport } from '../src/client/transport.mjs';
+import { McpClient } from '../src/client/client.mjs';
+import { ApraFleet, parseToolJson, KB_REMOVED_SCOPE_KEYS } from '../src/client/api.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_INDEX = path.resolve(__dirname, '..', '..', '..', 'dist', 'index.js');
@@ -40,6 +41,11 @@ function initScratchRepoWithOriginRemote(dir) {
  * the shared HTTP singleton, so concurrent test runs / a dev's own running
  * fleet server cannot interfere) and points dist/index.js's spawn env at a
  * scratch HOME/data dir.
+ *
+ * The server command is passed as {command, args}, never as an
+ * APRA_FLEET_SERVER_CMD string: that string is split on spaces, which breaks
+ * when node lives under a path with a space (C:\Program Files on Windows).
+ * The handshake below is the one connectFleet() performs for stdio.
  */
 async function connectRealStdioFleet(repo, dataDir) {
     const home = path.join(dataDir, '..', 'home');
@@ -50,19 +56,16 @@ async function connectRealStdioFleet(repo, dataDir) {
         USERPROFILE: home,
         APRA_FLEET_DATA_DIR: dataDir,
     };
-    // Explicit, not auto-detected: resolveFleetServerCommand()'s own
-    // dev-monorepo fallback resolves relative to server-resolution.mjs's
-    // location (src/client/, three levels under packages/apra-fleet-client/)
-    // and lands one directory short of the real repo-root dist/index.js from
-    // THIS package's nesting depth -- the same reason auto-start-real-
-    // server.test.mjs and tests/regression-command-surface.test.ts both name
-    // DIST_INDEX explicitly rather than relying on auto-detection.
-    const resolutionEnv = {
-        ...spawnEnv,
-        APRA_FLEET_TRANSPORT: 'stdio',
-        APRA_FLEET_SERVER_CMD: `${process.execPath} ${DIST_INDEX} run --transport stdio`,
-    };
-    return connectFleet({ env: resolutionEnv, options: { cwd: repo, env: spawnEnv } });
+    const transport = new StdioTransport(process.execPath, [DIST_INDEX, 'run', '--transport', 'stdio'], { cwd: repo, env: spawnEnv });
+    await transport.start();
+    const mcpClient = new McpClient(transport);
+    await mcpClient.request('initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'fleet-client', version: '1.0.0' },
+    });
+    await transport.send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
+    return { transport, mcpClient, fleetApi: new ApraFleet(mcpClient) };
 }
 
 describe(

@@ -87,6 +87,18 @@ export function extractBibleDemotions(parsed: unknown): BibleTombstone[] {
 }
 
 /**
+ * A bible-carried updated_at, clamped to `now`. A future-dated entry would
+ * otherwise outrank every later tombstone under standingAgainstTombstone. An
+ * unparseable value is returned unchanged (the standing rule reports it as
+ * 'unknown').
+ */
+export function clampBibleTimeToNow(time: string, now: Date = new Date()): string {
+  const parsed = Date.parse(time);
+  if (Number.isNaN(parsed) || parsed <= now.getTime()) return time;
+  return now.toISOString();
+}
+
+/**
  * How a local row stands against a tombstone for the same id. The ONE rule both
  * directions use -- kb_import demotes only on 'withdrawn', kb_export re-adds
  * only on 'repromoted', and 'unknown' makes neither act.
@@ -385,7 +397,7 @@ export async function importBibleEntries(
         preferredId: entry.id,
         verbatim: options.verbatim === true,
         carriedBasis: carriedBasisOf(entry),
-        carriedUpdatedAt: typeof entry.updated_at === 'string' && entry.updated_at.length > 0 ? entry.updated_at : undefined,
+        carriedUpdatedAt: typeof entry.updated_at === 'string' && entry.updated_at.length > 0 ? clampBibleTimeToNow(entry.updated_at) : undefined,
       }));
     } catch (err) {
       if (err instanceof KbCaptureRejected) {

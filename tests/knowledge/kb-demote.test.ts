@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
 import { execFileSync } from 'node:child_process';
-import { kbDemote } from '../../src/tools/kb-demote.js';
+import { kbDemote, kbDemoteSchema } from '../../src/tools/kb-demote.js';
 import { runWithSessionMember } from '../../src/services/tool-scope.js';
 import { addAgent } from '../../src/services/registry.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
@@ -438,6 +438,19 @@ describe('kb_demote own-scope', () => {
 // ---------------------------------------------------------------------------
 // The kb_demote TOOL, through its real handler.
 // ---------------------------------------------------------------------------
+
+describe('the kb_demote request schema', () => {
+  it.each([
+    ['absent', {}],
+    ['empty', { evidence_files: [] }],
+  ])('rejects a request with no evidence_files (%s)', (_label, evidence) => {
+    expect(kbDemoteSchema.safeParse({ id: 'x', reason: REASON, ...evidence }).success).toBe(false);
+  });
+
+  it('accepts a request naming one evidence file', () => {
+    expect(kbDemoteSchema.safeParse({ id: 'x', reason: REASON, evidence_files: ['src/a.ts'] }).success).toBe(true);
+  });
+});
 
 describe('the kb_demote tool handler', () => {
   // Two REAL registered local members, both anchored at the scratch repo. The

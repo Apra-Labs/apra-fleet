@@ -330,7 +330,7 @@ envelope or a legacy bare array. It is absent when the bible holds none, so a
 reader that does not know the field -- and every bible written before it
 existed -- keeps working. Readers keep tombstones whose `reason` they do not
 know. `provenance.entry_count` counts ENTRIES only: a tombstone is not an
-entry.
+entry. Tombstones are never compacted: one stays until a re-promotion clears it.
 
 A demotion is NEVER inferred from an entry being absent from the bible. A clone
 legitimately holds CONFIRMED rows that were never exported (local-only
@@ -352,7 +352,10 @@ value.
   the LOCAL row exists, carries a `demoted_at` and is now below CONFIRMED;
   anything else is skipped with reason `not_demoted_or_unknown` and the file is
   unchanged for that id. Independently, on EVERY call each entry already in the
-  bible that the local KB holds as demoted is admitted the same way. An admitted
+  bible that the local KB holds as demoted is admitted the same way, unless the
+  bible entry is RE-PROMOTED against the local `demoted_at` under the rule
+  above (its `updated_at`, clamped to now, is strictly later): another clone
+  re-promoted it, and tombstoning it again would undo that. An admitted
   id is REMOVED from `entries` and its tombstone upserted as
   `{id, at: <local demoted_at>, reason: "demoted"}`. Tombstones already in the
   file are preserved when a later commit carries unrelated ids, and an id
@@ -371,7 +374,13 @@ value.
   (`BIBLE_DEMOTION_REASON`, "demoted in the project bible", standing in for the
   caller-supplied reason), and `promoted_at`/`source` stay untouched, exactly as
   a local demotion. A tombstone with any other reason only keeps its entry out
-  of the member bible view and the cold seed.
+  of the member bible view and the cold seed. A bible-carried `updated_at` is
+  clamped to the import time when stored, so a future-dated entry cannot
+  outrank every later tombstone.
+- A re-promotion does NOT reach a clone that already applied the tombstone.
+  Import skips an id that already has a local row, so that clone keeps its
+  INFERRED row until it is promoted there again; the every-call exception above
+  only stops it from tombstoning the re-promoted entry again.
 
 MIXED VERSIONS. A writer that predates tombstones (0.4.4 and earlier `kb_export`
 / `kb_bible_commit`) rewrites the bible WITHOUT `demotions`, and its

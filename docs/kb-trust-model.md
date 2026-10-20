@@ -96,7 +96,9 @@ So a demotion is carried by an EXPLICIT tombstone instead: `kb_bible_commit`'s
 optional `demoted_ids` input removes a demoted id from the bible's `entries`
 list and records it in a separate, optional top-level `demotions` array as
 `{id, at, reason: "demoted"}` (v3 bibles only), and on every call it does
-the same for each bible entry the local KB already holds as demoted. **Absence
+the same for each bible entry the local KB already holds as demoted (unless
+that entry was re-promoted after the local demotion). Tombstones are never
+compacted. **Absence
 from the bible is never, by itself, evidence of a demotion** -- only an
 explicit tombstone entry is. When another clone imports that bible
 (`kb_import`), it applies each tombstone to its own local row, lowering it
