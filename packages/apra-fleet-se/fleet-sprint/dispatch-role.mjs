@@ -667,7 +667,9 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // fresh session carrying the FULL role prompt (never resume: true,
             // which could reattach another role's session on a shared member).
             let resumeSessionId = sessionIdOfError(err);
-            let sessionLostOnce = false;
+            // The id of a session the server answered session_not_found for
+            // (named in the fresh-fallback log), or null.
+            let lostSessionId = null;
             while (resumeAttempt < Math.max(retry.resumeAttempts, resumesOnInfra ? 1 : 0)) {
                 resumeAttempt += 1;
                 const freshFallback = !resumeSessionId;
@@ -683,31 +685,36 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 // dispatch in the log.
                 const shortCircuit = await runPreDispatchSteps(ctx, secondary, member, opts, { resumeAttempt });
                 if (shortCircuit) return shortCircuit.value;
+                // The announcement never claims "resuming the same session" for
+                // a fresh fallback: there is no session to resume then, and the
+                // line just below says why.
+                const resumeTurns = resolveMaxTurns(secondary.maxTurns, bindingsFor(resumeAttempt));
+                const continuation = freshFallback ? 'continuing in a FRESH session' : 'resuming the same session';
                 if (resumeAttempt === 1 && resumesOnExhaustion) {
                     ctx.log(
                         `${roleLabel} exhausted its turn limit ` +
-                        `(max_turns=${resolveMaxTurns(policy.maxTurns, bindingsFor(0))}) -- resuming the same ` +
-                        `session with max_turns=${resolveMaxTurns(secondary.maxTurns, bindingsFor(1))}.`
+                        `(max_turns=${resolveMaxTurns(policy.maxTurns, bindingsFor(0))}) -- ${continuation} ` +
+                        `with max_turns=${resumeTurns}.`
                     );
                 } else if (resumeAttempt === 1) {
                     ctx.log(
                         `${roleLabel}: infrastructure dispatch failure ` +
                         `(${(err.details && err.details.reason) || 'unknown'}) -- the member produced no result ` +
-                        'envelope. This is NOT a failure verdict; resuming the same session once to recover ' +
+                        `envelope. This is NOT a failure verdict; ${continuation} once to recover ` +
                         'before recording anything.'
                     );
                 } else {
                     ctx.log(
-                        `${roleLabel} exhausted its turn limit again -- resuming the same session with ` +
-                        `max_turns=${resolveMaxTurns(secondary.maxTurns, bindingsFor(resumeAttempt))} ` +
+                        `${roleLabel} exhausted its turn limit again -- ${continuation} with ` +
+                        `max_turns=${resumeTurns} ` +
                         `(attempt ${resumeAttempt}/${retry.resumeAttempts}).`
                     );
                 }
                 if (freshFallback) {
                     ctx.log(
                         `${roleLabel}: starting a FRESH session with the full role prompt instead of resuming -- ` +
-                        (sessionLostOnce
-                            ? 'the session to resume was not found on the member.'
+                        (lostSessionId
+                            ? `the session to resume was not found on the member (the server reported session_not_found for session '${lostSessionId}').`
                             : 'the failed dispatch reported no session id, so there is no explicit session to resume.')
                     );
                 } else {
@@ -731,7 +738,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                     const sessionNotFound = resumeErr instanceof AgentDispatchError
                         && resumeErr.details && resumeErr.details.reason === 'session_not_found';
                     if (sessionNotFound && !freshFallback) {
-                        sessionLostOnce = true;
+                        lostSessionId = resumeSessionId;
                         resumeSessionId = null;
                         resumeAttempt -= 1;
                         continue;
@@ -740,6 +747,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                         // A re-exhaustion moves the resume target to the NEW
                         // session's id (none -> a fresh full-prompt session).
                         resumeSessionId = sessionIdOfError(resumeErr);
+                        lostSessionId = null;
                         continue;
                     }
                     throw resumeErr;
@@ -761,13 +769,27 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // session it hit the limit on (warm context kept) rather than starting a
     // fresh one. Only reached when the failing attempt reported a sessionId and
     // the role actually has a max-turns resume secondary; otherwise the caller
-    // re-runs runAttempt fresh.
+    // re-runs runAttempt fresh. If the server no longer knows that session
+    // (session_not_found -- e.g. the member restarted during the wait), the
+    // role starts a FRESH session with its FULL prompt instead, and says so:
+    // the short resume prompt is meaningless without the old context.
     const redispatchViaUsageLimitResume = async (attemptOpts, sessionId) => {
         const secondary = policy.secondary;
         const shortCircuit = await runPreDispatchSteps(ctx, secondary, member, opts, { resumeAttempt: 1 });
         if (shortCircuit) return shortCircuit.value;
         // Resumes the session the limit hit, by its explicit id.
-        return runDispatch(secondary, opts.resumePrompt ?? opts.prompt, opts.resumeLabel ?? opts.label, attemptOpts, { resumeAttempt: 1, resumeSessionId: sessionId });
+        try {
+            return await runDispatch(secondary, opts.resumePrompt ?? opts.prompt, opts.resumeLabel ?? opts.label, attemptOpts, { resumeAttempt: 1, resumeSessionId: sessionId });
+        } catch (resumeErr) {
+            const sessionNotFound = resumeErr instanceof AgentDispatchError
+                && resumeErr.details && resumeErr.details.reason === 'session_not_found';
+            if (!sessionNotFound) throw resumeErr;
+            ctx.log(
+                `${roleLabel}: the server reported session_not_found for session '${sessionId}' after the usage-limit ` +
+                'wait -- starting a FRESH session with the full role prompt instead.'
+            );
+            return runDispatch(secondary, opts.prompt, opts.label ?? opts.resumeLabel, attemptOpts, { resumeAttempt: 1, freshSession: true });
+        }
     };
 
     let lastErr = null;
