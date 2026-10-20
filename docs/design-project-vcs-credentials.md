@@ -47,9 +47,8 @@ provisions each sprint member with it through the existing
 `provision_vcs_auth` path -- written into that member's checkout (repo-local
 git config), not its global one. Everything downstream (push, PR REST calls
 through `vcs_credential_exec`'s label path) is unchanged and provider-neutral.
-A `kind=vcs` secret can only be resolved by the VCS tools, never by
-`execute_command`, so it is tighter than today without touching
-`network_policy`.
+A VCS secret stays an ordinary secret (usable in `execute_command` under its
+own `network_policy`); the VCS paths need no `network_policy=allow`.
 
 ## 1. The credential: identity lives with the secret
 
@@ -75,16 +74,19 @@ account share one secret, and rotating the token never touches projects.
 
 ## 2. Secret handling without loosening network_policy
 
-A secret with `vcs` metadata is a VCS credential: it is resolvable only by
-`provision_vcs_auth` and `vcs_credential_exec`, the two server-side paths that
-use it for git/REST against its own `host`. `{{secret.NAME}}` in
-`execute_command` (and anywhere else) refuses it with a clear reason. Its
-`network_policy` is therefore irrelevant and stays at the default -- no
-`allow` needed, and no new egress for that secret.
+A VCS secret is still an ordinary secret (owner decision): `{{secret.NAME}}`
+works in `execute_command` like any other secret, under that secret's own
+`network_policy` (default `confirm`), so an operator can still use it in
+their own `curl` to the provider's API.
 
-Host check: `provision_vcs_auth` refuses a `kind=vcs` secret whose `host`
-differs from the target scope; `vcs_credential_exec` only ever reads the
-helper the provision step wrote.
+The VCS paths do not need `network_policy=allow` (the #758 requirement):
+`provision_vcs_auth` resolves the secret server-side and writes the
+member's git credential helper, and `vcs_credential_exec` reads only that
+helper. Neither is `execute_command` network egress, so the secret's policy
+is never loosened to make sprints work.
+
+Host check: `provision_vcs_auth` refuses a secret whose `vcs.host` differs
+from the target host.
 
 ## 3. The binding: on the project
 
@@ -125,7 +127,8 @@ provisioned helper is the *effect* of the binding, recomputed every sprint.
    `provision_vcs_auth({ member, provider, secret: NAME, scope: 'repo' })`.
    Provider, host and username come from the secret's metadata; the server
    resolves the token. The fixed `bitbucket_api_token` / `azdevops_pat`
-   reads go away.
+   reads go away, and so does the per-sprint `azdevops_pat_secret_name`
+   override (owner decision: retired as part of this design).
 4. `scope: 'repo'` (new): the helper is written into the member's checkout
    (`git config --local` in its work folder) instead of `--global`. Two
    projects on one member with different accounts on the same host no longer
@@ -164,32 +167,52 @@ On the project page (not the launch form -- the choice is per project):
   `credential_store_update`, and saves the binding. The value is never
   re-entered.
 - Same for `azdevops_pat`. The fallback is removed one release later.
+- The per-sprint `azdevops_pat_secret_name` launch argument is removed in
+  this change (no deprecation period); a project binding replaces it.
 
 ## 7. Changes by component (for the plan, after approval)
 
-- Credential store: `vcs` metadata; VCS-only resolution; list/update fields.
+- Credential store: `vcs` metadata; list/update fields.
 - Tools: `credential_store_set`/`update` gain `vcs`; `provision_vcs_auth`
   gains `secret` (store NAME, identity from metadata) and `scope: 'repo'`.
   Client wrapper, api-reference and the tool docs in the same
   change (CLAUDE.md client-parity rule).
 - Supervisor: binding in project config and sqlite; `/api/project/vcs` and
   `/api/projects/:id/vcs`; launch-time validation; pass `vcsBindings`.
-- Engine: preflight provisions from the binding; drop the fixed-name reads;
-  no provider-specific launch options.
+- Engine: preflight provisions from the binding; drop the fixed-name reads
+  and the `azdevops_pat_secret_name` launch argument; no provider-specific
+  launch options.
 - Console/dashboard: project page credential select + add-new; launch form
   shows the bound credential.
 - Docs: auth-bitbucket/auth-github/auth-azdevops skills, getting-started,
   supervisor API/OpenAPI.
 
-## Open questions for the owner
+## Owner decisions
 
-1. Repo-local helper (`scope: 'repo'`): agreed as the default for
-   sprint-provisioned members? (It changes where the helper lives, not how
-   git uses it.)
-2. Should `kind=vcs` secrets ever be usable from `execute_command` (for an
-   operator's own `curl` to the Bitbucket API)? Proposed: no.
-3. One binding per host is enough for v0.5? (A project that pushes to two
-   hosts -- e.g. a mirror -- gets two entries; more than that is out of
-   scope.)
-4. Keep the per-sprint `azdevops_pat_secret_name` override, or retire it in
-   favour of the binding? Proposed: retire after the migration release.
+- One binding per host is enough for v0.5 (a project pushing to two hosts,
+  e.g. a mirror, has two entries; nothing more).
+- `azdevops_pat_secret_name` (per-sprint override) is retired as part of
+  this design.
+- A VCS secret is an ordinary secret: usable in any `execute_command` under
+  its own `network_policy`. No VCS-only restriction.
+
+## Open question for the owner
+
+1. Where should a sprint-provisioned member's git credential live?
+
+   Today `provision_vcs_auth` registers a "git credential helper" in the
+   member's GLOBAL git config (`~/.gitconfig` of the OS user the member runs
+   as), keyed by host. Two side effects:
+   - The backlog member is a local member running as the operator, so
+     provisioning it for a project's account replaces the operator's own
+     login for that host (e.g. their personal bitbucket.org login for every
+     repo on that machine).
+   - One member can hold only one account per host, so two projects with
+     different accounts on the same host overwrite each other on a shared
+     member.
+
+   Proposal: register the helper in the project checkout's own
+   `.git/config` (`git config --local`) instead. Only that repository uses
+   the project's account; the operator's global config and other repos are
+   untouched. Git authenticates the same way either way. OK to make this
+   the default for members that sprints provision?
