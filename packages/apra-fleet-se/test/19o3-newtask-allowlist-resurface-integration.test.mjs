@@ -66,6 +66,17 @@ const CORRECTED_TITLE = 'Fix the env leak';
 const GOOD_BRACKET_TITLE = '[test] foo';
 const GOOD_BRACKET_DESCRIPTION = 'A bracketed-title newTask using the planner.md [test] convention.';
 
+// Final Review findings: one whose title only needs the arrow/comparison
+// table, and one whose title cannot be sanitised at all (", $ and non-ASCII)
+// -- the latter must still land as a bead under a stripped fallback title,
+// with the original title ASCII-escaped into its description.
+const FINAL_ARROW_TITLE = 'Retry a -> b when x >= 3';
+const FINAL_ARROW_TITLE_SANITISED = 'Retry a to b when x at least 3';
+const FINAL_ARROW_DESCRIPTION = 'Flow: queue \u2192 worker.';
+const FINAL_UNSAFE_TITLE = 'Leak in "$HOME" path \u2192 caf\u00E9';
+const FINAL_UNSAFE_FALLBACK_TITLE = 'Leak in HOME path to caf';
+const FINAL_UNSAFE_DESCRIPTION = 'Final Review finding with an unsanitisable title.';
+
 const TASK_A_TITLE = 'Task: A closes normally (19o3 resurface scenario)';
 const TASK_B_TITLE = 'Task: B never closes (19o3 resurface scenario)';
 
@@ -154,12 +165,26 @@ describe('apra-fleet-19o.3: bracketed titles validate and rejected newTasks reap
                     };
                 };
 
+                const finalReviewHandler = async () => ({
+                    content: [{
+                        text: JSON.stringify({
+                            verdict: 'FAIL',
+                            notes: 'Task B is still open.',
+                            newTasks: [
+                                { title: FINAL_ARROW_TITLE, description: FINAL_ARROW_DESCRIPTION, priority: 'P3' },
+                                { title: FINAL_UNSAFE_TITLE, description: FINAL_UNSAFE_DESCRIPTION, priority: 'P3' },
+                            ],
+                        }),
+                    }],
+                });
+
                 const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, {
                     planReviewerMode: 'approve-immediately',
                     addExtraTaskDuringPlan: false,
                     doerHandler,
                     reviewerHandler,
                     plannerHandler,
+                    finalReviewHandler,
                 });
                 const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
                 workflow.on('log', (e) => logs.push(e.msg));
@@ -215,6 +240,20 @@ describe('apra-fleet-19o.3: bracketed titles validate and rejected newTasks reap
 
                 const badBead = finalBeads.find((b) => b.title === BAD_TITLE);
                 assert.ok(!badBead, `the rejected title must never itself land as a bead, got: ${JSON.stringify(titles)}`);
+
+                // ---- Final Review findings: arrow title sanitised, unsanitisable title filed under a fallback ----
+                const arrowBead = finalBeads.find((b) => b.title === FINAL_ARROW_TITLE_SANITISED);
+                assert.ok(arrowBead, `expected the Final Review arrow-title finding to land as '${FINAL_ARROW_TITLE_SANITISED}', got: ${JSON.stringify(titles)}`);
+                assert.equal(
+                    arrowBead.description,
+                    `Original title (JSON-escaped, non-ASCII as \\uXXXX): "${FINAL_ARROW_TITLE}"\n\nFlow: queue -> worker.`,
+                );
+                const fallbackBead = finalBeads.find((b) => b.title === FINAL_UNSAFE_FALLBACK_TITLE);
+                assert.ok(fallbackBead, `expected the unsanitisable Final Review finding to land under fallback title '${FINAL_UNSAFE_FALLBACK_TITLE}', got: ${JSON.stringify(titles)}`);
+                assert.equal(
+                    fallbackBead.description,
+                    `Original title (JSON-escaped, non-ASCII as \\uXXXX): "Leak in \\"$HOME\\" path \\u2192 caf\\u00E9"\n\n${FINAL_UNSAFE_DESCRIPTION}`,
+                );
 
                 // These two ids just pin bd's own native sequential id derivation
                 // under this mock-sprint harness's no-op allocator (childId always
