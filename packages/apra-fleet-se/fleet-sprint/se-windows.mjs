@@ -11,7 +11,7 @@
 // core's src/os/windows.ts wrapPowerShellEncoded(), not a reuse of it: this
 // package cannot import core.
 
-import { assertSafeRelativePath, assertSafeFileLine, FILE_PROBE_PRESENT, FILE_PROBE_ABSENT } from './se-posix.mjs';
+import { assertSafeRelativePath, assertSafeExcludePattern, assertSafeFileLine, FILE_PROBE_PRESENT, FILE_PROBE_ABSENT } from './se-posix.mjs';
 
 /**
  * PowerShell command primitives for a Windows member.
@@ -152,7 +152,7 @@ export class SeWindowsCommands {
    * @returns {string}
    */
   ensureGitExcluded(entry) {
-    const e = assertSafeRelativePath(entry, 'git-exclude entry');
+    const e = assertSafeExcludePattern(entry, 'git-exclude entry');
     const script = [
       `$excl = $null`,
       `try { $out = @(git rev-parse --git-path info/exclude 2>$null); if ($LASTEXITCODE -eq 0 -and $out.Count -gt 0) { $excl = [string]$out[0] } } catch { $excl = $null }`,

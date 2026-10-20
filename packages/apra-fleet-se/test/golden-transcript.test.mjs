@@ -274,6 +274,14 @@ function buildTranscriptFleetApi(tempDir, epicBead, dispatchLog) {
                 return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
             }
 
+            // The Harvest phase's git-exclude script (POSIX dialect) is not a
+            // `git ...` line; answered as a hermetic success so it never runs
+            // through the host shell (cmd.exe on Windows). Same intercept as
+            // test/helpers/mock-sprint-harness.mjs.
+            if (/^if excl=\$\(git rev-parse --git-path info\/exclude /.test(opts.command)) {
+                return mockCmdResult(0, '', '');
+            }
+
             const { err, stdout, stderr } = await runCmd(opts.command, tempDir);
             if (err) {
                 // apra-fleet-1cb.1: only a genuine spawn failure is an MCP-level

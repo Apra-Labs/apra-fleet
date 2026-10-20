@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runCmd, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { getSeCommands } from '../fleet-sprint/se-os-commands.mjs';
+import { SPRINT_ANALYSIS_EXCLUDE_PATTERN } from '../fleet-sprint/phases/harvest.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
+const HARVEST_GIT_EXCLUDE = getSeCommands({ os: 'linux', shell: 'bash' }).ensureGitExcluded(SPRINT_ANALYSIS_EXCLUDE_PATTERN);
 
 // =============================================================================
 // apra-fleet-unw2.3 (N3): reviewer-authored newTasks containing shell-
@@ -72,6 +75,9 @@ test('mock sprint: malicious reviewer newTasks are rejected without aborting the
         );
         const DANGEROUS_SNIPPETS = ['$(curl', '`rm -rf /`', 'backslash\\"'];
         for (const cmd of injection.commandLog) {
+            // The Harvest phase's engine-built git-exclude script (constant
+            // pattern, no sprint-derived text) is the one exact exemption.
+            if (cmd === HARVEST_GIT_EXCLUDE) continue;
             for (const snippet of DANGEROUS_SNIPPETS) {
                 check(
                     !cmd.includes(snippet),
@@ -238,14 +244,20 @@ test('mock sprint: a doer that always throws is isolated; sibling streak still c
 // left permanently in_progress/blocked (never picked up by any doer
 // because it's not in `--ready`). Here one task is force-set to
 // `in_progress` before the sprint runs (simulating an orphaned bead --
-// e.g. a doer that claimed it in an earlier, now-dead run) and is never
-// touched again; a sibling, independent task closes normally. The
-// sprint must complete (not throw) but its evidence-based final verdict
-// must be FAIL, and the workflow's returned status must be 'failed', not
-// a blanket 'success'.
+// e.g. a doer that claimed it in an earlier, now-dead run); a sibling,
+// independent task closes normally.
+//
+// The pre-sprint stale-claim check reclaims that pre-launch claim even
+// though the sibling is ready (GitHub #715), so the bead is dispatched --
+// and this scenario's doer claims it again and stops, leaving it
+// in_progress at the end of the single cycle. That is still the A5 shape:
+// the sprint must complete (not throw) but its evidence-based final verdict
+// must be FAIL, and the workflow's returned status must be 'failed', not a
+// blanket 'success'.
 test('mock sprint: an orphaned in_progress bead must not be read as sprint success', async () => {
     await withScenarioMarkers('orphaned (orphaned in_progress)', async () => {
         console.log('Running mock sprint scenario (orphaned in_progress bead -> not success)...');
+        let orphanedId = null;
         const orphaned = await runDevelopLoopScenario('orphaned', {
             members: ['local'],
             taskSpecs: [
@@ -255,7 +267,23 @@ test('mock sprint: an orphaned in_progress bead must not be read as sprint succe
             maxCycles: 1,
             beforeSprint: async ({ tempDir: td, tasks: ts }) => {
                 const orphanedTask = ts.find((t) => t.title === 'Task: Orphaned in_progress');
+                orphanedId = orphanedTask.id;
                 await runCmd(`bd update ${orphanedTask.id} --status=in_progress`, td);
+            },
+            doerHandler: async ({ opts, tempDir: td, runCmd: run }) => {
+                const match = opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/);
+                const ids = match ? match[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+                const closedIds = [];
+                for (const id of ids) {
+                    if (id === orphanedId) {
+                        // Claims it again and stops: orphaned once more.
+                        await run(`bd update ${id} --status=in_progress`, td);
+                        continue;
+                    }
+                    await run(`bd close ${id}`, td);
+                    closedIds.push(id);
+                }
+                return { content: [{ text: JSON.stringify({ status: closedIds.length === ids.length ? 'VERIFY' : 'BLOCKED', closedIds, notes: 'Scenario doer.' }) }] };
             },
         });
         check(!orphaned.error, `Orphaned-bead scenario should not throw/reject: ${orphaned.error ? orphaned.error.message : ''}`);
@@ -274,8 +302,12 @@ test('mock sprint: an orphaned in_progress bead must not be read as sprint succe
         );
         const orphanedTaskId = orphaned.tasks.find((t) => t.title === 'Task: Orphaned in_progress').id;
         check(
+            orphaned.logs.some((m) => m.startsWith('Pre-sprint self-heal') && m.includes(`${orphanedTaskId} is stuck`)),
+            `Expected the pre-sprint stale-claim check to reclaim ${orphanedTaskId} even though the sibling was ready, logs: ${JSON.stringify(orphaned.logs)}`
+        );
+        check(
             orphaned.finalBeadsById.get(orphanedTaskId) && orphaned.finalBeadsById.get(orphanedTaskId).status === 'in_progress',
-            `Expected the orphaned bead to remain in_progress (never touched), got: ${JSON.stringify(orphaned.finalBeadsById.get(orphanedTaskId))}`
+            `Expected the orphaned bead to end in_progress (re-claimed by the doer), got: ${JSON.stringify(orphaned.finalBeadsById.get(orphanedTaskId))}`
         );
     });
 });

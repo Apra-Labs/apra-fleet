@@ -1423,6 +1423,17 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 return mockCmdResult(0, `${body}\n201`, '');
             }
 
+            // The engine's local git-exclude primitive (se-os-commands
+            // ensureGitExcluded, POSIX dialect -- the mock members resolve to
+            // POSIX) is a shell script, not a `git ...` command line, so the
+            // generic block below would not catch it and a real exec() would
+            // run it through the HOST shell (cmd.exe on Windows, where it is
+            // not valid syntax). Answer it as a hermetic success instead;
+            // its real-shell behaviour is covered by its own tests.
+            if (/^if excl=\$\(git rev-parse --git-path info\/exclude /.test(opts.command)) {
+                return mockCmdResult(0, '', '');
+            }
+
             // git/gh commands (apra-fleet-unw.14's branch-ensure/push
             // steps) are intercepted rather than run for real: tempDir is a
             // bare `bd init` scratch directory, not a git repo with an

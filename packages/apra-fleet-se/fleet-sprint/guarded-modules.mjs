@@ -209,11 +209,13 @@ export const GUARDED_MODULES = [
     // guard's `files` output against guardedModuleBasenames().
     //
     // harvest.mjs took NO member_name-bearing command() call site out of
-    // runner.js -- the docs/sprint-analysis commits are made by the
+    // runner.js -- the docs/README commits are made by the
     // DISPATCHED harvester inside its own repo and published by the 'harvester'
     // policy row's pushCode/pushBeads bracket -- but it took ONE dispatchRole()
     // site (the harvester ladder), which is what dispatch-safety-guard and the
-    // phase 3 dispatch census read.
+    // phase 3 dispatch census read. It later gained ONE member_name-bearing
+    // command() site of its own: the pre-dispatch git exclude of the
+    // uncommitted analysis document on the harvester's member.
     //
     // publish-pr.mjs is the opposite shape and the more urgent of the two to
     // register: it took TWO member_name-bearing command() call sites out of
@@ -427,6 +429,9 @@ export const GUARDED_MODULES = [
     // Verify-block deadlock diagnosis (pure): no command() or agent() site;
     // runner.js owns the runbook probes, the stop and the mid-run exit.
     'verify-block.mjs',
+    // Pre-launch stale-claim rule, fresh-read gate and downstream naming
+    // (pure): no command() or agent() site; runner.js owns the read and write.
+    'beads-reachability.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',
     'vcs-providers/dolt.mjs',

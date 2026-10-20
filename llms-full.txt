@@ -3788,7 +3788,7 @@ Extrapolating from what the architecture is clearly reaching toward:
   calculation); the missing piece is per-sprint/per-member cost rollups
   where operators actually look -- the supervisor dashboard.
 - **Sprint calibration data starts steering sprints.** The engine already
-  writes `sprint calibration` and `sprint-analysis` commits every cycle;
+  writes `sprint calibration` commits and a local sprint-analysis record every cycle;
   the obvious next step is feeding that history back into planning
   (cycle-count estimates, model-tier selection, stall-timeout tuning)
   instead of only recording it.
