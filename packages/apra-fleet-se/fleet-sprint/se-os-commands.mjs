@@ -64,8 +64,10 @@
 //                          <base64 utf16le>` string; SePosixCommands throws
 //                          (a true POSIX member has no PowerShell to hand
 //                          the script to at all).
-//   ensureGitExcluded      member-call.mjs runRemote's args-file cleanup and
-//                          beads-identity-check.mjs member beads set-up:
+//   ensureGitExcluded      member-call.mjs runRemote's args-file cleanup,
+//                          beads-identity-check.mjs member beads set-up and
+//                          phases/harvest.mjs (the never-committed
+//                          docs/sprint-analysis-*.md; the only glob entry):
 //                          idempotently lists the args dir (.apra-call/) or
 //                          a new untracked beads path in
 //                          the member repo's git exclude file (resolved via

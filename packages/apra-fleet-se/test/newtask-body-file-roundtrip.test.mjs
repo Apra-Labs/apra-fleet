@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import { spawnSync } from 'node:child_process';
 import { validateNewTask, createChildBeadWithAllocatedId, appendRejectedFindingToParentNotes } from '../fleet-sprint/runner.js';
+import { buildFallbackNewTask } from '../fleet-sprint/abort.mjs';
 
 // apra-fleet-eft.56.2, transport hardened for eft.73.1: regression pin for the
 // reviewer-free-text body seam (createChildBeadWithAllocatedId /
@@ -137,6 +138,53 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
         // member-side staging command returned -- proving the body file's
         // provenance is the member, not an in-process orchestrator write.
         assert.strictEqual(extractQuotedFlagValue(createCmd, '--body-file'), stagedPaths[0]);
+    });
+
+    test('an arrow title and a Unicode-arrow description are sanitised and the description round-trips via --body-file', async () => {
+        const validation = validateNewTask({
+            title: 'Retry a -> b when x >= 3',
+            description: 'Flow: queue \u2192 worker \u21D2 store.',
+            priority: 'P2',
+            dedupCheck: { query: 'q', candidateIds: [], verdict: 'no-overlap' },
+        });
+        assert.strictEqual(validation.ok, true, validation.reason);
+        assert.strictEqual(validation.title, 'Retry a to b when x at least 3');
+        // The title was mapped, so the original title is kept (escaped) on top.
+        assert.strictEqual(
+            validation.description,
+            'Original title (JSON-escaped, non-ASCII as \\uXXXX): "Retry a -> b when x >= 3"\n\nFlow: queue -> worker => store.',
+        );
+        const { command, calls, readBodyOf } = makeMemberEmulatingCommand();
+        await createChildBeadWithAllocatedId({
+            command, allocator: NOOP_ALLOCATOR, member: 'local',
+            title: validation.title, description: validation.description, priority: validation.priority,
+            parentId: 'parent-1',
+        });
+        const createCmd = calls[calls.length - 1].cmd;
+        assert.ok(createCmd.includes('"Retry a to b when x at least 3"'), createCmd);
+        assert.ok(!createCmd.includes('->'), `arrow description must never be inlined: ${createCmd}`);
+        assert.strictEqual(await readBodyOf(createCmd), validation.description);
+    });
+
+    test('a fallback newTask (unsanitisable title) carries the ASCII-escaped original title via --body-file', async () => {
+        const original = 'Leak in "$HOME" path \u2192 caf\u00E9';
+        const fallback = buildFallbackNewTask({ title: original, description: 'Body text.', priority: 'P1', dedupCheck: { query: 'q', candidateIds: [], verdict: 'no-overlap' } });
+        assert.ok(fallback && fallback.ok);
+        assert.strictEqual(fallback.title, 'Leak in HOME path to caf');
+        const { command, calls, readBodyOf } = makeMemberEmulatingCommand();
+        await createChildBeadWithAllocatedId({
+            command, allocator: NOOP_ALLOCATOR, member: 'local',
+            title: fallback.title, description: fallback.description, priority: fallback.priority,
+            parentId: 'parent-1',
+        });
+        const createCmd = calls[calls.length - 1].cmd;
+        assert.ok(!createCmd.includes('$HOME'), `original title must never reach the command string: ${createCmd}`);
+        const body = await readBodyOf(createCmd);
+        assert.strictEqual(
+            body,
+            'Original title (JSON-escaped, non-ASCII as \\uXXXX): "Leak in \\"$HOME\\" path \\u2192 caf\\u00E9"\n\nBody text.',
+        );
+        assert.match(body, /^[\t\n\r\x20-\x7E]+$/);
     });
 
     test('a residual validation failure is appended verbatim to the parent bead notes and logged', async () => {

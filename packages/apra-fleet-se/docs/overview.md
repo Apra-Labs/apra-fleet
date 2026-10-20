@@ -74,8 +74,9 @@ runs every part that playbook defines once (informational -- it files
 parent-less `[regression][carry-over]` bugs rather than blocking this
 sprint's already decided verdict; the launch option `--skip-regression` /
 `phases: {"regression": "skip"}` skips it, and says so in the PR body); a
-`harvester` agent extracts durable knowledge into `docs/` (including the
-sprint analysis, `docs/sprint-analysis-<branch-slug>-<hash8>.md`), updates `README.md`,
+`harvester` agent extracts durable knowledge into `docs/`, writes the
+sprint analysis `docs/sprint-analysis-<branch-slug>-<hash8>.md` locally
+(never committed; git-excluded in that clone), updates `README.md`,
 and defers low-priority open issues (no `CHANGELOG.md` is written); then
 the runner pushes the sprint branch and opens (but never auto-merges) a PR
 whose title/body states the final verdict plainly, with the cost block. If

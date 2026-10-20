@@ -1099,8 +1099,15 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
    tracked"/"unlimited" rather than fabricating a number when the budget
    ceiling is unset or spend tracking is unavailable). The harvester's own
    contract (`harvester.md`) says to write `analysisText` verbatim -- never
-   reformat or recompute it. The harvester writes no CHANGELOG entry; the
-   same cost block is rendered by the engine in the PR body (`### Cost`).
+   reformat or recompute it -- and never to `git add` or commit it: the
+   file stays an untracked local record. Before the dispatch the engine
+   adds `docs/sprint-analysis-*.md` to the harvester clone's
+   `.git/info/exclude` (`ensureGitExcluded`, built for the member's
+   OS/shell; idempotent), so the file never shows as dirty, is never
+   auto-stashed by a later branch ensure, and is never swept into a
+   commit; if that step fails the harvester is not dispatched. The
+   harvester writes no CHANGELOG entry; the cost block is rendered by
+   the engine in the PR body (`### Cost`).
 3. **Publish PR** -- pushes the sprint branch (`git push -u origin
    <branch>`), then raises (never merges) a PR via `gh pr create`, whose
    title (`fleet-sprint [PASS|FAIL]: <branch>`; PRs from before the

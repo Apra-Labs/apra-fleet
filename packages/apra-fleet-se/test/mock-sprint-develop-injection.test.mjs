@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runCmd, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { getSeCommands } from '../fleet-sprint/se-os-commands.mjs';
+import { SPRINT_ANALYSIS_EXCLUDE_PATTERN } from '../fleet-sprint/phases/harvest.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
+const HARVEST_GIT_EXCLUDE = getSeCommands({ os: 'linux', shell: 'bash' }).ensureGitExcluded(SPRINT_ANALYSIS_EXCLUDE_PATTERN);
 
 // =============================================================================
 // apra-fleet-unw2.3 (N3): reviewer-authored newTasks containing shell-
@@ -72,6 +75,9 @@ test('mock sprint: malicious reviewer newTasks are rejected without aborting the
         );
         const DANGEROUS_SNIPPETS = ['$(curl', '`rm -rf /`', 'backslash\\"'];
         for (const cmd of injection.commandLog) {
+            // The Harvest phase's engine-built git-exclude script (constant
+            // pattern, no sprint-derived text) is the one exact exemption.
+            if (cmd === HARVEST_GIT_EXCLUDE) continue;
             for (const snippet of DANGEROUS_SNIPPETS) {
                 check(
                     !cmd.includes(snippet),
