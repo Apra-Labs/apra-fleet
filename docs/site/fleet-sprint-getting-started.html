@@ -1562,6 +1562,19 @@ apra-fleet start      <span class="cm"># npm install registers no OS service: st
   <p>The supervisor is built for exactly this: it holds a reservation ledger over members and issue scopes, refuses a launch whose member or issue scope collides with an already-running sprint (HTTP 409 naming the conflict), and shows a member as <em>reserved</em> in the launch form while it is busy. Each sprint gets its own branch, its own PR, and its own dashboard, so the runs stay independent all the way to review.</p>
 
   <p>Assigning several doers to a <em>single</em> sprint is a different thing, and an untested one &mdash; the launch form will let you tick several members for one sprint, but that configuration has not been exercised in practice, so treat it as experimental. Start with one member per sprint and add sprints, not doers.</p>
+
+  <h3 id="s2-6">2.6 Prepare the member before your first sprint</h3>
+
+  <p>A fleet member is a folder you already use for day-to-day development. fleet-sprint assumes its environment works &mdash; compilers, SDKs, package managers, services &mdash; and does not guess which tools your project needs. Two ways to make sure it does:</p>
+
+  <ul>
+    <li><strong>Exercise it once, interactively.</strong> Before the first sprint on a member, ask Claude to deploy the project on that member in the deployer role (following your <code>deploy.md</code>), or to run the integration tests in the integration test runner role (following <code>integ-test-playbook.md</code>). This runs the real toolchain; Claude usually fixes the environment or tells you exactly what to install.</li>
+    <li><strong>Make the environment part of the plan.</strong> Add a bead such as "make sure the .NET 8 SDK is installed, otherwise install it" and make the other beads depend on it. Caveats: on Windows, an installer that needs admin rights shows a UAC prompt and waits for someone to click it, so this suits attended runs; and an unattended member's permission mode may refuse install commands, in which case the bead comes back BLOCKED with the reason.</li>
+  </ul>
+
+  <p><strong>Manual edits.</strong> Commit any manual change in the member's folder before the next sprint, ideally with a short note in the relevant bead. If uncommitted changes block the sprint from checking out its branch, the sprint saves them (untracked files included) into a git stash named <code>fleet-sprint[&lt;branch&gt;] auto-stash of orphaned WIP blocking branch ensure</code> and continues. (On a multi-member launch, a member with any uncommitted changes has them stashed as <code>fleet-sprint[&lt;branch&gt;] auto-stash of uncommitted work before launch alignment</code>.) Changes that do not block the checkout stay in the working tree. Run <code>git stash list</code> in that folder to find stashed work.</p>
+
+  <p>Future direction: <a href="https://github.com/Apra-Labs/apra-fleet/discussions/770">projects declaring their environment needs</a>.</p>
 </section>
 
 <!-- ===================== SECTION 3 ===================== -->

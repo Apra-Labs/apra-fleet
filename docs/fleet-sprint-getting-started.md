@@ -299,6 +299,37 @@ one -- the launch form will let you tick several members for one sprint, but tha
 configuration has not been exercised in practice, so treat it as experimental.
 Start with one member per sprint and add sprints, not doers.
 
+### 2.6 Prepare the member before your first sprint
+
+A fleet member is a folder you already use for day-to-day development.
+fleet-sprint assumes its environment works -- compilers, SDKs, package managers,
+services -- and does not guess which tools your project needs. Two ways to make
+sure it does:
+
+- **Exercise it once, interactively.** Before the first sprint on a member, ask
+  Claude to deploy the project on that member in the deployer role (following
+  your `deploy.md`), or to run the integration tests in the integration test
+  runner role (following `integ-test-playbook.md`). This runs the real toolchain;
+  Claude usually fixes the environment or tells you exactly what to install.
+- **Make the environment part of the plan.** Add a bead such as "make sure the
+  .NET 8 SDK is installed, otherwise install it" and make the other beads depend
+  on it. Caveats: on Windows, an installer that needs admin rights shows a UAC
+  prompt and waits for someone to click it, so this suits attended runs; and an
+  unattended member's permission mode may refuse install commands, in which case
+  the bead comes back BLOCKED with the reason.
+
+**Manual edits.** Commit any manual change in the member's folder before the next
+sprint, ideally with a short note in the relevant bead. If uncommitted changes
+block the sprint from checking out its branch, the sprint saves them (untracked
+files included) into a git stash named
+`fleet-sprint[<branch>] auto-stash of orphaned WIP blocking branch ensure` and
+continues. (On a multi-member launch, a member with any uncommitted changes has
+them stashed as `fleet-sprint[<branch>] auto-stash of uncommitted work before
+launch alignment`.) Changes that do not block the checkout stay in the working
+tree. Run `git stash list` in that folder to find stashed work.
+
+Future direction: [projects declaring their environment needs](https://github.com/Apra-Labs/apra-fleet/discussions/770).
+
 ---
 
 ## 3. How do I run it
