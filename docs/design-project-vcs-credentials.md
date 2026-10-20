@@ -1,6 +1,6 @@
 # Design: per-project VCS credentials (v0.5)
 
-Status: all owner questions answered -- awaiting final approval; no code until approved.
+Status: APPROVED by the owner (2026-10-20). Implementation follows in a separate PR.
 Covers: the per-project credential binding, and the dashboard pick-a-secret
 flow that fills it. Supersedes the per-sprint shape of #758 (reverted by #762).
 
