@@ -36,6 +36,12 @@
           "exclusiveMinimum": 0,
           "description": "Cache lifetime in seconds for a token_command token that is not a JWT with an exp claim (default 2700)"
         },
+        "request_timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 120000,
+          "description": "Per-request timeout in milliseconds for the remote KB server, 1000-120000 (default 5000). Does not include the time a token_command takes to run."
+        },
         "repo_path": {
           "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
         },
