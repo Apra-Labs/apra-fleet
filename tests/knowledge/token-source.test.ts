@@ -35,7 +35,7 @@ afterEach(() => {
 /** A command that bumps the counter file and prints `token`. */
 function printingCommand(token: string, delayMs = 0): string {
   const print = `process.stdout.write(${JSON.stringify(token)})`;
-  const then = delayMs > 0 ? `setTimeout(()=>{${print}},${delayMs})` : print;
+  const then = delayMs > 0 ? `setTimeout(function(){${print}},${delayMs})` : print;
   return nodeEvalCommand(bumpCounterJs(counter, then));
 }
 
@@ -177,7 +177,7 @@ describe('CommandTokenSource failures', () => {
   });
 
   it('a command exceeding the timeout rejects naming the timeout', async () => {
-    const command = nodeEvalCommand(`${emitMarker}setTimeout(()=>{},60000)`);
+    const command = nodeEvalCommand(`${emitMarker}setInterval(function(){},60000)`);
     const source = new CommandTokenSource({ command, timeoutMs: 1000 });
     const { result: err, output } = await captureOutput(() => rejection(source.getToken()));
     expect(err.message).toContain('timed out after 1000ms');
@@ -206,10 +206,15 @@ describe('CommandTokenSource timeout kills the process tree', () => {
     const pidFile = path.join(tmp, 'grandchild.pid');
     // The shell's child spawns a grandchild that inherits stdout and sleeps,
     // records its pid, then exits 0 -- stdout stays open via the grandchild.
+    // On Windows an inherited stdout does not keep the parent's pipe open, so
+    // that hang cannot occur there; the child stays alive instead, so the
+    // timeout still fires and taskkill /T must take down the whole tree.
+    // No arrow functions: cmd.exe would read their ">" as a redirect.
+    const childEnd = process.platform === 'win32' ? 'setInterval(function(){},60000)' : 'process.exit(0)';
     const js =
       `const fs=require("fs");const cp=require("child_process");` +
-      `const g=cp.spawn(process.execPath,["-e","setTimeout(()=>{},60000)"],{stdio:["ignore","inherit","inherit"]});` +
-      `fs.writeFileSync(${JSON.stringify(pidFile)},String(g.pid));process.exit(0)`;
+      `const g=cp.spawn(process.execPath,["-e","setInterval(function(){},60000)"],{stdio:["ignore","inherit","inherit"]});` +
+      `fs.writeFileSync(${JSON.stringify(pidFile)},String(g.pid));${childEnd}`;
     const timeoutMs = 1000;
     const source = new CommandTokenSource({ command: nodeEvalCommand(js), timeoutMs });
 
