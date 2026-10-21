@@ -560,6 +560,20 @@ The client writes this to `~/.apra-fleet/data/knowledge/config.json`:
 
 The token is stored AES-256-GCM encrypted. It is never written in plaintext.
 
+For a server that issues short-lived tokens, pass `token_command` instead of
+`token` (the two are mutually exclusive; setting one clears the other):
+
+```
+kb_setup with provider=http, remote=https://<host>, token_command="my-token-cli print-access-token"
+```
+
+The command is run through the platform shell and must print the token on
+stdout. It is stored encrypted as `token_command_encrypted` and is never
+logged. A JWT with an `exp` claim is refreshed when fewer than 300 s remain;
+any other token is cached for `token_ttl_seconds` (default 2700). On a 401 the
+command is re-run once and the request retried. Changing `remote` without
+passing a new `token` or `token_command` drops the stored one.
+
 ### 3. GitNexus (optional, codebase plane)
 
 Install GitNexus as an MCP server in `.mcp.json` (already done if you used the
