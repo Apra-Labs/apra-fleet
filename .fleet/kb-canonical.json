@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "8c38f93777d15666c2f8fb26c7299db0e0707603",
     "branch": "u1_upstream_main_8c38f93",
-    "entry_count": 98
+    "entry_count": 99
   },
   "entries": [
     {
@@ -747,6 +747,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.498Z"
+    },
+    {
+      "id": "6a7cb25c-f9cd-4974-87b7-9ccf0e921c29",
+      "type": "learning",
+      "title": "Negative-pid group kill still reaches orphaned grandchildren after the shell exits",
+      "summary": "runTokenCommand spawns the shell detached on POSIX so it leads its own process group. process.kill(-pid) on timeout still kills a grandchild that holds stdout open, even after the shell itself has exited.",
+      "symbols": [
+        "runTokenCommand",
+        "killProcessTree"
+      ],
+      "source_files": [
+        "src/services/knowledge/token-source.ts",
+        "tests/knowledge/token-source.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-21T17:16:52.422Z",
+      "source_file_hashes": {
+        "src/services/knowledge/token-source.ts": "e5fae27cd7c0eaed812a616725247cb92c6af496",
+        "tests/knowledge/token-source.test.ts": "1673b046af3a2572183cf42790ce3dde0df97545"
+      }
     },
     {
       "id": "6b538682-67b1-4cf2-ab81-ae27d8d2bf8e",
