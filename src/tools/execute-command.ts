@@ -5,7 +5,7 @@ import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell, isPosixShell, touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { stageAuthEnv, removeMemberSecretFile, SecretDeliveryError, type StagedAuthEnv } from '../services/member-secret-env.js';
-import { writeStatusline } from '../services/statusline.js';
+import { markBusy } from '../services/member-busy.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper, generateTaskWrapperWindows } from '../services/cloud/task-wrapper.js';
 import { escapeShellArg, escapePowerShellArg, escapeWindowsArg } from '../utils/shell-escape.js';
@@ -367,12 +367,14 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       );
     }
 
-    writeStatusline(new Map([[agent.id, 'busy']]));
+    // Busy only while launching: the detached task's own progress is
+    // monitor_task's to report, not the statusline's.
+    const releaseBusy = markBusy(agent.id);
     try {
       const timeoutMs = (input.timeout_s ?? 120) * 1000;
       const launchResult = await strategy.execCommand(launchCmd, timeoutMs, undefined, onPidCaptured);
       touchAgent(agent.id);
-      writeStatusline();
+      releaseBusy();
       // Redact credential values from any output returned by the launch command (H2)
       const launchOutput = credentials.length > 0
         ? redactOutput(launchResult.stdout + launchResult.stderr, credentials)
@@ -382,8 +384,10 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       return `${longRunningOsWarning}Task launched: task_id=${taskId}\nUse monitor_task to track progress.${legacySuffix}`;
     } catch (err: any) {
       const isOffline = agent.agentType !== 'local' && !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
-      writeStatusline(new Map([[agent.id, isOffline ? 'offline' : 'idle']]));
+      releaseBusy(isOffline ? 'offline' : 'idle');
       return execFailureResult(`Failed to launch task on "${agent.friendlyName}": ${err.message}`, classifyExecFailure(err), err.message);
+    } finally {
+      releaseBusy();
     }
   }
 
@@ -408,8 +412,8 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     : resolvedCommand;
   const wrapped = cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, payload));
 
-  // Mark agent as busy in statusline
-  writeStatusline(new Map([[agent.id, 'busy']]));
+  // Mark agent as busy in statusline; released on every exit path below.
+  const releaseBusy = markBusy(agent.id);
 
   // Stored auth env vars travel in an owner-only file the command loads and
   // deletes -- never as inline values on the member's command line.
@@ -449,7 +453,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     const redactedStdout = credentials.length > 0 ? redactOutput(result.stdout ?? '', credentials) : (result.stdout ?? '');
     const redactedStderr = credentials.length > 0 ? redactOutput(result.stderr ?? '', credentials) : (result.stderr ?? '');
 
-    writeStatusline();
+    releaseBusy();
 
     // Log command output under a dedicated tag so `watch` can surface it (the
     // fleet log is watch's source; short-command stdout is otherwise not
@@ -474,10 +478,11 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     };
   } catch (err: any) {
     const isOffline = agent.agentType !== 'local' && !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
-    writeStatusline(new Map([[agent.id, isOffline ? 'offline' : 'idle']]));
+    releaseBusy(isOffline ? 'offline' : 'idle');
     scope.abort(err.message);
     return execFailureResult(`Failed to execute command on "${agent.friendlyName}": ${err.message}`, classifyExecFailure(err), err.message);
   } finally {
+    releaseBusy();
     // The prefix deletes the file once loaded; a failed/aborted run may not
     // have reached it.
     if (stagedEnvPath && !stagedEnvConsumed) await removeMemberSecretFile(agent, stagedEnvPath);
