@@ -26,6 +26,16 @@
           "type": "string",
           "description": "Authentication token for remote KB server (stored encrypted, never logged)"
         },
+        "token_command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Shell command that prints a bearer token on stdout, run to obtain and refresh the token (stored encrypted, never logged). Mutually exclusive with token. Example: my-token-cli print-access-token"
+        },
+        "token_ttl_seconds": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Cache lifetime in seconds for a token_command token that is not a JWT with an exp claim (default 2700)"
+        },
         "repo_path": {
           "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
         },
