@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "8c38f93777d15666c2f8fb26c7299db0e0707603",
     "branch": "u1_upstream_main_8c38f93",
-    "entry_count": 99
+    "entry_count": 100
   },
   "entries": [
     {
@@ -1351,6 +1351,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T09:41:38.971Z"
+    },
+    {
+      "id": "c039342f-3e21-4501-9421-4ceeaa15eeb3",
+      "type": "learning",
+      "title": "kbSetup re-validates request_timeout_ms itself because direct callers bypass zod",
+      "summary": "kbSetup in src/tools/kb-setup.ts checks request_timeout_ms via kbSetupSchema.shape.request_timeout_ms.safeParse before any side effect, because tests and in-process callers invoke kbSetup directly and skip MCP-layer schema parsing.",
+      "symbols": [
+        "kbSetup",
+        "kbSetupSchema",
+        "readKbConfigFromDisk"
+      ],
+      "source_files": [
+        "src/tools/kb-setup.ts",
+        "src/services/knowledge/kb-config.ts",
+        "tests/knowledge/kb-request-timeout.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-21T17:21:01.151Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-config.ts": "b5cdcfa2dceb5ccf206483732ba76a5a46fc8642",
+        "src/tools/kb-setup.ts": "a5fa3a3231bf67c074148dfabd056f8d0137e817",
+        "tests/knowledge/kb-request-timeout.test.ts": "0494bf9765250282975c8a82f6edc4e19707fffe"
+      }
     },
     {
       "id": "c2899616-0cb1-41e8-b229-76e291a0cd81",
