@@ -127,7 +127,9 @@ apra-fleet server (stdio or http, already configured by install)
   no SSH probes, no writes, so it is safe to poll. `status` is the
   last-known state the server already persists for the old status line;
   `quietForS` comes from the live stall detector when this process runs the
-  task, else from the persisted `busy(mm:ss)` label. `fleet_status` remains
+  task, else from the persisted `busy(mm:ss)` label. A busy whose writer
+  process (recorded in `statusline-owners.json`) is dead is reported `idle`;
+  each server also resets such orphaned busy entries at startup. `fleet_status` remains
   the live, probing view. Client wrapper: `ApraFleet.fleetSnapshot()`.
 - **Why the session's MCP connection** and not HTTP from the mod: it already
   carries whatever the install configured (stdio, or http plus the member
