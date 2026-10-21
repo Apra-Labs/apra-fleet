@@ -560,6 +560,40 @@ The client writes this to `~/.apra-fleet/data/knowledge/config.json`:
 
 The token is stored AES-256-GCM encrypted. It is never written in plaintext.
 
+For a server that issues short-lived tokens, pass `token_command` instead of
+`token` (the two are mutually exclusive; setting one clears the other):
+
+```
+kb_setup with provider=http, remote=https://<host>, token_command="my-token-cli print-access-token"
+```
+
+The command is run through the platform shell and must print the token on
+stdout. It is stored encrypted as `token_command_encrypted` and is never
+logged. A JWT with an `exp` claim is refreshed when fewer than 300 s remain;
+any other token is cached for `token_ttl_seconds` (default 2700). On a 401 the
+command is re-run once and the request retried. Changing `remote` without
+passing a new `token` or `token_command` drops the stored one.
+
+`request_timeout_ms` (integer, 1000-120000, default 5000) sets the per-request
+timeout to the KB server; it does not include the time a `token_command` takes.
+
+Token-source invariants:
+
+- Each `token_command` run has a 30 s limit with stdin closed. On timeout the
+  whole process tree is killed (process group on POSIX, `taskkill /T /F` on
+  Windows). Failures carry code `TOKEN_SOURCE_FAILED`, name only the cause, and
+  never include the command's stderr or output.
+- Concurrent refreshes share a single command run.
+- The HTTP status is checked before the body is parsed. A 401 triggers one
+  refresh and one retry, and only when the source can refresh (a static
+  `token` cannot).
+- A `TOKEN_SOURCE_FAILED` error leaves the offline write queue intact, so
+  queued writes are retried once the command works again.
+- Known gaps: a burst of 401s arriving after the first refresh completes can
+  re-run the command, since refresh is not compare-and-swap; if both
+  `token_encrypted` and `token_command_encrypted` are present in the config,
+  the static token wins silently.
+
 ### 3. GitNexus (optional, codebase plane)
 
 Install GitNexus as an MCP server in `.mcp.json` (already done if you used the

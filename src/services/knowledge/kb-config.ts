@@ -11,7 +11,13 @@ import { decryptPassword } from '../../utils/crypto.js';
 export interface KbConfigResult {
   provider: 'sqlite' | 'http';
   url?: string;
+  /** Static bearer token. Mutually exclusive with tokenCommand. */
   token?: string;
+  /** Decrypted shell command that prints a bearer token. */
+  tokenCommand?: string;
+  tokenTtlSeconds?: number;
+  /** Per-request timeout for the http provider; absent means the provider default. */
+  requestTimeoutMs?: number;
 }
 
 /**
@@ -24,6 +30,9 @@ export interface KbConfigFile {
   provider?: 'sqlite' | 'http';
   url?: string;
   token_encrypted?: string;
+  token_command_encrypted?: string;
+  token_ttl_seconds?: number;
+  request_timeout_ms?: number;
   bible?: { autoCommit?: boolean };
   [key: string]: unknown;
 }
@@ -73,10 +82,33 @@ export function readKbConfigFromDisk(): KbConfigResult {
     );
   }
 
+  const timeout = parsed.request_timeout_ms;
+  const requestTimeoutField = typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0
+    ? { requestTimeoutMs: timeout }
+    : {};
+
+  const commandEncrypted = typeof parsed.token_command_encrypted === 'string' && parsed.token_command_encrypted
+    ? parsed.token_command_encrypted
+    : undefined;
   const tokenEncrypted = typeof parsed.token_encrypted === 'string' ? parsed.token_encrypted : undefined;
+
+  if (commandEncrypted && !tokenEncrypted) {
+    let tokenCommand: string;
+    try {
+      tokenCommand = decryptPassword(commandEncrypted);
+    } catch (err) {
+      throw new Error(
+        `KB config at ${KB_CONFIG_PATH} has an undecryptable "token_command_encrypted": ${(err as Error).message}`,
+      );
+    }
+    const ttl = parsed.token_ttl_seconds;
+    const tokenTtlSeconds = typeof ttl === 'number' && Number.isFinite(ttl) && ttl > 0 ? ttl : 2700;
+    return { provider: 'http', url, tokenCommand, tokenTtlSeconds, ...requestTimeoutField };
+  }
+
   if (!tokenEncrypted) {
     throw new Error(
-      `KB config at ${KB_CONFIG_PATH} selects provider "http" but is missing required key "token_encrypted"`,
+      `KB config at ${KB_CONFIG_PATH} selects provider "http" but is missing required key "token_encrypted" or "token_command_encrypted"`,
     );
   }
 
@@ -89,5 +121,5 @@ export function readKbConfigFromDisk(): KbConfigResult {
     );
   }
 
-  return { provider: 'http', url, token };
+  return { provider: 'http', url, token, ...requestTimeoutField };
 }
