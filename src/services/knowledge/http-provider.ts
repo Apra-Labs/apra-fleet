@@ -2,6 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { randomBytes } from 'node:crypto';
 import { SqliteProvider } from './sqlite-provider.js';
+import { StaticTokenSource, TOKEN_SOURCE_FAILED, type TokenSource } from './token-source.js';
 import type {
   MemoryProvider,
   KBEntry,
@@ -42,16 +43,38 @@ function isConnectionError(err: unknown): boolean {
   );
 }
 
+function errorCode(err: unknown): string | undefined {
+  return err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+}
+
+/** HTTP_<status> error. Uses the body's JSON `error` field when there is one, else the raw body. */
+function httpStatusError(statusCode: number, body: string): NodeJS.ErrnoException {
+  let detail = body;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    const field = parsed !== null && typeof parsed === 'object'
+      ? (parsed as Record<string, unknown>).error
+      : undefined;
+    if (typeof field === 'string') detail = field;
+  } catch {
+    // Empty or non-JSON error body: keep the raw text as the detail.
+  }
+  const err = new Error(`HTTP ${statusCode}: ${detail}`) as NodeJS.ErrnoException;
+  err.code = `HTTP_${statusCode}`;
+  return err;
+}
+
 export class HttpKbProvider implements MemoryProvider {
   private baseUrl: string;
-  private readonly token: string;
+  private readonly tokenSource: TokenSource;
   private readonly fallback: SqliteProvider;
   readonly offlineQueue: QueuedOperation[] = [];
   private readonly beforeExitHandler: () => void;
 
-  constructor(url: string, token: string, fallback?: SqliteProvider) {
+  /** A string token is wrapped in a StaticTokenSource (it can never refresh). */
+  constructor(url: string, token: string | TokenSource, fallback?: SqliteProvider) {
     this.baseUrl = url.replace(/\/$/, '');
-    this.token = token;
+    this.tokenSource = typeof token === 'string' ? new StaticTokenSource(token) : token;
     this.fallback = fallback ?? new SqliteProvider();
 
     this.beforeExitHandler = () => {
@@ -77,7 +100,32 @@ export class HttpKbProvider implements MemoryProvider {
     this.offlineQueue.push(op);
   }
 
-  private rawRequest<T>(
+  /**
+   * One authenticated request. The token is fetched from the source BEFORE the
+   * HTTP request exists, so a slow token command never runs under the request
+   * timeout. On HTTP 401 a refreshable source is forced to refresh once and the
+   * request is retried once; a second 401 (or any 401 with a static token)
+   * rejects with HTTP_401. A TOKEN_SOURCE_FAILED error from the source
+   * propagates unchanged.
+   */
+  private async rawRequest<T>(
+    method: string,
+    pathname: string,
+    body?: unknown,
+    queryParams?: Record<string, string>
+  ): Promise<T> {
+    const token = await this.tokenSource.getToken();
+    try {
+      return await this.sendRequest<T>(token, method, pathname, body, queryParams);
+    } catch (err) {
+      if (errorCode(err) !== 'HTTP_401' || !this.tokenSource.canRefresh) throw err;
+    }
+    const refreshed = await this.tokenSource.refresh();
+    return this.sendRequest<T>(refreshed, method, pathname, body, queryParams);
+  }
+
+  private sendRequest<T>(
+    token: string,
     method: string,
     pathname: string,
     body?: unknown,
@@ -94,7 +142,7 @@ export class HttpKbProvider implements MemoryProvider {
       const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.token}`,
+        'Authorization': `Bearer ${token}`,
       };
       if (bodyStr) headers['Content-Length'] = Buffer.byteLength(bodyStr).toString();
 
@@ -113,17 +161,14 @@ export class HttpKbProvider implements MemoryProvider {
         let data = '';
         res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
         res.on('end', () => {
+          // Status before parse: an error status with an empty or non-JSON
+          // body must still surface as HTTP_<status>, not as invalid JSON.
+          if (res.statusCode !== undefined && res.statusCode >= 400) {
+            reject(httpStatusError(res.statusCode, data));
+            return;
+          }
           try {
-            const parsed = JSON.parse(data);
-            if (res.statusCode !== undefined && res.statusCode >= 400) {
-              const httpErr = new Error(
-                `HTTP ${res.statusCode}: ${(parsed as Record<string, string>).error ?? data}`
-              ) as NodeJS.ErrnoException;
-              httpErr.code = `HTTP_${res.statusCode}`;
-              reject(httpErr);
-            } else {
-              resolve(parsed as T);
-            }
+            resolve(JSON.parse(data) as T);
           } catch {
             reject(new Error(`Invalid JSON response from KB server`));
           }
@@ -154,7 +199,9 @@ export class HttpKbProvider implements MemoryProvider {
         }
         this.offlineQueue.shift();
       } catch (err) {
-        if (isConnectionError(err)) {
+        // A token that could not be fetched says nothing about the queued op:
+        // keep the queue, exactly as for an unreachable server.
+        if (isConnectionError(err) || errorCode(err) === TOKEN_SOURCE_FAILED) {
           break;
         }
         this.offlineQueue.shift();
