@@ -574,6 +574,9 @@ any other token is cached for `token_ttl_seconds` (default 2700). On a 401 the
 command is re-run once and the request retried. Changing `remote` without
 passing a new `token` or `token_command` drops the stored one.
 
+`request_timeout_ms` (integer, 1000-120000, default 5000) sets the per-request
+timeout to the KB server; it does not include the time a `token_command` takes.
+
 ### 3. GitNexus (optional, codebase plane)
 
 Install GitNexus as an MCP server in `.mcp.json` (already done if you used the

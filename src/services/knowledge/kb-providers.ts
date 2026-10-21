@@ -161,7 +161,7 @@ async function selectProjectProvider(projectProvider: SqliteProvider, configFing
   const tokenSource = config.tokenCommand !== undefined
     ? new CommandTokenSource({ command: config.tokenCommand, ttlSeconds: config.tokenTtlSeconds })
     : config.token!;
-  const httpProvider = new HttpKbProvider(config.url!, tokenSource, projectProvider);
+  const httpProvider = new HttpKbProvider(config.url!, tokenSource, projectProvider, config.requestTimeoutMs);
   try {
     await httpProvider.init();
   } catch (err) {

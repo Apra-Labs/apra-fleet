@@ -20,6 +20,8 @@ export const kbSetupSchema = z.object({
     .describe('Shell command that prints a bearer token on stdout, run to obtain and refresh the token (stored encrypted, never logged). Mutually exclusive with token. Example: my-token-cli print-access-token'),
   token_ttl_seconds: z.number().int().positive().optional()
     .describe('Cache lifetime in seconds for a token_command token that is not a JWT with an exp claim (default 2700)'),
+  request_timeout_ms: z.number().int().min(1000).max(120000).optional()
+    .describe('Per-request timeout in milliseconds for the remote KB server, 1000-120000 (default 5000). Does not include the time a token_command takes to run.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
   // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
   ...KB_REMOVED_SCOPE_KEYS_SHAPE,
@@ -133,6 +135,11 @@ function applySetupInput(config: KbConfigFile, input: KbSetupInput, steps: strin
     }
   }
 
+  if (input.request_timeout_ms !== undefined) {
+    config.request_timeout_ms = input.request_timeout_ms;
+    steps.push('Stored request timeout');
+  }
+
   if (input.token) {
     config.token_encrypted = encryptPassword(input.token);
     delete config.token_command_encrypted;
@@ -166,6 +173,10 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<s
   const steps: string[] = [];
   if (input.token && input.token_command) {
     throw new Error('kb_setup: pass either token or token_command, not both');
+  }
+  const timeoutCheck = kbSetupSchema.shape.request_timeout_ms.safeParse(input.request_timeout_ms);
+  if (!timeoutCheck.success) {
+    throw new Error('kb_setup: request_timeout_ms must be an integer between 1000 and 120000');
   }
   // Validate before any side effect, so a bad remote installs no hook and
   // leaves any existing config untouched.

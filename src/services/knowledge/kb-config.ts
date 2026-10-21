@@ -16,6 +16,8 @@ export interface KbConfigResult {
   /** Decrypted shell command that prints a bearer token. */
   tokenCommand?: string;
   tokenTtlSeconds?: number;
+  /** Per-request timeout for the http provider; absent means the provider default. */
+  requestTimeoutMs?: number;
 }
 
 /**
@@ -30,6 +32,7 @@ export interface KbConfigFile {
   token_encrypted?: string;
   token_command_encrypted?: string;
   token_ttl_seconds?: number;
+  request_timeout_ms?: number;
   bible?: { autoCommit?: boolean };
   [key: string]: unknown;
 }
@@ -79,6 +82,11 @@ export function readKbConfigFromDisk(): KbConfigResult {
     );
   }
 
+  const timeout = parsed.request_timeout_ms;
+  const requestTimeoutField = typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0
+    ? { requestTimeoutMs: timeout }
+    : {};
+
   const commandEncrypted = typeof parsed.token_command_encrypted === 'string' && parsed.token_command_encrypted
     ? parsed.token_command_encrypted
     : undefined;
@@ -95,7 +103,7 @@ export function readKbConfigFromDisk(): KbConfigResult {
     }
     const ttl = parsed.token_ttl_seconds;
     const tokenTtlSeconds = typeof ttl === 'number' && Number.isFinite(ttl) && ttl > 0 ? ttl : 2700;
-    return { provider: 'http', url, tokenCommand, tokenTtlSeconds };
+    return { provider: 'http', url, tokenCommand, tokenTtlSeconds, ...requestTimeoutField };
   }
 
   if (!tokenEncrypted) {
@@ -113,5 +121,5 @@ export function readKbConfigFromDisk(): KbConfigResult {
     );
   }
 
-  return { provider: 'http', url, token };
+  return { provider: 'http', url, token, ...requestTimeoutField };
 }
