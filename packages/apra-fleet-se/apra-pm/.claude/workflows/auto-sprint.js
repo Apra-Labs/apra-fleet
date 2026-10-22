@@ -1866,6 +1866,13 @@ const DEPLOYER_SCHEMA = {
     },
     "notes": {
       "type": "string"
+    },
+    "failedStep": {
+      "type": "string",
+      "enum": [
+        "permissions"
+      ],
+      "description": "Set to \"permissions\" ONLY when you returned deployed: false because you stopped at Step 0a (the deploy.md Permissions check) before running any deploy command. The orchestrator then does not dispatch the deploy again this run. Omit it for every other outcome, including any failure after a deploy command ran."
     }
   }
 };

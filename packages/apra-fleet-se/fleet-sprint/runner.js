@@ -162,7 +162,7 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // around Deploy, and the dashboard/still-open loop control after Review,
 // stayed here.
 import { runReviewPhase } from './phases/review.mjs';
-import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
+import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, formatDeploySetAsideNotes, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
 // apra-fleet-3swo.6.8: the next two phase() boundaries -- the per-cycle Integ
 // Test and the Re-Review that Cycle Evaluation dispatches when the goal-
 // priority count already reads 0 but no review ran this cycle. Integ Test is
@@ -3355,7 +3355,13 @@ async function runSprintCycle(context) {
 
         let deployedThisCycle = false;
 
-        if (hasDeploy) {
+        // Deploy set aside for the run (a Permissions pre-step failure in an
+        // earlier cycle -- see DEPLOY SET-ASIDE in ./phases/deploy.mjs): never
+        // dispatch the deployer again; this cycle's deploy counts as failed.
+        const deploySetAside = sprintState.deploySetAside || null;
+        if (hasDeploy && deploySetAside) {
+            log(`Skipping Deploy Phase C${cycle}: ${formatDeploySetAsideNotes(deploySetAside)}. Skipping Integration Test phase.`);
+        } else if (hasDeploy) {
             // The phase body lives in ./phases/deploy.mjs
             // (apra-fleet-3swo.6.5), which receives its state explicitly
             // instead of closing over runSprintCycle's locals. The
@@ -3369,12 +3375,13 @@ async function runSprintCycle(context) {
                 phase, log, dispatchCtx,
                 cycle, sprintSelfIdLine,
                 getMemberForRole, ensureUnattendedAuto, ensureDeployPermissions,
+                sprintState,
                 deployFailures, deployedThisCycle,
             }));
         } else {
             log('Skipping Deploy Phase (no deploy.md found, or the probe itself failed -- see prior log line)');
         }
-        lastDeployFailure = latestDeployFailure({ hasDeploy, deployedThisCycle, cycle, deployFailures });
+        lastDeployFailure = latestDeployFailure({ hasDeploy, deployedThisCycle, cycle, deployFailures, deploySetAside });
         if (!lastDeployFailure) deployBlockedCycles = 0;
 
         // apra-fleet-66u.2: declared here, OUTSIDE the `if (hasPlaybook &&

@@ -557,6 +557,7 @@ const FALLBACK_deployerReport = {
     properties: {
         deployed: { type: 'boolean' },
         notes: { type: 'string' },
+        failedStep: { type: 'string', enum: ['permissions'] },
     },
     required: ['deployed', 'notes'],
 };
