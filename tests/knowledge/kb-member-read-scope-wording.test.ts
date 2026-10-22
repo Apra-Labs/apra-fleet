@@ -42,6 +42,8 @@ describe.each(sources)('MEMBER read-scope wording in the %s', (_label, describe_
     expect(d).toContain("INFERRED/UNVERIFIED only from the member's own captures");
     expect(d).toContain('member:<caller uuid>');
     expect(d).toContain('merged for a mixed request');
+    expect(d).toContain('also returns captures of the member promoted to CONFIRMED in the per-repo DB');
+    expect(d).toContain('the bible copy wins on a shared id');
   });
 
   it.each(TOOLS)('%s no longer carries the old per-repo-DB-only member-scope sentence', (tool) => {

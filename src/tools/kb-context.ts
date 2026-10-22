@@ -56,7 +56,7 @@ export async function kbContext(input: KbContextInput, anchor?: KbAnchor): Promi
   // DB, so the other tiers never expose another member's captures and never
   // hide the bible's. This is also the MEMBER default read.
   const split = await getMemberSplitRead(anchor, confidence, 'kb_context');
-  if (split) return JSON.stringify(partition(await splitContext(split, input.files, explicit, confidence, excludeDisputed)));
+  if (split) return JSON.stringify(partition(await splitContext(split, input.files, explicit, excludeDisputed)));
 
   // Everything else (kb-self.ts getSelfReadKb): a MEMBER CONFIRMED-only
   // request reads the checkout bible view; a MEMBER request naming only
@@ -83,17 +83,14 @@ async function splitContext(
   split: MemberSplitRead,
   files: string[],
   explicit: Tier[] | undefined,
-  confidence: Tier[],
   excludeDisputed: boolean,
 ): Promise<FileResult[]> {
   const { ownerTag } = split.own;
-  // An explicit list answers its non-CONFIRMED tiers from the member's own
-  // captures. The default read has always asked the own half for its whole
-  // tier set (CONFIRMED + INFERRED, owner-tagged), so a cache entry the member
-  // promoted in the per-repo DB still counts; that is kept unchanged.
-  const ownTiers = explicit === undefined ? confidence : split.own.tiers;
+  // The own half asks for every requested tier (CONFIRMED included),
+  // owner-tagged, so a cache entry the member promoted in the per-repo DB
+  // still counts, for the default and an explicit list alike.
   const fromBible = await split.bible.project.context(files, split.bible.tiers, excludeDisputed);
-  const fromOwn = await split.own.project.context(files, ownTiers, excludeDisputed, ownerTag);
+  const fromOwn = await split.own.project.context(files, split.own.tiers, excludeDisputed, ownerTag);
   let results = mergeByFile(fromBible, fromOwn);
 
   // Fallback to global if project has no results. The global KB is

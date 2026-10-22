@@ -11,6 +11,7 @@ import { kbQuery } from '../../src/tools/kb-query.js';
 import { kbList } from '../../src/tools/kb-list.js';
 import { kbSessionPrime } from '../../src/tools/kb-session-prime.js';
 import { kbContext } from '../../src/tools/kb-context.js';
+import { kbPromote } from '../../src/tools/kb-promote.js';
 import { getKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { requireSqliteProject } from '../../src/services/knowledge/require-sqlite-project.js';
 import { computeFileHash } from '../../src/services/knowledge/file-hash.js';
@@ -348,5 +349,101 @@ describe('FULL session with the same mixed tier list is unchanged (no bible-view
     const out = JSON.parse(await full(() => kbContext({ files: FILES, confidence: [...MIXED] }))) as Ctx;
     expect(out.fresh.map(r => r.file).sort()).toEqual([F2, F3]);
     expect(out.missing).toEqual([F1]);
+  });
+});
+
+// A member's own capture promoted to CONFIRMED in the per-repo DB (kb_promote)
+// has not reached the bible yet. The own half of a mixed read asks for every
+// requested tier, so it is still returned; another member's DB-only CONFIRMED
+// entry is not (CONFIRMED is the bible's for everything but own captures).
+// Own word and files (F4/F5) keep the shared fixtures' exact lists untouched.
+describe('MEMBER mixed-tier reads keep the caller\'s own CONFIRMED-in-DB captures', () => {
+  const WORD2 = 'gearpromo';
+  const F4 = 'src/f4.ts';
+  const F5 = 'src/f5.ts';
+  let aConf: string; // A's capture, promoted to CONFIRMED in the per-repo DB
+  let bConf: string; // B's capture, promoted to CONFIRMED in the per-repo DB
+  let aCtxF4: string; // A's context-cache entry for F4, promoted to CONFIRMED
+  let bCtxF5: string; // B's context-cache entry for F5, promoted to CONFIRMED
+  const REASON = 'Verified against src/sprocket.ts in this test fixture checkout.';
+
+  const promote = async (member: string, id: string): Promise<void> => {
+    const out = JSON.parse(await as(member, () => kbPromote({ id, reason: REASON })));
+    expect(out.new_confidence).toBe('CONFIRMED');
+  };
+
+  beforeAll(async () => {
+    const cap = async (member: string, title: string, symbol: string): Promise<string> => {
+      const out = JSON.parse(await as(member, () => kbCapture({
+        type: 'knowledge', title,
+        summary: `${title}: the ${WORD2} stage retries a failed tick.`,
+        content: `${title}: the ${WORD2} stage retries a failed tick, see src/sprocket.ts.`,
+        source_files: ['src/sprocket.ts'], symbols: [symbol],
+      } as Parameters<typeof kbCapture>[0])));
+      return out.id as string;
+    };
+    aConf = await cap(memberA, 'Gearpromo alpha promoted fact', 'gearAlpha');
+    bConf = await cap(memberB, 'Gearpromo bravo promoted fact', 'gearBravo');
+
+    for (const f of [F4, F5]) fs.writeFileSync(path.join(repo, f), `export const v = '${f}';\n`);
+    const db = requireSqliteProject((await getKbProviders(repo)).project, 'test');
+    const seedCtx = async (member: string, file: string): Promise<string> => {
+      const hash = (await computeFileHash(path.join(repo, file)))!;
+      const { id } = await db.capture({
+        type: 'context-cache', title: `Cache of ${file}`, summary: `File summary of ${file}.`,
+        content: `File summary of ${file}.`, source_files: [file], symbols: [`cache_${path.basename(file, '.ts')}`],
+        tags: [`member:${member}`], content_hash: hash.hash, content_hash_type: hash.type,
+        flagged_for_review: false, author: 'doer', source: 'session', confidence: 'INFERRED',
+      } as Parameters<typeof db.capture>[0]);
+      return id;
+    };
+    aCtxF4 = await seedCtx(memberA, F4);
+    bCtxF5 = await seedCtx(memberB, F5);
+
+    await promote(memberA, aConf);
+    await promote(memberB, bConf);
+    await promote(memberA, aCtxF4);
+    await promote(memberB, bCtxF5);
+    // The rows really are CONFIRMED in the per-repo DB, and the bible does not carry them.
+    const stored = (await db.query({ ids: [aConf, bConf, aCtxF4, bCtxF5] })).results;
+    expect(stored).toHaveLength(4);
+    for (const e of stored) expect(e.confidence).toBe('CONFIRMED');
+    for (const id of [aConf, bConf, aCtxF4, bCtxF5]) expect(BIBLE_IDS()).not.toContain(id);
+  });
+
+  it('kb_query returns the caller\'s own CONFIRMED-in-DB capture, not another member\'s', async () => {
+    const out = JSON.parse(await as(memberA, () => kbQuery({ query: WORD2, confidence: [...MIXED] })));
+    const rows = out.l1_results as Array<{ id: string; confidence: string }>;
+    expect(rows.find(e => e.id === aConf)).toMatchObject({ confidence: 'CONFIRMED' });
+    expect(ids(rows)).not.toContain(bConf);
+    expect(ids(out.l2_expanded)).toContain(aConf);
+  });
+
+  it('kb_list returns the caller\'s own CONFIRMED-in-DB entries, not another member\'s', async () => {
+    const out = JSON.parse(await as(memberA, () => kbList({ confidence: [...MIXED] })));
+    const rows = out.results as Array<{ id: string; confidence: string }>;
+    expect(rows.find(e => e.id === aConf)).toMatchObject({ confidence: 'CONFIRMED' });
+    expect(rows.find(e => e.id === aCtxF4)).toMatchObject({ confidence: 'CONFIRMED' });
+    expect(ids(rows)).not.toContain(bConf);
+    expect(ids(rows)).not.toContain(bCtxF5);
+  });
+
+  it('kb_session_prime returns the caller\'s own CONFIRMED-in-DB capture, not another member\'s', async () => {
+    const out = JSON.parse(await as(memberA, () => kbSessionPrime({
+      hint_modules: [WORD2], session_files: [F4, F5], confidence: [...MIXED],
+    })));
+    const top = ids(out.top_entries);
+    expect(top).toContain(aConf);
+    expect(top).not.toContain(bConf);
+    expect(out.fresh_summaries.map((r: { entry_id: string }) => r.entry_id)).toEqual([aCtxF4]);
+    expect(out.stale_files).toEqual([F5]);
+  });
+
+  it('kb_context reports the caller\'s own CONFIRMED-in-DB cache entry fresh, not another member\'s', async () => {
+    const out = JSON.parse(await as(memberA, () => kbContext({ files: [F4, F5], confidence: [...MIXED] }))) as Ctx;
+    expect(out.fresh.map(r => [r.file, r.entry_id])).toEqual([[F4, aCtxF4]]);
+    expect(out.missing).toEqual([F5]);
+    // The default member read agrees.
+    expect(JSON.parse(await as(memberA, () => kbContext({ files: [F4, F5] })))).toEqual(out);
   });
 });

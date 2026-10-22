@@ -187,8 +187,8 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
   // A MEMBER request naming CONFIRMED plus another tier is split (kb-self.ts
   // getMemberSplitRead): each half is primed by primeFrom below, the CONFIRMED
   // half exactly as a CONFIRMED-only request (bible view, cold-seeds included,
-  // decided on that half's own entries), the other tiers from the per-repo DB
-  // owner-tagged (no cold-seed). The two results are then merged.
+  // decided on that half's own entries), every requested tier from the
+  // per-repo DB owner-tagged (no cold-seed). The two results are then merged.
   const split = await getMemberSplitRead(anchor, input.confidence, 'kb_session_prime');
   if (split) {
     const fromBible = await primeFrom(

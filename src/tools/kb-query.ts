@@ -84,8 +84,9 @@ function capL2Content<T extends { content: string }>(e: T): T {
 
 // MEMBER mixed-tier query (kb-self.ts getMemberSplitRead). Each half is
 // queried with only its own tiers and owner tag: the CONFIRMED half (bible
-// view + global, untagged) exactly as a CONFIRMED-only member read, the other
-// tiers from the per-repo DB + global with the member's owner tag.
+// view + global, untagged) exactly as a CONFIRMED-only member read, the own
+// half (every requested tier, CONFIRMED included) from the per-repo DB +
+// global with the member's owner tag.
 //
 // Ranking: provider ranks (FTS bm25) are not comparable across two databases,
 // so the merged order is fixed: the bible half in its own rank order, then the
@@ -175,8 +176,9 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   }
 
   // A MEMBER request naming CONFIRMED plus another tier is split: CONFIRMED
-  // from the checkout bible view, the rest from the per-repo DB, own captures
-  // only (kb-self.ts getMemberSplitRead). flagged_only never splits.
+  // from the checkout bible view, plus the per-repo DB at every requested
+  // tier, own captures only (kb-self.ts getMemberSplitRead). flagged_only
+  // never splits.
   if (!input.flagged_only) {
     const split = await getMemberSplitRead(anchor, input.confidence, 'kb_query');
     if (split) return splitQuery(split, input);

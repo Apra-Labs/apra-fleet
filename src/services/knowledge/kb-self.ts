@@ -271,11 +271,11 @@ export type KbTier = 'CONFIRMED' | 'INFERRED' | 'UNVERIFIED';
  *
  * `bible` answers the CONFIRMED tier from exactly the source a CONFIRMED-only
  * member read uses: the member's checkout bible view plus the global KB, with
- * NO owner tag. `own` answers the remaining (non-CONFIRMED) tiers from the
- * per-repo DB and the global KB, both restricted to `ownerTag`, so a member
- * never sees another member's unconfirmed captures. The own half never asks
- * for CONFIRMED: an own capture promoted in the per-repo DB is not part of the
- * member's CONFIRMED set until it reaches the bible.
+ * NO owner tag. `own` answers EVERY requested tier (CONFIRMED included) from
+ * the per-repo DB and the global KB, both restricted to `ownerTag`, so a member
+ * never sees another member's DB-only captures at any tier, while its own
+ * capture promoted to CONFIRMED in the per-repo DB stays visible before it
+ * reaches the bible (the bible copy wins on a shared id).
  */
 export interface MemberSplitRead {
   anchor: KbAnchor;
@@ -307,8 +307,7 @@ export async function getMemberSplitRead(
 ): Promise<MemberSplitRead | null> {
   if (anchor !== undefined || getSessionMemberId() === undefined) return null;
   const tiers = [...new Set(confidence ?? [])] as KbTier[];
-  const ownTiers = tiers.filter(t => t !== 'CONFIRMED');
-  if (!tiers.includes('CONFIRMED') || ownTiers.length === 0) return null;
+  if (!tiers.includes('CONFIRMED') || tiers.every(t => t === 'CONFIRMED')) return null;
   const ownerTag = memberOwnerTag(anchor);
   if (ownerTag === undefined) return null;
   const resolved = resolveKbAnchor(anchor);
@@ -321,7 +320,7 @@ export async function getMemberSplitRead(
     anchor: resolved,
     projectSlug: repo.projectSlug,
     bible: { project: view, global, tiers: ['CONFIRMED'] },
-    own: { project: requireSqliteProject(repo.project, callerLabel), global: repo.global, tiers: ownTiers, ownerTag },
+    own: { project: requireSqliteProject(repo.project, callerLabel), global: repo.global, tiers, ownerTag },
   };
 }
 

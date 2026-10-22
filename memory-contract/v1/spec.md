@@ -151,8 +151,11 @@ member's own checkout bible (`.fleet/kb-canonical.json`), rebuilt when the file
 changes. An explicit confidence list is split: CONFIRMED is read from the
 member checkout bible and INFERRED/UNVERIFIED only from the member's own
 captures in the per-repo DB (tagged `member:<caller uuid>`), merged for a
-mixed request, so a `[CONFIRMED, INFERRED]` read is a superset of the
-CONFIRMED-only result and never exposes another member's captures. `kb_capture` tags the
+mixed request. The own half of a mixed request asks for every listed tier, so
+the member's own captures promoted to CONFIRMED in the per-repo DB are returned
+before they reach the bible (the bible copy wins on a shared id); a
+`[CONFIRMED, INFERRED]` read is a superset of the CONFIRMED-only result and
+never exposes another member's captures. `kb_capture` tags the
 stored entry `member:<caller uuid>`; `kb_promote` and `kb_invalidate` act only
 on entries carrying that tag and report any other id as not found, changing
 nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards

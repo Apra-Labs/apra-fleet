@@ -54,8 +54,8 @@ export async function kbList(input: KbListInput, anchor?: KbAnchor): Promise<str
 
   let entries: Awaited<ReturnType<SqliteProvider['list']>>;
   // MEMBER mixed-tier request (CONFIRMED plus another tier): CONFIRMED from
-  // the checkout bible view, the other tiers from the per-repo DB, own
-  // captures only (kb-self.ts getMemberSplitRead). Merged by id (bible copy
+  // the checkout bible view, plus every requested tier from the per-repo DB,
+  // own captures only (kb-self.ts getMemberSplitRead). Merged by id (bible copy
   // wins), re-sorted into list()'s id order, then limited.
   const split = await getMemberSplitRead(anchor, confidence, 'kb_list');
   if (split) {
