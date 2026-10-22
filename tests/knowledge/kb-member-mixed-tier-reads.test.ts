@@ -9,6 +9,11 @@ import { resetMemberBibleViews } from '../../src/services/knowledge/member-bible
 import { kbCapture } from '../../src/tools/kb-capture.js';
 import { kbQuery } from '../../src/tools/kb-query.js';
 import { kbList } from '../../src/tools/kb-list.js';
+import { kbSessionPrime } from '../../src/tools/kb-session-prime.js';
+import { kbContext } from '../../src/tools/kb-context.js';
+import { getKbProviders } from '../../src/services/knowledge/kb-providers.js';
+import { requireSqliteProject } from '../../src/services/knowledge/require-sqlite-project.js';
+import { computeFileHash } from '../../src/services/knowledge/file-hash.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
 
 // MEMBER mixed-tier reads (a tier list naming CONFIRMED plus another tier):
@@ -33,6 +38,13 @@ let memberC: string;
 let e2: string; // A's own INFERRED capture
 let e3: string; // B's INFERRED capture
 let dup: string; // A's capture whose id the bible also carries
+let aCtxF2: string; // A's own INFERRED context-cache entry for F2
+let bCtxF3: string; // B's INFERRED context-cache entry for F3
+const F1 = 'src/f1.ts';
+const F2 = 'src/f2.ts';
+const F3 = 'src/f3.ts';
+const BIBLE_CTX = 'bible-ctx-f1';
+const BIBLE_IDS = () => ['bible-e1', BIBLE_CTX, dup];
 
 const as = <T>(member: string, fn: () => Promise<T>): Promise<T> => runWithSessionMember(member, fn);
 const ids = (rows: Array<{ id: string }>) => rows.map(r => r.id);
@@ -81,14 +93,36 @@ beforeAll(async () => {
   e3 = await capture(memberB, `Sprocketmix bravo foreign fact`, 'sprocketBravo');
   dup = await capture(memberA, `Sprocketmix alpha duplicate own copy`, 'sprocketDup');
 
+  // Context-cache entries for F2 (A's own) and F3 (B's), seeded straight into
+  // the per-repo DB with the file's real hash so they read fresh.
+  for (const f of [F1, F2, F3]) fs.writeFileSync(path.join(repo, f), `export const v = '${f}';\n`);
+  const db = requireSqliteProject((await getKbProviders(repo)).project, 'test');
+  const seedCtx = async (member: string, file: string): Promise<string> => {
+    const hash = (await computeFileHash(path.join(repo, file)))!;
+    const { id } = await db.capture({
+      type: 'context-cache', title: `Cache of ${file}`, summary: `File summary of ${file}.`,
+      content: `File summary of ${file}.`, source_files: [file], symbols: [`cache_${path.basename(file, '.ts')}`],
+      tags: [`member:${member}`], content_hash: hash.hash, content_hash_type: hash.type,
+      flagged_for_review: false, author: 'doer', source: 'session', confidence: 'INFERRED',
+    } as Parameters<typeof db.capture>[0]);
+    return id;
+  };
+  aCtxF2 = await seedCtx(memberA, F2);
+  bCtxF3 = await seedCtx(memberB, F3);
+
   // Written after the captures (and before any member read builds the view):
-  // E1 is bible-only; `dup` is the same id as A's capture, with its own title.
+  // E1 is bible-only; `dup` is the same id as A's capture, with its own title;
+  // the bible also carries a CONFIRMED context-cache entry for F1.
   fs.mkdirSync(path.join(repo, '.fleet'), { recursive: true });
   fs.writeFileSync(path.join(repo, '.fleet', 'kb-canonical.json'), JSON.stringify({
     version: 2,
     entries: [
       bibleEntry('bible-e1', 'Sprocketmix confirmed bible fact'),
       bibleEntry(dup, 'Sprocketmix duplicate bible copy'),
+      {
+        id: BIBLE_CTX, type: 'context-cache', title: `Cache of ${F1}`, summary: `File summary of ${F1}.`,
+        symbols: [], source_files: [F1], confidence: 'CONFIRMED', updated_at: '2026-09-01T00:00:00.000Z',
+      },
     ],
   }), 'utf-8');
 });
@@ -163,19 +197,20 @@ describe('kb_list in a MEMBER session with a mixed tier list', () => {
   it('returns the bible CONFIRMED entries and the caller\'s own captures, never another member\'s, in id order', async () => {
     const out = JSON.parse(await as(memberA, () => kbList({ confidence: [...MIXED] })));
     const got = ids(out.results);
-    expect(got).toEqual(['bible-e1', dup, e2].sort());
+    expect(got).toEqual([...BIBLE_IDS(), e2, aCtxF2].sort());
     expect(got).not.toContain(e3);
-    expect(out.total).toBe(3);
+    expect(got).not.toContain(bCtxF3);
+    expect(out.total).toBe(5);
   });
 
   it('a CONFIRMED-only request is unchanged: the bible entries alone', async () => {
     const out = JSON.parse(await as(memberA, () => kbList({ confidence: ['CONFIRMED'] })));
-    expect(ids(out.results)).toEqual(['bible-e1', dup].sort());
+    expect(ids(out.results)).toEqual(BIBLE_IDS().sort());
   });
 
   it('a member with zero captures gets the bible entries', async () => {
     const out = JSON.parse(await as(memberC, () => kbList({ confidence: [...MIXED] })));
-    expect(ids(out.results)).toEqual(['bible-e1', dup].sort());
+    expect(ids(out.results)).toEqual(BIBLE_IDS().sort());
   });
 
   it('an id in both the bible and the per-repo DB appears once, as the bible copy', async () => {
@@ -186,11 +221,101 @@ describe('kb_list in a MEMBER session with a mixed tier list', () => {
 
   it('honours limit on the merged list', async () => {
     const out = JSON.parse(await as(memberA, () => kbList({ confidence: [...MIXED], limit: 2 })));
-    expect(ids(out.results)).toEqual(['bible-e1', dup, e2].sort().slice(0, 2));
+    expect(ids(out.results)).toEqual([...BIBLE_IDS(), e2, aCtxF2].sort().slice(0, 2));
   });
 
   it('member B sees its own capture and the bible, not A\'s', async () => {
     const out = JSON.parse(await as(memberB, () => kbList({ confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] })));
-    expect(ids(out.results)).toEqual(['bible-e1', dup, e3].sort());
+    expect(ids(out.results)).toEqual([...BIBLE_IDS(), e3, bCtxF3].sort());
+  });
+});
+
+const FILES = [F1, F2, F3];
+type Ctx = { fresh: Array<{ file: string; entry_id: string }>; stale: Array<{ file: string; entry_id: string }>; missing: string[] };
+const STATUS_RANK: Record<string, number> = { fresh: 2, stale: 1, missing: 0 };
+function statusByFile(out: Ctx): Record<string, string> {
+  const by: Record<string, string> = {};
+  for (const r of out.fresh) by[r.file] = 'fresh';
+  for (const r of out.stale) by[r.file] = 'stale';
+  for (const f of out.missing) by[f] = 'missing';
+  return by;
+}
+
+describe('kb_session_prime in a MEMBER session with a mixed tier list', () => {
+  const prime = (member: string, confidence?: string[]) => as(member, async () => JSON.parse(await kbSessionPrime({
+    hint_modules: [WORD], session_files: FILES,
+    ...(confidence ? { confidence: confidence as Array<'CONFIRMED' | 'INFERRED' | 'UNVERIFIED'> } : {}),
+  })));
+
+  it('returns the bible CONFIRMED entry and the caller\'s own capture, never another member\'s', async () => {
+    const out = await prime(memberA, [...MIXED]);
+    const top = ids(out.top_entries);
+    expect(top).toEqual(expect.arrayContaining(['bible-e1', e2]));
+    expect(top).not.toContain(e3);
+    expect(new Set(top).size).toBe(top.length);
+    // The own context-cache entry for F2 is fresh; F3 (another member's) is not.
+    expect(out.fresh_summaries.map((r: { file: string }) => r.file)).toEqual([F2]);
+    expect(out.fresh_summaries.map((r: { entry_id: string }) => r.entry_id)).toEqual([aCtxF2]);
+    expect(out.stale_files).not.toContain(F2);
+    expect(out.stale_files).toEqual(expect.arrayContaining([F1, F3]));
+    expect(out.session_warm).toBe(false);
+  });
+
+  it('the mixed result is a superset of the CONFIRMED-only result', async () => {
+    const confirmed = await prime(memberA, ['CONFIRMED']);
+    const mixed = await prime(memberA, [...MIXED]);
+    expect(ids(mixed.top_entries)).toEqual(expect.arrayContaining(ids(confirmed.top_entries)));
+    // The CONFIRMED half comes first, unchanged.
+    expect(ids(mixed.top_entries).slice(0, confirmed.top_entries.length)).toEqual(ids(confirmed.top_entries));
+    const confirmedFresh = confirmed.fresh_summaries.map((r: { file: string }) => r.file);
+    expect(mixed.fresh_summaries.map((r: { file: string }) => r.file)).toEqual(expect.arrayContaining(confirmedFresh));
+  });
+
+  it('a member with zero captures gets the bible entries', async () => {
+    const out = await prime(memberC, [...MIXED]);
+    const confirmed = await prime(memberC, ['CONFIRMED']);
+    expect(ids(out.top_entries)).toEqual(ids(confirmed.top_entries));
+    expect(ids(out.top_entries)).toEqual(expect.arrayContaining(['bible-e1', dup]));
+    expect(ids(out.top_entries)).not.toContain(e2);
+  });
+
+  it('an id in both the bible and the per-repo DB appears once, as the bible copy', async () => {
+    const out = await prime(memberA, [...MIXED]);
+    const rows = (out.top_entries as Array<{ id: string; title: string }>).filter(e => e.id === dup);
+    expect(rows.map(e => e.title)).toEqual(['Sprocketmix duplicate bible copy']);
+  });
+});
+
+describe('kb_context in a MEMBER session with a mixed tier list', () => {
+  const context = (member: string, confidence?: string[]) => as(member, async () => JSON.parse(await kbContext({
+    files: FILES,
+    ...(confidence ? { confidence: confidence as Array<'CONFIRMED' | 'INFERRED' | 'UNVERIFIED'> } : {}),
+  })) as Ctx);
+
+  it('reports F1 from the bible, F2 fresh from the own capture, F3 (another member\'s) missing', async () => {
+    const out = await context(memberA, [...MIXED]);
+    expect(out.fresh.map(r => [r.file, r.entry_id])).toEqual([[F2, aCtxF2]]);
+    // A bible context-cache entry carries no content hash (bible import
+    // stores none), so the bible's F1 entry is found but reads stale.
+    expect(out.stale.map(r => [r.file, r.entry_id])).toEqual([[F1, BIBLE_CTX]]);
+    expect(out.missing).toEqual([F3]);
+  });
+
+  it('the mixed result is a superset of the CONFIRMED-only result (no file gets a worse status)', async () => {
+    const confirmed = statusByFile(await context(memberA, ['CONFIRMED']));
+    const mixed = statusByFile(await context(memberA, [...MIXED]));
+    for (const f of FILES) expect(STATUS_RANK[mixed[f]]).toBeGreaterThanOrEqual(STATUS_RANK[confirmed[f]]);
+    expect(confirmed).toEqual({ [F1]: 'stale', [F2]: 'missing', [F3]: 'missing' });
+  });
+
+  it('a member with zero captures gets the bible entries', async () => {
+    const out = await context(memberC, [...MIXED]);
+    expect(out.stale.map(r => r.entry_id)).toEqual([BIBLE_CTX]);
+    expect(out.missing).toEqual([F2, F3]);
+  });
+
+  it('the default (no tier list) member read gives the same answer as the explicit CONFIRMED+INFERRED list here', async () => {
+    expect(await context(memberA)).toEqual(await context(memberA, [...MIXED]));
+    expect(await context(memberB)).toEqual(await context(memberB, [...MIXED]));
   });
 });

@@ -35,6 +35,8 @@ import { runWithSessionMember } from '../../src/services/tool-scope.js';
 import { resetMemberBibleViews } from '../../src/services/knowledge/member-bible-view.js';
 import { kbQuery } from '../../src/tools/kb-query.js';
 import { kbList } from '../../src/tools/kb-list.js';
+import { kbSessionPrime } from '../../src/tools/kb-session-prime.js';
+import { kbContext } from '../../src/tools/kb-context.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
 
 const RUN = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -91,10 +93,30 @@ describe('MEMBER mixed-tier read over a non-sqlite per-repo KB: typed refusal', 
     expect(err.message).toMatch(REFUSAL);
   });
 
+  it('kb_session_prime refuses, naming the tool', async () => {
+    const err = await asMember(() => kbSessionPrime({ hint_modules: ['cogmix'], confidence: [...MIXED] })).catch(e => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/^kb_session_prime/);
+    expect(err.message).toMatch(REFUSAL);
+  });
+
+  it('kb_context refuses, naming the tool, for an explicit mixed list and for the member default', async () => {
+    for (const confidence of [[...MIXED], undefined]) {
+      const err = await asMember(() => kbContext({ files: ['src/cog.ts'], ...(confidence ? { confidence } : {}) })).catch(e => e as Error);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/^kb_context/);
+      expect(err.message).toMatch(REFUSAL);
+    }
+  });
+
   it('a CONFIRMED-only request still answers from the bible view', async () => {
     const q = JSON.parse(await asMember(() => kbQuery({ query: 'cogmix', confidence: ['CONFIRMED'] })));
     expect(q.l1_results.map((e: { id: string }) => e.id)).toEqual(['bible-cog']);
     const l = JSON.parse(await asMember(() => kbList({})));
     expect(l.results.map((e: { id: string }) => e.id)).toEqual(['bible-cog']);
+    const p = JSON.parse(await asMember(() => kbSessionPrime({ hint_modules: ['cogmix'], confidence: ['CONFIRMED'] })));
+    expect(p.top_entries.map((e: { id: string }) => e.id)).toEqual(['bible-cog']);
+    const c = JSON.parse(await asMember(() => kbContext({ files: ['src/cog.ts'], confidence: ['CONFIRMED'] })));
+    expect(c.missing).toEqual(['src/cog.ts']);
   });
 });
