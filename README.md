@@ -255,7 +255,7 @@ for the exact selection rule and its fallback-construction invariant.
 `knowledge/config.json` per fleet install, so pointing it at a remote KB
 points EVERY repo that install serves -- every member, every project -- at
 that server. `kb_setup` only places the git post-commit hook (in the calling
-session's own repo); it does not scope the config. On a shared fleet server,
+session's own repo, including linked worktrees and custom `core.hooksPath`); it does not scope the config. On a shared fleet server,
 treat `kb_setup --remote` as a change for all of its users.
 
 Every KB tool call is scoped to the calling session's own repo -- a fleet
