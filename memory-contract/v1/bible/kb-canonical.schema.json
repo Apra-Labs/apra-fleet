@@ -26,11 +26,25 @@
       "properties": {
         "version": { "const": 3 },
         "provenance": { "$ref": "#/$defs/provenance" },
-        "entries": { "type": "array", "items": { "$ref": "#/$defs/entry" } }
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/entry" } },
+        "demotions": { "$ref": "#/$defs/demotions" }
       }
     }
   ],
   "$defs": {
+    "demotions": {
+      "type": "array",
+      "description": "v3 only. Optional tombstones written by kb_bible_commit: each names an id removed from entries at `at` for `reason`. reason \"demoted\" (a kb_demote) is the only one kb_import applies to a local row, and only when that row is withdrawn under the one re-promotion rule; readers keep reasons they do not know. Omitted entirely when there are none. Never inferred from an absence. See spec.md section 2.6.",
+      "items": {
+        "type": "object",
+        "required": ["id", "at", "reason"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "at": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "provenance": {
       "type": "object",
       "description": "commit: the base commit the entries were verified against (null when unknown). branch: the target base branch the entries merge into. entry_count: the number of entries in the file.",

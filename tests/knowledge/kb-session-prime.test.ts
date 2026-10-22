@@ -144,6 +144,12 @@ const mockGetProvider = vi.hoisted(() => vi.fn());
 const mockGetKbProviders = vi.hoisted(() => vi.fn());
 const mockValidateFilePaths = vi.hoisted(() => vi.fn());
 const mockTouch = vi.hoisted(() => vi.fn());
+// The cold seed asks the project provider which bible ids this clone already
+// holds as a NON-live-CONFIRMED row, so those are not re-seeded. Part of the
+// MemoryProvider interface, so the mocked provider must answer it; the default
+// below is an empty map = "no local row for any of these", which is the state
+// every pre-existing cold-seed test here was written against.
+const mockLiveConfirmedState = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/knowledge/kb-providers.js', () => ({
   getKbProviders: mockGetKbProviders,
@@ -238,10 +244,15 @@ describe('kb_session_prime graph-neighbor expansion', () => {
     mockValidateFilePaths.mockReset();
     mockTouch.mockReset();
     mockTouch.mockResolvedValue(0);
+    mockLiveConfirmedState.mockReset();
+    mockLiveConfirmedState.mockReturnValue(new Map<string, boolean>());
 
     mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
     mockGetKbProviders.mockResolvedValue({
-      project: { prime: mockPrime, query: mockProjectQuery, touch: mockTouch },
+      project: {
+        prime: mockPrime, query: mockProjectQuery, touch: mockTouch,
+        getLiveConfirmedState: mockLiveConfirmedState,
+      },
       global: { query: mockGlobalQuery },
       projectSlug: 'test',
     });
@@ -482,10 +493,15 @@ describe('kb_session_prime canonical-bible cold-seed', () => {
     mockValidateFilePaths.mockReset();
     mockTouch.mockReset();
     mockTouch.mockResolvedValue(0);
+    mockLiveConfirmedState.mockReset();
+    mockLiveConfirmedState.mockReturnValue(new Map<string, boolean>());
 
     mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
     mockGetKbProviders.mockResolvedValue({
-      project: { prime: mockPrime, query: mockProjectQuery, touch: mockTouch },
+      project: {
+        prime: mockPrime, query: mockProjectQuery, touch: mockTouch,
+        getLiveConfirmedState: mockLiveConfirmedState,
+      },
       global: { query: mockGlobalQuery },
       projectSlug: 'test',
     });
@@ -806,10 +822,15 @@ describe('kb_session_prime global-bible cold-seed (T3.5, F9c, D8)', () => {
     mockValidateFilePaths.mockReset();
     mockTouch.mockReset();
     mockTouch.mockResolvedValue(0);
+    mockLiveConfirmedState.mockReset();
+    mockLiveConfirmedState.mockReturnValue(new Map<string, boolean>());
 
     mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
     mockGetKbProviders.mockResolvedValue({
-      project: { prime: mockPrime, query: mockProjectQuery, touch: mockTouch },
+      project: {
+        prime: mockPrime, query: mockProjectQuery, touch: mockTouch,
+        getLiveConfirmedState: mockLiveConfirmedState,
+      },
       global: { query: mockGlobalQuery },
       projectSlug: 'test',
     });
