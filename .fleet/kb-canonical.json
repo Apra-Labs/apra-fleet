@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "308072047d0168bad3bdc22bedb5e1fb39daf653",
-    "branch": "feat/kb-redesign",
-    "entry_count": 96
+    "commit": "8c38f93777d15666c2f8fb26c7299db0e0707603",
+    "branch": "main",
+    "entry_count": 97
   },
   "entries": [
     {
@@ -1056,6 +1056,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.234Z"
+    },
+    {
+      "id": "9af40daa-2521-430a-a529-7db25d27da87",
+      "type": "knowledge",
+      "title": "Bible context-cache entries never read fresh in kb_context: bible import stores no content_hash",
+      "summary": "importBibleEntries (bible-import.ts) captures every bible entry with content_hash ''. SqliteProvider.context() marks a file fresh only when the entry's content_hash equals the file's current hash. So a context-cache entry from the checkout bible always reads stale (hash_mismatch), including in a member bible view.",
+      "symbols": [
+        "importBibleEntries",
+        "context"
+      ],
+      "source_files": [
+        "src/services/knowledge/bible-import.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "tests/knowledge/kb-member-mixed-tier-reads.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-22T06:25:32.542Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "9a75635a8ccb17c83c0aef0cc1806386ec3c8cd5",
+        "src/services/knowledge/sqlite-provider.ts": "3b70b8d2bfe7a3e3b4c1c522400841d0b5282d6f",
+        "tests/knowledge/kb-member-mixed-tier-reads.test.ts": "f452ea5700809ded25e518a2743994214a4bc750"
+      }
     },
     {
       "id": "a05ff689-9610-4624-ac2f-301d91e83846",
