@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "8c38f93777d15666c2f8fb26c7299db0e0707603",
     "branch": "main",
-    "entry_count": 99
+    "entry_count": 100
   },
   "entries": [
     {
@@ -991,6 +991,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:08:33.761Z"
+    },
+    {
+      "id": "86ae8b43-42ad-4606-a961-2755421723be",
+      "type": "learning",
+      "title": "KB tool description wording is pinned by a test that reads the registry and the bindings",
+      "summary": "tests/knowledge/kb-member-read-scope-wording.test.ts collects the real kb_query/kb_list/kb_context/kb_session_prime descriptions via registerAllTools with a fake server and reads memory-contract/v1/bindings/mcp/*.json. It asserts exact member read-scope phrases, so editing that wording needs the test, the generator and the bindings updated together.",
+      "symbols": [
+        "registerAllTools",
+        "BINDINGS_MCP_DIR"
+      ],
+      "source_files": [
+        "tests/knowledge/kb-member-read-scope-wording.test.ts",
+        "src/services/tool-registry.ts",
+        "memory-contract/v1/generate-contract.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-22T08:04:41.883Z",
+      "source_file_hashes": {
+        "memory-contract/v1/generate-contract.mjs": "dcd3ef9234288e2558712b6bc0c3f4bb4c42d4b6",
+        "src/services/tool-registry.ts": "099aa042a6602d90c9401a8fd399cf1bda1f568f",
+        "tests/knowledge/kb-member-read-scope-wording.test.ts": "cbd0387bc3c84e6a808d00b76bc625ceba574bc2"
+      }
     },
     {
       "id": "8fdf21fa-e64c-43d2-a22a-edfd21bd6791",
