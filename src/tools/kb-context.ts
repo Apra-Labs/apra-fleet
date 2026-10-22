@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
-import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfReadKb, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
 import type { KbProviders } from '../services/knowledge/kb-providers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
@@ -51,8 +51,10 @@ export async function kbContext(input: KbContextInput, anchor?: KbAnchor): Promi
 
   // MEMBER session -> the checkout bible view (kb-self.ts getSelfReadKb) for
   // the CONFIRMED tier; an INFERRED/UNVERIFIED request goes to the per-repo DB,
-  // own captures only (ownerTag).
-  const read = await getSelfReadKb(anchor, explicit);
+  // own captures only (ownerTag). Under an http project provider (serverRecall)
+  // a MEMBER read goes straight to the server: no bible merge; an
+  // INFERRED/UNVERIFIED request keeps ownerTag, enforced by either provider.
+  const read = await getSelfReadKb(anchor, explicit, { serverRecall: true });
   const { providers } = read;
   let results: FileResult[];
   if (explicit === undefined && read.memberView) {
@@ -65,8 +67,16 @@ export async function kbContext(input: KbContextInput, anchor?: KbAnchor): Promi
     const fromOwn = await requireSqliteProject(own.providers.project, 'kb_context')
       .context(input.files, confidence, excludeDisputed, own.ownerTag);
     results = mergeByFile(fromBible, fromOwn);
+  } else if (explicit === undefined && memberOwnerTag(anchor) !== undefined) {
+    // MEMBER default over an http project (no bible view): the same merge as
+    // above, both halves from the server -- every CONFIRMED summary, plus the
+    // member's OWN CONFIRMED/INFERRED ones, so another member's INFERRED
+    // capture never shows.
+    const fromServer = await providers.project.context(input.files, ['CONFIRMED'], excludeDisputed);
+    const fromOwn = await providers.project.context(input.files, confidence, excludeDisputed, memberOwnerTag(anchor));
+    results = mergeByFile(fromServer, fromOwn);
   } else if (read.ownerTag !== undefined) {
-    results = await requireSqliteProject(providers.project, 'kb_context').context(input.files, confidence, excludeDisputed, read.ownerTag);
+    results = await providers.project.context(input.files, confidence, excludeDisputed, read.ownerTag);
   } else {
     results = await providers.project.context(input.files, confidence, excludeDisputed);
   }
@@ -75,8 +85,10 @@ export async function kbContext(input: KbContextInput, anchor?: KbAnchor): Promi
   const hasFresh = results.some(r => r.status === 'fresh');
   if (!hasFresh) {
     // A MEMBER default read keeps the global fallback CONFIRMED-only: the global
-    // KB is machine-wide, so its INFERRED tier is not the member's own.
-    const globalTiers = explicit === undefined && read.memberView ? (['CONFIRMED'] as Tier[]) : confidence;
+    // KB is machine-wide, so its INFERRED tier is not the member's own. Keyed on
+    // the member session, not memberView, so the http path keeps the same rule.
+    const isMemberDefault = explicit === undefined && memberOwnerTag(anchor) !== undefined;
+    const globalTiers = isMemberDefault ? (['CONFIRMED'] as Tier[]) : confidence;
     const globalResults = await providers.global.context(input.files, globalTiers, excludeDisputed, read.ownerTag);
     const hasFreshGlobal = globalResults.some(r => r.status === 'fresh');
     if (hasFreshGlobal) {

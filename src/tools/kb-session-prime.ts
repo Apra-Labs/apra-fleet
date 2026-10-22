@@ -3,7 +3,6 @@ import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-sc
 import fs from 'node:fs';
 import path from 'node:path';
 import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
-import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { getProvider } from './code-intelligence.js';
 import type { KBEntry } from '../services/knowledge/types.js';
@@ -182,8 +181,9 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
   // That explicit request is answered from the per-repo DB with only the
   // caller's own captures (ownerTag): every block below honours it, and the
   // bible cold-seeds are skipped (bible entries are nobody's own capture).
-  const { providers, anchor: resolved, ownerTag } = await getSelfReadKb(anchor, input.confidence);
-  if (ownerTag !== undefined) requireSqliteProject(providers.project, 'kb_session_prime');
+  // Under an http project provider (serverRecall) a MEMBER prime of any tier
+  // is answered by the server; ownerTag is enforced the same way, fleet-side.
+  const { providers, anchor: resolved, ownerTag } = await getSelfReadKb(anchor, input.confidence, { serverRecall: true });
 
   // Default-trusted reads: CONFIRMED + undisputed unless the caller lists tiers.
   const confidence = input.confidence?.length ? input.confidence : (['CONFIRMED'] as NonNullable<KbSessionPrimeInput['confidence']>);

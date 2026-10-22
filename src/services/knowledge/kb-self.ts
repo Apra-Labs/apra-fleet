@@ -27,8 +27,10 @@ import { getSessionMemberId } from '../tool-scope.js';
 import { getAgent } from '../registry.js';
 import type { Agent } from '../../types.js';
 import { knownRepoRemoteUrl } from '../member-remote-url.js';
-import { getKbProviders, getGlobalKbProvider, getProjectSlug, type KbProviders } from './kb-providers.js';
+import { getKbProviders, getGlobalKbProvider, getProjectSlug, kbConfigSelectsHttp, type KbProviders } from './kb-providers.js';
 import { getMemberBibleView } from './member-bible-view.js';
+import { isSqliteProject } from './require-sqlite-project.js';
+import { HttpKbProvider } from './http-provider.js';
 
 /** Explicit KB anchor for in-process callers. Not exposed on any tool schema. */
 export interface KbAnchor {
@@ -238,14 +240,49 @@ export interface SelfReadKb {
  * INFERRED or UNVERIFIED tier (a bible carries the CONFIRMED set, so those
  * tiers are not the view's to answer). The global KB is unchanged either way.
  * That last MEMBER case carries `ownerTag`: it sees only its own captures.
+ *
+ * `opts.serverRecall` (passed only by kb_query, kb_session_prime and
+ * kb_context): when the KB config selects a non-SQLite (http) project
+ * provider, a MEMBER session reads that provider for every tier, CONFIRMED
+ * included -- the checkout bible is not fed from the server. A request naming
+ * INFERRED/UNVERIFIED carries ownerTag exactly as on SQLite; the http provider
+ * enforces it fleet-side on the entries' tags. A CONFIRMED read whose server
+ * is unreachable is answered from the checkout bible (withOfflineReads), never
+ * the per-repo database. kb_list and kb_stats do not pass it and keep the
+ * routing above under either provider.
  */
+export interface SelfReadKbOptions {
+  serverRecall?: boolean;
+}
+
 export async function getSelfReadKb(
   anchor?: KbAnchor,
   confidence?: readonly string[],
+  opts: SelfReadKbOptions = {},
 ): Promise<SelfReadKb> {
   const resolved = resolveKbAnchor(anchor);
+  const isMemberSelf = anchor === undefined && getSessionMemberId() !== undefined;
   const namesUnconfirmedTier = (confidence ?? []).some(c => c !== 'CONFIRMED');
-  if (anchor === undefined && getSessionMemberId() !== undefined && !namesUnconfirmedTier) {
+  // Decided from the config, so the default (SQLite) path opens no store here.
+  if (isMemberSelf && opts.serverRecall && kbConfigSelectsHttp()) {
+    const providers = await getKbProviders(resolved.folder, resolved.remoteUrl);
+    if (!isSqliteProject(providers.project)) {
+      if (namesUnconfirmedTier) {
+        const ownerTag = memberOwnerTag(anchor);
+        return { providers, anchor: resolved, memberView: false, ...(ownerTag !== undefined ? { ownerTag } : {}) };
+      }
+      // A CONFIRMED read whose server is unreachable is answered from the
+      // checkout bible (with a warning), never from the per-repo database.
+      const project = providers.project instanceof HttpKbProvider
+        ? providers.project.withOfflineReads(
+          () => getMemberBibleView(resolved),
+          'KB server unreachable: answering this MEMBER CONFIRMED read from the checkout bible',
+        )
+        : providers.project;
+      return { providers: { ...providers, project }, anchor: resolved, memberView: false };
+    }
+  }
+  if (isMemberSelf && !namesUnconfirmedTier) {
     const [project, global] = await Promise.all([getMemberBibleView(resolved), getGlobalKbProvider()]);
     return {
       providers: { project, global, projectSlug: getProjectSlug(resolved.folder, resolved.remoteUrl) },
