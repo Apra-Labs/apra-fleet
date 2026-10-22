@@ -18,7 +18,12 @@
 //       deploy reason (the single-cycle variant is pinned by
 //       mock-sprint-deploy-permissions-set-aside.test.mjs);
 //   (d) no BLOCKED anywhere: dispatch counts, cycle count and outcome are
-//       the pre-change ones.
+//       the pre-change ones;
+//   (e) one lane BLOCKED while another lane's feature has all its children
+//       closed: that feature is neither set aside nor waiting on a set-aside
+//       deploy, so Deploy and Integration Test run for it before any stall;
+//   (f) the deploy is set aside and all work is closed: no deploy-retry
+//       cycle, no Re-Review, and the run ends FAIL naming the deploy reason.
 // =============================================================================
 
 import { test } from 'node:test';
@@ -192,6 +197,102 @@ test('(d) no BLOCKED anywhere: dispatch counts, cycle count and outcome are unch
         // scenario, same handlers).
         assert.deepEqual(countByAgent(run), PRE_CHANGE_DISPATCH_COUNTS, JSON.stringify(countByAgent(run)));
         assert.equal(run.result.verdict, PRE_CHANGE_VERDICT, JSON.stringify(run.result));
+    });
+});
+
+test('(e) a verify-ready feature in another lane keeps the run going through Deploy and Integration Test before the stall', async () => {
+    resetSyncMemo();
+    await withScenarioMarkers('blocked stall verify-ready feature', async () => {
+        const T = { a: 'Task: needs the missing toolchain', f1: 'Task: feature part one', f2: 'Task: feature part two' };
+        const FEATURE = 'Feature: the workable feature';
+        let featureId = null;
+        const run = await runDevelopLoopScenario('bsc-feature', {
+            members: ['local'],
+            taskSpecs: Object.values(T).map((title) => ({ title })),
+            maxCycles: 3,
+            withRunbooks: true,
+            beforeSprint: async ({ runCmd: rc, tempDir: td, tasks, epicBead }) => {
+                const id = (title) => tasks.find((x) => x.title === title).id;
+                featureId = (await rc(`bd create -t feature "${FEATURE}" -d "Scenario feature." --silent`, td)).stdout.trim();
+                await rc(`bd update ${featureId} --parent ${epicBead.id}`, td);
+                for (const t of [T.f1, T.f2]) await rc(`bd update ${id(t)} --parent ${featureId}`, td);
+                const lanes = [[T.a, 'lane-a', 1], [T.f1, 'lane-f', 1], [T.f2, 'lane-f', 2]];
+                for (const [title, streak, order] of lanes) {
+                    await rc(`bd update ${id(title)} --set-metadata streak=${streak} --set-metadata streakOrder=${order}`, td);
+                }
+            },
+            doerHandler: async ({ opts, runCmd: rc, tempDir: td }) => {
+                const ids = assignedIds(opts.prompt);
+                const list = JSON.parse((await rc('bd list --json', td)).stdout || '[]');
+                const blocked = ids.filter((x) => (list.find((b) => b.id === x) || {}).title === T.a);
+                if (blocked.length > 0) {
+                    return report({ status: 'BLOCKED', closedIds: [], blockedIds: blocked, notes: TOOLCHAIN_NOTES });
+                }
+                for (const x of ids) await rc(`bd close ${x}`, td);
+                return report({ status: 'VERIFY', closedIds: ids, notes: 'Done.' });
+            },
+            reviewerHandler: approve,
+        });
+        const a = run.tasks.find((t) => t.title === T.a).id;
+        assert.ok(featureId, 'the feature bead must exist');
+        assert.equal(timesDispatched(run, a), 1, `${a} dispatch count`);
+
+        // Deploy and Integration Test ran for the verify-ready feature, and
+        // closed it, before the run stalled.
+        const deployIdx = run.dispatched.findIndex((d) => d.agent === 'deployer');
+        assert.ok(deployIdx >= 0, `the deployer must be dispatched: ${JSON.stringify(countByAgent(run))}`);
+        const integ = run.dispatched.filter((d) => d.agent === 'integ-test-runner');
+        assert.ok(integ.some((d) => new RegExp(`verification-closure:[^.]*${featureId}`).test(d.prompt)),
+            'Integration Test must be asked to verify the feature');
+        assert.equal(run.finalBeadsById.get(featureId).status, 'closed', 'the feature closes through Integration Test');
+
+        // Only then: the set-aside stall, naming the blocked bead and neither
+        // the feature nor a deploy.
+        assert.ok(run.error, 'the run must end in a stall once only the set-aside bead remains');
+        assert.equal(run.error.code, 'SPRINT_STALLED', run.error.message);
+        assert.equal(run.error.details.cycle, 1);
+        assert.deepEqual(run.error.blockerIds, [a]);
+    });
+});
+
+test('(f) a set-aside deploy with every bead closed exits at once: no retry cycle, no Re-Review, FAIL naming the deploy reason', async () => {
+    resetSyncMemo();
+    await withScenarioMarkers('blocked stall deploy set aside all closed', async () => {
+        const PERMISSION_NOTES = 'Missing permission grant(s): Bash(docker compose:*).';
+        let deployCalls = 0;
+        // No child beads: the sprint's target is a single leaf bead, so nothing
+        // can only close through Integration Test once it closes.
+        const run = await runDevelopLoopScenario('bsc-deploy-done', {
+            members: ['local'],
+            taskSpecs: [],
+            maxCycles: 3,
+            withRunbooks: true,
+            doerHandler: async ({ opts, runCmd: rc, tempDir: td }) => {
+                const ids = assignedIds(opts.prompt);
+                for (const x of ids) await rc(`bd close ${x}`, td);
+                return report({ status: 'VERIFY', closedIds: ids, notes: 'Done.' });
+            },
+            reviewerHandler: approve,
+            deployHandler: async () => {
+                deployCalls++;
+                return report({ deployed: false, failedStep: 'permissions', notes: PERMISSION_NOTES });
+            },
+        });
+        assert.ok(!run.error, `no stall expected: ${run.error && run.error.message}`);
+        assert.equal(run.finalBeadsById.get(run.epicBeadId).status, 'closed', 'the target bead closes in C1');
+        assert.equal(deployCalls, 1, 'the deployer is dispatched exactly once');
+        assert.ok(!cycleTwoStarted(run.logs), `no second cycle may start: ${JSON.stringify(run.logs.filter((l) => /Cycle|C2/.test(l)))}`);
+        assert.ok(!run.logs.some((l) => /Re-attempting deploy/.test(l)), 'no misleading deploy-retry log line');
+        assert.ok(run.logs.some((l) => /No deploy retry is possible this run/.test(l)), 'the set-aside exit must be logged');
+        const deployIdx = run.dispatched.findIndex((d) => d.agent === 'deployer');
+        // After the deploy, the only reviewer dispatch is the Final Review.
+        const afterDeploy = run.dispatched.slice(deployIdx + 1);
+        assert.ok(!afterDeploy.some((d) => d.agent === 'reviewer' && d.label !== 'Final Review'),
+            `no Re-Review after the deploy: ${JSON.stringify(afterDeploy.map((d) => [d.agent, d.label]))}`);
+        assert.equal(run.result.verdict, 'FAIL', JSON.stringify(run.result));
+        assert.ok(run.result.notes.includes(PERMISSION_NOTES), run.result.notes);
+        assert.ok(run.commandLog.some((c) => c.includes('Set aside this run')),
+            'the published PR body must carry the "Set aside this run" section');
     });
 });
 
