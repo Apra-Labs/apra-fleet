@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { kbSetup } from '../../src/tools/kb-setup.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { decryptPassword } from '../../src/utils/crypto.js';
@@ -19,7 +20,7 @@ let savedConfig: string | null;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-setup-test-'));
-  fs.mkdirSync(path.join(tmpDir, '.git', 'hooks'), { recursive: true });
+  execFileSync('git', ['init', '-q'], { cwd: tmpDir });
   savedConfig = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : null;
   fs.rmSync(configPath, { force: true });
 });

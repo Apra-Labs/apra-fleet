@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import path from 'node:path';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
@@ -25,11 +26,27 @@ git diff-tree --no-commit-id -r --name-only HEAD | while IFS= read -r f; do
 done
 `;
 
-export function installKbPostCommitHook(repoPath: string): void {
-  const hookDir = path.join(repoPath, '.git', 'hooks');
-  if (!fs.existsSync(hookDir)) {
-    fs.mkdirSync(hookDir, { recursive: true });
+// Ask git for the hooks dir: in a linked worktree .git is a file, and
+// core.hooksPath may relocate the dir. Fails loud, naming repoPath.
+function resolveGitHooksDir(repoPath: string): string {
+  let out: string;
+  try {
+    out = execFileSync('git', ['rev-parse', '--git-path', 'hooks'], {
+      cwd: repoPath, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    }).trim().split(/\r?\n/)[0]?.trim() ?? '';
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Cannot resolve git hooks dir for ${repoPath}: ${msg}`);
   }
+  if (!out) {
+    throw new Error(`Cannot resolve git hooks dir for ${repoPath}: git rev-parse --git-path hooks printed nothing`);
+  }
+  return path.isAbsolute(out) ? out : path.join(repoPath, out);
+}
+
+export function installKbPostCommitHook(repoPath: string): void {
+  const hookDir = resolveGitHooksDir(repoPath);
+  fs.mkdirSync(hookDir, { recursive: true });
   const hookPath = path.join(hookDir, 'post-commit');
   fs.writeFileSync(hookPath, KB_POST_COMMIT_HOOK, { mode: 0o755 });
 }
