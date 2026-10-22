@@ -148,8 +148,11 @@ hash, and captures are stored at most INFERRED.
 In a MEMBER session the default reads (`kb_query`, `kb_session_prime`,
 `kb_list`, `kb_context`, `kb_stats`) are answered from an in-memory view of the
 member's own checkout bible (`.fleet/kb-canonical.json`), rebuilt when the file
-changes. An explicit INFERRED/UNVERIFIED read comes from the per-repo DB and
-returns only entries tagged `member:<caller uuid>`. `kb_capture` tags the
+changes. An explicit confidence list is split: CONFIRMED is read from the
+member checkout bible and INFERRED/UNVERIFIED only from the member's own
+captures in the per-repo DB (tagged `member:<caller uuid>`), merged for a
+mixed request, so a `[CONFIRMED, INFERRED]` read is a superset of the
+CONFIRMED-only result and never exposes another member's captures. `kb_capture` tags the
 stored entry `member:<caller uuid>`; `kb_promote` and `kb_invalidate` act only
 on entries carrying that tag and report any other id as not found, changing
 nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards

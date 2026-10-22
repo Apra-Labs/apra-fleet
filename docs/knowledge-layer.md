@@ -222,7 +222,10 @@ CONFIRMED-only default reported almost every file missing. UNVERIFIED
 the member's checkout bible (CONFIRMED) with the member's own
 CONFIRMED/INFERRED captures from the per-repo DB (tagged
 `member:<caller uuid>`), so it never exposes another member's captures; its
-global-KB fallback stays CONFIRMED-only.
+global-KB fallback stays CONFIRMED-only. An explicit confidence list is split
+the same way for `kb_query`, `kb_list`, `kb_context` and `kb_session_prime`:
+CONFIRMED from the checkout bible, INFERRED/UNVERIFIED only from the member's
+own captures, merged for a mixed request.
 
 ### Member-session tool calls
 
