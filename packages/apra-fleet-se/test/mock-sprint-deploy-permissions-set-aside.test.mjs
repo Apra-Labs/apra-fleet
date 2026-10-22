@@ -3,8 +3,10 @@
 // deploy command ran) is set aside for the rest of the run: the deployer
 // reports it with the structured `failedStep: 'permissions'` field, the engine
 // records sprintState.deploySetAside (reason + first-seen cycle), and no later
-// cycle dispatches the deployer again. The verdict gate still sees the deploy
-// as failed.
+// cycle dispatches the deployer again. Once the work is closed, the sprint's
+// epic can only close through Integration Test, which cannot run while the
+// deploy is set aside -- so the run stalls at once in C1 (set-aside.mjs),
+// naming the deploy reason, instead of re-running empty cycles.
 //
 // The other half of the rule -- a failure WITHOUT the field keeps the normal
 // per-cycle retry -- is pinned by mock-sprint-deploy-failure-verdict.test.mjs
@@ -57,7 +59,7 @@ test('unit: latestDeployFailure reports the set-aside reason for a cycle with no
     assert.equal(latestDeployFailure({ hasDeploy: false, deployedThisCycle: false, cycle: 2, deployFailures: failures, deploySetAside: setAside }), null);
 });
 
-test('mock sprint: a deploy failing at the Permissions pre-step in C1 is never dispatched again', async () => {
+test('mock sprint: a deploy failing at the Permissions pre-step in C1 is never dispatched again; the run stalls in C1', async () => {
     await withScenarioMarkers('deploypermsetaside', async () => {
         let deployCalls = 0;
         const run = await runDevelopLoopScenario('deploypermsetaside', {
@@ -73,24 +75,25 @@ test('mock sprint: a deploy failing at the Permissions pre-step in C1 is never d
             },
             finalReviewHandler: rubberStampPass,
         });
-        assert.ok(!run.error, `scenario must not throw: ${run.error && run.error.message}`);
+        assert.ok(run.error, 'the run must stall once only IntegTest-bound work remains');
+        assert.equal(run.error.code, 'SPRINT_STALLED', run.error.message);
+        assert.equal(run.error.details.cycle, 1, 'the stall must be declared in C1, with no further cycle');
         assert.equal(deployCalls, 1, 'the deployer must be dispatched only in C1');
         assert.equal(run.dispatched.filter((d) => d.agent === 'deployer').length, 1);
         assert.equal(run.dispatched.filter((d) => d.agent === 'integ-test-runner').length, 0);
+        assert.ok(!run.logs.some((l) => /\bC2 R\d|Cycle 2\b|Deploy Phase C2/.test(l)), 'no second cycle may start');
 
         // Recorded on sprintState with its reason and first-seen cycle.
         const recorded = run.logs.find((l) => l.startsWith('Deploy SET ASIDE for the rest of this run'));
         assert.ok(recorded, `expected the set-aside log, logs: ${JSON.stringify(run.logs.filter((l) => /Deploy/.test(l)))}`);
         assert.match(recorded, /\(first seen C1\): deployer stopped at the deploy\.md Permissions check before running any deploy command/);
-        // Later cycles skip the dispatch and carry the C1 set-aside forward.
-        for (const c of [2, 3]) {
-            assert.ok(run.logs.some((l) => l.startsWith(`Skipping Deploy Phase C${c}: deploy not dispatched -- set aside for this run since C1`)),
-                `C${c} must skip the deployer, logs: ${JSON.stringify(run.logs.filter((l) => /Deploy/.test(l)))}`);
-        }
 
-        // The verdict gate still sees a failed deploy and names the set-aside.
-        assert.equal(run.result.verdict, 'FAIL', JSON.stringify(run.result));
-        assert.match(run.result.notes, /Deploy FAILED in the last cycle \(C3\)/);
-        assert.ok(run.result.notes.includes('set aside for this run since C1'), run.result.notes);
+        // The stall names the deploy reason and the IntegTest-bound epic.
+        assert.ok(run.error.blockerIds.includes('deploy'), JSON.stringify(run.error.blockerIds));
+        assert.ok(run.error.blockerIds.includes(run.epicBeadId), JSON.stringify(run.error.blockerIds));
+        assert.ok(run.error.blockerReasons.deploy.includes(PERMISSION_NOTES), run.error.blockerReasons.deploy);
+        assert.match(run.error.blockerReasons.deploy, /first seen C1/);
+        assert.ok(run.error.message.includes(PERMISSION_NOTES), run.error.message);
+        assert.deepEqual(run.error.setAside.map((e) => e.id), ['deploy']);
     });
 });

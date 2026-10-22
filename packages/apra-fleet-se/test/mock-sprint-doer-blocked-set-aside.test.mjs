@@ -111,7 +111,7 @@ test('mock sprint: a BLOCKED bead and its dependent chain are set aside; its lan
         const doers = doerDispatches(scenario);
         check(doers.length >= 2, `expected at least 2 doer dispatches, got ${doers.length}`);
         assert.deepEqual(dispatchedIds(doers[0]).slice().sort(), [a, b, c].sort(), 'round 1 dispatches the whole lane');
-        // Never dispatched again in the run (later rounds and the second cycle).
+        // Never dispatched again in the run (later rounds; the run stalls before a second cycle).
         for (const dd of doers.slice(1)) {
             const ids = dispatchedIds(dd);
             for (const setAside of [a, d, e]) check(!ids.includes(setAside), `set-aside bead ${setAside} re-dispatched: ${JSON.stringify(ids)}`);
@@ -140,10 +140,16 @@ test('mock sprint: a BLOCKED bead and its dependent chain are set aside; its lan
             scenario.logs.some((m) => m.includes('set aside after a doer BLOCKED report')),
             'a later round must log the set-aside exclusion',
         );
-        check(
-            scenario.logs.some((m) => /^Develop C2 R\d+: excluding .*set aside after a doer BLOCKED report/.test(m)),
-            'the second cycle must still exclude the set-aside bead',
-        );
+        // Once the two lane-mates close, everything left open is set aside, so
+        // the run stalls at once in C1 instead of spending a second cycle.
+        check(scenario.error, 'the run must end in a stall once only set-aside beads remain');
+        assert.equal(scenario.error.code, 'SPRINT_STALLED');
+        assert.equal(scenario.error.details.cycle, 1, 'the stall must be declared in C1');
+        check(!scenario.logs.some((m) => /\bC2 R\d|Cycle 2\b/.test(m)), 'no second cycle may start');
+        for (const setAside of [a, d, e]) {
+            check(scenario.error.blockerIds.includes(setAside), `blockerIds must name ${setAside}: ${JSON.stringify(scenario.error.blockerIds)}`);
+            check(scenario.error.blockerReasons[setAside], `blockerReasons must explain ${setAside}`);
+        }
     });
 });
 

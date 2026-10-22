@@ -80,8 +80,12 @@ test('mock sprint: a streak that closes 2 of 3 beads then returns BLOCKED review
             },
             reviewerHandler: approve,
         });
-        check(!scenario.error, `Scenario should not abort: ${scenario.error ? scenario.error.message : ''}`);
         const id = (title) => scenario.tasks.find((t) => t.title === title).id;
+        // The BLOCKED third bead is set aside for the run; once it is the only
+        // open bead the run stalls at once -- after the round-1 Review ran.
+        check(scenario.error && scenario.error.code === 'SPRINT_STALLED',
+            `expected the set-aside stall, got: ${scenario.error ? scenario.error.message : 'no error'}`);
+        assert.deepEqual(scenario.error.blockerIds, [id(TITLES[2])]);
         const reviews = developReviews(scenario);
         check(reviews.length >= 1, 'Expected a develop-round Review dispatch');
         const scope = reviewScopeIds(reviews[0]).slice().sort();

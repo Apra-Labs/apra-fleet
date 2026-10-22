@@ -212,12 +212,18 @@ export async function runDevelopPhase({
         }
         if (blockedIds.length === 0) return;
         const where = { cycle, round: devRounds };
+        // The doer's own notes are carried verbatim (whitespace-collapsed,
+        // capped) so the stall report says what to fix; they are reported,
+        // never parsed.
+        const rawNotes = typeof report.notes === 'string' ? report.notes.replace(/\s+/g, ' ').trim() : '';
+        const doerNotes = rawNotes.length > 300 ? `${rawNotes.slice(0, 297)}...` : rawNotes;
         const fresh = [];
         for (const id of blockedIds) {
             if (doctorBlockedIds.has(id)) continue;
             doctorBlockedIds.set(id, {
                 kind: 'blocked', blockedBy: id,
-                reason: `doer on member '${doerMember}' reported BLOCKED on streak [${streakIds.join(', ')}]`,
+                reason: `doer on member '${doerMember}' reported BLOCKED on streak [${streakIds.join(', ')}]` +
+                    (doerNotes ? `: ${doerNotes}` : ''),
                 ...where,
             });
             fresh.push(id);
