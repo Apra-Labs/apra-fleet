@@ -154,7 +154,8 @@ captures in the per-repo DB (tagged `member:<caller uuid>`), merged for a
 mixed request. The own half of a mixed request asks for every listed tier, so
 the member's own captures promoted to CONFIRMED in the per-repo DB are returned
 before they reach the bible (the bible copy wins on a shared id); a
-`[CONFIRMED, INFERRED]` read is a superset of the CONFIRMED-only result and
+`[CONFIRMED, INFERRED]` read is a superset of the CONFIRMED-only result
+(except `kb_list` with a `limit`, which applies the limit after merging) and
 never exposes another member's captures. `kb_capture` tags the
 stored entry `member:<caller uuid>`; `kb_promote` and `kb_invalidate` act only
 on entries carrying that tag and report any other id as not found, changing
