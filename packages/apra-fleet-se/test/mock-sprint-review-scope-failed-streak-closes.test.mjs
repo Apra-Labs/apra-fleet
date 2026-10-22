@@ -76,7 +76,7 @@ test('mock sprint: a streak that closes 2 of 3 beads then returns BLOCKED review
                 const third = list.find((b) => b.title === TITLES[2]);
                 const closable = ids.filter((id) => !third || id !== third.id);
                 for (const id of closable) await rc(`bd close ${id}`, td);
-                return { content: [{ text: JSON.stringify({ status: 'BLOCKED', closedIds: closable, notes: 'Blocked on the third bead.' }) }] };
+                return { content: [{ text: JSON.stringify({ status: 'BLOCKED', closedIds: closable, blockedIds: third ? [third.id] : [], notes: 'Blocked on the third bead.' }) }] };
             },
             reviewerHandler: approve,
         });

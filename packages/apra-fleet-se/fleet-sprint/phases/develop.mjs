@@ -184,23 +184,32 @@ export async function runDevelopPhase({
     // Records the bead(s) a doer reported BLOCKED, and their open in-scope
     // 'blocks' dependents, on doctorBlockedIds. WHICH open beads are blocked is
     // read off the report's structured `blockedIds` field, never its notes:
-    // the reported ids that the engine's own read-back still shows open. With
-    // no (or an empty) `blockedIds`, the only unambiguous case is a single
-    // still-open bead -- a single-bead streak, or a streak whose other beads
-    // all verifiably closed -- which must be the blocked one. Several open
-    // beads and no `blockedIds` cannot be told apart (blocked versus merely not
-    // reached), so nothing is set aside and the existing left-open retry
-    // applies.
+    // the reported ids that the engine's own read-back still shows open. An
+    // explicit empty `blockedIds` means the doer left nothing open BECAUSE of
+    // the block, so nothing is set aside. With the field omitted, the only
+    // unambiguous case is a single-bead dispatch whose one bead is still open:
+    // that bead is the blocked one. In any larger dispatch an open bead the
+    // doer did not name may simply not have been reached (for example after
+    // the doer closed an earlier bead as blocked and stopped), so a bead the
+    // doer never named is never set aside: nothing is set aside and the
+    // existing left-open retry applies.
     const recordDoerBlocked = async ({ report, unclosedIds, streakIds, doerMember }) => {
-        const reported = Array.isArray(report.blockedIds) ? report.blockedIds.map(String) : [];
+        const hasField = Array.isArray(report.blockedIds);
+        const reported = hasField ? report.blockedIds.map(String) : [];
         let blockedIds;
-        if (reported.length > 0) {
+        if (hasField && reported.length === 0) {
+            log(
+                `Doer streak [${streakIds.join(', ')}] reported BLOCKED with an empty blockedIds -- no bead was left open ` +
+                'because of the block, so nothing is set aside; the open beads stay eligible for the next round.'
+            );
+            return;
+        } else if (reported.length > 0) {
             blockedIds = reported.filter((id) => unclosedIds.includes(id));
             const ignored = reported.filter((id) => !unclosedIds.includes(id));
             if (ignored.length > 0) {
                 log(`Doer streak [${streakIds.join(', ')}] reported blockedIds not open in this streak (ignored): ${ignored.join(', ')}.`);
             }
-        } else if (unclosedIds.length === 1) {
+        } else if (streakIds.length === 1 && unclosedIds.length === 1) {
             blockedIds = [...unclosedIds];
         } else {
             log(

@@ -183,3 +183,94 @@ test('mock sprint: a report that leaves a bead open without BLOCKED sets nothing
         check(retried, 'the left-open bead must be retried in a later round (current left-open retry unchanged)');
     });
 });
+
+// --- Which open beads a BLOCKED report sets aside when blockedIds is not a
+// non-empty list: only a single-bead dispatch falls back to "the one bead
+// still open"; an explicit [] sets nothing aside; a bead the doer never
+// named is never set aside.
+
+const PAIR = ['Task: pair first', 'Task: pair second'];
+
+test('mock sprint: 2-bead streak, doer closes the first as blocked and stops -- the unreached second bead is NOT set aside', async () => {
+    resetSyncMemo();
+    await withScenarioMarkers('doer blocked unnamed lane-mate', async () => {
+        let firstDone = false;
+        const scenario = await runDevelopLoopScenario('dbsa-unnamed', {
+            members: ['local'],
+            taskSpecs: PAIR.map((title) => ({ title })),
+            beforeSprint: async ({ runCmd: rc, tempDir: td, tasks }) => {
+                for (let i = 0; i < PAIR.length; i++) {
+                    const t = tasks.find((x) => x.title === PAIR[i]);
+                    await rc(`bd update ${t.id} --set-metadata streak=lane-p --set-metadata streakOrder=${i + 1}`, td);
+                }
+            },
+            doerHandler: async ({ opts, runCmd: rc, tempDir: td }) => {
+                const ids = assignedIds(opts);
+                if (!firstDone) {
+                    // Closes the first bead with a blocked reason, then stops
+                    // without reaching the second, and names no blockedIds
+                    // (nothing was left open because of the block).
+                    firstDone = true;
+                    await rc(`bd close ${ids[0]}`, td);
+                    return { content: [{ text: JSON.stringify({ status: 'BLOCKED', closedIds: [ids[0]], notes: 'blocked: missing secret DEPLOY_TOKEN' }) }] };
+                }
+                for (const id of ids) await rc(`bd close ${id}`, td);
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Done.' }) }] };
+            },
+            reviewerHandler: approve,
+        });
+        const second = scenario.tasks.find((t) => t.title === PAIR[1]).id;
+        check(!scenario.logs.some((m) => m.includes('Doer BLOCKED set-aside')), 'the unnamed second bead must not be set aside');
+        check(scenario.logs.some((m) => m.includes('no blockedIds naming which')), 'the no-blockedIds multi-bead path must be logged');
+        const doers = doerDispatches(scenario);
+        check(doers.slice(1).some((dd) => dispatchedIds(dd).includes(second)), `the second bead must be re-dispatched: ${JSON.stringify(doers.map(dispatchedIds))}`);
+        assert.equal(scenario.finalBeadsById.get(second).status, 'closed');
+        check(!scenario.error, `no stall expected: ${scenario.error ? scenario.error.message : ''}`);
+    });
+});
+
+test('mock sprint: a BLOCKED report with an explicit empty blockedIds sets nothing aside', async () => {
+    resetSyncMemo();
+    await withScenarioMarkers('doer blocked empty blockedIds', async () => {
+        let calls = 0;
+        const scenario = await runDevelopLoopScenario('dbsa-empty', {
+            members: ['local'],
+            taskSpecs: [{ title: 'Task: single empty' }],
+            doerHandler: async ({ opts, runCmd: rc, tempDir: td }) => {
+                const ids = assignedIds(opts);
+                calls++;
+                if (calls === 1) {
+                    return { content: [{ text: JSON.stringify({ status: 'BLOCKED', closedIds: [], blockedIds: [], notes: 'Transient: retry.' }) }] };
+                }
+                for (const id of ids) await rc(`bd close ${id}`, td);
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Done.' }) }] };
+            },
+            reviewerHandler: approve,
+        });
+        const only = scenario.tasks[0].id;
+        check(!scenario.logs.some((m) => m.includes('Doer BLOCKED set-aside')), 'an explicit [] must set nothing aside');
+        check(scenario.logs.some((m) => m.includes('reported BLOCKED with an empty blockedIds')), 'the empty-blockedIds path must be logged');
+        check(calls >= 2, `the bead must be re-dispatched, doer calls: ${calls}`);
+        assert.equal(scenario.finalBeadsById.get(only).status, 'closed');
+        check(!scenario.error, `no stall expected: ${scenario.error ? scenario.error.message : ''}`);
+    });
+});
+
+test('mock sprint: a single-bead dispatch reported BLOCKED with blockedIds omitted sets that bead aside', async () => {
+    resetSyncMemo();
+    await withScenarioMarkers('doer blocked single omitted', async () => {
+        const scenario = await runDevelopLoopScenario('dbsa-single', {
+            members: ['local'],
+            taskSpecs: [{ title: 'Task: single omitted' }],
+            doerHandler: async () => ({ content: [{ text: JSON.stringify({ status: 'BLOCKED', closedIds: [], notes: 'Missing toolchain.' }) }] }),
+            reviewerHandler: approve,
+        });
+        const only = scenario.tasks[0].id;
+        const entries = setAsideEntries(scenario.logs);
+        assert.deepEqual(Object.keys(entries), [only], JSON.stringify(entries));
+        assert.equal(entries[only].kind, 'blocked');
+        assert.equal(doerDispatches(scenario).length, 1, 'the set-aside bead is dispatched exactly once');
+        check(scenario.error && scenario.error.code === 'SPRINT_STALLED', `expected the set-aside stall, got: ${scenario.error ? scenario.error.message : 'no error'}`);
+        assert.deepEqual(scenario.error.blockerIds, [only]);
+    });
+});
