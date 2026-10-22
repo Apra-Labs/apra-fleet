@@ -227,6 +227,23 @@ the same way for `kb_query`, `kb_list`, `kb_context` and `kb_session_prime`:
 CONFIRMED from the checkout bible, INFERRED/UNVERIFIED only from the member's
 own captures, merged for a mixed request.
 
+**Mixed-tier split read (invariants).** The split lives in one helper
+(`getMemberSplitRead` / `mergeSplitById`, `src/services/knowledge/kb-self.ts`)
+shared by all four read tools. It applies only to a member session whose tier
+list names CONFIRMED plus at least one other tier. FULL sessions, explicit-anchor
+callers, CONFIRMED-only reads and reads naming only non-CONFIRMED tiers keep
+their previous path. The CONFIRMED half is the checkout bible plus the untagged
+global KB; the other half is the per-repo DB and global KB filtered to
+`member:<caller uuid>`. Results merge by id and the bible copy wins on a
+duplicate. A per-repo KB that is not sqlite is refused with a typed error naming
+the tool. Known limits: with a `limit`, a mixed `kb_list` sorts by id before
+limiting, so it is not guaranteed to be a superset of the CONFIRMED-only list at
+the same limit (`kb_query` keeps the bible half first); and a member's own
+capture promoted to CONFIRMED in the per-repo DB does not appear in an explicit
+mixed read until it reaches the bible (`kb_context`'s default read still counts
+it). The tool descriptions, the memory-contract bindings and spec, and a
+wording test must all describe this scope together.
+
 ### Member-session tool calls
 
 A member session sees a reduced tool list. The allowlist lives in one
