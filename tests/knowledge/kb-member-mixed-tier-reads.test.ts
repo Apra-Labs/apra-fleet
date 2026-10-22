@@ -319,3 +319,34 @@ describe('kb_context in a MEMBER session with a mixed tier list', () => {
     expect(await context(memberB)).toEqual(await context(memberB, [...MIXED]));
   });
 });
+
+describe('FULL session with the same mixed tier list is unchanged (no bible-view split)', () => {
+  const full = <T>(fn: () => Promise<T>): Promise<T> => {
+    vi.spyOn(process, 'cwd').mockReturnValue(repo);
+    return runWithSessionMember(undefined, fn);
+  };
+
+  it('kb_query sees every member\'s captures from the per-repo DB, not the bible', async () => {
+    const got = ids(JSON.parse(await full(() => kbQuery({ query: WORD, confidence: [...MIXED] }))).l1_results);
+    expect(got).toEqual(expect.arrayContaining([e2, e3]));
+    expect(got).not.toContain('bible-e1');
+  });
+
+  it('kb_list sees every member\'s captures', async () => {
+    const got = ids(JSON.parse(await full(() => kbList({ confidence: [...MIXED] }))).results);
+    expect(got).toEqual(expect.arrayContaining([e2, e3, aCtxF2, bCtxF3]));
+    expect(got).not.toContain('bible-e1');
+  });
+
+  it('kb_session_prime sees every member\'s captures', async () => {
+    const out = JSON.parse(await full(() => kbSessionPrime({ hint_modules: [WORD], session_files: FILES, confidence: [...MIXED] })));
+    expect(ids(out.top_entries)).toEqual(expect.arrayContaining([e2, e3]));
+    expect(out.fresh_summaries.map((r: { file: string }) => r.file).sort()).toEqual([F2, F3]);
+  });
+
+  it('kb_context reports F2 and F3 fresh and F1 missing (no bible entry in the per-repo DB)', async () => {
+    const out = JSON.parse(await full(() => kbContext({ files: FILES, confidence: [...MIXED] }))) as Ctx;
+    expect(out.fresh.map(r => r.file).sort()).toEqual([F2, F3]);
+    expect(out.missing).toEqual([F1]);
+  });
+});
