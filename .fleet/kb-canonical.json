@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "8c38f93777d15666c2f8fb26c7299db0e0707603",
     "branch": "main",
-    "entry_count": 98
+    "entry_count": 99
   },
   "entries": [
     {
@@ -519,6 +519,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T12:01:02.130Z"
+    },
+    {
+      "id": "48e12361-051f-4d38-9cf0-ca955eca4fdc",
+      "type": "knowledge",
+      "title": "Member mixed-tier kb_session_prime primes each half separately, then merges",
+      "summary": "In a MEMBER session with CONFIRMED plus another tier, kbSessionPrime runs primeFrom once for the bible half and once for the own half, then mergePrimed combines them. Cold-seed and the global-KB append are decided per half, so the CONFIRMED-only result is an exact prefix of the mixed result.",
+      "symbols": [
+        "kbSessionPrime",
+        "primeFrom",
+        "mergePrimed",
+        "splitContext",
+        "getMemberSplitRead"
+      ],
+      "source_files": [
+        "src/tools/kb-session-prime.ts",
+        "src/tools/kb-context.ts",
+        "src/services/knowledge/kb-self.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-22T07:29:38.533Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-self.ts": "47c30cd5feb3273b3d80cd35c2e9092472b4d469",
+        "src/tools/kb-context.ts": "99cd6c2e3bea877ec4476bc70b32788a36dcbc8e",
+        "src/tools/kb-session-prime.ts": "ae39c9f992dd1392c08ff83c286d7b3af4ea1776"
+      }
     },
     {
       "id": "4ab868ea-bb49-459a-b21e-f2b906d3cb58",
