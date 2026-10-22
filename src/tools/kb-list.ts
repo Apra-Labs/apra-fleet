@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
-import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfReadKb, getMemberSplitRead, mergeSplitById, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 
 // T3.3 (F8a, D8): kb_list -- a read-only audit view over the CONFIRMED (or any
 // filtered) set. Distinct from kb_query: no FTS, no L2 expansion, and
@@ -41,23 +42,42 @@ function normaliseConfidence(confidence: KbListInput['confidence']): Tier[] | un
 
 export async function kbList(input: KbListInput, anchor?: KbAnchor): Promise<string> {
   const confidence = normaliseConfidence(input.confidence);
-  // MEMBER session -> the checkout bible view (kb-self.ts getSelfReadKb).
-  // An explicit INFERRED/UNVERIFIED request goes to the per-repo DB, own
-  // captures only (ownerTag).
-  const { providers, ownerTag } = await getSelfReadKb(anchor, confidence);
-  const sqliteProvider = requireSqliteProject(providers.project, 'kb_list');
-
-  const entries = await sqliteProvider.list({
-    confidence: confidence?.length ? confidence : DEFAULT_CONFIDENCE,
+  const filters = {
     // Default read is CONFIRMED *and* undisputed; an explicit tier list opts out.
     exclude_disputed: !confidence?.length,
     type: input.type,
     module: input.module,
     symbol: input.symbol,
     tag: input.tag,
-    owner_tag: ownerTag,
     limit: input.limit,
-  });
+  };
+
+  let entries: Awaited<ReturnType<SqliteProvider['list']>>;
+  // MEMBER mixed-tier request (CONFIRMED plus another tier): CONFIRMED from
+  // the checkout bible view, the other tiers from the per-repo DB, own
+  // captures only (kb-self.ts getMemberSplitRead). Merged by id (bible copy
+  // wins), re-sorted into list()'s id order, then limited.
+  const split = await getMemberSplitRead(anchor, confidence, 'kb_list');
+  if (split) {
+    const [fromBible, fromOwn] = await Promise.all([
+      split.bible.project.list({ ...filters, confidence: split.bible.tiers }),
+      split.own.project.list({ ...filters, confidence: split.own.tiers, owner_tag: split.own.ownerTag }),
+    ]);
+    entries = mergeSplitById(fromBible, fromOwn, {
+      order: (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      limit: input.limit,
+    });
+  } else {
+    // MEMBER session -> the checkout bible view (kb-self.ts getSelfReadKb).
+    // A request naming only INFERRED/UNVERIFIED goes to the per-repo DB, own
+    // captures only (ownerTag).
+    const { providers, ownerTag } = await getSelfReadKb(anchor, confidence);
+    entries = await requireSqliteProject(providers.project, 'kb_list').list({
+      ...filters,
+      confidence: confidence?.length ? confidence : DEFAULT_CONFIDENCE,
+      owner_tag: ownerTag,
+    });
+  }
 
   const results = entries.map(e => ({
     id: e.id,
