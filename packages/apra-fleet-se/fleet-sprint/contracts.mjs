@@ -520,6 +520,7 @@ const FALLBACK_doerReport = {
         status: { type: 'string', enum: ['VERIFY', 'BLOCKED'] },
         closedIds: { type: 'array', items: { type: 'string' } },
         notes: { type: 'string' },
+        blockedIds: { type: 'array', items: { type: 'string' } },
     },
     required: ['status', 'closedIds', 'notes'],
 };

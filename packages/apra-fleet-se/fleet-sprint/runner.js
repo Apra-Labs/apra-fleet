@@ -3273,6 +3273,7 @@ async function runSprintCycle(context) {
                 sprintState, gitSync, updateDashboard,
                 kbPriming, kbWork, kbInjection, kbSprintContext,
                 devRounds, currentReady, doerPool, perBeadFeedback,
+                bdListScoped,
                 claimBeadsBatched,
                 verifyDoerStreakClosed,
                 normalizeTierToken,

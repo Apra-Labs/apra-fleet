@@ -262,6 +262,13 @@ stop and return:
 orchestrator can verify your closes against beads instead of trusting the summary alone.
 Do NOT continue past VERIFY.
 
+Whenever you return `status: "BLOCKED"`, also return `blockedIds`: the assigned bead ids
+you left open BECAUSE of the block. Leave out ids you merely did not reach (for example
+lane-mates skipped under the same-lane stop rule) -- the orchestrator sets each
+`blockedIds` bead and everything depending on it aside for the rest of the run, and
+re-dispatches the unreached ones. Example:
+`{ "status": "BLOCKED", "closedIds": ["<id-1>"], "blockedIds": ["<id-2>"], "notes": "..." }`.
+
 
 ## Branch and secrets rules
 

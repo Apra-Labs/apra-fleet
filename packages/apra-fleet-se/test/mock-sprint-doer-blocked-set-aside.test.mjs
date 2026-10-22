@@ -1,0 +1,179 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { openBlocksDependents } from '../fleet-sprint/beads-scope.mjs';
+import {
+    invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures,
+} from '../fleet-sprint/dolt-sync.mjs';
+
+// =============================================================================
+// A bead a doer reports BLOCKED (named per bead via the report's blockedIds)
+// is set aside for the rest of the run together with every open bead that
+// depends on it over 'blocks' edges (sprintState.doctorBlockedIds in
+// phases/develop.mjs). Lane-mates that do not depend on it return to the
+// ready pool. A report that leaves beads open WITHOUT status BLOCKED sets
+// nothing aside.
+// =============================================================================
+
+const check = (cond, msg) => assert.ok(cond, msg);
+
+const assignedIds = (opts) => {
+    const match = opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/);
+    return match ? match[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+};
+const approve = async () => ({
+    content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }],
+});
+const doerDispatches = (scenario) => scenario.dispatched.filter((d) => d.agent === 'doer');
+const dispatchedIds = (d) => {
+    const match = d.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/);
+    return match ? match[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+};
+const resetSyncMemo = () => {
+    invalidateSyncRemoteCache();
+    clearLastSyncedTip();
+    clearTipProbeFailures();
+};
+const setAsideEntries = (logs) => {
+    const out = {};
+    for (const m of logs) {
+        if (!m.includes('Doer BLOCKED set-aside')) continue;
+        const json = m.slice(m.indexOf('Entries: ') + 'Entries: '.length);
+        Object.assign(out, JSON.parse(json));
+    }
+    return out;
+};
+
+const LANE = ['Task: lane first', 'Task: lane second', 'Task: lane third'];
+const DEPENDENT = 'Task: depends on first';
+const DEPENDENT_2 = 'Task: depends on dependent';
+
+// One 3-bead lane (all ready at once), plus a two-deep blocks chain hanging off
+// the lane's first bead: DEPENDENT depends on LANE[0], DEPENDENT_2 on DEPENDENT.
+const wireGraph = async ({ runCmd: rc, tempDir: td, tasks }) => {
+    const id = (title) => tasks.find((x) => x.title === title).id;
+    for (let i = 0; i < LANE.length; i++) {
+        await rc(`bd update ${id(LANE[i])} --set-metadata streak=lane-x --set-metadata streakOrder=${i + 1}`, td);
+    }
+    await rc(`bd update ${id(DEPENDENT)} --set-metadata streak=lane-y --set-metadata streakOrder=1`, td);
+    await rc(`bd update ${id(DEPENDENT_2)} --set-metadata streak=lane-y --set-metadata streakOrder=2`, td);
+    await rc(`bd dep add ${id(DEPENDENT)} ${id(LANE[0])}`, td);
+    await rc(`bd dep add ${id(DEPENDENT_2)} ${id(DEPENDENT)}`, td);
+};
+const specs = [...LANE, DEPENDENT, DEPENDENT_2].map((title) => ({ title }));
+
+test('unit: openBlocksDependents walks blocks edges transitively, skips closed and parent-child', () => {
+    const scope = [
+        { id: 'a', status: 'open', dependencies: [{ depends_on_id: 'epic', type: 'parent-child' }] },
+        { id: 'b', status: 'open', dependencies: [{ depends_on_id: 'a', type: 'blocks' }] },
+        { id: 'c', status: 'open', dependencies: [{ depends_on_id: 'b', type: 'blocks' }] },
+        { id: 'd', status: 'closed', dependencies: [{ depends_on_id: 'a', type: 'blocks' }] },
+        { id: 'e', status: 'open', dependencies: [{ depends_on_id: 'd', type: 'blocks' }] },
+        { id: 'f', status: 'open', dependencies: [{ depends_on_id: 'a', type: 'parent-child' }] },
+        { id: 'g', status: 'open', dependencies: [] },
+    ];
+    const deps = openBlocksDependents(['a'], scope);
+    assert.deepEqual([...deps.entries()].sort(), [['b', 'a'], ['c', 'a']]);
+    assert.equal(openBlocksDependents(['g'], scope).size, 0);
+    assert.equal(openBlocksDependents([], scope).size, 0);
+});
+
+test('mock sprint: a BLOCKED bead and its dependent chain are set aside; its lane-mates are re-dispatched and close', async () => {
+    resetSyncMemo();
+    await withScenarioMarkers('doer blocked set-aside', async () => {
+        let blockedId = null;
+        const scenario = await runDevelopLoopScenario('dbsa-blocked', {
+            members: ['local'],
+            taskSpecs: specs,
+            maxCycles: 2,
+            beforeSprint: wireGraph,
+            doerHandler: async ({ opts, runCmd: rc, tempDir: td }) => {
+                const ids = assignedIds(opts);
+                const list = JSON.parse((await rc('bd list --json', td)).stdout || '[]');
+                const first = list.find((b) => b.title === LANE[0]);
+                if (first && ids.includes(first.id)) {
+                    // Blocked on the lane's first bead; stops without reaching the
+                    // other two (same-lane stop rule).
+                    blockedId = first.id;
+                    return { content: [{ text: JSON.stringify({ status: 'BLOCKED', closedIds: [], blockedIds: [first.id], notes: 'Blocked: needs live evidence.' }) }] };
+                }
+                for (const id of ids) await rc(`bd close ${id}`, td);
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Done.' }) }] };
+            },
+            reviewerHandler: approve,
+        });
+        const id = (title) => scenario.tasks.find((t) => t.title === title).id;
+        const [a, b, c] = LANE.map(id);
+        const d = id(DEPENDENT);
+        const e = id(DEPENDENT_2);
+        check(blockedId === a, 'the doer must have been dispatched on the lane first bead');
+
+        const doers = doerDispatches(scenario);
+        check(doers.length >= 2, `expected at least 2 doer dispatches, got ${doers.length}`);
+        assert.deepEqual(dispatchedIds(doers[0]).slice().sort(), [a, b, c].sort(), 'round 1 dispatches the whole lane');
+        // Never dispatched again in the run (later rounds and the second cycle).
+        for (const dd of doers.slice(1)) {
+            const ids = dispatchedIds(dd);
+            for (const setAside of [a, d, e]) check(!ids.includes(setAside), `set-aside bead ${setAside} re-dispatched: ${JSON.stringify(ids)}`);
+        }
+        // The other two lane beads come back the next round and close.
+        assert.deepEqual(dispatchedIds(doers[1]).slice().sort(), [b, c].sort(), 'round 2 dispatches the two remaining lane beads');
+        if (scenario.finalBeadsById) {
+            for (const closed of [b, c]) assert.equal(scenario.finalBeadsById.get ? scenario.finalBeadsById.get(closed).status : scenario.finalBeadsById[closed].status, 'closed');
+        }
+
+        const entries = setAsideEntries(scenario.logs);
+        assert.deepEqual(Object.keys(entries).sort(), [a, d, e].sort(), `set-aside ids: ${JSON.stringify(entries)}`);
+        assert.equal(entries[a].kind, 'blocked');
+        assert.equal(entries[a].blockedBy, a);
+        check(/reported BLOCKED/.test(entries[a].reason), `blocked reason: ${entries[a].reason}`);
+        for (const dep of [d, e]) {
+            assert.equal(entries[dep].kind, 'dependent');
+            assert.equal(entries[dep].blockedBy, a);
+            check(entries[dep].reason.includes(a), `a dependent's reason must name the blocked bead: ${entries[dep].reason}`);
+        }
+        for (const entry of Object.values(entries)) {
+            assert.equal(entry.cycle, 1);
+            assert.equal(entry.round, 1);
+        }
+        check(
+            scenario.logs.some((m) => m.includes('set aside after a doer BLOCKED report')),
+            'a later round must log the set-aside exclusion',
+        );
+        check(
+            scenario.logs.some((m) => /^Develop C2 R\d+: excluding .*set aside after a doer BLOCKED report/.test(m)),
+            'the second cycle must still exclude the set-aside bead',
+        );
+    });
+});
+
+test('mock sprint: a report that leaves a bead open without BLOCKED sets nothing aside and the bead is retried', async () => {
+    resetSyncMemo();
+    await withScenarioMarkers('doer left-open no set-aside', async () => {
+        const scenario = await runDevelopLoopScenario('dbsa-leftopen', {
+            members: ['local'],
+            taskSpecs: LANE.map((title) => ({ title })),
+            beforeSprint: async ({ runCmd: rc, tempDir: td, tasks }) => {
+                for (let i = 0; i < LANE.length; i++) {
+                    const t = tasks.find((x) => x.title === LANE[i]);
+                    await rc(`bd update ${t.id} --set-metadata streak=lane-x --set-metadata streakOrder=${i + 1}`, td);
+                }
+            },
+            doerHandler: async ({ opts, runCmd: rc, tempDir: td }) => {
+                const ids = assignedIds(opts);
+                const list = JSON.parse((await rc('bd list --json', td)).stdout || '[]');
+                const third = list.find((b) => b.title === LANE[2]);
+                const closable = ids.filter((x) => !third || x !== third.id);
+                for (const x of closable) await rc(`bd close ${x}`, td);
+                // Success-looking report that leaves the third bead open.
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: closable, notes: 'ok' }) }] };
+            },
+            reviewerHandler: approve,
+        });
+        const third = scenario.tasks.find((t) => t.title === LANE[2]).id;
+        check(!scenario.logs.some((m) => m.includes('Doer BLOCKED set-aside')), 'nothing may be set aside without status BLOCKED');
+        check(!scenario.logs.some((m) => m.includes('set aside after a doer BLOCKED report')), 'no set-aside exclusion without BLOCKED');
+        const retried = doerDispatches(scenario).slice(1).some((dd) => dispatchedIds(dd).includes(third));
+        check(retried, 'the left-open bead must be retried in a later round (current left-open retry unchanged)');
+    });
+});
