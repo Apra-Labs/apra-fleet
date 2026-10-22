@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "8c38f93777d15666c2f8fb26c7299db0e0707603",
     "branch": "main",
-    "entry_count": 99
+    "entry_count": 100
   },
   "entries": [
     {
@@ -1120,6 +1120,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.248Z"
+    },
+    {
+      "id": "a098caf8-263f-4b72-b5a7-55fc3d290a07",
+      "type": "knowledge",
+      "title": "Set-aside stall throws StalledSprintError before the 2-cycle stall and deploy-retry exit",
+      "summary": "runner.js throwIfSetAsideStall runs at the start of a Develop round (all ready beads set aside) and at Cycle Evaluation before STALL_CYCLE_LIMIT and the deploy-blocked retry; set-aside.mjs evaluateSetAsideStall decides it purely.",
+      "symbols": [
+        "throwIfSetAsideStall",
+        "evaluateSetAsideStall",
+        "collectSetAsideEntries",
+        "StalledSprintError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs",
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-blocked-stall-cycle1.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-22T05:40:50.485Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs": "46fd9dc81c6edbfa975e667e5b3569f60df616a7",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "7d6e9fb4da7578f3b9c0ccefc2b94c9322a4c13a",
+        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs": "9973ffdded67807fead8b497b2acd817253cb23b",
+        "packages/apra-fleet-se/test/mock-sprint-blocked-stall-cycle1.test.mjs": "773f66cbc9726bc770c4f399da3699cbe5b2e0b5"
+      }
     },
     {
       "id": "a1a279ec-5537-4820-a23a-c9a7737f2507",
