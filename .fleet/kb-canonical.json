@@ -308,6 +308,25 @@
       "updated_at": "2026-09-25T22:26:43.002Z"
     },
     {
+      "id": "304fb583-7651-44f4-a038-61bf9927db8b",
+      "type": "learning",
+      "title": "Changing doer-output.json requires regenerating auto-sprint.js schemas and the happy-path golden",
+      "summary": "Editing agents/schemas/doer-output.json breaks the apra-pm auto-sprint schema drift test and the mock-sprint-happy-path golden transcript, which embeds the schema in the doer prompt.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json",
+        "packages/apra-fleet-se/apra-pm/test/auto-sprint-schemas-drift.test.mjs",
+        "packages/apra-fleet-se/test/golden-transcript.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-22T05:09:50.606Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json": "58fffe7c86aa875100bc8b66769c43a462cc3111",
+        "packages/apra-fleet-se/apra-pm/test/auto-sprint-schemas-drift.test.mjs": "eaca88fa5ff10f41b4acd11099776d9e78415b0e",
+        "packages/apra-fleet-se/test/golden-transcript.test.mjs": "9ec222f8856aa6a5935b49d144ae6caf2fd05ee9"
+      }
+    },
+    {
       "id": "3377795a-7d1a-4f6f-98b6-fd721581db37",
       "type": "knowledge",
       "title": "ssh2 1.17 sftp() leaves the session channel open when the sftp subsystem request is refused",
@@ -702,6 +721,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.782Z"
+    },
+    {
+      "id": "668bc632-0c2b-49b8-956b-9da60709ff36",
+      "type": "knowledge",
+      "title": "Doer-BLOCKED beads are set aside for the run via sprintState.doctorBlockedIds",
+      "summary": "develop.mjs records doer-BLOCKED beads plus their open blocks-edge dependents on sprintState.doctorBlockedIds and excludes them from currentReady every round and cycle; blocked ids come from report.blockedIds or the single still-open bead.",
+      "symbols": [
+        "runDevelopPhase",
+        "openBlocksDependents",
+        "doctorBlockedIds"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-doer-blocked-set-aside.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-22T05:09:48.293Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "a67a0459ea06f0fe96810283db38fd88a84c8d54",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "00bdf97a6528a2c0fefdfee84a1ff19503bf9470",
+        "packages/apra-fleet-se/test/mock-sprint-doer-blocked-set-aside.test.mjs": "b5973d02a6368eda9189c317992b7d44fa4d66d9"
+      }
     },
     {
       "id": "66ab34e7-0092-4be5-b77d-17453ddc46c9",
@@ -1173,6 +1215,32 @@
       "updated_at": "2026-09-29T06:13:16.248Z"
     },
     {
+      "id": "a098caf8-263f-4b72-b5a7-55fc3d290a07",
+      "type": "knowledge",
+      "title": "Set-aside stall throws StalledSprintError before the 2-cycle stall and deploy-retry exit",
+      "summary": "runner.js throwIfSetAsideStall runs at the start of a Develop round (all ready beads set aside) and at Cycle Evaluation before STALL_CYCLE_LIMIT and the deploy-blocked retry; set-aside.mjs evaluateSetAsideStall decides it purely.",
+      "symbols": [
+        "throwIfSetAsideStall",
+        "evaluateSetAsideStall",
+        "collectSetAsideEntries",
+        "StalledSprintError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs",
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-blocked-stall-cycle1.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-22T05:40:50.485Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs": "46fd9dc81c6edbfa975e667e5b3569f60df616a7",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "7d6e9fb4da7578f3b9c0ccefc2b94c9322a4c13a",
+        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs": "9973ffdded67807fead8b497b2acd817253cb23b",
+        "packages/apra-fleet-se/test/mock-sprint-blocked-stall-cycle1.test.mjs": "773f66cbc9726bc770c4f399da3699cbe5b2e0b5"
+      }
+    },
+    {
       "id": "a1a279ec-5537-4820-a23a-c9a7737f2507",
       "type": "knowledge",
       "title": "Review scope is built from engine-verified closedIds, not outcome status",
@@ -1216,6 +1284,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "a4d684ba-ff2b-48e7-831c-7f68346f5d19",
+      "type": "knowledge",
+      "title": "A Permissions pre-step deploy failure sets deploy aside for the run via sprintState.deploySetAside",
+      "summary": "runDeployPhase records sprintState.deploySetAside when the deployer returns failedStep 'permissions'; runner.js then skips the deployer in later cycles, and latestDeployFailure reports the set-aside so the verdict gate still sees a failed deploy.",
+      "symbols": [
+        "runDeployPhase",
+        "latestDeployFailure",
+        "formatDeploySetAsideNotes",
+        "DEPLOY_PERMISSIONS_FAILED_STEP"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/deploy.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/apra-pm/agents/schemas/deployer-output.json",
+        "packages/apra-fleet-se/test/mock-sprint-deploy-permissions-set-aside.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-22T05:09:45.923Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/agents/schemas/deployer-output.json": "34e75106271eb4335a208e60e41fde33bb588f97",
+        "packages/apra-fleet-se/fleet-sprint/phases/deploy.mjs": "6a1bec3ac5acb4e36b41e554522971888e390b0e",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "485fb0169cfc2e947759959d4f18abd77e2aab53",
+        "packages/apra-fleet-se/test/mock-sprint-deploy-permissions-set-aside.test.mjs": "9bc9490b017d53aff60e974a5489f77df3883ed9"
+      }
     },
     {
       "id": "a67295f1-33ca-4960-93a0-da0275505905",
