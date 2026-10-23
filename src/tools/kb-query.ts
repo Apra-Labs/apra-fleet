@@ -1,7 +1,10 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
-import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
+import {
+  getSelfReadKb, getMemberSplitRead, mergeSplitById, type KbAnchor, type MemberSplitRead,
+} from '../services/knowledge/kb-self.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import type { MemoryProvider } from '../services/knowledge/types.js';
 
 const L2_CONTENT_CAP = 3200;
 
@@ -50,6 +53,120 @@ function passesTrustFilter(
   return true;
 }
 
+type L1Opts = Parameters<MemoryProvider['query']>[0] & { limit: number };
+type Entry = Awaited<ReturnType<MemoryProvider['query']>>['results'][number];
+
+// One provider's L1 page with the trust filter re-applied (see passesTrustFilter).
+async function trustedL1(provider: MemoryProvider, queryOpts: L1Opts, input: KbQueryInput, ownerTag?: string): Promise<Entry[]> {
+  const first = await provider.query(queryOpts);
+  const filtering = Boolean(input.confidence?.length || input.exclude_disputed || ownerTag);
+  if (!filtering) return first.results;
+  let kept = first.results.filter(e => passesTrustFilter(e, input, ownerTag));
+  // A provider that ignored the filter may have spent its whole limit on
+  // entries just dropped here. A full page that filtered short is the only
+  // signal of that (the sqlite provider filters in SQL, so it never trips
+  // this); re-ask once with a wider window and trim back to the limit.
+  if (kept.length < queryOpts.limit && first.results.length >= queryOpts.limit) {
+    const wider = await provider.query({ ...queryOpts, limit: queryOpts.limit * 4 });
+    kept = wider.results.filter(e => passesTrustFilter(e, input, ownerTag));
+  }
+  return kept.slice(0, queryOpts.limit);
+}
+
+function capL2Content<T extends { content: string }>(e: T): T {
+  return {
+    ...e,
+    content: e.content.length > L2_CONTENT_CAP
+      ? e.content.slice(0, L2_CONTENT_CAP) + '...[truncated]'
+      : e.content,
+  };
+}
+
+// MEMBER mixed-tier query (kb-self.ts getMemberSplitRead). Each half is
+// queried with only its own tiers and owner tag: the CONFIRMED half (bible
+// view + global, untagged) exactly as a CONFIRMED-only member read, the own
+// half (every requested tier, CONFIRMED included) from the per-repo DB +
+// global with the member's owner tag.
+//
+// Ranking: provider ranks (FTS bm25) are not comparable across two databases,
+// so the merged order is fixed: the bible half in its own rank order, then the
+// own half in its rank order. The limit is applied per side AFTER that merge
+// (project side = bible view + per-repo DB, global side = both global halves),
+// mirroring the per-provider limit of the unsplit read, so the CONFIRMED-only
+// result is always a prefix of each side and the mixed result a superset of it.
+async function splitQuery(split: MemberSplitRead, raw: KbQueryInput): Promise<string> {
+  const input: KbQueryInput = { ...raw, exclude_disputed: raw.exclude_disputed ?? false };
+  const limit = input.limit ?? 20;
+  const baseOpts = {
+    query: input.query,
+    type: input.type,
+    tag: input.tag,
+    limit,
+    l1_only: true,
+    include_stale: input.include_stale ?? false,
+    include_superseded: input.include_stale ?? false,
+    exclude_disputed: input.exclude_disputed,
+  };
+  const bibleInput: KbQueryInput = { ...input, confidence: split.bible.tiers };
+  const ownInput: KbQueryInput = { ...input, confidence: split.own.tiers };
+  const bibleOpts = { ...baseOpts, confidence: split.bible.tiers };
+  const ownOpts = { ...baseOpts, confidence: split.own.tiers, owner_tag: split.own.ownerTag };
+  const { ownerTag } = split.own;
+
+  const viewL1 = await trustedL1(split.bible.project, bibleOpts, bibleInput);
+  const repoL1 = await trustedL1(split.own.project, ownOpts, ownInput, ownerTag);
+  const globalConfirmedL1 = await trustedL1(split.bible.global, bibleOpts, bibleInput);
+  const globalOwnL1 = await trustedL1(split.own.global, ownOpts, ownInput, ownerTag);
+
+  const projectL1 = mergeSplitById(viewL1, repoL1, { limit });
+  const globalL1 = mergeSplitById(globalConfirmedL1, globalOwnL1, { limit });
+
+  // Which store owns each id, so its L2 copy is fetched from that store.
+  const viewIds = new Set(viewL1.map(e => e.id));
+  const repoIds = new Set(repoL1.map(e => e.id));
+
+  const seenTitles = new Set(projectL1.map(e => e.title));
+  const mergedL1 = [...projectL1, ...globalL1.filter(e => !seenTitles.has(e.title))];
+
+  const top5Ids = mergedL1.slice(0, 5).map(e => e.id);
+  let l2Results: Entry[] = mergedL1.slice(0, 5);
+  if (top5Ids.length > 0) {
+    const fromView = top5Ids.filter(id => viewIds.has(id));
+    const fromRepo = top5Ids.filter(id => !viewIds.has(id) && repoIds.has(id));
+    const fromGlobal = top5Ids.filter(id => !viewIds.has(id) && !repoIds.has(id));
+    const fetched = new Map<string, Entry>();
+    if (fromView.length) for (const e of (await split.bible.project.query({ ids: fromView })).results) fetched.set(e.id, e);
+    if (fromRepo.length) for (const e of (await split.own.project.query({ ids: fromRepo })).results) fetched.set(e.id, e);
+    if (fromGlobal.length) for (const e of (await split.bible.global.query({ ids: fromGlobal })).results) fetched.set(e.id, e);
+    l2Results = top5Ids.flatMap(id => (fetched.has(id) ? [capL2Content(fetched.get(id)!)] : []));
+  }
+
+  let relatedClaims: Entry[] = [];
+  if (input.expand_related && top5Ids.length > 0) {
+    try {
+      const fromBible = (await split.bible.project.relatedClaims(top5Ids, undefined, {
+        confidence: split.bible.tiers,
+        exclude_disputed: input.exclude_disputed,
+      })).filter(e => passesTrustFilter(e, bibleInput));
+      // The per-repo half stays owner-tag filtered.
+      const fromOwn = (await split.own.project.relatedClaims(top5Ids, undefined, {
+        confidence: split.own.tiers,
+        exclude_disputed: input.exclude_disputed,
+        owner_tag: ownerTag,
+      })).filter(e => passesTrustFilter(e, ownInput, ownerTag));
+      relatedClaims = mergeSplitById(fromBible, fromOwn);
+    } catch {
+      relatedClaims = [];
+    }
+  }
+
+  return JSON.stringify({
+    l1_results: mergedL1,
+    l2_expanded: l2Results,
+    ...(input.expand_related ? { related_claims: relatedClaims } : {}),
+  });
+}
+
 export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<string> {
   // Tag-only calls are valid (HIGH-1 fix): the provider's plain (non-FTS)
   // branch supports a queryless listing, so `kb_query({ tag })` lists all
@@ -58,10 +175,19 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
     throw new Error('Provide query (free-text search), tag (exact-match tag listing), or flagged_only: true (list contradictions)');
   }
 
+  // A MEMBER request naming CONFIRMED plus another tier is split: CONFIRMED
+  // from the checkout bible view, plus the per-repo DB at every requested
+  // tier, own captures only (kb-self.ts getMemberSplitRead). flagged_only
+  // never splits.
+  if (!input.flagged_only) {
+    const split = await getMemberSplitRead(anchor, input.confidence, 'kb_query');
+    if (split) return splitQuery(split, input);
+  }
+
   // A MEMBER session reads its checkout bible view unless it explicitly asks
   // for INFERRED/UNVERIFIED (kb-self.ts getSelfReadKb); flagged_only ignores
   // the confidence filter, so it is answered from the view too.
-  // An explicit INFERRED/UNVERIFIED request in a MEMBER session goes to the
+  // A request naming only INFERRED/UNVERIFIED in a MEMBER session goes to the
   // per-repo DB and sees only the caller's own captures (ownerTag).
   const { providers, ownerTag } = await getSelfReadKb(anchor, input.flagged_only ? undefined : input.confidence);
   if (ownerTag !== undefined) requireSqliteProject(providers.project, 'kb_query');
@@ -120,24 +246,8 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // The trust filter runs PER PROVIDER, before the title de-dup below: filtering
   // after the merge would let an excluded project entry shadow an admissible
   // global entry of the same title and then vanish, taking both with it.
-  const filtering = Boolean(input.confidence?.length || input.exclude_disputed || ownerTag);
-  const trustedL1 = async (provider: typeof providers.project) => {
-    const first = await provider.query(queryOpts);
-    if (!filtering) return first.results;
-    let kept = first.results.filter(e => passesTrustFilter(e, input, ownerTag));
-    // A provider that ignored the filter may have spent its whole limit on
-    // entries just dropped here. A full page that filtered short is the only
-    // signal of that (the sqlite provider filters in SQL, so it never trips
-    // this); re-ask once with a wider window and trim back to the limit.
-    if (kept.length < queryOpts.limit && first.results.length >= queryOpts.limit) {
-      const wider = await provider.query({ ...queryOpts, limit: queryOpts.limit * 4 });
-      kept = wider.results.filter(e => passesTrustFilter(e, input, ownerTag));
-    }
-    return kept.slice(0, queryOpts.limit);
-  };
-
-  const projectL1 = await trustedL1(providers.project);
-  const globalL1 = await trustedL1(providers.global);
+  const projectL1 = await trustedL1(providers.project, queryOpts, input, ownerTag);
+  const globalL1 = await trustedL1(providers.global, queryOpts, input, ownerTag);
 
   // Merge project first, deduplicate global entries by title
   const seen = new Set(projectL1.map(e => e.title));

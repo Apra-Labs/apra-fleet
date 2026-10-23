@@ -540,6 +540,31 @@
       "updated_at": "2026-10-06T12:01:02.130Z"
     },
     {
+      "id": "48e12361-051f-4d38-9cf0-ca955eca4fdc",
+      "type": "knowledge",
+      "title": "Member mixed-tier kb_session_prime primes each half separately, then merges",
+      "summary": "In a MEMBER session with CONFIRMED plus another tier, kbSessionPrime runs primeFrom once for the bible half and once for the own half, then mergePrimed combines them. Cold-seed and the global-KB append are decided per half, so the CONFIRMED-only result is an exact prefix of the mixed result.",
+      "symbols": [
+        "kbSessionPrime",
+        "primeFrom",
+        "mergePrimed",
+        "splitContext",
+        "getMemberSplitRead"
+      ],
+      "source_files": [
+        "src/tools/kb-session-prime.ts",
+        "src/tools/kb-context.ts",
+        "src/services/knowledge/kb-self.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-22T07:29:38.533Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-self.ts": "47c30cd5feb3273b3d80cd35c2e9092472b4d469",
+        "src/tools/kb-context.ts": "99cd6c2e3bea877ec4476bc70b32788a36dcbc8e",
+        "src/tools/kb-session-prime.ts": "ae39c9f992dd1392c08ff83c286d7b3af4ea1776"
+      }
+    },
+    {
       "id": "4ab868ea-bb49-459a-b21e-f2b906d3cb58",
       "type": "knowledge",
       "title": "An async http.createServer handler that throws kills the apra-fleet server",
@@ -798,6 +823,30 @@
       "updated_at": "2026-10-06T06:57:40.812Z"
     },
     {
+      "id": "71323701-67db-4aa8-b7ce-858fb5e2aea7",
+      "type": "knowledge",
+      "title": "Member mixed-tier KB read: bible half first, per-side limit, own CONFIRMED excluded",
+      "summary": "getMemberSplitRead (kb-self.ts) splits a MEMBER tier list naming CONFIRMED plus another tier: CONFIRMED from the checkout bible view plus untagged global, other tiers from the per-repo DB plus global with owner tag member:<uuid>. kb_query merges bible-first per side (project, global) and limits per side, so l1_results can exceed limit; own CONFIRMED rows in the per-repo DB are never returned.",
+      "symbols": [
+        "getMemberSplitRead",
+        "mergeSplitById",
+        "splitQuery",
+        "kbList"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-self.ts",
+        "src/tools/kb-query.ts",
+        "src/tools/kb-list.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-22T07:01:34.588Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-self.ts": "47c30cd5feb3273b3d80cd35c2e9092472b4d469",
+        "src/tools/kb-list.ts": "809c1835a792a9e791ee1a8c0b1067ee4dffbe14",
+        "src/tools/kb-query.ts": "936642c3a4a0290ba953768f777b73a76ab7d6c6"
+      }
+    },
+    {
       "id": "715c2ff2-f5fa-43ba-a0e2-1946939af614",
       "type": "knowledge",
       "title": "The stall_poll_tick summary line is JSON plus an elapsed suffix, not parseable JSON",
@@ -986,6 +1035,28 @@
       "updated_at": "2026-09-29T06:08:33.761Z"
     },
     {
+      "id": "86ae8b43-42ad-4606-a961-2755421723be",
+      "type": "learning",
+      "title": "KB tool description wording is pinned by a test that reads the registry and the bindings",
+      "summary": "tests/knowledge/kb-member-read-scope-wording.test.ts collects the real kb_query/kb_list/kb_context/kb_session_prime descriptions via registerAllTools with a fake server and reads memory-contract/v1/bindings/mcp/*.json. It asserts exact member read-scope phrases, so editing that wording needs the test, the generator and the bindings updated together.",
+      "symbols": [
+        "registerAllTools",
+        "BINDINGS_MCP_DIR"
+      ],
+      "source_files": [
+        "tests/knowledge/kb-member-read-scope-wording.test.ts",
+        "src/services/tool-registry.ts",
+        "memory-contract/v1/generate-contract.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-22T08:04:41.883Z",
+      "source_file_hashes": {
+        "memory-contract/v1/generate-contract.mjs": "dcd3ef9234288e2558712b6bc0c3f4bb4c42d4b6",
+        "src/services/tool-registry.ts": "099aa042a6602d90c9401a8fd399cf1bda1f568f",
+        "tests/knowledge/kb-member-read-scope-wording.test.ts": "cbd0387bc3c84e6a808d00b76bc625ceba574bc2"
+      }
+    },
+    {
       "id": "8fdf21fa-e64c-43d2-a22a-edfd21bd6791",
       "type": "knowledge",
       "title": "Three distinct git-credential-helper file shapes exist across member OS/shell combinations",
@@ -1098,6 +1169,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.234Z"
+    },
+    {
+      "id": "9af40daa-2521-430a-a529-7db25d27da87",
+      "type": "knowledge",
+      "title": "Bible context-cache entries never read fresh in kb_context: bible import stores no content_hash",
+      "summary": "importBibleEntries (bible-import.ts) captures every bible entry with content_hash ''. SqliteProvider.context() marks a file fresh only when the entry's content_hash equals the file's current hash. So a context-cache entry from the checkout bible always reads stale (hash_mismatch), including in a member bible view.",
+      "symbols": [
+        "importBibleEntries",
+        "context"
+      ],
+      "source_files": [
+        "src/services/knowledge/bible-import.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "tests/knowledge/kb-member-mixed-tier-reads.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-22T06:25:32.542Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "9a75635a8ccb17c83c0aef0cc1806386ec3c8cd5",
+        "src/services/knowledge/sqlite-provider.ts": "3b70b8d2bfe7a3e3b4c1c522400841d0b5282d6f",
+        "tests/knowledge/kb-member-mixed-tier-reads.test.ts": "f452ea5700809ded25e518a2743994214a4bc750"
+      }
     },
     {
       "id": "a05ff689-9610-4624-ac2f-301d91e83846",
