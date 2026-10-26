@@ -21,8 +21,11 @@ import type {
   RetireOptions,
 } from './types.js';
 
+import { DEFAULT_REQUEST_TIMEOUT_MS } from './kb-config.js';
+
+export { DEFAULT_REQUEST_TIMEOUT_MS };
+
 const MAX_QUEUE_SIZE = 1000;
-export const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 
 /**
  * Optional settings for HttpKbProvider. An options object rather than more

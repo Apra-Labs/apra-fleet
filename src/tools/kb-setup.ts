@@ -3,7 +3,7 @@ import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-sc
 import fs from 'node:fs';
 import path from 'node:path';
 import { installKbPostCommitHook } from './kb-invalidate.js';
-import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
+import { KB_CONFIG_PATH, MIN_REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS } from '../services/knowledge/kb-config.js';
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { logWarn } from '../utils/log-helpers.js';
@@ -16,7 +16,7 @@ export const kbSetupSchema = z.object({
     .describe('Remote KB server URL, http(s) only (required when provider=http). Use https for any non-loopback host: plain http sends the token in cleartext.'),
   token: z.string().optional()
     .describe('Authentication token for remote KB server (stored encrypted, never logged)'),
-  request_timeout_ms: z.number().int().min(1000).max(120000).optional()
+  request_timeout_ms: z.number().int().min(MIN_REQUEST_TIMEOUT_MS).max(MAX_REQUEST_TIMEOUT_MS).optional()
     .describe('Per-request timeout in milliseconds for the remote KB server, 1000-120000 (default 5000)'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
   // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
@@ -73,7 +73,7 @@ function checkRemoteUrl(remote: string): string[] {
  */
 function checkRequestTimeout(value: number | undefined): void {
   if (kbSetupSchema.shape.request_timeout_ms.safeParse(value).success) return;
-  throw new Error(`kb_setup: request_timeout_ms must be an integer between 1000 and 120000, got ${value}`);
+  throw new Error(`kb_setup: request_timeout_ms must be an integer between ${MIN_REQUEST_TIMEOUT_MS} and ${MAX_REQUEST_TIMEOUT_MS}, got ${value}`);
 }
 
 /**
