@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { writeStatusline } from '../services/statusline.js';
+import { markBusy } from '../services/member-busy.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { isContainedInWorkFolder } from '../utils/platform.js';
 import { LogScope } from '../utils/log-helpers.js';
@@ -57,7 +57,7 @@ export async function receiveFiles(input: ReceiveFilesInput, extra?: any): Promi
   const pathSummary = input.remote_paths[0] ?? '';
   const scope = new LogScope('receive_files', `${input.remote_paths.length} file(s) ← ${agent.friendlyName}:${pathSummary}`, agent);
 
-  writeStatusline(new Map([[agent.id, 'busy']]));
+  const releaseBusy = markBusy(agent.id);
 
   try {
     const result = await strategy.receiveFiles(input.remote_paths, input.local_dest_dir, extra?.signal);
@@ -89,12 +89,14 @@ export async function receiveFiles(input: ReceiveFilesInput, extra?: any): Promi
     else
       scope.ok(`${result.success.length} file(s)`);
 
-    writeStatusline();
+    releaseBusy();
     return output;
   } catch (err: any) {
     const isOffline = agent.agentType !== 'local' && !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
-    writeStatusline(new Map([[agent.id, isOffline ? 'offline' : 'idle']]));
+    releaseBusy(isOffline ? 'offline' : 'idle');
     scope.abort(err.message);
     return `Failed to download files from "${agent.friendlyName}": ${err.message}`;
+  } finally {
+    releaseBusy();
   }
 }

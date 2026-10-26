@@ -8,12 +8,14 @@ import { describe, it, expect } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 // @ts-expect-error -- plain .mjs helper
-import { assertNotRealProfile, REAL_HOME_ENV, SANDBOX_ROOT_ENV } from '../scripts/test-sandbox.mjs';
+import { assertNotRealProfile, dropBeadsWorkspaceEnv, REAL_HOME_ENV, SANDBOX_ROOT_ENV } from '../scripts/test-sandbox.mjs';
 import { FLEET_DIR, SERVER_INFO_PATH } from '../src/paths.js';
 import { BIN_DIR, FLEET_BASE } from '../src/cli/config.js';
 
 const REAL = process.env[REAL_HOME_ENV] as string;
+const WITH_TEST_SANDBOX = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'with-test-sandbox.mjs');
 
 function under(p: string, dir: string): boolean {
   const a = path.resolve(p).toLowerCase();
@@ -42,6 +44,28 @@ describe('test sandbox', () => {
     expect(() => assertNotRealProfile(
       { [REAL_HOME_ENV]: real, APRA_FLEET_DATA_DIR: path.join(os.tmpdir(), 'sbx', 'data') }, () => path.join(os.tmpdir(), 'sbx'),
     )).not.toThrow();
+  });
+
+  it('dropBeadsWorkspaceEnv removes the beads variables whatever their case and keeps the rest', () => {
+    const env = { Beads_Dir: '/a', beads_db: '/b', BD_DB: '/c', BEADS_DIR_EXTRA: 'keep', Path: '/bin' };
+    expect(dropBeadsWorkspaceEnv(env)).toEqual({ BEADS_DIR_EXTRA: 'keep', Path: '/bin' });
+  });
+
+  it.each([
+    ['reusing this run\'s sandbox', {}],
+    ['creating a fresh sandbox', { [SANDBOX_ROOT_ENV]: '' }],
+  ])('with-test-sandbox.mjs hands its child no beads workspace variables when %s', (_case, overrides) => {
+    const polluted = path.join(os.tmpdir(), 'polluted-ambient-beads', '.beads');
+    const r = spawnSync(process.execPath, [
+      WITH_TEST_SANDBOX, 'node', '-e',
+      'console.log(JSON.stringify(["BEADS_DIR","BEADS_DB","BD_DB"].map((k) => process.env[k] ?? null)))',
+    ], {
+      env: { ...process.env, BEADS_DIR: polluted, BEADS_DB: path.join(polluted, 'beads.db'), BD_DB: path.join(polluted, 'beads.db'), ...overrides },
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout.trim())).toEqual([null, null, null]);
   });
 
   it('a child node process pointed back at the real home is refused before any module loads', () => {

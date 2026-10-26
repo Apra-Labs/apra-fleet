@@ -283,7 +283,9 @@ test('mock sprint: an orphaned in_progress bead must not be read as sprint succe
                     await run(`bd close ${id}`, td);
                     closedIds.push(id);
                 }
-                return { content: [{ text: JSON.stringify({ status: closedIds.length === ids.length ? 'VERIFY' : 'BLOCKED', closedIds, notes: 'Scenario doer.' }) }] };
+                // A left-open report, not BLOCKED: a BLOCKED bead is set aside for
+                // the run and would end it as SPRINT_STALLED at once.
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds, notes: 'Scenario doer.' }) }] };
             },
         });
         check(!orphaned.error, `Orphaned-bead scenario should not throw/reject: ${orphaned.error ? orphaned.error.message : ''}`);

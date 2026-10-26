@@ -432,6 +432,9 @@ export const GUARDED_MODULES = [
     // Pre-launch stale-claim rule, fresh-read gate and downstream naming
     // (pure): no command() or agent() site; runner.js owns the read and write.
     'beads-reachability.mjs',
+    // Run-scoped set-aside stall decision and report section (pure): no
+    // command() or agent() site; runner.js owns the reads and the throw.
+    'set-aside.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',
     'vcs-providers/dolt.mjs',

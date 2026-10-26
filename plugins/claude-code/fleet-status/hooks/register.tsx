@@ -42,6 +42,7 @@ const POLL_MS = 30_000
 const BUSY_RECHECK_MS = 2_000
 const STATUS_NAMES_MAX = 3
 const CONNECTING = 'connecting...'
+const UNREACHABLE = 'server not reachable'
 const RETRY_MS = 3_000
 // While a read fails this soon after session start the server is presumed
 // to be starting: retried every RETRY_MS, shown as CONNECTING.
@@ -168,7 +169,7 @@ export function withSecrets(line: string | undefined, s: SecretsView): string | 
 export function paneRows(v: FleetView, l: PaneLayout = DEFAULT_LAYOUT): number {
   const fixed = 4
   if (!l.membersOpen) return fixed + (v.error && v.members.length > 0 ? 1 : 0)
-  if (v.members.length === 0) return fixed + 1 + (v.error === 'server not reachable' ? 1 : 0)
+  if (v.members.length === 0) return fixed + 1 + (v.error?.startsWith(UNREACHABLE) ? 1 : 0)
   const categories = new Set(v.members.map(m => m.category ?? '')).size
   const labelled = categories > 1 || v.members.some(m => m.category !== null)
   return fixed + (v.error ? 1 : 0) + v.members.length + (labelled ? categories : 0)
@@ -196,7 +197,36 @@ export function classifyError(text: string, sinceStartMs: number): string {
   const withTools = /servers with tools:\s*(.*)$/i.exec(text)?.[1] ?? ''
   if (withTools.split(/[,\s]+/).includes(SERVER)) return 'server too old: update apra-fleet'
   if (sinceStartMs < STARTUP_MS) return CONNECTING
-  return 'server not reachable'
+  // Newer wording: the server's tools are not in this session at all -- down,
+  // or hidden by a permissions.deny rule.
+  const hidden = HIDDEN_TOOL.exec(text)?.[1]
+  if (hidden) return `${UNREACHABLE} (or ${TOOL_PREFIX}${hidden} denied)`
+  return UNREACHABLE
+}
+
+/**
+ * The `no connected MCP tool "X"` wording Claude Code uses when a tool is not
+ * in this session: the server is down, or a permissions.deny rule hides it.
+ */
+const HIDDEN_TOOL = /no connected MCP tool "([\w-]+)"/
+
+/**
+ * A failed $.mcp.call -> the line the pane shows. When fleet_snapshot still
+ * answers, the server is up, so a tool it says is missing is hidden from this
+ * session (a permissions.deny rule): say so, rather than echo the raw error.
+ */
+export function callErrorText(text: string, snapshotOk: boolean): string {
+  const tool = HIDDEN_TOOL.exec(text)?.[1]
+  if (tool && snapshotOk) {
+    const what = tool.startsWith('credential_store_') ? 'credential tools' : tool
+    return `${what} hidden in this session (permission deny rule ${TOOL_PREFIX}${tool}?)`
+  }
+  return text.replace(/^\$\.mcp\.call:\s*/, '')
+}
+
+async function errorText($: EngineInterface, err: unknown): Promise<string> {
+  const v = await read($, view)
+  return callErrorText(err instanceof Error ? err.message : String(err), v.fetchedAt > 0 && !v.error)
 }
 
 
@@ -327,7 +357,7 @@ async function removeMember($: EngineInterface, name: string): Promise<void> {
     const res = await $.mcp.call(SERVER, REMOVE_TOOL, { member_name: name })
     note = removeNote(name, texts(res), res.isError)
   } catch (err) {
-    note = `Not removed: ${err instanceof Error ? err.message : String(err)}`
+    note = `Not removed: ${await errorText($, err)}`
   }
   await update($, memberAction, () => ({ note }))
   await refresh($)
@@ -356,7 +386,7 @@ function refreshSecrets($: EngineInterface): Promise<void> {
       fresh = { items: parseSecrets(texts(res)), fetchedAt: Date.now() }
     } catch (err) {
       const prev = await read($, secrets)
-      fresh = { ...prev, fetchedAt: Date.now(), error: err instanceof Error ? err.message : String(err) }
+      fresh = { ...prev, fetchedAt: Date.now(), error: await errorText($, err) }
     }
     await update($, secrets, () => fresh)
     // A delete or apply changes the expiring count: keep the status line in step.
@@ -403,7 +433,7 @@ async function requestEntryLink($: EngineInterface): Promise<void> {
       note: undefined,
     }))
   } catch (err) {
-    await setNote($, `No link: ${err instanceof Error ? err.message : String(err)}`)
+    await setNote($, `No link: ${await errorText($, err)}`)
   }
 }
 
@@ -418,7 +448,7 @@ async function applySettings($: EngineInterface): Promise<void> {
     const line = texts(res).join(' ').trim()
     await setNote($, res.isError || /not found/i.test(line) ? `Not applied: ${line || 'no such secret yet'}` : `Settings applied to ${f.name}.`)
   } catch (err) {
-    await setNote($, `Not applied: ${err instanceof Error ? err.message : String(err)}`)
+    await setNote($, `Not applied: ${await errorText($, err)}`)
   }
   await refreshSecrets($)
 }
@@ -433,7 +463,8 @@ async function deleteSecret($: EngineInterface, name: string): Promise<void> {
       note: res.isError || /not found/i.test(line) ? `Could not delete ${name}.` : `Deleted ${name}.`,
     }))
   } catch (err) {
-    await update($, secretForm, f => ({ ...f, confirmDelete: undefined, note: `Could not delete ${name}: ${err instanceof Error ? err.message : String(err)}` }))
+    const why = await errorText($, err)
+    await update($, secretForm, f => ({ ...f, confirmDelete: undefined, note: `Could not delete ${name}: ${why}` }))
   }
   await refreshSecrets($)
 }
@@ -441,7 +472,8 @@ async function deleteSecret($: EngineInterface, name: string): Promise<void> {
 /** Rows the Secrets section takes in the pane: rule and header, then (open) the list, confirm, form and note. */
 export function secretsRows(s: SecretsView, f: SecretForm, l: PaneLayout = DEFAULT_LAYOUT): number {
   if (!l.secretsOpen) return 2
-  const list = Math.max(1, s.items.length) + (s.error ? 1 : 0)
+  // With an error the empty-state line is not drawn: the error stands alone.
+  const list = s.error ? 1 + s.items.length : Math.max(1, s.items.length)
   const form = f.mode === 'form' ? 4 + (l.moreOptions ? 3 : 0) : f.mode === 'link' ? 3 + (f.warning ? 1 : 0) : 0
   return 2 + list + form + (f.note ? 1 : 0) + (f.confirmDelete ? 1 : 0)
 }
@@ -451,10 +483,103 @@ export function secretToken(name: string): string {
   return `{{secret.${name}}}`
 }
 
+// --- Pane size ---------------------------------------------------------------
+
+/**
+ * Cells kept free at the body's right edge. The terminal surface does not
+ * draw the last two body columns (observed: every row, the rule included),
+ * so the tree is laid out that much narrower and right-aligned controls
+ * (x, more, less, add) land in cells that show.
+ */
+export const GUTTER = 2
+const MIN_COLUMNS = 40
+const MAX_COLUMNS = 72
+// Member row: status glyph, icon and state columns, the x control.
+const MEMBER_FIXED = 3 + 3 + 9 + 1
+export const FOOTER = `refresh ${POLL_MS / 1000}s ${DOT} press name to insert token`
+
+/** Terminal cells a string takes: astral and the status emoji are two wide. */
+export function cells(text: string): number {
+  let n = 0
+  for (const ch of text) n += ch.codePointAt(0)! >= 0x1f000 || ch === GLYPH.busy || ch === GLYPH.offline || ch === GLYPH.unknown ? 2 : 1
+  return n
+}
+
+/** What a member row shows behind "more": always something, whatever the state. */
+export function memberExtras(m: FleetMember): string {
+  const bits = [
+    m.status === 'busy' ? (m.quietForS !== undefined ? `quiet ${clock(m.quietForS)}` : 'working') : '',
+    m.status === 'unknown' ? 'no activity -- may be stalled' : '',
+    m.status === 'idle' && !m.reservedBy ? 'free for work' : '',
+    m.status === 'offline' ? 'not reachable' : '',
+    m.reservedBy ? `held by ${m.reservedBy}` : '',
+    m.id && m.id !== m.name ? `id ${m.id.slice(0, 8)}` : '',
+  ]
+  return bits.filter(Boolean).join(`  ${DOT}  `)
+}
+
+/** The widest member name the row can give its full length, at `width` body cells. */
+export function nameCap(width: number, indent: number): number {
+  return Math.max(10, width - MEMBER_FIXED - indent)
+}
+
+function counted(v: FleetView): Array<{ s: FleetMemberStatus; n: number }> {
+  return (['busy', 'unknown', 'idle', 'offline'] as const)
+    .map(c => ({ s: c, n: v.members.filter(m => m.status === c).length }))
+    .filter(c => c.n > 0)
+}
+
+/**
+ * Body columns the pane's content takes (header, section headers, member and
+ * secret rows, the open form, the footer), clamped to 40-72, plus GUTTER.
+ */
+export function paneColumns(v: FleetView, s: SecretsView, l: PaneLayout = DEFAULT_LAYOUT, f: SecretForm = CLOSED_FORM): number {
+  const widths: number[] = [cells(FOOTER)]
+  widths.push(10 + (v.version ? 3 + v.version.replace(/^v/, '').length : 0) + 2 + 14)
+  const summary = counted(v).reduce((w, c, i) => w + cells(`${GLYPH[c.s]} ${c.n}`) + (i ? 2 : 0), 0)
+  widths.push(cells(`${OPEN} Members ${v.members.length}`) + (summary ? 2 + summary : 0) + 2 + 5)
+  if (l.membersOpen && v.members.length > 0) {
+    const indent = new Set(v.members.map(m => m.category ?? '')).size > 1 || v.members.some(m => m.category !== null) ? 1 : 0
+    const name = Math.max(...v.members.map(m => m.name.length)) + 2
+    for (const m of v.members) {
+      const extra = l.moreMembers ? cells(memberExtras(m)) + 1 : 0
+      widths.push(indent + MEMBER_FIXED + name + extra)
+    }
+  }
+  const expiring = s.items.filter(expiresSoon).length
+  widths.push(cells(`${OPEN} ${KEY} Secrets ${s.items.length}`) + (expiring ? 2 + cells(`${expiring} expiring`) : 0) + 2 + (s.items.length ? 7 : 0) + 3)
+  if (l.secretsOpen) {
+    const name = Math.min(28, Math.max(0, ...s.items.map(r => r.name.length)) + 2)
+    for (const r of s.items) {
+      const expiry = l.moreSecrets || expiresSoon(r) ? cells(expiryLabel(r.expiry)) : 0
+      widths.push(name + (l.moreSecrets ? 28 : 0) + expiry + 1 + 'replace'.length + 2)
+    }
+    if (f.mode === 'form') {
+      widths.push(1 + cliCommand(f.name || '<NAME>').length + 1 + 6)
+      widths.push(1 + (l.moreOptions ? 27 : 0) + 19 + 1 + (l.moreOptions ? 13 : 14) + 1 + 7)
+    }
+  }
+  return Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, ...widths)) + GUTTER
+}
+
+/** Open (or resize) the pane to what its content takes now. */
+async function openPane($: EngineInterface): Promise<void> {
+  const v = await read($, view)
+  const l = await read($, layout)
+  const s = await read($, secrets)
+  const f = await read($, secretForm)
+  // Inline (above the prompt) the pane asks for the rows its content takes;
+  // docked beside the transcript, for the columns.
+  const rows = paneRows(v, l) + (l.membersOpen ? memberActionRows(await read($, memberAction)) : 0) + secretsRows(s, f, l)
+  await $.ui.open({ id: PANE, title: 'Fleet', rows, columns: paneColumns(v, s, l, f) })
+}
+
 async function setLayout($: EngineInterface, patch: Partial<PaneLayout>): Promise<void> {
   const next = await update($, layout, cur => ({ ...cur, ...patch }))
   // Remembering the layout is a convenience: a store that refuses must not undo the toggle.
   await $.store.set(LAYOUT_KEY, next).catch(() => undefined)
+  // A toggle is a press inside the open pane: re-ask its size for the new content.
+  await openPane($).catch(() => undefined)
 }
 
 let inFlight: Promise<void> | undefined
@@ -507,13 +632,8 @@ export const register: Register = on => {
 
   on('command.run', { command: 'fleet-status' }, async $ => {
     await refresh($)
-    const v = await read($, view)
-    // Inline (above the prompt) the pane asks for the rows its content takes;
-    // docked beside the transcript it is floor to ceiling anyway.
-    const l = await read($, layout)
-    const rows = paneRows(v, l) + (l.membersOpen ? memberActionRows(await read($, memberAction)) : 0) + secretsRows(await read($, secrets), await read($, secretForm), l)
-    await $.ui.open({ id: PANE, title: 'Fleet', rows })
-    return { text: summaryText(v) }
+    await openPane($)
+    return { text: summaryText(await read($, view)) }
   })
 
   // Any other apra-fleet tool call may change a member's state: re-read
@@ -540,7 +660,8 @@ export const register: Register = on => {
     const act = await read($, memberAction)
     const s = await read($, secrets)
     const f = await read($, secretForm)
-    const width = Math.max(20, e.props.bodyColumns ?? 60)
+    // GUTTER: the last body cells do not show on the terminal; lay out short of them.
+    const width = Math.max(20, (e.props.bodyColumns ?? 60) - GUTTER)
     const rule = <Text dimColor>{RULE.repeat(width)}</Text>
     const asOf = v.fetchedAt ? new Date(v.fetchedAt).toTimeString().slice(0, 8) : '--:--:--'
     const copy = (text: string) => (p: UiPressArgument) => void $.ui.copy({ text, surface: p.surface })
@@ -573,9 +694,7 @@ export const register: Register = on => {
     )
 
     // --- Members ---
-    const counts = (['busy', 'unknown', 'idle', 'offline'] as const)
-      .map(c => ({ s: c, n: v.members.filter(m => m.status === c).length }))
-      .filter(c => c.n > 0)
+    const counts = counted(v)
     const memberSummary = (
       <Box flexDirection="row" gap={2}>
         {counts.map(c => (
@@ -584,7 +703,7 @@ export const register: Register = on => {
       </Box>
     )
     let memberBody
-    const hint = v.error === 'server not reachable' ? 'Start it with `apra-fleet start`, then /mcp to reconnect.' : undefined
+    const hint = v.error?.startsWith(UNREACHABLE) ? 'Start it with `apra-fleet start`, then /mcp to reconnect.' : undefined
     if (v.error && v.members.length === 0) {
       memberBody = (
         <Box flexDirection="column">
@@ -601,8 +720,9 @@ export const register: Register = on => {
         groups.set(key, [...(groups.get(key) ?? []), m])
       }
       const keys = [...groups.keys()].sort((a, b) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)))
-      const nameWidth = Math.min(24, Math.max(...v.members.map(m => m.name.length)) + 2)
       const showCategories = keys.length > 1 || keys[0] !== ''
+      // The cap is what the row leaves after its fixed columns, not a constant.
+      const nameWidth = Math.min(nameCap(width, showCategories ? 1 : 0), Math.max(...v.members.map(m => m.name.length)) + 2)
       memberBody = (
         <Box flexDirection="column">
           {keys.map(key => (
@@ -615,15 +735,7 @@ export const register: Register = on => {
                   <Box width={nameWidth}><Text bold wrap="truncate-end">{m.name}</Text></Box>
                   <Box width={9}><Text color={COLOR[m.status]}>{m.status}</Text></Box>
                   <Box flexGrow={1}>
-                    {l.moreMembers ? (
-                      <Text dimColor wrap="truncate-end">
-                        {[
-                          m.status === 'busy' && m.quietForS !== undefined ? `quiet ${clock(m.quietForS)}` : '',
-                          m.status === 'unknown' ? 'no activity -- may be stalled' : '',
-                          m.reservedBy ? `held by ${m.reservedBy}` : '',
-                        ].filter(Boolean).join(`  ${DOT}  `)}
-                      </Text>
-                    ) : null}
+                    {l.moreMembers ? <Text dimColor wrap="truncate-end">{memberExtras(m)}</Text> : null}
                   </Box>
                   <Button key={`remove:${m.name}`} label={CROSS} plain dimColor
                     onPress={() => void update($, memberAction, () => ({ confirmRemove: m.name }))} />
@@ -655,15 +767,15 @@ export const register: Register = on => {
 
     // --- Secrets ---
     const openForm = (row?: SecretRow) => {
-      setForm(() => ({
+      // The form is wider than the list: re-ask the pane's size once it is drawn.
+      void update($, secretForm, (): SecretForm => ({
         ...CLOSED_FORM,
         mode: 'form',
         name: row?.name ?? '',
         members: row && row.members !== '*' ? row.members : '',
         keep: row && row.scope !== 'persistent' ? 'session' : 'persistent',
         replacing: row ? true : undefined,
-      }))
-      if (!l.secretsOpen) void setLayout($, { secretsOpen: true })
+      })).then(() => (l.secretsOpen ? openPane($) : setLayout($, { secretsOpen: true }))).catch(() => undefined)
     }
     const closeForm = () => {
       setForm(cur => ({ ...CLOSED_FORM, note: cur.note }))
@@ -748,7 +860,7 @@ export const register: Register = on => {
           <Box flexDirection="column">
             {s.error ? <Text color="error">{`secrets: ${s.error}`}</Text> : null}
             {s.items.length === 0
-              ? <Text dimColor>No secrets stored.</Text>
+              ? (s.error ? null : <Text dimColor>No secrets stored.</Text>)
               : s.items.map(row => (
                 <Box flexDirection="row">
                   <Box width={nameWidth}>
@@ -783,11 +895,11 @@ export const register: Register = on => {
     )
 
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" width={width}>
         {header}
         {membersBlock}
         {secretsBlock}
-        <Text dimColor>{`refreshes every ${POLL_MS / 1000}s ${DOT} press a secret's name to insert its token`}</Text>
+        <Text dimColor>{FOOTER}</Text>
       </Box>
     )
   })

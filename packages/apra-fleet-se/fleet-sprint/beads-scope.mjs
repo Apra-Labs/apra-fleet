@@ -353,6 +353,45 @@ function blocksPrereqIds(bead) {
 }
 
 /**
+ * Every OPEN (non-closed) bead in `scopeBeads` that depends on one of
+ * `rootIds` over 'blocks' edges, directly or transitively, mapped to the root
+ * id its chain leads back to (the first root reached, breadth-first). The
+ * roots themselves are not included. Parent-child edges are not followed.
+ *
+ * @param {Iterable<string>} rootIds
+ * @param {Array<object>} scopeBeads - in-scope beads, any status, with `dependencies`
+ * @returns {Map<string, string>} dependent id -> root id
+ */
+export function openBlocksDependents(rootIds, scopeBeads) {
+    const scope = Array.isArray(scopeBeads) ? scopeBeads : [];
+    const roots = new Set([...rootIds].map(String));
+    // prerequisite id -> beads that list it as a 'blocks' prerequisite
+    const dependentsOf = new Map();
+    for (const b of scope) {
+        if (!b || b.id === undefined || b.id === null) continue;
+        for (const pre of blocksPrereqIds(b)) {
+            if (!dependentsOf.has(pre)) dependentsOf.set(pre, []);
+            dependentsOf.get(pre).push(b);
+        }
+    }
+    const out = new Map();
+    const queue = [...roots].map((id) => ({ id, root: id }));
+    const visited = new Set(roots);
+    while (queue.length > 0) {
+        const { id, root } = queue.shift();
+        for (const dep of dependentsOf.get(id) || []) {
+            const depId = String(dep.id);
+            if (visited.has(depId)) continue;
+            visited.add(depId);
+            if (dep.status === 'closed') continue;
+            out.set(depId, root);
+            queue.push({ id: depId, root });
+        }
+    }
+    return out;
+}
+
+/**
  * Split ready leaf beads into those the develop loop may dispatch and the
  * below-goal ones it must not (see the block comment above).
  *

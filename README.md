@@ -480,6 +480,7 @@ third-party verticals.
 | Topic | Link |
 |-------|------|
 | **fleet-sprint Getting Started Guide (start here, plain English)** | [Website](https://apra-labs.github.io/apra-fleet/fleet-sprint-getting-started.html) - [Markdown](docs/fleet-sprint-getting-started.md) |
+| fleet-sprint set-aside rules (BLOCKED beads, deploy Permissions failure, immediate stall) | [docs/fleet-sprint-set-aside.md](docs/fleet-sprint-set-aside.md) |
 | Codebase wiki (architecture, internals, AI Q&A) | [DeepWiki](https://deepwiki.com/Apra-Labs/apra-fleet) |
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
 | Choosing a provider (roles, gotchas, mixing providers, OpenCode/local models) | [docs/provider-guide.md](docs/provider-guide.md) |

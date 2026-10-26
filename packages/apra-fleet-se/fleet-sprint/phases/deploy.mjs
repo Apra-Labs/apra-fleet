@@ -83,10 +83,43 @@ export const DEPLOY_RETRY_CYCLE_LIMIT = 3;
  *   deploy.md exists and this cycle's deploy failed; null when it succeeded or
  *   no deploy was attempted (no deploy.md).
  */
-export function latestDeployFailure({ hasDeploy, deployedThisCycle, cycle, deployFailures }) {
+export function latestDeployFailure({ hasDeploy, deployedThisCycle, cycle, deployFailures, deploySetAside = null }) {
     if (!hasDeploy || deployedThisCycle) return null;
     const rec = [...deployFailures].reverse().find((f) => f && f.cycle === cycle);
-    return { cycle, notes: rec && rec.notes != null ? String(rec.notes) : '(deployer returned no notes)' };
+    if (rec) return { cycle, notes: rec.notes != null ? String(rec.notes) : '(deployer returned no notes)' };
+    // No deployer ran this cycle because deploy is set aside for the run (see
+    // DEPLOY SET-ASIDE below): the failure is still the set-aside one.
+    if (deploySetAside) return { cycle, notes: formatDeploySetAsideNotes(deploySetAside) };
+    return { cycle, notes: '(deployer returned no notes)' };
+}
+
+// =============================================================================
+// DEPLOY SET-ASIDE.
+//
+// A deploy that fails at the deploy.md Permissions check (deployer Step 0a: no
+// deploy command ran) fails identically every cycle until an operator grants
+// the missing permission, so re-dispatching the deployer only burns a turn.
+// The deployer marks that stop with the structured `failedStep: 'permissions'`
+// field (never inferred from its notes); runDeployPhase then records
+// `sprintState.deploySetAside` = { reason, notes, cycle } (cycle = first seen)
+// and the cycle loop does not dispatch the deployer again this run. The
+// failure itself still goes onto deployFailures, so the verdict gate above
+// keeps working; later cycles report it through latestDeployFailure's
+// `deploySetAside` fallback. Any other failure (field absent, or a deploy
+// command ran) keeps the normal per-cycle retry.
+// =============================================================================
+
+/** The structured deployer failedStep value that sets deploy aside for the run. */
+export const DEPLOY_PERMISSIONS_FAILED_STEP = 'permissions';
+
+/**
+ * Notes for a cycle whose deploy was not dispatched because it is set aside.
+ *
+ * @param {{ reason: string, cycle: number }} setAside
+ * @returns {string}
+ */
+export function formatDeploySetAsideNotes(setAside) {
+    return `deploy not dispatched -- set aside for this run since C${setAside.cycle}: ${setAside.reason}`;
 }
 
 /**
@@ -146,6 +179,9 @@ export async function runDeployPhase({
     getMemberForRole,
     ensureUnattendedAuto,
     ensureDeployPermissions,
+    // Per-sprint state; `deploySetAside` is recorded on it (see DEPLOY
+    // SET-ASIDE above).
+    sprintState,
     // Mutated in place; reassigned and returned, respectively (see header).
     deployFailures,
     deployedThisCycle,
@@ -212,6 +248,17 @@ export async function runDeployPhase({
     if (!deployedThisCycle) {
         deployFailures.push({ cycle, notes: deployResult.notes });
         log(`Deploy FAILED this cycle (C${cycle}): ${deployResult.notes}. Skipping Integration Test phase.`);
+        if (deployResult.failedStep === DEPLOY_PERMISSIONS_FAILED_STEP && sprintState && !sprintState.deploySetAside) {
+            sprintState.deploySetAside = {
+                reason: 'deployer stopped at the deploy.md Permissions check before running any deploy command',
+                notes: deployResult.notes,
+                cycle,
+            };
+            log(
+                `Deploy SET ASIDE for the rest of this run (first seen C${cycle}): ${sprintState.deploySetAside.reason}. ` +
+                'Not dispatching the deployer again this run -- grant the missing permission(s) and re-trigger the sprint.'
+            );
+        }
     }
 
     return { deployedThisCycle };

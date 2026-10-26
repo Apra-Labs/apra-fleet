@@ -34,6 +34,7 @@ const RUN = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)
 const remoteFor = (name: string) => `https://example.test/kb-self-${name}-${RUN}.git`;
 const SCOPE_FIELDS = ['repo', 'repo_path', 'repo_remote_url'];
 const ALL_TIERS = ['CONFIRMED', 'INFERRED', 'UNVERIFIED'];
+const UNCONFIRMED_TIERS = ['INFERRED', 'UNVERIFIED'];
 
 let scratch: string;
 let handle: HttpTransportHandle;
@@ -276,10 +277,13 @@ describe('kb (self): a REMOTE member session resolves the KB from its single kno
       flagged_for_review: false, author: 'test', source: 'session', confidence: 'INFERRED',
     } as any);
 
+    // Unconfirmed tiers only: a tier list naming CONFIRMED also reads the
+    // member's checkout bible, which for a remote member means reaching its
+    // host -- not what this test is about.
     const remote = await connect(members.remote);
-    const hits = await callJson(remote, 'kb_query', { query: 'gateway retries idempotent', confidence: ALL_TIERS });
+    const hits = await callJson(remote, 'kb_query', { query: 'gateway retries idempotent', confidence: UNCONFIRMED_TIERS });
     expect(hits.l1_results.map((e: { id: string }) => e.id)).toContain(id);
-    const listed = await callJson(remote, 'kb_list', { confidence: ALL_TIERS });
+    const listed = await callJson(remote, 'kb_list', { confidence: UNCONFIRMED_TIERS });
     expect(listed.results.map((e: { id: string }) => e.id)).toContain(id);
 
     // A local member on a different origin does not see it.

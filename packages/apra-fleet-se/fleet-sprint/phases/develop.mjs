@@ -65,6 +65,7 @@ import { isPostDispatchSyncFailure } from '../errors.mjs';
 import { isPermissionScopePostDispatchSyncFailure } from '../dispatch-failure.mjs';
 import { policyFor } from '../role-policies.mjs';
 import { CLAIMED_ELSEWHERE_REASON } from '../orphan-reclaim.mjs';
+import { openBlocksDependents } from '../beads-scope.mjs';
 
 /**
  * Runs ONE Develop round: streak grouping, per-doer worklist packing, and the
@@ -109,6 +110,9 @@ export async function runDevelopPhase({
     doerPool,
     perBeadFeedback,
     // Injected runner helpers -- see the header for why these are not imports.
+    // `bdListScoped` is read only to find the open in-scope dependents of a
+    // doer-BLOCKED bead (see doctorBlockedIds below).
+    bdListScoped,
     claimBeadsBatched,
     verifyDoerStreakClosed,
     normalizeTierToken,
@@ -146,10 +150,114 @@ export async function runDevelopPhase({
         );
         currentReady = currentReady.filter((b) => !permissionScopeBlockedBeads.has(b.id));
     }
+
+    // --- Doer-BLOCKED set-aside carry-over ---
+    // A bead a doer reported BLOCKED (see recordDoerBlocked below), plus every
+    // open in-scope bead depending on it over 'blocks' edges, is set aside for
+    // the rest of the RUN: re-dispatching it would only hit the same block, and
+    // its dependents cannot start until it closes. Same lazily-attached,
+    // sprint-lifetime Map pattern as permissionScopeBlockedBeads above, so the
+    // exclusion holds across rounds AND cycles. Each entry is
+    // { kind: 'blocked'|'dependent', blockedBy, reason, cycle, round } --
+    // `blockedBy` is the bead the doer reported (itself, for kind 'blocked'),
+    // and cycle/round record when the bead was first set aside. Lane-mates of
+    // the blocked bead that do not depend on it are NOT set aside: they stay
+    // open and ready, so they return to the next round's pool.
+    sprintState.doctorBlockedIds = sprintState.doctorBlockedIds || new Map();
+    const doctorBlockedIds = sprintState.doctorBlockedIds;
+    const setAsideReady = currentReady.filter((b) => doctorBlockedIds.has(b.id));
+    if (setAsideReady.length > 0) {
+        log(
+            `Develop C${cycle} R${devRounds}: excluding ${setAsideReady.length} bead(s) set aside after a doer BLOCKED report ` +
+            `(${setAsideReady.map((b) => `${b.id}: ${doctorBlockedIds.get(b.id).reason}`).join('; ')}) from this round's streak ` +
+            'assignment -- not re-dispatching them this run.'
+        );
+        currentReady = currentReady.filter((b) => !doctorBlockedIds.has(b.id));
+    }
     if (currentReady.length === 0) {
-        log(`Develop C${cycle} R${devRounds}: every still-ready bead this round is publish-blocked -- skipping streak assignment and dispatch entirely.`);
+        log(setAsideReady.length > 0
+            ? `Develop C${cycle} R${devRounds}: every still-ready bead this round is set aside (doer-BLOCKED or publish-blocked) -- skipping streak assignment and dispatch entirely.`
+            : `Develop C${cycle} R${devRounds}: every still-ready bead this round is publish-blocked -- skipping streak assignment and dispatch entirely.`);
         return { streakOutcomes: [], readyTitleById: new Map() };
     }
+
+    // Records the bead(s) a doer reported BLOCKED, and their open in-scope
+    // 'blocks' dependents, on doctorBlockedIds. WHICH open beads are blocked is
+    // read off the report's structured `blockedIds` field, never its notes:
+    // the reported ids that the engine's own read-back still shows open. An
+    // explicit empty `blockedIds` means the doer left nothing open BECAUSE of
+    // the block, so nothing is set aside. With the field omitted, the only
+    // unambiguous case is a single-bead dispatch whose one bead is still open:
+    // that bead is the blocked one. In any larger dispatch an open bead the
+    // doer did not name may simply not have been reached (for example after
+    // the doer closed an earlier bead as blocked and stopped), so a bead the
+    // doer never named is never set aside: nothing is set aside and the
+    // existing left-open retry applies.
+    const recordDoerBlocked = async ({ report, unclosedIds, streakIds, doerMember }) => {
+        const hasField = Array.isArray(report.blockedIds);
+        const reported = hasField ? report.blockedIds.map(String) : [];
+        let blockedIds;
+        if (hasField && reported.length === 0) {
+            log(
+                `Doer streak [${streakIds.join(', ')}] reported BLOCKED with an empty blockedIds -- no bead was left open ` +
+                'because of the block, so nothing is set aside; the open beads stay eligible for the next round.'
+            );
+            return;
+        } else if (reported.length > 0) {
+            blockedIds = reported.filter((id) => unclosedIds.includes(id));
+            const ignored = reported.filter((id) => !unclosedIds.includes(id));
+            if (ignored.length > 0) {
+                log(`Doer streak [${streakIds.join(', ')}] reported blockedIds not open in this streak (ignored): ${ignored.join(', ')}.`);
+            }
+        } else if (streakIds.length === 1 && unclosedIds.length === 1) {
+            blockedIds = [...unclosedIds];
+        } else {
+            log(
+                `Doer streak [${streakIds.join(', ')}] reported BLOCKED with ${unclosedIds.length} bead(s) still open ` +
+                'and no blockedIds naming which -- cannot tell blocked from not reached, so nothing is set aside; ' +
+                'the open beads stay eligible for the next round.'
+            );
+            return;
+        }
+        if (blockedIds.length === 0) return;
+        const where = { cycle, round: devRounds };
+        // The doer's own notes are carried verbatim (whitespace-collapsed,
+        // capped) so the stall report says what to fix; they are reported,
+        // never parsed.
+        const rawNotes = typeof report.notes === 'string' ? report.notes.replace(/\s+/g, ' ').trim() : '';
+        const doerNotes = rawNotes.length > 300 ? `${rawNotes.slice(0, 297)}...` : rawNotes;
+        const fresh = [];
+        for (const id of blockedIds) {
+            if (doctorBlockedIds.has(id)) continue;
+            doctorBlockedIds.set(id, {
+                kind: 'blocked', blockedBy: id,
+                reason: `doer on member '${doerMember}' reported BLOCKED on streak [${streakIds.join(', ')}]` +
+                    (doerNotes ? `: ${doerNotes}` : ''),
+                ...where,
+            });
+            fresh.push(id);
+        }
+        let dependents = new Map();
+        if (typeof bdListScoped === 'function') {
+            dependents = openBlocksDependents(blockedIds, await bdListScoped(''));
+        }
+        const freshDependents = [];
+        for (const [id, root] of dependents) {
+            if (doctorBlockedIds.has(id)) continue;
+            doctorBlockedIds.set(id, {
+                kind: 'dependent', blockedBy: root,
+                reason: `depends (via blocks edges) on doer-BLOCKED bead '${root}'`,
+                ...where,
+            });
+            freshDependents.push(id);
+        }
+        log(
+            `Doer BLOCKED set-aside C${cycle} R${devRounds}: setting aside for the rest of this run bead(s) ` +
+            `[${fresh.join(', ')}] reported BLOCKED and their open dependent(s) [${freshDependents.join(', ')}]; ` +
+            `other open bead(s) of streak [${streakIds.join(', ')}] return to the ready pool. Entries: ` +
+            JSON.stringify(Object.fromEntries([...fresh, ...freshDependents].map((id) => [id, doctorBlockedIds.get(id)])))
+        );
+    };
 
     // --- Streak grouping ------------------------------------------
     // PREFER deterministic grouping straight from the planner's lane
@@ -774,6 +882,9 @@ export async function runDevelopPhase({
         const leftOpenReason = report && report.status === 'BLOCKED' ? 'blocked' : 'left-open';
         if (unclosedIds.length > 0) {
             log(`Doer streak [${actualBeadIds.join(', ')}] reported status '${report ? report.status : 'unknown'}' but bead(s) still open: ${unclosedIds.join(', ')} -- treating streak as FAILED.`);
+        }
+        if (leftOpenReason === 'blocked' && unclosedIds.length > 0) {
+            await recordDoerBlocked({ report, unclosedIds, streakIds: actualBeadIds, doerMember });
         }
 
         if (batchStreaks) {

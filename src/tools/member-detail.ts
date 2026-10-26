@@ -322,9 +322,13 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     result.cloud = cloudSection;
   }
 
-  // Update statusline with observed state
-  const slStatus = session.status === 'busy' ? 'busy' : 'idle';
-  writeStatusline(new Map([[agent.id, slStatus]]));
+  // Update statusline with observed state -- idle only, as fleet_status does.
+  // A probed busy is NOT written: busy belongs to the dispatching call (which
+  // releases it) and the stall detector; a busy written from a one-off probe
+  // has no owner to ever clear it. A failed probe (unknown) leaves it as is.
+  if (String(session.status).startsWith('idle')) {
+    writeStatusline(new Map([[agent.id, 'idle']]));
+  }
 
   if (input.format === 'json') {
     return JSON.stringify(result);

@@ -148,11 +148,19 @@ hash, and captures are stored at most INFERRED.
 In a MEMBER session the default reads (`kb_query`, `kb_session_prime`,
 `kb_list`, `kb_context`, `kb_stats`) are answered from an in-memory view of the
 member's own checkout bible (`.fleet/kb-canonical.json`), rebuilt when the file
-changes. An explicit INFERRED/UNVERIFIED read comes from the per-repo DB and
-returns only entries tagged `member:<caller uuid>`. `kb_capture` tags the
+changes. An explicit confidence list is split: CONFIRMED is read from the
+member checkout bible and INFERRED/UNVERIFIED only from the member's own
+captures in the per-repo DB (tagged `member:<caller uuid>`), merged for a
+mixed request. The own half of a mixed request asks for every listed tier, so
+the member's own captures promoted to CONFIRMED in the per-repo DB are returned
+before they reach the bible (the bible copy wins on a shared id); a
+`[CONFIRMED, INFERRED]` read is a superset of the CONFIRMED-only result
+(except `kb_list` with a `limit`, which applies the limit after merging) and
+never exposes another member's captures. `kb_capture` tags the
 stored entry `member:<caller uuid>`; `kb_promote`, `kb_demote` and
 `kb_invalidate` act only on entries carrying that tag and report any other id
-as not found, changing nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
+as not found, changing nothing. `kb_invalidate` takes exactly one of `files`
+or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
 `{discarded, not_found, already_discarded}`. In a member session without the
 kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the

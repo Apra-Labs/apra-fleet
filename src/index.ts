@@ -285,6 +285,18 @@ function resolveTransport(args: string[]): 'http' | 'stdio' | 'invalid' {
   return 'invalid';
 }
 
+/** Clear busy statuses persisted by a server that died mid-task. */
+async function reconcileStartupBusyImpl(): Promise<void> {
+  const { reconcileStaleBusy } = await import('./services/statusline.js');
+  const cleared = reconcileStaleBusy();
+  if (cleared.length > 0) {
+    logLine('startup', `reset stale busy status for ${cleared.length} member(s) left by a previous server: ${cleared.join(', ')}`);
+  }
+}
+function reconcileStartupBusy(): void {
+  void reconcileStartupBusyImpl().catch(() => { /* best-effort */ });
+}
+
 async function startStdioServer() {
   const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
   const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js');
@@ -355,6 +367,7 @@ async function startStdioServer() {
 
   idleManager.start();
   void cleanupStaleTasks();
+  reconcileStartupBusy();
   purgeExpiredCredentials();
   void checkForUpdate();
 
@@ -523,6 +536,7 @@ async function startHttpServer() {
 
   idleManager.start();
   void cleanupStaleTasks();
+  reconcileStartupBusy();
   purgeExpiredCredentials();
   void checkForUpdate();
 
