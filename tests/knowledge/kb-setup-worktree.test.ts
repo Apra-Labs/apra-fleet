@@ -11,6 +11,33 @@ import { isolateGitConfig } from './isolate-git-config.js';
 const configPath = path.join(FLEET_DIR, 'knowledge', 'config.json');
 const HOOK_STEP = 'Installed git post-commit hook for KB invalidation';
 
+// Windows without Administrator or Developer Mode refuses symlink creation
+// (EPERM). That is a host capability gap, so only the symlink test skips;
+// any other error still surfaces.
+function probeFileSymlink(): { ok: boolean; reason: string } {
+  const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-setup-symlink-probe-'));
+  try {
+    const target = path.join(probeDir, 'target');
+    fs.writeFileSync(target, '');
+    fs.symlinkSync(target, path.join(probeDir, 'link'), 'file');
+    return { ok: true, reason: '' };
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e.code === 'EPERM') return { ok: false, reason: e.message };
+    throw e;
+  } finally {
+    fs.rmSync(probeDir, { recursive: true, force: true });
+  }
+}
+
+const fileSymlinks = probeFileSymlink();
+if (!fileSymlinks.ok) {
+  console.warn(
+    `[kb-setup-worktree.test.ts] symlink creation is not permitted on this host (${fileSymlinks.reason}) `
+    + '-- skipping the symlinked post-commit test. Run as Administrator or enable Developer Mode to exercise it.',
+  );
+}
+
 let rootDir: string;
 let savedConfig: string | null;
 let restoreGitConfig: () => void;
@@ -140,6 +167,30 @@ describe('kb_setup never overwrites a post-commit hook it did not write', () => 
     const skip = result.steps.find((s: string) => s.startsWith(SKIP_PREFIX + 'existing post-commit at '));
     expect(skip).toBeDefined();
     expect(skip).toMatch(/post-commit is not ours$/);
+  });
+
+  it.skipIf(!fileSymlinks.ok)('leaves a symlinked post-commit and its target untouched and reports the skip [skipped without symlink permission]', async () => {
+    const repo = path.join(rootDir, 'repo');
+    initRepo(repo);
+    // The target carries the fleet marker, so only the link itself makes the
+    // hook not ours; following it would write to a file outside the repo.
+    const target = path.join(rootDir, 'shared-post-commit');
+    const targetContent = `#!/bin/sh\n${KB_HOOK_MARKER}\necho shared hook\n`;
+    fs.writeFileSync(target, targetContent);
+    const hookPath = defaultHookPath(repo);
+    fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+    fs.symlinkSync(target, hookPath, 'file');
+
+    const result = JSON.parse(await kbSetup({}, { folder: repo }));
+
+    expect(result.success).toBe(true);
+    expect(result.steps).not.toContain(HOOK_STEP);
+    const skip = result.steps.find((s: string) => s.startsWith(SKIP_PREFIX + 'existing post-commit at '));
+    expect(skip).toBeDefined();
+    expect(skip).toMatch(/post-commit is not ours$/);
+    expect(fs.lstatSync(hookPath).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(hookPath)).toBe(target);
+    expect(fs.readFileSync(target, 'utf-8')).toBe(targetContent);
   });
 
   it('skips, without creating it, a hooks dir outside the repo and its git dir', async () => {
