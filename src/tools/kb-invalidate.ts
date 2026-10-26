@@ -18,37 +18,91 @@ export const kbInvalidateSchema = z.object({
 
 export type KbInvalidateInput = z.infer<typeof kbInvalidateSchema>;
 
+// Identifies a post-commit hook fleet wrote; kb_setup only rewrites files carrying it.
+export const KB_HOOK_MARKER = '# apra-fleet KB invalidation hook';
+
 export const KB_POST_COMMIT_HOOK = `#!/bin/sh
-# apra-fleet KB invalidation hook
+${KB_HOOK_MARKER}
 # Marks context-cache entries stale for files changed in the last commit
 git diff-tree --no-commit-id -r --name-only HEAD | while IFS= read -r f; do
   [ -n "$f" ] && node dist/index.js kb invalidate "$f" 2>/dev/null || true
 done
 `;
 
-// Ask git for the hooks dir: in a linked worktree .git is a file, and
-// core.hooksPath may relocate the dir. Fails loud, naming repoPath.
-function resolveGitHooksDir(repoPath: string): string {
+export type KbHookInstallResult =
+  | { installed: true; hookPath: string }
+  | { installed: false; reason: string };
+
+// Ask git for a path (`git rev-parse <args>`), made absolute against repoPath.
+// Used for the hooks dir -- in a linked worktree .git is a file, and
+// core.hooksPath may relocate it -- and the git common dir. Fails loud, naming repoPath.
+function gitRevParsePath(repoPath: string, args: string[]): string {
+  const command = `git rev-parse ${args.join(' ')}`;
   let out: string;
   try {
-    out = execFileSync('git', ['rev-parse', '--git-path', 'hooks'], {
+    out = execFileSync('git', ['rev-parse', ...args], {
       cwd: repoPath, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     }).trim().split(/\r?\n/)[0]?.trim() ?? '';
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Cannot resolve git hooks dir for ${repoPath}: ${msg}`);
+    throw new Error(`Cannot resolve git path for ${repoPath} (${command}): ${msg}`);
   }
   if (!out) {
-    throw new Error(`Cannot resolve git hooks dir for ${repoPath}: git rev-parse --git-path hooks printed nothing`);
+    throw new Error(`Cannot resolve git path for ${repoPath}: ${command} printed nothing`);
   }
   return path.isAbsolute(out) ? out : path.join(repoPath, out);
 }
 
-export function installKbPostCommitHook(repoPath: string): void {
-  const hookDir = resolveGitHooksDir(repoPath);
-  fs.mkdirSync(hookDir, { recursive: true });
+// Realpath of p, or of its nearest existing ancestor with the rest re-appended,
+// so a not-yet-created dir compares in the same form as an existing one
+// (Windows 8.3 short names, macOS /var -> /private/var).
+function canonicalPath(p: string): string {
+  const resolved = path.resolve(p);
+  if (fs.existsSync(resolved)) return fs.realpathSync.native(resolved);
+  const parent = path.dirname(resolved);
+  if (parent === resolved) return resolved;
+  return path.join(canonicalPath(parent), path.basename(resolved));
+}
+
+function isWithin(base: string, target: string): boolean {
+  const rel = path.relative(base, target);
+  return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel));
+}
+
+// The hooks dir must sit under the worktree or the git common dir; a global
+// core.hooksPath pointing elsewhere is shared by other repos and not ours to write.
+function hookDirInsideRepo(repoPath: string, hookDir: string): boolean {
+  const target = canonicalPath(hookDir);
+  const commonDir = gitRevParsePath(repoPath, ['--git-common-dir']);
+  return [repoPath, commonDir].some((base) => isWithin(canonicalPath(base), target));
+}
+
+// True when hookPath is absent, or is a regular file carrying KB_HOOK_MARKER.
+// A symlink, directory or unmarked file belongs to someone else.
+function hookIsOursOrAbsent(hookPath: string): boolean {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(hookPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Cannot inspect existing post-commit hook at ${hookPath}: ${msg}`);
+  }
+  return stat.isFile() && fs.readFileSync(hookPath, 'utf8').includes(KB_HOOK_MARKER);
+}
+
+export function installKbPostCommitHook(repoPath: string): KbHookInstallResult {
+  const hookDir = gitRevParsePath(repoPath, ['--git-path', 'hooks']);
+  if (!hookDirInsideRepo(repoPath, hookDir)) {
+    return { installed: false, reason: `hooks dir ${hookDir} is outside the repo and its git dir (core.hooksPath)` };
+  }
   const hookPath = path.join(hookDir, 'post-commit');
+  if (!hookIsOursOrAbsent(hookPath)) {
+    return { installed: false, reason: `existing post-commit at ${hookPath} is not ours` };
+  }
+  fs.mkdirSync(hookDir, { recursive: true });
   fs.writeFileSync(hookPath, KB_POST_COMMIT_HOOK, { mode: 0o755 });
+  return { installed: true, hookPath };
 }
 
 // A MEMBER session WITHOUT the kb_maintainer grant may not retire a CONFIRMED
