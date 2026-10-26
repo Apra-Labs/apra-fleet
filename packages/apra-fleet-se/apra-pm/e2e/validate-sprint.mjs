@@ -183,8 +183,20 @@ function readBeadsDisk(repo) {
 // jsonl-native or dolt-backed (the dolt backend leaves issues.jsonl stale, so this is
 // the only on-disk source of truth). Returns false if bd is absent or the query fails.
 // NOTE: `bd show --json` returns a single-element ARRAY, not an object.
+// bd resolves BEADS_DIR / BEADS_DB / BD_DB before cwd. Drop them so this
+// query reads `repo` (the scratch e2e clone), not a workspace the host
+// exports globally.
+function bdChildEnv() {
+  const e = { ...process.env };
+  // Case-insensitive: a copy of the Windows env keeps the stored spelling.
+  for (const k of Object.keys(e)) {
+    if (['BEADS_DIR', 'BEADS_DB', 'BD_DB'].includes(k.toUpperCase())) delete e[k];
+  }
+  return e;
+}
+
 function bdSaysClosed(repo, id) {
-  const r = spawnSync('bd', ['show', id, '--json'], { cwd: repo, encoding: 'utf-8' });
+  const r = spawnSync('bd', ['show', id, '--json'], { cwd: repo, encoding: 'utf-8', env: bdChildEnv() });
   if (r.status !== 0 || !r.stdout) return false;
   try {
     const parsed = JSON.parse(r.stdout);
