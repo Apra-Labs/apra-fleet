@@ -362,7 +362,8 @@ value.
   unchanged for that id. Independently, on EVERY call each entry already in the
   bible that the local KB holds as demoted is admitted the same way, unless the
   bible entry is RE-PROMOTED against the local `demoted_at` under the rule
-  above (its `updated_at`, clamped to now, is strictly later): another clone
+  above (its `updated_at` is strictly later, and not later than now -- a
+  future-dated `updated_at` is never a re-promotion): another clone
   re-promoted it, and tombstoning it again would undo that. An admitted
   id is REMOVED from `entries` and its tombstone upserted as
   `{id, at: <local demoted_at>, reason: "demoted"}`. Tombstones already in the

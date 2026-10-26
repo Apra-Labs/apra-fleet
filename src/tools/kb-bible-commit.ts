@@ -7,7 +7,7 @@ import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js
 import { filterProjectBibleCandidates, hasCarriedBasis, selectLegacyBibleBackfill } from '../services/knowledge/bible-basis-filter.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
-import { TOMBSTONE_DEMOTED, clampBibleTimeToNow, standingAgainstTombstone, type BibleTombstone } from '../services/knowledge/bible-import.js';
+import { TOMBSTONE_DEMOTED, standingAgainstTombstone, type BibleTombstone } from '../services/knowledge/bible-import.js';
 import { bibleBytesBlobId } from '../services/knowledge/bible-blob-id.js';
 import { memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import {
@@ -195,8 +195,9 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   // demoted is tombstoned too, named or not: that is what restores a demotion
   // after an older writer (0.4.4) rewrote the bible without its tombstones.
   // Except when the bible entry was promoted AFTER this clone's demotion (same
-  // standingAgainstTombstone rule, bible time clamped to now): another clone
-  // re-promoted it, and tombstoning it again would undo that re-promotion.
+  // standingAgainstTombstone rule; a bible time later than now never counts):
+  // another clone re-promoted it, and tombstoning it again would undo that
+  // re-promotion.
   const bibleEntries = existingDoc?.entries ?? [];
   const bibleIds = bibleEntries.map(e => e.id);
   const demotionState = project.getDemotionState([...requestedDemotions, ...bibleIds]);
@@ -338,10 +339,17 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed });
 }
 
-/** True when the bible entry's own updated_at postdates the local demotion. */
-function repromotedAfter(entry: CanonicalEntry, tombstone: BibleTombstone): boolean {
+/**
+ * True when the bible entry's own updated_at postdates the local demotion. An
+ * updated_at later than now is NOT a re-promotion: clamping it to now would
+ * still put it after every past demoted_at, so a future-dated entry would block
+ * the tombstone forever.
+ */
+function repromotedAfter(entry: CanonicalEntry, tombstone: BibleTombstone, now: Date = new Date()): boolean {
   if (typeof entry.updated_at !== 'string' || entry.updated_at.length === 0) return false;
-  return standingAgainstTombstone(clampBibleTimeToNow(entry.updated_at), tombstone.at) === 'repromoted';
+  const updatedAt = Date.parse(entry.updated_at);
+  if (Number.isNaN(updatedAt) || updatedAt > now.getTime()) return false;
+  return standingAgainstTombstone(entry.updated_at, tombstone.at) === 'repromoted';
 }
 
 /**

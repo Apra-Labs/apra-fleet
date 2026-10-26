@@ -730,6 +730,29 @@ describe('a bible-carried tombstone at is clamped to now where it is read', () =
   });
 });
 
+// The every-call exception must not trust a bible entry dated in the future:
+// clamping it to now would still put it after every past demoted_at, so a
+// future-dated entry would block the tombstone forever.
+describe('a future-dated bible entry is not a re-promotion', () => {
+  it('the next bible commit from the demoted clone removes it and restores the tombstone', async () => {
+    const y = await confirmedCiting(providerA, cloneA, 'Ypsilon', 'src/y.ts');
+    const keep = await confirmedCiting(providerA, cloneA, 'Kappa', 'src/k.ts');
+    await kbBibleCommit({ ids: [y, keep], ...BASE }, { folder: cloneA });
+    await kbDemote({ id: y, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
+
+    const futureDated = readBible(cloneA);
+    futureDated.entries.find(e => e.id === y)!.updated_at = '2999-01-01T00:00:00.000Z';
+    fs.writeFileSync(biblePathOf(cloneA), JSON.stringify(futureDated, null, 2) + '\n');
+    commitWorkTree(cloneA);
+
+    const commit = JSON.parse(await kbBibleCommit({ ids: [], ...BASE }, { folder: cloneA }));
+    expect(commit.demoted).toEqual([y]);
+    const restored = readBible(cloneA);
+    expect(restored.entries.map(e => e.id)).toEqual([keep]);
+    expect(restored.demotions).toEqual([{ id: y, at: row(providerA, y)!.demoted_at, reason: 'demoted' }]);
+  });
+});
+
 describe('the bible_updated_at migration is guarded and backfills', () => {
   it('re-adds the column on re-init after it is dropped, and the next import records the carried updated_at', async () => {
     const k = await confirmedCiting(providerA, cloneA, 'Kappa', 'src/k.ts');
