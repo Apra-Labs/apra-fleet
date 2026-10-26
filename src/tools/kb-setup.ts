@@ -17,7 +17,7 @@ export const kbSetupSchema = z.object({
   token: z.string().optional()
     .describe('Authentication token for remote KB server (stored encrypted, never logged)'),
   request_timeout_ms: z.number().int().min(MIN_REQUEST_TIMEOUT_MS).max(MAX_REQUEST_TIMEOUT_MS).optional()
-    .describe('Per-request timeout in milliseconds for the remote KB server, 1000-120000 (default 5000)'),
+    .describe('Socket idle timeout in milliseconds for each request to the remote KB server, 1000-120000 (default 5000). Not a per-request deadline: a call can wait up to about twice this while queued offline writes flush first.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
   // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
   ...KB_REMOVED_SCOPE_KEYS_SHAPE,

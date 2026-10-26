@@ -18,7 +18,7 @@ export interface KbConfigResult {
   provider: 'sqlite' | 'http';
   url?: string;
   token?: string;
-  /** Per-request timeout for the http provider; absent means the provider default. */
+  /** Socket idle timeout per request for the http provider; absent means the provider default. */
   requestTimeoutMs?: number;
 }
 
