@@ -579,6 +579,20 @@ The client writes this to `~/.apra-fleet/data/knowledge/config.json`:
 
 The token is stored AES-256-GCM encrypted. It is never written in plaintext.
 
+`request_timeout_ms` (integer, 1000-120000, default 5000) sets the per-request
+timeout to the KB server, for servers that need longer than the default:
+
+```
+kb_setup with provider=http, remote=https://<host>, token=<token>, request_timeout_ms=15000
+```
+
+kb_setup refuses a value outside that range, or a non-integer, before writing
+anything. The value is stored as `request_timeout_ms` in the config and kept
+across later `kb_setup` runs that do not pass it. A request that exceeds it
+fails with code `ETIMEDOUT` and a message naming the timeout in ms; like any
+unreachable-server error, that queues a capture or invalidate offline and
+falls back to the local store for reads.
+
 ### 3. GitNexus (optional, codebase plane)
 
 Install GitNexus as an MCP server in `.mcp.json` (already done if you used the

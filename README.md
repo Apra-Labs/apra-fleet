@@ -250,6 +250,9 @@ no separate "server mode" build. A config with no remote, or any config the
 reader cannot parse, always falls back to the local SQLite provider -- see
 [Client-side provider selection](docs/knowledge-layer-design.md#client-side-provider-selection)
 for the exact selection rule and its fallback-construction invariant.
+`--request_timeout_ms <ms>` (1000-120000, default 5000) sets the per-request
+timeout to the remote KB server. See
+[docs/knowledge-layer.md](docs/knowledge-layer.md).
 
 **The provider config is install-wide, not per repo.** There is one
 `knowledge/config.json` per fleet install, so pointing it at a remote KB
