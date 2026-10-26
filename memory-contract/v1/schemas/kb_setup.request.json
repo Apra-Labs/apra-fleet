@@ -26,6 +26,12 @@
           "type": "string",
           "description": "Authentication token for remote KB server (stored encrypted, never logged)"
         },
+        "request_timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 120000,
+          "description": "Per-request timeout in milliseconds for the remote KB server, 1000-120000 (default 5000)"
+        },
         "repo_path": {
           "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
         },

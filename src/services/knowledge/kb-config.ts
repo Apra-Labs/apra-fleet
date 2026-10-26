@@ -12,6 +12,8 @@ export interface KbConfigResult {
   provider: 'sqlite' | 'http';
   url?: string;
   token?: string;
+  /** Per-request timeout for the http provider; absent means the provider default. */
+  requestTimeoutMs?: number;
 }
 
 /**
@@ -24,6 +26,7 @@ export interface KbConfigFile {
   provider?: 'sqlite' | 'http';
   url?: string;
   token_encrypted?: string;
+  request_timeout_ms?: number;
   bible?: { autoCommit?: boolean };
   [key: string]: unknown;
 }
@@ -89,5 +92,12 @@ export function readKbConfigFromDisk(): KbConfigResult {
     );
   }
 
-  return { provider: 'http', url, token };
+  // kb_setup validates the range on write; the reader only drops values no
+  // timeout can use, so a hand-edited bad value falls back to the provider default.
+  const timeout = parsed.request_timeout_ms;
+  const requestTimeoutField = typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0
+    ? { requestTimeoutMs: timeout }
+    : {};
+
+  return { provider: 'http', url, token, ...requestTimeoutField };
 }
