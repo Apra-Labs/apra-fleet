@@ -26,7 +26,9 @@ function initRepo(dir: string): void {
 
 beforeEach(() => {
   restoreGitConfig = isolateGitConfig();
-  rootDir =fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kb-setup-wt-')));
+  // realpathSync.native expands Windows 8.3 short names (RUNNER~1) the way git
+  // and kb_setup report paths; plain realpathSync leaves them short.
+  rootDir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'kb-setup-wt-')));
   savedConfig = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : null;
   fs.rmSync(configPath, { force: true });
 });
@@ -56,7 +58,7 @@ describe('kb_setup hook install resolves the hooks dir through git', () => {
     const hookPath = path.join(hooksDir, 'post-commit');
     expect(fs.existsSync(hookPath)).toBe(true);
     expect(fs.readFileSync(hookPath, 'utf-8')).toContain('kb invalidate');
-    expect(fs.realpathSync(hooksDir)).toBe(fs.realpathSync(path.join(main, '.git', 'hooks')));
+    expect(fs.realpathSync.native(hooksDir)).toBe(fs.realpathSync.native(path.join(main, '.git', 'hooks')));
     expect(fs.statSync(path.join(wt, '.git')).isFile()).toBe(true);
   });
 
