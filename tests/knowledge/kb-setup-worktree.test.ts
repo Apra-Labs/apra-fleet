@@ -6,12 +6,14 @@ import { execFileSync } from 'node:child_process';
 import { kbSetup } from '../../src/tools/kb-setup.js';
 import { installKbPostCommitHook } from '../../src/tools/kb-invalidate.js';
 import { FLEET_DIR } from '../../src/paths.js';
+import { isolateGitConfig } from './isolate-git-config.js';
 
 const configPath = path.join(FLEET_DIR, 'knowledge', 'config.json');
 const HOOK_STEP = 'Installed git post-commit hook for KB invalidation';
 
 let rootDir: string;
 let savedConfig: string | null;
+let restoreGitConfig: () => void;
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true }).trim();
@@ -23,7 +25,8 @@ function initRepo(dir: string): void {
 }
 
 beforeEach(() => {
-  rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kb-setup-wt-')));
+  restoreGitConfig = isolateGitConfig();
+  rootDir =fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kb-setup-wt-')));
   savedConfig = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : null;
   fs.rmSync(configPath, { force: true });
 });
@@ -32,6 +35,7 @@ afterEach(() => {
   fs.rmSync(rootDir, { recursive: true, force: true });
   if (savedConfig === null) fs.rmSync(configPath, { force: true });
   else fs.writeFileSync(configPath, savedConfig);
+  restoreGitConfig();
 });
 
 describe('kb_setup hook install resolves the hooks dir through git', () => {
