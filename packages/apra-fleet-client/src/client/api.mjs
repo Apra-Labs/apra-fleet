@@ -744,7 +744,8 @@
  *   entry content as the audit trail; a reason made only of whitespace or newlines
  *   is refused.
  * @property {string[]} evidence_files - At least one repo-relative file backing the
- *   demotion. Each must resolve to a real file inside the calling session's repo; a
+ *   demotion; an absent or empty list is refused by input validation before the
+ *   tool runs. Each must resolve to a real file inside the calling session's repo; a
  *   path that does not resolve, names a directory, is ABSOLUTE, or contains a ".."
  *   segment is refused with E-DEMOTE-EVIDENCE-UNRESOLVED and nothing is written.
  */

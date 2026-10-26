@@ -342,9 +342,10 @@ export interface MemoryProvider {
   // which is optional for backwards compatibility): withdrawing trust is only
   // useful if why is recorded. evidenceFiles are REQUIRED (at least one), each
   // of which must resolve inside the provider's anchor; none is refused with
-  // E-DEMOTE-EVIDENCE-UNRESOLVED. The parameter stays optional in the signature
-  // so the refusal is a coded error, not a type error at the tool boundary.
-  demote(id: string, reason: string, evidenceFiles?: string[], opts?: { ownerTag?: string }): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
+  // E-DEMOTE-EVIDENCE-UNRESOLVED. The kb_demote tool's input schema (min(1))
+  // refuses an absent or empty list before the provider is reached; the
+  // provider's own refusal covers an untyped direct caller.
+  demote(id: string, reason: string, evidenceFiles: string[], opts?: { ownerTag?: string }): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
   sync(opts?: SyncOptions): Promise<SyncResult>;
   // T2.1 (F5, D4): dedicated no-bump aggregation read (kb_list pattern -- never
   // touches use_count/last_accessed). Part of the interface (not just

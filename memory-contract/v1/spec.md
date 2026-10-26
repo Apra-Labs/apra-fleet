@@ -667,7 +667,11 @@ entry is not CONFIRMED (`E-DEMOTE-NOT-CONFIRMED`, the ladder refusal above);
 trimmed, falls short of the demote reason floor (`E-DEMOTE-REASON-REQUIRED`);
 (6) no evidence file is cited (evidence is REQUIRED, like promote's
 resolvable basis), or a cited evidence file does not resolve anchor-relative to
-a regular file in this worktree (`E-DEMOTE-EVIDENCE-UNRESOLVED`). The eventual content note MUST
+a regular file in this worktree (`E-DEMOTE-EVIDENCE-UNRESOLVED`). At the tool
+boundary an absent or empty `evidence_files` never reaches that check: the
+request schema's `minItems: 1` refuses it first, as an input-validation error.
+The provider still refuses an empty list with `E-DEMOTE-EVIDENCE-UNRESOLVED`
+for a direct caller. The eventual content note MUST
 use the one format shared with the bible tombstone path (2.6), so a demotion
 applied locally and one that crossed clones through an import read
 identically: exactly ONE leading newline (never two, which is the `kb_feedback`

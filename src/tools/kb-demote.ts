@@ -8,7 +8,7 @@ export const kbDemoteSchema = z.object({
   reason: z.string().min(1)
     .describe('Why trust is being withdrawn -- at least 20 characters after newlines are collapsed to spaces and the result trimmed. Appended to the entry content as the audit trail; a reason made only of whitespace or newlines is refused.'),
   evidence_files: z.array(z.string()).min(1)
-    .describe('At least one repo-relative file backing the demotion. Each must resolve to a real file inside the calling session\'s repo; a path that does not resolve, names a directory, is ABSOLUTE, or contains a ".." segment is refused with E-DEMOTE-EVIDENCE-UNRESOLVED and nothing is written.'),
+    .describe('At least one repo-relative file backing the demotion; an absent or empty list is refused by input validation before the tool runs. Each must resolve to a real file inside the calling session\'s repo; a path that does not resolve, names a directory, is ABSOLUTE, or contains a ".." segment is refused with E-DEMOTE-EVIDENCE-UNRESOLVED and nothing is written.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
   // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
   ...KB_REMOVED_SCOPE_KEYS_SHAPE,

@@ -1973,7 +1973,7 @@ export class SqliteProvider implements MemoryProvider {
   async demote(
     id: string,
     reason: string,
-    evidenceFiles?: string[],
+    evidenceFiles: string[],
     opts?: { ownerTag?: string },
   ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
     const db = this.getDb();

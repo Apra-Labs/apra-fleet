@@ -310,7 +310,7 @@ export class HttpKbProvider implements MemoryProvider {
   async demote(
     _id: string,
     _reason: string,
-    _evidenceFiles?: string[],
+    _evidenceFiles: string[],
     _opts?: { ownerTag?: string },
   ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
     throw new Error('kb_demote is not supported for an HTTP KB: the remote provider has no demote route, and demoting against the local fallback store would snapshot the wrong tree. Nothing was changed.');
