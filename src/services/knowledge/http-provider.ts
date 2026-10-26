@@ -24,6 +24,16 @@ import type {
 const MAX_QUEUE_SIZE = 1000;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 
+/**
+ * Optional settings for HttpKbProvider. An options object rather than more
+ * positional parameters, so new settings can be added without changing the
+ * constructor signature.
+ */
+export interface HttpKbProviderOptions {
+  /** Socket idle timeout per request, in ms; absent means DEFAULT_REQUEST_TIMEOUT_MS. */
+  requestTimeoutMs?: number;
+}
+
 type QueuedOperation =
   | { op: 'capture'; input: KBEntryInput }
   | { op: 'invalidate'; files: string[] };
@@ -50,8 +60,8 @@ export class HttpKbProvider implements MemoryProvider {
   readonly offlineQueue: QueuedOperation[] = [];
   private readonly beforeExitHandler: () => void;
 
-  constructor(url: string, token: string, fallback?: SqliteProvider, requestTimeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS) {
-    this.requestTimeoutMs = requestTimeoutMs;
+  constructor(url: string, token: string, fallback?: SqliteProvider, options: HttpKbProviderOptions = {}) {
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.baseUrl = url.replace(/\/$/, '');
     this.token = token;
     this.fallback = fallback ?? new SqliteProvider();
