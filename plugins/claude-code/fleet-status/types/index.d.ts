@@ -73,7 +73,7 @@ export type MemberAction = {
 export type PaneLayout = {
   membersOpen: boolean
   secretsOpen: boolean
-  /** Members: quiet time, holder and stall notes beside each row. */
+  /** Members: a state note (quiet time, stall, free, unreachable), holder and short id beside each row. */
   moreMembers: boolean
   /** Secrets: scope, allowed members and expiry beside each row. */
   moreSecrets: boolean

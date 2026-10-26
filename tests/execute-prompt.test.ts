@@ -2917,6 +2917,11 @@ describe('executePrompt -- preflight reason code mapping', () => {
       ).rejects.toThrow('No response from server');
       expect(inFlightAgents.has(member.id)).toBe(false);
       expect(getStallDetector().stallCheckList.has(member.id)).toBe(false);
+      // A stall tick may already have written busy(mm:ss): the release must
+      // write idle explicitly, not just drop the stall entry.
+      expect(vi.mocked(writeStatusline).mock.calls.some(
+        ([m]) => m instanceof Map && m.get(member.id) === 'idle',
+      )).toBe(true);
 
       mockExecCommand
         .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })

@@ -2326,6 +2326,9 @@ session: ${parsed.sessionId}`;
     if (claimGuardActive) {
       inFlightAgents.delete(agent.id);
       getStallDetector().remove(agent.id);
+      // The stall detector writes busy(mm:ss) on every tick once its entry
+      // exists; removing the entry alone would leave that busy persisted.
+      writeStatusline(new Map([[agent.id, 'idle']]));
     }
     throw err;
   }

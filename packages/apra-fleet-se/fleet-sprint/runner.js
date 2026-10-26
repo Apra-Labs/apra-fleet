@@ -162,7 +162,8 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // around Deploy, and the dashboard/still-open loop control after Review,
 // stayed here.
 import { runReviewPhase } from './phases/review.mjs';
-import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
+import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, formatDeploySetAsideNotes, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
+import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage } from './set-aside.mjs';
 // apra-fleet-3swo.6.8: the next two phase() boundaries -- the per-cycle Integ
 // Test and the Re-Review that Cycle Evaluation dispatches when the goal-
 // priority count already reads 0 but no review ran this cycle. Integ Test is
@@ -197,7 +198,7 @@ import { runRegressionTestPhase } from './phases/regression-test.mjs';
 // return value is its own contract, and group('Finalization')/endGroup() wrap
 // all four Finalization phases rather than either of these two). Their ORDER
 // is load-bearing: the harvester is a code-writing role whose
-// docs/sprint-analysis commits must be G-pushed by its own policy
+// docs/README commits must be G-pushed by its own policy
 // bracket before Publish PR pushes the branch and raises the PR a human reads.
 // See each module's header for where its boundary is drawn.
 import { runHarvestPhase } from './phases/harvest.mjs';
@@ -314,6 +315,11 @@ import { DEFAULT_CONTEXT_CEILING, createRoundSessionRegistry } from './round-ses
 // dispatched on, so a claim a failed doer of this run left in_progress is
 // re-laned in the same sprint (see reclaimInRunOrphanedClaims below).
 import { createOrphanClaimTracker } from './orphan-reclaim.mjs';
+// The pre-launch stale-claim rule, its fresh-read gate, and the downstream
+// beads each reclaim unblocks (see reclaimStaleInProgress below).
+import {
+    isPreLaunchReclaimCandidate, confirmPreLaunchCandidates, downstreamSuffix,
+} from './beads-reachability.mjs';
 // GitHub #717: the verify-block deadlock diagnosis -- a bead blocked only by
 // verify-routed beads while the Integration Test phase cannot run.
 import {
@@ -666,7 +672,10 @@ export const meta = { name: 'fleet-sprint-runner' };
 // would pass them literally into argv. Double quotes are stripped as real
 // quoting by PowerShell and cmd.exe alike, and are a harmless no-op under POSIX
 // shells.
-const NOT_DONE_STATUSES = '"open,in_progress,blocked,deferred"';
+const NOT_DONE_STATUS_LIST = ['open', 'in_progress', 'blocked', 'deferred'];
+const NOT_DONE_STATUSES = `"${NOT_DONE_STATUS_LIST.join(',')}"`;
+// The same statuses as a Set, for filtering already-fetched bead records.
+const NOT_DONE_STATUS_SET = new Set(NOT_DONE_STATUS_LIST);
 
 // ---------------------------------------------------------------------------
 // Git sync brackets: G-pull / G-push -- MOVED to ./member-sync.mjs
@@ -2012,12 +2021,17 @@ async function runSprintCycle(context) {
         return ready.filter((b) => !parentIds.has(b.id));
     }
 
-    // How many times a given bead has already been auto-reclaimed this sprint
-    // (see reclaimStaleInProgress below). Keyed by bead id, lives for the
-    // whole sprint process so the bounce cap accumulates across cycles, not
-    // just within one call.
-    const staleInProgressReclaimCounts = new Map();
-    const STALE_IN_PROGRESS_RECLAIM_LIMIT = 2;
+    // Bead ids the PRE-LAUNCH rule (reclaimStaleInProgress below) must never
+    // touch again this run: every id it has already reclaimed, and every id a
+    // doer of this run was dispatched on (added after each Develop round).
+    // From then on any claim of that bead is this run's own (or a later
+    // actor's), and only the in-run tracker (reclaimInRunOrphanedClaims) may
+    // re-lane it, under its own rules (claimed-elsewhere, completed work, its
+    // re-dispatch cap). started_at cannot draw that line: bd keeps a bead's
+    // FIRST claim stamp on every re-claim, so this run's own claim of a bead
+    // that was stale at launch still reads as predating the launch. Also
+    // bounds the pre-launch rule to one reclaim per bead per sprint.
+    const preLaunchSettledIds = new Set();
     // Read once, on the FIRST call to reclaimStaleInProgress (the pre-sprint
     // one), from the sprint state's start stamp (createSprintState) -- the
     // same instant the KB promotion-candidate window starts at, so the sprint
@@ -2028,77 +2042,91 @@ async function runSprintCycle(context) {
 
     /**
      * Reclaims 'in_progress' beads that are safe to redispatch to 'open':
-     * no unmet `blocks` dependencies (nothing left to wait on) AND claimed
-     * BEFORE this sprint incarnation's own launch time -- so this very
-     * sprint's own in-flight work is never touched here (a claim a failed doer
-     * of THIS run left behind is reclaimed separately, by
-     * reclaimInRunOrphanedClaims). The pre-launch rule is NOT safe against
-     * concurrency on its own: a claim an EARLIER-launched sprint that is
-     * still running holds also predates this launch and would be reclaimed;
-     * only the supervisor's issue-scope overlap guard (which refuses to launch
-     * two sprints over overlapping scope) keeps such a claim out of this
-     * sprint's scope. A bead with no
-     * parseable `started_at` is treated as predating this sprint (`bd
-     * update --claim` always stamps `started_at`, so a bead claimed by
-     * THIS sprint always has one -- an unparseable/absent value can only
-     * mean orphaned state from something else).
+     * no unmet `blocks` dependencies (nothing left to wait on), claimed
+     * BEFORE this sprint incarnation's own launch time, and not in
+     * preLaunchSettledIds (never reclaimed or dispatched by this run). So this
+     * sprint's own work is never touched here -- a claim a failed doer of
+     * THIS run left behind is reclaimed separately, by
+     * reclaimInRunOrphanedClaims -- and each bead is reclaimed by this rule
+     * at most once per sprint. A bead with no parseable `started_at` is
+     * treated as predating this sprint (`bd update --claim` stamps
+     * `started_at` on a first claim, so an absent value can only mean
+     * orphaned state from something else, e.g. a bare `--status
+     * in_progress`).
      *
-     * Bounded per bead via staleInProgressReclaimCounts: a bead that keeps
-     * landing back in 'in_progress' (a doer repeatedly failing on it
-     * specifically, not a one-off orphaned claim) stops being silently
-     * reclaimed after STALE_IN_PROGRESS_RECLAIM_LIMIT attempts and is
-     * surfaced as needing human investigation instead -- the same
-     * bounce-cap precedent already used for the verify-route gap counter
-     * (VERIFY_GAP_LIMIT) elsewhere in this file, applied to this failure
-     * mode.
+     * THE WRITE. `bd update <id> --status open --assignee= --force
+     * --if-status in_progress`, the same write reclaimInRunOrphanedClaims
+     * uses: the stale assignee is cleared because a different actor's `bd
+     * update --claim` refuses a bead another actor still holds (`--force` is
+     * bd's documented override for that abandoned-claim case), and
+     * `--if-status in_progress` makes bd refuse the write if the bead
+     * changed since it was read (logged, left as is).
      *
-     * Originally this reclaim only ran ONCE, as a pre-sprint gate, and only
-     * when the pre-sprint ready set was empty -- a bead orphaned mid-sprint
-     * (a crashed doer, a killed dispatch, or -- as observed in practice --
-     * a prior aborted sprint incarnation whose claims were still in_progress
-     * on relaunch) was invisible to every later cycle, so the sprint just
-     * spun Plan-finds-nothing -> Deploy forever until the stall detector
-     * eventually gave up, burning cycles/cost for zero progress. This is
-     * now also called at the top of every cycle's readiness check (when the
-     * ready set is empty), so a PRE-LAUNCH orphaned claim self-heals on the
-     * very next cycle instead of silently persisting for the rest of the run.
-     * It never reclaims a claim made after the launch -- including one a
-     * crashed doer of THIS run left -- which is reclaimInRunOrphanedClaims'
-     * job.
-     * @param {{ notDoneBeads: object[], reasonTag: string }} opts
-     * @returns {Promise<{ reclaimedIds: string[], cappedIds: string[] }>}
+     * `freshRead`: set when `notDoneBeads` came from the cached snapshot,
+     * which can lag a cycle behind agent-made closes. The candidates are then
+     * re-read with `bd show`, and only those a fresh read still shows
+     * in_progress under the same assignee are written. Callers passing a
+     * fresh `bd list` need no second read.
+     *
+     * Call sites: pre-sprint ONCE whether or not other work is ready (a stale
+     * claim hides its whole `blocks` chain from `bd ready` even while
+     * unrelated work is ready -- see the pre-sprint stale-claim check), and
+     * per cycle only when the ready set is otherwise empty.
+     *
+     * KNOWN LIMIT -- this rule cannot tell an abandoned claim from a live one.
+     * "Claimed before this launch" is all it knows. A bead's assignee is a bd
+     * actor name, and the engine has no map from an actor to a live sprint
+     * or a working human (member reservations are keyed by member, not by bd
+     * actor), so no liveness gate is possible here. Specifically, it WILL
+     * reopen and clear the assignee of: (a) a claim held by an
+     * earlier-launched sprint that is still running, if that bead is inside
+     * this sprint's scope -- only the supervisor's issue-scope overlap guard
+     * prevents that, so two sprints launched directly from the CLI over
+     * overlapping scope (bypassing the supervisor) can both work such a bead;
+     * (b) a bead a human claimed before the launch and is still working.
+     * Because the pre-sprint call is unconditional, this applies to every
+     * launch, not only one with nothing ready. Each such bead is reclaimed at
+     * most once per sprint (preLaunchSettledIds) and every reclaim is logged
+     * with the bead id.
+     *
+     * Each reclaim log names the downstream beads (its `blocks` dependents)
+     * the reclaim puts back on the path to ready.
+     * @param {{ notDoneBeads: object[], reasonTag: string, freshRead?: boolean }} opts
+     * @returns {Promise<{ reclaimedIds: string[] }>}
      */
-    async function reclaimStaleInProgress({ notDoneBeads, reasonTag }) {
+    async function reclaimStaleInProgress({ notDoneBeads, reasonTag, freshRead = false }) {
         if (sprintLaunchTime === null) sprintLaunchTime = sprintState.startedAtMs;
         const notDoneIds = new Set(notDoneBeads.map((b) => b.id));
-        const unmetBlockers = (bead) => (bead.dependencies || [])
-            .filter((d) => d.type === 'blocks' && notDoneIds.has(d.depends_on_id))
-            .map((d) => d.depends_on_id);
-
-        const candidates = notDoneBeads.filter((b) => {
-            if (b.status !== 'in_progress') return false;
-            if (unmetBlockers(b).length > 0) return false;
-            const startedAtMs = b.started_at ? Date.parse(b.started_at) : NaN;
-            return Number.isNaN(startedAtMs) || startedAtMs < sprintLaunchTime;
-        });
+        let candidates = notDoneBeads.filter((b) => isPreLaunchReclaimCandidate(b, {
+            notDoneIds, sprintLaunchTime, settledIds: preLaunchSettledIds,
+        }));
 
         const reclaimedIds = [];
-        const cappedIds = [];
+        if (candidates.length === 0) return { reclaimedIds };
+
+        if (freshRead) {
+            const ids = candidates.map((b) => b.id);
+            const showLabel = `bd show ${ids.join(' ')} --json`;
+            const fresh = parseBdJson(await command(showLabel, { member_name: backlogMember, silent: true }), showLabel);
+            const { confirmed, rejected } = confirmPreLaunchCandidates(candidates, fresh);
+            for (const r of rejected) {
+                log(`${reasonTag}: ${r.id} looked stuck 'in_progress' with a pre-launch claim in the cached snapshot, but ${r.reason} -- not reclaiming it.`);
+            }
+            candidates = confirmed;
+        }
+
         for (const bead of candidates) {
-            const priorAttempts = staleInProgressReclaimCounts.get(bead.id) ?? 0;
-            if (priorAttempts >= STALE_IN_PROGRESS_RECLAIM_LIMIT) {
-                cappedIds.push(bead.id);
+            try {
+                await command(`bd update ${bead.id} --status open --assignee= --force --if-status in_progress`, { member_name: backlogMember, silent: true });
+            } catch (err) {
+                log(`${reasonTag}: reclaiming ${bead.id} was refused (${err.message}) -- leaving it as it is.`);
                 continue;
             }
-            staleInProgressReclaimCounts.set(bead.id, priorAttempts + 1);
-            log(`${reasonTag}: ${bead.id} is stuck 'in_progress' (started_at=${bead.started_at || 'n/a'}) with no unmet blockers and predates this sprint's launch -- reclaiming to 'open' so the sprint can dispatch it (attempt ${priorAttempts + 1}/${STALE_IN_PROGRESS_RECLAIM_LIMIT}).`);
-            await command(`bd update ${bead.id} --status open`, { member_name: backlogMember, silent: true });
+            preLaunchSettledIds.add(bead.id);
+            log(`${reasonTag}: ${bead.id} is stuck 'in_progress' (started_at=${bead.started_at || 'n/a'}, assignee=${bead.assignee || 'none'}) with no unmet blockers and predates this sprint's launch -- ${freshRead ? 'confirmed by a fresh read and ' : ''}reclaimed to 'open' with its assignee cleared so the sprint can dispatch it (once per sprint; any later claim of it is this run's own).${downstreamSuffix(notDoneBeads, bead.id)}`);
             reclaimedIds.push(bead.id);
         }
-        if (cappedIds.length > 0) {
-            log(`${reasonTag}: ${cappedIds.length} bead(s) hit the stale-in_progress reclaim bounce cap (limit ${STALE_IN_PROGRESS_RECLAIM_LIMIT}) and were left 'in_progress' rather than reclaimed again -- needs human investigation: ${cappedIds.join(', ')}.`);
-        }
-        return { reclaimedIds, cappedIds };
+        return { reclaimedIds };
     }
 
     /**
@@ -2154,7 +2182,8 @@ async function runSprintCycle(context) {
      */
     async function reclaimInRunOrphanedClaims({ reasonTag }) {
         if (!orphanClaims.hasFailed()) return [];
-        const { candidates, newlyCappedIds } = orphanClaims.candidates(await fetchAllBeadsShared());
+        const snapshotBeads = await fetchAllBeadsShared();
+        const { candidates, newlyCappedIds } = orphanClaims.candidates(snapshotBeads);
         if (newlyCappedIds.length > 0) {
             log(`${reasonTag}: ${newlyCappedIds.length} bead(s) a failed doer of this run left 'in_progress' already hit the re-dispatch cap (limit ${orphanClaims.limit}) and are left as they are -- needs human investigation: ${newlyCappedIds.join(', ')}.`);
         }
@@ -2194,7 +2223,7 @@ async function runSprintCycle(context) {
                 continue;
             }
             const attempt = orphanClaims.markReclaimed(c.id);
-            log(`${reasonTag}: ${c.id} was left 'in_progress' by a failed doer streak of this run (member '${c.doerMember || 'unknown'}') -- confirmed by a fresh read and reclaimed to 'open' so it is dispatched again this sprint (attempt ${attempt}/${orphanClaims.limit}).`);
+            log(`${reasonTag}: ${c.id} was left 'in_progress' by a failed doer streak of this run (member '${c.doerMember || 'unknown'}') -- confirmed by a fresh read and reclaimed to 'open' so it is dispatched again this sprint (attempt ${attempt}/${orphanClaims.limit}).${downstreamSuffix(snapshotBeads, c.id)}`);
             reclaimedIds.push(c.id);
         }
         return reclaimedIds;
@@ -2298,8 +2327,10 @@ async function runSprintCycle(context) {
             // on the first round of any cycle (roundSessions never resumes
             // across cycles) and cleared on a failed round by the policy's
             // 'clear-round-session' degrade step. The max_turns-exhaustion
-            // resume overrides this to `resume: true`, which is an in-dispatch
-            // continuation, not a cross-round one.
+            // resume overrides this with the exhausted dispatch's OWN session
+            // id (`resume: "<sessionId>"`, never `resume: true`, which the
+            // server resolves to the member's last session, whichever role ran
+            // it) -- an in-dispatch continuation, not a cross-round one.
             resumeArg: roundSessions.resumeArgFor('reviewer', cycle),
             onSessionId: (id, meta) => roundSessions.record('reviewer', cycle, id, meta),
             onResultRejected: (reason) => new ReviewerContractViolationError(
@@ -2585,6 +2616,31 @@ async function runSprintCycle(context) {
         log(`Pre-sprint validation: no ready leaf beads, but ${preSprintVerifyIds.length} bead(s) are implementation-complete and routed to verify: ${preSprintVerifyIds.join(', ')}. Proceeding as a verify-only sprint.`);
     }
 
+    // GitHub #715: pre-sprint stale-claim check, run ONCE whether or not other
+    // work is ready. A bead left in_progress by an earlier run is invisible to
+    // `bd ready`, and so is every bead blocked on it -- unrelated ready work
+    // must not hide that whole chain for the entire sprint. The empty-ready
+    // case runs the same reclaim inside the refusal block below (from a fresh
+    // `bd list` it needs there anyway), so this covers every other case.
+    // Pre-filters on the shared snapshot readyLeafBeads() just cached -- no
+    // bd call at all unless a candidate exists -- then confirms each
+    // candidate with a fresh `bd show` before writing (freshRead), because
+    // the snapshot alone never authorizes a write. Same pre-launch rule and
+    // concurrency caveat as reclaimStaleInProgress' doc comment.
+    if (initialBeads.length > 0 || preSprintVerifyIds.length > 0) {
+        const notDoneFromSnapshot = (await bdListScoped(''))
+            .filter((b) => NOT_DONE_STATUS_SET.has(b.status))
+            .filter((b) => !validated.assignee || b.assignee === validated.assignee);
+        const { reclaimedIds: preSprintStaleReclaimedIds } = await reclaimStaleInProgress({
+            notDoneBeads: notDoneFromSnapshot,
+            reasonTag: 'Pre-sprint self-heal',
+            freshRead: true,
+        });
+        if (preSprintStaleReclaimedIds.length > 0) {
+            initialBeads = await readyLeafBeads();
+        }
+    }
+
     if (initialBeads.length === 0 && preSprintVerifyIds.length === 0) {
         // An empty `--ready` set is not by itself "nothing left to do": real
         // unblocked work can be deadlocked on a bead stuck in a stale
@@ -2845,6 +2901,83 @@ async function runSprintCycle(context) {
     // score below: a bead cannot re-earn classification credit by
     // oscillating in and out of eligibility.
     const verifyEverIds = new Set();
+
+    // Immediate set-aside stall (see ./set-aside.mjs). When nothing is ready
+    // and every open in-scope bead at goal priority is set aside for this run
+    // -- doer-BLOCKED (sprintState.doctorBlockedIds) or, while the deploy is
+    // set aside (sprintState.deploySetAside), bound to Integration Test -- no
+    // further round or cycle can make progress, so throw StalledSprintError
+    // now instead of after STALL_CYCLE_LIMIT empty cycles. A no-op (no bd
+    // call at all) unless something was set aside this run. `openAtGoal` and
+    // `closedIds` may be passed in when the caller already read them (Cycle
+    // Evaluation); otherwise they are read fresh here. `runbooks`
+    // ({ hasDeploy, hasPlaybook }) may likewise be passed in; otherwise the
+    // two runbooks are probed here when the deploy is not set aside.
+    //
+    // An open verify-routed parent (every child closed, the parent itself
+    // waiting on Integration Test) is neither set aside nor waiting on a
+    // set-aside deploy while Integration Test can still run (deploy.md and
+    // integ-test-playbook.md present, deploy not set aside): Deploy and
+    // Integration Test later in this cycle can still close it, so it counts
+    // as open work that keeps the run going. Without the runbooks it cannot
+    // be verified at all; the existing "cannot verify" exit owns that case.
+    async function throwIfSetAsideStall({ where, cycle, openAtGoal = null, closedIds = null, runbooks = null }) {
+        const doctorBlockedIds = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map();
+        const deploySetAside = sprintState.deploySetAside || null;
+        if (doctorBlockedIds.size === 0 && !deploySetAside) return;
+        let open = openAtGoal;
+        if (!open) {
+            const [raw, parentIds] = await Promise.all([
+                bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
+                decomposedParentIds(),
+            ]);
+            open = partitionDeferredBeads(raw.filter((b) => !parentIds.has(b.id))).active;
+        }
+        let integBoundIds = [];
+        let verifyBlockedIds = [];
+        if (deploySetAside) {
+            // Beads that can only close through Integration Test: verify-routed
+            // parents (classified fresh -- a parent whose last child closed this
+            // cycle is not in verifyEverIds yet) plus beads blocked only by them.
+            invalidateAllBeadsCache();
+            const allBeads = await fetchAllBeadsShared();
+            const closed = closedIds || new Set(allBeads.filter((b) => b.status === 'closed').map((b) => b.id));
+            const fresh = classifyVerifySet(allBeads, targetIssues).verifyIds;
+            integBoundIds = [...new Set([...fresh, ...[...verifyEverIds].filter((id) => !closed.has(id))])];
+            const knownClosed = [...closed].map((id) => ({ id, status: 'closed' }));
+            verifyBlockedIds = findVerifyBlockedBeads(open, knownClosed, integBoundIds).map((b) => b.id);
+        } else {
+            const { hasDeploy, hasPlaybook } = runbooks || await (async () => {
+                const deployMd = await probeFileExists('deploy.md', getMemberForRole('deployer'));
+                const playbook = deployMd && await probeFileExists('integ-test-playbook.md', getMemberForRole('integ-test-runner'));
+                return { hasDeploy: deployMd, hasPlaybook: playbook };
+            })();
+            if (hasDeploy && hasPlaybook) {
+                // Open verify-routed parents become uncovered candidates:
+                // with the deploy not set aside, evaluateSetAsideStall never
+                // treats an integ-bound id as covered.
+                invalidateAllBeadsCache();
+                const allBeads = await fetchAllBeadsShared();
+                const closed = closedIds || new Set(allBeads.filter((b) => b.status === 'closed').map((b) => b.id));
+                integBoundIds = classifyVerifySet(allBeads, targetIssues).verifyIds.filter((id) => !closed.has(id));
+            }
+        }
+        const stall = evaluateSetAsideStall({
+            openIds: open.map((b) => b.id), integBoundIds, verifyBlockedIds, doctorBlockedIds, deploySetAside,
+        });
+        if (!stall) return;
+        const message = formatSetAsideStallMessage(stall, { where, scope: sprintFilter });
+        log(message);
+        throw new StalledSprintError(message, {
+            staleCycles, closedCountHistory, highWaterClosedCount,
+            thrashIds: thrashingBeadIds(),
+            blockerIds: stall.blockerIds,
+            blockerReasons: stall.blockerReasons,
+            setAside: stall.entries,
+            cycle,
+            details: { setAsideStall: true, where },
+        });
+    }
 
     // apra-fleet-rp7a.1: every bead id ever seen DEFERRED at/above goal
     // priority during Cycle Evaluation, monotone for the same reason
@@ -3133,6 +3266,22 @@ async function runSprintCycle(context) {
 
             if (currentReadyAll.length === 0) break;
 
+            // Start-of-round set-aside check: when every still-ready bead is set
+            // aside for this run (doer-BLOCKED or a dependent of one), stall now
+            // if nothing else open can progress; otherwise skip the remaining
+            // rounds (nothing here is dispatchable) and go on to Cycle
+            // Evaluation. Mixed rounds are passed through unchanged --
+            // ./phases/develop.mjs excludes the set-aside beads itself.
+            const roundSetAside = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : null;
+            if (roundSetAside && currentReadyAll.every((b) => roundSetAside.has(b.id))) {
+                await throwIfSetAsideStall({ where: `start of Develop C${cycle} R${devRounds + 1}`, cycle });
+                log(
+                    `Develop C${cycle} R${devRounds + 1}: every still-ready bead is set aside for this run ` +
+                    `(${currentReadyAll.map((b) => b.id).join(', ')}) -- skipping the remaining develop/review rounds this cycle.`
+                );
+                break;
+            }
+
             // In-cycle SCOPED replan, taken on a bead's FIRST replan flag: when
             // a reviewer flags a still-ready bead via `replanIds` -- its
             // acceptance criteria are defective and cannot be satisfied by
@@ -3218,6 +3367,7 @@ async function runSprintCycle(context) {
                 sprintState, gitSync, updateDashboard,
                 kbPriming, kbWork, kbInjection, kbSprintContext,
                 devRounds, currentReady, doerPool, perBeadFeedback,
+                bdListScoped,
                 claimBeadsBatched,
                 verifyDoerStreakClosed,
                 normalizeTierToken,
@@ -3227,6 +3377,11 @@ async function runSprintCycle(context) {
                 for (const id of (o.beadIds || [])) workedOnBeadIds.add(id);
             }
             orphanClaims.recordOutcomes(streakOutcomes);
+            // Dispatched by this run: the pre-launch rule never touches these
+            // again (see preLaunchSettledIds).
+            for (const o of streakOutcomes) {
+                for (const id of (o.beadIds || [])) preLaunchSettledIds.add(id);
+            }
 
             // --- Review: self-contained, schema-validated, orchestrator-applied ---
             // The phase body lives in ./phases/review.mjs
@@ -3294,7 +3449,13 @@ async function runSprintCycle(context) {
 
         let deployedThisCycle = false;
 
-        if (hasDeploy) {
+        // Deploy set aside for the run (a Permissions pre-step failure in an
+        // earlier cycle -- see DEPLOY SET-ASIDE in ./phases/deploy.mjs): never
+        // dispatch the deployer again; this cycle's deploy counts as failed.
+        const deploySetAside = sprintState.deploySetAside || null;
+        if (hasDeploy && deploySetAside) {
+            log(`Skipping Deploy Phase C${cycle}: ${formatDeploySetAsideNotes(deploySetAside)}. Skipping Integration Test phase.`);
+        } else if (hasDeploy) {
             // The phase body lives in ./phases/deploy.mjs
             // (apra-fleet-3swo.6.5), which receives its state explicitly
             // instead of closing over runSprintCycle's locals. The
@@ -3308,12 +3469,13 @@ async function runSprintCycle(context) {
                 phase, log, dispatchCtx,
                 cycle, sprintSelfIdLine,
                 getMemberForRole, ensureUnattendedAuto, ensureDeployPermissions,
+                sprintState,
                 deployFailures, deployedThisCycle,
             }));
         } else {
             log('Skipping Deploy Phase (no deploy.md found, or the probe itself failed -- see prior log line)');
         }
-        lastDeployFailure = latestDeployFailure({ hasDeploy, deployedThisCycle, cycle, deployFailures });
+        lastDeployFailure = latestDeployFailure({ hasDeploy, deployedThisCycle, cycle, deployFailures, deploySetAside });
         if (!lastDeployFailure) deployBlockedCycles = 0;
 
         // apra-fleet-66u.2: declared here, OUTSIDE the `if (hasPlaybook &&
@@ -3463,6 +3625,14 @@ async function runSprintCycle(context) {
             staleCycles++;
         }
 
+        // Immediate set-aside stall, checked BEFORE the STALL_CYCLE_LIMIT
+        // stall and the deploy-blocked retry exit below, so neither can delay
+        // it: everything left is set aside, so no later cycle can progress.
+        await throwIfSetAsideStall({
+            where: `Cycle ${cycle} evaluation`, cycle, openAtGoal, closedIds: closedIdsNow,
+            runbooks: { hasDeploy, hasPlaybook },
+        });
+
         // apra-fleet-b4g.102.1: a cycle spent re-attempting a failed deploy
         // after the work itself was already satisfied is not a stall -- it is
         // bounded separately (DEPLOY_RETRY_CYCLE_LIMIT and maxCycles) by the
@@ -3479,10 +3649,18 @@ async function runSprintCycle(context) {
             // a "blocker" told an operator to go unblock something the
             // dispatcher was never going to offer in the first place. They are
             // reported separately, as skipped scope, by deferredStallSuffix.
-            const blockerIds = openAtGoal.map((b) => b.id);
-            const blockerSuffix = blockerIds.length > 0
-                ? ` Still open at/above goal priority ${goalMax}: [${blockerIds.join(', ')}].`
-                : ' No beads remain open at/above goal priority -- the stall is in closing out the sprint, not in the work itself.';
+            // Beads set aside for this run (doer-BLOCKED and their dependents)
+            // are named too, even below goal priority, unless already closed.
+            const setAsideOpenIds = sprintState.doctorBlockedIds instanceof Map
+                ? [...sprintState.doctorBlockedIds.keys()].filter((id) => !closedIdsNow.has(id))
+                : [];
+            const openAtGoalIds = openAtGoal.map((b) => b.id);
+            const blockerIds = [...new Set([...openAtGoalIds, ...setAsideOpenIds])];
+            const setAsideOnlyIds = setAsideOpenIds.filter((id) => !openAtGoalIds.includes(id));
+            const blockerSuffix = (openAtGoalIds.length > 0
+                ? ` Still open at/above goal priority ${goalMax}: [${openAtGoalIds.join(', ')}].`
+                : ' No beads remain open at/above goal priority -- the stall is in closing out the sprint, not in the work itself.') +
+                (setAsideOnlyIds.length > 0 ? ` Also set aside for this run (doer-BLOCKED or a dependent of one): [${setAsideOnlyIds.join(', ')}].` : '');
             const deferredStallIds = [...deferredEverIds];
             const deferredStallSuffix = deferredStallIds.length > 0
                 ? ` Not counted as blockers (deferred, therefore never dispatchable): [${deferredStallIds.join(', ')}].`
@@ -3518,7 +3696,7 @@ async function runSprintCycle(context) {
                 `[${closedCountHistory.join(', ')}] (high-water mark on progress score: ${highWaterClosedCount}).` +
                 blockerSuffix + deferredStallSuffix + thrashSuffix + verifySuffix +
                 ` Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, deferredIds: deferredStallIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle }
+                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, deferredIds: deferredStallIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle, setAside: collectSetAsideEntries(sprintState) }
             );
         }
 
@@ -3650,8 +3828,19 @@ async function runSprintCycle(context) {
         const rootsAllClosed = targetIssues.length > 0 && targetIssues.every((id) => closedIdsNow.has(id));
         const goalSatisfied = openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED' && stillOpenVerifyIds.length === 0;
         if ((rootsAllClosed || goalSatisfied) && lastDeployFailure) {
-            deployBlockedCycles++;
             const which = rootsAllClosed ? 'every configured sprint root/target bead is closed' : `goal priority ${validated.goal} (<=${goalMax}) is otherwise satisfied`;
+            // A deploy set aside for the run is never re-dispatched, so a
+            // retry cycle could only spin (Plan, Re-Review) waiting on a
+            // deploy that will not run: exit to the finish phases now. The
+            // set-aside deploy is reported in the result and its "Set aside
+            // this run" section, and the deploy-failure verdict gate forces
+            // FAIL.
+            if (sprintState.deploySetAside) {
+                log(`Cycle ${cycle}: ${which}, but NOT exiting as satisfied -- ${formatDeploySetAsideNotes(sprintState.deploySetAside)}. No deploy retry is possible this run; exiting cycle loop, the sprint verdict will be FAIL.`);
+                endGroup();
+                break;
+            }
+            deployBlockedCycles++;
             if (cycle < MAX_CYCLES && deployBlockedCycles < DEPLOY_RETRY_CYCLE_LIMIT) {
                 log(`Cycle ${cycle}: ${which}, but NOT exiting as satisfied -- ${formatDeployFailureReason(lastDeployFailure)}. Re-attempting deploy next cycle (deploy-blocked cycle ${deployBlockedCycles} of at most ${DEPLOY_RETRY_CYCLE_LIMIT}).`);
                 cycle++;
@@ -3804,9 +3993,10 @@ async function runSprintCycle(context) {
     }
 
     // The phase body lives in ./phases/harvest.mjs (apra-fleet-3swo.6.9). The
-    // sprint-analysis document, the docs commits and the issue deferrals are
-    // all written by the DISPATCHED harvester in its own repo, and the
-    // 'harvester' policy row's pushCode/pushBeads bracket publishes them. The
+    // sprint-analysis document (written locally, never committed), the docs
+    // commits and the issue deferrals are all made by the DISPATCHED harvester
+    // in its own repo, and the 'harvester' policy row's pushCode/pushBeads
+    // bracket publishes the commits and deferrals. The
     // only value it returns is the cost block Publish PR renders. It must
     // nonetheless run HERE, after Regression Test (whose summary it folds into
     // the analysis document) and before Publish PR (which pushes the branch the
@@ -3819,7 +4009,9 @@ async function runSprintCycle(context) {
         integTestRunnerSpend, integTestRunnerDispatchCount,
         finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds, regressionResult, regressionSkippedBy,
         dispatchToolCalls: sprintState.dispatchToolCalls,
+        setAside: collectSetAsideEntries(sprintState),
         kbWork,
+        command, memberSeCommands,
         computeBranchSlug, buildAnalysisText, buildCostAnalysis,
     });
 
@@ -3846,6 +4038,7 @@ async function runSprintCycle(context) {
         args, validated, targetIssues, backlogMember, finalCycleLabel,
         gitSync, getMemberForRole,
         finalVerdictResult, costAnalysis,
+        setAside: collectSetAsideEntries(sprintState),
     });
 
     endGroup();

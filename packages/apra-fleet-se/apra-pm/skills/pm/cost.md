@@ -111,7 +111,11 @@ At sprint close, after the harvester runs:
 2. **Build summary**: run `buildSprintSummary(analysis, quote, calibration, opts)`
    where `opts = { branch, goal, goalMet, cycleCount, tasksCompleted, tasksOpen,
    startedAt }`. Write the returned `summaryText` to
-   `sprint-logs/<branch>-<startedAt>.analysis.md` and commit it.
+   `sprint-logs/<branch>-<startedAt>.analysis.md`. Do NOT `git add` or commit it: it is a
+   local record. Before writing it, make sure the line `sprint-logs/*.analysis.md` is in
+   the repo's local git exclude file (the path `git rev-parse --git-path info/exclude`
+   prints; add the line only if it is not already there) so no later `git add -A` or
+   `git add sprint-logs/` stages it.
 3. **Update calibration**: run `computeUpdatedCalibration(calibration, analysis,
    startedAt, taskAssignments, logEntries)` and write the result back to
    `sprint-logs/calibration.json`. Commit it. This blends the actual token counts

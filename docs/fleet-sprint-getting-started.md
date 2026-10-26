@@ -65,9 +65,11 @@ Concretely, after a run finishes, here is what has changed in your world:
   against the base branch you chose.
 - Your issue tracker (beads -- see Section 2) has the sprint's issues decomposed,
   worked, and closed-with-evidence or left open with filed bugs explaining why.
-- A sprint analysis document is committed to the branch
-  (`docs/sprint-analysis-<branch>-<hash>.md`: `/` in the branch name becomes
-  `-`, plus an 8-character hash), and the run's raw log is retained on
+- A sprint analysis document is written to the harvester member's working
+  tree (`docs/sprint-analysis-<branch>-<hash>.md`: `/` in the branch name
+  becomes `-`, plus an 8-character hash) but never committed -- the engine
+  lists `docs/sprint-analysis-*.md` in that clone's `.git/info/exclude` so it
+  never shows as a local change -- and the run's raw log is retained on
   disk. No `CHANGELOG.md` entry is written; the cost breakdown is in the PR body.
 
 What it is *not*: it does not invent product scope (the planner is explicitly
@@ -296,6 +298,34 @@ Assigning several doers to a *single* sprint is a different thing, and an untest
 one -- the launch form will let you tick several members for one sprint, but that
 configuration has not been exercised in practice, so treat it as experimental.
 Start with one member per sprint and add sprints, not doers.
+
+### 2.6 Prepare the member before your first sprint
+
+A fleet member is a folder you already use for day-to-day development.
+fleet-sprint assumes its environment works -- compilers, SDKs, package managers,
+services -- and does not guess which tools your project needs.
+
+To prepare it, do one interactive dry run before the first sprint on a member:
+ask Claude to deploy the project on that member in the deployer role (following
+your `deploy.md`), or to run the integration tests in the integration test runner
+role (following `integ-test-playbook.md`). This runs the real toolchain; Claude
+usually fixes the environment or tells you exactly what to install. Environment
+setup belongs to these roles, not to sprint doers, which stay inside the repo's
+working copy. On Windows, an installer that needs admin rights shows a UAC prompt
+for you to approve.
+
+**Manual edits.** Commit any manual change in the member's folder before the next
+sprint, ideally with a short note in the relevant bead. If uncommitted changes
+block the sprint from checking out its branch, the sprint saves all of the
+folder's uncommitted changes (untracked files included, not only the blocking
+ones) into a git stash named
+`fleet-sprint[<branch>] auto-stash of orphaned WIP blocking branch ensure` and
+continues. (On a multi-member launch, a member with any uncommitted changes has
+them stashed as `fleet-sprint[<branch>] auto-stash of uncommitted work before
+launch alignment`.) If nothing blocks the checkout, your changes stay in the
+working tree. Run `git stash list` in that folder to find stashed work.
+
+Future direction: [projects declaring their environment needs](https://github.com/Apra-Labs/apra-fleet/discussions/770).
 
 ---
 

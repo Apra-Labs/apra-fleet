@@ -5,6 +5,7 @@ import { FLEET_DIR } from '../paths.js';
 import { getAllAgents } from '../services/registry.js';
 import { DEFAULT_ICON } from '../services/icons.js';
 import { getStallDetector } from '../services/stall/index.js';
+import { isOrphanedBusy } from '../services/statusline.js';
 import { serverVersion } from '../version.js';
 
 // fleet_snapshot: the cheap, read-only fleet view the Claude Code fleet-status
@@ -66,6 +67,9 @@ export function buildFleetSnapshot(now: number = Date.now()): FleetSnapshot {
     let status = normalizeStatus(states[a.id]);
     const entry = stall.getEntry(a.id);
     if (entry?.stallReported) status = 'unknown';
+    // A persisted busy whose writing server process is dead can never be
+    // cleared by that process -- report it as idle, not busy forever.
+    if (status === 'busy' && !entry && isOrphanedBusy(a.id)) status = 'idle';
     const m: SnapshotMember = {
       id: a.id,
       name: a.friendlyName,

@@ -320,7 +320,13 @@ export function createSyncBrackets({ setPauseGuard } = {}) {
 //     failure (it may have committed and/or pushed), so run the full
 //     pre-dispatch sync in syncMemberBefore's resetToRemoteTip mode -- fetch
 //     and reset onto the remote tip BEFORE the doer can commit, resuming on
-//     published work instead of re-implementing it and diverging.
+//     published work instead of re-implementing it and diverging. The
+//     prior attempt's unpublished commits and uncommitted TRACKED changes
+//     are first pinned on a LOCAL, never-pushed
+//     fleet-salvage/<branch-slug>/<short sha> side ref (git stash create +
+//     git branch -f), without moving the sprint branch or touching
+//     untracked files; a salvage failure aborts the bracket with
+//     GitSyncError instead of resetting (see salvageBeforeReset).
 //   skipPreDispatchSync and resumeOntoRemoteTip encode opposite assumptions
 //   about whether the prior attempt published anything and MUST never be
 //   passed together. Nothing in the code enforces this today.
