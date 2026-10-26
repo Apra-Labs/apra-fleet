@@ -69,8 +69,12 @@ export interface BibleDocument {
  * OPTIONAL, and a malformed tombstone is dropped individually rather than
  * failing the whole bible -- exactly how a malformed ENTRY is treated by
  * importBibleEntries below. kb-export.ts's reader calls this too.
+ *
+ * Each `at` is clamped to `now` (clampBibleTimeToNow): a future-dated tombstone
+ * would otherwise become a future demoted_at on import, and every later
+ * re-promotion would count as withdrawn against it.
  */
-export function extractBibleDemotions(parsed: unknown): BibleTombstone[] {
+export function extractBibleDemotions(parsed: unknown, now: Date = new Date()): BibleTombstone[] {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
   const doc = parsed as { version?: unknown; demotions?: unknown };
   if (doc.version !== 3 || !Array.isArray(doc.demotions)) return [];
@@ -81,7 +85,7 @@ export function extractBibleDemotions(parsed: unknown): BibleTombstone[] {
     if (typeof r.id !== 'string' || r.id.length === 0) continue;
     if (typeof r.at !== 'string' || r.at.length === 0) continue;
     if (typeof r.reason !== 'string' || r.reason.length === 0) continue;
-    byId.set(r.id, { id: r.id, at: r.at, reason: r.reason });
+    byId.set(r.id, { id: r.id, at: clampBibleTimeToNow(r.at, now), reason: r.reason });
   }
   return Array.from(byId.values()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }

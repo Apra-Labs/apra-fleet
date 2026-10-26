@@ -384,7 +384,9 @@ value.
   a local demotion. A tombstone with any other reason only keeps its entry out
   of the member bible view and the cold seed. A bible-carried `updated_at` is
   clamped to the import time when stored, so a future-dated entry cannot
-  outrank every later tombstone.
+  outrank every later tombstone. Likewise a tombstone's `at` is clamped to now
+  wherever a bible is read, so a future-dated tombstone never becomes a future
+  `demoted_at` that every later re-promotion would count as withdrawn against.
 - A re-promotion does NOT reach a clone that already applied the tombstone.
   Import skips an id that already has a local row, so that clone keeps its
   INFERRED row until it is promoted there again; the every-call exception above

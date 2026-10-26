@@ -23,7 +23,7 @@ import {
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
 import { validateFilePaths } from './path-validation.js';
-import { standingAgainstTombstone } from './bible-import.js';
+import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
 import { KbCaptureRejected, type DiscardResult, type RetireOptions } from './types.js';
 import type {
   MemoryProvider,
@@ -2076,7 +2076,9 @@ export class SqliteProvider implements MemoryProvider {
    *    at import -- never the local import time. kb_export uses the same rule to
    *    decide whether to re-add a tombstoned entry, so the two never disagree.
    *  - demoted_at is stamped with the TOMBSTONE's value, not now(): it records
-   *    when trust was withdrawn, which happened on the other clone.
+   *    when trust was withdrawn, which happened on the other clone. That value
+   *    is clamped to now (clampBibleTimeToNow), so a future-dated tombstone
+   *    never stores a demoted_at that every later re-promotion falls before.
    *  - NO ownerTag CHECK. Bible-imported rows carry no member tag (see
    *    importBibleEntries, which builds its input with tags: [] and author
    *    'unknown'), so an owner check here would make every imported row
@@ -2105,7 +2107,8 @@ export class SqliteProvider implements MemoryProvider {
     if (entry.superseded_at) return false;
     if (entry.type === 'user-directive') return false;
 
-    if (standingAgainstTombstone(this.bibleTrustTimeOf(row), tombstoneAt) !== 'withdrawn') return false;
+    const demotedAt = clampBibleTimeToNow(tombstoneAt);
+    if (standingAgainstTombstone(this.bibleTrustTimeOf(row), demotedAt) !== 'withdrawn') return false;
 
     const demotionNote = buildDemotionNote(BIBLE_DEMOTION_REASON, [], entry.author);
     const newContent = truncateContent(entry.content + demotionNote);
@@ -2116,7 +2119,7 @@ export class SqliteProvider implements MemoryProvider {
       'UPDATE entries SET confidence = ?, demoted_at = ?, demoted_basis_hashes = ?, content = ? WHERE id = ?'
     ).run(
       'INFERRED',
-      tombstoneAt,
+      demotedAt,
       JSON.stringify(this.demoteBasisHashes(entry.source_files)),
       newContent,
       id,

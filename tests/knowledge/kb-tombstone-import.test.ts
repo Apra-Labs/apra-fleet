@@ -691,6 +691,45 @@ describe('a bible-carried updated_at is clamped to the import time', () => {
   });
 });
 
+// A future-dated tombstone `at` must not become a future demoted_at: a later
+// re-promotion would then count as withdrawn against it, and B's every-call
+// loop would tombstone the re-promoted entry again -- the flap.
+describe('a bible-carried tombstone at is clamped to now where it is read', () => {
+  it('B stores a demoted_at no later than the import, and a later re-promotion on A is not re-tombstoned by B', async () => {
+    const y = await confirmedCiting(providerA, cloneA, 'Ypsilon', 'src/y.ts');
+    await kbBibleCommit({ ids: [y], ...BASE }, { folder: cloneA });
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+
+    const published = readBible(cloneA);
+    const futureTombstone = {
+      ...published,
+      entries: published.entries.filter(e => e.id !== y),
+      demotions: [{ id: y, at: '2999-01-01T00:00:00.000Z', reason: 'demoted' }],
+    };
+    fs.writeFileSync(biblePathOf(cloneB), JSON.stringify(futureTombstone, null, 2) + '\n');
+    const report = JSON.parse(await kbImport({ skip_sweep: true }, { folder: cloneB }));
+    expect(report.demoted).toBe(1);
+    const demotedAt = row(providerB, y)!.demoted_at!;
+    expect(Date.parse(demotedAt)).toBeLessThanOrEqual(Date.now());
+
+    // A re-promotes Y strictly after B's demotion and commits it.
+    while (Date.now() <= Date.parse(demotedAt)) { /* wait out clock resolution */ }
+    await kbDemote({ id: y, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
+    await providerA.promote(y, 'test fixture: re-verified after the demotion');
+    await kbBibleCommit({ ids: [y], ...BASE }, { folder: cloneA });
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+
+    const before = fs.readFileSync(biblePathOf(cloneB), 'utf-8');
+    const commit = JSON.parse(await kbBibleCommit({ ids: [], ...BASE }, { folder: cloneB }));
+    expect(commit.demoted).toEqual([]);
+    expect(commit.committed).toBe(false);
+    expect(fs.readFileSync(biblePathOf(cloneB), 'utf-8')).toBe(before);
+    expect(readBible(cloneB).entries.map(e => e.id)).toContain(y);
+  });
+});
+
 describe('the bible_updated_at migration is guarded and backfills', () => {
   it('re-adds the column on re-init after it is dropped, and the next import records the carried updated_at', async () => {
     const k = await confirmedCiting(providerA, cloneA, 'Kappa', 'src/k.ts');
