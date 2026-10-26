@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { kbSetup } from '../../src/tools/kb-setup.js';
 import { getKbProviders, resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { HttpKbProvider, DEFAULT_REQUEST_TIMEOUT_MS } from '../../src/services/knowledge/http-provider.js';
+import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
@@ -135,5 +136,20 @@ describe('request_timeout_ms end to end', () => {
     const elapsed = await expectTimeout(provider, DEFAULT_REQUEST_TIMEOUT_MS);
     expect(elapsed).toBeGreaterThanOrEqual(4900);
     expect(elapsed).toBeLessThan(7500);
+  }, 20000);
+
+  it('the constructor takes the timeout in an options object', async () => {
+    responseDelayMs = 3000;
+    const fallback = new SqliteProvider(':memory:');
+    await fallback.init();
+    const provider = new HttpKbProvider(`http://127.0.0.1:${port}`, 'static-token', fallback, { requestTimeoutMs: 1200 });
+    try {
+      const elapsed = await expectTimeout(provider, 1200);
+      expect(elapsed).toBeGreaterThanOrEqual(1100);
+      expect(elapsed).toBeLessThan(2900);
+    } finally {
+      provider.dispose();
+      fallback.close();
+    }
   }, 20000);
 });
