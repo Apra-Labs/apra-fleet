@@ -30,7 +30,7 @@
           "type": "integer",
           "minimum": 1000,
           "maximum": 120000,
-          "description": "Per-request timeout in milliseconds for the remote KB server, 1000-120000 (default 5000)"
+          "description": "Socket idle timeout in milliseconds for each request to the remote KB server, 1000-120000 (default 5000). Not a per-request deadline: a call can wait up to about twice this while queued offline writes flush first."
         },
         "repo_path": {
           "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
