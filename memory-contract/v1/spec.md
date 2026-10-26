@@ -399,8 +399,14 @@ MIXED VERSIONS. A writer that predates tombstones (0.4.4 and earlier `kb_export`
 Upgrade every clone that exports to the same repository together. If an older
 writer has already run, the next `kb_bible_commit` from a clone holding the
 entry as demoted removes the entry and restores its tombstone (the every-call
-rule above); a clone that imported the rewritten bible in between does not lose
-its own demotion, because import never raises confidence on an existing row.
+rule above) -- but only when the re-added entry's `updated_at` is at or before
+the local `demoted_at`. An older writer exports `updated_at = promoted_at ||
+created_at`, which for an imported row is that clone's local import time; if
+it imported the entry AFTER the demotion (before the tombstone reached its
+branch), the re-added entry reads as re-promoted and the tombstone is NOT
+restored -- demote it again once every exporting clone is upgraded. A clone
+that imported the rewritten bible in between does not lose its own demotion,
+because import never raises confidence on an existing row.
 
 ### 2.7 Every code_* call is scoped to the calling session (code constraint)
 
