@@ -1322,7 +1322,7 @@ export class ApraFleet {
      * Withdraw trust from a CONFIRMED entry, lowering it to INFERRED (the
      * inverse of kb_promote). Not a ladder: an INFERRED/UNVERIFIED target is
      * REFUSED with E-DEMOTE-NOT-CONFIRMED rather than returned as a no-op.
-     * Appends the reason (and any evidence files) as an audit note; promoted_at
+     * Appends the reason and the required evidence files as an audit note; promoted_at
      * and source are left untouched. Result JSON:
      * {id, previous_confidence, new_confidence}; extract with parseToolJson().
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
