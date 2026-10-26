@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { kbSetup } from '../../src/tools/kb-setup.js';
-import { readKbConfigFromDisk } from '../../src/services/knowledge/kb-config.js';
+import { readKbConfigFromDisk, type KbConfigResult } from '../../src/services/knowledge/kb-config.js';
+import { DEFAULT_REQUEST_TIMEOUT_MS } from '../../src/services/knowledge/http-provider.js';
+import { getActiveLogFile } from '../../src/utils/log-helpers.js';
 import { FLEET_DIR } from '../../src/paths.js';
 
 // kb_setup request_timeout_ms: validation, persistence, and read-back through
@@ -80,9 +82,45 @@ describe('kb_setup request_timeout_ms', () => {
     expect(readKbConfigFromDisk().requestTimeoutMs).toBe(3000);
   });
 
-  it.each([0, -5, 'abc', null])('the reader ignores a hand-edited non-positive or non-numeric value (%s)', async (value) => {
+});
+
+describe('readKbConfigFromDisk request_timeout_ms bounds', () => {
+  it.each([3e9, 999, 120001, 1500.5, 0, -5, 'abc', null])(
+    'a hand-edited %s falls back to the default with a warning naming key, value and default',
+    async (value) => {
+      await setup(3000);
+      writeRawConfig({ request_timeout_ms: value });
+      const { result, warnings } = readWithWarnings();
+      expect(result.requestTimeoutMs).toBe(DEFAULT_REQUEST_TIMEOUT_MS);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('request_timeout_ms');
+      expect(warnings[0]).toContain(JSON.stringify(value));
+      expect(warnings[0]).toContain(`default ${DEFAULT_REQUEST_TIMEOUT_MS}`);
+    },
+  );
+
+  it.each([1000, 7500, 120000])('a valid %i passes through without a warning', async (value) => {
     await setup(3000);
     writeRawConfig({ request_timeout_ms: value });
-    expect(readKbConfigFromDisk()).not.toHaveProperty('requestTimeoutMs');
+    const { result, warnings } = readWithWarnings();
+    expect(result.requestTimeoutMs).toBe(value);
+    expect(warnings).toHaveLength(0);
   });
 });
+
+// Warnings logged by one readKbConfigFromDisk call: the kb_config warn lines
+// appended to the real fleet log during it (logWarn writes synchronously).
+function readWithWarnings(): { result: KbConfigResult; warnings: string[] } {
+  const logFile = getActiveLogFile();
+  if (!logFile) throw new Error('kb-request-timeout test: no active fleet log file');
+  const offset = fs.existsSync(logFile) ? fs.statSync(logFile).size : 0;
+  const result = readKbConfigFromDisk();
+  const appended = fs.readFileSync(logFile).subarray(offset).toString('utf-8');
+  const warnings = appended
+    .split('\n')
+    .filter(line => line.trim().length > 0)
+    .map(line => JSON.parse(line) as { level: string; tag: string; msg: string })
+    .filter(record => record.level === 'warn' && record.tag === 'kb_config')
+    .map(record => record.msg);
+  return { result, warnings };
+}
