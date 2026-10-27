@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "3b1cd70f84e9c5c55fd0210305009522be4eea38",
     "branch": "u1_upstream_main_3b1cd70",
-    "entry_count": 109
+    "entry_count": 110
   },
   "entries": [
     {
@@ -526,6 +526,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T09:57:31.784Z"
+    },
+    {
+      "id": "4545f74f-f1e4-44f7-9de5-d652a8b29683",
+      "type": "knowledge",
+      "title": "HTTP member mixed-tier reads split with the KB server as both halves",
+      "summary": "Since 452789fd, getMemberSplitRead no longer returns null under http. Own half = raw HttpKbProvider owner-tagged; CONFIRMED half = server view with bible offline fallback (serverRecall), or bible view for kb_list.",
+      "symbols": [
+        "getMemberSplitRead",
+        "memberConfirmedServerView",
+        "HttpKbProvider.withOfflineReads"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-self.ts",
+        "src/services/knowledge/http-provider.ts",
+        "tests/knowledge/kb-member-split-parity-http.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-27T22:53:15.595Z",
+      "source_file_hashes": {
+        "src/services/knowledge/http-provider.ts": "c910ead1ad109eda2a831d17c898d32378590641",
+        "src/services/knowledge/kb-self.ts": "b1941d45c7c5a34d59a9dbfaa1cd55afe134c591",
+        "tests/knowledge/kb-member-split-parity-http.test.ts": "b9456a0e936a6667408b7fee40e5f2df4e334015"
+      }
     },
     {
       "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
