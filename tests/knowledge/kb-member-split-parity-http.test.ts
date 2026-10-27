@@ -10,6 +10,7 @@ import { runWithSessionMember } from '../../src/services/tool-scope.js';
 import { getKbProviders, resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { requireSqliteProject } from '../../src/services/knowledge/require-sqlite-project.js';
 import { importBibleEntries } from '../../src/services/knowledge/bible-import.js';
+import { getMemberSplitRead, mergeSplitById } from '../../src/services/knowledge/kb-self.js';
 import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { memberBiblePath, resetMemberBibleViews } from '../../src/services/knowledge/member-bible-view.js';
@@ -36,8 +37,13 @@ import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../
 //           bible, as its CONFIRMED-only read), every listed tier from the
 //           server, own captures only.
 //
-// Both stores also hold another member's captures, which must never appear
-// (the cross-member leak a mixed-tier read once had). The other member's
+// The parity table also covers another member's CONFIRMED entry (promoted to
+// the bible: returned by a mixed-tier read under either provider), a MEMBER
+// flagged_only read (the checkout bible view under either provider) and
+// kb_session_prime's fts_terms neighbour query on each half of the split.
+//
+// Both stores also hold another member's unconfirmed captures, which must
+// never appear (the cross-member leak a mixed-tier read once had). The other member's
 // context-cache entry for src/cog.ts is the NEWEST one for that file, so the
 // own half must pick the member's own entry, not hide it behind another's.
 //
@@ -58,6 +64,9 @@ const RUN = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)
 const MIXED = ['CONFIRMED', 'INFERRED'] as Array<'CONFIRMED' | 'INFERRED'>;
 const OTHER_TAG = `member:other-${RUN}`;
 const FILES = ['src/gearwheel.ts', 'src/cog.ts'];
+// Cited by the neighbour, promoted and flagged entries (a capture's source
+// files must exist), but not asked about by kb_context.
+const OTHER_FILES = ['src/sprocket.ts', 'src/pinion.ts', 'src/axle.ts'];
 
 function bibleEntry(id: string, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -83,7 +92,28 @@ const BIBLE = [
   // top-5 L2 expansion covers all of them: which row is fifth depends on the
   // half the own promoted capture sits in, which differs between the stores.
   bibleEntry('bible-ctx', { type: 'context-cache', title: 'Wheel source context', summary: 'Context summary for the wheel source file.', symbols: [] }),
+  // Another member's capture that was promoted and reached the bible. Over
+  // http the server holds it under that member's tag and the CONFIRMED half
+  // returns it untagged; over SQLite the checkout bible view does. Not a
+  // 'gearwheel' match (see bible-ctx above): the 'pinion' query and the
+  // neighbour query find it.
+  bibleEntry('other-confirmed', {
+    title: 'Pinion promoted fact', summary: 'Pinion fact promoted from another member session.',
+    symbols: ['Pinion'], source_files: ['src/pinion.ts'], tags: [`member:other-promoted-${RUN}`],
+  }),
+  // A directive in the bible: both stores import it as a flagged pending
+  // proposal (the capture directive gate), so the member flagged_only read is
+  // non-empty under either provider.
+  bibleEntry('bible-directive', {
+    type: 'user-directive', title: 'Directive keep axle notes short', summary: 'Directive: keep axle notes short.',
+    symbols: [], source_files: [],
+  }),
 ];
+
+// The kb_session_prime graph-neighbour query: discrete names sent as
+// fts_terms, OR-joined as one FTS match. 'Sprocket' hits the member's own
+// capture, 'Pinion' the other member's promoted bible entry.
+const NEIGHBOURS = ['Sprocket', 'Pinion', 'absent-neighbour'];
 
 interface Capture { id: string; input: KBEntryInput }
 
@@ -167,7 +197,30 @@ const NORMALISE: Record<string, (out: Row) => unknown> = {
     fresh_summaries: (out.fresh_summaries as Row[]).map(r => pick(r, ['file', 'entry_id', 'status'])).sort(byId),
   }),
   kb_context: out => out,
+  kb_query_flagged: out => ({
+    keys: Object.keys(out).sort(),
+    total: out.total,
+    flagged: (out.flagged_entries as Row[]).map(e => pick(e, [...ENTRY_KEYS, 'flagged_for_review'])).sort(byId),
+  }),
+  neighbour_query: out => (out.results as Row[]).map(e => pick(e, ENTRY_KEYS)).sort(byId),
 };
+
+/**
+ * kb_session_prime's graph-neighbour query, run on each half of the member
+ * split read with exactly the options primeFrom sends (fts_terms, l1_only,
+ * limit 10, the half's tiers and owner tag), merged by id. The neighbour
+ * names themselves come from a code-intelligence index, which a scratch
+ * checkout does not have, so the names are fixed here; the KB side of the
+ * query is the real provider path under either config.
+ */
+async function neighbourQuery(): Promise<string> {
+  const split = await getMemberSplitRead(undefined, MIXED, 'parity neighbour query', { serverRecall: true });
+  if (split === null) throw new Error('kb-member-split-parity: a MEMBER mixed-tier read did not take the split read');
+  const base = { fts_terms: NEIGHBOURS, l1_only: true, limit: 10, include_stale: false, exclude_disputed: false };
+  const bible = await split.bible.project.query({ ...base, confidence: split.bible.tiers });
+  const own = await split.own.project.query({ ...base, confidence: split.own.tiers, owner_tag: split.own.ownerTag });
+  return JSON.stringify({ results: mergeSplitById(bible.results, own.results) });
+}
 
 const READS: Array<{ tool: string; run: () => Promise<string> }> = [
   { tool: 'kb_query', run: () => kbQuery({ query: 'gearwheel', confidence: MIXED }) },
@@ -175,6 +228,10 @@ const READS: Array<{ tool: string; run: () => Promise<string> }> = [
   { tool: 'kb_session_prime', run: () => kbSessionPrime({ hint_symbols: ['Gearwheel'], confidence: MIXED }) },
   { tool: 'kb_context', run: () => kbContext({ files: FILES, confidence: MIXED }) },
   { tool: 'kb_context', run: () => kbContext({ files: FILES }) },
+  // Another member's CONFIRMED entry is part of a mixed-tier result.
+  { tool: 'kb_query', run: () => kbQuery({ query: 'pinion', confidence: MIXED }) },
+  { tool: 'kb_query_flagged', run: () => kbQuery({ flagged_only: true }) },
+  { tool: 'neighbour_query', run: neighbourQuery },
 ];
 
 beforeAll(async () => {
@@ -185,7 +242,7 @@ beforeAll(async () => {
   repo = path.join(scratch, 'checkout');
   fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
   fs.mkdirSync(path.join(repo, '.fleet'), { recursive: true });
-  for (const file of FILES) fs.writeFileSync(path.join(repo, file), `export const value = '${file}';\n`);
+  for (const file of [...FILES, ...OTHER_FILES]) fs.writeFileSync(path.join(repo, file), `export const value = '${file}';\n`);
   execFileSync('git', ['init', '-q'], { cwd: repo });
   execFileSync('git', ['remote', 'add', 'origin', `https://example.test/kb-member-split-parity-${RUN}.git`], { cwd: repo });
   fs.writeFileSync(memberBiblePath(repo), JSON.stringify({ version: 2, entries: BIBLE }), 'utf-8');
@@ -201,8 +258,21 @@ beforeAll(async () => {
     capture('own-ctx', ownTag, { type: 'context-cache', title: 'Cog context own', summary: 'Own context summary for src/cog.ts.', symbols: [] }),
     capture('other-inferred', OTHER_TAG, { title: 'Gearwheel other member capture' }),
     capture('other-ctx', OTHER_TAG, { type: 'context-cache', title: 'Cog context other', summary: 'Other member context summary for src/cog.ts.', symbols: [] }),
+    // A neighbour-query hit among the member's own captures, and one own
+    // capture it must NOT return (own-inferred), so an unforwarded fts_terms
+    // (a plain listing) differs from the FTS match.
+    capture('own-neighbour', ownTag, {
+      title: 'Sprocket neighbour note', summary: 'Sprocket neighbour note from a member session.',
+      source_files: ['src/sprocket.ts'], symbols: ['Sprocket'],
+    }),
+    // Another member's flagged capture: on the server, outside the bible, so a
+    // member flagged_only read must never show it.
+    capture('other-flagged', OTHER_TAG, {
+      title: 'Axle flagged other capture', summary: 'Axle claim another member flagged for review.',
+      source_files: ['src/axle.ts'], symbols: ['Axle'], flagged_for_review: true,
+    }),
   ];
-  otherIds = ['other-inferred', 'other-ctx'];
+  otherIds = ['other-inferred', 'other-ctx', 'other-flagged'];
 
   // SQLite: the per-repo DB holds the captures; the bible file is the bible.
   await seedCaptures(requireSqliteProject((await getKbProviders(repo)).project, 'parity seed'));
@@ -237,7 +307,8 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-  await new Promise<void>(resolve => server.close(() => resolve()));
+  // Guarded: a failed beforeAll may not have started the server.
+  if (server) await new Promise<void>(resolve => server.close(() => resolve()));
   useSqlite();
   restoreRegistry();
   fs.rmSync(TOKEN_PATH, { force: true });
@@ -257,7 +328,7 @@ describe('MEMBER mixed-tier split read: SQLite and http (real kb-server) return 
     });
   }
 
-  it('over http no result carries another member\'s captures, and every read returns the bible and own entries', async () => {
+  it('over http no result carries another member\'s unconfirmed captures, and every read returns the bible and own entries', async () => {
     await useHttp();
     const seen = new Set<string>();
     for (const read of READS) {
@@ -265,6 +336,26 @@ describe('MEMBER mixed-tier split read: SQLite and http (real kb-server) return 
       for (const id of otherIds) expect(ids, `${read.tool} leaked ${id}`).not.toContain(id);
       ids.forEach(id => seen.add(id));
     }
-    for (const id of ['bible-a', 'bible-ctx', 'own-inferred', 'own-confirmed', 'own-ctx']) expect([...seen]).toContain(id);
+    for (const id of ['bible-a', 'bible-ctx', 'own-inferred', 'own-confirmed', 'own-ctx', 'own-neighbour', 'bible-directive']) {
+      expect([...seen]).toContain(id);
+    }
+  });
+
+  it('over http another member\'s CONFIRMED entry is returned by a mixed-tier read and by the neighbour query', async () => {
+    await useHttp();
+    const pinion = JSON.parse(await asMember(() => kbQuery({ query: 'pinion', confidence: MIXED }))) as { l1_results: Row[] };
+    expect(pinion.l1_results.map(e => e.id)).toContain('other-confirmed');
+    const neighbours = JSON.parse(await asMember(neighbourQuery)) as { results: Row[] };
+    // The FTS match only: the member's other own captures are not neighbours.
+    expect(neighbours.results.map(e => e.id).sort()).toEqual(['other-confirmed', 'own-neighbour']);
+  });
+
+  it('over http a member flagged_only read contains only flagged entries', async () => {
+    await useHttp();
+    const out = JSON.parse(await asMember(() => kbQuery({ flagged_only: true }))) as { flagged_entries: Row[] };
+    expect(out.flagged_entries.length).toBeGreaterThan(0);
+    for (const e of out.flagged_entries) {
+      expect(Boolean(e.flagged_for_review || e.contradiction_of), `${String(e.id)} is not flagged`).toBe(true);
+    }
   });
 });
