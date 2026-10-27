@@ -1042,6 +1042,10 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
     query: 'widget batching', confidence: ['INFERRED'],
   }));
 }
+// A server for a different project: the read is refused, not answered locally.
+await withSession('HTTP_MISMATCH', () => recordRefusal('kb_query', 'refusal-http-project-mismatch', {
+  query: 'widget batching',
+}, 'E-KB-HTTP-PROJECT-MISMATCH'));
 await kbHttpStandIn.close();
 
 // ===========================================================================

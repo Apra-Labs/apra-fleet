@@ -551,6 +551,26 @@ export class HttpKbProvider implements MemoryProvider {
   }
 
   /**
+   * GET /api/kb/list. A 404 means the server predates the route (kb-server and
+   * its clients must be upgraded together), which is a typed refusal rather
+   * than a bare HTTP error.
+   */
+  private async listRequest(params: Record<string, string>): Promise<{ results?: KBEntry[] }> {
+    try {
+      return await this.rawRequest<{ results?: KBEntry[] }>('GET', '/api/kb/list', undefined, params);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'HTTP_404') {
+        throw new KbHttpUnsupportedError(
+          `kb_list (the KB server at ${this.displayUrl} has no GET /api/kb/list route)`,
+          'nothing was read',
+          'upgrade the KB server to the same version as this client, or use a local SQLite KB (kb_setup provider sqlite).',
+        );
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Every live entry the server holds with `ownerTag`, any tier. Reads the
    * no-bump list route, so an ownership check is not counted as a retrieval.
    * Asks the server to narrow on the tag and re-checks each entry, so a server
@@ -559,7 +579,7 @@ export class HttpKbProvider implements MemoryProvider {
    * array: ownership cannot be decided then.
    */
   private async ownedEntries(ownerTag: string): Promise<KBEntry[]> {
-    const result = await this.rawRequest<{ results?: KBEntry[] }>('GET', '/api/kb/list', undefined, {
+    const result = await this.listRequest({
       tag: ownerTag,
       confidence: 'CONFIRMED,INFERRED,UNVERIFIED',
       include_stale: 'true',
@@ -606,7 +626,7 @@ export class HttpKbProvider implements MemoryProvider {
     // both a caller tag and an owner tag, the owner filter runs here, after.
     const filteredHere = opts.owner_tag !== undefined && opts.tag !== undefined;
     if (opts.limit !== undefined && !filteredHere) params.limit = String(opts.limit);
-    const result = await this.rawRequest<{ results?: KBEntry[] }>('GET', '/api/kb/list', undefined, params);
+    const result = await this.listRequest(params);
     const entries = result.results ?? [];
     if (opts.owner_tag === undefined) return entries;
     const owned = entries.filter(e => hasTag(e, opts.owner_tag!) && (opts.tag === undefined || hasTag(e, opts.tag)));

@@ -8,7 +8,7 @@ import { startKbServer, KbServerHttpProviderRefusedError } from '../../src/comma
 import { FLEET_DIR } from '../../src/paths.js';
 import { encryptPassword } from '../../src/utils/crypto.js';
 import { resetKbProviders, getProjectSlug } from '../../src/services/knowledge/kb-providers.js';
-import { HttpKbProvider, KbHttpProjectMismatchError, redactUrlUserinfo } from '../../src/services/knowledge/http-provider.js';
+import { HttpKbProvider, KbHttpProjectMismatchError, KbHttpUnsupportedError, redactUrlUserinfo } from '../../src/services/knowledge/http-provider.js';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 
 const TEST_PORT = 17878;
@@ -306,6 +306,77 @@ describe('kb-server refuses a client for another project on every route', () => 
       provider.dispose();
       fallback.close();
       fs.rmSync(fallbackDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a capture queued while offline stays queued when the client then reaches a server for another project, and the server store gets nothing', async () => {
+    const marker = `queuedmismatch${crypto.randomBytes(6).toString('hex')}`;
+    const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-queued-mismatch-'));
+    const fallback = new SqliteProvider(path.join(fallbackDir, 'kb.sqlite'));
+    // A closed port: the capture is queued, nothing is reachable.
+    const closed = http.createServer();
+    await new Promise<void>(resolve => closed.listen(0, '127.0.0.1', resolve));
+    const closedPort = (closed.address() as { port: number }).port;
+    await new Promise<void>(resolve => closed.close(() => resolve()));
+    const provider = new HttpKbProvider(`http://127.0.0.1:${closedPort}`, testToken, fallback, { projectSlug: OTHER });
+    try {
+      await provider.init();
+      const queued = await provider.capture({
+        type: 'knowledge', title: `Queued ${marker}`, summary: `Entry ${marker} queued while the server was down.`,
+        content: `Body of ${marker}.`, source_files: [], symbols: [], tags: [], content_hash: '',
+        content_hash_type: 'sha256', flagged_for_review: false, author: 'test', source: 'doer', confidence: 'INFERRED',
+      } as any);
+      expect(queued.id).toMatch(/^offline-/);
+      expect(provider.offlineQueue).toHaveLength(1);
+
+      // The client's server URL now reaches a server for a different project.
+      (provider as unknown as { baseUrl: string }).baseUrl = `http://127.0.0.1:${TEST_PORT}`;
+      await expect(provider.query({ query: marker })).rejects.toBeInstanceOf(KbHttpProjectMismatchError);
+
+      expect(provider.offlineQueue).toHaveLength(1);
+      expect(provider.offlineQueue[0]).toMatchObject({ op: 'capture' });
+      const store = await request('GET', `/api/kb/query?query=${marker}&confidence=CONFIRMED,INFERRED,UNVERIFIED`);
+      expect(store.status).toBe(200);
+      expect(store.body.results).toEqual([]);
+    } finally {
+      provider.dispose();
+      fallback.close();
+      fs.rmSync(fallbackDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('HttpKbProvider list against a server without GET /api/kb/list', () => {
+  it('surfaces the 404 as E-KB-HTTP-UNSUPPORTED, for kb_list and for the member own-scope lookup', async () => {
+    const seen: string[] = [];
+    const server = http.createServer((req, res) => {
+      seen.push(`${req.method} ${(req.url ?? '').split('?')[0]}`);
+      req.resume();
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not found', code: 'NOT_FOUND' }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-list-404-'));
+    const fallback = new SqliteProvider(path.join(fallbackDir, 'kb.sqlite'));
+    const provider = new HttpKbProvider(`http://127.0.0.1:${port}`, testToken, fallback, { projectSlug: SERVER_PROJECT });
+    try {
+      for (const call of [
+        () => provider.list({ confidence: ['CONFIRMED'] } as any),
+        () => provider.list({ owner_tag: 'member:x' } as any),
+        () => provider.promote('x', 'a reason long enough to pass the floor', { ownerTag: 'member:x' }),
+      ]) {
+        const err = await call().then(() => null, (e: unknown) => e as Error);
+        expect(err).toBeInstanceOf(KbHttpUnsupportedError);
+        expect((err as Error).message).toMatch(/^E-KB-HTTP-UNSUPPORTED: .*\/api\/kb\/list/);
+      }
+      expect(seen).toEqual(['GET /api/kb/list', 'GET /api/kb/list', 'GET /api/kb/list']);
+    } finally {
+      provider.dispose();
+      fallback.close();
+      fs.rmSync(fallbackDir, { recursive: true, force: true });
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
     }
   });
 });

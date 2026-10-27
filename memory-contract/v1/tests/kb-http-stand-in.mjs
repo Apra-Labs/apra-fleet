@@ -6,7 +6,10 @@
 // by the URL path prefix the session's KB config points at:
 //   /tagged    the entry carries its tags (owner tag of another member)
 //   /untagged  the same entry with no tags field (ownership undecidable)
-// Every other request is a 404: a recorded case that reaches any other route
+//   /other-project  a server for a different project: every request is a 409
+//              PROJECT_MISMATCH, exactly as kb-server answers a client slug it
+//              does not serve
+// Every other request (on the first two variants) is a 404: a recorded case that reaches any other route
 // fails loudly instead of recording a stand-in's invented answer.
 //
 // Node builtins only, like the rest of this directory's harness code.
@@ -15,7 +18,7 @@ import http from 'node:http';
 
 export const HTTP_FOREIGN_ENTRY_ID = '9d4e7a10-3b2c-4f5e-8a61-2c7d0e9b4f13';
 export const HTTP_FOREIGN_OWNER_TAG = 'member:contract-http-foreign-owner';
-export const HTTP_STAND_IN_VARIANTS = ['tagged', 'untagged'];
+export const HTTP_STAND_IN_VARIANTS = ['tagged', 'untagged', 'other-project'];
 
 function foreignEntry(withTags) {
   const entry = {
@@ -42,6 +45,15 @@ function handle(req, res) {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(body));
   };
+  if (variant === 'other-project') {
+    send(409, {
+      error: 'this KB server serves a different project',
+      code: 'PROJECT_MISMATCH',
+      server_project: 'contract-other-project',
+      client_project: req.headers['x-kb-project'] ?? '(none)',
+    });
+    return;
+  }
   if (req.method === 'GET' && (route === '/api/kb/query' || route === '/api/kb/list') && HTTP_STAND_IN_VARIANTS.includes(variant)) {
     const results = [foreignEntry(variant === 'tagged')];
     send(200, { results, total: results.length });

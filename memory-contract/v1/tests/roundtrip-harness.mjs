@@ -243,6 +243,9 @@ export const ENVIRONMENT = {
     // The same over a server that returns entries without tags: member own-scope
     // cannot be decided, so a member kb_promote is refused with a typed code.
     HTTP_UNTAGGED: { member: 'contract-http-untagged', kind: 'local', repo: 'HTTP', kbMaintainer: true, kbHttp: 'untagged' },
+    // The same over a server for a DIFFERENT project (409 PROJECT_MISMATCH on
+    // every route): a read is refused with E-KB-HTTP-PROJECT-MISMATCH.
+    HTTP_MISMATCH: { member: 'contract-http-mismatch', kind: 'local', repo: 'HTTP', kbMaintainer: true, kbHttp: 'other-project' },
   },
   defaultSession: 'A',
 };
@@ -623,6 +626,9 @@ export const SCENARIO = [
   { tool: 'kb_promote', case: 'refusal-http-not-own' },
   { tool: 'kb_promote', case: 'refusal-kb-http-unsupported' },
   { tool: 'kb_query', case: 'http-own-scope', assertParsed: assertNoForeignEntry },
+  // A server for another project is reachable but wrong: a read is refused,
+  // never answered from the local store.
+  { tool: 'kb_query', case: 'refusal-http-project-mismatch' },
 ];
 
 // ---------------------------------------------------------------------------

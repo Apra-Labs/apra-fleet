@@ -625,6 +625,7 @@ Another server can stand in for `kb-server` by serving the same routes:
 |---|---|
 | `POST /api/kb/capture` | kb_capture |
 | `GET /api/kb/query` (`query`, `type`, `tag`, `limit`, `l1_only`, `confidence`, `exclude_disputed`, `include_stale`, `include_superseded`) | kb_query, and the member own-scope lookup (`tag=member:<uuid>`); entries must carry their `tags` |
+| `GET /api/kb/list` (`tag`, `confidence`, `type`, `module`, `symbol`, `exclude_disputed`, `include_stale`, `limit`; no-bump read, entries carry their `tags`) | kb_list, and the member own-scope ownership check. A 404 from it surfaces as `E-KB-HTTP-UNSUPPORTED` |
 | `GET /api/kb/context` | kb_context |
 | `POST /api/kb/prime` | kb_session_prime |
 | `POST /api/kb/invalidate` (`{files}`) | kb_invalidate with files |
@@ -854,6 +855,10 @@ Design notes:
   one project and answers any other (or a missing header) with 409 naming
   both slugs, surfaced as `E-KB-HTTP-PROJECT-MISMATCH`, never as a fallback
   to the local store.
+- Upgrade `kb-server` and its clients together. A v0.4.4 client sends no
+  `X-KB-Project` header, so a current `kb-server` answers it with 409
+  `E-KB-HTTP-PROJECT-MISMATCH` on every call; a current client against an older
+  server that lacks `GET /api/kb/list` gets `E-KB-HTTP-UNSUPPORTED` from kb_list.
 - Invariant: promote has no offline queue or local fallback, since the entry id
   only exists on the server. A malformed or non-JSON error body still surfaces as
   a thrown error rather than a silent success.
