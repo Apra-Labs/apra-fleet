@@ -833,6 +833,13 @@ Design notes:
   routed to the http provider (`serverRecall` in
   `src/services/knowledge/kb-self.ts`), because the server, not a local store,
   holds the confirmed entries. `kb_list` and `kb_stats` are unchanged.
+- Exception: a member `kb_query({flagged_only: true})` does not take
+  `serverRecall`. It reads the checkout bible view plus the global KB under
+  either provider, exactly as over SQLite. A flagged listing carries no owner
+  tag, so on the server it would show other members' entries. A non-member
+  flagged read goes to the server: the provider sends `flagged_only=true`,
+  `kb-server`'s `GET /api/kb/query` honours it, and `kb_query` re-applies the
+  flagged filter to whatever the server returns.
 - Server down: a member CONFIRMED read falls back to the checkout bible (the
   same view a SQLite member reads) and logs a warning; it never falls back to
   the per-repo database. Other reads keep the per-repo fallback store.

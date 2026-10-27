@@ -367,6 +367,7 @@ export class HttpKbProvider implements MemoryProvider {
     if (opts.include_superseded) params.include_superseded = 'true';
     if (opts.confidence?.length) params.confidence = opts.confidence.join(',');
     if (opts.exclude_disputed) params.exclude_disputed = 'true';
+    if (opts.flagged_only) params.flagged_only = 'true';
     // MEMBER own-scope: the server narrows on the owner tag when the caller
     // set no tag of its own; the result is re-filtered below either way.
     const tag = opts.tag ?? opts.owner_tag;

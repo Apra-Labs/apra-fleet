@@ -250,7 +250,8 @@ export interface SelfReadKb {
  * enforces it fleet-side on the entries' tags. A CONFIRMED read whose server
  * is unreachable is answered from the checkout bible (withOfflineReads), never
  * the per-repo database. kb_list and kb_stats do not pass it and keep the
- * routing above under either provider.
+ * routing above under either provider, and neither does a kb_query
+ * flagged_only read (a MEMBER one stays on the bible view, as over SQLite).
  */
 export interface SelfReadKbOptions {
   serverRecall?: boolean;

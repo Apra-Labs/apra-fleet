@@ -52,6 +52,12 @@ function passesTrustFilter(
   return true;
 }
 
+// The flagged_only predicate (the same condition SqliteProvider.query applies
+// in SQL): either half of a contradiction pair.
+function isFlagged(e: { flagged_for_review?: boolean; contradiction_of?: string | null }): boolean {
+  return Boolean(e.flagged_for_review || e.contradiction_of);
+}
+
 type L1Opts = Parameters<MemoryProvider['query']>[0] & { limit: number };
 type Entry = Awaited<ReturnType<MemoryProvider['query']>>['results'][number];
 
@@ -191,8 +197,16 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // per-repo DB and sees only the caller's own captures (ownerTag).
   // Under an http project provider (serverRecall) a MEMBER read of any tier
   // goes to the server; ownerTag is enforced the same way, fleet-side.
+  // A flagged_only read never takes serverRecall: a MEMBER flagged read is
+  // answered from the checkout bible view (plus the global KB) under either
+  // provider, exactly as over SQLite. The KB server holds every member's
+  // captures at every tier, and a flagged listing carries no owner tag, so
+  // sending it there would show the member other members' entries.
   const { providers, ownerTag } = await getSelfReadKb(
-    anchor, input.flagged_only ? undefined : input.confidence, { serverRecall: true });
+    anchor,
+    input.flagged_only ? undefined : input.confidence,
+    { serverRecall: !input.flagged_only },
+  );
 
   if (input.flagged_only) {
     const flaggedOpts = {
@@ -205,13 +219,16 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
       l1_only: false,
     };
 
-    const projectFlagged = await providers.project.query(flaggedOpts);
-    const globalFlagged = await providers.global.query(flaggedOpts);
+    // isFlagged re-applies the flagged filter to what a provider returned: the
+    // sqlite provider filters in SQL, a remote KB server predating the
+    // flagged_only parameter ignores it and answers with a plain listing.
+    const projectFlagged = (await providers.project.query(flaggedOpts)).results.filter(isFlagged);
+    const globalFlagged = (await providers.global.query(flaggedOpts)).results.filter(isFlagged);
 
-    const seen = new Set(projectFlagged.results.map(e => e.id));
+    const seen = new Set(projectFlagged.map(e => e.id));
     const merged = [
-      ...projectFlagged.results,
-      ...globalFlagged.results.filter(e => !seen.has(e.id)),
+      ...projectFlagged,
+      ...globalFlagged.filter(e => !seen.has(e.id)),
     ];
 
     return JSON.stringify({

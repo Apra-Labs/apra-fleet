@@ -221,9 +221,13 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         const tag = url.searchParams.get('tag') || undefined;
         const include_stale = url.searchParams.get('include_stale') === 'true';
         const include_superseded = url.searchParams.get('include_superseded') === 'true';
+        // flagged_only: list only contradiction-flagged entries (the
+        // kb_query flagged_only branch); the trust filters are ignored then.
+        const flagged_only = url.searchParams.get('flagged_only') === 'true';
 
         const result = await provider.query({
           query, type, tag, limit, l1_only, confidence, exclude_disputed, include_stale, include_superseded,
+          flagged_only,
         });
         return jsonResponse(res, 200, result as unknown as Record<string, unknown>);
       }
