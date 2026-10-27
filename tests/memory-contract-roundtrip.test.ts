@@ -156,6 +156,8 @@ class SqliteContractProvider {
     for (const [key, recorded] of Object.entries(RECORDED_REMOTES)) literals[recorded] = this.liveRemote(key);
     for (const [recorded, live] of world.memberLiterals as [string, string][]) literals[recorded] = live;
     literals[HTTP_STAND_IN_RECORDED_OTHER_URL] = (kbHttpStandIn as NonNullable<typeof kbHttpStandIn>).urlFor('other-project');
+    // The http sessions' project slug is part of the project-mismatch message.
+    literals['exampletest-memory-contract-fixtures-http'] = resolveProjectSlug(this.repoPaths.get('HTTP') as string);
 
     return { substitutions: { paths, literals } };
   }
