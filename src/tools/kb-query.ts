@@ -279,15 +279,20 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   let l2Results = mergedL1.slice(0, 5);
 
   if (top5Ids.length > 0) {
-    // L2 fetch: check project first, then global for IDs not found in project
-    const projectL2 = await providers.project.query({ ids: top5Ids });
-    const projectL2Ids = new Set(projectL2.results.map(e => e.id));
+    // L2 fetch: check project first, then global for IDs not found in project.
+    // Each answer keeps only the ids it was asked for: a remote KB server that
+    // ignores the ids parameter must not inject arbitrary entries into L2.
+    const requested = new Set(top5Ids);
+    const projectL2 = (await providers.project.query({ ids: top5Ids })).results
+      .filter(e => requested.has(e.id));
+    const projectL2Ids = new Set(projectL2.map(e => e.id));
     const missingIds = top5Ids.filter(id => !projectL2Ids.has(id));
+    const missing = new Set(missingIds);
     const globalL2Results = missingIds.length > 0
-      ? (await providers.global.query({ ids: missingIds })).results
+      ? (await providers.global.query({ ids: missingIds })).results.filter(e => missing.has(e.id))
       : [];
 
-    l2Results = [...projectL2.results, ...globalL2Results].map(e => ({
+    l2Results = [...projectL2, ...globalL2Results].map(e => ({
       ...e,
       content: e.content.length > L2_CONTENT_CAP
         ? e.content.slice(0, L2_CONTENT_CAP) + '...[truncated]'

@@ -624,9 +624,9 @@ Another server can stand in for `kb-server` by serving the same routes:
 | Route | Used for |
 |---|---|
 | `POST /api/kb/capture` | kb_capture |
-| `GET /api/kb/query` (`query`, `type`, `tag`, `limit`, `l1_only`, `confidence`, `exclude_disputed`, `include_stale`, `include_superseded`) | kb_query, and the member own-scope lookup (`tag=member:<uuid>`); entries must carry their `tags` |
+| `GET /api/kb/query` (`query`, `type`, `tag`, `limit`, `l1_only`, `confidence`, `exclude_disputed`, `include_stale`, `include_superseded`, `flagged_only`, `fts_terms`, `ids`) | kb_query, and the member own-scope lookup (`tag=member:<uuid>`); entries must carry their `tags`. `flagged_only=true` lists only contradiction-flagged entries. `fts_terms` is a JSON array of strings (URL-encoded, e.g. `fts_terms=["Gearwheel","ratio"]`) OR-joined as one FTS match (kb_session_prime's neighbour query). `ids` is a JSON array of entry ids for an exact-id lookup (kb_query's L2 fetch; kb_query keeps only the requested ids). A `fts_terms` or `ids` value that is not a JSON array of strings answers 400 `BAD_REQUEST` |
 | `GET /api/kb/list` (`tag`, `confidence`, `type`, `module`, `symbol`, `exclude_disputed`, `include_stale`, `limit`; no-bump read, entries carry their `tags`) | kb_list, and the member own-scope ownership check. A 404 from it surfaces as `E-KB-HTTP-UNSUPPORTED` |
-| `GET /api/kb/context` | kb_context |
+| `GET /api/kb/context` (`files` comma-separated, required; `confidence` comma-separated; `exclude_disputed`; `tag`) | kb_context. `tag=member:<uuid>` is the member own-scope: each file's newest entry is chosen among the entries carrying that tag, not the newest overall |
 | `POST /api/kb/prime` | kb_session_prime |
 | `POST /api/kb/invalidate` (`{files}`) | kb_invalidate with files |
 | `POST /api/kb/promote` (`{id, reason}` -> `{id, previous_confidence, new_confidence}`; 404 unknown id, 422 refused) | kb_promote |
