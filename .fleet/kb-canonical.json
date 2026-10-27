@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "3b1cd70f84e9c5c55fd0210305009522be4eea38",
     "branch": "u1_upstream_main_3b1cd70",
-    "entry_count": 107
+    "entry_count": 109
   },
   "entries": [
     {
@@ -1004,6 +1004,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T22:08:20.217Z"
+    },
+    {
+      "id": "7bb2d969-efda-48b2-afe6-fcfa06ea9d34",
+      "type": "learning",
+      "title": "kb_session_prime graph-neighbour fts_terms query only reaches the project provider via code intelligence",
+      "summary": "The http project provider receives fts_terms only from kb_session_prime's graph-neighbour expansion, which needs a code-intelligence index; the global fts_terms query goes to the local SQLite global KB. Tests drive the neighbour options directly on split providers.",
+      "symbols": [
+        "primeFrom",
+        "getProvider",
+        "getMemberSplitRead"
+      ],
+      "source_files": [
+        "src/tools/kb-session-prime.ts",
+        "src/tools/code-intelligence.ts",
+        "tests/knowledge/kb-member-split-parity-http.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-27T22:48:51.447Z",
+      "source_file_hashes": {
+        "src/tools/code-intelligence.ts": "a9221918efa2b9dbe776df6d4b44f49323f2b775",
+        "src/tools/kb-session-prime.ts": "d8c593604acb93aa16a433f5e1091453dbbedddc",
+        "tests/knowledge/kb-member-split-parity-http.test.ts": "b9456a0e936a6667408b7fee40e5f2df4e334015"
+      }
     },
     {
       "id": "7d7320d0-ed80-4b16-8ac8-c5df806cea55",
@@ -2062,6 +2085,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T09:23:05.562Z"
+    },
+    {
+      "id": "f72823b6-1d3e-4dcf-ba43-f1d62bdc7c09",
+      "type": "knowledge",
+      "title": "kb_query unsplit L2 fetch filters provider answers to the requested ids",
+      "summary": "kbQuery's unsplit L2 fetch keeps only entries whose id is in top5Ids (project) or missingIds (global), so a KB server ignoring the ids parameter cannot inject entries into l2_expanded.",
+      "symbols": [
+        "kbQuery",
+        "splitQuery"
+      ],
+      "source_files": [
+        "src/tools/kb-query.ts",
+        "tests/knowledge/kb-query-l2-ids-http.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-27T22:48:51.393Z",
+      "source_file_hashes": {
+        "src/tools/kb-query.ts": "2e6f750dd9f17961db59239c5f78d0fc143c2769",
+        "tests/knowledge/kb-query-l2-ids-http.test.ts": "ab37adb6816cdd7a0876541d8708787efa73b95c"
+      }
     },
     {
       "id": "f76a103e-797e-4606-b224-bc130e8243e0",
