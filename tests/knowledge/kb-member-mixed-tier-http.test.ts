@@ -170,6 +170,7 @@ beforeEach(() => {
   requests.length = 0;
   entries = [
     entry('own-confirmed', 'CONFIRMED', [ownTag]),
+    entry('other-confirmed', 'CONFIRMED', [OTHER_TAG]),
     entry('own-inferred', 'INFERRED', [ownTag]),
     entry('other-inferred', 'INFERRED', [OTHER_TAG]),
   ];
@@ -187,18 +188,21 @@ afterAll(async () => {
 });
 
 describe('MEMBER mixed-tier read over the http project KB: the server answers, the bible view is never loaded', () => {
-  it('kb_query reaches the server with both tiers and the member owner tag, and returns its own rows', async () => {
+  it('kb_query reaches the server with both tiers and the member owner tag, and returns the full CONFIRMED set plus its own INFERRED rows', async () => {
     const out = JSON.parse(await asMember(() => kbQuery({ query: 'gearbox', confidence: [...MIXED] })));
-    expect(ids(out.l1_results)).toEqual(['own-confirmed', 'own-inferred']);
+    expect(ids(out.l1_results)).toEqual(['other-confirmed', 'own-confirmed', 'own-inferred']);
     const q = requests.find(r => r.method === 'GET' && r.path === '/api/kb/query');
     expect(q).toBeDefined();
     expect(q!.params.get('confidence')).toBe('CONFIRMED,INFERRED');
-    expect(q!.params.get('tag')).toBe(ownTag);
+    // The owner tag is not sent: the server's full CONFIRMED set must come back.
+    expect(q!.params.get('tag')).toBeNull();
+    expect(ids(out.l1_results)).not.toContain('other-inferred');
   });
 
-  it('kb_session_prime reaches the server with both tiers, and keeps only the member own rows', async () => {
+  it('kb_session_prime reaches the server with both tiers, and keeps all CONFIRMED rows plus its own INFERRED rows', async () => {
     const out = JSON.parse(await asMember(() => kbSessionPrime({ hint_symbols: ['gearbox'], confidence: [...MIXED] })));
-    expect(ids(out.top_entries)).toEqual(['own-confirmed', 'own-inferred']);
+    expect(ids(out.top_entries)).toEqual(['other-confirmed', 'own-confirmed', 'own-inferred']);
+    expect(ids(out.top_entries)).not.toContain('other-inferred');
     const p = requests.find(r => r.method === 'POST' && r.path === '/api/kb/prime');
     expect(p).toBeDefined();
     expect(p!.body?.confidence).toEqual([...MIXED]);
@@ -220,8 +224,13 @@ describe('MEMBER mixed-tier read over the http project KB: the server answers, t
     expect(out.fresh).toEqual([]);
     expect(out.missing).toEqual([CITED_FILE]);
 
+    // Another member's CONFIRMED row is visible, as on the SQLite split read.
+    entries = [entry('other-confirmed', 'CONFIRMED', [OTHER_TAG])];
+    const confirmed = JSON.parse(await asMember(() => kbContext({ files: [CITED_FILE], confidence: [...MIXED] })));
+    expect(confirmed.fresh.map((r: { entry_id: string }) => r.entry_id)).toEqual(['other-confirmed']);
+
     entries = [entry('own-inferred', 'INFERRED', [ownTag])];
-    const own = JSON.parse(await asMember(() => kbContext({ files: [CITED_FILE], confidence: [...MIXED] })));
+    const own =JSON.parse(await asMember(() => kbContext({ files: [CITED_FILE], confidence: [...MIXED] })));
     expect(own.fresh.map((r: { entry_id: string }) => r.entry_id)).toEqual(['own-inferred']);
   });
 
