@@ -383,6 +383,8 @@ export class HttpKbProvider implements MemoryProvider {
     if (opts.confidence?.length) params.confidence = opts.confidence.join(',');
     if (opts.exclude_disputed) params.exclude_disputed = 'true';
     if (opts.flagged_only) params.flagged_only = 'true';
+    // Discrete FTS terms travel as a JSON array (a term may contain a comma).
+    if (opts.fts_terms?.length) params.fts_terms = JSON.stringify(opts.fts_terms);
     // MEMBER own-scope: the server narrows on the owner tag when the caller
     // set no tag of its own; the result is re-filtered below either way.
     // A mixed-tier read that names CONFIRMED must get the server's full

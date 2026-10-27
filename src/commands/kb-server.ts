@@ -225,9 +225,22 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         // kb_query flagged_only branch); the trust filters are ignored then.
         const flagged_only = url.searchParams.get('flagged_only') === 'true';
 
+        // fts_terms: JSON array of discrete terms, OR-joined as an FTS match
+        // (the kb_session_prime neighbour query sends only these).
+        let fts_terms: string[] | undefined;
+        const ftsRaw = url.searchParams.get('fts_terms');
+        if (ftsRaw) {
+          let parsed: unknown;
+          try { parsed = JSON.parse(ftsRaw); } catch { parsed = undefined; }
+          if (!Array.isArray(parsed) || !parsed.every(t => typeof t === 'string')) {
+            return jsonResponse(res, 400, { error: 'fts_terms must be a JSON array of strings', code: 'BAD_REQUEST' });
+          }
+          fts_terms = parsed;
+        }
+
         const result = await provider.query({
           query, type, tag, limit, l1_only, confidence, exclude_disputed, include_stale, include_superseded,
-          flagged_only,
+          flagged_only, fts_terms,
         });
         return jsonResponse(res, 200, result as unknown as Record<string, unknown>);
       }

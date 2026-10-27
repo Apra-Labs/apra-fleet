@@ -163,6 +163,70 @@ describe('kb-server promote and tag filter', () => {
     expect(res.body.results[0].tags).toContain(tag);
   });
 
+  it('GET /api/kb/query?fts_terms= applies the terms as an OR-joined FTS match; a malformed value is 400', async () => {
+    const term = `zorblax${crypto.randomBytes(6).toString('hex')}`;
+    // captureTagged has no hook for the term: capture the matching entry directly.
+    const matching = await request('POST', '/api/kb/capture', {
+      body: {
+        type: 'knowledge', title: `Neighbour ${term} note`, summary: `Entry about ${term} wiring.`,
+        content: `Details of ${term} for the fts_terms wire test.`, source_files: ['src/commands/kb-server.ts'],
+        symbols: [], tags: [], content_hash: '', content_hash_type: 'sha256',
+        flagged_for_review: false, author: 'test', source: 'doer', confidence: 'INFERRED',
+      },
+    });
+    expect(matching.status).toBe(201);
+    // Newer, unrelated entries: a recency listing would return these, not the match.
+    const newer = [await captureTagged([]), await captureTagged([]), await captureTagged([])];
+    expect(newer).not.toContain(matching.body.id);
+
+    const terms = encodeURIComponent(JSON.stringify([term, 'no-such-neighbour.ts']));
+    const res = await request('GET', `/api/kb/query?fts_terms=${terms}&l1_only=true&limit=3&confidence=INFERRED`);
+    expect(res.status).toBe(200);
+    expect(res.body.results.map((e: { id: string }) => e.id)).toEqual([matching.body.id]);
+
+    const bad = await request('GET', `/api/kb/query?fts_terms=${encodeURIComponent('not json')}`);
+    expect(bad.status).toBe(400);
+    expect(bad.body.code).toBe('BAD_REQUEST');
+  });
+
+  it('HttpKbProvider forwards fts_terms: the neighbour query returns the FTS-matched ids, the same as a SQLite KB seeded alike', async () => {
+    const term = `quuxneighbour${crypto.randomBytes(6).toString('hex')}`;
+    const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-fts-terms-'));
+    const provider = new HttpKbProvider(
+      `http://127.0.0.1:${TEST_PORT}`, testToken, new SqliteProvider(path.join(fallbackDir, 'kb.sqlite')),
+      { projectSlug: SERVER_PROJECT },
+    );
+    const local = new SqliteProvider(path.join(fallbackDir, 'local.sqlite'));
+    const entry = (title: string, summary: string) => ({
+      type: 'knowledge', title, summary, content: `${summary} Extra body text for the capture floor.`,
+      source_files: ['src/commands/kb-server.ts'], symbols: [], tags: [], content_hash: '',
+      content_hash_type: 'sha256', flagged_for_review: false, author: 'test', source: 'doer', confidence: 'INFERRED',
+    }) as any;
+    try {
+      await local.init();
+      // Oldest first: the match is the OLDEST entry, so recency order excludes it at limit 2.
+      const seeds = [
+        entry(`Match ${term} entry`, `The ${term} module wires the sprocket.`),
+        entry(`Unrelated alpha ${term.slice(0, 8)}x`, 'Completely different topic one about gearboxes.'),
+        entry(`Unrelated beta ${term.slice(0, 8)}y`, 'Completely different topic two about flywheels.'),
+        entry(`Unrelated gamma ${term.slice(0, 8)}z`, 'Completely different topic three about camshafts.'),
+      ];
+      const remoteIds: string[] = [];
+      for (const seed of seeds) {
+        remoteIds.push((await provider.capture(seed)).id);
+        await local.capture(seed);
+      }
+      const opts = { fts_terms: [term, 'absent-neighbour.ts'], l1_only: true, limit: 2, confidence: ['INFERRED' as const] };
+      const overHttp = await provider.query(opts);
+      const overSqlite = await local.query(opts);
+      expect(overHttp.results.map(r => r.id)).toEqual([remoteIds[0]]);
+      expect(overHttp.results.map(r => r.title)).toEqual(overSqlite.results.map(r => r.title));
+    } finally {
+      provider.dispose();
+      fs.rmSync(fallbackDir, { recursive: true, force: true });
+    }
+  });
+
   it('HttpKbProvider against this server: member own-scope promote works for the owner and is not-found for anyone else', async () => {
     const owner = `member:${crypto.randomUUID()}`;
     const id = await captureTagged([owner]);
