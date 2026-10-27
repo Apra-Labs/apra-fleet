@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "3b1cd70f84e9c5c55fd0210305009522be4eea38",
-    "branch": "u1_upstream_main_3b1cd70",
-    "entry_count": 110
+    "commit": "8c38f93777d15666c2f8fb26c7299db0e0707603",
+    "branch": "main",
+    "entry_count": 100
   },
   "entries": [
     {
@@ -151,33 +151,6 @@
       "updated_at": "2026-09-29T06:13:11.978Z"
     },
     {
-      "id": "18133a0e-03b4-4f9d-ba54-f285004cf03d",
-      "type": "knowledge",
-      "title": "getMemberSplitRead steps aside under http when passed serverRecall",
-      "summary": "kb_query, kb_session_prime and kb_context pass { serverRecall: true } to getMemberSplitRead; with an http project provider it returns null so getSelfReadKb's serverRecall path answers. kb_list does not pass it and keeps the typed non-sqlite refusal.",
-      "symbols": [
-        "getMemberSplitRead",
-        "getSelfReadKb",
-        "SelfReadKbOptions"
-      ],
-      "source_files": [
-        "src/services/knowledge/kb-self.ts",
-        "src/tools/kb-context.ts",
-        "src/tools/kb-query.ts",
-        "src/tools/kb-session-prime.ts",
-        "src/tools/kb-list.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-27T21:41:39.067Z",
-      "source_file_hashes": {
-        "src/services/knowledge/kb-self.ts": "5a666ddd7c7dfc2993e9618cf28f72f471ceba82",
-        "src/tools/kb-context.ts": "3b09118ad27ecf6a37256bc26250815af174b629",
-        "src/tools/kb-list.ts": "9327c309a2f43d3109f2d2e1c9b3edccf20f3967",
-        "src/tools/kb-query.ts": "d6590645b242fe36c3fcb6894b9c4e28faf3958a",
-        "src/tools/kb-session-prime.ts": "2e6301963f427ce35562e67f8a6d24ea03c92117"
-      }
-    },
-    {
       "id": "19197697-8273-4c51-9d9e-ecffe39d2dc7",
       "type": "knowledge",
       "title": "The slow lane runs in bd REPLAY mode despite bypassing run-tests.mjs",
@@ -280,12 +253,7 @@
         "tests/stall-no-signal-false-kill.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:13.625Z",
-      "source_file_hashes": {
-        "src/services/stall/stall-detector.ts": "b472e11eb27b688faaa8c62bce24880a14197023",
-        "tests/stall-detector.test.ts": "6291164e7ba7d5824752d6fc02e12ab1466e2f9b",
-        "tests/stall-no-signal-false-kill.test.ts": "be75e7a5fe8c34ed7ef883ec59848ee98fefa0e6"
-      }
+      "updated_at": "2026-09-29T06:13:13.625Z"
     },
     {
       "id": "26b8c94b-20c8-4d6e-8862-8e65bc512ba6",
@@ -373,11 +341,7 @@
         "tests/sftp-subsystem-refusal.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T06:25:49.718Z",
-      "source_file_hashes": {
-        "src/services/sftp.ts": "e7737cf000b78c0e5c2688189ce53f6e0ce41e85",
-        "tests/sftp-subsystem-refusal.test.ts": "37e60bde41af90e4a5b9697c1395dc64057afe52"
-      }
+      "updated_at": "2026-10-06T06:25:49.718Z"
     },
     {
       "id": "33c1189c-bf95-4cf3-b875-4b93620bea0f",
@@ -433,12 +397,7 @@
         "tests/ssh-host-key-reaccept.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T10:58:58.488Z",
-      "source_file_hashes": {
-        "src/services/known-hosts.ts": "9216adcb9ad5b4ac684255463abd13a9d7601299",
-        "src/services/ssh.ts": "5ee3f5d839cce14c31a5295a0a150e7f4677d7ae",
-        "tests/ssh-host-key-reaccept.test.ts": "7ba9218eb306508c120a582bf2370d97535676d0"
-      }
+      "updated_at": "2026-10-06T10:58:58.488Z"
     },
     {
       "id": "416532bd-32a5-4056-8cb5-03f2219c2870",
@@ -480,15 +439,7 @@
         "skills/fleet/profiles/node.json"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:14.033Z",
-      "source_file_hashes": {
-        "integ-test-playbook.md": "f464532544db7015dfc4658a9e30923b9286a011",
-        "regression-test-playbook.md": "d61fa4222c592c2bab61d1c0231ab30209a0f2eb",
-        "skills/fleet/profiles/base-dev.json": "f5ebfe785c69b411c4b2eb5cc1500b116abee7fb",
-        "skills/fleet/profiles/base-reviewer.json": "db55cb01779c8f8854a4aa749740092ad4f29cfc",
-        "skills/fleet/profiles/node.json": "6b1f54548d4c09bb8f2bad195a5831709c34a0b4",
-        "tests/integ-playbook-permission-profiles.test.ts": "de0b9b8e267097e3b8757c054b462dfe15ec244e"
-      }
+      "updated_at": "2026-09-29T06:13:14.033Z"
     },
     {
       "id": "44cfb13c-397c-4b93-88b3-5731cb417c65",
@@ -526,29 +477,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T09:57:31.784Z"
-    },
-    {
-      "id": "4545f74f-f1e4-44f7-9de5-d652a8b29683",
-      "type": "knowledge",
-      "title": "HTTP member mixed-tier reads split with the KB server as both halves",
-      "summary": "Since 452789fd, getMemberSplitRead no longer returns null under http. Own half = raw HttpKbProvider owner-tagged; CONFIRMED half = server view with bible offline fallback (serverRecall), or bible view for kb_list.",
-      "symbols": [
-        "getMemberSplitRead",
-        "memberConfirmedServerView",
-        "HttpKbProvider.withOfflineReads"
-      ],
-      "source_files": [
-        "src/services/knowledge/kb-self.ts",
-        "src/services/knowledge/http-provider.ts",
-        "tests/knowledge/kb-member-split-parity-http.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-27T22:53:15.595Z",
-      "source_file_hashes": {
-        "src/services/knowledge/http-provider.ts": "c910ead1ad109eda2a831d17c898d32378590641",
-        "src/services/knowledge/kb-self.ts": "b1941d45c7c5a34d59a9dbfaa1cd55afe134c591",
-        "tests/knowledge/kb-member-split-parity-http.test.ts": "b9456a0e936a6667408b7fee40e5f2df4e334015"
-      }
     },
     {
       "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
@@ -760,29 +688,6 @@
       "updated_at": "2026-09-29T06:13:11.708Z"
     },
     {
-      "id": "62de3f59-411b-4397-b618-310aa8fbf2a6",
-      "type": "knowledge",
-      "title": "getMemberSplitRead decides http step-aside and sqlite refusal before loading the bible view",
-      "summary": "getMemberSplitRead resolves getKbProviders first and returns null under http+serverRecall, or throws the requireSqliteProject refusal, BEFORE it loads getMemberBibleView, so remote members pay no SSH round trip on http mixed-tier reads.",
-      "symbols": [
-        "getMemberSplitRead",
-        "getMemberBibleView",
-        "requireSqliteProject"
-      ],
-      "source_files": [
-        "src/services/knowledge/kb-self.ts",
-        "src/services/knowledge/member-bible-view.ts",
-        "tests/knowledge/kb-member-mixed-tier-http.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-27T21:48:48.094Z",
-      "source_file_hashes": {
-        "src/services/knowledge/kb-self.ts": "51a237318f6e2e20325967de0b23b5bbf2ec2b3b",
-        "src/services/knowledge/member-bible-view.ts": "aeac863c028453b4365c06945c704040fbf6d39f",
-        "tests/knowledge/kb-member-mixed-tier-http.test.ts": "4bf0a2e5301c8a25160a267f576b7fa2a166d636"
-      }
-    },
-    {
       "id": "64bedb7a-8a2d-46ba-9586-6254a88f6dcd",
       "type": "knowledge",
       "title": "dispatchReview has exactly two consumers, Review and Re-Review, not three",
@@ -873,12 +778,7 @@
         "regression-test-playbook.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:31.774Z",
-      "source_file_hashes": {
-        "regression-test-playbook.md": "d61fa4222c592c2bab61d1c0231ab30209a0f2eb",
-        "scripts/kill-port.mjs": "b057c3b29d130c137c768372cdf2d2ca94e63c8c",
-        "tests/kill-port.test.ts": "f4236a03a10574fbb47bb892989fa45da987cacf"
-      }
+      "updated_at": "2026-09-25T22:26:31.774Z"
     },
     {
       "id": "70f0e881-49d9-40eb-85ab-ff9c8868f49b",
@@ -920,12 +820,7 @@
         "packages/apra-fleet-se/docs/kb-canonical-merge.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T06:57:40.812Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/docs/kb-canonical-merge.md": "35a27aa90d25d77134d5efb4af38df75920847e7",
-        "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs": "ec75236af4fb108aa1a91d4e9f9433f030f7db29",
-        "packages/apra-fleet-se/test/merge-kb-canonical.test.mjs": "de4c76a854fa892dcb6d6cbb8851a1aee34a7481"
-      }
+      "updated_at": "2026-10-06T06:57:40.812Z"
     },
     {
       "id": "71323701-67db-4aa8-b7ce-858fb5e2aea7",
@@ -968,11 +863,7 @@
         "src/utils/log-helpers.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:41.271Z",
-      "source_file_hashes": {
-        "src/services/stall/stall-detector.ts": "b472e11eb27b688faaa8c62bce24880a14197023",
-        "src/utils/log-helpers.ts": "27f4f02a8004ceae5d1b8883ada455890a6d6997"
-      }
+      "updated_at": "2026-09-25T22:26:41.271Z"
     },
     {
       "id": "76754ef3-5ff3-4fb4-a7cf-d74504f5013b",
@@ -1027,29 +918,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T22:08:20.217Z"
-    },
-    {
-      "id": "7bb2d969-efda-48b2-afe6-fcfa06ea9d34",
-      "type": "learning",
-      "title": "kb_session_prime graph-neighbour fts_terms query only reaches the project provider via code intelligence",
-      "summary": "The http project provider receives fts_terms only from kb_session_prime's graph-neighbour expansion, which needs a code-intelligence index; the global fts_terms query goes to the local SQLite global KB. Tests drive the neighbour options directly on split providers.",
-      "symbols": [
-        "primeFrom",
-        "getProvider",
-        "getMemberSplitRead"
-      ],
-      "source_files": [
-        "src/tools/kb-session-prime.ts",
-        "src/tools/code-intelligence.ts",
-        "tests/knowledge/kb-member-split-parity-http.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-27T22:48:51.447Z",
-      "source_file_hashes": {
-        "src/tools/code-intelligence.ts": "a9221918efa2b9dbe776df6d4b44f49323f2b775",
-        "src/tools/kb-session-prime.ts": "d8c593604acb93aa16a433f5e1091453dbbedddc",
-        "tests/knowledge/kb-member-split-parity-http.test.ts": "b9456a0e936a6667408b7fee40e5f2df4e334015"
-      }
     },
     {
       "id": "7d7320d0-ed80-4b16-8ac8-c5df806cea55",
@@ -1125,12 +993,7 @@
         "regression-test-playbook.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:32.922Z",
-      "source_file_hashes": {
-        "regression-test-playbook.md": "d61fa4222c592c2bab61d1c0231ab30209a0f2eb",
-        "scripts/sandbox-lock.mjs": "7d0b717cb8dddea16592fe17154f5f02a2f25974",
-        "tests/sandbox-lock.test.ts": "2628030b1896c96dd2ef3f3161fa14be789eb646"
-      }
+      "updated_at": "2026-09-25T22:26:32.922Z"
     },
     {
       "id": "84258482-2b78-4c46-a077-7698d06fc4b4",
@@ -1250,12 +1113,7 @@
         "src/os/windows-gitbash.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T10:58:50.816Z",
-      "source_file_hashes": {
-        "src/os/child-env-bound.ts": "dc0e2561d9c10db9f421d5a4c814e83c3f772c4f",
-        "src/os/windows-gitbash.ts": "100e34be26880d84796eab62ef830781f19a9cba",
-        "src/os/windows.ts": "80d3c913f94d8846dccfb753f7ab786372fd487e"
-      }
+      "updated_at": "2026-10-06T10:58:50.816Z"
     },
     {
       "id": "962688bf-cee4-4461-bc3b-10b87eaf56c4",
@@ -1428,27 +1286,6 @@
       "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
-      "id": "a4cda18d-c0a5-468f-a5cc-cfedd658b3a7",
-      "type": "knowledge",
-      "title": "contract:generate reads dist, so build before regenerating memory-contract",
-      "summary": "memory-contract/v1/generate-contract.mjs derives request schemas from the built tool modules in dist/, so running contract:generate without a fresh npm run build silently emits stale schemas (e.g. a missing new kb_setup field).",
-      "symbols": [
-        "BASE_DESCRIPTIONS"
-      ],
-      "source_files": [
-        "memory-contract/v1/generate-contract.mjs",
-        "src/tools/kb-setup.ts",
-        "memory-contract/v1/schemas/kb_setup.request.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-27T21:41:39.131Z",
-      "source_file_hashes": {
-        "memory-contract/v1/generate-contract.mjs": "c964b6440d9c64b21765682fb646c842a3f35162",
-        "memory-contract/v1/schemas/kb_setup.request.json": "a348bcfac44b91163d05ee0e06d9a23306f995c7",
-        "src/tools/kb-setup.ts": "ac4a5be5834a1f2bcfcac3b30314a6393ca784f9"
-      }
-    },
-    {
       "id": "a4d684ba-ff2b-48e7-831c-7f68346f5d19",
       "type": "knowledge",
       "title": "A Permissions pre-step deploy failure sets deploy aside for the run via sprintState.deploySetAside",
@@ -1530,11 +1367,7 @@
         "src/providers/provider.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:24:09.365Z",
-      "source_file_hashes": {
-        "src/providers/claude.ts": "97c74b189ab8906e43374e6c1be059665b561b56",
-        "src/providers/provider.ts": "b59c65d65b80b5103f3000de6636562f3b46cb75"
-      }
+      "updated_at": "2026-09-29T06:24:09.365Z"
     },
     {
       "id": "b8d328fa-e22b-498f-98cf-2ff10bd6370a",
@@ -1723,11 +1556,7 @@
         "packages/apra-fleet-se/test/azure-devops-real-e2e.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:37.343Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-client/src/client/transport.mjs": "aa60d3370115785dbdfca7d53b84b54812fcc79e",
-        "packages/apra-fleet-se/test/azure-devops-real-e2e.test.mjs": "60e3d607d5a472c052913327a4ca0fa6e2c7d21c"
-      }
+      "updated_at": "2026-09-25T22:26:37.343Z"
     },
     {
       "id": "d6a925e2-7ffb-409e-9d6d-df112557edda",
@@ -1745,11 +1574,7 @@
         "packages/apra-fleet-se/test/supervisor-dolt-orphan-sweep.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.852Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/src/supervisor/dolt-orphan-sweep.mjs": "98ef4cc14cb0c8c2a127dadedbf0e77f11f9b0e9",
-        "packages/apra-fleet-se/test/supervisor-dolt-orphan-sweep.test.mjs": "257496178c2a8349222954fa634542ee2b576c2f"
-      }
+      "updated_at": "2026-09-29T06:13:53.852Z"
     },
     {
       "id": "d75f28a9-bb69-4fd8-bf81-1ad9bd17d51b",
@@ -1836,11 +1661,7 @@
         "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.820Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs": "1b12436f9c16b9a9985b666d435c3495731ab582",
-        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs": "0216144f04ab23487870012e025de8f5f23b5ff8"
-      }
+      "updated_at": "2026-09-29T06:13:53.820Z"
     },
     {
       "id": "e078ec0e-b747-4274-a82b-4155c342928b",
@@ -1857,11 +1678,7 @@
         "packages/apra-fleet-se/apra-pm/test/install-binary-asset-copy.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:13.312Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/apra-pm/install.mjs": "c6936f9636f88109fb3c49fea77dca27171978a8",
-        "packages/apra-fleet-se/apra-pm/test/install-binary-asset-copy.test.mjs": "857a66897ba3b40b2a126af3b5b4681b2784e084"
-      }
+      "updated_at": "2026-09-29T06:13:13.312Z"
     },
     {
       "id": "e0d3a928-0df8-49c1-bd69-3674ad65310a",
@@ -1876,11 +1693,7 @@
         "src/services/auth-socket.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:15.109Z",
-      "source_file_hashes": {
-        "src/services/auth-socket.ts": "79b95fb076cf884f610a72820824c5798b3a01fa",
-        "src/services/auth-web.ts": "47222316dee7b8c2b2d1072422bbc0fb178dacb7"
-      }
+      "updated_at": "2026-09-29T06:13:15.109Z"
     },
     {
       "id": "e1673449-1192-4948-bd32-7b743635a820",
@@ -2027,11 +1840,7 @@
         "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:08:07.865Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "851e0cf872efb6ce739a214b02bf48deecd85dd1",
-        "packages/apra-fleet-se/test/phase5-consumer-migration-end-state.test.mjs": "37e32a2a5e0928f9c3412bbe99db768b62eb58a6"
-      }
+      "updated_at": "2026-09-29T06:08:07.865Z"
     },
     {
       "id": "f33011e2-8ae6-4388-95d4-5e21f1716d0f",
@@ -2108,26 +1917,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T09:23:05.562Z"
-    },
-    {
-      "id": "f72823b6-1d3e-4dcf-ba43-f1d62bdc7c09",
-      "type": "knowledge",
-      "title": "kb_query unsplit L2 fetch filters provider answers to the requested ids",
-      "summary": "kbQuery's unsplit L2 fetch keeps only entries whose id is in top5Ids (project) or missingIds (global), so a KB server ignoring the ids parameter cannot inject entries into l2_expanded.",
-      "symbols": [
-        "kbQuery",
-        "splitQuery"
-      ],
-      "source_files": [
-        "src/tools/kb-query.ts",
-        "tests/knowledge/kb-query-l2-ids-http.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-27T22:48:51.393Z",
-      "source_file_hashes": {
-        "src/tools/kb-query.ts": "2e6f750dd9f17961db59239c5f78d0fc143c2769",
-        "tests/knowledge/kb-query-l2-ids-http.test.ts": "ab37adb6816cdd7a0876541d8708787efa73b95c"
-      }
     },
     {
       "id": "f76a103e-797e-4606-b224-bc130e8243e0",
