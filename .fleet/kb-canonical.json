@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "3b1cd70f84e9c5c55fd0210305009522be4eea38",
     "branch": "u1_upstream_main_3b1cd70",
-    "entry_count": 106
+    "entry_count": 107
   },
   "entries": [
     {
@@ -735,6 +735,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.708Z"
+    },
+    {
+      "id": "62de3f59-411b-4397-b618-310aa8fbf2a6",
+      "type": "knowledge",
+      "title": "getMemberSplitRead decides http step-aside and sqlite refusal before loading the bible view",
+      "summary": "getMemberSplitRead resolves getKbProviders first and returns null under http+serverRecall, or throws the requireSqliteProject refusal, BEFORE it loads getMemberBibleView, so remote members pay no SSH round trip on http mixed-tier reads.",
+      "symbols": [
+        "getMemberSplitRead",
+        "getMemberBibleView",
+        "requireSqliteProject"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-self.ts",
+        "src/services/knowledge/member-bible-view.ts",
+        "tests/knowledge/kb-member-mixed-tier-http.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-27T21:48:48.094Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-self.ts": "51a237318f6e2e20325967de0b23b5bbf2ec2b3b",
+        "src/services/knowledge/member-bible-view.ts": "aeac863c028453b4365c06945c704040fbf6d39f",
+        "tests/knowledge/kb-member-mixed-tier-http.test.ts": "4bf0a2e5301c8a25160a267f576b7fa2a166d636"
+      }
     },
     {
       "id": "64bedb7a-8a2d-46ba-9586-6254a88f6dcd",
