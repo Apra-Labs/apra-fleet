@@ -353,19 +353,19 @@ export async function getMemberSplitRead(
   const ownerTag = memberOwnerTag(anchor);
   if (ownerTag === undefined) return null;
   const resolved = resolveKbAnchor(anchor);
-  const [view, global, repo] = await Promise.all([
-    getMemberBibleView(resolved),
-    getGlobalKbProvider(),
-    getKbProviders(resolved.folder, resolved.remoteUrl),
-  ]);
+  const repo = await getKbProviders(resolved.folder, resolved.remoteUrl);
   // Same condition as getSelfReadKb's serverRecall branch, so exactly one of
-  // the two paths answers.
+  // the two paths answers. Checked BEFORE the member bible view is loaded: on a
+  // remote member that load is an SSH round trip that throws when the member is
+  // unreachable, which would break a read the KB server answers.
   if (opts.serverRecall && kbConfigSelectsHttp() && !isSqliteProject(repo.project)) return null;
+  const ownProject = requireSqliteProject(repo.project, callerLabel);
+  const [view, global] = await Promise.all([getMemberBibleView(resolved), getGlobalKbProvider()]);
   return {
     anchor: resolved,
     projectSlug: repo.projectSlug,
     bible: { project: view, global, tiers: ['CONFIRMED'] },
-    own: { project: requireSqliteProject(repo.project, callerLabel), global: repo.global, tiers, ownerTag },
+    own: { project: ownProject, global: repo.global, tiers, ownerTag },
   };
 }
 
