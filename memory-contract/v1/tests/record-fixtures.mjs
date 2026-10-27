@@ -133,7 +133,7 @@ const { resetKbProviders } = await import(pathToFileURL(path.join(DIST, 'service
 // by another member); the token is the committed obviously-fake test value.
 // The config is scoped to each of those sessions' calls and the prior one
 // restored afterwards.
-const { startKbHttpStandIn, HTTP_FOREIGN_ENTRY_ID } =
+const { startKbHttpStandIn, HTTP_FOREIGN_ENTRY_ID, HTTP_STAND_IN_RECORDED_OTHER_URL } =
   await import(pathToFileURL(path.join(HERE, 'kb-http-stand-in.mjs')).href);
 const kbHttpStandIn = await startKbHttpStandIn();
 const HTTP_KB_CONFIG_PATH = path.join(process.env.APRA_FLEET_DATA_DIR, 'knowledge', 'config.json');
@@ -261,7 +261,7 @@ async function recordHappy(tool, caseName, request) {
   }
 }
 
-async function recordRefusal(tool, caseName, request, expectedErrorCode) {
+async function recordRefusal(tool, caseName, request, expectedErrorCode, literals = []) {
   const handler = handlerFor(tool);
   if (!handler) {
     failures++;
@@ -274,7 +274,9 @@ async function recordRefusal(tool, caseName, request, expectedErrorCode) {
     console.log(`  [FAIL] ${tool}/${caseName} expected a throw for ${expectedErrorCode} but got a response`);
     void response;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    let message = err instanceof Error ? err.message : String(err);
+    // Live values that vary per run (an ephemeral stand-in port) are recorded as stable literals.
+    for (const [live, recorded] of literals) message = message.split(live).join(recorded);
     writeFixture(tool, caseName, {
       tool,
       case: caseName,
@@ -1045,7 +1047,7 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
 // A server for a different project: the read is refused, not answered locally.
 await withSession('HTTP_MISMATCH', () => recordRefusal('kb_query', 'refusal-http-project-mismatch', {
   query: 'widget batching',
-}, 'E-KB-HTTP-PROJECT-MISMATCH'));
+}, 'E-KB-HTTP-PROJECT-MISMATCH', [[kbHttpStandIn.urlFor('other-project'), HTTP_STAND_IN_RECORDED_OTHER_URL]]));
 await kbHttpStandIn.close();
 
 // ===========================================================================

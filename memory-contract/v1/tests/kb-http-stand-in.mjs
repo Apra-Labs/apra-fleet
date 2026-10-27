@@ -18,6 +18,8 @@ import http from 'node:http';
 
 export const HTTP_FOREIGN_ENTRY_ID = '9d4e7a10-3b2c-4f5e-8a61-2c7d0e9b4f13';
 export const HTTP_FOREIGN_OWNER_TAG = 'member:contract-http-foreign-owner';
+/** The 'other-project' variant's URL as recorded in fixtures (the live port is ephemeral). */
+export const HTTP_STAND_IN_RECORDED_OTHER_URL = 'http://127.0.0.1:0/other-project';
 export const HTTP_STAND_IN_VARIANTS = ['tagged', 'untagged', 'other-project'];
 
 function foreignEntry(withTags) {

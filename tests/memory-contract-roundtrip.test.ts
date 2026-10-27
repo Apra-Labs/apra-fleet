@@ -41,7 +41,7 @@ import {
   RECORDED_REMOTE_HTTP,
 } from '../memory-contract/v1/tests/roundtrip-harness.mjs';
 import { materializeSessionWorld } from '../memory-contract/v1/tests/session-world.mjs';
-import { startKbHttpStandIn } from '../memory-contract/v1/tests/kb-http-stand-in.mjs';
+import { startKbHttpStandIn, HTTP_STAND_IN_RECORDED_OTHER_URL } from '../memory-contract/v1/tests/kb-http-stand-in.mjs';
 import { KB_MODULES, CODE_EXPORTS } from '../memory-contract/v1/generate-contract.mjs';
 
 type ToolHandler = (input: unknown, extra?: unknown) => Promise<{ content: { type: string; text: string }[] }>;
@@ -155,6 +155,7 @@ class SqliteContractProvider {
     const literals: Record<string, string> = {};
     for (const [key, recorded] of Object.entries(RECORDED_REMOTES)) literals[recorded] = this.liveRemote(key);
     for (const [recorded, live] of world.memberLiterals as [string, string][]) literals[recorded] = live;
+    literals[HTTP_STAND_IN_RECORDED_OTHER_URL] = (kbHttpStandIn as NonNullable<typeof kbHttpStandIn>).urlFor('other-project');
 
     return { substitutions: { paths, literals } };
   }
@@ -228,7 +229,7 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    expect(report.steps.length).toBe(97); // one SCENARIO step per committed fixture (97 fixture files on disk)
+    expect(report.steps.length).toBe(98); // one SCENARIO step per committed fixture (98 fixture files on disk)
   });
 
   it('covers all 26 inventoried tools', () => {
