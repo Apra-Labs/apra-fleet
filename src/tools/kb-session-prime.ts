@@ -3,7 +3,6 @@ import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-sc
 import fs from 'node:fs';
 import path from 'node:path';
 import { getSelfReadKb, getMemberSplitRead, mergeSplitById, type KbAnchor } from '../services/knowledge/kb-self.js';
-import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { getProvider } from './code-intelligence.js';
 import type { KBEntry, MemoryProvider } from '../services/knowledge/types.js';
@@ -189,7 +188,9 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
   // half exactly as a CONFIRMED-only request (bible view, cold-seeds included,
   // decided on that half's own entries), every requested tier from the
   // per-repo DB owner-tagged (no cold-seed). The two results are then merged.
-  const split = await getMemberSplitRead(anchor, input.confidence, 'kb_session_prime');
+  // Under an http project provider (serverRecall) both halves are primed by
+  // the KB server: the CONFIRMED half unfiltered, the own half owner-tagged.
+  const split = await getMemberSplitRead(anchor, input.confidence, 'kb_session_prime', { serverRecall: true });
   if (split) {
     const fromBible = await primeFrom(
       { project: split.bible.project, global: split.bible.global, folder: split.anchor.folder },
@@ -202,8 +203,9 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
     return JSON.stringify(mergePrimed(fromBible, fromOwn, input));
   }
 
-  const { providers, anchor: resolved, ownerTag } = await getSelfReadKb(anchor, input.confidence);
-  if (ownerTag !== undefined) requireSqliteProject(providers.project, 'kb_session_prime');
+  // Under an http project provider (serverRecall) a MEMBER prime of any tier
+  // is answered by the server; ownerTag is enforced the same way, fleet-side.
+  const { providers, anchor: resolved, ownerTag } = await getSelfReadKb(anchor, input.confidence, { serverRecall: true });
 
   // Default-trusted reads: CONFIRMED + undisputed unless the caller lists tiers.
   const confidence = input.confidence?.length ? input.confidence : (['CONFIRMED'] as Tier[]);

@@ -599,7 +599,8 @@ narrowing point: it throws naming the caller when the project provider is an
 unpredictably against a remote provider that does not support them.
 
 There are nine such call sites, with two distinct behaviours. Eight fail fast
-through `requireSqliteProject`: `kb_list`, `kb_feedback`,
+through `requireSqliteProject`: `kb_list` (except a MEMBER mixed-tier list,
+whose own half `HttpKbProvider.list` serves from the KB server), `kb_feedback`,
 `kb_freshness_sweep`, `kb_reconcile_prefilter`, `kb_resolve_contradiction`,
 `kb_import`, `kb_export` (project scope), and the `kb directives` CLI.
 `kb_stats` is the ninth and deliberately DEGRADES instead: it asks the type

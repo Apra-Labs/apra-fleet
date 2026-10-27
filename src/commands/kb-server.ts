@@ -9,7 +9,8 @@ import { HttpKbProvider } from '../services/knowledge/http-provider.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
-import type { KBEntryInput, Confidence } from '../services/knowledge/types.js';
+import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import type { KBEntry, KBEntryInput, Confidence } from '../services/knowledge/types.js';
 
 // my-beads-db-0cd.15 (reopened): startKbServer is an exported library function
 // that tests/knowledge/kb-server.test.ts imports and calls IN-PROCESS. The
@@ -28,6 +29,9 @@ export class KbServerHttpProviderRefusedError extends Error {
 }
 
 const MAX_BODY_SIZE = 1_048_576; // 1MB
+
+/** Header every HttpKbProvider request carries: the project slug it is for. */
+export const KB_PROJECT_HEADER = 'x-kb-project';
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 100;
 
@@ -98,6 +102,22 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
+/**
+ * A query parameter carrying a JSON array of strings: undefined when absent,
+ * null when present but not such an array (the caller answers 400).
+ */
+function stringArrayParam(url: URL, name: string): string[] | undefined | null {
+  const raw = url.searchParams.get(name);
+  if (!raw) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  return Array.isArray(parsed) && parsed.every(t => typeof t === 'string') ? parsed : null;
+}
+
 function getClientIp(req: http.IncomingMessage): string {
   return req.socket.remoteAddress || '0.0.0.0';
 }
@@ -145,7 +165,8 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
     (providers as any).project = overrideProvider;
   }
   const provider = providers.project;
-  process.stderr.write('[kb-server] project=' + providers.projectSlug + '\n');
+  const serverProject = providers.projectSlug;
+  process.stderr.write('[kb-server] project=' + serverProject + '\n');
 
   const server = http.createServer(async (req, res) => {
     const ip = getClientIp(req);
@@ -174,6 +195,20 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
       return jsonResponse(res, 401, { error: 'Invalid token', code: 'UNAUTHORIZED' });
     }
 
+    // One server serves one project. A request for another project (or one
+    // that names none) is refused on every route, so a client pointed at the
+    // wrong server never reads or writes another repo's KB.
+    const clientProject = req.headers[KB_PROJECT_HEADER];
+    if (clientProject !== serverProject) {
+      const named = typeof clientProject === 'string' ? clientProject : '(none)';
+      return jsonResponse(res, 409, {
+        error: `KB project mismatch: this server serves "${serverProject}", the request is for "${named}"`,
+        code: 'PROJECT_MISMATCH',
+        server_project: serverProject,
+        client_project: named,
+      });
+    }
+
     try {
       // POST /api/kb/capture
       if (pathname === '/api/kb/capture' && method === 'POST') {
@@ -196,9 +231,84 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
           ?.split(',')
           .filter((c): c is Confidence => c === 'CONFIRMED' || c === 'INFERRED' || c === 'UNVERIFIED');
         const exclude_disputed = url.searchParams.get('exclude_disputed') === 'true';
+        // tag: exact-match tag filter (HttpKbProvider uses it for the member
+        // own-scope lookup, tag=member:<uuid>); a tag alone lists every entry
+        // carrying it. include_stale / include_superseded as in kb_query.
+        const tag = url.searchParams.get('tag') || undefined;
+        const include_stale = url.searchParams.get('include_stale') === 'true';
+        const include_superseded = url.searchParams.get('include_superseded') === 'true';
+        // flagged_only: list only contradiction-flagged entries (the
+        // kb_query flagged_only branch); the trust filters are ignored then.
+        const flagged_only = url.searchParams.get('flagged_only') === 'true';
 
-        const result = await provider.query({ query, type, limit, l1_only, confidence, exclude_disputed });
+        // fts_terms: JSON array of discrete terms, OR-joined as an FTS match
+        // (the kb_session_prime neighbour query sends only these).
+        const fts_terms = stringArrayParam(url, 'fts_terms');
+        // ids: JSON array of entry ids, an exact-id lookup (kb_query's L2 fetch).
+        const ids = stringArrayParam(url, 'ids');
+        if (fts_terms === null || ids === null) {
+          const name = fts_terms === null ? 'fts_terms' : 'ids';
+          return jsonResponse(res, 400, { error: `${name} must be a JSON array of strings`, code: 'BAD_REQUEST' });
+        }
+
+        const result = await provider.query({
+          query, type, tag, limit, l1_only, confidence, exclude_disputed, include_stale, include_superseded,
+          flagged_only, fts_terms, ids,
+        });
         return jsonResponse(res, 200, result as unknown as Record<string, unknown>);
+      }
+
+      // GET /api/kb/list -- the no-bump read (provider.list): use_count and
+      // last_accessed are left alone. HttpKbProvider's member own-scope lookup
+      // uses it, so checking ownership is not counted as a retrieval.
+      if (pathname === '/api/kb/list' && method === 'GET') {
+        if (!isSqliteProject(provider)) {
+          return jsonResponse(res, 501, { error: 'list is served only from a local SQLite KB', code: 'NOT_IMPLEMENTED' });
+        }
+        const confidence = url.searchParams.get('confidence')
+          ?.split(',')
+          .filter((c): c is Confidence => c === 'CONFIRMED' || c === 'INFERRED' || c === 'UNVERIFIED');
+        // type/module/symbol/exclude_disputed: the kb_list filters, so a
+        // MEMBER kb_list's own half (HttpKbProvider.list) is filtered here.
+        const results = await provider.list({
+          tag: url.searchParams.get('tag') || undefined,
+          confidence,
+          type: (url.searchParams.get('type') || undefined) as KBEntry['type'] | undefined,
+          module: url.searchParams.get('module') || undefined,
+          symbol: url.searchParams.get('symbol') || undefined,
+          exclude_disputed: url.searchParams.get('exclude_disputed') === 'true',
+          limit: url.searchParams.has('limit') ? parseInt(url.searchParams.get('limit')!, 10) : undefined,
+          include_stale: url.searchParams.get('include_stale') === 'true',
+        });
+        return jsonResponse(res, 200, { results, total: results.length });
+      }
+
+      // POST /api/kb/promote  {id, reason} -> {id, previous_confidence, new_confidence}
+      // Same reply shape as the kb_promote tool. An unknown id is 404; any
+      // other refusal of the promote ladder (reason, superseded, directive,
+      // unresolved basis) is 422 with the provider's message.
+      if (pathname === '/api/kb/promote' && method === 'POST') {
+        const { id, reason } = JSON.parse(await readBody(req)) as { id?: unknown; reason?: unknown };
+        if (typeof id !== 'string' || id.length === 0) {
+          return jsonResponse(res, 400, { error: 'id must be a non-empty string', code: 'BAD_REQUEST' });
+        }
+        if (reason !== undefined && typeof reason !== 'string') {
+          return jsonResponse(res, 400, { error: 'reason must be a string', code: 'BAD_REQUEST' });
+        }
+        try {
+          const result = await provider.promote(id, reason);
+          return jsonResponse(res, 200, {
+            id: result.id,
+            previous_confidence: result.confidence_before,
+            new_confidence: result.confidence_after,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.startsWith('Entry not found')) {
+            return jsonResponse(res, 404, { error: message, code: 'NOT_FOUND' });
+          }
+          return jsonResponse(res, 422, { error: message, code: 'PROMOTE_REFUSED' });
+        }
       }
 
       // POST /api/kb/invalidate
@@ -227,7 +337,12 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         const ctxConfidence = url.searchParams.get('confidence')
           ?.split(',')
           .filter((c): c is Confidence => c === 'CONFIRMED' || c === 'INFERRED' || c === 'UNVERIFIED');
-        const result = await provider.context(files, ctxConfidence, url.searchParams.get('exclude_disputed') === 'true');
+        // tag: MEMBER own-scope (HttpKbProvider sends the owner tag), so each
+        // file's newest entry is chosen among that member's own.
+        const result = await provider.context(
+          files, ctxConfidence, url.searchParams.get('exclude_disputed') === 'true',
+          url.searchParams.get('tag') || undefined,
+        );
         return jsonResponse(res, 200, { results: result });
       }
 
@@ -250,6 +365,10 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
       // rule lives in the provider and only its presentation lives here.
       if (err instanceof KbCaptureRejected) {
         return jsonResponse(res, 400, { error: err.message, code: 'CAPTURE_REJECTED', reason: err.reason });
+      }
+      // A request body that is not JSON is the caller's fault, on every route.
+      if (err instanceof SyntaxError) {
+        return jsonResponse(res, 400, { error: 'Request body is not valid JSON', code: 'BAD_REQUEST' });
       }
       if (err instanceof Error) {
         if (err.message === 'BODY_TOO_LARGE') {

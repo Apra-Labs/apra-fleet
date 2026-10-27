@@ -311,7 +311,8 @@ export interface MemoryProvider {
   init(): Promise<void>;
   capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }>;
   query(opts: QueryOptions): Promise<KBResult>;
-  context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean): Promise<FileContextResult[]>;
+  // ownerTag (MEMBER own-scope): only summaries from entries carrying that tag.
+  context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean, ownerTag?: string): Promise<FileContextResult[]>;
   invalidate(files: string[]): Promise<{ invalidated: number }>;
   // Id-level DISCARD: sets superseded_at (and stale) so the entry drops from every
   // read path; the row is kept. ownerTag restricts the call to entries carrying
@@ -320,7 +321,8 @@ export interface MemoryProvider {
   discard(ids: string[], opts?: RetireOptions): Promise<DiscardResult>;
   getLinked(id: string): Promise<KBEntry[]>;
   prime(opts: PrimeOptions): Promise<PrimedContext>;
-  promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
+  // opts.ownerTag (MEMBER own-scope): an entry without that tag is "Entry not found".
+  promote(id: string, reason?: string, opts?: { ownerTag?: string }): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
   sync(opts?: SyncOptions): Promise<SyncResult>;
   // T2.1 (F5, D4): dedicated no-bump aggregation read (kb_list pattern -- never
   // touches use_count/last_accessed). Part of the interface (not just

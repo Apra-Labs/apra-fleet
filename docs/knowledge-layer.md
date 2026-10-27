@@ -237,8 +237,18 @@ global KB; the other half is the per-repo DB and global KB filtered to
 `member:<caller uuid>` and asks for every requested tier, CONFIRMED included,
 so the member's own capture promoted to CONFIRMED in the per-repo DB is
 returned before it reaches the bible. Results merge by id and the bible copy wins on a
-duplicate. A per-repo KB that is not sqlite is refused with a typed error naming
-the tool. Known limits: with a `limit`, a mixed `kb_list` sorts by id before
+duplicate. Under the http project provider the split still applies, with the
+KB server in place of the per-repo DB: the own half is the server, owner-tagged
+(checked by fleet on the entry tags the server returns). The CONFIRMED half is
+the source the tool's CONFIRMED-only read uses: the KB server for `kb_query`,
+`kb_session_prime` and `kb_context` (they pass `serverRecall`; the checkout
+bible answers only while the server is unreachable), the checkout bible for
+`kb_list`. A mixed read over http therefore has the same shape as over SQLite
+and never shows another member's unconfirmed captures. One difference follows
+from the store, not the split: on the server the member's own promoted capture
+is part of the CONFIRMED set, so it arrives in the CONFIRMED half (and counts
+toward `kb_session_prime`'s cold-seed threshold). Any other non-sqlite per-repo
+KB is refused with a typed error naming the tool. Known limits: with a `limit`, a mixed `kb_list` sorts by id before
 limiting, so it is not guaranteed to be a superset of the CONFIRMED-only list at
 the same limit (`kb_query` keeps the bible half first). The tool descriptions, the memory-contract bindings and spec, and a
 wording test must all describe this scope together.
@@ -529,9 +539,9 @@ point is `/pm kb-reconcile`.
 
 ### 1. Quick start (SQLite, local)
 
-No setup required. The KB initializes automatically on first use at:
+No setup required. Each repo's KB initializes automatically on first use at:
 ```
-~/.apra-fleet/data/knowledge/kb.sqlite
+~/.apra-fleet/data/knowledge/<project-slug>/kb.sqlite
 ```
 
 Staleness needs no git hook: `context-cache` entries store a per-file hash
@@ -607,6 +617,19 @@ It is a socket idle timeout, not a per-request deadline:
   prime first try to flush them, and the flush attempt has the same timeout. Against an unresponsive server a call can
   therefore wait up to about twice the value: one timeout for the flush, one
   for the call itself.
+
+Routes the http provider uses (all except `/health` need the bearer token).
+Another server can stand in for `kb-server` by serving the same routes:
+
+| Route | Used for |
+|---|---|
+| `POST /api/kb/capture` | kb_capture |
+| `GET /api/kb/query` (`query`, `type`, `tag`, `limit`, `l1_only`, `confidence`, `exclude_disputed`, `include_stale`, `include_superseded`, `flagged_only`, `fts_terms`, `ids`) | kb_query, and the member own-scope lookup (`tag=member:<uuid>`); entries must carry their `tags`. `flagged_only=true` lists only contradiction-flagged entries. `fts_terms` is a JSON array of strings (URL-encoded, e.g. `fts_terms=["Gearwheel","ratio"]`) OR-joined as one FTS match (kb_session_prime's neighbour query). `ids` is a JSON array of entry ids for an exact-id lookup (kb_query's L2 fetch; kb_query keeps only the requested ids). A `fts_terms` or `ids` value that is not a JSON array of strings answers 400 `BAD_REQUEST` |
+| `GET /api/kb/list` (`tag`, `confidence`, `type`, `module`, `symbol`, `exclude_disputed`, `include_stale`, `limit`; no-bump read, entries carry their `tags`) | kb_list, and the member own-scope ownership check. A 404 from it surfaces as `E-KB-HTTP-UNSUPPORTED` |
+| `GET /api/kb/context` (`files` comma-separated, required; `confidence` comma-separated; `exclude_disputed`; `tag`) | kb_context. `tag=member:<uuid>` is the member own-scope: each file's newest entry is chosen among the entries carrying that tag, not the newest overall |
+| `POST /api/kb/prime` | kb_session_prime |
+| `POST /api/kb/invalidate` (`{files}`) | kb_invalidate with files |
+| `POST /api/kb/promote` (`{id, reason}` -> `{id, previous_confidence, new_confidence}`; 404 unknown id, 422 refused) | kb_promote |
 
 ### 3. GitNexus (optional, codebase plane)
 
@@ -760,14 +783,150 @@ All data is local. No token. `kb_sync` is a no-op.
 Run `kb_setup` with `remote` and `token` to write this. Do not write
 `token_encrypted` by hand.
 
-`HttpKbProvider` proxy behavior:
-- **Reads** (query, context, prime): if server unreachable, fall back to local
-  SqliteProvider. Session continues uninterrupted.
-- **Writes** (capture, invalidate): if server unreachable, queue in memory
-  (max 1000 entries). On reconnect, queue is flushed before the next request.
-- **Queue overflow**: if 1000 pending writes accumulate, the oldest is dropped
-  and a warning is printed to stderr.
-- **Process exit**: if the queue is non-empty on exit, a warning is emitted.
+#### MemoryProvider operations
+
+Every method in the `MemoryProvider` interface is classified as one of:
+- **remote** -- calls the HTTP server; on connection error, may queue (writes)
+  or fall back to local store (reads).
+- **local-fallback** -- delegates to the local SQLite fallback store.
+- **unsupported** -- returns a documented refusal or throws a typed error.
+
+| Method | Classification | Notes |
+|--------|---|---|
+| init | local-fallback | Initializes the local fallback store. |
+| capture | remote | Posts entry to server. On connection error, queued in memory (max 1000); queue flushed on reconnect. |
+| query | remote | Retrieves entries from server. On connection error, falls back to the offline store: the checkout bible for a MEMBER CONFIRMED read (`withOfflineReads`, with a warning), otherwise the per-repo local store. |
+| context | remote | Retrieves file context from server. On connection error, falls back to the offline store, as for query: a MEMBER CONFIRMED read gets the checkout bible's summaries, never the per-repo DB's. |
+| invalidate | remote | Invalidates files on server. On connection error, queued in memory; queue flushed on reconnect. |
+| discard | unsupported | Throws E-KB-HTTP-UNSUPPORTED (id-level discard not supported). Use kb_invalidate with files instead. |
+| getLinked | local-fallback | Retrieves linked entries from the local fallback store, or from the offline store once a read of the same provider view fell back to it (the checkout bible for a MEMBER CONFIRMED read). |
+| prime | remote | Retrieves primed context from server. On connection error, falls back to the offline store, as for query. Its cold-seed `touch` is then skipped, so an offline MEMBER prime writes nothing to the per-repo DB. |
+| promote | remote | POST /api/kb/promote with `{id, reason}`. No local fallback and no offline queue on connection error (the id only exists on the server): a connection error rejects naming the server URL. A refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's title/code. |
+| sync | unsupported | Returns {synced: false} (no remote sync over http). |
+| stats | unsupported | Returns supported:false with empty results (stats not supported over http). |
+| touch | local-fallback | Records entry access in local fallback store (telemetry only). Skipped (returns 0) once a read of the same provider view was answered offline by a store other than the fallback, e.g. the checkout bible: those ids are not the per-repo DB's. |
+| relatedClaims | local-fallback | Retrieves related entries from local fallback store (graph queries only), or from the offline store once a read of the same provider view fell back to it, so an offline MEMBER `kb_query` with `expand_related` never reads the per-repo DB. |
+
+**Queue overflow**: if 1000 pending writes accumulate, the oldest is dropped
+and a warning is printed to stderr. **Process exit**: if the queue is non-empty
+on exit, a warning is emitted.
+
+#### Bible commit under HTTP
+
+`kb_bible_commit` is not supported over the HTTP KB provider. When called, it
+returns `bible_skipped: true` with reason `KB_BIBLE_COMMIT_HTTP_SKIP_REASON`
+(`src/tools/kb-bible-commit.ts`). The sprint round logs one skip line and
+continues without error.
+
+Design notes:
+
+- The guard is a soft skip, not an error: a non-SQLite project is not misconfigured,
+  it simply has no local bible to commit. The skip returns before any KB write or
+  git commit; the sprint client drops its queued confirmations, skip rounds and
+  retirements for that round and does not push or run the publication check.
+- Id-level `discard` is the opposite: it throws a typed error rather than
+  skipping, because silently ignoring a discard would leave a wrong entry live
+  on the shared server. The refusal names `kb_invalidate` with files as the
+  supported alternative.
+- `memory-contract/v1` spec prose and conformance fixtures cover both
+  `bible_skipped` and `E-KB-HTTP-UNSUPPORTED`.
+
+#### Promote and member recall under HTTP
+
+- `kb_promote` stays gated to the `kb_maintainer` grant but no longer needs a
+  SQLite project: under http it calls the provider's `promote` directly. A
+  member's owner tag is checked fleet-side first, through the server's no-bump
+  `/api/kb/list` route, so a member can promote only its own captures.
+- Member reads of every tier (`kb_query`, `kb_session_prime`, `kb_context`) are
+  routed to the http provider (`serverRecall` in
+  `src/services/knowledge/kb-self.ts`), because the server, not a local store,
+  holds the confirmed entries. `kb_list` and `kb_stats` are unchanged.
+- Exception: a member `kb_query({flagged_only: true})` does not take
+  `serverRecall`. It reads the checkout bible view plus the global KB under
+  either provider, exactly as over SQLite. A flagged listing carries no owner
+  tag, so on the server it would show other members' entries. A non-member
+  flagged read goes to the server: the provider sends `flagged_only=true`,
+  `kb-server`'s `GET /api/kb/query` honours it, and `kb_query` re-applies the
+  flagged filter to whatever the server returns.
+- Server down: a member CONFIRMED read falls back to the checkout bible (the
+  same view a SQLite member reads) and logs a warning; it never falls back to
+  the per-repo database. Other reads keep the per-repo fallback store.
+- Every request carries the project slug in `X-KB-Project`. `kb-server` serves
+  one project and answers any other (or a missing header) with 409 naming
+  both slugs, surfaced as `E-KB-HTTP-PROJECT-MISMATCH`, never as a fallback
+  to the local store.
+- Upgrade `kb-server` and its clients together. A v0.4.4 client sends no
+  `X-KB-Project` header, so a current `kb-server` answers it with 409
+  `E-KB-HTTP-PROJECT-MISMATCH` on every call; a current client against an older
+  server that lacks `GET /api/kb/list` gets `E-KB-HTTP-UNSUPPORTED` from kb_list.
+- Invariant: promote has no offline queue or local fallback, since the entry id
+  only exists on the server. A malformed or non-JSON error body still surfaces as
+  a thrown error rather than a silent success.
+- `kb_bible_commit` under http reports the `entry_count` of the existing bible
+  file (read without touching the KB) and logs, rather than throws, when the
+  bible is unreadable.
+
+#### How-to: Point fleet at a central KB server
+
+To redirect every repo on a fleet install to a central KB server (fleet's own
+`kb-server`, or any server that implements the same HTTP routes), configure
+the HTTP provider from a FULL session (orchestrator or local CLI). The setting
+is install-wide (one config file covers every repo the install serves), but a
+`kb-server` serves ONE project: requests carry their repo's project slug
+(`X-KB-Project`), and a repo whose slug differs from the server's gets
+`E-KB-HTTP-PROJECT-MISMATCH` on every call. Use the http provider on an
+install that serves that one repo.
+
+**Command:**
+
+```
+kb_setup with provider='http', remote='<server-url>', token='<bearer-token>'
+```
+
+**Setup steps:**
+
+1. Obtain the server URL and a bearer token from the central KB server's
+   operator. For fleet's own `node dist/index.js kb-server`, the token comes
+   from `--generate-token` (see [Central server](#2-central-server-http-team-shared)).
+
+2. On each client machine (one per fleet install), call the `kb_setup` MCP tool
+   from a FULL session (orchestrator or local session) with the server URL and
+   token. That includes every member host: a member's kb tools run on its own
+   host and read that host's config, so a member host without it keeps using
+   SQLite. The tool encrypts the token into the fleet config at
+   `~/.apra-fleet/data/knowledge/config.json`. `kb_setup` is MCP-only: there is
+   no `kb-setup` CLI command.
+
+3. The repo on that fleet install whose project the server serves now reads
+   and writes its KB to the central server. To switch back to local SQLite, call `kb_setup` with
+   `provider='sqlite'`.
+
+**Scope**: the provider setting is install-wide, not per-repo or per-sprint. All
+members on the fleet install see the same server.
+
+**Deployment advice**: run the central server and client setup on an isolated
+fleet install first, not your live install, because every repo served by that
+install starts reading and writing the server immediately. Verify the flow
+works before scaling to production.
+
+**Authentication**: only `Authorization: Bearer <token>` is sent in HTTP
+headers; the token is the sole credential the server sees. Member own-scope is
+enforced by fleet, not by the server: a MEMBER kb_promote first reads the
+caller's own entries (tag member:<uuid>) and sends the promote only for one of
+them (another id is not found, nothing sent), and MEMBER reads of INFERRED or
+UNVERIFIED keep only entries carrying that tag. This needs the server to return
+each entry's tags: when it does not, the promote is refused with
+E-KB-HTTP-UNSUPPORTED and untagged entries are dropped from those reads.
+
+**Capabilities over HTTP**: see the [MemoryProvider operations](#memoryprovider-operations)
+table above. In summary:
+- **Supported**: `kb_capture`, `kb_query`, `kb_context`, `kb_invalidate` (with
+  offline queueing on connection error), `kb_promote` (server-side only,
+  fails on connection error with no fallback), and member-session read tools
+  (`kb_query`, `kb_session_prime`, `kb_context` via the `serverRecall` path).
+- **Not supported**: `kb_bible_commit` returns `bible_skipped` instead of
+  committing; id-level `kb_invalidate` by `ids` throws
+  `E-KB-HTTP-UNSUPPORTED` (use `kb_invalidate` with `files` instead).
 
 ### Future: Postgres
 

@@ -642,6 +642,38 @@
           "retryable": false,
           "remediation": "Run from a folder inside a git work tree with a resolvable HEAD.",
           "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the environment cannot supply the git basis."
+        },
+        {
+          "$anchor": "E-KB-HTTP-UNSUPPORTED",
+          "code": "E-KB-HTTP-UNSUPPORTED",
+          "meaning": "The project KB is backed by the http provider and the operation cannot be served there: kb_invalidate with ids (id-level discard; the http provider has no discard operation, and nothing is discarded, on the remote or in the local fallback store), or a MEMBER kb_promote whose own-scope check got entries without tags back from the server (ownership cannot be decided, so nothing is promoted).",
+          "raising_methods": [
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/http-provider.ts (KbHttpUnsupportedError), raised by HttpKbProvider.discard and by HttpKbProvider.promote's member own-scope lookup",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Discard by id from a session whose KB is the local SQLite provider (kb_setup provider sqlite), or use kb_invalidate with files instead. For kb_promote, use a KB server that returns entry tags, or a local SQLite KB.",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the configured provider cannot serve this operation at all."
+        },
+        {
+          "$anchor": "E-KB-HTTP-PROJECT-MISMATCH",
+          "code": "E-KB-HTTP-PROJECT-MISMATCH",
+          "meaning": "The project KB is backed by the http provider and the KB server it points at serves a different project: every request carries the caller project slug (X-KB-Project) and the server answered 409 naming both slugs. Nothing is read or written, and the local fallback store is not used: the server is reachable, it is the wrong one.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "provider" },
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
+            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/http-provider.ts (KbHttpProjectMismatchError), raised by HttpKbProvider on a kb-server 409 PROJECT_MISMATCH reply",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Point this repo at the KB server for its own project (kb_setup provider http with that server url), or use a local SQLite KB (kb_setup provider sqlite).",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the configured server serves another project."
         }
       ]
     }

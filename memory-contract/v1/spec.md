@@ -156,10 +156,26 @@ the member's own captures promoted to CONFIRMED in the per-repo DB are returned
 before they reach the bible (the bible copy wins on a shared id); a
 `[CONFIRMED, INFERRED]` read is a superset of the CONFIRMED-only result
 (except `kb_list` with a `limit`, which applies the limit after merging) and
-never exposes another member's captures. `kb_capture` tags the
+never exposes another member's captures. The bible view and this split apply
+to a SQLite project KB: under the http project provider a MEMBER `kb_query`,
+`kb_session_prime` or `kb_context` read of any tier, CONFIRMED included, goes to
+the server (`kb_list` and `kb_stats` keep the SQLite routing, except that the
+own half of a mixed `kb_list` is the server). A mixed request is split the same
+way there: the server's CONFIRMED set, plus every listed tier from the
+server restricted to the caller's own captures, merged by id. Own-scope holds
+there too, enforced by fleet on the entry tags the server returns: a read
+naming INFERRED/UNVERIFIED returns only entries tagged `member:<caller uuid>`
+(an entry returned without tags counts as not the caller's), and the default
+`kb_context` read merges every CONFIRMED summary with the caller's own
+CONFIRMED/INFERRED ones. Filtering happens after the server's `limit`, so such a
+read can return fewer entries than asked for. `kb_capture` tags the
 stored entry `member:<caller uuid>`; `kb_promote` and `kb_invalidate` act only
 on entries carrying that tag and report any other id as not found, changing
-nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
+nothing. Under the http project provider a MEMBER `kb_promote` first looks the
+caller's own entries up on the server (`tag` = `member:<caller uuid>`) and sends
+the promote only when the id is among them; any other id is `E-ENTRY-NOT-FOUND`
+with nothing sent, and a server that returns entries without tags is refused
+with `E-KB-HTTP-UNSUPPORTED` (ownership cannot be decided). `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
 `{discarded, not_found, already_discarded}`. In a member session without the
 kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the
@@ -244,6 +260,19 @@ A MEMBER session is served an explicit tool list
   boundary against a process on the member's host). FULL sessions and the
   kb_maintainer session without `ref` are otherwise unchanged (they read the
   named or work-tree file).
+- Under an http project KB, `kb_invalidate {ids}` (id-level discard) is refused
+  with `E-KB-HTTP-UNSUPPORTED` (thrown): the http provider has no discard
+  operation, and nothing is discarded, on the remote or in the local fallback
+  store. `kb_invalidate {files}` is unaffected.
+- Under an http project KB, every request carries the project slug
+  (`X-KB-Project`). Fleet's `kb-server` serves one project and answers a
+  request for another project (or naming none) with 409 naming both slugs,
+  surfaced by every provider call (capture, query, context, invalidate, prime,
+  promote) as `E-KB-HTTP-PROJECT-MISMATCH` (thrown); nothing is read or written
+  and the local fallback store is not used. When the server is unreachable, a
+  MEMBER CONFIRMED read (`kb_query`, `kb_session_prime`, `kb_context`) is
+  answered from the checkout bible with a logged warning, never from the
+  per-repo database.
 - `kb_invalidate` retires entries (`ids` discards them; `files` marks
   context-cache entries invalidated), and `kb_bible_commit` removes retired
   entries from the bible, so in a member session WITHOUT the grant neither
@@ -315,7 +344,14 @@ working folder, which is typically a feature branch.
   nothing removed, or an unchanged entry set, makes no write and no commit. Re-running with
   the same ids after resetting to a newer HEAD re-merges at entry level, so a
   rejected push can be retried with no manual merge. An existing bible that
-  cannot be parsed is refused (thrown), never overwritten.
+  cannot be parsed is refused (thrown), never overwritten. Under a non-SQLite
+  (http) project KB there is no local store to build a bible from, so the call
+  is skipped before any KB read, write or git commit (the bible file itself may be read, leniently: an
+  unparseable one is logged and counted as 0, never thrown over): it returns `bible_skipped:
+  true` with a `reason`, nothing merged, skipped, removed or committed
+  (`committed` false, `entry_count` the number of entries in the existing parseable
+  bible, 0 when it is absent or unparseable); it is an answer, not an error, and has
+  no code.
 
 ### 2.7 Every code_* call is scoped to the calling session (code constraint)
 
@@ -434,8 +470,9 @@ deliberately get NO code, each with its reason. They fall into three kinds:
   that branch is the one with a code.
 - **A failure was degraded into an answer** -- the `code_*` adapters' offline
   result, the swallowed bible read, the emptied
-  `related_claims`, the unknown author role, and a provider reporting stats as
-  unsupported.
+  `related_claims`, the unknown author role, a provider reporting stats as
+  unsupported, and `kb_bible_commit` returning `bible_skipped: true` under an
+  http project KB.
 
 ### 3.3 No code in v1 is retryable
 

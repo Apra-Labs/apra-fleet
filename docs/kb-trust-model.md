@@ -51,6 +51,26 @@ Enforcement applies only to captures made from the gate onward.
   from session transcripts, unreviewed, and always captured at UNVERIFIED. Harvest
   can never mint CONFIRMED -- the same gate covers it.
 
+## HTTP provider
+
+With `kb_setup provider http` the project KB lives on a KB server, and the
+guarantees above change:
+
+- Promotes are live for every member at once. A `kb_promote` on the server is
+  read by every member's next query; there is no bible in between, and no
+  basis-at-HEAD check (the check `kb_export` / `kb_bible_commit` apply) before
+  other members see the entry.
+- Basis and freshness are checked against the SERVER's checkout: capture's
+  basis check and context-cache freshness hash the files in the folder the
+  server runs in, not the member's checkout.
+- The shared bearer token is the only credential. Anyone holding it can read
+  and write every entry on that server. The owner tags that scope a member's
+  reads and promotes (`member:<uuid>`) are asserted by the client, so they
+  keep agent sessions apart; they do not stop a holder of the token.
+- A server serves one project; requests carry their project slug
+  (`X-KB-Project`) and any other project is refused with 409
+  (`E-KB-HTTP-PROJECT-MISMATCH`).
+
 ## The kb_maintainer grant protects CONFIRMED entries from member sessions
 
 A member session (one without the kb_maintainer grant) can neither mint nor

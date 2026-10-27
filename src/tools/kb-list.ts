@@ -56,7 +56,9 @@ export async function kbList(input: KbListInput, anchor?: KbAnchor): Promise<str
   // MEMBER mixed-tier request (CONFIRMED plus another tier): CONFIRMED from
   // the checkout bible view, plus every requested tier from the per-repo DB,
   // own captures only (kb-self.ts getMemberSplitRead). Merged by id (bible copy
-  // wins), re-sorted into list()'s id order, then limited.
+  // wins), re-sorted into list()'s id order, then limited. Under an http
+  // project provider the own half is the KB server's list, owner-tagged; the
+  // CONFIRMED half stays the checkout bible, as kb_list's CONFIRMED-only read.
   const split = await getMemberSplitRead(anchor, confidence, 'kb_list');
   if (split) {
     const [fromBible, fromOwn] = await Promise.all([
