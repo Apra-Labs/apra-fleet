@@ -45,8 +45,9 @@ function passesTrustFilter(
   e: { confidence?: string; flagged_for_review?: boolean; contradiction_of?: string | null; tags?: string[] },
   input: KbQueryInput,
   ownerTag?: string,
+  spareConfirmed = false,
 ): boolean {
-  if (ownerTag !== undefined && !(e.tags ?? []).includes(ownerTag)) return false;
+  if (ownerTag !== undefined && !(spareConfirmed && e.confidence === 'CONFIRMED') && !(e.tags ?? []).includes(ownerTag)) return false;
   if (input.confidence?.length && !input.confidence.includes(e.confidence as NonNullable<KbQueryInput['confidence']>[number])) return false;
   if (input.exclude_disputed && (e.flagged_for_review || e.contradiction_of)) return false;
   return true;
@@ -62,18 +63,18 @@ type L1Opts = Parameters<MemoryProvider['query']>[0] & { limit: number };
 type Entry = Awaited<ReturnType<MemoryProvider['query']>>['results'][number];
 
 // One provider's L1 page with the trust filter re-applied (see passesTrustFilter).
-async function trustedL1(provider: MemoryProvider, queryOpts: L1Opts, input: KbQueryInput, ownerTag?: string): Promise<Entry[]> {
+async function trustedL1(provider: MemoryProvider, queryOpts: L1Opts, input: KbQueryInput, ownerTag?: string, spareConfirmed = false): Promise<Entry[]> {
   const first = await provider.query(queryOpts);
   const filtering = Boolean(input.confidence?.length || input.exclude_disputed || ownerTag);
   if (!filtering) return first.results;
-  let kept = first.results.filter(e => passesTrustFilter(e, input, ownerTag));
+  let kept = first.results.filter(e => passesTrustFilter(e, input, ownerTag, spareConfirmed));
   // A provider that ignored the filter may have spent its whole limit on
   // entries just dropped here. A full page that filtered short is the only
   // signal of that (the sqlite provider filters in SQL, so it never trips
   // this); re-ask once with a wider window and trim back to the limit.
   if (kept.length < queryOpts.limit && first.results.length >= queryOpts.limit) {
     const wider = await provider.query({ ...queryOpts, limit: queryOpts.limit * 4 });
-    kept = wider.results.filter(e => passesTrustFilter(e, input, ownerTag));
+    kept = wider.results.filter(e => passesTrustFilter(e, input, ownerTag, spareConfirmed));
   }
   return kept.slice(0, queryOpts.limit);
 }
@@ -208,6 +209,10 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
     { serverRecall: !input.flagged_only },
   );
 
+  // Mixed-tier http read: the provider already spares CONFIRMED from the owner
+  // tag, so this re-filter must too (sqlite mixed reads take the split path).
+  const spareConfirmed = input.confidence?.includes('CONFIRMED') === true;
+
   if (input.flagged_only) {
     const flaggedOpts = {
       query: input.query,
@@ -265,7 +270,7 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // The trust filter runs PER PROVIDER, before the title de-dup below: filtering
   // after the merge would let an excluded project entry shadow an admissible
   // global entry of the same title and then vanish, taking both with it.
-  const projectL1 = await trustedL1(providers.project, queryOpts, input, ownerTag);
+  const projectL1 = await trustedL1(providers.project, queryOpts, input, ownerTag, spareConfirmed);
   const globalL1 = await trustedL1(providers.global, queryOpts, input, ownerTag);
 
   // Merge project first, deduplicate global entries by title
@@ -307,7 +312,7 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
         confidence: input.confidence,
         exclude_disputed: input.exclude_disputed,
         owner_tag: ownerTag,
-      })).filter(e => passesTrustFilter(e, input, ownerTag));
+      })).filter(e => passesTrustFilter(e, input, ownerTag, spareConfirmed));
     } catch {
       relatedClaims = [];
     }
