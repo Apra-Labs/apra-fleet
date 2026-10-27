@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
-import { getSelfReadKb, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
+import {
+  getSelfReadKb, getMemberSplitRead, memberOwnerTag, type KbAnchor, type MemberSplitRead,
+} from '../services/knowledge/kb-self.js';
 import type { KbProviders } from '../services/knowledge/kb-providers.js';
-import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 
 export const kbContextSchema = z.object({
@@ -49,29 +50,32 @@ export async function kbContext(input: KbContextInput, anchor?: KbAnchor): Promi
   // Default-trusted read: undisputed unless a tier list is given.
   const excludeDisputed = explicit === undefined;
 
-  // MEMBER session -> the checkout bible view (kb-self.ts getSelfReadKb) for
-  // the CONFIRMED tier; an INFERRED/UNVERIFIED request goes to the per-repo DB,
-  // own captures only (ownerTag). Under an http project provider (serverRecall)
-  // a MEMBER read goes straight to the server: no bible merge; an
-  // INFERRED/UNVERIFIED request keeps ownerTag, enforced by either provider.
+  // MEMBER session whose tier list (explicit, or the default above) names
+  // CONFIRMED plus another tier: the split read (kb-self.ts
+  // getMemberSplitRead). The checkout bible's CONFIRMED entries are merged per
+  // file (best status wins) with the member's OWN captures from the per-repo
+  // DB, so the other tiers never expose another member's captures and never
+  // hide the bible's. This is also the MEMBER default read. Under an http
+  // project provider (serverRecall) the split steps aside (returns null) and
+  // the server answers below.
+  const split = await getMemberSplitRead(anchor, confidence, 'kb_context', { serverRecall: true });
+  if (split) return JSON.stringify(partition(await splitContext(split, input.files, explicit, excludeDisputed)));
+
+  // Everything else (kb-self.ts getSelfReadKb): a MEMBER CONFIRMED-only
+  // request reads the checkout bible view; a MEMBER request naming only
+  // INFERRED/UNVERIFIED goes to the per-repo DB, own captures only (ownerTag).
+  // Under an http project provider (serverRecall) a MEMBER read goes straight
+  // to the server: no bible merge; an INFERRED/UNVERIFIED request keeps
+  // ownerTag, enforced by either provider.
   const read = await getSelfReadKb(anchor, explicit, { serverRecall: true });
   const { providers } = read;
+  const isMemberDefault = explicit === undefined && memberOwnerTag(anchor) !== undefined;
   let results: FileResult[];
-  if (explicit === undefined && read.memberView) {
-    // MEMBER default: the checkout bible's CONFIRMED entries merged with the
-    // member's OWN CONFIRMED/INFERRED captures from the per-repo DB, so the
-    // INFERRED half of the default never exposes another member's captures and
-    // never hides the bible's.
-    const own = await getSelfReadKb(anchor, confidence);
-    const fromBible = await providers.project.context(input.files, ['CONFIRMED'], excludeDisputed);
-    const fromOwn = await requireSqliteProject(own.providers.project, 'kb_context')
-      .context(input.files, confidence, excludeDisputed, own.ownerTag);
-    results = mergeByFile(fromBible, fromOwn);
-  } else if (explicit === undefined && memberOwnerTag(anchor) !== undefined) {
+  if (isMemberDefault) {
     // MEMBER default over an http project (no bible view): the same merge as
-    // above, both halves from the server -- every CONFIRMED summary, plus the
-    // member's OWN CONFIRMED/INFERRED ones, so another member's INFERRED
-    // capture never shows.
+    // the split read, both halves from the server -- every CONFIRMED summary,
+    // plus the member's OWN CONFIRMED/INFERRED ones, so another member's
+    // INFERRED capture never shows.
     const fromServer = await providers.project.context(input.files, ['CONFIRMED'], excludeDisputed);
     const fromOwn = await providers.project.context(input.files, confidence, excludeDisputed, memberOwnerTag(anchor));
     results = mergeByFile(fromServer, fromOwn);
@@ -82,23 +86,53 @@ export async function kbContext(input: KbContextInput, anchor?: KbAnchor): Promi
   }
 
   // Fallback to global if project has no results
-  const hasFresh = results.some(r => r.status === 'fresh');
-  if (!hasFresh) {
-    // A MEMBER default read keeps the global fallback CONFIRMED-only: the global
-    // KB is machine-wide, so its INFERRED tier is not the member's own. Keyed on
-    // the member session, not memberView, so the http path keeps the same rule.
-    const isMemberDefault = explicit === undefined && memberOwnerTag(anchor) !== undefined;
+  if (!results.some(r => r.status === 'fresh')) {
+    // A MEMBER default read (the http path above) keeps the global fallback
+    // CONFIRMED-only: the global KB is machine-wide, so its INFERRED tier is
+    // not the member's own -- the same rule splitContext applies.
     const globalTiers = isMemberDefault ? (['CONFIRMED'] as Tier[]) : confidence;
     const globalResults = await providers.global.context(input.files, globalTiers, excludeDisputed, read.ownerTag);
-    const hasFreshGlobal = globalResults.some(r => r.status === 'fresh');
-    if (hasFreshGlobal) {
-      results = globalResults;
-    }
+    if (globalResults.some(r => r.status === 'fresh')) results = globalResults;
   }
 
+  return JSON.stringify(partition(results));
+}
+
+async function splitContext(
+  split: MemberSplitRead,
+  files: string[],
+  explicit: Tier[] | undefined,
+  excludeDisputed: boolean,
+): Promise<FileResult[]> {
+  const { ownerTag } = split.own;
+  // The own half asks for every requested tier (CONFIRMED included),
+  // owner-tagged, so a cache entry the member promoted in the per-repo DB
+  // still counts, for the default and an explicit list alike.
+  const fromBible = await split.bible.project.context(files, split.bible.tiers, excludeDisputed);
+  const fromOwn = await split.own.project.context(files, split.own.tiers, excludeDisputed, ownerTag);
+  let results = mergeByFile(fromBible, fromOwn);
+
+  // Fallback to global if project has no results. The global KB is
+  // machine-wide, so its non-CONFIRMED tiers are not the member's own: the
+  // default read keeps the fallback CONFIRMED-only; an explicit list adds the
+  // member's own global captures for the other tiers.
+  if (!results.some(r => r.status === 'fresh')) {
+    let globalResults = await split.bible.global.context(files, split.bible.tiers, excludeDisputed);
+    if (explicit !== undefined) {
+      globalResults = mergeByFile(
+        globalResults,
+        await split.own.global.context(files, split.own.tiers, excludeDisputed, ownerTag),
+      );
+    }
+    if (globalResults.some(r => r.status === 'fresh')) results = globalResults;
+  }
+  return results;
+}
+
+function partition(results: FileResult[]): { fresh: FileResult[]; stale: FileResult[]; missing: string[] } {
   const fresh = results.filter(r => r.status === 'fresh');
   const stale = results.filter(r => r.status === 'stale');
   const missing = results.filter(r => r.status === 'missing').map(r => r.file);
 
-  return JSON.stringify({ fresh, stale, missing });
+  return { fresh, stale, missing };
 }

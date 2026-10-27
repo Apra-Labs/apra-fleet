@@ -2,8 +2,8 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { McpToolResult, On } from 'claude-code'
 
 import {
-  classifyError, clock, entryLinkWarning, expiresSoon, expiryLabel, paneRows, parseEntryLink, parseSecrets, parseSnapshot,
-  DEFAULT_LAYOUT, removeNote, secretToken, secretsStatus, secretsRows, statusLine, summaryText, withSecrets,
+  callErrorText, cells, classifyError, clock, entryLinkWarning, expiresSoon, expiryLabel, FOOTER, GUTTER, memberExtras, nameCap,
+  paneColumns, paneRows, parseEntryLink, parseSecrets, parseSnapshot, DEFAULT_LAYOUT, removeNote, secretToken, secretsStatus, secretsRows, statusLine, summaryText, withSecrets,
 } from '../hooks/register'
 import type { FleetView } from '../types'
 
@@ -102,10 +102,10 @@ describe('fleet-status formatting', () => {
 // with no secrets, and any other tool from `tools` (every call is recorded).
 // ui.open and ui.status stand in for the surface: the pane is placed and the
 // status line text is kept for the test to read.
-type Seen = { status: (string | undefined)[]; reads: number; calls: { tool: string; args: Record<string, unknown> }[] }
+type Seen = { status: (string | undefined)[]; reads: number; calls: { tool: string; args: Record<string, unknown> }[]; opened: (number | undefined)[] }
 type Reply = McpToolResult | { deny: string }
 function serveSnapshot(on: On, reply: Reply, tools: Record<string, Reply | (() => Reply)> = {}, opts: { store?: boolean } = {}): Seen {
-  const seen: Seen = { status: [], reads: 0, calls: [] }
+  const seen: Seen = { status: [], reads: 0, calls: [], opened: [] }
   const all: Record<string, Reply | (() => Reply)> = { credential_store_list: text('[]'), ...tools, fleet_snapshot: reply }
   on('mcp.call', ($, e) => {
     expect(e.server).toBe('apra-fleet')
@@ -117,7 +117,10 @@ function serveSnapshot(on: On, reply: Reply, tools: Record<string, Reply | (() =
     return 'deny' in r ? r : { value: r }
   })
   if (opts.store !== false) mock.store(on)
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', ($, e) => {
+    seen.opened.push(e.columns)
+    return { value: { isPlaced: true } }
+  })
   on('ui.status', ($, e) => {
     seen.status.push(e.text)
     return { value: undefined }
@@ -146,14 +149,15 @@ describe('fleet-status pane', () => {
     expect(seen.status.at(-1)?.includes('alice 02:14')).toBe(true)
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'fleet-status', surface, component: 'Pane', requestId: 'fleet-status', props: PANE_PROPS })
-      // Quiet time, holder and stall notes sit behind "more".
-      if (surface === 'terminal') {
-        expect(await ui.find({ type: 'Text', text: 'held by sprint-42' })).toBe(undefined)
-        await ui.press({ key: 'more-members' })
-      }
+      // Quiet time, holder and stall notes sit behind "more". Each pass starts
+      // from the default layout and leaves it so: the layout is kept across mounts.
+      expect(await ui.find({ type: 'Text', text: 'held by sprint-42' })).toBe(undefined)
+      await ui.press({ key: 'more-members' })
       for (const text of ['apra-fleet', 'v0.5.0', 'alice', 'quiet 02:14', 'held by sprint-42', 'dgx-2', 'build', 'gpu', 'uncategorized', 'may be stalled']) {
         expect(await ui.find({ type: 'Text', text })).toBeDefined()
       }
+      await ui.press({ key: 'more-members' })
+      expect(await ui.find({ type: 'Text', text: 'held by sprint-42' })).toBe(undefined)
       await ui.unmount()
     }
   })
@@ -460,6 +464,134 @@ describe('fleet-status inserting a secret token', () => {
     const ui = await $.ui.mount(MOUNT)
     await ui.press({ key: 'fold-members' })
     expect(saved.at(-1)).toEqual({ ...DEFAULT_LAYOUT, membersOpen: false })
+    await ui.unmount()
+  })
+})
+
+// A permissions.deny rule on credential_store_* (or remove_member) hides the
+// tool from the session while fleet_snapshot still answers: the wording
+// Claude Code gives $.mcp.call then.
+const HIDDEN = (tool: string) => `$.mcp.call: no connected MCP tool "${tool}" on a server named "apra-fleet"`
+
+describe('fleet-status hidden tools', () => {
+  test('callErrorText names the deny rule only while the snapshot answers', async () => {
+    expect(callErrorText(HIDDEN('credential_store_list'), true))
+      .toBe('credential tools hidden in this session (permission deny rule mcp__apra-fleet__credential_store_list?)')
+    expect(callErrorText(HIDDEN('remove_member'), true))
+      .toBe('remove_member hidden in this session (permission deny rule mcp__apra-fleet__remove_member?)')
+    expect(callErrorText(HIDDEN('credential_store_list'), false)).toBe('no connected MCP tool "credential_store_list" on a server named "apra-fleet"')
+  })
+
+  test('classifyError recognises the no-connected-tool wording', async () => {
+    expect(classifyError(HIDDEN('fleet_snapshot'), 5_000)).toBe('connecting...')
+    expect(classifyError(HIDDEN('fleet_snapshot'), 61_000)).toBe('server not reachable (or mcp__apra-fleet__fleet_snapshot denied)')
+  })
+
+  test('a hidden secrets tool shows an actionable line and never "No secrets stored."', async ($, on) => {
+    serveSnapshot(on, OK, { credential_store_list: { deny: HIDDEN('credential_store_list') } })
+    await $.command.run(RUN)
+    const ui = await $.ui.mount(MOUNT)
+    await ui.press({ key: 'fold-secrets' })
+    expect(await ui.find({ type: 'Text', text: /credential tools hidden in this session \(permission deny rule mcp__apra-fleet__credential_store_list\?\)/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'No secrets stored.' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('secrets rows: an error replaces the empty-state line', async () => {
+    const l = { ...DEFAULT_LAYOUT, secretsOpen: true }
+    const f = { mode: 'closed', name: '', members: '', keep: 'persistent', ttl: 'none' } as const
+    expect(secretsRows({ items: [], fetchedAt: 1 }, f, l)).toBe(3)
+    expect(secretsRows({ items: [], fetchedAt: 1, error: 'x' }, f, l)).toBe(3)
+  })
+
+  test('a hidden remove_member says so in the note', async ($, on) => {
+    serveSnapshot(on, OK, { remove_member: { deny: HIDDEN('remove_member') } })
+    await $.command.run(RUN)
+    const ui = await $.ui.mount(MOUNT)
+    await ui.press({ key: 'remove:bob' })
+    await ui.press({ key: 'remove-confirm' })
+    expect(await ui.find({ type: 'Text', text: /^Not removed: remove_member hidden in this session/ })).toBeDefined()
+    await ui.unmount()
+  })
+})
+
+const IDLE = JSON.stringify({
+  version: 'v0.5.0',
+  members: [
+    { id: 'a1b2c3d4e5f6', name: 'backlog-apraOpsSupervisor', icon: 'B', category: null, status: 'idle' },
+    { id: 'f6e5d4c3b2a1', name: 'mac1', icon: 'M', category: null, status: 'offline' },
+  ],
+})
+
+describe('fleet-status pane width', () => {
+  test('the tree is laid out GUTTER cells short of the body, the rule included', async ($, on) => {
+    serveSnapshot(on, OK)
+    await $.command.run(RUN)
+    const ui = await $.ui.mount(MOUNT)
+    expect(GUTTER).toBe(2)
+    expect(await ui.find({ type: 'Text', text: String.fromCharCode(0x2500).repeat(PANE_PROPS.bodyColumns - GUTTER) })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: String.fromCharCode(0x2500).repeat(PANE_PROPS.bodyColumns) })).toBe(undefined)
+    // The root box is held to the same width, so right-aligned controls land in view.
+    const root = await ui.drawn()
+    expect('props' in root ? root.props : undefined).toMatchObject({ width: PANE_PROPS.bodyColumns - GUTTER })
+    await ui.unmount()
+  })
+
+  test('paneColumns fits the content, clamped, plus the gutter', async () => {
+    const v = viewOf(SNAPSHOT)
+    const s = { items: [], fetchedAt: 1 }
+    const c = paneColumns(v, s)
+    expect(c >= 40 + GUTTER && c <= 72 + GUTTER).toBe(true)
+    // "more" adds the notes beside each row: never narrower.
+    expect(paneColumns(v, s, { ...DEFAULT_LAYOUT, moreMembers: true }) > c).toBe(true)
+    // A long name widens it (fixed 16 + name + 2); a very long one is clamped.
+    const long = viewOf(JSON.stringify({ members: [{ id: 'x', name: 'n'.repeat(40), status: 'idle' }] }))
+    expect(paneColumns(long, s)).toBe(16 + 40 + 2 + GUTTER)
+    const huge = viewOf(JSON.stringify({ members: [{ id: 'x', name: 'n'.repeat(90), status: 'idle' }] }))
+    expect(paneColumns(huge, s)).toBe(72 + GUTTER)
+    expect(cells(FOOTER) <= 40).toBe(true)
+  })
+
+  test('/fleet-status asks for the columns its content takes; a toggle re-asks', async ($, on) => {
+    const { opened } = serveSnapshot(on, OK)
+    await $.command.run(RUN)
+    expect(opened.at(-1)).toBe(paneColumns(viewOf(SNAPSHOT), { items: [], fetchedAt: 1 }))
+    const ui = await $.ui.mount(MOUNT)
+    const before = opened.length
+    await ui.press({ key: 'more-members' })
+    expect(opened.length).toBe(before + 1)
+    expect(opened.at(-1)).toBe(paneColumns(viewOf(SNAPSHOT), { items: [], fetchedAt: 1 }, { ...DEFAULT_LAYOUT, moreMembers: true }))
+    await ui.unmount()
+  })
+
+  test('more shows something for idle and offline members, and less hides it', async ($, on) => {
+    serveSnapshot(on, text(IDLE))
+    await $.command.run(RUN)
+    const ui = await $.ui.mount(MOUNT)
+    expect(await ui.find({ type: 'Text', text: /free for work/ })).toBe(undefined)
+    await ui.press({ key: 'more-members' })
+    expect(await ui.find({ type: 'Text', text: /free for work/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /not reachable/ })).toBeDefined()
+    await ui.press({ key: 'more-members' })
+    expect(await ui.find({ type: 'Text', text: /free for work/ })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('memberExtras is never empty', async () => {
+    for (const m of parseSnapshot([SNAPSHOT]).members.concat(parseSnapshot([IDLE]).members)) {
+      expect(memberExtras(m).length > 0).toBe(true)
+    }
+  })
+
+  test('a 25-character name is drawn whole', async ($, on) => {
+    serveSnapshot(on, text(IDLE))
+    await $.command.run(RUN)
+    const ui = await $.ui.mount(MOUNT)
+    const NAME = 'backlog-apraOpsSupervisor'
+    // The fixed-width cell around the name: as wide as the name, so nothing is cut.
+    const cell = (await ui.findAll({ type: 'Box' })).find(b => typeof b.props.width === 'number' && b.text === NAME)
+    expect((cell?.props.width as number) >= NAME.length).toBe(true)
+    expect(nameCap(PANE_PROPS.bodyColumns - GUTTER, 0) >= 'backlog-apraOpsSupervisor'.length + 2).toBe(true)
     await ui.unmount()
   })
 })

@@ -159,7 +159,10 @@ async function selectProjectProvider(projectProvider: SqliteProvider, configFing
   // readKbConfigFromDisk throws on http-without-url/token, so both are present here.
   // The slug goes on every request (X-KB-Project) so a server for another
   // project refuses it instead of answering with that project's KB.
-  const httpProvider = new HttpKbProvider(config.url!, config.token!, projectProvider, slug);
+  const httpProvider = new HttpKbProvider(config.url!, config.token!, projectProvider, {
+    requestTimeoutMs: config.requestTimeoutMs,
+    projectSlug: slug,
+  });
   try {
     await httpProvider.init();
   } catch (err) {

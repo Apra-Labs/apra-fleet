@@ -7,6 +7,11 @@ import { groupByCategory } from '../utils/agent-helpers.js';
 
 const STATUSLINE_PATH = path.join(FLEET_DIR, 'statusline.txt');
 const STATE_PATH = path.join(FLEET_DIR, 'statusline-state.json');
+// Sidecar: agentId -> pid of the server process that last wrote a busy status
+// for it. Lets a reader tell a live busy from one persisted by a server that
+// has since died (crash/restart mid-task). Kept separate so the state file's
+// Record<string, string> shape is unchanged for its readers.
+const OWNERS_PATH = path.join(FLEET_DIR, 'statusline-owners.json');
 
 // Status display emoji — keyed on base status (without parenthetical suffix)
 const STATUS_EMOJI: Record<string, string> = {
@@ -37,6 +42,68 @@ function saveState(state: Record<string, string>): void {
   fs.writeFileSync(STATE_PATH, JSON.stringify(state), { mode: 0o600 });
 }
 
+function loadOwners(): Record<string, number> {
+  try {
+    if (fs.existsSync(OWNERS_PATH)) {
+      return JSON.parse(fs.readFileSync(OWNERS_PATH, 'utf-8'));
+    }
+  } catch { /* corrupted file, start fresh */ }
+  return {};
+}
+
+function saveOwners(owners: Record<string, number>): void {
+  fs.writeFileSync(OWNERS_PATH, JSON.stringify(owners), { mode: 0o600 });
+}
+
+function isBusyStatus(status: string | undefined): boolean {
+  return status !== undefined && baseStatus(status) === 'busy';
+}
+
+/** True when a process with this pid exists (EPERM = exists, not ours). */
+export function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: any) {
+    return err?.code === 'EPERM';
+  }
+}
+
+/**
+ * True when the persisted status for `agentId` is busy but the server process
+ * that wrote it is known to be dead -- a busy no live process can ever clear.
+ * A busy with no recorded owner (written before owners were tracked) is not
+ * judged here; startup reconciliation handles it.
+ */
+export function isOrphanedBusy(agentId: string): boolean {
+  if (!isBusyStatus(loadState()[agentId])) return false;
+  const owner = loadOwners()[agentId];
+  return owner !== undefined && !isPidAlive(owner);
+}
+
+/**
+ * Startup reconciliation: a fresh server holds no in-flight work, so any
+ * persisted busy whose owner is missing, dead, or this very pid (reuse) was
+ * left by a server that died mid-task. Reset those to idle. Busy entries
+ * owned by another live server process are kept. Returns the reset ids.
+ */
+export function reconcileStaleBusy(): string[] {
+  try {
+    const state = loadState();
+    const owners = loadOwners();
+    const stale = Object.keys(state).filter(id => {
+      if (!isBusyStatus(state[id])) return false;
+      const owner = owners[id];
+      return owner === undefined || owner === process.pid || !isPidAlive(owner);
+    });
+    if (stale.length > 0) writeStatusline(new Map(stale.map(id => [id, 'idle'])));
+    return stale;
+  } catch {
+    return [];
+  }
+}
+
 /** Return the last-known status for an agent (defaults to 'idle'). */
 export function readMemberStatus(agentId: string): string {
   return loadState()[agentId] ?? 'idle';
@@ -47,6 +114,11 @@ export function readMemberStatus(agentId: string): string {
  * - Overrides are merged into the persisted state (not a full reset).
  * - Agents not in overrides keep their last-known state.
  * - New agents default to 'idle'.
+ *
+ * Called with NO overrides it only RE-RENDERS (registry changes: names, icons,
+ * added/removed members). It never clears a member's busy -- to end a busy
+ * period pass an explicit status, or use markBusy() (member-busy.ts), whose
+ * release always writes one.
  */
 export function writeStatusline(overrides?: Map<string, string>): void {
   try {
@@ -60,15 +132,25 @@ export function writeStatusline(overrides?: Map<string, string>): void {
       if (fs.existsSync(STATE_PATH)) {
         fs.writeFileSync(STATE_PATH, '{}', { mode: 0o600 });
       }
+      if (fs.existsSync(OWNERS_PATH)) saveOwners({});
       return;
     }
 
     const saved = loadState();
+    const owners = loadOwners();
+    let ownersChanged = false;
 
-    // Merge overrides into saved state
+    // Merge overrides into saved state; a busy write records this process as
+    // its owner, any other status drops the owner.
     if (overrides) {
       for (const [id, status] of overrides) {
         saved[id] = status;
+        if (isBusyStatus(status)) {
+          if (owners[id] !== process.pid) { owners[id] = process.pid; ownersChanged = true; }
+        } else if (id in owners) {
+          delete owners[id];
+          ownersChanged = true;
+        }
       }
     }
 
@@ -76,6 +158,9 @@ export function writeStatusline(overrides?: Map<string, string>): void {
     const agentIds = new Set(agents.map(a => a.id));
     for (const id of Object.keys(saved)) {
       if (!agentIds.has(id)) delete saved[id];
+    }
+    for (const id of Object.keys(owners)) {
+      if (!agentIds.has(id)) { delete owners[id]; ownersChanged = true; }
     }
 
     const states = agents.map(a => ({
@@ -101,6 +186,7 @@ export function writeStatusline(overrides?: Map<string, string>): void {
     const line = categoryParts.join('  |  ');
 
     saveState(saved);
+    if (ownersChanged) saveOwners(owners);
     fs.writeFileSync(STATUSLINE_PATH, line + '\n', { mode: 0o600 });
   } catch { /* best-effort, never break tool execution */ }
 }

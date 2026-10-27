@@ -114,6 +114,8 @@ export async function runHarvestPhase({
     regressionSkippedBy = null,
     // Sprint state's per-dispatch kb_* and code_* call records (dispatch-accounting.mjs).
     dispatchToolCalls = null,
+    // The run's set-aside records (../set-aside.mjs collectSetAsideEntries).
+    setAside = [],
     // The KB work client: the harvest round's bible commit runs through it.
     kbWork = null,
     // Member-bound command runner and the per-member OS/shell command builder
@@ -156,6 +158,7 @@ export async function runHarvestPhase({
         regressionResult,
         regressionSkippedBy,
         dispatchToolCalls,
+        setAside,
         // Confirmations the final review round's bible commit could not
         // publish -- persisted here so the warning outlives the live log.
         kbBibleUnpublished: kbWork && typeof kbWork.unpublishedBible === 'function' ? kbWork.unpublishedBible() : null,

@@ -80,8 +80,11 @@ console.log(JSON.stringify([...allow], null, 2));
 
 Check every required prefix against this one merged list. If any prefix has
 no covering entry, STOP immediately and return `deployed: false`, listing
-every missing entry in `notes` and asking the orchestrator/operator to run
-`compose_permissions` with the missing grant(s), then re-trigger the sprint.
+every missing entry in `notes`, and set `failedStep: "permissions"`, asking the
+orchestrator/operator to run `compose_permissions` with the missing grant(s), then
+re-trigger the sprint. `failedStep` is how the orchestrator knows no deploy command
+ran -- set it only for this Step 0a stop, never for a failure after a deploy command
+ran.
 NEVER add permissions yourself: `.claude/settings.json` changes require a
 team PR, and `.claude/settings.local.json` must be provisioned via the
 `compose_permissions` MCP tool (the provider-agnostic delivery mechanism
@@ -158,6 +161,16 @@ placeholder):
 {
   "deployed": true,
   "notes": "Smoke test exited 0."
+}
+```
+
+A Step 0a stop (missing permissions, no deploy command ran):
+
+```json
+{
+  "deployed": false,
+  "failedStep": "permissions",
+  "notes": "Missing permission grant(s): <entries>. Run compose_permissions with them, then re-trigger the sprint."
 }
 ```
 

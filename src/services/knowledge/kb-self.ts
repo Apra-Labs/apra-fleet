@@ -29,8 +29,9 @@ import type { Agent } from '../../types.js';
 import { knownRepoRemoteUrl } from '../member-remote-url.js';
 import { getKbProviders, getGlobalKbProvider, getProjectSlug, kbConfigSelectsHttp, type KbProviders } from './kb-providers.js';
 import { getMemberBibleView } from './member-bible-view.js';
-import { isSqliteProject } from './require-sqlite-project.js';
+import { isSqliteProject, requireSqliteProject } from './require-sqlite-project.js';
 import { HttpKbProvider } from './http-provider.js';
+import type { SqliteProvider } from './sqlite-provider.js';
 
 /** Explicit KB anchor for in-process callers. Not exposed on any tool schema. */
 export interface KbAnchor {
@@ -297,6 +298,91 @@ export async function getSelfReadKb(
     memberView: false,
     ...(ownerTag !== undefined ? { ownerTag } : {}),
   };
+}
+
+export type KbTier = 'CONFIRMED' | 'INFERRED' | 'UNVERIFIED';
+
+/**
+ * The two halves of a MEMBER mixed-tier read (see getMemberSplitRead).
+ *
+ * `bible` answers the CONFIRMED tier from exactly the source a CONFIRMED-only
+ * member read uses: the member's checkout bible view plus the global KB, with
+ * NO owner tag. `own` answers EVERY requested tier (CONFIRMED included) from
+ * the per-repo DB and the global KB, both restricted to `ownerTag`, so a member
+ * never sees another member's DB-only captures at any tier, while its own
+ * capture promoted to CONFIRMED in the per-repo DB stays visible before it
+ * reaches the bible (the bible copy wins on a shared id).
+ */
+export interface MemberSplitRead {
+  anchor: KbAnchor;
+  projectSlug: string;
+  bible: { project: SqliteProvider; global: SqliteProvider; tiers: KbTier[] };
+  own: { project: SqliteProvider; global: SqliteProvider; tiers: KbTier[]; ownerTag: string };
+}
+
+/**
+ * The shared split read for a MEMBER session whose explicit tier list names
+ * CONFIRMED together with at least one other tier. Returns null for every other
+ * request, which then keeps its existing path through getSelfReadKb: a FULL
+ * session, an explicit-KbAnchor caller, a CONFIRMED-only (or omitted) tier list
+ * (bible view), and a list naming only non-CONFIRMED tiers (own captures only).
+ *
+ * Callers query each half with its own tiers and owner tag, then merge with
+ * mergeSplitById (bible copy wins) and apply their limit after the merge.
+ *
+ * Non-sqlite per-repo provider (a remote HTTP KB): the own half is refused
+ * with requireSqliteProject's error naming `callerLabel`, exactly as the
+ * same request was refused before the split existed. Answering with the bible
+ * half alone would silently drop tiers the caller asked for, so the request
+ * fails loudly instead.
+ *
+ * `opts.serverRecall` (the same option getSelfReadKb takes, passed by
+ * kb_query, kb_session_prime and kb_context): when the KB config selects a
+ * non-SQLite (http) project provider, returns null instead of refusing, so the
+ * caller's getSelfReadKb serverRecall path answers the read from the server.
+ */
+export async function getMemberSplitRead(
+  anchor: KbAnchor | undefined,
+  confidence: readonly string[] | undefined,
+  callerLabel: string,
+  opts: SelfReadKbOptions = {},
+): Promise<MemberSplitRead | null> {
+  if (anchor !== undefined || getSessionMemberId() === undefined) return null;
+  const tiers = [...new Set(confidence ?? [])] as KbTier[];
+  if (!tiers.includes('CONFIRMED') || tiers.every(t => t === 'CONFIRMED')) return null;
+  const ownerTag = memberOwnerTag(anchor);
+  if (ownerTag === undefined) return null;
+  const resolved = resolveKbAnchor(anchor);
+  const [view, global, repo] = await Promise.all([
+    getMemberBibleView(resolved),
+    getGlobalKbProvider(),
+    getKbProviders(resolved.folder, resolved.remoteUrl),
+  ]);
+  // Same condition as getSelfReadKb's serverRecall branch, so exactly one of
+  // the two paths answers.
+  if (opts.serverRecall && kbConfigSelectsHttp() && !isSqliteProject(repo.project)) return null;
+  return {
+    anchor: resolved,
+    projectSlug: repo.projectSlug,
+    bible: { project: view, global, tiers: ['CONFIRMED'] },
+    own: { project: requireSqliteProject(repo.project, callerLabel), global: repo.global, tiers, ownerTag },
+  };
+}
+
+/**
+ * Merge the two halves of a split read: every `bible` row, then each `own` row
+ * whose id the bible half did not already return (the bible copy wins). An
+ * optional `order` re-sorts the merged list; `limit` is applied last.
+ */
+export function mergeSplitById<T extends { id: string }>(
+  bible: readonly T[],
+  own: readonly T[],
+  opts: { limit?: number; order?: (a: T, b: T) => number } = {},
+): T[] {
+  const seen = new Set(bible.map(e => e.id));
+  let merged = [...bible, ...own.filter(e => !seen.has(e.id))];
+  if (opts.order) merged = merged.sort(opts.order);
+  return opts.limit !== undefined ? merged.slice(0, opts.limit) : merged;
 }
 
 /** Appended to every kb_* tool description so callers know there is no scope argument. */

@@ -4,6 +4,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 import { createHash } from 'crypto';
+import { dropBeadsWorkspaceEnv } from '../../../../scripts/test-sandbox.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -69,13 +70,17 @@ export function bdMode() {
     return 'replay';
 }
 
+// bd resolves BEADS_DIR / BEADS_DB / BD_DB before cwd. Drop them so every
+// real spawn is scoped to the scratch `cwd` this harness built, never to a
+// workspace the host exports globally.
+export function bdChildEnv() {
+    return dropBeadsWorkspaceEnv({ ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' });
+}
+
 // The original mock-sprint-harness runCmd body, unchanged: resolve (never
 // reject) with { err, stdout, stderr } from a real child process.
-// `stripBeadsDir`: drop an ambient BEADS_DIR so bd resolves `cwd` only.
-export const execCmd = (cmd, cwd, { stripBeadsDir = false } = {}) => new Promise((resolve) => {
-    const env = { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' };
-    if (stripBeadsDir) delete env.BEADS_DIR;
-    exec(cmd, { cwd, windowsHide: true, env }, (err, stdout, stderr) => {
+export const execCmd = (cmd, cwd) => new Promise((resolve) => {
+    exec(cmd, { cwd, windowsHide: true, env: bdChildEnv() }, (err, stdout, stderr) => {
         resolve({ err, stdout, stderr });
     });
 });
@@ -450,7 +455,7 @@ async function createBdInitTemplate(templateDir) {
     await fs.promises.mkdir(os.tmpdir(), { recursive: true });
     const staging = await fs.promises.mkdtemp(`${templateDir}-staging-`);
     bdInitTemplateSpawns += 1;
-    const res = await execCmd('bd init', staging, { stripBeadsDir: true });
+    const res = await execCmd('bd init', staging);
     if (res.err) {
         await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
         return { ...res, templateDir };

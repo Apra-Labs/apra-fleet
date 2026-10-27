@@ -22,11 +22,30 @@ import type {
   RetireOptions,
 } from './types.js';
 
+import { DEFAULT_REQUEST_TIMEOUT_MS } from './kb-config.js';
+
+export { DEFAULT_REQUEST_TIMEOUT_MS };
+
 const MAX_QUEUE_SIZE = 1000;
-const REQUEST_TIMEOUT_MS = 5000;
 // Most entries one owner-tag lookup reads back. An owned entry beyond it is
 // reported not-found (a refusal, never a wrong promote).
 const OWNED_LOOKUP_LIMIT = 1000;
+
+/**
+ * Optional settings for HttpKbProvider. An options object rather than more
+ * positional parameters, so new settings can be added without changing the
+ * constructor signature.
+ */
+export interface HttpKbProviderOptions {
+  /** Socket idle timeout per request, in ms; absent means DEFAULT_REQUEST_TIMEOUT_MS. */
+  requestTimeoutMs?: number;
+  /**
+   * Project slug sent as the X-KB-Project header on every request, so a KB
+   * server serving a different project refuses with 409 instead of answering
+   * with that project's KB. Absent means no header is sent.
+   */
+  projectSlug?: string;
+}
 
 type QueuedOperation =
   | { op: 'capture'; input: KBEntryInput }
@@ -160,6 +179,7 @@ export class HttpKbProvider implements MemoryProvider {
   private readonly token: string;
   private readonly projectSlug: string | undefined;
   private readonly fallback: SqliteProvider;
+  private readonly requestTimeoutMs: number;
   readonly offlineQueue: QueuedOperation[] = [];
   private readonly beforeExitHandler: () => void;
   /**
@@ -169,11 +189,12 @@ export class HttpKbProvider implements MemoryProvider {
   private offlineReads: () => Promise<MemoryProvider>;
   private offlineReadWarning: string | undefined;
 
-  constructor(url: string, token: string, fallback?: SqliteProvider, projectSlug?: string) {
+  constructor(url: string, token: string, fallback?: SqliteProvider, options: HttpKbProviderOptions = {}) {
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.baseUrl = url.replace(/\/$/, '');
     this.displayUrl = redactUrlUserinfo(this.baseUrl);
     this.token = token;
-    this.projectSlug = projectSlug;
+    this.projectSlug = options.projectSlug;
     this.fallback = fallback ?? new SqliteProvider();
     const fallbackStore = this.fallback;
     this.offlineReads = async () => fallbackStore;
@@ -281,8 +302,10 @@ export class HttpKbProvider implements MemoryProvider {
         res.on('error', reject);
       });
 
-      req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-        const err = new Error('ETIMEDOUT: KB server request timed out') as NodeJS.ErrnoException;
+      req.setTimeout(this.requestTimeoutMs, () => {
+        const err = new Error(
+          `ETIMEDOUT: KB server request timed out after ${this.requestTimeoutMs} ms`
+        ) as NodeJS.ErrnoException;
         err.code = 'ETIMEDOUT';
         req.destroy(err);
       });

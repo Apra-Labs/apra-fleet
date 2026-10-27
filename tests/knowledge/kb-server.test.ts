@@ -168,7 +168,8 @@ describe('kb-server promote and tag filter', () => {
     const id = await captureTagged([owner]);
     const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-http-provider-'));
     const provider = new HttpKbProvider(
-      `http://127.0.0.1:${TEST_PORT}`, testToken, new SqliteProvider(path.join(fallbackDir, 'kb.sqlite')), SERVER_PROJECT,
+      `http://127.0.0.1:${TEST_PORT}`, testToken, new SqliteProvider(path.join(fallbackDir, 'kb.sqlite')),
+      { projectSlug: SERVER_PROJECT },
     );
     try {
       await expect(provider.promote(id, PROMOTE_REASON, { ownerTag: `member:${crypto.randomUUID()}` }))
@@ -214,7 +215,7 @@ describe('kb-server refuses a client for another project on every route', () => 
   it('an HttpKbProvider for another project gets E-KB-HTTP-PROJECT-MISMATCH from every call, never its fallback store', async () => {
     const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-other-project-'));
     const fallback = new SqliteProvider(path.join(fallbackDir, 'kb.sqlite'));
-    const provider = new HttpKbProvider(`http://127.0.0.1:${TEST_PORT}`, testToken, fallback, OTHER);
+    const provider = new HttpKbProvider(`http://127.0.0.1:${TEST_PORT}`, testToken, fallback, { projectSlug: OTHER });
     try {
       await provider.init();
       const calls: Array<[string, () => Promise<unknown>]> = [

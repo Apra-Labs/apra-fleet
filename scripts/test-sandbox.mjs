@@ -10,6 +10,10 @@
 // JWTs) and launched the installed binary. Per-test env discipline did not
 // hold, so the sandbox is applied by the runners, not by individual tests.
 //
+// It also removes the beads workspace variables (BEADS_DIR, BEADS_DB, BD_DB):
+// bd reads them before cwd, so a test's `bd` child would otherwise reach the
+// developer's real beads database instead of the scratch dir the test built.
+//
 // Entry points: scripts/run-all-tests.mjs (npm test), scripts/with-test-sandbox.mjs
 // (package test scripts), tests/global-setup.ts (bare `npx vitest`). The
 // guard (scripts/test-sandbox-guard.mjs) is preloaded into every node process
@@ -23,6 +27,23 @@ export const SANDBOX_ROOT_ENV = 'APRA_TEST_SANDBOX_ROOT';
 export const REAL_HOME_ENV = 'APRA_TEST_REAL_HOME';
 
 const GUARD_URL = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), 'test-sandbox-guard.mjs')).href;
+
+/** Env vars bd resolves its workspace from ahead of cwd. */
+export const BEADS_WORKSPACE_ENV = ['BEADS_DIR', 'BEADS_DB', 'BD_DB'];
+
+/**
+ * Delete the beads workspace variables from `env` in place. Names are matched
+ * case-insensitively: a plain object copy of the Windows environment keeps the
+ * stored spelling (e.g. `Beads_Dir`), which bd still reads.
+ * @param {Record<string, string|undefined>} env
+ * @returns the same `env`
+ */
+export function dropBeadsWorkspaceEnv(env) {
+    for (const k of Object.keys(env)) {
+        if (BEADS_WORKSPACE_ENV.includes(k.toUpperCase())) delete env[k];
+    }
+    return env;
+}
 
 /** Per-user dirs under the real home that tests must never touch. */
 const PROTECTED = ['.apra-fleet', '.apra-fleet-se', '.fleet-tasks', '.claude', '.claude.json', '.beads', '.gemini', '.codex', '.config', '.gitconfig'];
@@ -71,11 +92,12 @@ export function assertNotRealProfile(env = process.env, homedir = os.homedir) {
 }
 
 /**
- * Create (or reuse, when already inside one) the per-run sandbox and point
- * `env` at it. Returns { root, created, cleanup }.
+ * Create (or reuse, when already inside one) the per-run sandbox, point
+ * `env` at it and drop the beads workspace variables. Returns { root, created, cleanup }.
  * @param {Record<string, string|undefined>} [env] mutated in place (normally process.env)
  */
 export function ensureTestSandbox(env = process.env) {
+    dropBeadsWorkspaceEnv(env);
     const existing = env[SANDBOX_ROOT_ENV];
     if (existing && fs.existsSync(existing)) {
         assertNotRealProfile(env);

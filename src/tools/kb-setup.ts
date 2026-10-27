@@ -3,7 +3,7 @@ import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-sc
 import fs from 'node:fs';
 import path from 'node:path';
 import { installKbPostCommitHook } from './kb-invalidate.js';
-import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
+import { KB_CONFIG_PATH, MIN_REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS } from '../services/knowledge/kb-config.js';
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { logWarn } from '../utils/log-helpers.js';
@@ -16,6 +16,8 @@ export const kbSetupSchema = z.object({
     .describe('Remote KB server URL, http(s) only (required when provider=http). Use https for any non-loopback host: plain http sends the token in cleartext.'),
   token: z.string().optional()
     .describe('Authentication token for remote KB server (stored encrypted, never logged)'),
+  request_timeout_ms: z.number().int().min(MIN_REQUEST_TIMEOUT_MS).max(MAX_REQUEST_TIMEOUT_MS).optional()
+    .describe('Socket idle timeout in milliseconds for each request to the remote KB server, 1000-120000 (default 5000). Not a per-request deadline: a call can wait up to about twice this while queued offline writes flush first.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
   // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
   ...KB_REMOVED_SCOPE_KEYS_SHAPE,
@@ -62,6 +64,16 @@ function checkRemoteUrl(remote: string): string[] {
     ];
   }
   return [];
+}
+
+/**
+ * Throws when request_timeout_ms is set but is not an integer in range. The
+ * MCP layer parses input with kbSetupSchema already; this re-check covers
+ * direct callers of kbSetup, which get no schema parse.
+ */
+function checkRequestTimeout(value: number | undefined): void {
+  if (kbSetupSchema.shape.request_timeout_ms.safeParse(value).success) return;
+  throw new Error(`kb_setup: request_timeout_ms must be an integer between ${MIN_REQUEST_TIMEOUT_MS} and ${MAX_REQUEST_TIMEOUT_MS}, got ${value}`);
 }
 
 /**
@@ -126,6 +138,11 @@ function applySetupInput(config: KbConfigFile, input: KbSetupInput, steps: strin
     }
   }
 
+  if (input.request_timeout_ms !== undefined) {
+    config.request_timeout_ms = input.request_timeout_ms;
+    steps.push('Stored request timeout');
+  }
+
   if (input.token) {
     config.token_encrypted = encryptPassword(input.token);
     steps.push('Stored remote token encrypted (AES-256-GCM)');
@@ -142,8 +159,9 @@ function writeConfig(config: KbConfigFile): void {
 
 export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<string> {
   const steps: string[] = [];
-  // Validate before any side effect, so a bad remote installs no hook and
-  // leaves any existing config untouched.
+  // Validate before any side effect, so a bad remote or timeout installs no
+  // hook and leaves any existing config untouched.
+  checkRequestTimeout(input.request_timeout_ms);
   const warnings = input.remote ? checkRemoteUrl(input.remote) : [];
   for (const warning of warnings) {
     logWarn('kb_setup', warning);
@@ -161,8 +179,10 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<s
   }
   if (repoPath !== null) {
     if (fs.existsSync(path.join(repoPath, '.git'))) {
-      installKbPostCommitHook(repoPath);
-      steps.push('Installed git post-commit hook for KB invalidation');
+      const hook = installKbPostCommitHook(repoPath);
+      steps.push(hook.installed
+        ? 'Installed git post-commit hook for KB invalidation'
+        : 'Skipped git hook: ' + hook.reason);
     } else {
       steps.push('Skipped git hook: no .git directory found at ' + repoPath);
     }
