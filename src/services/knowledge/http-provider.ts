@@ -188,6 +188,14 @@ export class HttpKbProvider implements MemoryProvider {
    */
   private offlineReads: () => Promise<MemoryProvider>;
   private offlineReadWarning: string | undefined;
+  /**
+   * The store that answered a read of this provider (or view) while the
+   * server was unreachable; undefined until that happens. relatedClaims and
+   * getLinked then read that store, and touch is skipped when it is not the
+   * per-repo fallback store, so an offline MEMBER read (answered from the
+   * checkout bible) never reads or writes the per-repo DB.
+   */
+  private offlineStore: MemoryProvider | undefined;
 
   constructor(url: string, token: string, fallback?: SqliteProvider, options: HttpKbProviderOptions = {}) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -231,7 +239,14 @@ export class HttpKbProvider implements MemoryProvider {
 
   private async offlineReadProvider(): Promise<MemoryProvider> {
     if (this.offlineReadWarning !== undefined) logWarn('kb-http', this.offlineReadWarning);
-    return this.offlineReads();
+    const store = await this.offlineReads();
+    this.offlineStore = store;
+    return store;
+  }
+
+  /** True once an offline read was answered by a store other than the per-repo fallback. */
+  private answeredOutsideFallback(): boolean {
+    return this.offlineStore !== undefined && this.offlineStore !== this.fallback;
   }
 
   private enqueue(op: QueuedOperation): void {
@@ -432,14 +447,20 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
+  // No remote route: the graph is read from the local store the entries came
+  // from -- the offline store once a read fell back to it (the checkout bible
+  // for a MEMBER CONFIRMED view), else the per-repo fallback store.
   async getLinked(id: string): Promise<KBEntry[]> {
-    return this.fallback.getLinked(id);
+    return (this.offlineStore ?? this.fallback).getLinked(id);
   }
 
   // Delegated to the local fallback store like getLinked: delivery telemetry is
   // a property of the KB the entries were read out of, and there is no remote
   // route for it. Never throws -- a telemetry write must not fail a prime.
+  // Skipped (0 touched) once an offline read was answered by another store:
+  // those ids are not the per-repo DB's, and the read must not write it.
   async touch(ids: string[]): Promise<number> {
+    if (this.answeredOutsideFallback()) return 0;
     try {
       return await this.fallback.touch(ids);
     } catch {
@@ -452,7 +473,7 @@ export class HttpKbProvider implements MemoryProvider {
   // must degrade to "no related claims", not fail a prime.
   async relatedClaims(ids: string[], limit?: number, filter?: EntryTrustFilter): Promise<KBEntry[]> {
     try {
-      return await this.fallback.relatedClaims(ids, limit, filter);
+      return await (this.offlineStore ?? this.fallback).relatedClaims(ids, limit, filter);
     } catch {
       return [];
     }

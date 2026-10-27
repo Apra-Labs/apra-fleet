@@ -787,17 +787,17 @@ Every method in the `MemoryProvider` interface is classified as one of:
 |--------|---|---|
 | init | local-fallback | Initializes the local fallback store. |
 | capture | remote | Posts entry to server. On connection error, queued in memory (max 1000); queue flushed on reconnect. |
-| query | remote | Retrieves entries from server. On connection error, falls back to local store. |
-| context | remote | Retrieves file context from server. On connection error, falls back to local store. |
+| query | remote | Retrieves entries from server. On connection error, falls back to the offline store: the checkout bible for a MEMBER CONFIRMED read (`withOfflineReads`, with a warning), otherwise the per-repo local store. |
+| context | remote | Retrieves file context from server. On connection error, falls back to the offline store, as for query: a MEMBER CONFIRMED read gets the checkout bible's summaries, never the per-repo DB's. |
 | invalidate | remote | Invalidates files on server. On connection error, queued in memory; queue flushed on reconnect. |
 | discard | unsupported | Throws E-KB-HTTP-UNSUPPORTED (id-level discard not supported). Use kb_invalidate with files instead. |
-| getLinked | local-fallback | Retrieves linked entries from local fallback store. |
-| prime | remote | Retrieves primed context from server. On connection error, falls back to local store. |
+| getLinked | local-fallback | Retrieves linked entries from the local fallback store, or from the offline store once a read of the same provider view fell back to it (the checkout bible for a MEMBER CONFIRMED read). |
+| prime | remote | Retrieves primed context from server. On connection error, falls back to the offline store, as for query. Its cold-seed `touch` is then skipped, so an offline MEMBER prime writes nothing to the per-repo DB. |
 | promote | remote | POST /api/kb/promote with `{id, reason}`. No local fallback and no offline queue on connection error (the id only exists on the server): a connection error rejects naming the server URL. A refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's title/code. |
 | sync | unsupported | Returns {synced: false} (no remote sync over http). |
 | stats | unsupported | Returns supported:false with empty results (stats not supported over http). |
-| touch | local-fallback | Records entry access in local fallback store (telemetry only). |
-| relatedClaims | local-fallback | Retrieves related entries from local fallback store (graph queries only). |
+| touch | local-fallback | Records entry access in local fallback store (telemetry only). Skipped (returns 0) once a read of the same provider view was answered offline by a store other than the fallback, e.g. the checkout bible: those ids are not the per-repo DB's. |
+| relatedClaims | local-fallback | Retrieves related entries from local fallback store (graph queries only), or from the offline store once a read of the same provider view fell back to it, so an offline MEMBER `kb_query` with `expand_related` never reads the per-repo DB. |
 
 **Queue overflow**: if 1000 pending writes accumulate, the oldest is dropped
 and a warning is printed to stderr. **Process exit**: if the queue is non-empty
