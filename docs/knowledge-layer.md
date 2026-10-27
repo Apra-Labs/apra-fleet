@@ -237,11 +237,18 @@ global KB; the other half is the per-repo DB and global KB filtered to
 `member:<caller uuid>` and asks for every requested tier, CONFIRMED included,
 so the member's own capture promoted to CONFIRMED in the per-repo DB is
 returned before it reaches the bible. Results merge by id and the bible copy wins on a
-duplicate. A per-repo KB that is not sqlite is refused with a typed error naming
-the tool, except under the http project provider for `kb_query`,
-`kb_session_prime` and `kb_context`: those pass `serverRecall`, the split steps
-aside (returns null) and the server answers through `getSelfReadKb`'s
-serverRecall path instead. Known limits: with a `limit`, a mixed `kb_list` sorts by id before
+duplicate. Under the http project provider the split still applies, with the
+KB server in place of the per-repo DB: the own half is the server, owner-tagged
+(checked by fleet on the entry tags the server returns). The CONFIRMED half is
+the source the tool's CONFIRMED-only read uses: the KB server for `kb_query`,
+`kb_session_prime` and `kb_context` (they pass `serverRecall`; the checkout
+bible answers only while the server is unreachable), the checkout bible for
+`kb_list`. A mixed read over http therefore has the same shape as over SQLite
+and never shows another member's unconfirmed captures. One difference follows
+from the store, not the split: on the server the member's own promoted capture
+is part of the CONFIRMED set, so it arrives in the CONFIRMED half (and counts
+toward `kb_session_prime`'s cold-seed threshold). Any other non-sqlite per-repo
+KB is refused with a typed error naming the tool. Known limits: with a `limit`, a mixed `kb_list` sorts by id before
 limiting, so it is not guaranteed to be a superset of the CONFIRMED-only list at
 the same limit (`kb_query` keeps the bible half first). The tool descriptions, the memory-contract bindings and spec, and a
 wording test must all describe this scope together.

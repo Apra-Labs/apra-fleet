@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import {
-  getSelfReadKb, getMemberSplitRead, memberOwnerTag, type KbAnchor, type MemberSplitRead,
+  getSelfReadKb, getMemberSplitRead, type KbAnchor, type MemberSplitRead,
 } from '../services/knowledge/kb-self.js';
 import type { KbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
@@ -56,30 +56,21 @@ export async function kbContext(input: KbContextInput, anchor?: KbAnchor): Promi
   // file (best status wins) with the member's OWN captures from the per-repo
   // DB, so the other tiers never expose another member's captures and never
   // hide the bible's. This is also the MEMBER default read. Under an http
-  // project provider (serverRecall) the split steps aside (returns null) and
-  // the server answers below.
+  // project provider (serverRecall) both halves are the KB server: every
+  // CONFIRMED summary, plus the member's own.
   const split = await getMemberSplitRead(anchor, confidence, 'kb_context', { serverRecall: true });
   if (split) return JSON.stringify(partition(await splitContext(split, input.files, explicit, excludeDisputed)));
 
   // Everything else (kb-self.ts getSelfReadKb): a MEMBER CONFIRMED-only
   // request reads the checkout bible view; a MEMBER request naming only
   // INFERRED/UNVERIFIED goes to the per-repo DB, own captures only (ownerTag).
-  // Under an http project provider (serverRecall) a MEMBER read goes straight
-  // to the server: no bible merge; an INFERRED/UNVERIFIED request keeps
-  // ownerTag, enforced by either provider.
+  // Under an http project provider (serverRecall) such a MEMBER read goes to
+  // the server; an INFERRED/UNVERIFIED request keeps ownerTag, enforced by
+  // either provider.
   const read = await getSelfReadKb(anchor, explicit, { serverRecall: true });
   const { providers } = read;
-  const isMemberDefault = explicit === undefined && memberOwnerTag(anchor) !== undefined;
   let results: FileResult[];
-  if (isMemberDefault) {
-    // MEMBER default over an http project (no bible view): the same merge as
-    // the split read, both halves from the server -- every CONFIRMED summary,
-    // plus the member's OWN CONFIRMED/INFERRED ones, so another member's
-    // INFERRED capture never shows.
-    const fromServer = await providers.project.context(input.files, ['CONFIRMED'], excludeDisputed);
-    const fromOwn = await providers.project.context(input.files, confidence, excludeDisputed, memberOwnerTag(anchor));
-    results = mergeByFile(fromServer, fromOwn);
-  } else if (read.ownerTag !== undefined) {
+  if (read.ownerTag !== undefined) {
     results = await providers.project.context(input.files, confidence, excludeDisputed, read.ownerTag);
   } else {
     results = await providers.project.context(input.files, confidence, excludeDisputed);
@@ -87,11 +78,7 @@ export async function kbContext(input: KbContextInput, anchor?: KbAnchor): Promi
 
   // Fallback to global if project has no results
   if (!results.some(r => r.status === 'fresh')) {
-    // A MEMBER default read (the http path above) keeps the global fallback
-    // CONFIRMED-only: the global KB is machine-wide, so its INFERRED tier is
-    // not the member's own -- the same rule splitContext applies.
-    const globalTiers = isMemberDefault ? (['CONFIRMED'] as Tier[]) : confidence;
-    const globalResults = await providers.global.context(input.files, globalTiers, excludeDisputed, read.ownerTag);
+    const globalResults = await providers.global.context(input.files, confidence, excludeDisputed, read.ownerTag);
     if (globalResults.some(r => r.status === 'fresh')) results = globalResults;
   }
 

@@ -10,7 +10,7 @@ import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
 import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
-import type { KBEntryInput, Confidence } from '../services/knowledge/types.js';
+import type { KBEntry, KBEntryInput, Confidence } from '../services/knowledge/types.js';
 
 // my-beads-db-0cd.15 (reopened): startKbServer is an exported library function
 // that tests/knowledge/kb-server.test.ts imports and calls IN-PROCESS. The
@@ -100,6 +100,22 @@ function readBody(req: http.IncomingMessage): Promise<string> {
     req.on('end', () => resolve(body));
     req.on('error', reject);
   });
+}
+
+/**
+ * A query parameter carrying a JSON array of strings: undefined when absent,
+ * null when present but not such an array (the caller answers 400).
+ */
+function stringArrayParam(url: URL, name: string): string[] | undefined | null {
+  const raw = url.searchParams.get(name);
+  if (!raw) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  return Array.isArray(parsed) && parsed.every(t => typeof t === 'string') ? parsed : null;
 }
 
 function getClientIp(req: http.IncomingMessage): string {
@@ -227,20 +243,17 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
 
         // fts_terms: JSON array of discrete terms, OR-joined as an FTS match
         // (the kb_session_prime neighbour query sends only these).
-        let fts_terms: string[] | undefined;
-        const ftsRaw = url.searchParams.get('fts_terms');
-        if (ftsRaw) {
-          let parsed: unknown;
-          try { parsed = JSON.parse(ftsRaw); } catch { parsed = undefined; }
-          if (!Array.isArray(parsed) || !parsed.every(t => typeof t === 'string')) {
-            return jsonResponse(res, 400, { error: 'fts_terms must be a JSON array of strings', code: 'BAD_REQUEST' });
-          }
-          fts_terms = parsed;
+        const fts_terms = stringArrayParam(url, 'fts_terms');
+        // ids: JSON array of entry ids, an exact-id lookup (kb_query's L2 fetch).
+        const ids = stringArrayParam(url, 'ids');
+        if (fts_terms === null || ids === null) {
+          const name = fts_terms === null ? 'fts_terms' : 'ids';
+          return jsonResponse(res, 400, { error: `${name} must be a JSON array of strings`, code: 'BAD_REQUEST' });
         }
 
         const result = await provider.query({
           query, type, tag, limit, l1_only, confidence, exclude_disputed, include_stale, include_superseded,
-          flagged_only, fts_terms,
+          flagged_only, fts_terms, ids,
         });
         return jsonResponse(res, 200, result as unknown as Record<string, unknown>);
       }
@@ -255,9 +268,15 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         const confidence = url.searchParams.get('confidence')
           ?.split(',')
           .filter((c): c is Confidence => c === 'CONFIRMED' || c === 'INFERRED' || c === 'UNVERIFIED');
+        // type/module/symbol/exclude_disputed: the kb_list filters, so a
+        // MEMBER kb_list's own half (HttpKbProvider.list) is filtered here.
         const results = await provider.list({
           tag: url.searchParams.get('tag') || undefined,
           confidence,
+          type: (url.searchParams.get('type') || undefined) as KBEntry['type'] | undefined,
+          module: url.searchParams.get('module') || undefined,
+          symbol: url.searchParams.get('symbol') || undefined,
+          exclude_disputed: url.searchParams.get('exclude_disputed') === 'true',
           limit: url.searchParams.has('limit') ? parseInt(url.searchParams.get('limit')!, 10) : undefined,
           include_stale: url.searchParams.get('include_stale') === 'true',
         });
@@ -318,7 +337,12 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         const ctxConfidence = url.searchParams.get('confidence')
           ?.split(',')
           .filter((c): c is Confidence => c === 'CONFIRMED' || c === 'INFERRED' || c === 'UNVERIFIED');
-        const result = await provider.context(files, ctxConfidence, url.searchParams.get('exclude_disputed') === 'true');
+        // tag: MEMBER own-scope (HttpKbProvider sends the owner tag), so each
+        // file's newest entry is chosen among that member's own.
+        const result = await provider.context(
+          files, ctxConfidence, url.searchParams.get('exclude_disputed') === 'true',
+          url.searchParams.get('tag') || undefined,
+        );
         return jsonResponse(res, 200, { results: result });
       }
 

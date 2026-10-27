@@ -9,6 +9,7 @@ import { addAgent } from '../../src/services/registry.js';
 import { runWithSessionMember } from '../../src/services/tool-scope.js';
 import { resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { resetMemberBibleViews } from '../../src/services/knowledge/member-bible-view.js';
+import { KbBibleError } from '../../src/services/knowledge/bible-import.js';
 import { kbSetup } from '../../src/tools/kb-setup.js';
 import { kbQuery } from '../../src/tools/kb-query.js';
 import { kbList } from '../../src/tools/kb-list.js';
@@ -19,15 +20,17 @@ import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../
 
 // A MEMBER mixed-tier read (confidence [CONFIRMED, INFERRED]) with the KB
 // config selecting the http project provider. kb_query, kb_session_prime and
-// kb_context pass serverRecall, so getMemberSplitRead steps aside and the KB
-// server answers, with the member owner tag. kb_list does not, and keeps the
-// typed non-sqlite refusal.
+// kb_context pass serverRecall, so getMemberSplitRead splits the read across
+// the KB server: a CONFIRMED request without the owner tag, plus a request for
+// every listed tier with the member owner tag. kb_list does not pass it: its
+// CONFIRMED half is the checkout bible view, as for its CONFIRMED-only read.
 //
 // The member's checkout bible is deliberately MALFORMED: loading the member
-// bible view throws E-BIBLE-MALFORMED. Every assertion below therefore also
-// proves the split read decides the http step-aside (and the kb_list refusal)
-// BEFORE it loads the bible view -- on a remote member that load is an SSH
-// round trip that fails when the member is unreachable.
+// bible view throws E-BIBLE-MALFORMED. The serverRecall assertions below
+// therefore also prove the split never loads the bible view while the server
+// answers -- on a remote member that load is an SSH round trip that fails when
+// the member is unreachable -- and kb_list proves its bible half fails loudly
+// rather than being dropped.
 //
 // What is real: the tool handlers, kb-self routing, kb_setup, the KB config,
 // HttpKbProvider, and a local http.Server stand-in for the KB server. No
@@ -187,37 +190,40 @@ afterAll(async () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-describe('MEMBER mixed-tier read over the http project KB: the server answers, the bible view is never loaded', () => {
-  it('kb_query reaches the server with both tiers and the member owner tag, and returns the full CONFIRMED set plus its own INFERRED rows', async () => {
+// The split's two server requests: the CONFIRMED half carries no owner tag,
+// the own half carries every listed tier and the member owner tag.
+function expectSplitRequests(splitOf: (r: RecordedRequest) => { tiers: unknown; tag: unknown } | null): void {
+  const halves = requests.map(splitOf).filter(h => h !== null);
+  expect(halves).toContainEqual({ tiers: 'CONFIRMED', tag: null });
+  expect(halves).toContainEqual({ tiers: MIXED.join(','), tag: ownTag });
+}
+
+describe('MEMBER mixed-tier read over the http project KB: split across the server, the bible view is never loaded', () => {
+  it('kb_query splits into a CONFIRMED and an owner-tagged request, and returns the full CONFIRMED set plus its own INFERRED rows', async () => {
     const out = JSON.parse(await asMember(() => kbQuery({ query: 'gearbox', confidence: [...MIXED] })));
     expect(ids(out.l1_results)).toEqual(['other-confirmed', 'own-confirmed', 'own-inferred']);
-    const q = requests.find(r => r.method === 'GET' && r.path === '/api/kb/query');
-    expect(q).toBeDefined();
-    expect(q!.params.get('confidence')).toBe('CONFIRMED,INFERRED');
-    // The owner tag is not sent: the server's full CONFIRMED set must come back.
-    expect(q!.params.get('tag')).toBeNull();
+    expectSplitRequests(r => (r.method === 'GET' && r.path === '/api/kb/query' && r.params.get('ids') === null
+      ? { tiers: r.params.get('confidence'), tag: r.params.get('tag') } : null));
     expect(ids(out.l1_results)).not.toContain('other-inferred');
   });
 
-  it('kb_session_prime reaches the server with both tiers, and keeps all CONFIRMED rows plus its own INFERRED rows', async () => {
+  it('kb_session_prime primes each half on the server, and keeps all CONFIRMED rows plus its own INFERRED rows', async () => {
     const out = JSON.parse(await asMember(() => kbSessionPrime({ hint_symbols: ['gearbox'], confidence: [...MIXED] })));
     expect(ids(out.top_entries)).toEqual(['other-confirmed', 'own-confirmed', 'own-inferred']);
     expect(ids(out.top_entries)).not.toContain('other-inferred');
-    const p = requests.find(r => r.method === 'POST' && r.path === '/api/kb/prime');
-    expect(p).toBeDefined();
-    expect(p!.body?.confidence).toEqual([...MIXED]);
-    expect(p!.body).not.toHaveProperty('owner_tag');
+    const primes = requests.filter(r => r.method === 'POST' && r.path === '/api/kb/prime');
+    expect(primes.map(p => p.body?.confidence)).toEqual([['CONFIRMED'], [...MIXED]]);
+    for (const p of primes) expect(p.body).not.toHaveProperty('owner_tag');
     // Ownership is looked up on the server by the member owner tag.
     expect(requests.some(r => r.path === '/api/kb/list' && r.params.get('tag') === ownTag)).toBe(true);
   });
 
-  it('kb_context reaches the server with both tiers and answers the file from the member own row', async () => {
+  it('kb_context splits into a CONFIRMED and an owner-tagged request, and answers the file from the member own row', async () => {
     // Only the other member's INFERRED row and the member's own INFERRED row cite the file.
     entries = [entry('other-inferred', 'INFERRED', [OTHER_TAG]), entry('own-inferred', 'INFERRED', [ownTag])];
     const out = JSON.parse(await asMember(() => kbContext({ files: [CITED_FILE], confidence: [...MIXED] })));
-    const c = requests.find(r => r.method === 'GET' && r.path === '/api/kb/context');
-    expect(c).toBeDefined();
-    expect(c!.params.get('confidence')).toBe('CONFIRMED,INFERRED');
+    expectSplitRequests(r => (r.method === 'GET' && r.path === '/api/kb/context'
+      ? { tiers: r.params.get('confidence'), tag: r.params.get('tag') } : null));
     expect(requests.some(r => r.path === '/api/kb/list' && r.params.get('tag') === ownTag)).toBe(true);
     // The stand-in answers with the first matching row (another member's): owner
     // filtering drops it, so the file reads as missing rather than exposing it.
@@ -234,12 +240,11 @@ describe('MEMBER mixed-tier read over the http project KB: the server answers, t
     expect(own.fresh.map((r: { entry_id: string }) => r.entry_id)).toEqual(['own-inferred']);
   });
 
-  it('kb_list keeps the typed refusal, naming the tool, without touching the server or the bible view', async () => {
+  it('kb_list reads its CONFIRMED half from the checkout bible: a malformed bible fails loudly, never answered from the server alone', async () => {
     const err = await asMember(() => kbList({ confidence: [...MIXED] })).catch(e => e as Error);
-    expect(err).toBeInstanceOf(Error);
-    expect(err.message).toMatch(/^kb_list/);
-    expect(err.message).toMatch(REFUSAL);
-    expect(err.message).not.toMatch(/E-BIBLE-MALFORMED/);
-    expect(requests).toEqual([]);
+    expect(err).toBeInstanceOf(KbBibleError);
+    expect((err as KbBibleError).code).toBe('E-BIBLE-MALFORMED');
+    expect(err.message).not.toMatch(REFUSAL);
+    expect(requests.filter(r => r.path === '/api/kb/list')).toEqual([]);
   });
 });

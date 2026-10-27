@@ -169,6 +169,9 @@ export class KbHttpProjectMismatchError extends Error {
   }
 }
 
+/** kb_list options, shared with SqliteProvider.list so both halves of a split list take one shape. */
+export type KbListOptions = Parameters<SqliteProvider['list']>[0];
+
 /** Header carrying the project slug on every request (checked by kb-server). */
 export const KB_PROJECT_HEADER = 'X-KB-Project';
 
@@ -385,18 +388,19 @@ export class HttpKbProvider implements MemoryProvider {
     if (opts.flagged_only) params.flagged_only = 'true';
     // Discrete FTS terms travel as a JSON array (a term may contain a comma).
     if (opts.fts_terms?.length) params.fts_terms = JSON.stringify(opts.fts_terms);
+    // Exact-id lookup (kb_query's L2 fetch), also a JSON array.
+    if (opts.ids?.length) params.ids = JSON.stringify(opts.ids);
     // MEMBER own-scope: the server narrows on the owner tag when the caller
-    // set no tag of its own; the result is re-filtered below either way.
-    // A mixed-tier read that names CONFIRMED must get the server's full
-    // CONFIRMED set, so the owner tag is not sent then; keepOwned narrows the
-    // other tiers fleet-side.
-    const ownerNarrowsServer = opts.owner_tag !== undefined && !opts.confidence?.includes('CONFIRMED');
-    const tag = opts.tag ?? (ownerNarrowsServer ? opts.owner_tag : undefined);
+    // set no tag of its own; the result is re-filtered below either way, at
+    // every tier. A MEMBER mixed-tier read gets the other members' CONFIRMED
+    // entries from its CONFIRMED half (kb-self.ts getMemberSplitRead), never
+    // from an owner-tagged read.
+    const tag = opts.tag ?? opts.owner_tag;
     if (tag) params.tag = tag;
 
     try {
       const result = await this.rawRequest<KBResult>('GET', '/api/kb/query', undefined, params);
-      return opts.owner_tag ? this.keepOwned(result, opts.owner_tag, opts.tag, opts.confidence) : result;
+      return opts.owner_tag ? this.keepOwned(result, opts.owner_tag, opts.tag) : result;
     } catch (err) {
       if (isConnectionError(err)) {
         return (await this.offlineReadProvider()).query(opts);
@@ -416,12 +420,15 @@ export class HttpKbProvider implements MemoryProvider {
       const ctxParams: Record<string, string> = { files: files.join(',') };
       if (confidence?.length) ctxParams.confidence = confidence.join(',');
       if (excludeDisputed) ctxParams.exclude_disputed = 'true';
+      // MEMBER own-scope: the server picks each file's newest entry among the
+      // caller's own (as the SQLite provider does in SQL), so another member's
+      // newer entry cannot hide it; ownership is re-checked below.
+      if (ownerTag) ctxParams.tag = ownerTag;
       const result = await this.rawRequest<{ results: FileContextResult[] }>(
         'GET', '/api/kb/context', undefined, ctxParams
       );
       if (!ownerTag) return result.results;
-      return this.keepOwnedSummaries(
-        result.results, await this.ownedIds(ownerTag), await this.confirmedIdsIfRequested(confidence));
+      return this.keepOwnedSummaries(result.results, await this.ownedIds(ownerTag));
     } catch (err) {
       if (isConnectionError(err)) {
         return (await this.offlineReadProvider()).context(files, confidence, excludeDisputed, ownerTag);
@@ -490,11 +497,10 @@ export class HttpKbProvider implements MemoryProvider {
       const primed = await this.rawRequest<PrimedContext>('POST', '/api/kb/prime', body);
       if (!ownerTag) return primed;
       const owned = await this.ownedIds(ownerTag);
-      const confirmed = await this.confirmedIdsIfRequested(opts.confidence);
       return {
         ...primed,
-        top_entries: (primed.top_entries ?? []).filter(e => this.visibleToOwner(e, ownerTag, opts.confidence)),
-        fresh_summaries: this.keepOwnedSummaries(primed.fresh_summaries ?? [], owned, confirmed),
+        top_entries: (primed.top_entries ?? []).filter(e => hasTag(e, ownerTag)),
+        fresh_summaries: this.keepOwnedSummaries(primed.fresh_summaries ?? [], owned),
       };
     } catch (err) {
       if (isConnectionError(err)) {
@@ -580,22 +586,31 @@ export class HttpKbProvider implements MemoryProvider {
   }
 
   /**
-   * MEMBER mixed-tier visibility, matching the SQLite split read: a CONFIRMED
-   * entry is visible to every member when the read named the CONFIRMED tier;
-   * any other tier is visible only to the member whose owner tag it carries.
+   * kb_list over the server's no-bump GET /api/kb/list route, with the same
+   * options as SqliteProvider.list. A MEMBER own-scope read (owner_tag) asks
+   * the server to narrow on that tag when the caller set no tag of its own,
+   * and is re-filtered on the entries' tags either way. Remote-only: the
+   * listing is not answered from a local store when the server is down.
    */
-  private visibleToOwner(e: KBEntry, ownerTag: string, confidence?: Confidence[]): boolean {
-    return (e.confidence === 'CONFIRMED' && confidence?.includes('CONFIRMED') === true) || hasTag(e, ownerTag);
-  }
-
-  /** Ids of every CONFIRMED entry on the server, or none when CONFIRMED was not requested. */
-  private async confirmedIdsIfRequested(confidence?: Confidence[]): Promise<Set<string>> {
-    if (!confidence?.includes('CONFIRMED')) return new Set();
-    const result = await this.rawRequest<{ results?: KBEntry[] }>('GET', '/api/kb/list', undefined, {
-      confidence: 'CONFIRMED',
-      limit: String(OWNED_LOOKUP_LIMIT),
-    });
-    return new Set((result.results ?? []).filter(e => e.confidence === 'CONFIRMED').map(e => e.id));
+  async list(opts: KbListOptions): Promise<KBEntry[]> {
+    const params: Record<string, string> = {};
+    if (opts.confidence?.length) params.confidence = opts.confidence.join(',');
+    if (opts.type) params.type = opts.type;
+    if (opts.module) params.module = opts.module;
+    if (opts.symbol) params.symbol = opts.symbol;
+    if (opts.exclude_disputed) params.exclude_disputed = 'true';
+    if (opts.include_stale) params.include_stale = 'true';
+    const tag = opts.tag ?? opts.owner_tag;
+    if (tag) params.tag = tag;
+    // A limit is only exact when the server applied every filter itself: with
+    // both a caller tag and an owner tag, the owner filter runs here, after.
+    const filteredHere = opts.owner_tag !== undefined && opts.tag !== undefined;
+    if (opts.limit !== undefined && !filteredHere) params.limit = String(opts.limit);
+    const result = await this.rawRequest<{ results?: KBEntry[] }>('GET', '/api/kb/list', undefined, params);
+    const entries = result.results ?? [];
+    if (opts.owner_tag === undefined) return entries;
+    const owned = entries.filter(e => hasTag(e, opts.owner_tag!) && (opts.tag === undefined || hasTag(e, opts.tag)));
+    return opts.limit !== undefined ? owned.slice(0, opts.limit) : owned;
   }
 
   /**
@@ -603,9 +618,9 @@ export class HttpKbProvider implements MemoryProvider {
    * own tag filter, when it set one). Filtering happens after the server's
    * limit, so a member can get fewer results than it asked for.
    */
-  private keepOwned(result: KBResult, ownerTag: string, tag?: string, confidence?: Confidence[]): KBResult {
+  private keepOwned(result: KBResult, ownerTag: string, tag?: string): KBResult {
     const results = (result.results ?? [])
-      .filter(e => this.visibleToOwner(e, ownerTag, confidence) && (tag === undefined || hasTag(e, tag)));
+      .filter(e => hasTag(e, ownerTag) && (tag === undefined || hasTag(e, tag)));
     return { ...result, results, total: results.length };
   }
 
@@ -615,11 +630,9 @@ export class HttpKbProvider implements MemoryProvider {
    * with no entry id (ownership unknown), is reported as missing for that
    * file, as the SQLite provider does when the caller has no entry for it.
    */
-  private keepOwnedSummaries(
-    results: FileContextResult[], owned: Set<string>, confirmed: Set<string> = new Set(),
-  ): FileContextResult[] {
+  private keepOwnedSummaries(results: FileContextResult[], owned: Set<string>): FileContextResult[] {
     return results.map(r =>
-      r.entry_id === undefined || !(owned.has(r.entry_id) || confirmed.has(r.entry_id)) ? { file: r.file, status: 'missing' as const } : r);
+      r.entry_id === undefined || !owned.has(r.entry_id) ? { file: r.file, status: 'missing' as const } : r);
   }
 
   async sync(_opts?: SyncOptions): Promise<SyncResult> {

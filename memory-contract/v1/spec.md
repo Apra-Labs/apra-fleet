@@ -159,7 +159,10 @@ before they reach the bible (the bible copy wins on a shared id); a
 never exposes another member's captures. The bible view and this split apply
 to a SQLite project KB: under the http project provider a MEMBER `kb_query`,
 `kb_session_prime` or `kb_context` read of any tier, CONFIRMED included, goes to
-the server (`kb_list` and `kb_stats` keep the SQLite routing). Own-scope holds
+the server (`kb_list` and `kb_stats` keep the SQLite routing, except that the
+own half of a mixed `kb_list` is the server). A mixed request is split the same
+way there: the server's CONFIRMED set, plus every listed tier from the
+server restricted to the caller's own captures, merged by id. Own-scope holds
 there too, enforced by fleet on the entry tags the server returns: a read
 naming INFERRED/UNVERIFIED returns only entries tagged `member:<caller uuid>`
 (an entry returned without tags counts as not the caller's), and the default

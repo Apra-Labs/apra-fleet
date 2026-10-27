@@ -188,8 +188,8 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
   // half exactly as a CONFIRMED-only request (bible view, cold-seeds included,
   // decided on that half's own entries), every requested tier from the
   // per-repo DB owner-tagged (no cold-seed). The two results are then merged.
-  // Under an http project provider (serverRecall) the split steps aside
-  // (returns null) and the server answers below.
+  // Under an http project provider (serverRecall) both halves are primed by
+  // the KB server: the CONFIRMED half unfiltered, the own half owner-tagged.
   const split = await getMemberSplitRead(anchor, input.confidence, 'kb_session_prime', { serverRecall: true });
   if (split) {
     const fromBible = await primeFrom(
