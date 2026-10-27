@@ -647,10 +647,23 @@ git aligned, both described in the architecture sections above:
   non-fatal, with a config off-switch. See
   [Auto-commit at export](#auto-commit-at-export).
 
-(`kb_setup` still writes a legacy `.git/hooks/post-commit` invalidation hook,
-but it is not load-bearing: it calls a repo-relative `node dist/index.js` path
-and swallows all errors, so it is effectively inert outside the apra-fleet
-source tree. Hash-based freshness is the mechanism to rely on.)
+(`kb_setup` still writes a legacy `post-commit` invalidation hook, but it is
+not load-bearing. The hook directory is resolved by asking git
+(`git rev-parse --git-path hooks`), never by assuming `<repo>/.git/hooks`, so
+it works when the repo folder is a linked worktree (where `.git` is a file) and
+honours `core.hooksPath`. If git cannot resolve the directory, `kb_setup`
+fails with an error naming the repo path. `kb_setup` never overwrites a hook
+it did not write: it writes only when no `post-commit` exists or the existing
+one is a regular file carrying the `# apra-fleet KB invalidation hook` marker.
+Any other `post-commit` (e.g. a tracked husky or `.githooks/` hook, or a
+symlink) is left untouched and reported as the step `Skipped git hook:
+existing post-commit at <path> is not ours`. When the resolved directory is
+outside both the worktree and the git common dir -- typically a machine-global
+`core.hooksPath` shared by other repos -- `kb_setup` skips the hook with a
+step and does not create the directory. The hook itself calls a repo-relative
+`node dist/index.js` path and swallows all errors, so it is effectively inert
+outside the apra-fleet source tree. Hash-based freshness is the mechanism to
+rely on.)
 
 ---
 

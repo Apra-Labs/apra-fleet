@@ -179,8 +179,10 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<s
   }
   if (repoPath !== null) {
     if (fs.existsSync(path.join(repoPath, '.git'))) {
-      installKbPostCommitHook(repoPath);
-      steps.push('Installed git post-commit hook for KB invalidation');
+      const hook = installKbPostCommitHook(repoPath);
+      steps.push(hook.installed
+        ? 'Installed git post-commit hook for KB invalidation'
+        : 'Skipped git hook: ' + hook.reason);
     } else {
       steps.push('Skipped git hook: no .git directory found at ' + repoPath);
     }
