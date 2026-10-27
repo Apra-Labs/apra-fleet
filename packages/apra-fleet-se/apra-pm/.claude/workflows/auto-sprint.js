@@ -1758,6 +1758,13 @@ const DOER_STATUS_SCHEMA = {
     "notes": {
       "type": "string"
     },
+    "blockedIds": {
+      "type": "array",
+      "description": "With status BLOCKED: the assigned bead ids you left open BECAUSE of the block -- not ids you merely did not reach (e.g. same-lane stop rule). The engine sets these beads, and every open bead depending on them, aside for the rest of the run. Optional -- omitted on a single-bead assignment it means that bead; omit or send [] with status VERIFY.",
+      "items": {
+        "type": "string"
+      }
+    },
     "kb_captures": {
       "type": "array",
       "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
@@ -1859,6 +1866,13 @@ const DEPLOYER_SCHEMA = {
     },
     "notes": {
       "type": "string"
+    },
+    "failedStep": {
+      "type": "string",
+      "enum": [
+        "permissions"
+      ],
+      "description": "Set to \"permissions\" ONLY when you returned deployed: false because you stopped at Step 0a (the deploy.md Permissions check) before running any deploy command. The orchestrator then does not dispatch the deploy again this run. Omit it for every other outcome, including any failure after a deploy command ran."
     }
   }
 };

@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { runCmd, bdInitTemplateSpawnCount, bdInitTemplatePath } from './helpers/bd-replay.mjs';
+import { runCmd, bdInitTemplateSpawnCount, bdInitTemplatePath, bdChildEnv } from './helpers/bd-replay.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 // =============================================================================
@@ -46,7 +46,7 @@ import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 function resolveBdBinary() {
     try {
-        const res = spawnSync('bd', ['--version'], { encoding: 'utf8', timeout: 15000 });
+        const res = spawnSync('bd', ['--version'], { encoding: 'utf8', timeout: 15000, env: bdChildEnv() });
         return res.status === 0 ? 'bd' : null;
     } catch {
         return null;

@@ -162,7 +162,8 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // around Deploy, and the dashboard/still-open loop control after Review,
 // stayed here.
 import { runReviewPhase } from './phases/review.mjs';
-import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
+import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, formatDeploySetAsideNotes, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
+import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage } from './set-aside.mjs';
 // apra-fleet-3swo.6.8: the next two phase() boundaries -- the per-cycle Integ
 // Test and the Re-Review that Cycle Evaluation dispatches when the goal-
 // priority count already reads 0 but no review ran this cycle. Integ Test is
@@ -2901,6 +2902,83 @@ async function runSprintCycle(context) {
     // oscillating in and out of eligibility.
     const verifyEverIds = new Set();
 
+    // Immediate set-aside stall (see ./set-aside.mjs). When nothing is ready
+    // and every open in-scope bead at goal priority is set aside for this run
+    // -- doer-BLOCKED (sprintState.doctorBlockedIds) or, while the deploy is
+    // set aside (sprintState.deploySetAside), bound to Integration Test -- no
+    // further round or cycle can make progress, so throw StalledSprintError
+    // now instead of after STALL_CYCLE_LIMIT empty cycles. A no-op (no bd
+    // call at all) unless something was set aside this run. `openAtGoal` and
+    // `closedIds` may be passed in when the caller already read them (Cycle
+    // Evaluation); otherwise they are read fresh here. `runbooks`
+    // ({ hasDeploy, hasPlaybook }) may likewise be passed in; otherwise the
+    // two runbooks are probed here when the deploy is not set aside.
+    //
+    // An open verify-routed parent (every child closed, the parent itself
+    // waiting on Integration Test) is neither set aside nor waiting on a
+    // set-aside deploy while Integration Test can still run (deploy.md and
+    // integ-test-playbook.md present, deploy not set aside): Deploy and
+    // Integration Test later in this cycle can still close it, so it counts
+    // as open work that keeps the run going. Without the runbooks it cannot
+    // be verified at all; the existing "cannot verify" exit owns that case.
+    async function throwIfSetAsideStall({ where, cycle, openAtGoal = null, closedIds = null, runbooks = null }) {
+        const doctorBlockedIds = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map();
+        const deploySetAside = sprintState.deploySetAside || null;
+        if (doctorBlockedIds.size === 0 && !deploySetAside) return;
+        let open = openAtGoal;
+        if (!open) {
+            const [raw, parentIds] = await Promise.all([
+                bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
+                decomposedParentIds(),
+            ]);
+            open = partitionDeferredBeads(raw.filter((b) => !parentIds.has(b.id))).active;
+        }
+        let integBoundIds = [];
+        let verifyBlockedIds = [];
+        if (deploySetAside) {
+            // Beads that can only close through Integration Test: verify-routed
+            // parents (classified fresh -- a parent whose last child closed this
+            // cycle is not in verifyEverIds yet) plus beads blocked only by them.
+            invalidateAllBeadsCache();
+            const allBeads = await fetchAllBeadsShared();
+            const closed = closedIds || new Set(allBeads.filter((b) => b.status === 'closed').map((b) => b.id));
+            const fresh = classifyVerifySet(allBeads, targetIssues).verifyIds;
+            integBoundIds = [...new Set([...fresh, ...[...verifyEverIds].filter((id) => !closed.has(id))])];
+            const knownClosed = [...closed].map((id) => ({ id, status: 'closed' }));
+            verifyBlockedIds = findVerifyBlockedBeads(open, knownClosed, integBoundIds).map((b) => b.id);
+        } else {
+            const { hasDeploy, hasPlaybook } = runbooks || await (async () => {
+                const deployMd = await probeFileExists('deploy.md', getMemberForRole('deployer'));
+                const playbook = deployMd && await probeFileExists('integ-test-playbook.md', getMemberForRole('integ-test-runner'));
+                return { hasDeploy: deployMd, hasPlaybook: playbook };
+            })();
+            if (hasDeploy && hasPlaybook) {
+                // Open verify-routed parents become uncovered candidates:
+                // with the deploy not set aside, evaluateSetAsideStall never
+                // treats an integ-bound id as covered.
+                invalidateAllBeadsCache();
+                const allBeads = await fetchAllBeadsShared();
+                const closed = closedIds || new Set(allBeads.filter((b) => b.status === 'closed').map((b) => b.id));
+                integBoundIds = classifyVerifySet(allBeads, targetIssues).verifyIds.filter((id) => !closed.has(id));
+            }
+        }
+        const stall = evaluateSetAsideStall({
+            openIds: open.map((b) => b.id), integBoundIds, verifyBlockedIds, doctorBlockedIds, deploySetAside,
+        });
+        if (!stall) return;
+        const message = formatSetAsideStallMessage(stall, { where, scope: sprintFilter });
+        log(message);
+        throw new StalledSprintError(message, {
+            staleCycles, closedCountHistory, highWaterClosedCount,
+            thrashIds: thrashingBeadIds(),
+            blockerIds: stall.blockerIds,
+            blockerReasons: stall.blockerReasons,
+            setAside: stall.entries,
+            cycle,
+            details: { setAsideStall: true, where },
+        });
+    }
+
     // apra-fleet-rp7a.1: every bead id ever seen DEFERRED at/above goal
     // priority during Cycle Evaluation, monotone for the same reason
     // verifyEverIds is. These beads are excluded from the completion/stall
@@ -3188,6 +3266,22 @@ async function runSprintCycle(context) {
 
             if (currentReadyAll.length === 0) break;
 
+            // Start-of-round set-aside check: when every still-ready bead is set
+            // aside for this run (doer-BLOCKED or a dependent of one), stall now
+            // if nothing else open can progress; otherwise skip the remaining
+            // rounds (nothing here is dispatchable) and go on to Cycle
+            // Evaluation. Mixed rounds are passed through unchanged --
+            // ./phases/develop.mjs excludes the set-aside beads itself.
+            const roundSetAside = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : null;
+            if (roundSetAside && currentReadyAll.every((b) => roundSetAside.has(b.id))) {
+                await throwIfSetAsideStall({ where: `start of Develop C${cycle} R${devRounds + 1}`, cycle });
+                log(
+                    `Develop C${cycle} R${devRounds + 1}: every still-ready bead is set aside for this run ` +
+                    `(${currentReadyAll.map((b) => b.id).join(', ')}) -- skipping the remaining develop/review rounds this cycle.`
+                );
+                break;
+            }
+
             // In-cycle SCOPED replan, taken on a bead's FIRST replan flag: when
             // a reviewer flags a still-ready bead via `replanIds` -- its
             // acceptance criteria are defective and cannot be satisfied by
@@ -3273,6 +3367,7 @@ async function runSprintCycle(context) {
                 sprintState, gitSync, updateDashboard,
                 kbPriming, kbWork, kbInjection, kbSprintContext,
                 devRounds, currentReady, doerPool, perBeadFeedback,
+                bdListScoped,
                 claimBeadsBatched,
                 verifyDoerStreakClosed,
                 normalizeTierToken,
@@ -3354,7 +3449,13 @@ async function runSprintCycle(context) {
 
         let deployedThisCycle = false;
 
-        if (hasDeploy) {
+        // Deploy set aside for the run (a Permissions pre-step failure in an
+        // earlier cycle -- see DEPLOY SET-ASIDE in ./phases/deploy.mjs): never
+        // dispatch the deployer again; this cycle's deploy counts as failed.
+        const deploySetAside = sprintState.deploySetAside || null;
+        if (hasDeploy && deploySetAside) {
+            log(`Skipping Deploy Phase C${cycle}: ${formatDeploySetAsideNotes(deploySetAside)}. Skipping Integration Test phase.`);
+        } else if (hasDeploy) {
             // The phase body lives in ./phases/deploy.mjs
             // (apra-fleet-3swo.6.5), which receives its state explicitly
             // instead of closing over runSprintCycle's locals. The
@@ -3368,12 +3469,13 @@ async function runSprintCycle(context) {
                 phase, log, dispatchCtx,
                 cycle, sprintSelfIdLine,
                 getMemberForRole, ensureUnattendedAuto, ensureDeployPermissions,
+                sprintState,
                 deployFailures, deployedThisCycle,
             }));
         } else {
             log('Skipping Deploy Phase (no deploy.md found, or the probe itself failed -- see prior log line)');
         }
-        lastDeployFailure = latestDeployFailure({ hasDeploy, deployedThisCycle, cycle, deployFailures });
+        lastDeployFailure = latestDeployFailure({ hasDeploy, deployedThisCycle, cycle, deployFailures, deploySetAside });
         if (!lastDeployFailure) deployBlockedCycles = 0;
 
         // apra-fleet-66u.2: declared here, OUTSIDE the `if (hasPlaybook &&
@@ -3523,6 +3625,14 @@ async function runSprintCycle(context) {
             staleCycles++;
         }
 
+        // Immediate set-aside stall, checked BEFORE the STALL_CYCLE_LIMIT
+        // stall and the deploy-blocked retry exit below, so neither can delay
+        // it: everything left is set aside, so no later cycle can progress.
+        await throwIfSetAsideStall({
+            where: `Cycle ${cycle} evaluation`, cycle, openAtGoal, closedIds: closedIdsNow,
+            runbooks: { hasDeploy, hasPlaybook },
+        });
+
         // apra-fleet-b4g.102.1: a cycle spent re-attempting a failed deploy
         // after the work itself was already satisfied is not a stall -- it is
         // bounded separately (DEPLOY_RETRY_CYCLE_LIMIT and maxCycles) by the
@@ -3539,10 +3649,18 @@ async function runSprintCycle(context) {
             // a "blocker" told an operator to go unblock something the
             // dispatcher was never going to offer in the first place. They are
             // reported separately, as skipped scope, by deferredStallSuffix.
-            const blockerIds = openAtGoal.map((b) => b.id);
-            const blockerSuffix = blockerIds.length > 0
-                ? ` Still open at/above goal priority ${goalMax}: [${blockerIds.join(', ')}].`
-                : ' No beads remain open at/above goal priority -- the stall is in closing out the sprint, not in the work itself.';
+            // Beads set aside for this run (doer-BLOCKED and their dependents)
+            // are named too, even below goal priority, unless already closed.
+            const setAsideOpenIds = sprintState.doctorBlockedIds instanceof Map
+                ? [...sprintState.doctorBlockedIds.keys()].filter((id) => !closedIdsNow.has(id))
+                : [];
+            const openAtGoalIds = openAtGoal.map((b) => b.id);
+            const blockerIds = [...new Set([...openAtGoalIds, ...setAsideOpenIds])];
+            const setAsideOnlyIds = setAsideOpenIds.filter((id) => !openAtGoalIds.includes(id));
+            const blockerSuffix = (openAtGoalIds.length > 0
+                ? ` Still open at/above goal priority ${goalMax}: [${openAtGoalIds.join(', ')}].`
+                : ' No beads remain open at/above goal priority -- the stall is in closing out the sprint, not in the work itself.') +
+                (setAsideOnlyIds.length > 0 ? ` Also set aside for this run (doer-BLOCKED or a dependent of one): [${setAsideOnlyIds.join(', ')}].` : '');
             const deferredStallIds = [...deferredEverIds];
             const deferredStallSuffix = deferredStallIds.length > 0
                 ? ` Not counted as blockers (deferred, therefore never dispatchable): [${deferredStallIds.join(', ')}].`
@@ -3578,7 +3696,7 @@ async function runSprintCycle(context) {
                 `[${closedCountHistory.join(', ')}] (high-water mark on progress score: ${highWaterClosedCount}).` +
                 blockerSuffix + deferredStallSuffix + thrashSuffix + verifySuffix +
                 ` Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, deferredIds: deferredStallIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle }
+                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, deferredIds: deferredStallIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle, setAside: collectSetAsideEntries(sprintState) }
             );
         }
 
@@ -3710,8 +3828,19 @@ async function runSprintCycle(context) {
         const rootsAllClosed = targetIssues.length > 0 && targetIssues.every((id) => closedIdsNow.has(id));
         const goalSatisfied = openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED' && stillOpenVerifyIds.length === 0;
         if ((rootsAllClosed || goalSatisfied) && lastDeployFailure) {
-            deployBlockedCycles++;
             const which = rootsAllClosed ? 'every configured sprint root/target bead is closed' : `goal priority ${validated.goal} (<=${goalMax}) is otherwise satisfied`;
+            // A deploy set aside for the run is never re-dispatched, so a
+            // retry cycle could only spin (Plan, Re-Review) waiting on a
+            // deploy that will not run: exit to the finish phases now. The
+            // set-aside deploy is reported in the result and its "Set aside
+            // this run" section, and the deploy-failure verdict gate forces
+            // FAIL.
+            if (sprintState.deploySetAside) {
+                log(`Cycle ${cycle}: ${which}, but NOT exiting as satisfied -- ${formatDeploySetAsideNotes(sprintState.deploySetAside)}. No deploy retry is possible this run; exiting cycle loop, the sprint verdict will be FAIL.`);
+                endGroup();
+                break;
+            }
+            deployBlockedCycles++;
             if (cycle < MAX_CYCLES && deployBlockedCycles < DEPLOY_RETRY_CYCLE_LIMIT) {
                 log(`Cycle ${cycle}: ${which}, but NOT exiting as satisfied -- ${formatDeployFailureReason(lastDeployFailure)}. Re-attempting deploy next cycle (deploy-blocked cycle ${deployBlockedCycles} of at most ${DEPLOY_RETRY_CYCLE_LIMIT}).`);
                 cycle++;
@@ -3880,6 +4009,7 @@ async function runSprintCycle(context) {
         integTestRunnerSpend, integTestRunnerDispatchCount,
         finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds, regressionResult, regressionSkippedBy,
         dispatchToolCalls: sprintState.dispatchToolCalls,
+        setAside: collectSetAsideEntries(sprintState),
         kbWork,
         command, memberSeCommands,
         computeBranchSlug, buildAnalysisText, buildCostAnalysis,
@@ -3908,6 +4038,7 @@ async function runSprintCycle(context) {
         args, validated, targetIssues, backlogMember, finalCycleLabel,
         gitSync, getMemberForRole,
         finalVerdictResult, costAnalysis,
+        setAside: collectSetAsideEntries(sprintState),
     });
 
     endGroup();

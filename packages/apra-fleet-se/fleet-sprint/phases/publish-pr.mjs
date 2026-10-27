@@ -102,6 +102,9 @@ export async function runPublishPrPhase({
     finalVerdictResult,
     // Engine-computed cost block from ./harvest.mjs, rendered in the PR body.
     costAnalysis = '',
+    // The run's set-aside records (../set-aside.mjs collectSetAsideEntries),
+    // rendered as the "Set aside this run" section; omitted when empty.
+    setAside = [],
 }) {
     phase(`Publish PR C${finalCycleLabel}`);
     // The branch push is the LAST step of a sprint that has already done all of
@@ -257,6 +260,7 @@ export async function runPublishPrPhase({
                 validated.skipRegression ? 'Regression pass: skipped by launch option -- not run this sprint.' : null,
                 lowerQualityBanner || null,
             ],
+            setAside,
             costAnalysis,
             previousBody,
         });

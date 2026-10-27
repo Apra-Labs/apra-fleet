@@ -222,7 +222,26 @@ CONFIRMED-only default reported almost every file missing. UNVERIFIED
 the member's checkout bible (CONFIRMED) with the member's own
 CONFIRMED/INFERRED captures from the per-repo DB (tagged
 `member:<caller uuid>`), so it never exposes another member's captures; its
-global-KB fallback stays CONFIRMED-only.
+global-KB fallback stays CONFIRMED-only. An explicit confidence list is split
+the same way for `kb_query`, `kb_list`, `kb_context` and `kb_session_prime`:
+CONFIRMED from the checkout bible, INFERRED/UNVERIFIED only from the member's
+own captures, merged for a mixed request.
+
+**Mixed-tier split read (invariants).** The split lives in one helper
+(`getMemberSplitRead` / `mergeSplitById`, `src/services/knowledge/kb-self.ts`)
+shared by all four read tools. It applies only to a member session whose tier
+list names CONFIRMED plus at least one other tier. FULL sessions, explicit-anchor
+callers, CONFIRMED-only reads and reads naming only non-CONFIRMED tiers keep
+their previous path. The CONFIRMED half is the checkout bible plus the untagged
+global KB; the other half is the per-repo DB and global KB filtered to
+`member:<caller uuid>` and asks for every requested tier, CONFIRMED included,
+so the member's own capture promoted to CONFIRMED in the per-repo DB is
+returned before it reaches the bible. Results merge by id and the bible copy wins on a
+duplicate. A per-repo KB that is not sqlite is refused with a typed error naming
+the tool. Known limits: with a `limit`, a mixed `kb_list` sorts by id before
+limiting, so it is not guaranteed to be a superset of the CONFIRMED-only list at
+the same limit (`kb_query` keeps the bible half first). The tool descriptions, the memory-contract bindings and spec, and a
+wording test must all describe this scope together.
 
 ### Member-session tool calls
 
@@ -559,6 +578,35 @@ The client writes this to `~/.apra-fleet/data/knowledge/config.json`:
 ```
 
 The token is stored AES-256-GCM encrypted. It is never written in plaintext.
+
+`request_timeout_ms` (integer, 1000-120000, default 5000) sets the socket idle
+timeout for each request to the KB server, for servers that need longer than
+the default:
+
+```
+kb_setup with provider=http, remote=https://<host>, token=<token>, request_timeout_ms=15000
+```
+
+kb_setup refuses a value outside that range, or a non-integer, before writing
+anything. The value is stored as `request_timeout_ms` in the config and kept
+across later `kb_setup` runs that do not pass it. If the config is edited by
+hand to a value outside that range or a non-integer, the reader uses the 5000
+default instead and logs a warning naming the key, the bad value and the
+default; it does not fail, so the config keeps working.
+
+A request whose socket is idle for longer than the timeout fails with code
+`ETIMEDOUT` and a message naming the timeout in ms; like any
+unreachable-server error, that queues a capture or invalidate offline and
+falls back to the local store for reads.
+
+It is a socket idle timeout, not a per-request deadline:
+
+- The timer restarts whenever data arrives, so a server that keeps sending
+  bytes slowly can take longer than the value without timing out.
+- When writes are queued offline, capture, query, context, invalidate and
+  prime first try to flush them, and the flush attempt has the same timeout. Against an unresponsive server a call can
+  therefore wait up to about twice the value: one timeout for the flush, one
+  for the call itself.
 
 ### 3. GitNexus (optional, codebase plane)
 
