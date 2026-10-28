@@ -67,10 +67,10 @@ refs, side-effect class, idempotency and error codes; this section names every
 method it contains and nothing else, so the two never drift silently out of
 sync.
 
-### 2.1 `MemoryProvider` interface methods (`methods.json` ids P-1..P-12)
+### 2.1 `MemoryProvider` interface methods (`methods.json` ids P-1..P-13)
 
 `init`, `capture`, `query`, `context`, `invalidate`, `getLinked`, `prime`,
-`promote`, `sync`, `stats`, `touch`, `relatedClaims`.
+`promote`, `demote`, `sync`, `stats`, `touch`, `relatedClaims`.
 
 Side-effect classes used across this set: `append` (`init`, `query`, `sync`,
 `touch`), `trust-mutating` (`capture`, `invalidate`, `promote`), `pure read`
@@ -157,9 +157,10 @@ before they reach the bible (the bible copy wins on a shared id); a
 `[CONFIRMED, INFERRED]` read is a superset of the CONFIRMED-only result
 (except `kb_list` with a `limit`, which applies the limit after merging) and
 never exposes another member's captures. `kb_capture` tags the
-stored entry `member:<caller uuid>`; `kb_promote` and `kb_invalidate` act only
-on entries carrying that tag and report any other id as not found, changing
-nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
+stored entry `member:<caller uuid>`; `kb_promote`, `kb_demote` and
+`kb_invalidate` act only on entries carrying that tag and report any other id
+as not found, changing nothing. `kb_invalidate` takes exactly one of `files`
+or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
 `{discarded, not_found, already_discarded}`. In a member session without the
 kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the
@@ -167,6 +168,16 @@ response then also carries `refused`; the same holds for `kb_capture` with
 `supersedes`. `kb_feedback` is refused with
 `E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
 unchanged.
+
+A row imported from the bible (`kb_import`) carries NO `member:<uuid>` tag at
+all -- bible entries are not stamped with any one member's identity. The
+consequence for `kb_demote` follows directly from the own-scope rule above,
+but is easy to miss: inside a MEMBER session, only the entries that member
+itself captured and later promoted to CONFIRMED are demotable; a CONFIRMED
+entry the member's checkout holds only because it was imported from the bible
+is reported not found, same as an unknown id, and is left unchanged. A FULL
+session carries no ownerTag at all and may demote any CONFIRMED row,
+bible-imported or not.
 
 ### 2.5a MEMBER-session tool exposure (KB write policy)
 
@@ -188,6 +199,9 @@ A MEMBER session is served an explicit tool list
   `origin=engine` is ignored. Every other member session -- including an agent
   session on the maintainer member, which connects through the plain
   `?member=<uuid>` entry -- gets an unknown-tool error.
+- `kb_demote` withdraws CONFIRMED (CONFIRMED -> INFERRED) and is served on the
+  same terms as `kb_promote`: only to a member session carrying the
+  kb_maintainer grant.
 - Every other `kb_*` tool (including `kb_bible_commit` and `kb_import`) and
   every `code_*` tool is served to every member session.
 - `kb_import` with an explicit `path` keeps the named bible's confidence (and a
@@ -316,6 +330,83 @@ working folder, which is typically a feature branch.
   the same ids after resetting to a newer HEAD re-merges at entry level, so a
   rejected push can be retried with no manual merge. An existing bible that
   cannot be parsed is refused (thrown), never overwritten.
+
+The v3 envelope also carries an OPTIONAL top-level `demotions` array of
+`{id, at, reason}` tombstones, sorted by id: the id left the bible at `at` for
+`reason`. Only a v3 envelope may carry it; a reader ignores `demotions` on a v2
+envelope or a legacy bare array. It is absent when the bible holds none, so a
+reader that does not know the field -- and every bible written before it
+existed -- keeps working. Readers keep tombstones whose `reason` they do not
+know. `provenance.entry_count` counts ENTRIES only: a tombstone is not an
+entry. Tombstones are never compacted: one stays until a re-promotion clears it.
+
+A demotion is NEVER inferred from an entry being absent from the bible. A clone
+legitimately holds CONFIRMED rows that were never exported (local-only
+promotions, `basis_mismatch` refusals), and those must not be demoted by an
+import, so withdrawal of trust is only ever carried by an explicit tombstone.
+
+ONE RE-PROMOTION RULE governs both directions. A row's bible trust time is when
+its trust dates from as a bible records it: its `promoted_at` when it was
+promoted on this clone, else the `updated_at` the bible carried when the row
+was imported. It is never the local import time. A row imported before that
+value was kept has no trust time and counts as withdrawn: its trust came from a
+bible, and a later bible withdrew it. Against a tombstone, a row whose trust
+time is strictly after `at` is RE-PROMOTED; at or before `at` it is WITHDRAWN;
+either timestamp failing to parse decides nothing. Bible writers record that
+same trust time as the entry's `updated_at`, so every clone compares the same
+value.
+
+- `kb_bible_commit` takes an optional `demoted_ids`. An id is admitted only when
+  the LOCAL row exists, carries a `demoted_at` and is now below CONFIRMED;
+  anything else is skipped with reason `not_demoted_or_unknown` and the file is
+  unchanged for that id. Independently, on EVERY call each entry already in the
+  bible that the local KB holds as demoted is admitted the same way, unless the
+  bible entry is RE-PROMOTED against the local `demoted_at` under the rule
+  above (its `updated_at` is strictly later, and not later than now -- a
+  future-dated `updated_at` is never a re-promotion): another clone
+  re-promoted it, and tombstoning it again would undo that. An admitted
+  id is REMOVED from `entries` and its tombstone upserted as
+  `{id, at: <local demoted_at>, reason: "demoted"}`. Tombstones already in the
+  file are preserved when a later commit carries unrelated ids, and an id
+  re-admitted through `ids` (a re-promotion) has its tombstone CLEARED.
+- `kb_export` (scope=project) honours tombstones: it does not re-add a tombstoned
+  id unless the local row is RE-PROMOTED under the rule above, in which case it
+  re-adds the entry and clears the tombstone in the same write.
+- `kb_import` applies `reason: "demoted"` tombstones on the READ side, to a local
+  row -- the counterpart of the write-side rules above, and the only place a
+  bible import can lower an already-CONFIRMED row's own confidence. The local
+  row is lowered from CONFIRMED to INFERRED ONLY when it still exists, is
+  CONFIRMED, is not superseded, is not a `user-directive`, and is WITHDRAWN under
+  the rule above; a RE-PROMOTED row is left untouched (it is newer evidence than
+  the tombstone), and a tombstoned id with no local row creates none. The demoted
+  row gets the same single-line content note as a local `kb_demote`
+  (`BIBLE_DEMOTION_REASON`, "demoted in the project bible", standing in for the
+  caller-supplied reason), and `promoted_at`/`source` stay untouched, exactly as
+  a local demotion. A tombstone with any other reason only keeps its entry out
+  of the member bible view and the cold seed. A bible-carried `updated_at` is
+  clamped to the import time when stored, so a future-dated entry cannot
+  outrank every later tombstone. Likewise a tombstone's `at` is clamped to now
+  wherever a bible is read, so a future-dated tombstone never becomes a future
+  `demoted_at` that every later re-promotion would count as withdrawn against.
+- A re-promotion does NOT reach a clone that already applied the tombstone.
+  Import skips an id that already has a local row, so that clone keeps its
+  INFERRED row until it is promoted there again; the every-call exception above
+  only stops it from tombstoning the re-promoted entry again.
+
+MIXED VERSIONS. A writer that predates tombstones (0.4.4 and earlier `kb_export`
+/ `kb_bible_commit`) rewrites the bible WITHOUT `demotions`, and its
+`kb_export` re-adds a demoted id from any clone still holding it CONFIRMED.
+Upgrade every clone that exports to the same repository together. If an older
+writer has already run, the next `kb_bible_commit` from a clone holding the
+entry as demoted removes the entry and restores its tombstone (the every-call
+rule above) -- but only when the re-added entry's `updated_at` is at or before
+the local `demoted_at`. An older writer exports `updated_at = promoted_at ||
+created_at`, which for an imported row is that clone's local import time; if
+it imported the entry AFTER the demotion (before the tombstone reached its
+branch), the re-added entry reads as re-promoted and the tombstone is NOT
+restored -- demote it again once every exporting clone is upgraded. A clone
+that imported the rewritten bible in between does not lose its own demotion,
+because import never raises confidence on an existing row.
 
 ### 2.7 Every code_* call is scoped to the calling session (code constraint)
 
@@ -552,8 +643,55 @@ the bracketed note (the note names kb_promote, which is not its remedy). CONFIRM
 promotion path (`kb_promote`) and MAY additionally survive on a dedicated
 bible-import path, because that path is a separately-trusted, human-reviewed
 channel -- but that exemption MUST be reachable only through an internal,
-non-serializable flag, never a field a caller can set on the request body. A
-closed Author enum MUST gate `role` server-side even though the request
+non-serializable flag, never a field a caller can set on the request body. The
+inverse move, CONFIRMED -> INFERRED, MUST be available as a first-class
+operation (`kb_demote`) rather than as a re-capture: an entry whose grade
+outran its evidence has to be downgradable without destroying its id, its
+promotion history or its links. `kb_demote` MUST NOT be a ladder -- a target
+that is not CONFIRMED MUST be REFUSED (`E-DEMOTE-NOT-CONFIRMED`), never
+returned as an unchanged no-op -- MUST leave `promoted_at` and `source`
+untouched, and MUST record the basis it withdrew trust against by hashing the
+cited source files AS THEY ARE ON DISK AT DEMOTE TIME, never by copying the
+capture-time hash column (a capture-time copy cannot answer whether the tree
+has moved on since the demotion, which is the question the record exists for).
+Every refusal `kb_demote` can raise MUST be checked before the single write
+that lowers confidence, in this fixed order, so a partial demotion can never
+be observed: (1) the id does not exist, or -- in a MEMBER session -- exists but
+does not carry the caller's ownerTag, both reported as the identical "entry not
+found" (so a MEMBER session can never learn an entry it does not own exists by
+probing for a different refusal); (2) the entry is already superseded
+(`E-DEMOTE-SUPERSEDED`); (3) the entry is a `user-directive`, which is
+human-terminal in both directions (`E-DEMOTE-REFUSED-DIRECTIVE`); (4) the
+entry is not CONFIRMED (`E-DEMOTE-NOT-CONFIRMED`, the ladder refusal above);
+(5) the reason, with every newline collapsed to a space and the result
+trimmed, falls short of the demote reason floor (`E-DEMOTE-REASON-REQUIRED`);
+(6) no evidence file is cited (evidence is REQUIRED, like promote's
+resolvable basis), or a cited evidence file does not resolve anchor-relative to
+a regular file in this worktree (`E-DEMOTE-EVIDENCE-UNRESOLVED`). At the tool
+boundary an absent or empty `evidence_files` never reaches that check: the
+request schema's `minItems: 1` refuses it first, as an input-validation error.
+The provider still refuses an empty list with `E-DEMOTE-EVIDENCE-UNRESOLVED`
+for a direct caller. The eventual content note MUST
+use the one format shared with the bible tombstone path (2.6), so a demotion
+applied locally and one that crossed clones through an import read
+identically: exactly ONE leading newline (never two, which is the `kb_feedback`
+marker, so the two can never be mistaken for each other), then
+`[Demoted: <reason, newlines collapsed to spaces> -- <author>]`, with a
+` | evidence: <evidence files, comma-joined>` clause inserted before the
+closing bracket whenever evidence files are known (always, for a local
+`kb_demote`; a bible tombstone may carry none).
+
+The KB's confidence-lowering surface is a short, named ladder, and `kb_demote`
+is only one rung of it: an entry that is simply less certain than its tier
+claims -- still broadly right, but the evidence underneath it turned out
+thinner than the promotion implied -- is routed to `kb_demote`; an entry shown
+to be actively wrong is routed to `kb_feedback` (flags and stales it, but MUST
+NOT touch confidence) or, when it forms a genuine contradiction pair with
+another entry, `kb_resolve_contradiction`; discarding an UNVERIFIED/INFERRED
+capture that was never worth promoting in the first place is a `kb_discards`
+judgement, carried out through `kb_invalidate`. `kb_demote` is the only one of
+these four that can ever lower a CONFIRMED entry's stored confidence, and it
+can only ever lower it to INFERRED. A closed Author enum MUST gate `role` server-side even though the request
 schema leaves it open; any value outside it, including an absent hint, MUST
 be stamped as the literal `unknown`. `source` derivation is a handler-level
 guarantee, not a provider-level one: on the `kb_capture` tool path `source`
@@ -582,22 +720,29 @@ applied next, in the same handler), then derives `confidence_clamped` from
 stored-vs-requested confidence, so both downgrades report it -- and only for
 calls that reach this handler (the `kb_capture` MCP tool; `kb_harvest`,
 `kb_import`, and the HTTP route never populate `confidence_clamped` at all).
-The provider choke point, `src/services/knowledge/sqlite-provider.ts:889-895`,
-re-enforces the downgrade for every route that reaches `capture()` --
+The provider choke point, `SqliteProvider.capture`'s confidence-clamp block
+(`src/services/knowledge/sqlite-provider.ts`), re-enforces the downgrade for
+every route that reaches `capture()` --
 `kb_capture`, `kb_harvest`, `kb_import`, and the HTTP `/api/kb/capture` route,
 which calls `provider.capture()` directly and bypasses the tool handler
-entirely (comment at `:845-855` names this explicitly) -- but its condition,
+entirely (a comment on that same block names this explicitly) -- but its
+condition,
 `!opts?.importMode && input.type !== 'user-directive' && input.confidence ===
-'CONFIRMED'` (`:889`), carries two exemptions the handler does not have.
-`type === 'user-directive'` is excluded because the directive gate
-(`:806-818`) has already forced that entry's confidence to UNVERIFIED before
+'CONFIRMED'`, carries two exemptions the handler does not have.
+`type === 'user-directive'` is excluded because the directive gate earlier in
+`capture()` has already forced that entry's confidence to UNVERIFIED before
 this check runs, overriding whatever the handler set. `!opts?.importMode` is
 excluded because a bible import keeps its stored confidence, including
-CONFIRMED (comment `:877-886`): the bible is a git-reviewed, human-merged
+CONFIRMED (a comment on the same clamp block): the bible is a git-reviewed, human-merged
 artifact, and re-clamping would demote a whole team's already-earned trust on
-every import. `importMode` is the SECOND parameter of `capture()`, never a
+every import. This clamp is the only route by which `capture()` itself could
+mint or preserve CONFIRMED; it never LOWERS an existing CONFIRMED row. A local
+CONFIRMED row IS still lowered on import, but through a separate path outside
+this clamp entirely (2.6): `kb_import` applies the bible's tombstones to
+already-stored rows, and only when the row is WITHDRAWN under 2.6's
+re-promotion rule. `importMode` is the SECOND parameter of `capture()`, never a
 field of the deserialized request body, so no caller reaching `capture()`
-through a route can set it (`:878-881`). Provenance: `AUTHOR_VALUES`
+through a route can set it (same comment block). Provenance: `AUTHOR_VALUES`
 (`src/tools/kb-capture.ts:11`) and `validateAuthor`
 (`src/tools/kb-capture.ts:16-21`) gate `role` against the closed set `doer,
 reviewer, planner, plan-reviewer, kb-agent, kb-reconciler, harvest, pm, user`;
@@ -605,10 +750,10 @@ anything else, or an absent hint, returns the literal `'unknown'`. `source` is
 computed at `src/tools/kb-capture.ts:117-122` from the validated `author` and
 `type` -- `'user-directive'` for a directive, `'review'` when `author ===
 'reviewer'`, else `'session'` -- and is never read from `input` ON THIS PATH.
-The provider choke point does not repeat that derivation: `insertEntry()`
-persists `input.source` VERBATIM (comment at
-`src/services/knowledge/sqlite-provider.ts:862-863`), and the only
-normalization applied is at `:873-875` -- a caller-supplied `source` of
+The provider choke point does not repeat that derivation: `SqliteProvider.insertEntry()`
+persists `input.source` VERBATIM (comment on that method, in
+`src/services/knowledge/sqlite-provider.ts`), and the only
+normalization is a separate step in `SqliteProvider.capture` -- a caller-supplied `source` of
 `'import'` or `'promotion'` is overwritten with `'unknown'` when
 `!opts?.importMode`, because those two values mark trusted-channel provenance
 (`'import'` from `kb_import`, `'promotion'` stamped only by `promote()`) and a
@@ -618,10 +763,10 @@ unchanged. The HTTP `/api/kb/capture` route reaches this unguarded: it parses
 the request body straight into `KBEntryInput` and calls
 `provider.capture(input)` (`src/commands/kb-server.ts:138-142`), never
 touching the handler that derives `source`. Admission is
-a separate check at the same provider entry point (`assertCheckableBasis`,
-`src/services/knowledge/sqlite-provider.ts:843`, body at `:334-356`): the
-zero-files half exempts `type === 'user-directive'` (`:337-338`, returns
-early), but the unresolvable-files half (`:347-355`) has no type exemption
+a separate check at the same provider entry point (`SqliteProvider.assertCheckableBasis`,
+`src/services/knowledge/sqlite-provider.ts`): the
+zero-files half exempts `type === 'user-directive'` (returns
+early), but the unresolvable-files half has no type exemption
 and still refuses a directive whose cited files do not exist.
 
 **THE OBLIGATION.** A second implementation MUST enforce the clamp at its
@@ -671,20 +816,21 @@ independently: a directive citing files that do not resolve in the worktree
 is refused under `E-BASIS-MISSING-FILES`, which is 4.2's rule and not this
 one. (INV-03)
 
-**THE PROOF.** One block at the provider entry point does all four:
-`src/services/knowledge/sqlite-provider.ts:806-818` -- `confidence:
-'UNVERIFIED'` (`:813`), `flagged_for_review: true` (`:814`), `scope:
-'project'` (`:815`), and `directive:pending` appended when not already
-present (`:807-810`). It rewrites `input` and falls through; it never throws,
+**THE PROOF.** One block at the provider entry point
+(`SqliteProvider.capture`'s directive gate, `src/services/knowledge/sqlite-provider.ts`)
+does all four: sets `confidence:
+'UNVERIFIED'`, `flagged_for_review: true`, `scope:
+'project'`, and appends `directive:pending` when not already
+present. It rewrites `input` and falls through; it never throws,
 so the call returns an id, and the HTTP capture route reaching that same code
 answers `201` (`src/commands/kb-server.ts:136-143`, provider call at `:142`).
 The refusing siblings of this one policy are separate sites that DO throw:
-`kb_promote` at `sqlite-provider.ts:1353-1357` and contradiction resolution
-at `sqlite-provider.ts:1569-1571`
+`SqliteProvider.promote`'s user-directive refusal and
+`SqliteProvider.resolveContradiction`'s directive-pair refusal (both in the same file)
 (`E-PROMOTE-REFUSED-DIRECTIVE`, `E-RESOLVE-DIRECTIVE-PAIR`). The basis
-exemption above is only the empty-basis half: `assertCheckableBasis`
-returns early for a directive at `sqlite-provider.ts:337-338`, nested inside
-the zero-files branch, so the unresolvable-files throw at `:347-355` still
+exemption above is only the empty-basis half: `SqliteProvider.assertCheckableBasis`
+returns early for a directive, nested inside
+the zero-files branch, so the unresolvable-files throw still
 reaches it.
 
 **THE OBLIGATION.** A second implementation MUST enforce this at its
@@ -749,10 +895,10 @@ candidate loop (`:185-239`) exactly as if the field had been absent. That
 fallthrough can itself resolve to `none`, `flagged`, an `update` against a
 DIFFERENT candidate, or `null` (a plain `add`) -- none of which reports that
 the named supersede was ignored. When a match IS found,
-`src/services/knowledge/sqlite-provider.ts:704-718` (`evaluateAudn`'s EXPLICIT
-branch) runs `UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?`
+`SqliteProvider.evaluateAudn`'s EXPLICIT
+branch (`src/services/knowledge/sqlite-provider.ts`) runs `UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?`
 against the matched id before inserting the new row; the sibling IMPLICIT
-branch three lines later, `:719-729` (same type, overlapping symbol and file,
+branch immediately below it in the same method (same type, overlapping symbol and file,
 but `input.supersedes` absent or not the matched id), inserts the new row and
 links it to the old one with a `refines` edge instead -- both rows stay live.
 The ACTIVE-directive guard is enforced a second time, independently, in the
@@ -823,7 +969,7 @@ basis paths against its own working directory instead. (INV-01)
 (input.type === 'context-cache' && input.source_file)` -- guarding
 `computeFileHash` at `:59-64`; when the condition is false, `content_hash`
 stays the initialized empty string (`:55`) and is persisted as-is
-(`src/services/knowledge/sqlite-provider.ts:265`, `input.content_hash ?? ''`),
+(`SqliteProvider.insertEntry`, `src/services/knowledge/sqlite-provider.ts`, `input.content_hash ?? ''`),
 with no error path anywhere in between. `capture()` itself never computes
 `content_hash` -- it only persists whatever value `input` already carries.
 `kb_harvest` and `kb_import` both pass it explicitly as `''`
@@ -835,33 +981,32 @@ HTTP caller supplying its own `content_hash` field has it persisted verbatim,
 bypassing the `kb-capture.ts:58` gate entirely -- the gate is a `kb_capture`-
 handler convenience, not an enforced invariant of `capture()` itself. The
 freshness basis is a different value, computed unconditionally by
-`capture()` itself at `src/services/knowledge/sqlite-provider.ts:902`
-(`computeSourceFileHashes`; comment `:899-901`: "capture() is the single
+`SqliteProvider.capture` itself, via `SqliteProvider.computeSourceFileHashes`
+(`src/services/knowledge/sqlite-provider.ts`; a comment on that call: "capture() is the single
 choke point every caller ... goes through, so every entry gets a hash basis
-here regardless of type") -- this is what `freshnessSweep` reads, never
-`content_hash` (comment at `:464`: "NOT content_hash, which is only ever set
-for context-cache entries"). `freshnessSweep` (`:586-652`) returns exactly
-`{checked, staled, unstaled}` (`:651`), where `checked` counts entries with a
-non-empty, parseable stored basis (`:622-624`). Staling and reviving share
-one predicate pair: `basisFullyMatches` (`:437-448`, full-basis-only -- an
+here regardless of type") -- this is what `SqliteProvider.freshnessSweep` reads, never
+`content_hash` (a comment nearby: "NOT content_hash, which is only ever set
+for context-cache entries"). `SqliteProvider.freshnessSweep` returns exactly
+`{checked, staled, unstaled}`, where `checked` counts entries with a
+non-empty, parseable stored basis. Staling and reviving share
+one predicate pair: `SqliteProvider.basisFullyMatches` (full-basis-only -- an
 empty basis or any single non-matching file never matches) decides the
-mismatch/match, and `freshnessRevivable` (`:417-428`, excludes superseded,
+mismatch/match, and `SqliteProvider.freshnessRevivable` (excludes superseded,
 feedback-flagged, `content_hash='invalidated'`, or durable-downvote-marked
 entries) gates which matches are allowed to revive. The anchor check,
-`anchorIsMissing` (`:325-327`, `anchor !== undefined && !fs.existsSync(anchor)`),
+`SqliteProvider.anchorIsMissing` (`anchor !== undefined && !fs.existsSync(anchor)`),
 only withholds a verdict when an anchor IS resolved (an explicit `root`
 argument, or the provider's own configured `repoPath`) and that path does not
-exist on disk (`:588`); when no anchor is configured at all -- `root` omitted
+exist on disk; when no anchor is configured at all -- `root` omitted
 and the provider has no `repoPath`, the shared global KB's case --
 `anchorIsMissing` returns false and the sweep proceeds, resolving relative
-basis paths against the process's own working directory (`:618`,
-`computeFileHashBatch([...fileSet], anchor ? { cwd: anchor } : undefined)`;
-comment `:583-585` names this the prior "implicit-cwd" behaviour, kept
+basis paths against the process's own working directory
+(`computeFileHashBatch([...fileSet], anchor ? { cwd: anchor } : undefined)`;
+a comment there names this the prior "implicit-cwd" behaviour, kept
 deliberately for that case). `src/tools/kb-invalidate.ts` drives explicit
-invalidation: the provider's `invalidate()` marks context-cache entries stale
+invalidation: the provider's `SqliteProvider.invalidate()` marks context-cache entries stale
 by setting `content_hash = 'invalidated'` for files named in a commit
-(`src/services/knowledge/sqlite-provider.ts:1119-1139`, the SET clause at
-`:1137`); the git hook that calls it is installed by
+(`src/services/knowledge/sqlite-provider.ts`, in its SET clause); the git hook that calls it is installed by
 `installKbPostCommitHook` (`src/tools/kb-invalidate.ts:25-32`), which
 `kb-setup.ts` invokes for the calling session's own folder when it carries a
 KB identity and has a `.git` directory (see 4.1).
