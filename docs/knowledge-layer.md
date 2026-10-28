@@ -586,6 +586,35 @@ The client writes this to `~/.apra-fleet/data/knowledge/config.json`:
 
 The token is stored AES-256-GCM encrypted. It is never written in plaintext.
 
+`request_timeout_ms` (integer, 1000-120000, default 5000) sets the socket idle
+timeout for each request to the KB server, for servers that need longer than
+the default:
+
+```
+kb_setup with provider=http, remote=https://<host>, token=<token>, request_timeout_ms=15000
+```
+
+kb_setup refuses a value outside that range, or a non-integer, before writing
+anything. The value is stored as `request_timeout_ms` in the config and kept
+across later `kb_setup` runs that do not pass it. If the config is edited by
+hand to a value outside that range or a non-integer, the reader uses the 5000
+default instead and logs a warning naming the key, the bad value and the
+default; it does not fail, so the config keeps working.
+
+A request whose socket is idle for longer than the timeout fails with code
+`ETIMEDOUT` and a message naming the timeout in ms; like any
+unreachable-server error, that queues a capture or invalidate offline and
+falls back to the local store for reads.
+
+It is a socket idle timeout, not a per-request deadline:
+
+- The timer restarts whenever data arrives, so a server that keeps sending
+  bytes slowly can take longer than the value without timing out.
+- When writes are queued offline, capture, query, context, invalidate and
+  prime first try to flush them, and the flush attempt has the same timeout. Against an unresponsive server a call can
+  therefore wait up to about twice the value: one timeout for the flush, one
+  for the call itself.
+
 ### 3. GitNexus (optional, codebase plane)
 
 Install GitNexus as an MCP server in `.mcp.json` (already done if you used the
@@ -625,10 +654,23 @@ git aligned, both described in the architecture sections above:
   non-fatal, with a config off-switch. See
   [Auto-commit at export](#auto-commit-at-export).
 
-(`kb_setup` still writes a legacy `.git/hooks/post-commit` invalidation hook,
-but it is not load-bearing: it calls a repo-relative `node dist/index.js` path
-and swallows all errors, so it is effectively inert outside the apra-fleet
-source tree. Hash-based freshness is the mechanism to rely on.)
+(`kb_setup` still writes a legacy `post-commit` invalidation hook, but it is
+not load-bearing. The hook directory is resolved by asking git
+(`git rev-parse --git-path hooks`), never by assuming `<repo>/.git/hooks`, so
+it works when the repo folder is a linked worktree (where `.git` is a file) and
+honours `core.hooksPath`. If git cannot resolve the directory, `kb_setup`
+fails with an error naming the repo path. `kb_setup` never overwrites a hook
+it did not write: it writes only when no `post-commit` exists or the existing
+one is a regular file carrying the `# apra-fleet KB invalidation hook` marker.
+Any other `post-commit` (e.g. a tracked husky or `.githooks/` hook, or a
+symlink) is left untouched and reported as the step `Skipped git hook:
+existing post-commit at <path> is not ours`. When the resolved directory is
+outside both the worktree and the git common dir -- typically a machine-global
+`core.hooksPath` shared by other repos -- `kb_setup` skips the hook with a
+step and does not create the directory. The hook itself calls a repo-relative
+`node dist/index.js` path and swallows all errors, so it is effectively inert
+outside the apra-fleet source tree. Hash-based freshness is the mechanism to
+rely on.)
 
 ---
 
