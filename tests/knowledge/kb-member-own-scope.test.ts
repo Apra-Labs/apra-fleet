@@ -182,6 +182,7 @@ describe('explicit INFERRED/UNVERIFIED reads return only the caller\'s own entri
 // ask for "my own CONFIRMED rows" was the unsatisfiable bible-view tag filter.
 describe('own_scope: true reads the caller\'s own CONFIRMED rows from the per-repo DB', () => {
   const biblePath = (): string => path.join(repo, '.fleet', 'kb-canonical.json');
+  const bibleOnlyId = `bible-only-${RUN}`;
   let aConfirmed: string;
   let bConfirmed: string;
 
@@ -205,6 +206,17 @@ describe('own_scope: true reads the caller\'s own CONFIRMED rows from the per-re
         type: 'knowledge',
         title: 'Gizmo alpha confirmed fact',
         summary: 'Gizmo alpha confirmed fact: the gizmo stage batches work per tick.',
+        symbols: [],
+        source_files: ['src/gizmo.ts'],
+        confidence: 'CONFIRMED',
+        updated_at: '2026-10-07T00:00:00.000Z',
+      }, {
+        // A bible-only row nobody in this DB owns: the split read's bible half
+        // returns it, so it tells the bible half apart from the own half.
+        id: bibleOnlyId,
+        type: 'knowledge',
+        title: 'Gizmo shared bible fact',
+        summary: 'Gizmo shared bible fact: the gizmo stage batches work per tick.',
         symbols: [],
         source_files: ['src/gizmo.ts'],
         confidence: 'CONFIRMED',
@@ -255,6 +267,42 @@ describe('own_scope: true reads the caller\'s own CONFIRMED rows from the per-re
     expect(out.l1_results).toEqual([]);
     expect(foreign).not.toContain(bConfirmed);
     expect(foreign).not.toContain(memberB);
+  });
+
+  // own_scope against the member split read: a request naming CONFIRMED plus
+  // another tier is answered as bible half + own half merged by id (bible copy
+  // wins). own_scope is the own half ALONE. A's promoted row sits in BOTH
+  // halves here (the bible above publishes it, the per-repo DB holds A's
+  // capture), so these pin "exactly once" and "the own copy", and the
+  // bible-only row proves the bible half really is live and really is dropped.
+  const occurrences = (rows: Array<{ id: string }>, id: string): number => rows.filter(r => r.id === id).length;
+  const ALL_TIERS = ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] as const;
+
+  it('the mixed-tier split read (no own_scope) merges the live bible half: the shared row once, as the bible copy', async () => {
+    const out = JSON.parse(await asA(() => kbQuery({ query: 'gizmo', confidence: [...ALL_TIERS], limit: 50 })));
+    expect(ids(out.l1_results)).toContain(bibleOnlyId);
+    expect(occurrences(out.l1_results, aConfirmed)).toBe(1);
+    expect(out.l1_results.find((e: { id: string }) => e.id === aConfirmed).tags).toEqual([]);
+  });
+
+  it('own_scope with CONFIRMED only sees the own CONFIRMED row exactly once, as the own (member-tagged) copy', async () => {
+    const out = JSON.parse(await asA(() => kbQuery({ query: 'gizmo', own_scope: true, confidence: ['CONFIRMED'], limit: 50 })));
+    expect(occurrences(out.l1_results, aConfirmed)).toBe(1);
+    expect(out.l1_results.find((e: { id: string }) => e.id === aConfirmed).tags).toContain(`member:${memberA}`);
+    expect(ids(out.l1_results)).not.toContain(bibleOnlyId);
+    expect(ids(out.l1_results)).not.toContain(bConfirmed);
+  });
+
+  it('own_scope with a mixed tier list is the split read\'s own half alone: own rows at every tier, the shared row once, no bible half', async () => {
+    const out = JSON.parse(await asA(() => kbQuery({ query: 'gizmo', own_scope: true, confidence: [...ALL_TIERS], limit: 50 })));
+    const got = ids(out.l1_results);
+    expect(occurrences(out.l1_results, aConfirmed)).toBe(1);
+    expect(out.l1_results.find((e: { id: string }) => e.id === aConfirmed).tags).toContain(`member:${memberA}`);
+    expect(got).toContain(aKnowledge);
+    expect(got).not.toContain(bibleOnlyId);
+    expect(got).not.toContain(bConfirmed);
+    expect(got).not.toContain(bKnowledge);
+    for (const e of out.l1_results as Array<{ tags: string[] }>) expect(e.tags).toContain(`member:${memberA}`);
   });
 
   it('own_scope has no effect for a FULL session (already reads the per-repo DB)', async () => {

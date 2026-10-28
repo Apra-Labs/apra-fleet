@@ -192,6 +192,16 @@ has no effect for a FULL session or an in-process caller passing an explicit
 anchor (both already read the per-repo DB), and defaults to false/omitted so
 every other caller's routing and result shape is unchanged.
 
+`own_scope` is the OWN HALF of the member split read on its own. A member
+request naming CONFIRMED together with another tier is answered by the split
+read: the bible half (CONFIRMED, checkout bible view, untagged) merged by id
+with the own half (every requested tier, CONFIRMED included, per-repo DB,
+caller's `ownerTag`), the bible copy winning on a shared id. With
+`own_scope: true` the same request skips the bible half: it returns the own
+half alone, so a member's own promoted CONFIRMED row appears exactly once and
+as the per-repo copy `kb_demote` acts on, and no untagged bible row is ever
+offered to a caller that can only demote its own entries.
+
 `own_scope` changes WHICH STORE answers and nothing else -- it moves no other
 default. That matters to the caller building a demotion candidate list,
 because `demote()` refuses an unknown or un-owned id, a superseded entry, a
