@@ -179,6 +179,49 @@ is reported not found, same as an unknown id, and is left unchanged. A FULL
 session carries no ownerTag at all and may demote any CONFIRMED row,
 bible-imported or not.
 
+Because the default CONFIRMED read is answered from the bible view, and every
+bible-view row is imported with `tags: []`, a MEMBER session has no way to
+read back its OWN promoted CONFIRMED rows from a default `kb_query`/`kb_list`
+call -- a `tag: "member:<id>"` filter can never match a bible-view row. `kb_query`
+accepts an opt-in `own_scope: true` to escape the bible view for exactly this
+case: it routes to the per-repo DB with the caller's own `ownerTag` applied,
+same as an explicit INFERRED/UNVERIFIED request, so the caller sees only its
+own rows regardless of which tier they are in. `own_scope` is ignored when
+`flagged_only` is set (that branch already reads the view unconditionally),
+has no effect for a FULL session or an in-process caller passing an explicit
+anchor (both already read the per-repo DB), and defaults to false/omitted so
+every other caller's routing and result shape is unchanged.
+
+`own_scope` is the OWN HALF of the member split read on its own. A member
+request naming CONFIRMED together with another tier is answered by the split
+read: the bible half (CONFIRMED, checkout bible view, untagged) merged by id
+with the own half (every requested tier, CONFIRMED included, per-repo DB,
+caller's `ownerTag`), the bible copy winning on a shared id. With
+`own_scope: true` the same request skips the bible half: it returns the own
+half alone, so a member's own promoted CONFIRMED row appears exactly once and
+as the per-repo copy `kb_demote` acts on, and no untagged bible row is ever
+offered to a caller that can only demote its own entries.
+
+`own_scope` changes WHICH STORE answers and nothing else -- it moves no other
+default. That matters to the caller building a demotion candidate list,
+because `demote()` refuses an unknown or un-owned id, a superseded entry, a
+user-directive, a non-CONFIRMED entry and a too-thin reason, but it has NO
+stale refusal and no disputed refusal: staleness is a freshness verdict while
+trust is a separate axis, and a row the sweep has already staled, or that
+something now contradicts, is exactly the kind most worth demoting. The
+default read path drops both -- stale rows unless `include_stale` is set, and
+disputed rows while `exclude_disputed` is on (its default whenever no explicit
+`confidence` list is given). So an own-scope read that must span everything
+`kb_demote` will accept asks for all three together:
+`{ own_scope: true, confidence: ["CONFIRMED"], include_stale: true }` -- the
+explicit `confidence` list is what turns `exclude_disputed` off.
+
+That widened read also returns SUPERSEDED rows, because `include_stale`
+admits superseded entries alongside stale ones. `kb_demote` refuses those
+(`E-DEMOTE-SUPERSEDED`), and this read path deliberately does not filter them
+out: dropping a superseded row is the CALLER's job, stated here so it is not
+left implicit.
+
 ### 2.5a MEMBER-session tool exposure (KB write policy)
 
 A MEMBER session is served an explicit tool list
@@ -201,7 +244,8 @@ A MEMBER session is served an explicit tool list
   `?member=<uuid>` entry -- gets an unknown-tool error.
 - `kb_demote` withdraws CONFIRMED (CONFIRMED -> INFERRED) and is served on the
   same terms as `kb_promote`: only to a member session carrying the
-  kb_maintainer grant.
+  kb_maintainer grant. The engine applies every reviewer demotion through that
+  session; no other member session needs it.
 - Every other `kb_*` tool (including `kb_bible_commit` and `kb_import`) and
   every `code_*` tool is served to every member session.
 - `kb_import` with an explicit `path` keeps the named bible's confidence (and a
