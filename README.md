@@ -233,6 +233,8 @@ MCP tools that ship with the KB:
 | `kb_bible_commit` | Merge confirmed entry ids into the bible (format v3, per-entry file hashes), remove superseded or invalidated entries, and commit locally with base-branch provenance (used by the sprint kb_maintainer) |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted (FULL session only) |
 
+`kb_query` accepts `own_scope: true` so a MEMBER session can read its own CONFIRMED rows from the per-repo database instead of the bible view. The fleet-sprint reviewer uses this to offer demotion candidates; the loop is on by default and `--kb-demotion-loop off` disables it. See [docs/kb-member-view-and-maintainer.md](docs/kb-member-view-and-maintainer.md).
+
 `code_*` tools resolve the calling session's own folder, refuse with typed
 `E-CODE-INDEX-NOT-READY` / `E-CODE-INTEL-DISABLED` errors when the index is not
 usable, and report `indexedCommit` on every result; `code_reindex` and

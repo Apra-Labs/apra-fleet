@@ -98,6 +98,16 @@ demote and why, exactly like `kb_promotions`/`kb_discards`.
    An entry created in an earlier sprint that gets demoted is therefore never
    re-offered for promotion by the engine. This is documented, not mitigated;
    no broader re-offer mechanism exists.
+7. **Guard robustness.** The ping-pong guard fails loud, not silent: every
+   site that cannot compute a hash or diff (a failing command, an unreadable
+   file) logs a WARNING naming the member and the command. The guard's
+   "last seen" revision advances only when the diff actually succeeded, so a
+   failed diff is retried next round rather than skipping the changes it
+   missed. The candidate read runs inside the same busy/in-flight bracket as
+   other maintainer operations, so a dispatch cannot start mid-read. The
+   in-flight record is one entry per member; overlapping maintainer
+   operations on the same member overwrite each other's entry (a known,
+   tracked limitation shared with the existing operations).
 
 ## One kb_maintainer per repository (writes)
 
