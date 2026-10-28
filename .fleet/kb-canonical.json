@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "8c38f93777d15666c2f8fb26c7299db0e0707603",
-    "branch": "main",
-    "entry_count": 100
+    "commit": "cbe7a39deaf2ec69cbc03e3be1d91a0923962296",
+    "branch": "u1_upstream_main_cbe7a39",
+    "entry_count": 105
   },
   "entries": [
     {
@@ -253,7 +253,12 @@
         "tests/stall-no-signal-false-kill.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:13.625Z"
+      "updated_at": "2026-09-29T06:13:13.625Z",
+      "source_file_hashes": {
+        "src/services/stall/stall-detector.ts": "b472e11eb27b688faaa8c62bce24880a14197023",
+        "tests/stall-detector.test.ts": "6291164e7ba7d5824752d6fc02e12ab1466e2f9b",
+        "tests/stall-no-signal-false-kill.test.ts": "be75e7a5fe8c34ed7ef883ec59848ee98fefa0e6"
+      }
     },
     {
       "id": "26b8c94b-20c8-4d6e-8862-8e65bc512ba6",
@@ -341,7 +346,11 @@
         "tests/sftp-subsystem-refusal.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T06:25:49.718Z"
+      "updated_at": "2026-10-06T06:25:49.718Z",
+      "source_file_hashes": {
+        "src/services/sftp.ts": "e7737cf000b78c0e5c2688189ce53f6e0ce41e85",
+        "tests/sftp-subsystem-refusal.test.ts": "37e60bde41af90e4a5b9697c1395dc64057afe52"
+      }
     },
     {
       "id": "33c1189c-bf95-4cf3-b875-4b93620bea0f",
@@ -397,7 +406,12 @@
         "tests/ssh-host-key-reaccept.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T10:58:58.488Z"
+      "updated_at": "2026-10-06T10:58:58.488Z",
+      "source_file_hashes": {
+        "src/services/known-hosts.ts": "9216adcb9ad5b4ac684255463abd13a9d7601299",
+        "src/services/ssh.ts": "5ee3f5d839cce14c31a5295a0a150e7f4677d7ae",
+        "tests/ssh-host-key-reaccept.test.ts": "7ba9218eb306508c120a582bf2370d97535676d0"
+      }
     },
     {
       "id": "416532bd-32a5-4056-8cb5-03f2219c2870",
@@ -439,7 +453,15 @@
         "skills/fleet/profiles/node.json"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:14.033Z"
+      "updated_at": "2026-09-29T06:13:14.033Z",
+      "source_file_hashes": {
+        "integ-test-playbook.md": "f464532544db7015dfc4658a9e30923b9286a011",
+        "regression-test-playbook.md": "d61fa4222c592c2bab61d1c0231ab30209a0f2eb",
+        "skills/fleet/profiles/base-dev.json": "f5ebfe785c69b411c4b2eb5cc1500b116abee7fb",
+        "skills/fleet/profiles/base-reviewer.json": "db55cb01779c8f8854a4aa749740092ad4f29cfc",
+        "skills/fleet/profiles/node.json": "6b1f54548d4c09bb8f2bad195a5831709c34a0b4",
+        "tests/integ-playbook-permission-profiles.test.ts": "de0b9b8e267097e3b8757c054b462dfe15ec244e"
+      }
     },
     {
       "id": "44cfb13c-397c-4b93-88b3-5731cb417c65",
@@ -778,7 +800,12 @@
         "regression-test-playbook.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:31.774Z"
+      "updated_at": "2026-09-25T22:26:31.774Z",
+      "source_file_hashes": {
+        "regression-test-playbook.md": "d61fa4222c592c2bab61d1c0231ab30209a0f2eb",
+        "scripts/kill-port.mjs": "b057c3b29d130c137c768372cdf2d2ca94e63c8c",
+        "tests/kill-port.test.ts": "f4236a03a10574fbb47bb892989fa45da987cacf"
+      }
     },
     {
       "id": "70f0e881-49d9-40eb-85ab-ff9c8868f49b",
@@ -820,7 +847,12 @@
         "packages/apra-fleet-se/docs/kb-canonical-merge.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T06:57:40.812Z"
+      "updated_at": "2026-10-06T06:57:40.812Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/docs/kb-canonical-merge.md": "35a27aa90d25d77134d5efb4af38df75920847e7",
+        "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs": "ec75236af4fb108aa1a91d4e9f9433f030f7db29",
+        "packages/apra-fleet-se/test/merge-kb-canonical.test.mjs": "de4c76a854fa892dcb6d6cbb8851a1aee34a7481"
+      }
     },
     {
       "id": "71323701-67db-4aa8-b7ce-858fb5e2aea7",
@@ -863,7 +895,11 @@
         "src/utils/log-helpers.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:41.271Z"
+      "updated_at": "2026-09-25T22:26:41.271Z",
+      "source_file_hashes": {
+        "src/services/stall/stall-detector.ts": "b472e11eb27b688faaa8c62bce24880a14197023",
+        "src/utils/log-helpers.ts": "27f4f02a8004ceae5d1b8883ada455890a6d6997"
+      }
     },
     {
       "id": "76754ef3-5ff3-4fb4-a7cf-d74504f5013b",
@@ -993,7 +1029,12 @@
         "regression-test-playbook.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:32.922Z"
+      "updated_at": "2026-09-25T22:26:32.922Z",
+      "source_file_hashes": {
+        "regression-test-playbook.md": "d61fa4222c592c2bab61d1c0231ab30209a0f2eb",
+        "scripts/sandbox-lock.mjs": "7d0b717cb8dddea16592fe17154f5f02a2f25974",
+        "tests/sandbox-lock.test.ts": "2628030b1896c96dd2ef3f3161fa14be789eb646"
+      }
     },
     {
       "id": "84258482-2b78-4c46-a077-7698d06fc4b4",
@@ -1113,7 +1154,12 @@
         "src/os/windows-gitbash.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T10:58:50.816Z"
+      "updated_at": "2026-10-06T10:58:50.816Z",
+      "source_file_hashes": {
+        "src/os/child-env-bound.ts": "dc0e2561d9c10db9f421d5a4c814e83c3f772c4f",
+        "src/os/windows-gitbash.ts": "100e34be26880d84796eab62ef830781f19a9cba",
+        "src/os/windows.ts": "80d3c913f94d8846dccfb753f7ab786372fd487e"
+      }
     },
     {
       "id": "962688bf-cee4-4461-bc3b-10b87eaf56c4",
@@ -1367,7 +1413,11 @@
         "src/providers/provider.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:24:09.365Z"
+      "updated_at": "2026-09-29T06:24:09.365Z",
+      "source_file_hashes": {
+        "src/providers/claude.ts": "97c74b189ab8906e43374e6c1be059665b561b56",
+        "src/providers/provider.ts": "b59c65d65b80b5103f3000de6636562f3b46cb75"
+      }
     },
     {
       "id": "b8d328fa-e22b-498f-98cf-2ff10bd6370a",
@@ -1556,7 +1606,11 @@
         "packages/apra-fleet-se/test/azure-devops-real-e2e.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:37.343Z"
+      "updated_at": "2026-09-25T22:26:37.343Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-client/src/client/transport.mjs": "aa60d3370115785dbdfca7d53b84b54812fcc79e",
+        "packages/apra-fleet-se/test/azure-devops-real-e2e.test.mjs": "60e3d607d5a472c052913327a4ca0fa6e2c7d21c"
+      }
     },
     {
       "id": "d6a925e2-7ffb-409e-9d6d-df112557edda",
@@ -1574,7 +1628,11 @@
         "packages/apra-fleet-se/test/supervisor-dolt-orphan-sweep.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.852Z"
+      "updated_at": "2026-09-29T06:13:53.852Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/src/supervisor/dolt-orphan-sweep.mjs": "98ef4cc14cb0c8c2a127dadedbf0e77f11f9b0e9",
+        "packages/apra-fleet-se/test/supervisor-dolt-orphan-sweep.test.mjs": "257496178c2a8349222954fa634542ee2b576c2f"
+      }
     },
     {
       "id": "d75f28a9-bb69-4fd8-bf81-1ad9bd17d51b",
@@ -1661,7 +1719,11 @@
         "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.820Z"
+      "updated_at": "2026-09-29T06:13:53.820Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs": "1b12436f9c16b9a9985b666d435c3495731ab582",
+        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs": "0216144f04ab23487870012e025de8f5f23b5ff8"
+      }
     },
     {
       "id": "e078ec0e-b747-4274-a82b-4155c342928b",
@@ -1678,7 +1740,11 @@
         "packages/apra-fleet-se/apra-pm/test/install-binary-asset-copy.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:13.312Z"
+      "updated_at": "2026-09-29T06:13:13.312Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/install.mjs": "c6936f9636f88109fb3c49fea77dca27171978a8",
+        "packages/apra-fleet-se/apra-pm/test/install-binary-asset-copy.test.mjs": "857a66897ba3b40b2a126af3b5b4681b2784e084"
+      }
     },
     {
       "id": "e0d3a928-0df8-49c1-bd69-3674ad65310a",
@@ -1693,7 +1759,11 @@
         "src/services/auth-socket.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:15.109Z"
+      "updated_at": "2026-09-29T06:13:15.109Z",
+      "source_file_hashes": {
+        "src/services/auth-socket.ts": "79b95fb076cf884f610a72820824c5798b3a01fa",
+        "src/services/auth-web.ts": "47222316dee7b8c2b2d1072422bbc0fb178dacb7"
+      }
     },
     {
       "id": "e1673449-1192-4948-bd32-7b743635a820",
@@ -1840,7 +1910,11 @@
         "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:08:07.865Z"
+      "updated_at": "2026-09-29T06:08:07.865Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "851e0cf872efb6ce739a214b02bf48deecd85dd1",
+        "packages/apra-fleet-se/test/phase5-consumer-migration-end-state.test.mjs": "37e32a2a5e0928f9c3412bbe99db768b62eb58a6"
+      }
     },
     {
       "id": "f33011e2-8ae6-4388-95d4-5e21f1716d0f",
@@ -1937,6 +2011,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T08:11:44.370Z"
+    },
+    {
+      "id": "f7c2219b-47da-413c-ad38-28fcd3397b35",
+      "type": "knowledge",
+      "title": "kb_query own_scope skips the member split read and returns only its own half",
+      "summary": "In kbQuery, own_scope: true bypasses getMemberSplitRead and goes through getSelfReadKb(ownScope), i.e. the per-repo DB with the caller's ownerTag at every requested tier; a mixed-tier own_scope request never merges the bible half.",
+      "symbols": [
+        "kbQuery",
+        "splitQuery",
+        "getMemberSplitRead",
+        "getSelfReadKb"
+      ],
+      "source_files": [
+        "src/tools/kb-query.ts",
+        "src/services/knowledge/kb-self.ts",
+        "tests/knowledge/kb-member-own-scope.test.ts",
+        "memory-contract/v1/spec.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-28T03:42:59.392Z",
+      "source_file_hashes": {
+        "memory-contract/v1/spec.md": "bd55f1a2ee5d32cd716c71a07727af9d542c3cac",
+        "src/services/knowledge/kb-self.ts": "07c5e1f1e4f98d2356b3d3969f818a7d0cea7f19",
+        "src/tools/kb-query.ts": "8eb1e954b56beef3ff6c232a9639c447793efd6d",
+        "tests/knowledge/kb-member-own-scope.test.ts": "c67634d0a16f6352bcd4ef734414eaa3cc041b57"
+      }
     },
     {
       "id": "fbf058a3-a2de-45e1-b97f-ec58b048cbc4",
