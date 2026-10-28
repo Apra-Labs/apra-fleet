@@ -1742,6 +1742,8 @@ async function runSprintCycle(context) {
         // Promotion candidates are limited to entries created since the
         // sprint started -- the sprint state's one start stamp.
         sprintStartMs: () => sprintState.startedAtMs,
+        // Reviewer demotion loop switch ('on' default, 'off'): sprint arg kb_demotion_loop.
+        demotionLoop: validated.kbDemotionLoop,
         log,
     });
     // Stored on the sprint context (like kbMaintainers) so the terminal-abort

@@ -562,6 +562,14 @@ export function createKbWorkClient(opts = {}) {
         return (typeof v === 'number' && Number.isFinite(v)) ? v : null;
     };
     const active = typeof memberCall === 'function';
+    // Reviewer demotion loop switch (sprint arg kb_demotion_loop, CLI
+    // --kb-demotion-loop): 'on' (default when absent) or 'off'. Any other value
+    // fails loudly rather than silently falling back to a default.
+    const demotionLoopSetting = opts.demotionLoop === undefined ? 'on' : opts.demotionLoop;
+    if (demotionLoopSetting !== 'on' && demotionLoopSetting !== 'off') {
+        throw new Error(`[kb-work] Invalid demotionLoop ${JSON.stringify(demotionLoopSetting)}: must be 'on' (default) or 'off'.`);
+    }
+    const demotionLoopOn = demotionLoopSetting === 'on';
 
     /** The kb_maintainer selector (createKbMaintainerSelector), or null. */
     function selector() {
@@ -1502,6 +1510,11 @@ export function createKbWorkClient(opts = {}) {
             // bug, and silently falling back to the round diff at FINAL review
             // would offer the reviewer a set scoped to a round that does not
             // exist. Degrade to nothing rather than to the wrong scope.
+            if (!demotionLoopOn) {
+                log("[kb-work] reviewer demotion loop is disabled by the kb_demotion_loop setting ('off'): offering no demotion candidates.");
+                offeredDemotions.clear();
+                return [];
+            }
             if (scope !== 'round' && scope !== 'sprint') {
                 log(`[kb-work] demotion candidates requested with unknown scope '${scope}' (non-fatal): offering none.`);
                 return [];
@@ -1645,7 +1658,13 @@ export function createKbWorkClient(opts = {}) {
          *   queued for a busy or unreachable maintainer are not counted).
          */
         async apply(role, member, result) {
-            const { captures, promotions, discards, demotions, refused } = vetKbWork(role, result);
+            const vetted = vetKbWork(role, result);
+            const { captures, promotions, discards, refused } = vetted;
+            let demotions = vetted.demotions;
+            if (!demotionLoopOn && demotions.length > 0) {
+                log(`[kb-work] reviewer demotion loop is disabled by the kb_demotion_loop setting ('off'): ${demotions.length} demotion(s) from ${role} dropped, no kb_demote issued.`);
+                demotions = [];
+            }
 
             for (const r of refused) log(`[kb-work] refused -- ${r}`);
             // Log every promotion with its stated evidence BEFORE attempting it.

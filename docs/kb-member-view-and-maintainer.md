@@ -86,6 +86,18 @@ demote and why, exactly like `kb_promotions`/`kb_discards`.
    as "unchanged" by this guard -- it stays offered rather than being
    silently ping-ponged out forever on a basis the guard cannot actually
    verify.
+5. **Off switch.** The loop is ON by default. A sprint launched with
+   `kb_demotion_loop: "off"` (CLI: `--kb-demotion-loop off`) offers the
+   reviewer no demotion candidates, so the `kb_demotions` block is not
+   requested, and drops any `kb_demotions` returned, so no `kb_demote` is
+   issued. The engine logs that the loop is disabled and by which setting. Any
+   value other than `on` or `off` is rejected at launch with an error naming
+   the value; it never falls back silently.
+6. **Fresh-look limit.** A demoted entry goes back to INFERRED for a fresh
+   look, but the promotion window is `created_at` inside the current sprint.
+   An entry created in an earlier sprint that gets demoted is therefore never
+   re-offered for promotion by the engine. This is documented, not mitigated;
+   no broader re-offer mechanism exists.
 
 ## One kb_maintainer per repository (writes)
 
