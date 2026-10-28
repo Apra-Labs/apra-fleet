@@ -602,19 +602,27 @@ function createRoundChangedFiles({ command, pullGitBefore, baseBranch, log = () 
             log(`[kb-work] could not fetch/fast-forward-merge '${memberName}' before computing this round's changed files (non-fatal): ${err && err.message ? err.message : String(err)}`);
             return [];
         }
-        const headRes = await command('git rev-parse HEAD', { member_name: memberName, silent: true, failSoft: true });
+        const revParseCmd = 'git rev-parse HEAD';
+        const headRes = await command(revParseCmd, { member_name: memberName, silent: true, failSoft: true });
         const head = (headRes && headRes.ok) ? String(headRes.output || '').trim() : '';
-        if (!head) return [];
+        if (!head) {
+            log(`[kb-work] WARN: '${revParseCmd}' failed on '${memberName}' -- no changed files for this round's demotion candidates${failedCommandDetail(headRes)}`);
+            return [];
+        }
         // THIS round's diff only: from the previous round's merged tip (or,
         // on the first round, the sprint's base branch) to the new tip --
         // never the cumulative origin/base...branch diff diffFiles computes.
         const fromRef = lastSha || `origin/${baseBranch}`;
-        const diffRes = await command(`git diff --name-only ${fromRef}...${head}`, { member_name: memberName, silent: true, failSoft: true });
-        const files = (diffRes && diffRes.ok)
-            ? String(diffRes.output || '').split('\n').map((l) => l.trim()).filter(Boolean)
-            : [];
+        const diffCmd = `git diff --name-only ${fromRef}...${head}`;
+        const diffRes = await command(diffCmd, { member_name: memberName, silent: true, failSoft: true });
+        if (!diffRes || !diffRes.ok) {
+            // lastSha is NOT advanced: the next round diffs from the last tip
+            // whose diff succeeded, so this round's files are not lost.
+            log(`[kb-work] WARN: '${diffCmd}' failed on '${memberName}' -- no changed files for this round's demotion candidates; the next round diffs from ${fromRef} again${failedCommandDetail(diffRes)}`);
+            return [];
+        }
         lastSha = head;
-        return files;
+        return String(diffRes.output || '').split('\n').map((l) => l.trim()).filter(Boolean);
     };
 }
 export { createRoundChangedFiles };
@@ -655,8 +663,12 @@ function createSprintChangedFiles({ command, pullGitBefore, baseBranch, branch, 
             log(`[kb-work] could not fetch/fast-forward-merge '${memberName}' before computing the sprint's cumulative changed files (non-fatal): ${err && err.message ? err.message : String(err)}`);
             return [];
         }
-        const diffRes = await command(`git diff --name-only origin/${baseBranch}...${branch}`, { member_name: memberName, silent: true, failSoft: true });
-        if (!diffRes || !diffRes.ok) return [];
+        const diffCmd = `git diff --name-only origin/${baseBranch}...${branch}`;
+        const diffRes = await command(diffCmd, { member_name: memberName, silent: true, failSoft: true });
+        if (!diffRes || !diffRes.ok) {
+            log(`[kb-work] WARN: '${diffCmd}' failed on '${memberName}' -- no changed files for the final review's demotion candidates${failedCommandDetail(diffRes)}`);
+            return [];
+        }
         return String(diffRes.output || '').split('\n').map((l) => l.trim()).filter(Boolean);
     };
 }
@@ -686,7 +698,7 @@ export { createSprintChangedFiles };
 //
 // A missing or unreadable file is simply absent from the result (never a
 // fabricated hash); a failed command, or output that is not the JSON object
-// this script prints, degrades to {} -- the caller's "never falsely
+// this script prints, degrades to {} with a WARN naming the member -- the caller's "never falsely
 // suppress" rule then leaves every candidate offered, exactly as it does for
 // an unparseable demoted_basis_hashes snapshot.
 //
@@ -701,6 +713,19 @@ const CURRENT_FILE_HASHES_SCRIPT =
     "const out={};" +
     "for (const f of files) { try { out[f]=crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex'); } catch (e) {} }" +
     "process.stdout.write(JSON.stringify(out));";
+// How a WARN line names the hashing command: the full string carries the whole
+// script plus a base64 file list, which would bury the message.
+const CURRENT_FILE_HASHES_LABEL = 'node -e <current-file-hashes script> <base64 file list>';
+const FAILED_OUTPUT_MAX_CHARS = 300;
+
+// ": <the command's output, capped at FAILED_OUTPUT_MAX_CHARS>", or "" when it
+// printed nothing -- the reason a WARN line quotes for a failed member command.
+function failedCommandDetail(res) {
+    const out = res && typeof res.output === 'string' ? res.output.trim() : '';
+    if (!out) return '';
+    return `: ${out.length > FAILED_OUTPUT_MAX_CHARS ? `${out.slice(0, FAILED_OUTPUT_MAX_CHARS)}...` : out}`;
+}
+
 function createCurrentFileHashes({ command, log = () => {} }) {
     return async function currentFileHashes(memberName, files) {
         const list = Array.isArray(files) ? files.filter((f) => typeof f === 'string' && f.length > 0) : [];
@@ -713,13 +738,24 @@ function createCurrentFileHashes({ command, log = () => {} }) {
             log(`[kb-work] could not re-hash ${list.length} file(s) on '${memberName}' for the in-sprint ping-pong guard (non-fatal): ${err && err.message ? err.message : String(err)}`);
             return {};
         }
-        if (!res || !res.ok) return {};
-        try {
-            const parsed = JSON.parse(String(res.output || '{}'));
-            return (parsed && typeof parsed === 'object') ? parsed : {};
-        } catch {
+        // A member without a working `node` lands here on every call, which
+        // disables the guard -- so say so, every time.
+        if (!res || !res.ok) {
+            log(`[kb-work] WARN: '${CURRENT_FILE_HASHES_LABEL}' failed on '${memberName}' -- the in-sprint ping-pong guard has no current hashes for ${list.length} file(s) and suppresses nothing${failedCommandDetail(res)}`);
             return {};
         }
+        let parsed;
+        try {
+            parsed = JSON.parse(String(res.output || '{}'));
+        } catch (err) {
+            log(`[kb-work] WARN: '${CURRENT_FILE_HASHES_LABEL}' on '${memberName}' printed output that is not JSON (${err.message}) -- the in-sprint ping-pong guard has no current hashes for ${list.length} file(s) and suppresses nothing${failedCommandDetail(res)}`);
+            return {};
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            log(`[kb-work] WARN: '${CURRENT_FILE_HASHES_LABEL}' on '${memberName}' printed JSON that is not a file -> hash object -- the in-sprint ping-pong guard suppresses nothing${failedCommandDetail(res)}`);
+            return {};
+        }
+        return parsed;
     };
 }
 export { createCurrentFileHashes };

@@ -1190,6 +1190,51 @@ export function createKbWorkClient(opts = {}) {
         }
     }
 
+    /**
+     * The body of demotionCandidates(), run inside its isBusy/inFlight
+     * bracket. Never throws.
+     * @returns {Promise<object[]>}
+     */
+    async function readDemotionCandidates(target, changedFilesFor, scopeLabel) {
+        // Same branch guard flushRepo/commitRepo apply before every G-pull
+        // on the maintainer: a fast-forward merge does not care what
+        // branch HEAD is currently on, only that HEAD is an ancestor of
+        // the fetched tip, so pulling on a maintainer not actually on the
+        // sprint branch could silently advance the wrong branch.
+        if (!(await onSprintBranch(target.member, target.repo, 0, 'demotion candidate read'))) return [];
+        let changed;
+        try {
+            changed = await changedFilesFor(target.member);
+        } catch (err) {
+            log(`[kb-work] could not compute ${scopeLabel} changed files on maintainer '${target.member}' (non-fatal): ${err.message}`);
+            return [];
+        }
+        const files = Array.isArray(changed) ? changed.filter((f) => typeof f === 'string' && f.trim()) : [];
+        if (files.length === 0) return [];
+        try {
+            const res = await memberCall(target.record, 'kb_query', buildDemotionCandidateQuery(target.record.id));
+            if (isToolError(res)) {
+                log(`[kb-work] kb_query for demotion candidates rejected on maintainer '${target.member}' (non-fatal): ${toolErrorText(res)}`);
+                return [];
+            }
+            const parsed = parseResult(res);
+            const results = parsed && Array.isArray(parsed.l1_results) ? parsed.l1_results
+                : (parsed && Array.isArray(parsed.results) ? parsed.results : []);
+            const fileSet = new Set(files);
+            const touchesChangedFiles = (e) => Array.isArray(e.source_files) && e.source_files.some((f) => fileSet.has(f));
+            // Filter the WHOLE read first (eligibility, then relevance),
+            // and only cap the survivors -- see the method comment.
+            const offered = results
+                .filter((e) => isDemotableCandidate(e) && touchesChangedFiles(e))
+                .slice(0, KB_MAX_DEMOTION_CANDIDATES);
+            offeredDemotions.set(target.repo, new Set(offered.map((e) => e.id)));
+            return offered;
+        } catch (err) {
+            log(`[kb-work] could not read demotion candidates from maintainer '${target.member}' (non-fatal): ${err.message}`);
+            return [];
+        }
+    }
+
     function enqueue(repo, kind, role, payload) {
         if (!queues.has(repo)) queues.set(repo, []);
         queues.get(repo).push({ kind, role, payload });
@@ -1533,42 +1578,23 @@ export function createKbWorkClient(opts = {}) {
             // land before the read, same as promotionCandidates.
             if (queues.has(target.repo)) await flush(target.repo);
             if (typeof changedFilesFor !== 'function') return [];
-            // Same branch guard flushRepo/commitRepo apply before every G-pull
-            // on the maintainer: a fast-forward merge does not care what
-            // branch HEAD is currently on, only that HEAD is an ancestor of
-            // the fetched tip, so pulling on a maintainer not actually on the
-            // sprint branch could silently advance the wrong branch.
-            if (!(await onSprintBranch(target.member, target.repo, 0, 'demotion candidate read'))) return [];
-            let changed;
-            try {
-                changed = await changedFilesFor(target.member);
-            } catch (err) {
-                log(`[kb-work] could not compute ${scopeLabel} changed files on maintainer '${target.member}' (non-fatal): ${err.message}`);
+            // Same isBusy/inFlight bracket flushRepo and commitRepo use: the
+            // read below G-pulls the maintainer's checkout and runs git and
+            // kb_query there, so it must neither start while a dispatch is
+            // running on the maintainer nor run concurrently with one that
+            // starts mid-read (dispatchStarted() awaits the inFlight entry).
+            // Taken AFTER flush() above, which brackets itself.
+            if (isBusy(target.member)) {
+                log(`[kb-work] maintainer '${target.member}' is mid-dispatch -- no pull and no demotion candidate read over ${scopeLabel} changed files for ${target.repo}; offering none`);
                 return [];
             }
-            const files = Array.isArray(changed) ? changed.filter((f) => typeof f === 'string' && f.trim()) : [];
-            if (files.length === 0) return [];
+            let release;
+            inFlight.set(target.member, new Promise((r) => { release = r; }));
             try {
-                const res = await memberCall(target.record, 'kb_query', buildDemotionCandidateQuery(target.record.id));
-                if (isToolError(res)) {
-                    log(`[kb-work] kb_query for demotion candidates rejected on maintainer '${target.member}' (non-fatal): ${toolErrorText(res)}`);
-                    return [];
-                }
-                const parsed = parseResult(res);
-                const results = parsed && Array.isArray(parsed.l1_results) ? parsed.l1_results
-                    : (parsed && Array.isArray(parsed.results) ? parsed.results : []);
-                const fileSet = new Set(files);
-                const touchesChangedFiles = (e) => Array.isArray(e.source_files) && e.source_files.some((f) => fileSet.has(f));
-                // Filter the WHOLE read first (eligibility, then relevance),
-                // and only cap the survivors -- see the method comment.
-                const offered = results
-                    .filter((e) => isDemotableCandidate(e) && touchesChangedFiles(e))
-                    .slice(0, KB_MAX_DEMOTION_CANDIDATES);
-                offeredDemotions.set(target.repo, new Set(offered.map((e) => e.id)));
-                return offered;
-            } catch (err) {
-                log(`[kb-work] could not read demotion candidates from maintainer '${target.member}' (non-fatal): ${err.message}`);
-                return [];
+                return await readDemotionCandidates(target, changedFilesFor, scopeLabel);
+            } finally {
+                inFlight.delete(target.member);
+                release();
             }
         },
         /**
