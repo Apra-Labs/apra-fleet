@@ -24,6 +24,7 @@
 import { createHash } from 'crypto';
 import { SAFE_TEXT_RE } from './newtask-text.mjs';
 import { formatDispatchToolCalls } from './dispatch-accounting.mjs';
+import { formatSetAsideItems } from './set-aside.mjs';
 
 // ---------------------------------------------------------------------------
 // PR body/title text sanitization. The final reviewer's verdict notes are LLM
@@ -153,6 +154,9 @@ export function buildAnalysisText({
     // still not in a pushed bible commit. Rendered as a loud section only
     // when any are, so a sprint whose bible was published reads as before.
     kbBibleUnpublished = null,
+    // The run's set-aside records (./set-aside.mjs collectSetAsideEntries):
+    // rendered as a "Set aside this run" section, omitted when empty.
+    setAside = [],
 }) {
     // The once-per-sprint Regression Test phase runs after the final verdict
     // and never gates it. Its failures are filed as parent-less carry-over
@@ -196,6 +200,7 @@ export function buildAnalysisText({
             ? `Integration test failures (${integFailures.length}): ` + integFailures.map((f) => `C${f.cycle}: ${f.notes} (bugs filed: ${(f.bugsFiled || []).join(', ') || 'none'})`).join(' | ')
             : 'No integration test failures recorded this sprint.',
         '',
+        ...setAsideSectionLines(setAside),
         '## Reviewer-proposed newTask rejections',
         '',
         rejectedNewTasks.length > 0
@@ -222,6 +227,18 @@ export function buildAnalysisText({
         );
     }
     return lines.join('\n');
+}
+
+/**
+ * The "Set aside this run" analysis section (bead, reason, first seen), each
+ * line followed by a blank separator; empty when nothing was set aside.
+ * @param {object[]} setAside
+ * @returns {string[]}
+ */
+function setAsideSectionLines(setAside) {
+    const items = formatSetAsideItems(setAside);
+    if (items.length === 0) return [];
+    return ['## Set aside this run', '', ...items.map((i) => `- ${i}`), ''];
 }
 
 /**

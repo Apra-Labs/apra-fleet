@@ -2,6 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { FLEET_DIR } from '../../paths.js';
 import { decryptPassword } from '../../utils/crypto.js';
+import { logWarn } from '../../utils/log-helpers.js';
+
+/** Bounds and default for request_timeout_ms, shared by kb_setup (write) and the reader. */
+export const MIN_REQUEST_TIMEOUT_MS = 1000;
+export const MAX_REQUEST_TIMEOUT_MS = 120000;
+export const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 
 /**
  * Result of reading FLEET_DIR/knowledge/config.json (the file src/tools/kb-setup.ts
@@ -12,6 +18,8 @@ export interface KbConfigResult {
   provider: 'sqlite' | 'http';
   url?: string;
   token?: string;
+  /** Socket idle timeout per request for the http provider; absent means the provider default. */
+  requestTimeoutMs?: number;
 }
 
 /**
@@ -24,6 +32,7 @@ export interface KbConfigFile {
   provider?: 'sqlite' | 'http';
   url?: string;
   token_encrypted?: string;
+  request_timeout_ms?: number;
   bible?: { autoCommit?: boolean };
   [key: string]: unknown;
 }
@@ -33,7 +42,7 @@ export const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
 /**
  * Read the KB provider config kb_setup wrote (provider/url/token_encrypted). Nothing
  * currently reads this file back -- this restores that capability as a pure reader with
- * no side effects, so a later task can wire it into getKbProviders.
+ * no side effects other than a logged warning (see readRequestTimeout), so a later task can wire it into getKbProviders.
  *
  * - Absent file, or provider missing/"sqlite" -> { provider: 'sqlite' }, silently,
  *   without ever touching token_encrypted (a corrupt token must never break the
@@ -89,5 +98,32 @@ export function readKbConfigFromDisk(): KbConfigResult {
     );
   }
 
-  return { provider: 'http', url, token };
+  const requestTimeoutField = 'request_timeout_ms' in parsed
+    ? { requestTimeoutMs: readRequestTimeout(parsed.request_timeout_ms) }
+    : {};
+
+  return { provider: 'http', url, token, ...requestTimeoutField };
+}
+
+/** True when value is an integer within the request_timeout_ms bounds. */
+function isValidRequestTimeout(value: unknown): value is number {
+  return Number.isInteger(value)
+    && (value as number) >= MIN_REQUEST_TIMEOUT_MS
+    && (value as number) <= MAX_REQUEST_TIMEOUT_MS;
+}
+
+/**
+ * kb_setup refuses an out-of-range value on write, but the file can be edited
+ * by hand. Applying the same bounds on read keeps a value like 3e9 from
+ * effectively disabling the timeout; falling back (instead of throwing) keeps
+ * an existing config working.
+ */
+function readRequestTimeout(value: unknown): number {
+  if (isValidRequestTimeout(value)) return value;
+  logWarn(
+    'kb_config',
+    `KB config at ${KB_CONFIG_PATH} has request_timeout_ms ${JSON.stringify(value)}, not an integer between ` +
+    `${MIN_REQUEST_TIMEOUT_MS} and ${MAX_REQUEST_TIMEOUT_MS}; using the default ${DEFAULT_REQUEST_TIMEOUT_MS}`,
+  );
+  return DEFAULT_REQUEST_TIMEOUT_MS;
 }

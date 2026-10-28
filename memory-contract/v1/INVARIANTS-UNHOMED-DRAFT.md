@@ -263,8 +263,8 @@ each part of the guarantee is kept by a rule on the operation itself:
   `kb_promote`. Withdrawing trust is as gated as granting it.
 - EVIDENCE REQUIRED. A demote with no evidence file, or one that does not
   resolve to a regular file in the worktree, is refused with
-  `E-DEMOTE-EVIDENCE-UNRESOLVED` and writes nothing. A demotion is a claim
-  about the tree, checked like promote's basis, never a bare opinion.
+  `E-DEMOTE-EVIDENCE-UNRESOLVED` and writes nothing. A demotion requires at
+  least one resolvable evidence file, never a bare opinion.
 - DEMOTED ROWS RE-ENTER THE PROMOTION POOL. A demote lands at INFERRED and
   nowhere lower, keeps the entry's id, links, cited files and promotion
   history, and does not stale it. The row is an ordinary INFERRED candidate

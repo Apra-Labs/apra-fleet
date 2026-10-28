@@ -625,6 +625,161 @@ describe('one re-promotion rule, based on the bible-carried updated_at', () => {
   });
 });
 
+describe('a re-promotion on one clone is not undone by another', () => {
+  // A demotes Y, B applies the tombstone, A re-promotes Y and commits it. B's
+  // import skips Y (the id exists), so B stays INFERRED. B's next empty bible
+  // commit must NOT tombstone Y again: the bible entry was promoted after B's
+  // demotion. Without that, A's next export re-adds Y and the bible flaps.
+  it('B keeps its INFERRED row, and its next bible commit leaves the re-promoted entry in the bible', async () => {
+    const y = await confirmedCiting(providerA, cloneA, 'Ypsilon', 'src/y.ts');
+    await kbBibleCommit({ ids: [y], ...BASE }, { folder: cloneA });
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+
+    await kbDemote({ id: y, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
+    await kbBibleCommit({ ids: [], demoted_ids: [y], ...BASE }, { folder: cloneA });
+    const tombstoneAt = readBible(cloneA).demotions![0].at;
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+    expect(row(providerB, y)!.confidence).toBe('INFERRED');
+    expect(row(providerB, y)!.demoted_at).toBe(tombstoneAt);
+
+    // A re-promotes Y (INFERRED -> CONFIRMED), strictly after the tombstone.
+    while (Date.now() <= Date.parse(tombstoneAt)) { /* wait out clock resolution */ }
+    await providerA.promote(y, 'test fixture: re-verified after the demotion');
+    const recommit = JSON.parse(await kbBibleCommit({ ids: [y], ...BASE }, { folder: cloneA }));
+    expect(recommit.merged).toEqual([y]);
+    const repromoted = readBible(cloneA);
+    expect(repromoted.entries.map(e => e.id)).toContain(y);
+    expect(repromoted.demotions ?? []).toEqual([]);
+
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+    // Documented limit: the re-promotion does not raise B's existing row.
+    expect(row(providerB, y)!.confidence).toBe('INFERRED');
+
+    const before = fs.readFileSync(biblePathOf(cloneB), 'utf-8');
+    const commit = JSON.parse(await kbBibleCommit({ ids: [], ...BASE }, { folder: cloneB }));
+    expect(commit.demoted).toEqual([]);
+    expect(commit.committed).toBe(false);
+    expect(fs.readFileSync(biblePathOf(cloneB), 'utf-8')).toBe(before);
+    expect(readBible(cloneB).entries.map(e => e.id)).toContain(y);
+  });
+});
+
+describe('a bible-carried updated_at is clamped to the import time', () => {
+  it('a future-dated entry is stored at the import time, so a later tombstone still demotes it', async () => {
+    const k = await confirmedCiting(providerA, cloneA, 'Kappa', 'src/k.ts');
+    await kbBibleCommit({ ids: [k], ...BASE }, { folder: cloneA });
+    const future = readBible(cloneA);
+    future.entries.find(e => e.id === k)!.updated_at = '2999-01-01T00:00:00.000Z';
+    fs.mkdirSync(path.dirname(biblePathOf(cloneB)), { recursive: true });
+    fs.writeFileSync(biblePathOf(cloneB), JSON.stringify(future, null, 2) + '\n');
+
+    const importedAt = Date.now();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+    const stored = db(providerB).prepare('SELECT bible_updated_at FROM entries WHERE id = ?').get(k) as { bible_updated_at: string };
+    expect(Date.parse(stored.bible_updated_at)).toBeGreaterThanOrEqual(importedAt);
+    expect(Date.parse(stored.bible_updated_at)).toBeLessThanOrEqual(Date.now());
+
+    while (Date.now() <= Date.parse(stored.bible_updated_at)) { /* wait out clock resolution */ }
+    const tombstoned = { ...future, entries: future.entries.filter(e => e.id !== k), demotions: [{ id: k, at: new Date().toISOString(), reason: 'demoted' }] };
+    fs.writeFileSync(biblePathOf(cloneB), JSON.stringify(tombstoned, null, 2) + '\n');
+    const report = JSON.parse(await kbImport({ skip_sweep: true }, { folder: cloneB }));
+    expect(report.demoted).toBe(1);
+    expect(row(providerB, k)!.confidence).toBe('INFERRED');
+  });
+});
+
+// A future-dated tombstone `at` must not become a future demoted_at: a later
+// re-promotion would then count as withdrawn against it, and B's every-call
+// loop would tombstone the re-promoted entry again -- the flap.
+describe('a bible-carried tombstone at is clamped to now where it is read', () => {
+  it('B stores a demoted_at no later than the import, and a later re-promotion on A is not re-tombstoned by B', async () => {
+    const y = await confirmedCiting(providerA, cloneA, 'Ypsilon', 'src/y.ts');
+    await kbBibleCommit({ ids: [y], ...BASE }, { folder: cloneA });
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+
+    const published = readBible(cloneA);
+    const futureTombstone = {
+      ...published,
+      entries: published.entries.filter(e => e.id !== y),
+      demotions: [{ id: y, at: '2999-01-01T00:00:00.000Z', reason: 'demoted' }],
+    };
+    fs.writeFileSync(biblePathOf(cloneB), JSON.stringify(futureTombstone, null, 2) + '\n');
+    const report = JSON.parse(await kbImport({ skip_sweep: true }, { folder: cloneB }));
+    expect(report.demoted).toBe(1);
+    const demotedAt = row(providerB, y)!.demoted_at!;
+    expect(Date.parse(demotedAt)).toBeLessThanOrEqual(Date.now());
+
+    // A re-promotes Y strictly after B's demotion and commits it.
+    while (Date.now() <= Date.parse(demotedAt)) { /* wait out clock resolution */ }
+    await kbDemote({ id: y, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
+    await providerA.promote(y, 'test fixture: re-verified after the demotion');
+    await kbBibleCommit({ ids: [y], ...BASE }, { folder: cloneA });
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+
+    const before = fs.readFileSync(biblePathOf(cloneB), 'utf-8');
+    const commit = JSON.parse(await kbBibleCommit({ ids: [], ...BASE }, { folder: cloneB }));
+    expect(commit.demoted).toEqual([]);
+    expect(commit.committed).toBe(false);
+    expect(fs.readFileSync(biblePathOf(cloneB), 'utf-8')).toBe(before);
+    expect(readBible(cloneB).entries.map(e => e.id)).toContain(y);
+  });
+});
+
+// The every-call exception must not trust a bible entry dated in the future:
+// clamping it to now would still put it after every past demoted_at, so a
+// future-dated entry would block the tombstone forever.
+describe('a future-dated bible entry is not a re-promotion', () => {
+  it('the next bible commit from the demoted clone removes it and restores the tombstone', async () => {
+    const y = await confirmedCiting(providerA, cloneA, 'Ypsilon', 'src/y.ts');
+    const keep = await confirmedCiting(providerA, cloneA, 'Kappa', 'src/k.ts');
+    await kbBibleCommit({ ids: [y, keep], ...BASE }, { folder: cloneA });
+    await kbDemote({ id: y, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
+
+    const futureDated = readBible(cloneA);
+    futureDated.entries.find(e => e.id === y)!.updated_at = '2999-01-01T00:00:00.000Z';
+    fs.writeFileSync(biblePathOf(cloneA), JSON.stringify(futureDated, null, 2) + '\n');
+    commitWorkTree(cloneA);
+
+    const commit = JSON.parse(await kbBibleCommit({ ids: [], ...BASE }, { folder: cloneA }));
+    expect(commit.demoted).toEqual([y]);
+    const restored = readBible(cloneA);
+    expect(restored.entries.map(e => e.id)).toEqual([keep]);
+    expect(restored.demotions).toEqual([{ id: y, at: row(providerA, y)!.demoted_at, reason: 'demoted' }]);
+  });
+});
+
+describe('the bible_updated_at migration is guarded and backfills', () => {
+  it('re-adds the column on re-init after it is dropped, and the next import records the carried updated_at', async () => {
+    const k = await confirmedCiting(providerA, cloneA, 'Kappa', 'src/k.ts');
+    await kbBibleCommit({ ids: [k], ...BASE }, { folder: cloneA });
+    const carriedUpdatedAt = readBible(cloneA).entries.find(e => e.id === k)!.updated_at;
+
+    // Simulate a DB created before the column existed.
+    db(providerB).exec('ALTER TABLE entries DROP COLUMN bible_updated_at');
+    const cols = (p2: SqliteProvider) => (db(p2).prepare('PRAGMA table_info(entries)').all() as { name: string }[]).map(c => c.name);
+    expect(cols(providerB)).not.toContain('bible_updated_at');
+    providerB.close();
+
+    providerB = new SqliteProvider(path.join(root, 'kb-b.sqlite'), cloneB);
+    await providerB.init();
+    expect(cols(providerB)).toContain('bible_updated_at');
+
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+    expect(providerB.getBibleTrustTimes([k]).get(k)).toBe(carriedUpdatedAt);
+
+    // A second init on a DB that already has the column is a caught no-op.
+    providerB.close();
+    providerB = new SqliteProvider(path.join(root, 'kb-b.sqlite'), cloneB);
+    await expect(providerB.init()).resolves.toBeUndefined();
+  });
+});
+
 describe('tombstones are a v3 envelope field only', () => {
   it('a v2 envelope carrying demotions demotes nothing', async () => {
     const y = await confirmedCiting(providerA, cloneA, 'Ypsilon', 'src/y.ts');
@@ -643,25 +798,18 @@ describe('tombstones are a v3 envelope field only', () => {
 
 // A 0.4.4 kb_export / kb_bible_commit predates tombstones: it rewrites the
 // bible without `demotions` and its kb_export re-adds a demoted id from any
-// clone still holding it CONFIRMED. This builds that file exactly and checks
-// what the current version then does with it.
+// clone still holding it CONFIRMED, with updated_at = promoted_at || created_at
+// -- for an imported row, that clone's LOCAL IMPORT TIME. This builds that file
+// exactly and checks what the current version then does with it.
 describe('a 0.4.4 rewrite followed by the current version', () => {
-  it('drops the tombstone; a demoted clone keeps its demotion on import, and the next bible commit restores the tombstone', async () => {
-    const y = await confirmedCiting(providerA, cloneA, 'Ypsilon', 'src/y.ts');
-    const keep = await confirmedCiting(providerA, cloneA, 'Kappa', 'src/k.ts');
-    await kbBibleCommit({ ids: [y, keep], ...BASE }, { folder: cloneA });
-    const yEntry = readBible(cloneA).entries.find(e => e.id === y)!;
-    mergeBibleIntoB();
-    await kbImport({ skip_sweep: true }, { folder: cloneB });
+  /** The updated_at a 0.4.4 kb_export writes for a row: promoted_at || created_at. */
+  function updatedAtWrittenBy044(provider: SqliteProvider, id: string): string {
+    const r = row(provider, id)!;
+    return r.promoted_at || r.created_at;
+  }
 
-    await kbDemote({ id: y, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
-    await kbBibleCommit({ ids: [], demoted_ids: [y], ...BASE }, { folder: cloneA });
-    mergeBibleIntoB();
-    await kbImport({ skip_sweep: true }, { folder: cloneB });
-    expect(row(providerB, y)!.confidence).toBe('INFERRED');
-
-    // The 0.4.4 rewrite: same envelope, Y re-added from a clone still holding
-    // it CONFIRMED, and no demotions field.
+  /** The 0.4.4 rewrite of A's tombstoned bible: Y re-added, no demotions field. */
+  function rewriteAs044(yEntry: { id: string; updated_at: string }): void {
     const tombstoned = readBible(cloneA);
     const rewritten = {
       version: tombstoned.version,
@@ -670,6 +818,28 @@ describe('a 0.4.4 rewrite followed by the current version', () => {
     };
     fs.writeFileSync(biblePathOf(cloneA), JSON.stringify(rewritten, null, 2) + '\n');
     commitWorkTree(cloneA);
+  }
+
+  it('drops the tombstone; a demoted clone keeps its demotion on import, and the next bible commit restores the tombstone', async () => {
+    const y = await confirmedCiting(providerA, cloneA, 'Ypsilon', 'src/y.ts');
+    const keep = await confirmedCiting(providerA, cloneA, 'Kappa', 'src/k.ts');
+    await kbBibleCommit({ ids: [y, keep], ...BASE }, { folder: cloneA });
+    const yEntry = readBible(cloneA).entries.find(e => e.id === y)!;
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+    // B stands in for the 0.4.4 clone: it imported Y BEFORE A's demotion, and
+    // this is the updated_at a 0.4.4 writer on it would export.
+    const writtenBy044 = updatedAtWrittenBy044(providerB, y);
+    while (Date.now() <= Date.parse(writtenBy044)) { /* wait out clock resolution */ }
+
+    await kbDemote({ id: y, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
+    await kbBibleCommit({ ids: [], demoted_ids: [y], ...BASE }, { folder: cloneA });
+    expect(Date.parse(writtenBy044)).toBeLessThan(Date.parse(row(providerA, y)!.demoted_at!));
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+    expect(row(providerB, y)!.confidence).toBe('INFERRED');
+
+    rewriteAs044({ ...yEntry, updated_at: writtenBy044 });
     mergeBibleIntoB();
 
     // Current-version import on B: Y is already a local row, so the rewritten
@@ -684,5 +854,34 @@ describe('a 0.4.4 rewrite followed by the current version', () => {
     const restored = readBible(cloneA);
     expect(restored.entries.map(e => e.id)).toEqual([keep]);
     expect(restored.demotions).toEqual([{ id: y, at: row(providerA, y)!.demoted_at, reason: 'demoted' }]);
+  });
+
+  it('documented limit: a 0.4.4 clone that imported Y AFTER the demotion re-adds it later than demoted_at, so the tombstone is not restored', async () => {
+    const y = await confirmedCiting(providerA, cloneA, 'Ypsilon', 'src/y.ts');
+    const keep = await confirmedCiting(providerA, cloneA, 'Kappa', 'src/k.ts');
+    await kbBibleCommit({ ids: [y, keep], ...BASE }, { folder: cloneA });
+    const yEntry = readBible(cloneA).entries.find(e => e.id === y)!;
+
+    // A demotes, but the tombstone has not reached B's branch yet.
+    await kbDemote({ id: y, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
+    const demotedAt = row(providerA, y)!.demoted_at!;
+    while (Date.now() <= Date.parse(demotedAt)) { /* wait out clock resolution */ }
+
+    // B (standing in for the 0.4.4 clone) imports the old bible after that.
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+    const writtenBy044 = updatedAtWrittenBy044(providerB, y);
+    expect(Date.parse(writtenBy044)).toBeGreaterThan(Date.parse(demotedAt));
+
+    await kbBibleCommit({ ids: [], demoted_ids: [y], ...BASE }, { folder: cloneA });
+    rewriteAs044({ ...yEntry, updated_at: writtenBy044 });
+
+    // The re-added entry reads as re-promoted against A's demoted_at, so A's
+    // next commit leaves it in the bible and does not restore the tombstone.
+    const commit = JSON.parse(await kbBibleCommit({ ids: [], ...BASE }, { folder: cloneA }));
+    expect(commit.demoted).toEqual([]);
+    const after = readBible(cloneA);
+    expect(after.entries.map(e => e.id).sort()).toEqual([keep, y].sort());
+    expect(after.demotions ?? []).toEqual([]);
   });
 });

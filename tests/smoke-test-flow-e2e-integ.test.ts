@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { bdChildEnv } from './helpers/bd-child-env.js';
 
 // apra-fleet-eft.18.8: the paired [test] for the rewritten smoke-test flow
 // (apra-fleet-eft.18.5's playbook rewrite, apra-fleet-eft.18.6's guard
@@ -42,7 +43,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 // now-actually-passing guard behavior.
 const BD_AVAILABLE = (() => {
   try {
-    execFileSync('bd', ['--version'], { encoding: 'utf-8' });
+    execFileSync('bd', ['--version'], { encoding: 'utf-8', env: bdChildEnv() });
     return true;
   } catch {
     return false;
@@ -65,7 +66,7 @@ function git(cwd: string, args: string[]): string {
 }
 
 function bd(cwd: string, args: string[]): string {
-  return execFileSync('bd', args, { cwd, encoding: 'utf-8' });
+  return execFileSync('bd', args, { cwd, encoding: 'utf-8', env: bdChildEnv() });
 }
 
 // Real, non-mocked command() for fleet-sprint/runner.js's doltPushAfter /
@@ -77,7 +78,7 @@ function makeRealCommand(cwd: string) {
   return async (cmd: string) => {
     const [bin, ...args] = cmd.split(' ');
     try {
-      const output = execFileSync(bin, args, { cwd, encoding: 'utf-8' });
+      const output = execFileSync(bin, args, { cwd, encoding: 'utf-8', env: bdChildEnv() });
       return { ok: true, output, error: null };
     } catch (err: unknown) {
       const e = err as { stdout?: string; stderr?: string; message: string };
@@ -230,7 +231,11 @@ describe.skipIf(!BD_AVAILABLE)(
     });
 
     function runGuard(repoPath: string, sandboxPath: string): { status: number; stdout: string; stderr: string } {
-      const res = spawnSync(process.execPath, [CHECK_SCRIPT_PATH, repoPath, sandboxPath], { encoding: 'utf-8' });
+      // The guard script spawns bd itself; its child inherits this env.
+      const res = spawnSync(process.execPath, [CHECK_SCRIPT_PATH, repoPath, sandboxPath], {
+        encoding: 'utf-8',
+        env: bdChildEnv(),
+      });
       return { status: res.status ?? -1, stdout: res.stdout, stderr: res.stderr };
     }
 

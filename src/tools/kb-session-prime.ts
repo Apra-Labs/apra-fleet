@@ -2,12 +2,13 @@ import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfReadKb, getMemberSplitRead, mergeSplitById, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { extractBibleDemotions, tombstonedIds } from '../services/knowledge/bible-import.js';
 import { getProvider } from './code-intelligence.js';
-import type { KBEntry } from '../services/knowledge/types.js';
+import type { KBEntry, MemoryProvider } from '../services/knowledge/types.js';
+import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import { FLEET_DIR } from '../paths.js';
 
 export const kbSessionPrimeSchema = z.object({
@@ -183,12 +184,97 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
   // That explicit request is answered from the per-repo DB with only the
   // caller's own captures (ownerTag): every block below honours it, and the
   // bible cold-seeds are skipped (bible entries are nobody's own capture).
+  //
+  // A MEMBER request naming CONFIRMED plus another tier is split (kb-self.ts
+  // getMemberSplitRead): each half is primed by primeFrom below, the CONFIRMED
+  // half exactly as a CONFIRMED-only request (bible view, cold-seeds included,
+  // decided on that half's own entries), every requested tier from the
+  // per-repo DB owner-tagged (no cold-seed). The two results are then merged.
+  const split = await getMemberSplitRead(anchor, input.confidence, 'kb_session_prime');
+  if (split) {
+    const fromBible = await primeFrom(
+      { project: split.bible.project, global: split.bible.global, folder: split.anchor.folder },
+      input, split.bible.tiers, false,
+    );
+    const fromOwn = await primeFrom(
+      { project: split.own.project, global: split.own.global, folder: split.anchor.folder, ownerTag: split.own.ownerTag },
+      input, split.own.tiers, false,
+    );
+    return JSON.stringify(mergePrimed(fromBible, fromOwn, input));
+  }
+
   const { providers, anchor: resolved, ownerTag } = await getSelfReadKb(anchor, input.confidence);
   if (ownerTag !== undefined) requireSqliteProject(providers.project, 'kb_session_prime');
 
   // Default-trusted reads: CONFIRMED + undisputed unless the caller lists tiers.
-  const confidence = input.confidence?.length ? input.confidence : (['CONFIRMED'] as NonNullable<KbSessionPrimeInput['confidence']>);
+  const confidence = input.confidence?.length ? input.confidence : (['CONFIRMED'] as Tier[]);
   const exclude_disputed = !input.confidence?.length;
+
+  return JSON.stringify(await primeFrom(
+    { project: providers.project, global: providers.global, folder: resolved.folder, ownerTag },
+    input, confidence, exclude_disputed,
+  ));
+}
+
+type Tier = NonNullable<KbSessionPrimeInput['confidence']>[number];
+type Primed = Awaited<ReturnType<MemoryProvider['prime']>>;
+
+/** One KB source a prime runs against. `ownerTag` set = own captures only, no bible cold-seed. */
+interface PrimeSource {
+  project: MemoryProvider;
+  global: SqliteProvider;
+  /** Repo root whose .fleet/kb-canonical.json the project-bible cold-seed reads. */
+  folder: string;
+  ownerTag?: string;
+}
+
+/**
+ * Merge the two halves of a MEMBER split prime. top_entries: every bible-half
+ * entry, then own-half entries the bible half did not already return (bible
+ * copy wins), with graph-neighbor additions capped at ADDED_ENTRY_CAP across
+ * the merged list (bible half first, so the CONFIRMED-only result survives
+ * intact). Files: a file fresh in either half is fresh (bible summary first);
+ * stale_files is the union minus those fresh files. session_warm and
+ * token_estimate are recomputed the way prime() computes them.
+ */
+function mergePrimed(bible: Primed, own: Primed, input: KbSessionPrimeInput): Primed {
+  let neighbors = 0;
+  const top_entries = mergeSplitById(bible.top_entries ?? [], own.top_entries ?? []).filter((e) => {
+    if ((e as { via?: string }).via !== 'graph-neighbor') return true;
+    neighbors += 1;
+    return neighbors <= ADDED_ENTRY_CAP;
+  });
+  const fresh_summaries = [...(bible.fresh_summaries ?? [])];
+  const freshFiles = new Set(fresh_summaries.map(r => r.file));
+  for (const r of own.fresh_summaries ?? []) {
+    if (freshFiles.has(r.file)) continue;
+    freshFiles.add(r.file);
+    fresh_summaries.push(r);
+  }
+  const stale_files = [...new Set([...(bible.stale_files ?? []), ...(own.stale_files ?? [])])]
+    .filter(f => !freshFiles.has(f));
+  let token_estimate = 0;
+  for (const e of top_entries) token_estimate += Math.ceil((e.summary?.length || 0) / 4);
+  for (const r of fresh_summaries) token_estimate += Math.ceil((r.summary?.length || 0) / 4);
+  return {
+    ...bible,
+    session_warm: input.session_files?.length ? stale_files.length === 0 : true,
+    stale_files,
+    top_entries,
+    fresh_summaries,
+    token_estimate,
+  };
+}
+
+async function primeFrom(
+  source: PrimeSource,
+  input: KbSessionPrimeInput,
+  confidence: Tier[],
+  exclude_disputed: boolean,
+): Promise<Primed> {
+  const providers = source;
+  const { ownerTag } = source;
+  const resolved = { folder: source.folder };
 
   const result = await providers.project.prime({
     confidence,
@@ -438,5 +524,5 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
     }
   }
 
-  return JSON.stringify(result);
+  return result;
 }

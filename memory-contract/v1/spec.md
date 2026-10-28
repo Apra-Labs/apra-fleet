@@ -148,11 +148,19 @@ hash, and captures are stored at most INFERRED.
 In a MEMBER session the default reads (`kb_query`, `kb_session_prime`,
 `kb_list`, `kb_context`, `kb_stats`) are answered from an in-memory view of the
 member's own checkout bible (`.fleet/kb-canonical.json`), rebuilt when the file
-changes. An explicit INFERRED/UNVERIFIED read comes from the per-repo DB and
-returns only entries tagged `member:<caller uuid>`. `kb_capture` tags the
+changes. An explicit confidence list is split: CONFIRMED is read from the
+member checkout bible and INFERRED/UNVERIFIED only from the member's own
+captures in the per-repo DB (tagged `member:<caller uuid>`), merged for a
+mixed request. The own half of a mixed request asks for every listed tier, so
+the member's own captures promoted to CONFIRMED in the per-repo DB are returned
+before they reach the bible (the bible copy wins on a shared id); a
+`[CONFIRMED, INFERRED]` read is a superset of the CONFIRMED-only result
+(except `kb_list` with a `limit`, which applies the limit after merging) and
+never exposes another member's captures. `kb_capture` tags the
 stored entry `member:<caller uuid>`; `kb_promote`, `kb_demote` and
 `kb_invalidate` act only on entries carrying that tag and report any other id
-as not found, changing nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
+as not found, changing nothing. `kb_invalidate` takes exactly one of `files`
+or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
 `{discarded, not_found, already_discarded}`. In a member session without the
 kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the
@@ -364,7 +372,7 @@ envelope or a legacy bare array. It is absent when the bible holds none, so a
 reader that does not know the field -- and every bible written before it
 existed -- keeps working. Readers keep tombstones whose `reason` they do not
 know. `provenance.entry_count` counts ENTRIES only: a tombstone is not an
-entry.
+entry. Tombstones are never compacted: one stays until a re-promotion clears it.
 
 A demotion is NEVER inferred from an entry being absent from the bible. A clone
 legitimately holds CONFIRMED rows that were never exported (local-only
@@ -386,7 +394,11 @@ value.
   the LOCAL row exists, carries a `demoted_at` and is now below CONFIRMED;
   anything else is skipped with reason `not_demoted_or_unknown` and the file is
   unchanged for that id. Independently, on EVERY call each entry already in the
-  bible that the local KB holds as demoted is admitted the same way. An admitted
+  bible that the local KB holds as demoted is admitted the same way, unless the
+  bible entry is RE-PROMOTED against the local `demoted_at` under the rule
+  above (its `updated_at` is strictly later, and not later than now -- a
+  future-dated `updated_at` is never a re-promotion): another clone
+  re-promoted it, and tombstoning it again would undo that. An admitted
   id is REMOVED from `entries` and its tombstone upserted as
   `{id, at: <local demoted_at>, reason: "demoted"}`. Tombstones already in the
   file are preserved when a later commit carries unrelated ids, and an id
@@ -405,7 +417,15 @@ value.
   (`BIBLE_DEMOTION_REASON`, "demoted in the project bible", standing in for the
   caller-supplied reason), and `promoted_at`/`source` stay untouched, exactly as
   a local demotion. A tombstone with any other reason only keeps its entry out
-  of the member bible view and the cold seed.
+  of the member bible view and the cold seed. A bible-carried `updated_at` is
+  clamped to the import time when stored, so a future-dated entry cannot
+  outrank every later tombstone. Likewise a tombstone's `at` is clamped to now
+  wherever a bible is read, so a future-dated tombstone never becomes a future
+  `demoted_at` that every later re-promotion would count as withdrawn against.
+- A re-promotion does NOT reach a clone that already applied the tombstone.
+  Import skips an id that already has a local row, so that clone keeps its
+  INFERRED row until it is promoted there again; the every-call exception above
+  only stops it from tombstoning the re-promoted entry again.
 
 MIXED VERSIONS. A writer that predates tombstones (0.4.4 and earlier `kb_export`
 / `kb_bible_commit`) rewrites the bible WITHOUT `demotions`, and its
@@ -413,8 +433,14 @@ MIXED VERSIONS. A writer that predates tombstones (0.4.4 and earlier `kb_export`
 Upgrade every clone that exports to the same repository together. If an older
 writer has already run, the next `kb_bible_commit` from a clone holding the
 entry as demoted removes the entry and restores its tombstone (the every-call
-rule above); a clone that imported the rewritten bible in between does not lose
-its own demotion, because import never raises confidence on an existing row.
+rule above) -- but only when the re-added entry's `updated_at` is at or before
+the local `demoted_at`. An older writer exports `updated_at = promoted_at ||
+created_at`, which for an imported row is that clone's local import time; if
+it imported the entry AFTER the demotion (before the tombstone reached its
+branch), the re-added entry reads as re-promoted and the tombstone is NOT
+restored -- demote it again once every exporting clone is upgraded. A clone
+that imported the rewritten bible in between does not lose its own demotion,
+because import never raises confidence on an existing row.
 
 ### 2.7 Every code_* call is scoped to the calling session (code constraint)
 
@@ -675,7 +701,11 @@ entry is not CONFIRMED (`E-DEMOTE-NOT-CONFIRMED`, the ladder refusal above);
 trimmed, falls short of the demote reason floor (`E-DEMOTE-REASON-REQUIRED`);
 (6) no evidence file is cited (evidence is REQUIRED, like promote's
 resolvable basis), or a cited evidence file does not resolve anchor-relative to
-a regular file in this worktree (`E-DEMOTE-EVIDENCE-UNRESOLVED`). The eventual content note MUST
+a regular file in this worktree (`E-DEMOTE-EVIDENCE-UNRESOLVED`). At the tool
+boundary an absent or empty `evidence_files` never reaches that check: the
+request schema's `minItems: 1` refuses it first, as an input-validation error.
+The provider still refuses an empty list with `E-DEMOTE-EVIDENCE-UNRESOLVED`
+for a direct caller. The eventual content note MUST
 use the one format shared with the bible tombstone path (2.6), so a demotion
 applied locally and one that crossed clones through an import read
 identically: exactly ONE leading newline (never two, which is the `kb_feedback`

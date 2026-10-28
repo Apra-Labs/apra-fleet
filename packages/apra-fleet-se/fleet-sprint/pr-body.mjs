@@ -23,6 +23,7 @@
 // ASCII only.
 
 import { PR_DESCRIPTION_MAX_LENGTH } from './vcs-module.mjs';
+import { formatSetAsideItems } from './set-aside.mjs';
 
 /** Opening token of the hidden run-history block. Versioned so a future
  *  format change can tell its own blocks from this one. */
@@ -197,6 +198,9 @@ function inline(text) {
  * @param {string} [opts.notes] untrusted free text (reviewer notes / abort detail)
  * @param {string} [opts.notesHeading]
  * @param {string[]} [opts.details] engine-authored detail lines, rendered as list items
+ * @param {object[]} [opts.setAside] the run's set-aside records (./set-aside.mjs
+ *   collectSetAsideEntries), rendered as a "Set aside this run" section; the
+ *   section is omitted when empty
  * @param {string} [opts.costAnalysis] engine-computed cost block, rendered in a fenced Cost section
  * @param {string} [opts.previousBody] the existing PR's body, for history carry-forward
  * @param {number} [opts.maxLength]
@@ -204,7 +208,7 @@ function inline(text) {
  */
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
-    notes, notesHeading = 'Reviewer notes', details = [], costAnalysis = '', previousBody = '',
+    notes, notesHeading = 'Reviewer notes', details = [], setAside = [], costAnalysis = '', previousBody = '',
     maxLength = PR_DESCRIPTION_MAX_LENGTH,
 }) {
     const v = VERDICTS.has(verdict) ? verdict : 'FAIL';
@@ -229,12 +233,16 @@ export function buildSprintPrBody({
     ].filter((l) => l !== null).join('\n');
 
     const detailLines = (details || []).filter(Boolean).map((d) => `- ${inline(d)}`);
+    const setAsideLines = formatSetAsideItems(setAside).map((d) => `- ${inline(d)}`);
     // The cost block replaces the per-sprint CHANGELOG entry the harvester used
     // to write (a shared prepend-only file that conflicted on every merge).
     const cost = sanitizePrMarkdown(costAnalysis);
     const costFence = '`'.repeat(Math.max(3, ...(cost.match(/`+/g) || []).map((r) => r.length + 1)));
     const tail = [
         '',
+        setAsideLines.length ? '### Set aside this run\n' : null,
+        setAsideLines.length ? setAsideLines.join('\n') : null,
+        setAsideLines.length ? '' : null,
         detailLines.length ? '### Details\n' : null,
         detailLines.length ? detailLines.join('\n') : null,
         detailLines.length ? '' : null,

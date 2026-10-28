@@ -744,7 +744,8 @@
  *   entry content as the audit trail; a reason made only of whitespace or newlines
  *   is refused.
  * @property {string[]} evidence_files - At least one repo-relative file backing the
- *   demotion. Each must resolve to a real file inside the calling session's repo; a
+ *   demotion; an absent or empty list is refused by input validation before the
+ *   tool runs. Each must resolve to a real file inside the calling session's repo; a
  *   path that does not resolve, names a directory, is ABSOLUTE, or contains a ".."
  *   segment is refused with E-DEMOTE-EVIDENCE-UNRESOLVED and nothing is written.
  */
@@ -1321,7 +1322,7 @@ export class ApraFleet {
      * Withdraw trust from a CONFIRMED entry, lowering it to INFERRED (the
      * inverse of kb_promote). Not a ladder: an INFERRED/UNVERIFIED target is
      * REFUSED with E-DEMOTE-NOT-CONFIRMED rather than returned as a no-op.
-     * Appends the reason (and any evidence files) as an audit note; promoted_at
+     * Appends the reason and the required evidence files as an audit note; promoted_at
      * and source are left untouched. Result JSON:
      * {id, previous_confidence, new_confidence}; extract with parseToolJson().
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused

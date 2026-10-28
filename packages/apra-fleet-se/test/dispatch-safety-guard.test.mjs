@@ -418,6 +418,9 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // gets its own explicit baseline count below.
 // Bumped 4 -> 5: the KB injection's diff-file listing (`git diff --name-only`,
 // role hint source for reviewer/harvester) passes member_name and is failSoft.
+// 5 -> 6 (same change, previously uncounted here): the KB injection's
+// deployTargets read (`node -e` printing deploy.md or the role's playbook for
+// KB hints) passes member_name and is failSoft.
 // Bumped 6 -> 8: createRoundChangedFiles' two command()
 // sites for kbWork.demotionCandidates()'s per-review-round changed-file set
 // (`git rev-parse HEAD` and `git diff --name-only <fromRef>...<head>`, both
@@ -446,7 +449,17 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // Bumped 10 -> 12 (GitHub #715): reclaimInRunOrphanedClaims adds its fresh-read
 // `bd show` and its guarded `bd update --status open` write, both on the
 // backlog member with member_name.
-const EXPECTED_COMMAND_COUNT = 12;
+// 12 -> 13 (GitHub #715): reclaimStaleInProgress' plain `bd update --status
+// open` write becomes the guarded, assignee-clearing write, and its freshRead
+// path (the unconditional pre-sprint stale-claim check) adds a fresh-read
+// `bd show`, both on the backlog member with member_name. Net +1: the write
+// already existed. Main counted the two #715 bumps as 6 -> 8 -> 9 on top of
+// a runner.js without the three KB demotion-loop sites above; with those
+// sites (createRoundChangedFiles x2, createSprintChangedFiles,
+// createCurrentFileHashes) the total is 13: runSprintCycle's four, the KB
+// injection's two, the demotion loop's four, reclaimInRunOrphanedClaims'
+// two and reclaimStaleInProgress' fresh read.
+const EXPECTED_COMMAND_COUNT = 13;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

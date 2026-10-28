@@ -25,7 +25,7 @@
             "type": "string"
           },
           "minItems": 1,
-          "description": "At least one repo-relative file backing the demotion. Each must resolve to a real file inside the calling session's repo; a path that does not resolve, names a directory, is ABSOLUTE, or contains a \"..\" segment is refused with E-DEMOTE-EVIDENCE-UNRESOLVED and nothing is written."
+          "description": "At least one repo-relative file backing the demotion; an absent or empty list is refused by input validation before the tool runs. Each must resolve to a real file inside the calling session's repo; a path that does not resolve, names a directory, is ABSOLUTE, or contains a \"..\" segment is refused with E-DEMOTE-EVIDENCE-UNRESOLVED and nothing is written."
         },
         "repo_path": {
           "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."

@@ -41,8 +41,10 @@ export async function stopPrompt(input: StopPromptInput): Promise<string> {
 
   // Unconditionally clear busy state — handles pid=none case where inFlightAgents
   // still holds the agent but the process never recorded a PID.
+  // An explicit 'idle' -- a bare writeStatusline() only re-renders and would
+  // leave a stored busy in place.
   inFlightAgents.delete(agent.id);
-  writeStatusline();
+  writeStatusline(new Map([[agent.id, 'idle']]));
 
   logLine('stop_prompt', `pid=${pid ?? 'none'}`, agent);
 

@@ -69,8 +69,12 @@ export interface BibleDocument {
  * OPTIONAL, and a malformed tombstone is dropped individually rather than
  * failing the whole bible -- exactly how a malformed ENTRY is treated by
  * importBibleEntries below. kb-export.ts's reader calls this too.
+ *
+ * Each `at` is clamped to `now` (clampBibleTimeToNow): a future-dated tombstone
+ * would otherwise become a future demoted_at on import, and every later
+ * re-promotion would count as withdrawn against it.
  */
-export function extractBibleDemotions(parsed: unknown): BibleTombstone[] {
+export function extractBibleDemotions(parsed: unknown, now: Date = new Date()): BibleTombstone[] {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
   const doc = parsed as { version?: unknown; demotions?: unknown };
   if (doc.version !== 3 || !Array.isArray(doc.demotions)) return [];
@@ -81,9 +85,21 @@ export function extractBibleDemotions(parsed: unknown): BibleTombstone[] {
     if (typeof r.id !== 'string' || r.id.length === 0) continue;
     if (typeof r.at !== 'string' || r.at.length === 0) continue;
     if (typeof r.reason !== 'string' || r.reason.length === 0) continue;
-    byId.set(r.id, { id: r.id, at: r.at, reason: r.reason });
+    byId.set(r.id, { id: r.id, at: clampBibleTimeToNow(r.at, now), reason: r.reason });
   }
   return Array.from(byId.values()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/**
+ * A bible-carried updated_at, clamped to `now`. A future-dated entry would
+ * otherwise outrank every later tombstone under standingAgainstTombstone. An
+ * unparseable value is returned unchanged (the standing rule reports it as
+ * 'unknown').
+ */
+export function clampBibleTimeToNow(time: string, now: Date = new Date()): string {
+  const parsed = Date.parse(time);
+  if (Number.isNaN(parsed) || parsed <= now.getTime()) return time;
+  return now.toISOString();
 }
 
 /**
@@ -385,7 +401,7 @@ export async function importBibleEntries(
         preferredId: entry.id,
         verbatim: options.verbatim === true,
         carriedBasis: carriedBasisOf(entry),
-        carriedUpdatedAt: typeof entry.updated_at === 'string' && entry.updated_at.length > 0 ? entry.updated_at : undefined,
+        carriedUpdatedAt: typeof entry.updated_at === 'string' && entry.updated_at.length > 0 ? clampBibleTimeToNow(entry.updated_at) : undefined,
       }));
     } catch (err) {
       if (err instanceof KbCaptureRejected) {

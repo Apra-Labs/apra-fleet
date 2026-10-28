@@ -148,17 +148,23 @@ export class SprintPlanRejectedError extends WorkflowError {
  * @property {string[]} [blockerIds] - apra-fleet-mjo: the bead ids still open
  *   at/above goal priority when the stall was declared, i.e. exactly what an
  *   operator must clear. Counts alone cannot answer "blocked on what?".
+ *   Also names every bead set aside for the run (doer-BLOCKED and its
+ *   dependents), plus the pseudo-id 'deploy' when the deploy is set aside.
+ * @property {Record<string, string>} [blockerReasons] - blocker id -> reason
+ *   (with first-seen cycle/round) for the set-aside blockers.
+ * @property {object[]} [setAside] - the run's set-aside records, rendered as
+ *   the "Set aside this run" report section (see ./set-aside.mjs).
  */
 export class StalledSprintError extends WorkflowError {
     /**
      * @param {string} message
-     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], blockerIds?: string[], cycle?: number, details?: object, cause?: unknown }} [opts]
+     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], blockerIds?: string[], blockerReasons?: Record<string, string>, setAside?: object[], cycle?: number, details?: object, cause?: unknown }} [opts]
      */
     constructor(message, opts = {}) {
-        const { staleCycles = null, closedCountHistory = [], highWaterClosedCount = null, thrashIds = [], blockerIds = [], cycle, details, cause } = opts;
+        const { staleCycles = null, closedCountHistory = [], highWaterClosedCount = null, thrashIds = [], blockerIds = [], blockerReasons = {}, setAside = [], cycle, details, cause } = opts;
         super(message, {
             code: 'SPRINT_STALLED',
-            details: { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, blockerIds, cycle, ...details },
+            details: { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, blockerIds, blockerReasons, setAside, cycle, ...details },
             cause,
         });
         this.staleCycles = staleCycles;
@@ -166,6 +172,8 @@ export class StalledSprintError extends WorkflowError {
         this.highWaterClosedCount = highWaterClosedCount;
         this.thrashIds = thrashIds;
         this.blockerIds = blockerIds;
+        this.blockerReasons = blockerReasons;
+        this.setAside = setAside;
     }
 }
 

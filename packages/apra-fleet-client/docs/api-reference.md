@@ -633,8 +633,9 @@ INFERRED (the inverse of `kbPromote`). Options: `id` (required), `reason`
 (required; at least 20 characters once newlines are collapsed to spaces and
 the result trimmed; appended to the entry content as the audit trail),
 `evidence_files` (required: at least one repo-relative file backing the
-demotion; each must resolve to a real file inside the calling session's repo,
-else `E-DEMOTE-EVIDENCE-UNRESOLVED`). Not a ladder: calling it on
+demotion -- an absent or empty list is an input-validation error, raised before
+the tool runs; each file must resolve to a real file inside the calling
+session's repo, else `E-DEMOTE-EVIDENCE-UNRESOLVED`). Not a ladder: calling it on
 an entry that is not CONFIRMED is REFUSED with `E-DEMOTE-NOT-CONFIRMED` rather
 than returned as an unchanged no-op. `promoted_at` and `source` are left
 untouched. Like `kbExport` / `kbBibleCommit`, the removed scope keys
