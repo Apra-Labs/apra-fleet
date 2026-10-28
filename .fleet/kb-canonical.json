@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "cbe7a39deaf2ec69cbc03e3be1d91a0923962296",
     "branch": "u1_upstream_main_cbe7a39",
-    "entry_count": 105
+    "entry_count": 107
   },
   "entries": [
     {
@@ -73,6 +73,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T14:55:56.447Z"
+    },
+    {
+      "id": "0e1bfa68-b084-4a44-ad91-f70aff02bc2a",
+      "type": "learning",
+      "title": "memory-contract fixture corpus counts are hard-coded in two tests",
+      "summary": "Adding a fixture to memory-contract/v1 means editing hard-coded counts in tests/memory-contract-fixture-response-schema.test.ts (two places) and tests/memory-contract-roundtrip.test.ts, plus a SCENARIO step in roundtrip-harness.mjs.",
+      "symbols": [
+        "SCENARIO",
+        "recordHappy"
+      ],
+      "source_files": [
+        "tests/memory-contract-fixture-response-schema.test.ts",
+        "tests/memory-contract-roundtrip.test.ts",
+        "memory-contract/v1/tests/roundtrip-harness.mjs",
+        "memory-contract/v1/tests/record-fixtures.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-28T04:42:26.973Z",
+      "source_file_hashes": {
+        "memory-contract/v1/tests/record-fixtures.mjs": "601bfa66754c6ce95edc069deeec598ceaea52d3",
+        "memory-contract/v1/tests/roundtrip-harness.mjs": "572ac5462486be7f962e5fbd9c4a248b8b5e9b55",
+        "tests/memory-contract-fixture-response-schema.test.ts": "27b5e63d7356b09c07cc3ff444529c20a1eadddd",
+        "tests/memory-contract-roundtrip.test.ts": "984b423b88fe120a48e8c048d6724bf139322c6b"
+      }
     },
     {
       "id": "0ee42346-ce6b-4988-9a0e-325115dce8ad",
@@ -1856,6 +1880,29 @@
         "packages/apra-fleet-se/fleet-sprint/kb.mjs": "7e22b1e41486daf8647bf83ad899c52a6a8c5263",
         "packages/apra-fleet-se/fleet-sprint/member-sync.mjs": "65991cdb22cbbe9e77d581117e0aa3144317891f",
         "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs": "27961b4e2d49ff0510e4c8abc9fa4f174238435c"
+      }
+    },
+    {
+      "id": "ec25d9e0-4a6c-459a-a201-7252ade19f54",
+      "type": "learning",
+      "title": "Mock-sprint harness answers maintainer git reads with a placeholder unless onCommand injects them",
+      "summary": "In mock-sprint-harness.mjs every unmatched git command returns 'ok (mocked ...)', so the bible commit (git merge-base) and the round diff never yield usable values; a scenario reaching kb_bible_commit must inject them through onCommand with mockCmdResult.",
+      "symbols": [
+        "mockCmdResult",
+        "resolveBibleBase",
+        "runDevelopLoopScenario"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-kb-write-routing.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-28T04:42:26.913Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "0c97d9ee4e6c1e854f1240134b9ee4bddb329abf",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs": "5a5be45641c2619ca7e0800d977d5b325f0c31db",
+        "packages/apra-fleet-se/test/mock-sprint-kb-write-routing.test.mjs": "9b85feaf9d5121cb6ba91fabb877edaca59c2d92"
       }
     },
     {
