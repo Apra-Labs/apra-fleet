@@ -298,3 +298,53 @@ describe('IN-SPRINT PING-PONG: a round-1 demotion is not re-offered for promotio
         assert.deepEqual(offered.map((e) => e.id), ['kb-ping'], 'a changed basis is new evidence -- the entry is offered again');
     });
 });
+
+// PINS CURRENT BEHAVIOUR, NOT A DESIRED LIMIT: nothing caps how often one
+// entry may flip between CONFIRMED and INFERRED within a sprint. The only
+// brake is the D6 guard above, which gates a RE-PROMOTION on a changed basis;
+// it counts nothing. So with the basis hashes unchanged an entry promoted in
+// round 1 is still offered for demotion in round 2 and demoted, and once its
+// cited file is edited the same entry can be re-promoted and demoted again.
+// If a flip cap is ever introduced, this test is expected to change with it.
+describe('IN-SPRINT PING-PONG: no flip cap (pins current behaviour)', () => {
+    test('promote in round 1, demote in round 2 with the basis unchanged, then re-promote and re-demote after an edit -- every flip is applied', async () => {
+        const sprintStart = Date.parse('2026-01-01T00:00:00.000Z');
+        let diskHash = 'HASH-ORIGINAL';
+        const { client, events } = harness({
+            sprintStartMs: sprintStart,
+            currentFileHashes: async (member, files) => Object.fromEntries(files.map((f) => [f, diskHash])),
+        });
+        const ID = 'kb-flip';
+        const inferred = (extra = {}) => ({ id: ID, type: 'knowledge', created_at: new Date(sprintStart + 1000).toISOString(), ...extra });
+        const demotedRow = () => inferred({
+            demoted_at: new Date(sprintStart + 60000).toISOString(),
+            demoted_basis_hashes: { [CHANGED_FILE]: 'HASH-ORIGINAL' },
+        });
+        const promote = () => client.apply('reviewer', 'reviewer-1', { kb_promotions: [{ id: ID, reason: REASON }] });
+        const demote = () => client.apply('reviewer', 'reviewer-1', { kb_demotions: [{ id: ID, reason: REASON, evidence_files: [CHANGED_FILE] }] });
+        const flips = () => events.filter((e) => e.ev === 'kb_promote' || e.ev === 'kb_demote').map((e) => `${e.ev}:${e.args.id}`);
+
+        // Round 1: offered for promotion and promoted.
+        assert.deepEqual((await offerPromotions(client, [inferred()])).map((e) => e.id), [ID]);
+        await promote();
+        // Round 2: now CONFIRMED and touching this round's changed file, basis
+        // unchanged -- still offered for demotion, and the demotion applies.
+        await offerDemotions(client, [demotable(ID)]);
+        await demote();
+        assert.deepEqual(flips(), [`kb_promote:${ID}`, `kb_demote:${ID}`]);
+
+        // Round 3: basis unchanged -- the D6 guard withholds re-promotion.
+        assert.deepEqual((await offerPromotions(client, [demotedRow()])).map((e) => e.id), []);
+
+        // Round 4: the cited file is edited -- re-offered and re-promoted.
+        diskHash = 'HASH-EDITED';
+        assert.deepEqual((await offerPromotions(client, [demotedRow()])).map((e) => e.id), [ID]);
+        await promote();
+        // Round 5: demoted again. No count of earlier flips stops it.
+        await offerDemotions(client, [demotable(ID)]);
+        await demote();
+
+        assert.deepEqual(flips(), [`kb_promote:${ID}`, `kb_demote:${ID}`, `kb_promote:${ID}`, `kb_demote:${ID}`],
+            'every flip was applied: there is no flip cap');
+    });
+});

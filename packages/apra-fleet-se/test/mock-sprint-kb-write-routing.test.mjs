@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool, mockCmdResult } from './helpers/mock-sprint-harness.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { createKbWorkClient, KB_DEMOTION_READ_LIMIT, KB_MAX_DEMOTION_CANDIDATES } from '../fleet-sprint/kb.mjs';
 import { createKbMaintainerSelector } from '../fleet-sprint/kb-maintainer.mjs';
@@ -48,6 +48,7 @@ function createFakeFleet({ failOwnScopeQuery = false } = {}) {
     const published = new Set();    // files on the remote branch
     const events = [];              // ordered: dispatch / gpull / kb events
     const orchestratorKbCalls = []; // kb_* through the orchestrator's FULL session
+    const bible = { entries: new Set(), tombstones: new Set() }; // the bible as kb_bible_commit leaves it
     let seq = 0;
 
     const kbOf = (id) => { if (!kbs.has(id)) kbs.set(id, []); return kbs.get(id); };
@@ -102,12 +103,37 @@ function createFakeFleet({ failOwnScopeQuery = false } = {}) {
                 }
                 return out;
             }
+            case 'kb_demote': {
+                // kb_demote's own refusals: only an owned CONFIRMED entry, with evidence.
+                const e = kb.find((x) => x.id === args.id && own(x));
+                if (!e) fail(`Entry not found: ${args.id}`);
+                if (e.confidence !== 'CONFIRMED') fail(`E-DEMOTE-NOT-CONFIRMED: ${args.id} is ${e.confidence}`);
+                if (!Array.isArray(args.evidence_files) || args.evidence_files.length === 0) fail('evidence_files is required');
+                e.confidence = 'INFERRED';
+                e.demoted_at = new Date().toISOString();
+                return { id: e.id, confidence_before: 'CONFIRMED', confidence_after: 'INFERRED' };
+            }
+            case 'kb_bible_commit': {
+                // Admission mirrors the real tool: an id merges only while
+                // CONFIRMED; a demoted id is tombstoned only once the row
+                // really is demoted (demoted_at set, no longer CONFIRMED).
+                const merged = (args.ids || []).filter((i) => kb.some((x) => x.id === i && x.confidence === 'CONFIRMED'));
+                const demoted = (args.demoted_ids || []).filter((i) => kb.some((x) => x.id === i && x.demoted_at && x.confidence !== 'CONFIRMED'));
+                const skipped = [
+                    ...(args.ids || []).filter((i) => !merged.includes(i)).map((i) => ({ id: i, reason: 'not_confirmed_or_unknown' })),
+                    ...(args.demoted_ids || []).filter((i) => !demoted.includes(i)).map((i) => ({ id: i, reason: 'not_demoted_or_unknown' })),
+                ];
+                for (const i of merged) bible.entries.add(i);
+                for (const i of demoted) { bible.entries.delete(i); bible.tombstones.add(i); }
+                const committed = merged.length + demoted.length > 0;
+                return { path: '.fleet/kb-canonical.json', merged, demoted, skipped, entry_count: bible.entries.size, committed };
+            }
             default: return {};
         }
     }
 
     return {
-        kbs, checkouts, published, events, orchestratorKbCalls, kbOf, checkoutOf, memberTool,
+        kbs, checkouts, published, events, orchestratorKbCalls, kbOf, checkoutOf, memberTool, bible,
         seedEntry(memberName, entry) {
             kbOf(memberUuid(memberName)).push({ tags: [ownTag(memberUuid(memberName))], confidence: 'INFERRED', superseded_at: null, ...entry });
         },
@@ -430,7 +456,93 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
         });
     });
 
-    test('a capture from a member whose work folder is not a repository is dropped with a WARN', { timeout: scaledTimeout(240000) }, async () => {
+    // The demotion happy path through the REAL runner: the reviewer returns
+    // kb_demotions for a CONFIRMED entry it was offered, the engine issues
+    // kb_demote on the maintainer (with the grant), and the round's bible
+    // commit carries the id as demoted_ids. Asserted from the ordered call
+    // transcript (fleet.events) and the fake maintainer's resulting state.
+    test('reviewer kb_demotions -> kb_demote on the maintainer -> kb_bible_commit {demoted_ids} with that id', { timeout: scaledTimeout(240000) }, async () => {
+        await withScenarioMarkers('kb demotion happy path', async () => {
+            const DEMOTED_ID = 'kb-confirmed-to-demote';
+            const BIBLE_FILE = '.fleet/kb-canonical.json';
+            const fleet = createFakeFleet();
+            fleet.seedEntry('maint', {
+                id: DEMOTED_ID, type: 'knowledge', title: 'A CONFIRMED claim the review disproves',
+                summary: 'keyed by tenant id only', source_files: [CITED], confidence: 'CONFIRMED',
+                created_at: '2000-01-01T00:00:00.000Z',
+            });
+            const reviewerPrompts = [];
+            const doerHandler = async ({ opts, tempDir, runCmd }) => {
+                fleet.events.push({ type: 'dispatch', member: opts.member_name, role: 'doer' });
+                const ids = (opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/)?.[1] || '').split(',').map((s) => s.trim()).filter(Boolean);
+                for (const id of ids) await runCmd(`bd close ${id}`, tempDir);
+                fleet.published.add(CITED);
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'done' }) }] };
+            };
+            const reviewerHandler = async ({ opts }) => {
+                fleet.events.push({ type: 'dispatch', member: opts.member_name, role: 'reviewer' });
+                reviewerPrompts.push(opts.prompt);
+                // Demote only what this review was actually offered.
+                const offered = opts.prompt.includes(`"id": "${DEMOTED_ID}"`);
+                return { content: [{ text: JSON.stringify({
+                    verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [],
+                    ...(offered ? { kb_demotions: [{ id: DEMOTED_ID, reason: `${CITED}:42 keys by tenant AND id; the claim does not hold`, evidence_files: [CITED] }] } : {}),
+                }) }] };
+            };
+            // The maintainer's checkout answers the git reads the demotion
+            // and bible-commit paths make: this round changed CITED, the
+            // sprint forked from a real-looking base commit, and the only
+            // local-only commit is the bible commit itself.
+            const observe = buildOnCommand(fleet);
+            const onCommand = (ev) => {
+                observe(ev);
+                if (ev.member_name !== 'maint') return undefined;
+                if (/^git rev-parse HEAD\s*$/.test(ev.command)) return mockCmdResult(0, 'b'.repeat(40), '');
+                if (/^git diff --name-only \S+\.\.\.\S+\s*$/.test(ev.command)) return mockCmdResult(0, `${CITED}\n`, '');
+                if (/^git merge-base HEAD origin\//.test(ev.command)) return mockCmdResult(0, 'a'.repeat(40), '');
+                if (/^git log -m --name-only --pretty=format: /.test(ev.command)) return mockCmdResult(0, `${BIBLE_FILE}\n`, '');
+                if (/^git rev-list --count /.test(ev.command)) return mockCmdResult(0, '1\n', '');
+                return undefined;
+            };
+
+            const r = await runDevelopLoopScenario('kbdemote', {
+                members: ['maint', 'dev'],
+                roleMap: { doer: ['dev'], reviewer: ['dev'] },
+                beadsIdentity: { maint: { repoRemote: REPO_URL }, dev: { repoRemote: REPO_URL } },
+                taskSpecs: [{ title: 'Task: kb demotion happy path' }],
+                doerHandler, reviewerHandler,
+                maxCycles: 1,
+                callToolFactory: (executeCommand) => buildCallTool(fleet, executeCommand),
+                onCommand,
+            });
+            assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
+            assert.ok(reviewerPrompts.some((p) => p.includes(`"id": "${DEMOTED_ID}"`)), 'the CONFIRMED entry touching this round\'s changed file was never offered for demotion');
+
+            const kbEvents = fleet.events.filter((e) => e.type === 'kb');
+            const demoteIdx = kbEvents.findIndex((e) => e.tool === 'kb_demote');
+            assert.ok(demoteIdx >= 0, `no kb_demote was issued; kb calls: ${JSON.stringify(kbEvents.map((e) => e.tool))}`);
+            const demote = kbEvents[demoteIdx];
+            assert.equal(demote.member, 'maint', 'kb_demote runs in the maintainer session');
+            assert.equal(demote.grant, true, 'kb_demote carries the kb_maintainer grant');
+            assert.equal(demote.args.id, DEMOTED_ID);
+            assert.deepEqual(demote.args.evidence_files, [CITED]);
+
+            const commitIdx = kbEvents.findIndex((e, i) => i > demoteIdx && e.tool === 'kb_bible_commit');
+            assert.ok(commitIdx > demoteIdx, `no kb_bible_commit followed the kb_demote; kb calls: ${JSON.stringify(kbEvents.map((e) => e.tool))}`);
+            const commit = kbEvents[commitIdx];
+            assert.equal(commit.member, 'maint', 'the bible commit runs on the maintainer');
+            assert.ok(Array.isArray(commit.args.demoted_ids) && commit.args.demoted_ids.includes(DEMOTED_ID),
+                `kb_bible_commit did not carry the demotion: ${JSON.stringify(commit.args)}`);
+
+            // The maintainer's state after the round: the entry is INFERRED and tombstoned in the bible.
+            const row = fleet.kbOf(memberUuid('maint')).find((e) => e.id === DEMOTED_ID);
+            assert.equal(row.confidence, 'INFERRED');
+            assert.ok(fleet.bible.tombstones.has(DEMOTED_ID), 'the bible carries no tombstone for the demoted id');
+            assert.deepEqual(fleet.orchestratorKbCalls, [], 'no kb_* call may go through the orchestrator session');
+        });
+    });
+
+    test('a capture from a member whose work folder is not a repository is dropped with a WARN',{ timeout: scaledTimeout(240000) }, async () => {
         await withScenarioMarkers('kb write routing non-repository member', async () => {
             const fleet = createFakeFleet();
             const doerHandler = async ({ opts, tempDir, runCmd }) => {
