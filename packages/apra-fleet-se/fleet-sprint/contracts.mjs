@@ -790,7 +790,7 @@ export const finalVerdict = {
             },
         },
         // The Final Review's DEMOTE judgement, mirroring reviewer-output.json's
-        // kb_demotions: same {id, reason, evidence_files?} shape as kb_discards,
+        // kb_demotions: same {id, reason, evidence_files} shape as kb_discards,
         // executed by the same kbWork.apply path. Optional: demoting nothing is
         // the common answer. CONFIRMED to INFERRED only, and only for ids
         // actually offered to this review round -- the basis-unchanged case,

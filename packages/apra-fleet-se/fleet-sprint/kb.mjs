@@ -1113,7 +1113,7 @@ export function createKbWorkClient(opts = {}) {
             if (!outcome.ok && outcome.branchBlocked) return { committed: 0, pending: totalPending() };
             if (!outcome.ok && outcome.fleetTooOld) {
                 log(`[kb-work] WARNING: bible commit for ${repo} cannot run on maintainer '${maintainer}': ${outcome.error} -- ${load} stay queued for the next round`);
-                return { committed: 0, pending: ids.length };
+                return { committed: 0, pending: totalPending() };
             }
             if (!outcome.ok) {
                 log(`[kb-work] WARN: bible commit for ${repo} on maintainer '${maintainer}' failed at ${outcome.stage} (${outcome.error}) -- ${load} stay queued for the next round`);

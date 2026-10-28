@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKbWorkClient } from '../fleet-sprint/kb.mjs';
+import { E_MEMBER_FLEET_TOO_OLD } from '../fleet-sprint/member-call.mjs';
 import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
 
 // =============================================================================
@@ -38,7 +39,7 @@ let offeredDemotionRows = [];
  *   - `currentFileHashes` and `sprintStartMs` are passed straight through to
  *     createKbWorkClient for the ping-pong guard tests.
  */
-function harness({ demoteOutcome, skipped = [], currentFileHashes = async () => ({}), sprintStartMs } = {}) {
+function harness({ demoteOutcome, skipped = [], currentFileHashes = async () => ({}), sprintStartMs, bibleCommitError } = {}) {
     const events = [];
     const logs = [];
     const memberCall = async (member, tool, args) => {
@@ -54,6 +55,7 @@ function harness({ demoteOutcome, skipped = [], currentFileHashes = async () => 
             return {};
         }
         if (tool === 'kb_bible_commit') {
+            if (bibleCommitError) throw bibleCommitError;
             const isSkipped = (id) => skipped.some((s) => s.id === id);
             const merged = (args.ids || []).filter((id) => !isSkipped(id));
             const demoted = (args.demoted_ids || []).filter((id) => !isSkipped(id));
@@ -201,6 +203,23 @@ describe('kb_bible_commit receives demoted_ids in the SAME call as confirmed ids
         assert.deepEqual(commits[0].args.ids, []);
         assert.deepEqual(commits[0].args.demoted_ids, ['kb-demo-only']);
         assert.deepEqual(out, { committed: 1, pending: 0 });
+    });
+});
+
+describe('a fleet-too-old maintainer leaves queued demotions pending', () => {
+    test('commitRound reports pending including the queued demotion, not just the confirmed ids', async () => {
+        const tooOld = Object.assign(new Error('maintainer fleet is too old for kb_bible_commit'), { code: E_MEMBER_FLEET_TOO_OLD });
+        const { client } = harness({ bibleCommitError: tooOld });
+        await offerPromotions(client, [{ id: 'kb-promo', type: 'knowledge', created_at: new Date().toISOString() }]);
+        await offerDemotions(client, [demotable('kb-demo')]);
+        await client.apply('reviewer', 'reviewer-1', {
+            kb_promotions: [{ id: 'kb-promo', reason: REASON }],
+            kb_demotions: [{ id: 'kb-demo', reason: REASON, evidence_files: [CHANGED_FILE] }],
+        });
+
+        const out = await client.commitRound();
+
+        assert.deepEqual(out, { committed: 0, pending: 2 });
     });
 });
 

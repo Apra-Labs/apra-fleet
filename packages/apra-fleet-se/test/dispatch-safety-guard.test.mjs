@@ -443,7 +443,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // just-demoted entry's cited files to tell "basis unchanged since the
 // demotion" from "basis moved on". Passes member_name and is failSoft,
 // verified compliant. No path is ever interpolated into the command string;
-// the file list is JSON-embedded into the generated script, same technique
+// the file list travels as one base64 argv token (never JSON-embedded in the script), same technique
 // createDeployPermissionsProvisioner's and stageCommandBodyMemberSide's
 // `node -e` sites already use.
 // Bumped 10 -> 12 (GitHub #715): reclaimInRunOrphanedClaims adds its fresh-read

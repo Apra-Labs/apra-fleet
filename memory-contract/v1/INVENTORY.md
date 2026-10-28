@@ -214,7 +214,7 @@ recorded here rather than silently absorbed into the header count.
 | P-6 | `getLinked` | `getLinked(id: string): Promise<KBEntry[]>` | none in this surface (internal link inspection) | read | yes |
 | P-7 | `prime` | `prime(opts: PrimeOptions): Promise<PrimedContext>` | `kb_session_prime` | read | yes |
 | P-8 | `promote` | `promote(id, reason?): Promise<{id, confidence_before, confidence_after}>` | `kb_promote` | mutate-trust (confidence tier up, appends evidence note) | at the CONFIRMED ceiling yes (no-op); below it NO -- each call advances one tier |
-| P-13 | `demote` | `demote(id, reason, evidenceFiles?, opts?): Promise<{id, confidence_before, confidence_after}>` | `kb_demote` | mutate-trust (CONFIRMED -> INFERRED, appends an audit note, snapshots the on-disk basis) | no -- a second call is REFUSED with `E-DEMOTE-NOT-CONFIRMED`, never a no-op |
+| P-13 | `demote` | `demote(id, reason, evidenceFiles, opts?): Promise<{id, confidence_before, confidence_after}>` | `kb_demote` | mutate-trust (CONFIRMED -> INFERRED, appends an audit note, snapshots the on-disk basis) | no -- a second call is REFUSED with `E-DEMOTE-NOT-CONFIRMED`, never a no-op |
 | P-9 | `sync` | `sync(opts?: SyncOptions): Promise<SyncResult>` | none in this surface | read/write (remote transfer) | no |
 | P-10 | `stats` | `stats(opts?: {symbols?}): Promise<ProviderStats>` | `kb_stats` | read, explicitly NO telemetry bump | yes |
 | P-11 | `touch` | `touch(ids: string[]): Promise<number>` | `kb_session_prime` | telemetry write (`use_count`/`last_accessed`), existence-tolerant | no (counter advances) |
