@@ -216,7 +216,7 @@ directly.
    the repo. A demotion without one is refused. Demoting nothing is a valid, common answer: `kb_demotions: []`.
    Never list the same id in more than one of `kb_promotions`, `kb_discards` and
    `kb_demotions` -- the orchestrator refuses it in every list it appears in.
-   A team can turn the demotion loop off (the `kb_demotion_loop` sprint setting); then no
+   A team can turn the demotion loop off (a sprint launch setting); then no
    demotion candidates block appears and any `kb_demotions` you return are dropped.
    Fresh-look limit: a demoted entry returns to INFERRED, but the promotion window is
    entries whose `created_at` falls inside the current sprint, so an entry created in an
