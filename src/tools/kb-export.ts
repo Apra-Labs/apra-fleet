@@ -10,6 +10,7 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 import { filterProjectBibleCandidates } from '../services/knowledge/bible-basis-filter.js';
+import { extractBibleDemotions, standingAgainstTombstone, type BibleTombstone } from '../services/knowledge/bible-import.js';
 import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import type { KBEntry } from '../services/knowledge/types.js';
 
@@ -88,9 +89,25 @@ export interface CanonicalBible {
     /** 40-char HEAD sha, or null when the repo has no commits or git is absent. */
     commit: string | null;
     branch: string | null;
+    /**
+     * ENTRIES ONLY. A tombstone is not an entry, so recording a demotion never
+     * moves this number -- it still names how many entries the file carries.
+     */
     entry_count: number;
   };
   entries: CanonicalEntry[];
+  /**
+   * OPTIONAL tombstones {id, at, reason}, sorted by id. v3 only. Absent when the
+   * bible carries none, so a reader that does not know the field (and every
+   * bible written before it existed) keeps working unchanged.
+   */
+  demotions?: BibleTombstone[];
+}
+
+/** Entries AND tombstones of a bible already on disk. */
+export interface CanonicalBibleDocument {
+  entries: CanonicalEntry[];
+  demotions: BibleTombstone[];
 }
 
 /** A basis map with its keys in sorted order, so serialization is byte-stable. */
@@ -115,7 +132,13 @@ export function withSourceFileHashes(entry: CanonicalEntry, basis: Record<string
  * predicate admitted it against); when given and non-empty it is written as
  * source_file_hashes (format v3). Nothing is hashed here.
  */
-export function toCanonicalEntry(e: KBEntry, basis?: Record<string, string> | null): CanonicalEntry {
+/**
+ * `trustTime` is the row's bible trust time (SqliteProvider.getBibleTrustTimes)
+ * when the caller has it, so an entry this clone imported keeps the updated_at
+ * its bible carried instead of taking the local import time. null/undefined
+ * falls back to promoted_at, then created_at.
+ */
+export function toCanonicalEntry(e: KBEntry, basis?: Record<string, string> | null, trustTime?: string | null): CanonicalEntry {
   const entry: CanonicalEntry = {
     id: e.id,
     type: e.type,
@@ -124,7 +147,7 @@ export function toCanonicalEntry(e: KBEntry, basis?: Record<string, string> | nu
     symbols: e.symbols,
     source_files: e.source_files,
     confidence: e.confidence,
-    updated_at: e.promoted_at || e.created_at,
+    updated_at: trustTime || e.promoted_at || e.created_at,
   };
   if (basis && Object.keys(basis).length > 0) entry.source_file_hashes = sortedBasis(basis);
   return entry;
@@ -155,15 +178,29 @@ export function compareById(a: { id: string }, b: { id: string }): number {
 /**
  * The entries of the bible already on disk, in either shape (legacy bare array
  * or v2/v3 envelope). null when the file is absent or unparseable.
+ *
+ * Entries only, exactly as before: callers that do not care about tombstones are
+ * unchanged. readBibleDocument below is the sibling reader for callers that do.
  */
 export function readBibleEntries(outPath: string): CanonicalEntry[] | null {
+  return readBibleDocument(outPath)?.entries ?? null;
+}
+
+/**
+ * The entries AND the demotion tombstones of the bible already on disk. Same
+ * acceptance as readBibleEntries (both shapes; null when absent or unparseable);
+ * a bible with no demotions field yields an empty tombstone list, never a
+ * failure.
+ */
+export function readBibleDocument(outPath: string): CanonicalBibleDocument | null {
   if (!fs.existsSync(outPath)) return null;
   try {
     const parsed = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
     const existing = Array.isArray(parsed)
       ? parsed
       : (parsed && Array.isArray(parsed.entries) ? parsed.entries : null);
-    return existing as CanonicalEntry[] | null;
+    if (existing === null) return null;
+    return { entries: existing as CanonicalEntry[], demotions: extractBibleDemotions(parsed) };
   } catch {
     return null;
   }
@@ -434,8 +471,10 @@ function byId(a: { id?: unknown }, b: { id?: unknown }): number {
  * but cannot be parsed as either shape THROWS: the project export is additive
  * and must never overwrite (and so silently drop) a bible it cannot read.
  */
-function readExistingBibleEntries(outPath: string): Array<Record<string, unknown>> {
-  if (!fs.existsSync(outPath)) return [];
+function readExistingBibleDocument(
+  outPath: string,
+): { entries: Array<Record<string, unknown>>; demotions: BibleTombstone[] } {
+  if (!fs.existsSync(outPath)) return { entries: [], demotions: [] };
   let parsed: unknown;
   try {
     parsed = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
@@ -451,8 +490,9 @@ function readExistingBibleEntries(outPath: string): Array<Record<string, unknown
   if (list === null) {
     throw new Error('kb_export: existing bible has no entries array, refusing to overwrite it: ' + outPath);
   }
-  return list as Array<Record<string, unknown>>;
+  return { entries: list as Array<Record<string, unknown>>, demotions: extractBibleDemotions(parsed) };
 }
+
 
 // PROJECT-SCOPE EXPORT: basis filter + additive merge.
 //
@@ -480,11 +520,24 @@ async function exportProjectBible(
   outPath: string,
   input: KbExportInput,
 ): Promise<string> {
-  const existing = readExistingBibleEntries(outPath);
+  const { entries: existing, demotions } = readExistingBibleDocument(outPath);
   const existingIds = new Set(existing.map(e => String(e.id)));
+  const tombstones = new Map(demotions.map(d => [d.id, d]));
 
   const confirmed = await source.list({ confidence: ['CONFIRMED'] });
-  const newCandidates = confirmed.filter(e => !existingIds.has(e.id));
+  // TOMBSTONE GATE, before the basis filter. An id another clone demoted is not
+  // re-added just because this clone still holds it CONFIRMED -- that is how a
+  // demotion would be silently undone on the next export. The ONE exception is a
+  // row standingAgainstTombstone calls 'repromoted' -- the same rule kb_import
+  // applies -- so the entry comes back and its tombstone is cleared in the same
+  // write.
+  const notInBible = confirmed.filter(e => !existingIds.has(e.id));
+  const trustTimes = source.getBibleTrustTimes(notInBible.map(e => e.id));
+  const newCandidates = notInBible.filter(e => {
+    const tombstone = tombstones.get(e.id);
+    if (!tombstone) return true;
+    return standingAgainstTombstone(trustTimes.get(e.id) ?? null, tombstone.at) === 'repromoted';
+  });
   const bases = source.getSourceFileBases(newCandidates.map(e => e.id));
   const qualifying = await filterProjectBibleCandidates(newCandidates, bases, repoPath);
 
@@ -492,17 +545,24 @@ async function exportProjectBible(
     return JSON.stringify({ exported: existing.length, path: outPath, scope: 'project', committed: false });
   }
 
+  for (const e of qualifying) tombstones.delete(e.id);
+
   // Each added entry carries the exact stored basis it was just admitted against.
-  const merged = [...existing, ...qualifying.map(e => toCanonicalEntry(e, bases.get(e.id)))].sort(byId);
+  const merged = [...existing, ...qualifying.map(e => toCanonicalEntry(e, bases.get(e.id), trustTimes.get(e.id)))].sort(byId);
   assertNoDuplicateBibleIds(merged, 'kb_export');
+  const nextDemotions = Array.from(tombstones.values()).sort(compareById);
   const bible = {
     version: BIBLE_FORMAT_VERSION,
     provenance: {
       commit: input.baseCommit ?? resolveHeadCommit(repoPath),
       branch: input.baseBranch ?? resolveBranch(repoPath),
+      // Entries only: the tombstones below are deliberately not counted.
       entry_count: merged.length,
     },
     entries: merged,
+    // Omitted entirely when there are none, so a bible that never saw a
+    // demotion is byte-identical to one written before the field existed.
+    ...(nextDemotions.length > 0 ? { demotions: nextDemotions } : {}),
   };
   const fleetDir = path.dirname(outPath);
   if (!fs.existsSync(fleetDir)) fs.mkdirSync(fleetDir, { recursive: true });
