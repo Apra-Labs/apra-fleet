@@ -112,7 +112,7 @@ afterEach(() => {
   for (const p of providers.values()) p.close();
   providers.clear();
   vi.restoreAllMocks();
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
 describe('capture -> promote -> bible commit -> export round trip', () => {

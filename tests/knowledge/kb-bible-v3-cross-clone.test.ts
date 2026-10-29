@@ -132,7 +132,7 @@ afterEach(() => {
   for (const p of providers.values()) p.close();
   providers.clear();
   vi.restoreAllMocks();
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
 describe('bible v3 basis across clones', () => {
