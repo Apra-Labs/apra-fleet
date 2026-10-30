@@ -140,6 +140,19 @@ describe('getKbProviders passes the resolved repository to the HTTP provider', (
     expect(await getKbProviders(folder, 'https://example.invalid/a-b/c.git')).toBe(first);
   });
 
+  it('the same folder with and without a remoteUrl gets separate selections, each sending its own repository', async () => {
+    writeHttpConfig();
+    const repo = makeRepo('https://github.com/example/local-origin.git');
+
+    const local = await getKbProviders(repo.dir);
+    const viaRemote = await getKbProviders(repo.dir, 'https://github.com/example/registered-remote.git');
+    expect(viaRemote).not.toBe(local);
+    expect(viaRemote.project).not.toBe(local.project);
+
+    expect(await headersOf(local.project)).toEqual({ repository: 'github.com/example/local-origin', commit: repo.head });
+    expect(await headersOf(viaRemote.project)).toEqual({ repository: 'github.com/example/registered-remote', commit: undefined });
+  });
+
   it('a folder with no origin remote: the HTTP provider sends neither header', async () => {
     writeHttpConfig();
     const dir = makeDir();

@@ -783,7 +783,10 @@ Run `kb_setup` with `remote` and `token` to write this. Do not write
   `dev.azure.com/<org>/<project>/_git/<repo>`) and `X-Repository-Commit` (the
   local folder's HEAD sha, omitted when it cannot be read, e.g. for a remote
   member's folder). A shared server can use them to keep repositories apart; a
-  server may ignore them. No local path is ever sent.
+  server may ignore them. No local path is ever sent, and nothing goes in the
+  URL. A remote whose host does not parse as a hostname sends no header at all.
+  The commit is best effort: a queued write replayed later carries the HEAD at
+  replay time, not at capture time.
 
 ### Future: Postgres
 

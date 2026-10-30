@@ -22,6 +22,7 @@ export const MAX_REPOSITORY_LENGTH = 512;
 const AZURE_HOST = 'dev.azure.com';
 const VISUALSTUDIO_SUFFIX = '.visualstudio.com';
 const URL_SCHEMES = new Set(['http', 'https', 'ssh', 'git', 'git+ssh', 'ssh+git']);
+const HOSTNAME = /^(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[0-9a-f:.]+\])$/;
 
 /** The repository a provider sends with every request. */
 export interface RepositoryIdentity {
@@ -76,7 +77,11 @@ export function normaliseRepositoryRemote(remoteUrl: string): string | undefined
     .replace(/\/+$/, '')
     .replace(/\.git$/i, '')
     .replace(/\/+$/, '');
-  if (!host || !repoPath || host.includes('@')) return undefined;
+  // The host must be a hostname or a bracketed IPv6 literal. Anything else (a
+  // password containing '/', a query before the path, a non-numeric port) means
+  // the authority was not parsed as the remote intended, and what is left could
+  // carry credentials or tokens: send no header rather than a leaking one.
+  if (!repoPath || !HOSTNAME.test(host)) return undefined;
 
   const value = canonicaliseAzure(percentEncode(`${host}/${repoPath}`));
   return isValidRepositoryValue(value) ? value : undefined;
@@ -153,7 +158,8 @@ function gitOut(folder: string, args: string[]): string | undefined {
   }
 }
 
-const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+/** A full SHA-1 or SHA-256 commit id, lowercase. */
+export const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 /** How long a read HEAD sha is reused before git is asked again. */
 export const HEAD_COMMIT_TTL_MS = 5000;

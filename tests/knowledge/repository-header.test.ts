@@ -106,6 +106,12 @@ describe('normaliseRepositoryRemote', () => {
     ['https://github.com'],
     ['https://github.com/'],
     [`https://github.com/${'a'.repeat(600)}`],
+    // Authorities that do not parse to a hostname: what is left could carry
+    // credentials or tokens, so no header at all.
+    ['https://user:pa/ss@github.com/org/repo.git'],
+    ['https://github.com?access_token=tok/org/repo'],
+    ['https://host:abc/o/r'],
+    ['https://github.com\t/o/r'],
   ])('returns undefined for %j (not a network remote, or not a valid header)', (input) => {
     expect(normaliseRepositoryRemote(input)).toBeUndefined();
   });

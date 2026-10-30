@@ -25,6 +25,7 @@ import { DEFAULT_REQUEST_TIMEOUT_MS } from './kb-config.js';
 import {
   REPOSITORY_HEADER,
   REPOSITORY_COMMIT_HEADER,
+  COMMIT_SHA,
   isValidRepositoryValue,
   type RepositoryIdentity,
 } from './repository-header.js';
@@ -48,8 +49,6 @@ export interface HttpKbProviderOptions {
    */
   repository?: RepositoryIdentity;
 }
-
-const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 type QueuedOperation =
   | { op: 'capture'; input: KBEntryInput }

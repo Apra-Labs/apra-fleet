@@ -12,7 +12,7 @@ const OFFLINE_URL = 'http://127.0.0.1:17779'; // nothing listens here
 const REPO = 'github.com/example/repo-headers';
 const SHA = 'a'.repeat(40);
 
-interface Seen { method: string; path: string; repository?: string; commit?: string; raw: string[] }
+interface Seen { method: string; path: string; url: string; repository?: string; commit?: string; raw: string[] }
 const seen: Seen[] = [];
 let server: http.Server;
 let baseUrl: string;
@@ -44,6 +44,7 @@ beforeAll(async () => {
       seen.push({
         method: req.method ?? '',
         path: urlPath,
+        url: req.url ?? '',
         repository: req.headers['x-repository'] as string | undefined,
         commit: req.headers['x-repository-commit'] as string | undefined,
         raw: req.rawHeaders,
@@ -107,6 +108,10 @@ describe('HttpKbProvider repository headers', () => {
       expect(request.commit, request.path).toBe(SHA);
       // Each header exactly once: the receiving server refuses a repeated header.
       expect(request.raw.filter(h => h.toLowerCase() === 'x-repository')).toHaveLength(1);
+      // Never in the URL: URLs end up in access logs.
+      expect(request.url, request.path).not.toContain(REPO);
+      expect(request.url, request.path).not.toContain(SHA);
+      expect(request.url, request.path).not.toMatch(/repo/i);
     }
   });
 
