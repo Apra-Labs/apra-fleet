@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "7d4560d33dd61f96cff755e1ccf569bea71cfbdf",
     "branch": "main",
-    "entry_count": 108
+    "entry_count": 109
   },
   "entries": [
     {
@@ -2041,6 +2041,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T08:11:44.370Z"
+    },
+    {
+      "id": "f8b2695a-bfbf-4a63-93de-5dcfe7d6c374",
+      "type": "knowledge",
+      "title": "apra-fleet secret --set with -y reads the value from stdin, trimmed",
+      "summary": "secret --set NAME --persist -y takes the value from stdin (trimmed, empty aborts), so token refreshers can pipe a command into it on any OS.",
+      "symbols": [
+        "runSecret",
+        "handleSet",
+        "credentialSet"
+      ],
+      "source_files": [
+        "src/cli/secret.ts",
+        "docs/knowledge-layer.md",
+        "tests/knowledge/kb-named-credential-live-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-30T06:14:02.447Z",
+      "source_file_hashes": {
+        "docs/knowledge-layer.md": "cf7a175e11afbbb6c67be06aea9c7d0864a8ed55",
+        "src/cli/secret.ts": "01ea1129155b296006c2faf310c8686311b6b87c",
+        "tests/knowledge/kb-named-credential-live-e2e.test.ts": "fc532dfe2a2ab4ef542f3ab66dbd9d146c08216b"
+      }
     },
     {
       "id": "fbf058a3-a2de-45e1-b97f-ec58b048cbc4",
