@@ -90,7 +90,8 @@ describe('normaliseRepositoryRemote', () => {
   });
 
   it('percent-encodes spaces and non-ASCII so the value is printable ASCII', () => {
-    expect(normaliseRepositoryRemote('https://dev.azure.com/org/My Project/_git/Rëpo'))
+    // The repo name holds e-diaeresis as a unicode escape so this file stays ASCII-only.
+    expect(normaliseRepositoryRemote('https://dev.azure.com/org/My Project/_git/R\u00ebpo'))
       .toBe('dev.azure.com/org/My%20Project/_git/R%C3%ABpo');
   });
 
@@ -119,7 +120,7 @@ describe('normaliseRepositoryRemote', () => {
   it('only ever produces values the receiving server accepts', () => {
     for (const input of [
       'https://github.com/o/r.git', 'git@github.com:o/r.git', 'https://MyOrg@dev.azure.com/MyOrg/P/_git/R',
-      'https://dev.azure.com/org/My Project/_git/Rëpo',
+      'https://dev.azure.com/org/My Project/_git/R\u00ebpo',
     ]) {
       const out = normaliseRepositoryRemote(input)!;
       expect(isValidRepositoryValue(out)).toBe(true);
