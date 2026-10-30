@@ -95,5 +95,8 @@ describe('kb-server --token-file', () => {
     const handles = (process as any)._getActiveHandles().filter((h: any) => h.constructor?.name === 'Timeout' && h._repeat);
     // The poll interval (250ms repeat) must be gone; none of ours remains.
     expect(handles.some((h: any) => h._repeat === 250)).toBe(false);
+    // Closing the server releases the --db database: Windows refuses to
+    // unlink a file that still has an open sqlite handle.
+    expect(() => fs.rmSync(path.join(tmp, 'kb.sqlite'))).not.toThrow();
   });
 });

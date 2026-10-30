@@ -157,6 +157,15 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
       );
     }
   }
+  // The --db override is built here, not taken from the shared provider cache,
+  // so this server owns it and must close it on shutdown: an open sqlite
+  // handle keeps the file locked (Windows refuses to delete it).
+  let ownedProvider: { close(): void } | undefined;
+  const releaseOwnedProvider = (): void => {
+    const p = ownedProvider;
+    ownedProvider = undefined;
+    p?.close();
+  };
   if (dbPath) {
     const { SqliteProvider } = await import('../services/knowledge/sqlite-provider.js');
     // Anchor capture basis checks at process.cwd(), the same repo root
@@ -165,6 +174,7 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
     const overrideProvider = new SqliteProvider(dbPath, process.cwd());
     await overrideProvider.init();
     (providers as any).project = overrideProvider;
+    ownedProvider = overrideProvider;
   }
   const provider = providers.project;
   process.stderr.write('[kb-server] project=' + providers.projectSlug + '\n');
@@ -286,6 +296,8 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
     }
   });
 
+  server.on('close', releaseOwnedProvider);
+
   // Poll the token file by path (stat-free content compare) so in-place writes
   // and rename-replacement are both picked up. A bad re-read keeps the last
   // good token; the token value is never logged.
@@ -314,6 +326,7 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         process.stderr.write(`KB server failed to start: port ${port} is already in use. Try --port ${port + 1}\n`);
         process.exit(1);
       }
+      releaseOwnedProvider();
       reject(err);
     });
 
