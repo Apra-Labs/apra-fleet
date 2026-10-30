@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "7d4560d33dd61f96cff755e1ccf569bea71cfbdf",
     "branch": "main",
-    "entry_count": 107
+    "entry_count": 108
   },
   "entries": [
     {
@@ -1049,6 +1049,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.922Z"
+    },
+    {
+      "id": "81df596b-4490-4862-8cef-3ad5ee7c0785",
+      "type": "knowledge",
+      "title": "fleet_status kb credential health is per host, read from kb-http-auth-state by URL",
+      "summary": "check-status.ts kbHttpCredentialHealth builds one kbHealth.credential block per host from the KB config; call times come from in-process kb-http-auth-state keyed by URL, so they reset to never on server restart.",
+      "symbols": [
+        "kbHttpCredentialHealth",
+        "safeCredentialHealth",
+        "jwtExpiry",
+        "getKbHttpAuthState",
+        "kbCredentialCompactLine"
+      ],
+      "source_files": [
+        "src/tools/check-status.ts",
+        "src/services/knowledge/kb-http-auth-state.ts",
+        "tests/fleet-status-kb-credential.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-30T06:05:58.684Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-http-auth-state.ts": "caa54601c749b6cb0dba9bf0744cc67a414bc2a3",
+        "src/tools/check-status.ts": "628e81e903e65081d280760877203d0f112dfb63",
+        "tests/fleet-status-kb-credential.test.ts": "ec21f04276fc4abfa383fa32c7e9f30c848042d5"
+      }
     },
     {
       "id": "84258482-2b78-4c46-a077-7698d06fc4b4",
