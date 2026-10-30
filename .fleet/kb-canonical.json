@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "8c38f93777d15666c2f8fb26c7299db0e0707603",
+    "commit": "7d4560d33dd61f96cff755e1ccf569bea71cfbdf",
     "branch": "main",
-    "entry_count": 100
+    "entry_count": 107
   },
   "entries": [
     {
@@ -276,6 +276,39 @@
       "updated_at": "2026-09-25T22:26:33.419Z"
     },
     {
+      "id": "2d11a53b-f992-4a4a-aa83-f3670dc08959",
+      "type": "knowledge",
+      "title": "HttpKbProvider resolves a named-secret token per request and retries once on 401",
+      "summary": "A token_ref KB config makes HttpKbProvider look up the fleet secret on every request; on 401 it re-reads and retries once, else raises KbHttpAuthError E-KB-HTTP-AUTH; auth errors stop the offline-queue flush without dropping ops.",
+      "symbols": [
+        "HttpKbProvider",
+        "KbHttpAuthError",
+        "readKbConfigFromDisk",
+        "selectProjectProvider",
+        "kbHttpCredentialHealth",
+        "recordKbHttpSuccess",
+        "recordKbHttpRejected"
+      ],
+      "source_files": [
+        "src/services/knowledge/http-provider.ts",
+        "src/services/knowledge/kb-config.ts",
+        "src/services/knowledge/kb-providers.ts",
+        "src/services/knowledge/kb-http-auth-state.ts",
+        "src/tools/check-status.ts",
+        "tests/knowledge/kb-http-named-secret.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-30T05:42:05.760Z",
+      "source_file_hashes": {
+        "src/services/knowledge/http-provider.ts": "8d7c5d035d4bbd3769d402d45cde6fede50f79a8",
+        "src/services/knowledge/kb-config.ts": "77601e7d005ddb57a2cba355dbf6f192800d3895",
+        "src/services/knowledge/kb-http-auth-state.ts": "caa54601c749b6cb0dba9bf0744cc67a414bc2a3",
+        "src/services/knowledge/kb-providers.ts": "76f6c911e3b643cec1ef43bf85f5824f25b4fdce",
+        "src/tools/check-status.ts": "628e81e903e65081d280760877203d0f112dfb63",
+        "tests/knowledge/kb-http-named-secret.test.ts": "4a3e7eb40893711458782d0ce4e50ef180c050cd"
+      }
+    },
+    {
       "id": "2d4ffb90-4bd2-4b84-a143-c2b84dc4cb21",
       "type": "knowledge",
       "title": "The supervisor's dolt-orphan-sweep arms on a 5-minute interval with no immediate first pass",
@@ -288,6 +321,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:28.685Z"
+    },
+    {
+      "id": "2e85c726-b08e-4d07-991d-28a387e4a507",
+      "type": "knowledge",
+      "title": "credentials.json is written via temp file plus rename for cross-process readers",
+      "summary": "saveCredentialFile writes credentials.json.<pid>.<hex>.tmp then renames it over credentials.json; in-place writeFileSync let a concurrent reader process hit truncated JSON.",
+      "symbols": [
+        "saveCredentialFile",
+        "renameWithRetry",
+        "loadCredentialFile",
+        "lookupServerSecret"
+      ],
+      "source_files": [
+        "src/services/credential-store.ts",
+        "tests/credential-store-atomic-write.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-30T05:42:06.741Z",
+      "source_file_hashes": {
+        "src/services/credential-store.ts": "9150c836c40136de45189ebc0930108d64c3656e",
+        "tests/credential-store-atomic-write.test.ts": "a7d3c27ae6925a97c66ead0603609b48001056ed"
+      }
     },
     {
       "id": "2ffc0a85-7607-49d0-9e9a-f3ca9b8cfbb4",
@@ -1433,6 +1488,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:36.716Z"
+    },
+    {
+      "id": "c4fb3b10-577e-46a8-8ddb-bde2844b57c7",
+      "type": "knowledge",
+      "title": "lookupServerSecret is the server-side secret lookup that keeps expired records",
+      "summary": "Fleet-server callers should use lookupServerSecret/lookupServerSecretMeta, not credentialResolve: they ignore allowedMembers and never delete expired records.",
+      "symbols": [
+        "lookupServerSecret",
+        "lookupServerSecretMeta",
+        "credentialResolve",
+        "checkTokenRef"
+      ],
+      "source_files": [
+        "src/services/credential-store.ts",
+        "src/tools/kb-setup.ts",
+        "tests/credential-store-atomic-write.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-30T05:42:06.277Z",
+      "source_file_hashes": {
+        "src/services/credential-store.ts": "9150c836c40136de45189ebc0930108d64c3656e",
+        "src/tools/kb-setup.ts": "1637a4de580dc13dc5ac17b5cbfcfb2b2d6e1369",
+        "tests/credential-store-atomic-write.test.ts": "a7d3c27ae6925a97c66ead0603609b48001056ed"
+      }
     },
     {
       "id": "c5ebfbc3-a76c-42e4-8254-87fc2c82e39d",
