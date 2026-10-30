@@ -372,6 +372,19 @@ Calls `fleet_status` -- status of all fleet members.
 
 KB health (`kbHealth` in JSON) covers every project KB scope on the server plus the global KB, one entry per scope -- it never depends on the server's working directory.
 
+When the KB config selects the http provider, `kbHealth.credential`
+(`FleetStatusKbCredential`; compact: one `kb credential:` line) reports the
+remote KB credential for this host -- one block, shared by every scope the
+http provider serves. For a named secret (`kind: "secret"`): `secretName`,
+`resolves` (`ok` / `missing` / `expired`, from metadata; an expired record is
+never deleted), `lastWritten` (the secret's `created_at`), `tokenExpiry` (the
+`exp` of a JWT value decoded locally, else `null`), and `lastSuccessfulCall` /
+`lastRejectedCall` (this server process; `null`, shown as `never`, until the
+first call). A literal-token config (`kind: "literal"`) carries the call times
+and a `hint` that the token cannot be refreshed and how to switch to
+`{{secret.NAME}}`. A sqlite config has no `credential`. The token value and
+any JWT claim other than `exp` never appear.
+
 #### `memberDetail(options)`
 
 Calls `member_detail` -- detailed status for one member: connectivity,

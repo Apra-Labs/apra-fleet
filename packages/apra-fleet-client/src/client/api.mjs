@@ -287,6 +287,23 @@
  */
 
 /**
+ * Remote KB credential health, `kbHealth.credential` in fleet_status json
+ * output (one compact `kb credential:` line in compact output). Present only
+ * when the KB config selects the http provider; this host only. Never carries
+ * the token value, nor any JWT claim other than exp.
+ * @typedef {Object} FleetStatusKbCredential
+ * @property {"secret" | "literal"} kind - "secret": token_ref names a fleet secret looked up per request; "literal": a stored literal token
+ * @property {string} url - Remote KB URL
+ * @property {string} [secretName] - kind "secret": the fleet secret's name
+ * @property {"ok" | "missing" | "expired"} [resolves] - kind "secret": metadata lookup result (an expired record is kept)
+ * @property {string | null} [lastWritten] - kind "secret": the secret record's created_at; null when missing
+ * @property {string | null} [tokenExpiry] - kind "secret": JWT exp decoded locally (ISO time); null for a non-JWT or unresolved value
+ * @property {string | null} lastSuccessfulCall - Last KB call accepted by the remote server in this server process; null when none yet
+ * @property {string | null} lastRejectedCall - Last KB call rejected with HTTP 401 in this server process; null when none yet
+ * @property {string} [hint] - kind "literal": the token cannot be refreshed; how to switch to {{secret.NAME}}
+ */
+
+/**
  * @typedef {Object} SendFilesOptions
  * @property {string[]} local_paths - Array of local file paths to upload
  * @property {string} [dest_subdir] - Destination subdirectory relative to work_folder on the member
@@ -1084,7 +1101,9 @@ export class ApraFleet {
     }
 
     /**
-     * Get status of all fleet members.
+     * Get status of all fleet members. With format "json" the result's
+     * kbHealth.credential is a {@link FleetStatusKbCredential} when the KB
+     * config selects the http provider.
      * @param {FleetStatusOptions} [options]
      */
     async fleetStatus(options = {}) {
