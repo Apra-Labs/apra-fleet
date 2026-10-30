@@ -3,6 +3,7 @@ import path from 'node:path';
 import { FLEET_DIR } from '../../paths.js';
 import { decryptPassword } from '../../utils/crypto.js';
 import { logWarn } from '../../utils/log-helpers.js';
+import { findSecretTokens } from '../secret-token.js';
 
 /** Bounds and default for request_timeout_ms, shared by kb_setup (write) and the reader. */
 export const MIN_REQUEST_TIMEOUT_MS = 1000;
@@ -17,7 +18,13 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 export interface KbConfigResult {
   provider: 'sqlite' | 'http';
   url?: string;
+  /** Literal token (decrypted token_encrypted). Absent when tokenSecretName is set. */
   token?: string;
+  /**
+   * Name of the fleet secret the token is read from on each request (from the
+   * token_ref placeholder). Absent for a literal-token config.
+   */
+  tokenSecretName?: string;
   /** Socket idle timeout per request for the http provider; absent means the provider default. */
   requestTimeoutMs?: number;
 }
@@ -49,6 +56,8 @@ export const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
  * - Absent file, or provider missing/"sqlite" -> { provider: 'sqlite' }, silently,
  *   without ever touching token_encrypted (a corrupt token must never break the
  *   stock sqlite path).
+ * - provider "http" with token_ref ({{secret.NAME}}) -> { provider: 'http', url, tokenSecretName }.
+ *   The secret itself is NOT read here: HttpKbProvider looks it up per request.
  * - provider "http" -> decrypts token_encrypted and returns { provider: 'http', url, token }.
  *   Missing url, missing token_encrypted, or a decryption failure all throw a
  *   descriptive Error naming this config path and the failing key -- never a silent
@@ -84,10 +93,21 @@ export function readKbConfigFromDisk(): KbConfigResult {
     );
   }
 
+  const requestTimeoutField = 'request_timeout_ms' in parsed
+    ? { requestTimeoutMs: readRequestTimeout(parsed.request_timeout_ms) }
+    : {};
+
+  // token_ref (a {{secret.NAME}} placeholder kb_setup stored instead of the
+  // value) wins over token_encrypted: kb_setup never writes both, and the
+  // reference is what the operator asked for most recently if a hand edit did.
+  if (typeof parsed.token_ref === 'string') {
+    return { provider: 'http', url, tokenSecretName: readTokenRef(parsed.token_ref), ...requestTimeoutField };
+  }
+
   const tokenEncrypted = typeof parsed.token_encrypted === 'string' ? parsed.token_encrypted : undefined;
   if (!tokenEncrypted) {
     throw new Error(
-      `KB config at ${KB_CONFIG_PATH} selects provider "http" but is missing required key "token_encrypted"`,
+      `KB config at ${KB_CONFIG_PATH} selects provider "http" but is missing required key "token_encrypted" (or "token_ref")`,
     );
   }
 
@@ -100,11 +120,22 @@ export function readKbConfigFromDisk(): KbConfigResult {
     );
   }
 
-  const requestTimeoutField = 'request_timeout_ms' in parsed
-    ? { requestTimeoutMs: readRequestTimeout(parsed.request_timeout_ms) }
-    : {};
-
   return { provider: 'http', url, token, ...requestTimeoutField };
+}
+
+/**
+ * The secret name inside a token_ref value. It must be exactly one placeholder
+ * ({{secret.NAME}}, or the legacy {{secure.NAME}}) and nothing else -- the
+ * same rule kb_setup applies on write, re-checked here for hand edits.
+ */
+function readTokenRef(value: string): string {
+  const matches = findSecretTokens(value);
+  if (matches.length !== 1 || matches[0].raw !== value) {
+    throw new Error(
+      `KB config at ${KB_CONFIG_PATH} has a "token_ref" that is not exactly one secret placeholder of the form {{secret.NAME}}`,
+    );
+  }
+  return matches[0].name;
 }
 
 /** True when value is an integer within the request_timeout_ms bounds. */

@@ -22,6 +22,8 @@ import type {
 } from './types.js';
 
 import { DEFAULT_REQUEST_TIMEOUT_MS } from './kb-config.js';
+import { lookupServerSecret } from '../credential-store.js';
+import { recordKbHttpSuccess, recordKbHttpRejected } from './kb-http-auth-state.js';
 
 export { DEFAULT_REQUEST_TIMEOUT_MS };
 
@@ -35,6 +37,66 @@ const MAX_QUEUE_SIZE = 1000;
 export interface HttpKbProviderOptions {
   /** Socket idle timeout per request, in ms; absent means DEFAULT_REQUEST_TIMEOUT_MS. */
   requestTimeoutMs?: number;
+}
+
+/**
+ * Where the bearer token comes from. A string is a literal token fixed for the
+ * provider's lifetime (the behaviour before named secrets). `{ secretName }`
+ * names a fleet secret that is looked up on EVERY request, so a secret updated
+ * outside fleet is used by the very next call with no restart.
+ */
+export type KbHttpTokenSource = string | { secretName: string };
+
+export type KbHttpAuthReason = 'missing' | 'expired' | 'rejected' | 'unreadable';
+
+/**
+ * E-KB-HTTP-AUTH: the remote KB's token comes from a named fleet secret and
+ * that secret is missing, expired, unreadable, or was rejected by the server
+ * (HTTP 401) on the request and on one retry after re-reading it. The message
+ * names the secret and the reason, never the value. `queued` is true when the
+ * operation (a capture or invalidate) was kept in the offline queue and will
+ * be sent once the secret is accepted.
+ */
+export class KbHttpAuthError extends Error {
+  readonly code = 'E-KB-HTTP-AUTH' as const;
+  readonly secretName: string;
+  readonly reason: KbHttpAuthReason;
+  readonly remediation: string;
+  readonly queued: boolean;
+  /** The problem sentence, without the code prefix and remediation. */
+  readonly problem: string;
+  constructor(secretName: string, reason: KbHttpAuthReason, problem: string, queued = false) {
+    const remediation = `apra-fleet secret --set ${secretName} --persist -y (the next KB call uses the new value; no restart needed)`;
+    const queuedNote = queued
+      ? ' The operation was queued offline and is sent once the secret is accepted.'
+      : '';
+    super(`E-KB-HTTP-AUTH: ${problem}${queuedNote} Remediation: ${remediation}`);
+    this.name = 'KbHttpAuthError';
+    this.secretName = secretName;
+    this.reason = reason;
+    this.remediation = remediation;
+    this.queued = queued;
+    this.problem = problem;
+  }
+
+  /** The same error, marked as having left its operation in the offline queue. */
+  asQueued(): KbHttpAuthError {
+    if (this.queued) return this;
+    return new KbHttpAuthError(this.secretName, this.reason, this.problem, true);
+  }
+}
+
+function isAuthError(err: unknown): err is KbHttpAuthError {
+  return err instanceof KbHttpAuthError;
+}
+
+function isHttp401(err: unknown): boolean {
+  return err instanceof Error && (err as NodeJS.ErrnoException).code === 'HTTP_401';
+}
+
+/** Defensive: a server that echoes the Authorization header must not leak the token into an error. */
+function redactToken(text: string, token: string): string {
+  return token ? text.split(token).join('[REDACTED]') : text;
 }
 
 type QueuedOperation =
@@ -57,16 +119,16 @@ function isConnectionError(err: unknown): boolean {
 
 export class HttpKbProvider implements MemoryProvider {
   private baseUrl: string;
-  private readonly token: string;
+  private readonly tokenSource: KbHttpTokenSource;
   private readonly fallback: SqliteProvider;
   private readonly requestTimeoutMs: number;
   readonly offlineQueue: QueuedOperation[] = [];
   private readonly beforeExitHandler: () => void;
 
-  constructor(url: string, token: string, fallback?: SqliteProvider, options: HttpKbProviderOptions = {}) {
+  constructor(url: string, token: KbHttpTokenSource, fallback?: SqliteProvider, options: HttpKbProviderOptions = {}) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.baseUrl = url.replace(/\/$/, '');
-    this.token = token;
+    this.tokenSource = token;
     this.fallback = fallback ?? new SqliteProvider();
 
     this.beforeExitHandler = () => {
@@ -92,11 +154,79 @@ export class HttpKbProvider implements MemoryProvider {
     this.offlineQueue.push(op);
   }
 
-  private rawRequest<T>(
+  /**
+   * The token to send now. A literal is returned as is. A secret name is
+   * looked up (server-side lookup: allowedMembers does not apply, an expired
+   * record is reported and kept) and a missing/expired/unreadable secret
+   * raises E-KB-HTTP-AUTH before any request is sent.
+   */
+  private resolveToken(): string {
+    const source = this.tokenSource;
+    if (typeof source === 'string') return source;
+    const name = source.secretName;
+    let found: ReturnType<typeof lookupServerSecret>;
+    try {
+      found = lookupServerSecret(name);
+    } catch (err) {
+      throw new KbHttpAuthError(
+        name, 'unreadable',
+        `the KB server token comes from fleet secret "${name}", which could not be read (${(err as Error).message}).`,
+      );
+    }
+    if (found.status === 'missing') {
+      throw new KbHttpAuthError(name, 'missing', `the KB server token comes from fleet secret "${name}", which does not exist.`);
+    }
+    if (found.status === 'expired') {
+      throw new KbHttpAuthError(
+        name, 'expired',
+        `the KB server token comes from fleet secret "${name}", which expired at ${found.expiresAt}.`,
+      );
+    }
+    return found.value;
+  }
+
+  /**
+   * One authenticated request. Literal token: exactly the old behaviour (a
+   * 401 is thrown as the plain HTTP_401 error, no retry). Secret name: the
+   * secret is looked up for this request; on 401 it is looked up once more
+   * and the request retried once; a second 401 raises E-KB-HTTP-AUTH.
+   * Records the last success / last 401 for fleet_status either way.
+   */
+  private async request<T>(
     method: string,
     pathname: string,
     body?: unknown,
     queryParams?: Record<string, string>
+  ): Promise<T> {
+    const secretName = typeof this.tokenSource === 'string' ? undefined : this.tokenSource.secretName;
+    const attempts = secretName === undefined ? 1 : 2;
+    for (let attempt = 1; ; attempt++) {
+      const token = this.resolveToken();
+      try {
+        const result = await this.rawRequest<T>(token, method, pathname, body, queryParams, secretName !== undefined);
+        recordKbHttpSuccess(this.baseUrl);
+        return result;
+      } catch (err) {
+        if (!isHttp401(err)) throw err;
+        recordKbHttpRejected(this.baseUrl);
+        if (secretName === undefined) throw err;
+        if (attempt >= attempts) {
+          throw new KbHttpAuthError(
+            secretName, 'rejected',
+            `the KB server rejected the token from fleet secret "${secretName}" (HTTP 401), also on one retry after re-reading the secret.`,
+          );
+        }
+      }
+    }
+  }
+
+  private rawRequest<T>(
+    token: string,
+    method: string,
+    pathname: string,
+    body?: unknown,
+    queryParams?: Record<string, string>,
+    nonJson401IsAuth = false,
   ): Promise<T> {
     return new Promise((resolve, reject) => {
       const parsedUrl = new URL(this.baseUrl);
@@ -109,7 +239,7 @@ export class HttpKbProvider implements MemoryProvider {
       const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.token}`,
+        'Authorization': `Bearer ${token}`,
       };
       if (bodyStr) headers['Content-Length'] = Buffer.byteLength(bodyStr).toString();
 
@@ -131,15 +261,25 @@ export class HttpKbProvider implements MemoryProvider {
           try {
             const parsed = JSON.parse(data);
             if (res.statusCode !== undefined && res.statusCode >= 400) {
-              const httpErr = new Error(
-                `HTTP ${res.statusCode}: ${(parsed as Record<string, string>).error ?? data}`
-              ) as NodeJS.ErrnoException;
+              const httpErr = new Error(redactToken(
+                `HTTP ${res.statusCode}: ${(parsed as Record<string, string>).error ?? data}`, token,
+              )) as NodeJS.ErrnoException;
               httpErr.code = `HTTP_${res.statusCode}`;
               reject(httpErr);
             } else {
               resolve(parsed as T);
             }
           } catch {
+            // An auth proxy in front of the KB (e.g. Entra) answers 401 with
+            // an empty or HTML body. For a named-secret token that must still
+            // count as a 401 so the re-read-and-retry runs. A literal token
+            // keeps the old error unchanged.
+            if (nonJson401IsAuth && res.statusCode === 401) {
+              const authErr = new Error('HTTP 401: KB server rejected the token') as NodeJS.ErrnoException;
+              authErr.code = 'HTTP_401';
+              reject(authErr);
+              return;
+            }
             reject(new Error(`Invalid JSON response from KB server`));
           }
         });
@@ -160,18 +300,22 @@ export class HttpKbProvider implements MemoryProvider {
     });
   }
 
+  // Stops (keeping the queue) on a connection error AND on E-KB-HTTP-AUTH: an
+  // auth failure is not the queued op's fault, and dropping it would lose
+  // every queued capture the moment the secret goes wrong. Any other error is
+  // specific to that op, which is dropped as before.
   private async tryFlushQueue(): Promise<void> {
     while (this.offlineQueue.length > 0) {
       const op = this.offlineQueue[0];
       try {
         if (op.op === 'capture') {
-          await this.rawRequest('POST', '/api/kb/capture', op.input);
+          await this.request('POST', '/api/kb/capture', op.input);
         } else if (op.op === 'invalidate') {
-          await this.rawRequest('POST', '/api/kb/invalidate', { files: op.files });
+          await this.request('POST', '/api/kb/invalidate', { files: op.files });
         }
         this.offlineQueue.shift();
       } catch (err) {
-        if (isConnectionError(err)) {
+        if (isConnectionError(err) || isAuthError(err)) {
           break;
         }
         this.offlineQueue.shift();
@@ -186,13 +330,19 @@ export class HttpKbProvider implements MemoryProvider {
   async capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }> {
     await this.tryFlushQueue();
     try {
-      return await this.rawRequest<{ id: string; audn_decision: AudnDecision }>(
+      return await this.request<{ id: string; audn_decision: AudnDecision }>(
         'POST', '/api/kb/capture', input
       );
     } catch (err) {
       if (isConnectionError(err)) {
         this.enqueue({ op: 'capture', input });
         return { id: `offline-${randomBytes(8).toString('hex')}`, audn_decision: 'add' };
+      }
+      if (isAuthError(err)) {
+        // Queued exactly as for server-down, but the call still fails with
+        // E-KB-HTTP-AUTH: unlike an outage, this needs the operator to act.
+        this.enqueue({ op: 'capture', input });
+        throw err.asQueued();
       }
       throw err;
     }
@@ -211,7 +361,7 @@ export class HttpKbProvider implements MemoryProvider {
     if (opts.exclude_disputed) params.exclude_disputed = 'true';
 
     try {
-      return await this.rawRequest<KBResult>('GET', '/api/kb/query', undefined, params);
+      return await this.request<KBResult>('GET', '/api/kb/query', undefined, params);
     } catch (err) {
       if (isConnectionError(err)) {
         return this.fallback.query(opts);
@@ -226,7 +376,7 @@ export class HttpKbProvider implements MemoryProvider {
       const ctxParams: Record<string, string> = { files: files.join(',') };
       if (confidence?.length) ctxParams.confidence = confidence.join(',');
       if (excludeDisputed) ctxParams.exclude_disputed = 'true';
-      const result = await this.rawRequest<{ results: FileContextResult[] }>(
+      const result = await this.request<{ results: FileContextResult[] }>(
         'GET', '/api/kb/context', undefined, ctxParams
       );
       return result.results;
@@ -245,13 +395,17 @@ export class HttpKbProvider implements MemoryProvider {
   async invalidate(files: string[]): Promise<{ invalidated: number }> {
     await this.tryFlushQueue();
     try {
-      return await this.rawRequest<{ invalidated: number }>(
+      return await this.request<{ invalidated: number }>(
         'POST', '/api/kb/invalidate', { files }
       );
     } catch (err) {
       if (isConnectionError(err)) {
         this.enqueue({ op: 'invalidate', files });
         return { invalidated: 0 };
+      }
+      if (isAuthError(err)) {
+        this.enqueue({ op: 'invalidate', files });
+        throw err.asQueued();
       }
       throw err;
     }
@@ -299,7 +453,7 @@ export class HttpKbProvider implements MemoryProvider {
   async prime(opts: PrimeOptions): Promise<PrimedContext> {
     await this.tryFlushQueue();
     try {
-      return await this.rawRequest<PrimedContext>('POST', '/api/kb/prime', opts);
+      return await this.request<PrimedContext>('POST', '/api/kb/prime', opts);
     } catch (err) {
       if (isConnectionError(err)) {
         return this.fallback.prime(opts);

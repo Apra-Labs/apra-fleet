@@ -559,6 +559,16 @@ session's `kb_query` / `kb_session_prime` / `kb_stats`), `E-MEMBER-VIEW-REMOTE`
 and `E-BIBLE-BASIS-NOT-GIT` (`kb_export` / `kb_bible_commit` in a folder that is
 not a git work tree).
 
+`E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_harvest`, `kb_invalidate`,
+`kb_query`, `kb_context` and `kb_session_prime` when the remote (HTTP) KB takes
+its token from a named fleet secret (`kb_setup` token `{{secret.NAME}}`) and that
+secret is missing, expired, or still rejected (HTTP 401) after one re-read and
+retry. The message names the secret and the reason, never the value. A capture
+or invalidate is queued offline first and sent once the secret is accepted; a
+member session's CONFIRMED read comes from its checkout bible and is unaffected.
+Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
+restart.
+
 `kb_import` in a member session without the kb_maintainer grant fails with
 `E-KB-MAINTAINER-REQUIRED` and imports nothing when: it names an explicit
 `path` other than its own `.fleet/kb-canonical.json`; the own bible has no
