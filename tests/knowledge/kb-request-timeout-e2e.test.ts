@@ -27,7 +27,9 @@ let responseDelayMs = 0;
 // timeout into offline-queue or local-fallback behaviour.
 type RawRequest = (method: string, pathname: string, body?: unknown) => Promise<unknown>;
 function rawRequestOf(provider: HttpKbProvider): RawRequest {
-  const raw = (provider as unknown as { rawRequest: RawRequest }).rawRequest;
+  // `request` (not rawRequest, which now also takes the token to send) keeps
+  // the (method, pathname, body) shape and resolves the token itself.
+  const raw = (provider as unknown as { request: RawRequest }).request;
   return raw.bind(provider);
 }
 
