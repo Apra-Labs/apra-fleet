@@ -252,6 +252,9 @@ no separate "server mode" build. A config with no remote, or any config the
 reader cannot parse, always falls back to the local SQLite provider -- see
 [Client-side provider selection](docs/knowledge-layer-design.md#client-side-provider-selection)
 for the exact selection rule and its fallback-construction invariant.
+`--token {{secret.NAME}}` stores a reference to a refreshable fleet secret instead of a token, so an
+expiring server token can be rotated with `apra-fleet secret --set NAME --persist -y` and no restart (see
+[Named credentials](docs/knowledge-layer.md#named-credentials-and-refreshers)).
 `--request_timeout_ms <ms>` (1000-120000, default 5000) sets the socket idle
 timeout for each request to the remote KB server. It is not a per-request
 deadline: a call can wait up to about twice the value while queued offline
