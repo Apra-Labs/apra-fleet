@@ -22,6 +22,12 @@ import type {
 } from './types.js';
 
 import { DEFAULT_REQUEST_TIMEOUT_MS } from './kb-config.js';
+import {
+  REPOSITORY_HEADER,
+  REPOSITORY_COMMIT_HEADER,
+  isValidRepositoryValue,
+  type RepositoryIdentity,
+} from './repository-header.js';
 
 export { DEFAULT_REQUEST_TIMEOUT_MS };
 
@@ -35,7 +41,15 @@ const MAX_QUEUE_SIZE = 1000;
 export interface HttpKbProviderOptions {
   /** Socket idle timeout per request, in ms; absent means DEFAULT_REQUEST_TIMEOUT_MS. */
   requestTimeoutMs?: number;
+  /**
+   * The repository every request is about, sent as the X-Repository and
+   * X-Repository-Commit headers. Filled only from fleet's resolved KB anchor
+   * (kb-providers.ts), never from tool input. Absent: neither header is sent.
+   */
+  repository?: RepositoryIdentity;
 }
+
+const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 type QueuedOperation =
   | { op: 'capture'; input: KBEntryInput }
@@ -60,11 +74,15 @@ export class HttpKbProvider implements MemoryProvider {
   private readonly token: string;
   private readonly fallback: SqliteProvider;
   private readonly requestTimeoutMs: number;
+  private readonly repository: RepositoryIdentity | undefined;
   readonly offlineQueue: QueuedOperation[] = [];
   private readonly beforeExitHandler: () => void;
 
   constructor(url: string, token: string, fallback?: SqliteProvider, options: HttpKbProviderOptions = {}) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.repository = options.repository && isValidRepositoryValue(options.repository.remote)
+      ? options.repository
+      : undefined;
     this.baseUrl = url.replace(/\/$/, '');
     this.token = token;
     this.fallback = fallback ?? new SqliteProvider();
@@ -92,6 +110,21 @@ export class HttpKbProvider implements MemoryProvider {
     this.offlineQueue.push(op);
   }
 
+  // The repository headers for one request. The commit is best effort: an
+  // unreadable or malformed sha omits the header, never fails the request.
+  private repositoryHeaders(): Record<string, string> {
+    if (!this.repository) return {};
+    const headers: Record<string, string> = { [REPOSITORY_HEADER]: this.repository.remote };
+    let commit: string | undefined;
+    try {
+      commit = this.repository.commitOf?.();
+    } catch {
+      commit = undefined;
+    }
+    if (commit && COMMIT_SHA.test(commit)) headers[REPOSITORY_COMMIT_HEADER] = commit;
+    return headers;
+  }
+
   private rawRequest<T>(
     method: string,
     pathname: string,
@@ -110,6 +143,7 @@ export class HttpKbProvider implements MemoryProvider {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.token}`,
+        ...this.repositoryHeaders(),
       };
       if (bodyStr) headers['Content-Length'] = Buffer.byteLength(bodyStr).toString();
 
