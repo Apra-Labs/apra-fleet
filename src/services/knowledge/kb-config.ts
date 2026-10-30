@@ -32,6 +32,8 @@ export interface KbConfigFile {
   provider?: 'sqlite' | 'http';
   url?: string;
   token_encrypted?: string;
+  /** Canonical {{secret.NAME}} placeholder written by kb_setup instead of token_encrypted. */
+  token_ref?: string;
   request_timeout_ms?: number;
   bible?: { autoCommit?: boolean };
   [key: string]: unknown;

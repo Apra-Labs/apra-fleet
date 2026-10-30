@@ -6,6 +6,8 @@ import { installKbPostCommitHook } from './kb-invalidate.js';
 import { KB_CONFIG_PATH, MIN_REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS } from '../services/knowledge/kb-config.js';
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 import { encryptPassword } from '../utils/crypto.js';
+import { findSecretTokens, hasSecretToken, formatSecretToken, legacyTokenWarning } from '../services/secret-token.js';
+import { lookupServerSecretMeta } from '../services/credential-store.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { resolveKbAnchor, KbSelfError, type KbAnchor } from '../services/knowledge/kb-self.js';
 
@@ -15,7 +17,7 @@ export const kbSetupSchema = z.object({
   remote: z.string().optional()
     .describe('Remote KB server URL, http(s) only (required when provider=http). Use https for any non-loopback host: plain http sends the token in cleartext.'),
   token: z.string().optional()
-    .describe('Authentication token for remote KB server (stored encrypted, never logged)'),
+    .describe('Authentication token for remote KB server. Either a literal token (stored encrypted, never logged) or exactly one named fleet secret placeholder of the form {{secret.NAME}} with nothing around it: then only the placeholder is stored and the server looks the secret up on each request, so rotating the secret needs no kb_setup re-run. For provider http the secret must already exist (apra-fleet secret --set NAME --persist -y).'),
   request_timeout_ms: z.number().int().min(MIN_REQUEST_TIMEOUT_MS).max(MAX_REQUEST_TIMEOUT_MS).optional()
     .describe('Socket idle timeout in milliseconds for each request to the remote KB server, 1000-120000 (default 5000). Not a per-request deadline: a call can wait up to about twice this while queued offline writes flush first.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
@@ -76,6 +78,41 @@ function checkRequestTimeout(value: number | undefined): void {
   throw new Error(`kb_setup: request_timeout_ms must be an integer between ${MIN_REQUEST_TIMEOUT_MS} and ${MAX_REQUEST_TIMEOUT_MS}, got ${value}`);
 }
 
+interface TokenRef {
+  name: string;
+  legacy: boolean;
+}
+
+/**
+ * Classify input.token. A literal returns null. A value containing a secret
+ * placeholder must be exactly one placeholder with nothing around it, else it
+ * is refused (naming the field, never echoing the value). For provider http
+ * the named secret must exist and be unexpired.
+ */
+function checkTokenRef(input: KbSetupInput): TokenRef | null {
+  const token = input.token;
+  if (!token || !hasSecretToken(token)) return null;
+  const matches = findSecretTokens(token);
+  if (matches.length !== 1 || matches[0].raw !== token) {
+    throw new Error(
+      'kb_setup: token must be either a literal token or exactly one secret placeholder ' +
+      '({{secret.NAME}}) with no surrounding text, quotes or whitespace',
+    );
+  }
+  const { name, legacy } = matches[0];
+  if (input.provider === 'http' || input.remote) {
+    const found = lookupServerSecretMeta(name);
+    const fix = `Set it with: apra-fleet secret --set ${name} --persist -y`;
+    if (found.status === 'missing') {
+      throw new Error(`kb_setup: token refers to secret "${name}", which does not exist. ${fix}`);
+    }
+    if (found.status === 'expired') {
+      throw new Error(`kb_setup: token refers to secret "${name}", which has expired. Re-set it with: apra-fleet secret --set ${name} --persist -y`);
+    }
+  }
+  return { name, legacy };
+}
+
 /**
  * The config kb_setup merges into. Absent -> empty. Malformed (bad JSON, or
  * not a JSON object) -> empty plus a warning: kb_setup is the tool an operator
@@ -119,7 +156,7 @@ function discardMalformed(warnings: string[], reason: string): KbConfigFile {
  *   dropped with a warning: sending one server's bearer token to another
  *   leaks the credential.
  */
-function applySetupInput(config: KbConfigFile, input: KbSetupInput, steps: string[], warnings: string[]): void {
+function applySetupInput(config: KbConfigFile, input: KbSetupInput, ref: TokenRef | null, steps: string[], warnings: string[]): void {
   if (input.provider || input.remote) {
     config.provider = input.provider || 'http';
   } else if (!config.provider) {
@@ -129,8 +166,9 @@ function applySetupInput(config: KbConfigFile, input: KbSetupInput, steps: strin
   if (input.remote) {
     const urlChanged = config.url !== input.remote;
     config.url = input.remote;
-    if (urlChanged && !input.token && config.token_encrypted) {
+    if (urlChanged && !input.token && (config.token_encrypted || config.token_ref)) {
       delete config.token_encrypted;
+      delete config.token_ref;
       const warning = 'remote changed and no token was given: the token stored for the previous ' +
         'remote was removed rather than sent to the new one. Re-run kb_setup with a token.';
       logWarn('kb_setup', warning);
@@ -143,7 +181,13 @@ function applySetupInput(config: KbConfigFile, input: KbSetupInput, steps: strin
     steps.push('Stored request timeout');
   }
 
-  if (input.token) {
+  if (input.token && ref) {
+    config.token_ref = formatSecretToken(ref.name);
+    delete config.token_encrypted;
+    steps.push(`Stored remote token as a reference to secret ${ref.name} (value is looked up per request, not stored)`);
+    if (ref.legacy) warnings.push(legacyTokenWarning([ref.name]));
+  } else if (input.token) {
+    delete config.token_ref;
     config.token_encrypted = encryptPassword(input.token);
     steps.push('Stored remote token encrypted (AES-256-GCM)');
   }
@@ -162,6 +206,7 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<s
   // Validate before any side effect, so a bad remote or timeout installs no
   // hook and leaves any existing config untouched.
   checkRequestTimeout(input.request_timeout_ms);
+  const ref = checkTokenRef(input);
   const warnings = input.remote ? checkRemoteUrl(input.remote) : [];
   for (const warning of warnings) {
     logWarn('kb_setup', warning);
@@ -189,7 +234,7 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<s
   }
 
   const config = readExistingConfig(warnings);
-  applySetupInput(config, input, steps, warnings);
+  applySetupInput(config, input, ref, steps, warnings);
   writeConfig(config);
   steps.push('Wrote KB config to ' + KB_CONFIG_PATH);
 
