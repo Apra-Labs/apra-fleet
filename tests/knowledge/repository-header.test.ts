@@ -41,6 +41,16 @@ describe('normaliseRepositoryRemote', () => {
     ['ssh://git@github.com:22/Apra-Labs/apra-fleet', 'github.com/Apra-Labs/apra-fleet'],
     ['git://github.com/Apra-Labs/apra-fleet.git', 'github.com/Apra-Labs/apra-fleet'],
     ['https://gitlab.example.com:8443/group/sub/repo.git', 'gitlab.example.com/group/sub/repo'],
+    // userinfo in the authority is legitimate and stripped
+    ['https://user:pass@host.example/o/r', 'host.example/o/r'],
+    ['https://user@host.example/o/r', 'host.example/o/r'],
+    ['ssh://git@github.com/o/r.git', 'github.com/o/r'],
+    ['git@github.com:o/r.git', 'github.com/o/r'],
+    ['https://u:p@ss@github.com/o/r', 'github.com/o/r'],
+    ['https://u:p:ss@github.com/o/r', 'github.com/o/r'],
+    ['https://u:p%40ss@github.com/o/r', 'github.com/o/r'],
+    ['https://u:p%2Fss@github.com/o/r', 'github.com/o/r'],
+    ['https://org@dev.azure.com/org/proj/_git/repo', 'dev.azure.com/org/proj/_git/repo'],
   ])('%s -> %s', (input, expected) => {
     expect(normaliseRepositoryRemote(input)).toBe(expected);
   });
@@ -113,6 +123,17 @@ describe('normaliseRepositoryRemote', () => {
     ['https://github.com?access_token=tok/org/repo'],
     ['https://host:abc/o/r'],
     ['https://github.com\t/o/r'],
+    // A password with a numeric prefix and a '/': the port strip would turn
+    // `user:1234` into host `user`, leaving the rest of the credentials in the path.
+    ['https://alice:1234/abcd@github.com/o/r'],
+    ['https://x-access-token:1/Zm9vYmFy@github.com/o/r'],
+    ['user:p/w@github.com:o/r'],
+    ['https://u:12/a@b@github.com/o/r'],
+    ['https://u:12/a:b@github.com/o/r'],
+    ['https://u:12/a%40b@github.com/o/r'],
+    ['https://u:12/ab#cd@github.com/o/r'],
+    ['https://u:12/ab?cd@github.com/o/r'],
+    ['user:12/ab#cd@github.com:o/r'],
   ])('returns undefined for %j (not a network remote, or not a valid header)', (input) => {
     expect(normaliseRepositoryRemote(input)).toBeUndefined();
   });

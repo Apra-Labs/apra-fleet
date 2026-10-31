@@ -69,6 +69,12 @@ export function normaliseRepositoryRemote(remoteUrl: string): string | undefined
     pathPart = scp[2];
   }
 
+  // Real userinfo sits in the authority and is already stripped. An '@' still in
+  // the path means the parser misread credentials as the host (a password with a
+  // numeric prefix and a '/', e.g. `https://u:1234/pw@host/o/r` turns `u:1234`
+  // into host `u` and a port). Checked before the query/fragment strip so a
+  // `#`/`?` in such a password cannot hide the '@'. Send no header.
+  if (pathPart.includes('@')) return undefined;
   // Query and fragment never identify a repository and can carry tokens.
   pathPart = pathPart.replace(/[?#].*$/, '');
   const host = hostPart.toLowerCase();
