@@ -295,8 +295,8 @@
  * @property {"secret" | "literal"} kind - "secret": token_ref names a fleet secret looked up per request; "literal": a stored literal token
  * @property {string} url - Remote KB URL
  * @property {string} [secretName] - kind "secret": the fleet secret's name
- * @property {"ok" | "missing" | "expired"} [resolves] - kind "secret": metadata lookup result (an expired record is kept)
- * @property {string | null} [lastWritten] - kind "secret": the secret record's created_at; null when missing
+ * @property {"ok" | "missing" | "expired" | "unreadable"} [resolves] - kind "secret": metadata lookup result (an expired record is kept); "unreadable" when the credential store cannot be read or the value cannot be decrypted
+ * @property {string | null} [lastWritten] - kind "secret": the secret record's created_at; null when missing or the store is unreadable
  * @property {string | null} [tokenExpiry] - kind "secret": JWT exp decoded locally (ISO time); null for a non-JWT or unresolved value
  * @property {string | null} lastSuccessfulCall - Last KB call accepted by the remote server in this server process; null when none yet
  * @property {string | null} lastRejectedCall - Last KB call rejected with HTTP 401 in this server process; null when none yet

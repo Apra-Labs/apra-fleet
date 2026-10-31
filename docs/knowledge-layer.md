@@ -633,8 +633,10 @@ are still served from the checkout bible. After a refresh nothing needs
 restarting.
 
 **fleet_status.** With the http provider, `fleet_status` shows a
-`kb credential:` line: `secret NAME | resolves: ok|missing|expired | last
-written | token expiry (JWT exp, or none) | last ok call | last rejected call`.
+`kb credential:` line: `secret NAME | resolves: ok|missing|expired|unreadable |
+last written | token expiry (JWT exp, or none) | last ok call | last rejected
+call`. `unreadable` means the credential store could not be read or the value
+could not be decrypted.
 For a literal token the line says it cannot be refreshed without re-running
 `kb_setup`, and gives the commands to switch to a named secret.
 

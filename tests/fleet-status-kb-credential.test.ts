@@ -24,6 +24,7 @@ import { SqliteProvider } from '../src/services/knowledge/sqlite-provider.js';
 import { resetKbHttpAuthState } from '../src/services/knowledge/kb-http-auth-state.js';
 import { credentialSet, credentialDelete, lookupServerSecretMeta } from '../src/services/credential-store.js';
 import { encryptPassword } from '../src/utils/crypto.js';
+import { FLEET_DIR } from '../src/paths.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 
@@ -221,6 +222,49 @@ describe('fleet_status KB credential signals', () => {
     expect(compact).toContain('kb:');
     expect(json.kbHealth).toBeDefined();
     expect(json.kbHealth).not.toHaveProperty('credential');
+  });
+
+  it('4c. corrupt credentials.json: the line still renders with resolves unreadable, no file content shown', async () => {
+    const credPath = path.join(process.env.APRA_FLEET_DATA_DIR ?? FLEET_DIR, 'credentials.json');
+    const saved = fs.readFileSync(credPath, 'utf-8');
+    const garbage = `{"version":"1.0","credentials":{ ${CANARY}-cipher`;
+    try {
+      fs.writeFileSync(credPath, garbage);
+      const { json, compact, line } = await status();
+      expect(json.kbHealth?.credential).toMatchObject({
+        kind: 'secret', secretName: NAME, resolves: 'unreadable', lastWritten: null, tokenExpiry: null,
+      });
+      expect(line).toContain(`secret ${NAME} | resolves: unreadable`);
+      expect(compact + JSON.stringify(json)).not.toContain(`${CANARY}-cipher`);
+    } finally {
+      fs.writeFileSync(credPath, saved);
+    }
+  });
+
+  it('4d. value fails to decrypt: resolves unreadable, last written kept, no ciphertext shown', async () => {
+    const credPath = path.join(process.env.APRA_FLEET_DATA_DIR ?? FLEET_DIR, 'credentials.json');
+    const saved = fs.readFileSync(credPath, 'utf-8');
+    const createdAt = (lookupServerSecretMeta(NAME) as { meta: { created_at: string } }).meta.created_at;
+    const file = JSON.parse(saved);
+    const enc: string = file.credentials[NAME].encryptedValue;
+    // Flip the auth tag so the GCM decrypt throws.
+    const [iv, tag, body] = enc.split(':');
+    const badTag = (tag[0] === '0' ? '1' : '0') + tag.slice(1);
+    file.credentials[NAME].encryptedValue = `${iv}:${badTag}:${body}`;
+    try {
+      fs.writeFileSync(credPath, JSON.stringify(file));
+      const { json, compact, line } = await status();
+      expect(json.kbHealth?.credential).toMatchObject({
+        kind: 'secret', secretName: NAME, resolves: 'unreadable', lastWritten: createdAt, tokenExpiry: null,
+      });
+      expect(line).toContain('resolves: unreadable');
+      expect(line).toContain(`last written: ${createdAt}`);
+      const both = compact + JSON.stringify(json);
+      expect(both).not.toContain(body);
+      expect(both).not.toContain(badTag);
+    } finally {
+      fs.writeFileSync(credPath, saved);
+    }
   });
 
   it('5. canary: no secret value ever appears in compact or json output', () => {

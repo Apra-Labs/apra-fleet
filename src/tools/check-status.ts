@@ -482,9 +482,14 @@ export type KbHttpCredentialHealth =
     url: string;
     /** Fleet secret named by the config's token_ref. */
     secretName: string;
-    /** Metadata lookup: ok, missing, or expired (an expired record is kept, never deleted here). */
-    resolves: 'ok' | 'missing' | 'expired';
-    /** The secret record's created_at; null when the secret is missing. */
+    /**
+     * Metadata lookup: ok, missing, or expired (an expired record is kept, never
+     * deleted here). unreadable: the credential store could not be read, or the
+     * secret's value could not be decrypted; every KB call then fails with
+     * E-KB-HTTP-AUTH reason unreadable.
+     */
+    resolves: 'ok' | 'missing' | 'expired' | 'unreadable';
+    /** The secret record's created_at; null when the secret is missing or the store is unreadable. */
     lastWritten: string | null;
     /** exp of a JWT secret value, decoded locally, as ISO time; null for a non-JWT value or an unresolved secret. */
     tokenExpiry: string | null;
@@ -591,30 +596,43 @@ export function kbHttpCredentialHealth(config: KbConfigResult): KbHttpCredential
     return { kind: 'literal', url: config.url, lastSuccessfulCall, lastRejectedCall, hint: KB_LITERAL_TOKEN_HINT };
   }
   const secretName = config.tokenSecretName;
-  const meta = lookupServerSecretMeta(secretName);
+  const block = { kind: 'secret' as const, url: config.url, secretName, lastSuccessfulCall, lastRejectedCall };
+  // A store or decrypt failure is reported as resolves unreadable, never
+  // hidden; the error text is dropped because it can quote ciphertext.
+  let meta: ReturnType<typeof lookupServerSecretMeta>;
+  try {
+    meta = lookupServerSecretMeta(secretName);
+  } catch {
+    return { ...block, resolves: 'unreadable', lastWritten: null, tokenExpiry: null };
+  }
+  const lastWritten = meta.status === 'missing' ? null : meta.meta.created_at;
   let tokenExpiry: string | null = null;
   if (meta.status === 'ok') {
-    const found = lookupServerSecret(secretName);
+    let found: ReturnType<typeof lookupServerSecret>;
+    try {
+      found = lookupServerSecret(secretName);
+    } catch {
+      return { ...block, resolves: 'unreadable', lastWritten, tokenExpiry: null };
+    }
     if (found.status === 'ok') tokenExpiry = jwtExpiry(found.value);
   }
-  return {
-    kind: 'secret',
-    url: config.url,
-    secretName,
-    resolves: meta.status,
-    lastWritten: meta.status === 'missing' ? null : meta.meta.created_at,
-    tokenExpiry,
-    lastSuccessfulCall,
-    lastRejectedCall,
-  };
+  return { ...block, resolves: meta.status, lastWritten, tokenExpiry };
 }
 
 function safeCredentialHealth(config: KbConfigResult): KbHttpCredentialHealth | undefined {
   try {
     return kbHttpCredentialHealth(config);
   } catch {
-    // An unreadable credential store must not hide the rest of the KB section.
-    return undefined;
+    // Store errors are handled inside kbHttpCredentialHealth; anything else
+    // still renders the line rather than hiding it.
+    if (config.provider !== 'http' || !config.url) return undefined;
+    if (config.tokenSecretName === undefined) {
+      return { kind: 'literal', url: config.url, lastSuccessfulCall: null, lastRejectedCall: null, hint: KB_LITERAL_TOKEN_HINT };
+    }
+    return {
+      kind: 'secret', url: config.url, secretName: config.tokenSecretName, resolves: 'unreadable',
+      lastWritten: null, tokenExpiry: null, lastSuccessfulCall: null, lastRejectedCall: null,
+    };
   }
 }
 

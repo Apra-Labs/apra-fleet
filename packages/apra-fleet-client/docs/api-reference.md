@@ -377,7 +377,9 @@ When the KB config selects the http provider, `kbHealth.credential`
 remote KB credential for this host -- one block, shared by every scope the
 http provider serves. For a named secret (`kind: "secret"`): `secretName`,
 `resolves` (`ok` / `missing` / `expired`, from metadata; an expired record is
-never deleted), `lastWritten` (the secret's `created_at`), `tokenExpiry` (the
+never deleted; `unreadable` when the credential store cannot be read or the
+value cannot be decrypted -- the line is still shown, with `lastWritten` kept
+if only the decrypt failed), `lastWritten` (the secret's `created_at`), `tokenExpiry` (the
 `exp` of a JWT value decoded locally, else `null`), and `lastSuccessfulCall` /
 `lastRejectedCall` (this server process; `null`, shown as `never`, until the
 first call). A literal-token config (`kind: "literal"`) carries the call times
