@@ -101,6 +101,38 @@ describe('kb_setup named secret token', () => {
     expect(fs.existsSync(configPath)).toBe(false);
   });
 
+  it('token-only update of an existing http config refuses a missing secret and leaves the config unchanged', async () => {
+    writeConfig(JSON.stringify({ provider: 'http', url: REMOTE, token_ref: `{{secret.${NAME}}}` }));
+    const before = fs.readFileSync(configPath, 'utf-8');
+    let msg = '';
+    try {
+      await kbSetup({ token: '{{secret.NO_SUCH_KB_SECRET}}' }, { folder: tmpDir });
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toContain('NO_SUCH_KB_SECRET');
+    expect(msg).toContain('apra-fleet secret --set NO_SUCH_KB_SECRET --persist -y');
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    expect(fs.existsSync(hookPath())).toBe(false);
+  });
+
+  it('token-only update of an existing http config refuses an expired secret', async () => {
+    writeConfig(JSON.stringify({ provider: 'http', url: REMOTE, token_encrypted: 'x' }));
+    const before = fs.readFileSync(configPath, 'utf-8');
+    credentialSet(NAME, CANARY, true, 'allow', '*', -10);
+    await expect(kbSetup({ token: `{{secret.${NAME}}}` }, { folder: tmpDir })).rejects.toThrow(/expired/);
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+  });
+
+  it('token-only update of an existing http config accepts a present secret and keeps provider and url', async () => {
+    writeConfig(JSON.stringify({ provider: 'http', url: REMOTE, token_encrypted: 'old' }));
+    const out = JSON.parse(await kbSetup({ token: `{{secret.${NAME}}}` }, { folder: tmpDir }));
+    expect(out.success).toBe(true);
+    const cfg = readConfig();
+    expect(cfg).toMatchObject({ provider: 'http', url: REMOTE, token_ref: `{{secret.${NAME}}}` });
+    expect(cfg).not.toHaveProperty('token_encrypted');
+  });
+
   it('does not check secret existence for provider sqlite', async () => {
     const out = JSON.parse(await kbSetup({ provider: 'sqlite', token: '{{secret.NO_SUCH_KB_SECRET}}' }, { folder: tmpDir }));
     expect(out.success).toBe(true);

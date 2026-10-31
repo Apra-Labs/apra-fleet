@@ -84,12 +84,22 @@ interface TokenRef {
 }
 
 /**
+ * The provider the config will select once input is applied: the same rule
+ * as applySetupInput, so a token-only call against an existing http config
+ * counts as http.
+ */
+function effectiveProvider(input: KbSetupInput, existing: KbConfigFile): 'sqlite' | 'http' {
+  if (input.provider || input.remote) return input.provider || 'http';
+  return existing.provider === 'http' ? 'http' : 'sqlite';
+}
+
+/**
  * Classify input.token. A literal returns null. A value containing a secret
  * placeholder must be exactly one placeholder with nothing around it, else it
- * is refused (naming the field, never echoing the value). For provider http
- * the named secret must exist and be unexpired.
+ * is refused (naming the field, never echoing the value). When the resulting
+ * config is http the named secret must exist and be unexpired.
  */
-function checkTokenRef(input: KbSetupInput): TokenRef | null {
+function checkTokenRef(input: KbSetupInput, provider: 'sqlite' | 'http'): TokenRef | null {
   const token = input.token;
   if (!token || !hasSecretToken(token)) return null;
   const matches = findSecretTokens(token);
@@ -100,8 +110,14 @@ function checkTokenRef(input: KbSetupInput): TokenRef | null {
     );
   }
   const { name, legacy } = matches[0];
-  if (input.provider === 'http' || input.remote) {
-    const found = lookupServerSecretMeta(name);
+  if (provider === 'http') {
+    let found: ReturnType<typeof lookupServerSecretMeta>;
+    try {
+      found = lookupServerSecretMeta(name);
+    } catch {
+      // The parser's message can quote part of credentials.json, so it is not repeated.
+      throw new Error(`kb_setup: token refers to secret "${name}", but the fleet credential store could not be read.`);
+    }
     const fix = `Set it with: apra-fleet secret --set ${name} --persist -y`;
     if (found.status === 'missing') {
       throw new Error(`kb_setup: token refers to secret "${name}", which does not exist. ${fix}`);
@@ -206,11 +222,14 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<s
   // Validate before any side effect, so a bad remote or timeout installs no
   // hook and leaves any existing config untouched.
   checkRequestTimeout(input.request_timeout_ms);
-  const ref = checkTokenRef(input);
   const warnings = input.remote ? checkRemoteUrl(input.remote) : [];
   for (const warning of warnings) {
     logWarn('kb_setup', warning);
   }
+  // Read (not write) the existing config first: whether the named secret must
+  // exist depends on the provider the merged config ends up with.
+  const config = readExistingConfig(warnings);
+  const ref = checkTokenRef(input, effectiveProvider(input, config));
 
   // Install git post-commit hook into the calling session's own repo (kb-self.ts).
   // A folder that cannot carry a KB identity skips the hook with the typed
@@ -233,7 +252,6 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<s
     }
   }
 
-  const config = readExistingConfig(warnings);
   applySetupInput(config, input, ref, steps, warnings);
   writeConfig(config);
   steps.push('Wrote KB config to ' + KB_CONFIG_PATH);
