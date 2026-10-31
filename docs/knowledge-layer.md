@@ -775,6 +775,18 @@ Run `kb_setup` with `remote` and `token` to write this. Do not write
 - **Queue overflow**: if 1000 pending writes accumulate, the oldest is dropped
   and a warning is printed to stderr.
 - **Process exit**: if the queue is non-empty on exit, a warning is emitted.
+- **Repository headers**: kb_* tools take no repository argument, but fleet
+  passes the repository it resolved for the calling session to the provider,
+  and `HttpKbProvider` sends it on every request (queued writes included) as
+  `X-Repository` (the normalised origin remote, `host/path`: no scheme, no
+  credentials, no trailing `.git`; Azure DevOps remotes folded to
+  `dev.azure.com/<org>/<project>/_git/<repo>`) and `X-Repository-Commit` (the
+  local folder's HEAD sha, omitted when it cannot be read, e.g. for a remote
+  member's folder). A shared server can use them to keep repositories apart; a
+  server may ignore them. No local path is ever sent, and nothing goes in the
+  URL. A remote whose host does not parse as a hostname sends no header at all.
+  The commit is best effort: a queued write replayed later carries the HEAD at
+  replay time, not at capture time.
 
 ### Future: Postgres
 
