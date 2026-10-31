@@ -133,6 +133,27 @@ describe('kb_setup named secret token', () => {
     expect(cfg).not.toHaveProperty('token_encrypted');
   });
 
+  it('token-only update of an http config refuses an unreadable credential store without quoting it', async () => {
+    writeConfig(JSON.stringify({ provider: 'http', url: REMOTE, token_encrypted: 'x' }));
+    const before = fs.readFileSync(configPath, 'utf-8');
+    const credPath = path.join(process.env.APRA_FLEET_DATA_DIR ?? FLEET_DIR, 'credentials.json');
+    const saved = fs.readFileSync(credPath, 'utf-8');
+    try {
+      fs.writeFileSync(credPath, 'zqstorecipher not json');
+      let msg = '';
+      try {
+        await kbSetup({ token: `{{secret.${NAME}}}` }, { folder: tmpDir });
+      } catch (e) {
+        msg = (e as Error).message;
+      }
+      expect(msg).toContain('credential store could not be read');
+      expect(msg).not.toMatch(/zqstorecipher|not valid JSON|Unexpected token/);
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+    } finally {
+      fs.writeFileSync(credPath, saved);
+    }
+  });
+
   it('does not check secret existence for provider sqlite', async () => {
     const out = JSON.parse(await kbSetup({ provider: 'sqlite', token: '{{secret.NO_SUCH_KB_SECRET}}' }, { folder: tmpDir }));
     expect(out.success).toBe(true);
