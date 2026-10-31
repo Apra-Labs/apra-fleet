@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -98,5 +98,31 @@ describe('kb-server --token-file', () => {
     // Closing the server releases the --db database: Windows refuses to
     // unlink a file that still has an open sqlite handle.
     expect(() => fs.rmSync(path.join(tmp, 'kb.sqlite'))).not.toThrow();
+  });
+
+  it('stops the watcher when listen fails (non-EADDRINUSE)', async () => {
+    fs.writeFileSync(tokenFile, 'tok-CCCC');
+    const timers: NodeJS.Timeout[] = [];
+    const realSetInterval = globalThis.setInterval;
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
+      const t = realSetInterval(fn, ms);
+      if (ms === 250) timers.push(t);
+      return t;
+    }) as any);
+    const listen = vi.spyOn(http.Server.prototype, 'listen').mockImplementation(function (this: http.Server) {
+      const err = Object.assign(new Error('listen EACCES: permission denied'), { code: 'EACCES' });
+      process.nextTick(() => this.emit('error', err));
+      return this;
+    });
+    try {
+      await expect(startKbServer(0, false, path.join(tmp, 'k3.sqlite'), tokenFile)).rejects.toThrow(/EACCES/);
+    } finally {
+      listen.mockRestore();
+      setIntervalSpy.mockRestore();
+    }
+    expect(timers).toHaveLength(1);
+    const destroyed = (timers[0] as any)._destroyed;
+    clearInterval(timers[0]);
+    expect(destroyed).toBe(true);
   });
 });

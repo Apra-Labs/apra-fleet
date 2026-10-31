@@ -982,6 +982,8 @@ names the secret and the reason (`missing`, `expired`, `unreadable` or
 apra-fleet secret --set NAME --persist -y
 ```
 Check `fleet_status` for the `kb credential:` line (resolves, last written,
-last ok/rejected call). If the line says `rejected`, the secret exists but the
-server no longer accepts its value, so the refresher is stale or the server
-token was rotated. See [Named credentials](#named-credentials-and-refreshers).
+last ok/rejected call). If it shows `resolves: ok` and a `last rejected call`
+time later than the `last ok call` time (or the error reason is `rejected`),
+the secret exists but the server no longer accepts its value, so the refresher
+is stale or the server token was rotated. `resolves: unreadable` means the
+credential store itself could not be read or decrypted. See [Named credentials](#named-credentials-and-refreshers).

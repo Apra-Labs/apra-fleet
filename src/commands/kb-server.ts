@@ -327,6 +327,7 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         process.exit(1);
       }
       releaseOwnedProvider();
+      if (tokenTimer) clearInterval(tokenTimer);
       reject(err);
     });
 

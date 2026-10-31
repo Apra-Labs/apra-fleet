@@ -29,6 +29,7 @@ import { KB_CONFIG_PATH } from '../../src/services/knowledge/kb-config.js';
 import { getKbHttpAuthState, resetKbHttpAuthState } from '../../src/services/knowledge/kb-http-auth-state.js';
 import { credentialSet, credentialDelete, lookupServerSecretMeta } from '../../src/services/credential-store.js';
 import { encryptPassword } from '../../src/utils/crypto.js';
+import { FLEET_DIR } from '../../src/paths.js';
 import { getActiveLogFile } from '../../src/utils/log-helpers.js';
 import { kbCapture } from '../../src/tools/kb-capture.js';
 import { kbQuery } from '../../src/tools/kb-query.js';
@@ -287,6 +288,24 @@ describe('HTTP KB provider with a named-secret token', () => {
     await expectAuthError(p.context(['src/gear.ts']), 'expired');
     expect(stub.requests).toHaveLength(0);
     expect(lookupServerSecretMeta(NAME).status).toBe('expired');
+  });
+
+  it('4c. unreadable credential store: E-KB-HTTP-AUTH (unreadable) with a fixed message, no file content quoted', async () => {
+    const credPath = path.join(process.env.APRA_FLEET_DATA_DIR ?? FLEET_DIR, 'credentials.json');
+    const saved = fs.readFileSync(credPath, 'utf-8');
+    const marker = `zqcipher${RUN.replace(/-/g, '')}`;
+    try {
+      // JSON.parse quotes the start of the source in its error message.
+      fs.writeFileSync(credPath, `${marker} not json`);
+      const p = await provider();
+      const err = await expectAuthError(p.query({ query: 'gear' }), 'unreadable');
+      expect(err.message).toContain('could not be read');
+      expect(err.message).not.toContain(marker);
+      expect(err.message).not.toMatch(/not valid JSON|Unexpected token/);
+      expect(stub.requests).toHaveLength(0);
+    } finally {
+      fs.writeFileSync(credPath, saved);
+    }
   });
 
   it('6a. through the kb_* handlers: E-KB-HTTP-AUTH is the thrown tool error, value never in it', async () => {

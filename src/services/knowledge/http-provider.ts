@@ -167,10 +167,11 @@ export class HttpKbProvider implements MemoryProvider {
     let found: ReturnType<typeof lookupServerSecret>;
     try {
       found = lookupServerSecret(name);
-    } catch (err) {
+    } catch {
+      // Fixed text: the underlying parser/decrypt error can quote ciphertext.
       throw new KbHttpAuthError(
         name, 'unreadable',
-        `the KB server token comes from fleet secret "${name}", which could not be read (${(err as Error).message}).`,
+        `the KB server token comes from fleet secret "${name}", which could not be read (credential store unreadable or value could not be decrypted).`,
       );
     }
     if (found.status === 'missing') {
