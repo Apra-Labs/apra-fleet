@@ -372,6 +372,21 @@ Calls `fleet_status` -- status of all fleet members.
 
 KB health (`kbHealth` in JSON) covers every project KB scope on the server plus the global KB, one entry per scope -- it never depends on the server's working directory.
 
+When the KB config selects the http provider, `kbHealth.credential`
+(`FleetStatusKbCredential`; compact: one `kb credential:` line) reports the
+remote KB credential for this host -- one block, shared by every scope the
+http provider serves. For a named secret (`kind: "secret"`): `secretName`,
+`resolves` (`ok` / `missing` / `expired`, from metadata; an expired record is
+never deleted; `unreadable` when the credential store cannot be read or the
+value cannot be decrypted -- the line is still shown, with `lastWritten` kept
+if only the decrypt failed), `lastWritten` (the secret's `created_at`), `tokenExpiry` (the
+`exp` of a JWT value decoded locally, else `null`), and `lastSuccessfulCall` /
+`lastRejectedCall` (this server process; `null`, shown as `never`, until the
+first call). A literal-token config (`kind: "literal"`) carries the call times
+and a `hint` that the token cannot be refreshed and how to switch to
+`{{secret.NAME}}`. A sqlite config has no `credential`. The token value and
+any JWT claim other than `exp` never appear.
+
 #### `memberDetail(options)`
 
 Calls `member_detail` -- detailed status for one member: connectivity,
@@ -558,6 +573,16 @@ session's `kb_query` / `kb_session_prime` / `kb_stats`), `E-MEMBER-VIEW-REMOTE`
 (a remote member's checkout bible is unreachable; the same three read tools)
 and `E-BIBLE-BASIS-NOT-GIT` (`kb_export` / `kb_bible_commit` in a folder that is
 not a git work tree).
+
+`E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_harvest`, `kb_invalidate`,
+`kb_query`, `kb_context` and `kb_session_prime` when the remote (HTTP) KB takes
+its token from a named fleet secret (`kb_setup` token `{{secret.NAME}}`) and that
+secret is missing, expired, or still rejected (HTTP 401) after one re-read and
+retry. The message names the secret and the reason, never the value. A capture
+or invalidate is queued offline first and sent once the secret is accepted; a
+member session's CONFIRMED read comes from its checkout bible and is unaffected.
+Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
+restart.
 
 `kb_import` in a member session without the kb_maintainer grant fails with
 `E-KB-MAINTAINER-REQUIRED` and imports nothing when: it names an explicit

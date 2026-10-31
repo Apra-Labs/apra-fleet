@@ -24,7 +24,9 @@ import { checkVersionMismatch, type VersionMismatch } from '../services/version-
 import { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import { listKbScopes, knowledgeRootDir, GLOBAL_KB_SCOPE, type KbScopeLocation } from '../services/knowledge/kb-scopes.js';
 import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
-import { readKbConfigFromDisk } from '../services/knowledge/kb-config.js';
+import { readKbConfigFromDisk, type KbConfigResult } from '../services/knowledge/kb-config.js';
+import { getKbHttpAuthState } from '../services/knowledge/kb-http-auth-state.js';
+import { lookupServerSecret, lookupServerSecretMeta } from '../services/credential-store.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -467,9 +469,53 @@ export interface KbScopeError {
   error: string;
 }
 
+/**
+ * Health of the remote KB's credential (KB config provider http). The KB
+ * config is one file per host, so every project scope served by the http
+ * provider shares this one credential. This host only. Never carries the
+ * token, nor any JWT claim other than exp.
+ */
+export type KbHttpCredentialHealth =
+  | {
+    kind: 'secret';
+    /** Remote KB URL the token is sent to. */
+    url: string;
+    /** Fleet secret named by the config's token_ref. */
+    secretName: string;
+    /**
+     * Metadata lookup: ok, missing, or expired (an expired record is kept, never
+     * deleted here). unreadable: the credential store could not be read, or the
+     * secret's value could not be decrypted; every KB call then fails with
+     * E-KB-HTTP-AUTH reason unreadable.
+     */
+    resolves: 'ok' | 'missing' | 'expired' | 'unreadable';
+    /** The secret record's created_at; null when the secret is missing or the store is unreadable. */
+    lastWritten: string | null;
+    /** exp of a JWT secret value, decoded locally, as ISO time; null for a non-JWT value or an unresolved secret. */
+    tokenExpiry: string | null;
+    /** Last KB call this process had accepted by the remote server; null when none yet. */
+    lastSuccessfulCall: string | null;
+    /** Last KB call the remote server rejected with HTTP 401; null when none yet. */
+    lastRejectedCall: string | null;
+  }
+  | {
+    kind: 'literal';
+    url: string;
+    lastSuccessfulCall: string | null;
+    lastRejectedCall: string | null;
+    /** One-line note that a literal token cannot be refreshed, and how to switch to a named secret. */
+    hint: string;
+  };
+
+export const KB_LITERAL_TOKEN_HINT =
+  'literal token stored in the KB config: it cannot be refreshed without re-running kb_setup. ' +
+  'To use a refreshable fleet secret: apra-fleet secret --set NAME --persist -y, then kb_setup token {{secret.NAME}}';
+
 export interface KbHealth {
   /** Which provider the KB config selects for project scopes. With `http`, the local scopes below are the offline fallback copies. */
   projectProvider: 'sqlite' | 'http';
+  /** The remote KB credential; present only when the KB config selects the http provider. */
+  credential?: KbHttpCredentialHealth;
   /** Every project scope found on disk (including `default`, the non-git scope), sorted by slug. */
   scopes: KbScopeHealth[];
   /** The single shared cross-project KB, or null when it does not exist yet. */
@@ -509,12 +555,84 @@ async function bibleForRepo(repoPath: string): Promise<KbHealthBible | null> {
   }
 }
 
-function configuredProjectProvider(): 'sqlite' | 'http' {
+function readKbConfigOrSqlite(): KbConfigResult {
   try {
-    return readKbConfigFromDisk().provider === 'http' ? 'http' : 'sqlite';
+    return readKbConfigFromDisk();
   } catch {
     // kb-providers degrades a broken config to the local SqliteProvider.
-    return 'sqlite';
+    return { provider: 'sqlite' };
+  }
+}
+
+const BASE64URL_SEGMENT = /^[A-Za-z0-9_-]+={0,2}$/;
+
+/**
+ * exp of a JWT, as an ISO time, decoded locally; null for anything that is not
+ * three base64url segments whose middle one is a JSON object with a numeric
+ * exp. Nothing else is read from the token.
+ */
+export function jwtExpiry(token: string): string | null {
+  const parts = token.split('.');
+  if (parts.length !== 3 || !parts.every(p => BASE64URL_SEGMENT.test(p))) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8')) as unknown;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    const exp = (payload as { exp?: unknown }).exp;
+    if (typeof exp !== 'number' || !Number.isFinite(exp)) return null;
+    const at = new Date(exp * 1000);
+    return Number.isNaN(at.getTime()) ? null : at.toISOString();
+  } catch {
+    return null;
+  }
+}
+
+/** The credential block for an http KB config; undefined for any other provider. */
+export function kbHttpCredentialHealth(config: KbConfigResult): KbHttpCredentialHealth | undefined {
+  if (config.provider !== 'http' || !config.url) return undefined;
+  const calls = getKbHttpAuthState(config.url);
+  const lastSuccessfulCall = calls.lastSuccessAt ?? null;
+  const lastRejectedCall = calls.lastRejectedAt ?? null;
+  if (config.tokenSecretName === undefined) {
+    return { kind: 'literal', url: config.url, lastSuccessfulCall, lastRejectedCall, hint: KB_LITERAL_TOKEN_HINT };
+  }
+  const secretName = config.tokenSecretName;
+  const block = { kind: 'secret' as const, url: config.url, secretName, lastSuccessfulCall, lastRejectedCall };
+  // A store or decrypt failure is reported as resolves unreadable, never
+  // hidden; the error text is dropped because it can quote ciphertext.
+  let meta: ReturnType<typeof lookupServerSecretMeta>;
+  try {
+    meta = lookupServerSecretMeta(secretName);
+  } catch {
+    return { ...block, resolves: 'unreadable', lastWritten: null, tokenExpiry: null };
+  }
+  const lastWritten = meta.status === 'missing' ? null : meta.meta.created_at;
+  let tokenExpiry: string | null = null;
+  if (meta.status === 'ok') {
+    let found: ReturnType<typeof lookupServerSecret>;
+    try {
+      found = lookupServerSecret(secretName);
+    } catch {
+      return { ...block, resolves: 'unreadable', lastWritten, tokenExpiry: null };
+    }
+    if (found.status === 'ok') tokenExpiry = jwtExpiry(found.value);
+  }
+  return { ...block, resolves: meta.status, lastWritten, tokenExpiry };
+}
+
+function safeCredentialHealth(config: KbConfigResult): KbHttpCredentialHealth | undefined {
+  try {
+    return kbHttpCredentialHealth(config);
+  } catch {
+    // Store errors are handled inside kbHttpCredentialHealth; anything else
+    // still renders the line rather than hiding it.
+    if (config.provider !== 'http' || !config.url) return undefined;
+    if (config.tokenSecretName === undefined) {
+      return { kind: 'literal', url: config.url, lastSuccessfulCall: null, lastRejectedCall: null, hint: KB_LITERAL_TOKEN_HINT };
+    }
+    return {
+      kind: 'secret', url: config.url, secretName: config.tokenSecretName, resolves: 'unreadable',
+      lastWritten: null, tokenExpiry: null, lastSuccessfulCall: null, lastRejectedCall: null,
+    };
   }
 }
 
@@ -563,7 +681,10 @@ export async function kbHealthSummary(opts: KbHealthOptions = {}): Promise<KbHea
     }
 
     const totalEntries = scopes.reduce((n, s) => n + s.totals.total, 0) + (global?.totals.total ?? 0);
-    return { projectProvider: configuredProjectProvider(), scopes, global, errors, totalEntries };
+    const config = readKbConfigOrSqlite();
+    const projectProvider = config.provider === 'http' ? 'http' : 'sqlite';
+    const credential = safeCredentialHealth(config);
+    return { projectProvider, ...(credential ? { credential } : {}), scopes, global, errors, totalEntries };
   } catch {
     return null;
   }
@@ -594,9 +715,18 @@ export function kbHealthCompactLine(health: KbScopeStats, label?: string): strin
  * scopes are collapsed into a single trailing line so an unused `default`
  * scope never reads as "the KB is empty".
  */
+/** Render the one compact line for the remote KB credential. */
+export function kbCredentialCompactLine(c: KbHttpCredentialHealth): string {
+  const calls = `last ok call: ${c.lastSuccessfulCall ?? 'never'} | last rejected call: ${c.lastRejectedCall ?? 'never'}`;
+  if (c.kind === 'literal') return `kb credential: ${c.hint} | ${calls}`;
+  return `kb credential: secret ${c.secretName} | resolves: ${c.resolves} | last written: ${c.lastWritten ?? 'never'} ` +
+    `| token expiry: ${c.tokenExpiry ?? 'none'} | ${calls}`;
+}
+
 export function kbHealthCompactLines(health: KbHealth): string {
+  const credentialLine = health.credential ? `\n  ${kbCredentialCompactLine(health.credential)}` : '';
   if (health.scopes.length === 0 && !health.global && health.errors.length === 0) {
-    return 'kb: no knowledge bases found yet (none captured on this server)';
+    return 'kb: no knowledge bases found yet (none captured on this server)' + credentialLine;
   }
   const nonEmpty = health.scopes.filter(s => s.totals.total > 0);
   const empty = health.scopes.filter(s => s.totals.total === 0).map(s => s.scope);
@@ -610,6 +740,7 @@ export function kbHealthCompactLines(health: KbHealth): string {
   if (globalNonEmpty) lines.push(`  ${kbHealthCompactLine(globalNonEmpty, globalNonEmpty.scope)}`);
   for (const e of health.errors) lines.push(`  kb[${e.scope}]: unreadable (${e.error})`);
   if (empty.length > 0) lines.push(`  kb: empty scope(s): ${empty.join(', ')}`);
+  if (health.credential) lines.push(`  ${kbCredentialCompactLine(health.credential)}`);
   return lines.join('\n');
 }
 

@@ -102,13 +102,35 @@ function getClientIp(req: http.IncomingMessage): string {
   return req.socket.remoteAddress || '0.0.0.0';
 }
 
-export async function startKbServer(port: number, generateToken: boolean, dbPath?: string): Promise<http.Server> {
+const TOKEN_FILE_POLL_MS = 250;
+
+function readTokenFile(tokenFile: string): string {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(tokenFile, 'utf-8');
+  } catch {
+    throw new Error(`cannot read token file ${tokenFile}`);
+  }
+  const token = raw.trim();
+  if (!token) throw new Error(`token file ${tokenFile} is empty`);
+  return token;
+}
+
+export async function startKbServer(port: number, generateToken: boolean, dbPath?: string, tokenFile?: string): Promise<http.Server> {
+  if (tokenFile && generateToken) {
+    throw new Error('--generate-token cannot be combined with --token-file: the token comes from the file');
+  }
+  // Fail before any side effect when the token file is unusable.
+  let serverToken: string;
+  if (tokenFile) {
+    serverToken = readTokenFile(tokenFile);
+  }
   if (generateToken) {
     const token = generateNewToken();
     process.stderr.write(`KB server token: ${token}\n`);
   }
 
-  const serverToken = getOrCreateToken();
+  if (!tokenFile) serverToken = getOrCreateToken();
   const providers = await createKbProviders();
   // KB server is a server, not a client: it must never silently become a
   // self-proxying HttpKbProvider just because the local KB config selects
@@ -135,6 +157,15 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
       );
     }
   }
+  // The --db override is built here, not taken from the shared provider cache,
+  // so this server owns it and must close it on shutdown: an open sqlite
+  // handle keeps the file locked (Windows refuses to delete it).
+  let ownedProvider: { close(): void } | undefined;
+  const releaseOwnedProvider = (): void => {
+    const p = ownedProvider;
+    ownedProvider = undefined;
+    p?.close();
+  };
   if (dbPath) {
     const { SqliteProvider } = await import('../services/knowledge/sqlite-provider.js');
     // Anchor capture basis checks at process.cwd(), the same repo root
@@ -143,10 +174,12 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
     const overrideProvider = new SqliteProvider(dbPath, process.cwd());
     await overrideProvider.init();
     (providers as any).project = overrideProvider;
+    ownedProvider = overrideProvider;
   }
   const provider = providers.project;
   process.stderr.write('[kb-server] project=' + providers.projectSlug + '\n');
 
+  let lastTokenWarning: string | undefined;
   const server = http.createServer(async (req, res) => {
     const ip = getClientIp(req);
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
@@ -263,12 +296,38 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
     }
   });
 
+  server.on('close', releaseOwnedProvider);
+
+  // Poll the token file by path (stat-free content compare) so in-place writes
+  // and rename-replacement are both picked up. A bad re-read keeps the last
+  // good token; the token value is never logged.
+  let tokenTimer: NodeJS.Timeout | undefined;
+  if (tokenFile) {
+    tokenTimer = setInterval(() => {
+      try {
+        serverToken = readTokenFile(tokenFile);
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (msg !== lastTokenWarning) {
+          lastTokenWarning = msg;
+          process.stderr.write(`[kb-server] warning: ${msg}; keeping the last good token\n`);
+        }
+        return;
+      }
+      lastTokenWarning = undefined;
+    }, TOKEN_FILE_POLL_MS);
+    tokenTimer.unref();
+    server.on('close', () => { if (tokenTimer) clearInterval(tokenTimer); });
+  }
+
   return new Promise((resolve, reject) => {
     server.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
         process.stderr.write(`KB server failed to start: port ${port} is already in use. Try --port ${port + 1}\n`);
         process.exit(1);
       }
+      releaseOwnedProvider();
+      if (tokenTimer) clearInterval(tokenTimer);
       reject(err);
     });
 
@@ -279,10 +338,11 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
   });
 }
 
-export function parseKbServerArgs(argv: string[]): { port: number; generateToken: boolean; dbPath?: string } {
+export function parseKbServerArgs(argv: string[]): { port: number; generateToken: boolean; dbPath?: string; tokenFile?: string } {
   let port = 7878;
   let generateToken = false;
   let dbPath: string | undefined;
+  let tokenFile: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--port' && argv[i + 1]) {
       port = parseInt(argv[i + 1], 10);
@@ -295,6 +355,10 @@ export function parseKbServerArgs(argv: string[]): { port: number; generateToken
       dbPath = argv[i + 1];
       i++;
     }
+    if (argv[i] === '--token-file' && argv[i + 1]) {
+      tokenFile = argv[i + 1];
+      i++;
+    }
   }
-  return { port, generateToken, dbPath };
+  return { port, generateToken, dbPath, tokenFile };
 }

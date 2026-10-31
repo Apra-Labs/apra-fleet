@@ -586,6 +586,65 @@ The client writes this to `~/.apra-fleet/data/knowledge/config.json`:
 
 The token is stored AES-256-GCM encrypted. It is never written in plaintext.
 
+#### Named credentials and refreshers
+
+For servers whose token expires (for example an Entra ID access token), store
+the token as a fleet secret and give `kb_setup` the placeholder instead of the
+value. The value of `token` is exactly the placeholder:
+
+```
+apra-fleet secret --set KB_TOKEN --persist -y      # the secret must exist first
+kb_setup with provider=http, remote=https://<host>, token={{secret.KB_TOKEN}}
+```
+
+The config then stores only the reference (`token_ref`), never a token. The
+secret is looked up on every request, so a refreshed value is used by the next
+KB call with no restart of the fleet server or any provider.
+
+Secrets are per host today: each host that runs the fleet server needs the
+secret and a refresher. With fleet.apralabs.com, all members of a fleet share
+secrets through the cloud workspace.
+
+**Per-host refreshers.** `apra-fleet secret --set NAME --persist -y` reads the
+new value from stdin, so a refresher is a token command piped into it. Azure
+example:
+
+```bash
+az account get-access-token --resource <app-id-uri> --query accessToken -o tsv | apra-fleet secret --set KB_TOKEN --persist -y
+```
+
+Run it on a schedule shorter than the token lifetime (for a 60 minute token,
+every 30 minutes or less), so one failed run still leaves a valid token.
+
+- Linux cron: `*/30 * * * * az account get-access-token --resource <app-id-uri> --query accessToken -o tsv | apra-fleet secret --set KB_TOKEN --persist -y`
+  (or a systemd timer with `OnUnitActiveSec=30min` running the same command).
+- Windows Task Scheduler: a task running every 30 minutes with action
+  `powershell.exe` and arguments
+  `-NoProfile -Command "az account get-access-token --resource <app-id-uri> --query accessToken -o tsv | apra-fleet secret --set KB_TOKEN --persist -y"`.
+- macOS: a launchd agent with `StartInterval` 1800 running the same command
+  through `/bin/sh -c`.
+
+**Failure behaviour.** When the secret is missing, expired or unreadable, or
+the server answers 401 twice (the request, then one retry after re-reading the
+secret), the KB call fails with `E-KB-HTTP-AUTH` naming the secret and the
+reason. Captures and invalidates are queued offline and sent once the secret
+is accepted; the queue is kept, not dropped. Member reads of CONFIRMED entries
+are still served from the checkout bible. After a refresh nothing needs
+restarting.
+
+**fleet_status.** With the http provider, `fleet_status` shows a
+`kb credential:` line: `secret NAME | resolves: ok|missing|expired|unreadable |
+last written | token expiry (JWT exp, or none) | last ok call | last rejected
+call`. `unreadable` means the credential store could not be read or the value
+could not be decrypted.
+For a literal token the line says it cannot be refreshed without re-running
+`kb_setup`, and gives the commands to switch to a named secret.
+
+**Test and stand-in servers.** `kb-server --token-file <path>` reads the server
+token from a file (instead of `--generate-token`; the two cannot be combined)
+and re-reads it about every 250 ms, so rotating the file takes effect without
+a restart. A failed re-read keeps the last good token.
+
 `request_timeout_ms` (integer, 1000-120000, default 5000) sets the socket idle
 timeout for each request to the KB server, for servers that need longer than
 the default:
@@ -767,6 +826,19 @@ All data is local. No token. `kb_sync` is a no-op.
 Run `kb_setup` with `remote` and `token` to write this. Do not write
 `token_encrypted` by hand.
 
+With a named secret the config holds a reference instead of a ciphertext:
+
+```json
+{
+  "provider": "http",
+  "url": "https://<host>",
+  "token_ref": "{{secret.KB_TOKEN}}"
+}
+```
+
+Write it with `kb_setup ... token={{secret.KB_TOKEN}}`; see
+[Named credentials and refreshers](#named-credentials-and-refreshers).
+
 `HttpKbProvider` proxy behavior:
 - **Reads** (query, context, prime): if server unreachable, fall back to local
   SqliteProvider. Session continues uninterrupted.
@@ -895,10 +967,23 @@ if some were already sent before the server went offline.
 
 **Symptom**: KB server returns 401 for all requests.
 
-**Fix**: the token in the client config must match the server's token. Regenerate
-on the server:
+**Literal token**: the token in the client config must match the server's
+token. Regenerate on the server:
 ```bash
 node dist/index.js kb-server --generate-token
 ```
 
 Then re-run `kb_setup` on each client with the new token.
+
+**Named secret** (`token={{secret.NAME}}`): the error is `E-KB-HTTP-AUTH` and
+names the secret and the reason (`missing`, `expired`, `unreadable` or
+`rejected`). Refresh the secret on this host; no restart is needed:
+```bash
+apra-fleet secret --set NAME --persist -y
+```
+Check `fleet_status` for the `kb credential:` line (resolves, last written,
+last ok/rejected call). If it shows `resolves: ok` and a `last rejected call`
+time later than the `last ok call` time (or the error reason is `rejected`),
+the secret exists but the server no longer accepts its value, so the refresher
+is stale or the server token was rotated. `resolves: unreadable` means the
+credential store itself could not be read or decrypted. See [Named credentials](#named-credentials-and-refreshers).

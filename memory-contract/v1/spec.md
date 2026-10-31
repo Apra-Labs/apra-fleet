@@ -537,6 +537,26 @@ kind in 3.2) -- so v1 has no retry-with-backoff class at all. `retryable` means
 "retrying the identical request unchanged can succeed"; fixing a path or
 supplying a missing reason is a new request, not a retry.
 
+`E-KB-HTTP-AUTH` (remote KB whose token is a named fleet secret) is the one
+code that clears once something outside the request changes -- the operator
+updates the secret, and the identical request then succeeds. It is still
+`retryable: false`: retrying it unchanged before that update fails the same
+way, and the provider has already done its one retry (re-read the secret, send
+once more) before raising it.
+
+### 3.3a Remote KB auth failure is thrown, and writes are queued first
+
+`E-KB-HTTP-AUTH` is `surfaced: thrown` on every tool that reaches the remote
+provider. A write (`kb_capture`, `kb_harvest`, `kb_invalidate`) is first put
+in the provider's offline queue -- the same queue a server-down write uses --
+and the thrown message says so; the queue is kept (not flushed, not dropped)
+until the secret is accepted. A read (`kb_query`, `kb_context`,
+`kb_session_prime`) is thrown with no local fallback: unlike an outage, this
+needs the operator to act, and a silently degraded answer would hide that. A
+MEMBER session's CONFIRMED read is answered from its checkout bible (2.5) and
+never reaches the provider, so it keeps working. No message, log line or
+queue warning ever contains the secret's value.
+
 ### 3.4 Silent refusals are named but not projectable
 
 Each code also carries `surfaced`: `thrown`, `response-field`, or `silent`. The
