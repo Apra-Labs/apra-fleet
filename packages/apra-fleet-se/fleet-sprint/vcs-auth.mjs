@@ -753,8 +753,21 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         // and keep going rather than aborting on this condition.
         let remedyHint = null;
         try {
-            const { provider } = await resolveProvider(member, { fleetApi });
-            const impl = getVcsProvider(provider);
+            // The TARGET remote's provider wins over the member's registered
+            // one (same rule provisionVcsAuthForMember applies at push+pr): a
+            // GitHub-registered member publishing to bitbucket.org must be
+            // told the Bitbucket remedy, not the registered provider's.
+            let remedyProvider = null;
+            try {
+                let remote = remoteUrlOverride ? String(remoteUrlOverride).trim() : '';
+                if (!remote) {
+                    const r = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
+                    remote = r && r.ok ? String(r.output || '').trim() : '';
+                }
+                if (remote) remedyProvider = detectVcsProviderFromRemote(remote);
+            } catch { /* fall back to the registered provider below */ }
+            if (!remedyProvider) ({ provider: remedyProvider } = await resolveProvider(member, { fleetApi }));
+            const impl = getVcsProvider(remedyProvider);
             if (impl && impl.authRemedy && impl.authRemedy.hint) remedyHint = impl.authRemedy.hint;
         } catch (resolveErr) {
             log(`${logPrefix}: could not resolve member '${member}'s VCS provider to look up an auth remedy hint (falling back to the raw provisioning error): ${resolveErr.message}`);
@@ -805,6 +818,13 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     const skippedRemedy = () => {
         const impl = getVcsProvider(provider);
         return impl && impl.authRemedy && impl.authRemedy.hint ? ` -- ${impl.authRemedy.hint}` : '';
+    };
+    // Provider-owned explanation of an HTTP status (e.g. Bitbucket 410/403),
+    // appended to failure messages; '' when the provider has none.
+    const statusHint = (status) => {
+        const impl = getVcsProvider(provider);
+        const hint = impl && typeof impl.httpFailureHint === 'function' ? impl.httpFailureHint(status) : '';
+        return hint ? ` -- ${hint}` : '';
     };
 
     // apra-fleet-3swo.7.6: the orchestrator never learns the token at all now.
@@ -882,7 +902,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 }
                 continue;
             }
-            return { ok: false, error: `${what} failed: HTTP ${parsed.status ?? '(unknown)'}: ${msg}${skippedProvider && isPrAuthFailure(parsed.status, msg) ? skippedRemedy() : ''}` };
+            return { ok: false, error: `${what} failed: HTTP ${parsed.status ?? '(unknown)'}: ${msg}${statusHint(parsed.status)}${skippedProvider && isPrAuthFailure(parsed.status, msg) ? skippedRemedy() : ''}` };
         }
     };
     const coords = () => ({ provider, ...(repoRef ? { repoRef } : { repo }), token, os, shell });
@@ -1005,6 +1025,17 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             // the operator has not deployed it yet. Degrade to a skipped PR
             // naming the fix instead of failing the sprint. A just-in-time
             // minted credential that cannot be read is still a hard failure.
+            // credential_read_failed WITHOUT an exitCode means the read itself
+            // threw (dispatch/connection error): the credential may well be
+            // deployed, so report the read failure and never take the
+            // credentialAbsent path that closes targets without a PR.
+            const transientRead = handoff.reason === 'credential_read_failed' && typeof handoff.exitCode !== 'number';
+            if (skippedProvider && transientRead) {
+                const message = `Could not read the '${credentialLabel}' VCS credential on member '${member}' `
+                    + `(transient read failure, vcs_credential_exec reason: ${handoff.reason}): ${handoffText || '(no detail)'}`;
+                log(`${logPrefix}: ${message}`);
+                return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: false, credentialReadFailed: true };
+            }
             if (skippedProvider && ['credential_read_failed', 'credential_empty', 'username_empty'].includes(handoff.reason)) {
                 const message = `No usable '${credentialLabel}' VCS credential is deployed on member '${member}' `
                     + `(vcs_credential_exec reason: ${handoff.reason})${skippedRemedy()}`;
@@ -1054,7 +1085,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         }
         const errorText = errorMessages.join('; ') || bodyText || `HTTP ${status ?? '(unknown)'}`;
 
-        if (status === built.interpret.alreadyExistsStatus && new RegExp(built.interpret.alreadyExistsPattern, 'i').test(errorText)) {
+        if (built.interpret.alreadyExistsStatus != null && built.interpret.alreadyExistsPattern && status === built.interpret.alreadyExistsStatus && new RegExp(built.interpret.alreadyExistsPattern, 'i').test(errorText)) {
             const urlMatch = /https?:\/\/\S+/.exec(errorText);
             const existingUrl = urlMatch ? urlMatch[0].replace(/[.,)]+$/, '') : null;
             const existing = { ok: true, alreadyExists: true, prUrl: existingUrl, error: null, authFailure: false };
@@ -1067,7 +1098,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         if (authFailed && skippedProvider) {
             // Nothing to re-provision (the provider skipped it), so a retry
             // would resend the same credential: report it with the remedy.
-            return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}${skippedRemedy()}`, authFailure: true };
+            return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}${statusHint(status)}${skippedRemedy()}`, authFailure: true };
         }
 
         // A provider whose duplicate-PR response is unverified declares
@@ -1095,6 +1126,13 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             try {
                 const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
                 if (reprov.repo) repo = reprov.repo;
+                if (reprov.provisionSkipped) {
+                    // The provider deploys its credential out of band, so the
+                    // re-provision ran nothing: no heal happened and a retry
+                    // would resend a byte-identical command.
+                    log(`${logPrefix}: no PR auth self-heal ran for member '${member}' (provider '${reprov.provider || provider}' skipped re-provisioning); not retrying.`);
+                    return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}${statusHint(status)}${skippedRemedy()}`, authFailure: true };
+                }
                 // No token re-read here any more: `built.command` still
                 // carries the placeholder, so the retry's own
                 // vcs_credential_exec dispatch re-reads the FRESHLY
@@ -1108,7 +1146,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             continue;
         }
 
-        return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}`, authFailure: isPrAuthFailure(status, errorText) };
+        return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}${statusHint(status)}`, authFailure: isPrAuthFailure(status, errorText) };
     }
 }
 

@@ -253,6 +253,29 @@ const authRemedy = Object.freeze({
 });
 
 /**
+ * Explain a Bitbucket REST HTTP status the way an operator can act on it.
+ * 410: Atlassian retired app passwords (CHANGE-3222), so a request still
+ * authenticating with one is answered Gone. 403: the API token authenticates
+ * but lacks a required scope. Any other status yields ''.
+ *
+ * @param {number|null|undefined} status
+ * @returns {string}
+ */
+function httpFailureHint(status) {
+    if (status === 410) {
+        return 'Bitbucket app passwords have been retired (Atlassian CHANGE-3222); '
+            + 'replace the app password with an Atlassian API token stored as '
+            + `${DEFAULT_API_TOKEN_SECRET}.`;
+    }
+    if (status === 403) {
+        return 'the Bitbucket API token is missing a required scope; it needs '
+            + 'read:repository:bitbucket, write:repository:bitbucket, '
+            + 'read:pullrequest:bitbucket and write:pullrequest:bitbucket.';
+    }
+    return '';
+}
+
+/**
  * Build the provision_vcs_auth arguments for a Bitbucket member -- the
  * OPTIONAL descriptor hook described in ./index.mjs's REQUIRED EXPORT SHAPE.
  * See the section header above for the full reasoning behind each branch.
@@ -588,6 +611,7 @@ export const BitbucketVCS = Object.freeze({
     rules: Object.freeze({
         [K.AUTH_EXPIRED]: AUTH_EXPIRED,
     }),
+    httpFailureHint,
     matchesHost,
     capabilitiesForHost,
     // remote-URL -> { workspace, repo, canonical }, mirroring

@@ -44,7 +44,12 @@ function fakeBitbucket({ registered = true, registeredAs = 'bitbucket', credenti
     state.exec = (cmd) => {
         state.execCommands.push(cmd);
         if (credential !== 'ok') {
-            return { content: [{ text: `[FAIL] credential (${credential})` }], structuredContent: { ok: false, reason: credential, exitCode: null, stdout: '', stderr: '' } };
+            // 'read_dispatch_error': the credential read itself threw (no exit
+            // code) -- a transient failure. credential_read_failed WITH an exit
+            // code is a helper file that is absent (cat exits nonzero).
+            const reason = credential === 'read_dispatch_error' ? 'credential_read_failed' : credential;
+            const exitCode = credential === 'credential_read_failed' ? 1 : null;
+            return { content: [{ text: `[FAIL] credential (${credential})` }], structuredContent: { ok: false, reason, exitCode, stdout: '', stderr: '' } };
         }
         const method = /^curl -sS -X (\w+)/.exec(cmd)[1];
         state.calls.push(method);
@@ -351,5 +356,77 @@ describe('(d) find-before-create: relaunch updates in place, no duplicate POST, 
 
     test('providers without findBeforeCreate keep the create-first order', () => {
         assert.equal(BitbucketVCS.findBeforeCreate, true);
+    });
+});
+
+describe('(36mo) transient credential read vs missing credential', () => {
+    test('a read that threw (no exit code) is reported as a read failure, never credentialAbsent', async () => {
+        const bb = fakeBitbucket({ credential: 'read_dispatch_error' });
+        const logs = [];
+        const result = await raiseVcsPrForMember({
+            fleetApi: new ApraFleet({ callTool: bb.callTool }),
+            command: remoteCommand, member: 'bb-transient', base: 'main', head: 'feat/x', title: 't', body: 'b',
+            logPrefix: '[Publish PR]', log: (m) => logs.push(m), remoteUrlOverride: BB_ORIGIN,
+        });
+        assert.equal(result.ok, false);
+        assert.ok(!result.credentialAbsent);
+        assert.match(result.error, /transient read failure/);
+        assert.ok(!/No usable/.test(result.error), result.error);
+    });
+
+    test('an absent helper (nonzero exit) is still credentialAbsent', async () => {
+        const bb = fakeBitbucket({ credential: 'credential_read_failed' });
+        const result = await raiseVcsPrForMember({
+            fleetApi: new ApraFleet({ callTool: bb.callTool }),
+            command: remoteCommand, member: 'bb-absent', base: 'main', head: 'feat/x', title: 't', body: 'b',
+            logPrefix: '[Publish PR]', remoteUrlOverride: BB_ORIGIN,
+        });
+        assert.equal(result.credentialAbsent, true);
+        assert.match(result.error, /No usable 'bitbucket' VCS credential/);
+    });
+});
+
+describe('(36mo) Bitbucket remedy on provider-mismatch degrade', () => {
+    test('a github-registered member, bitbucket remote, provisioning failure prints the Bitbucket remedy', async () => {
+        const callTool = async (name) => {
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github', os: 'linux', shell: '' }) }] };
+            if (name === 'credential_store_list') return { content: [{ text: '[]' }] };
+            throw new Error(`unexpected tool ${name}`);
+        };
+        // Force the provisioning step to throw before any PR attempt.
+        const result = await raiseVcsPrForMember({
+            fleetApi: new ApraFleet({ callTool }),
+            command: async () => { throw new Error('boom'); },
+            member: 'gh-on-bb', base: 'main', head: 'feat/x', title: 't', body: 'b',
+            logPrefix: '[Publish PR]', remoteUrlOverride: 'https://bitbucket.org/acme',
+        });
+        assert.equal(result.ok, false);
+        assert.equal(result.authFailure, true);
+        assert.ok(result.error.includes(BitbucketVCS.authRemedy.hint), result.error);
+    });
+});
+
+describe('(36mo) HTTP 410 / 403 explanations', () => {
+    test('410 names app-password retirement', async () => {
+        const bb = fakeBitbucket({ postStatus: 410 });
+        const err = await publish({ bb, runId: 'run-410', member: 'bb-410' }).then(() => null, (e) => e);
+        assert.ok(err && err.message.includes('HTTP 410') && /app passwords have been retired/.test(err.message), String(err && err.message));
+    });
+    test('403 names the missing token scopes', async () => {
+        const bb = fakeBitbucket({ postStatus: 403 });
+        const { logs } = await publish({ bb, runId: 'run-403', member: 'bb-403' });
+        assert.ok(logs.some((m) => m.includes('HTTP 403') && /missing a required scope/.test(m) && m.includes('write:pullrequest:bitbucket')), JSON.stringify(logs));
+    });
+    test('httpFailureHint is empty for other statuses', () => {
+        assert.equal(BitbucketVCS.httpFailureHint(500), '');
+    });
+});
+
+describe('(36mo) push+pr auth failure: no no-op self-heal', () => {
+    test('exactly one create command is dispatched and no "self-heal completed" is logged', async () => {
+        const bb = fakeBitbucket({ postStatus: 401 });
+        const { logs } = await publish({ bb, runId: 'run-noheal', member: 'bb-noheal' });
+        assert.equal(bb.execCommands.filter((c) => /^curl -sS -X POST/.test(c)).length, 1);
+        assert.ok(!logs.some((m) => /self-heal completed/.test(m)), JSON.stringify(logs));
     });
 });
