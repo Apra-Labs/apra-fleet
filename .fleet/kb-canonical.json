@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "a56ec06fc713341573201bc9b7f0a7694c0e33ea",
     "branch": "u1_upstream_main_a56ec06",
-    "entry_count": 112
+    "entry_count": 113
   },
   "entries": [
     {
@@ -731,6 +731,34 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.812Z"
+    },
+    {
+      "id": "59f7a9d4-464a-4ab5-8b6c-ecdb8a4dc6ec",
+      "type": "knowledge",
+      "title": "Helper-record immutability is enforced per MCP handler, not inside credentialSet",
+      "summary": "credentialSet overwrites any record of the same name, a credential helper included. Each MCP handler that can write a credential has to call isCredentialHelper first, so any new MCP caller of credentialSet needs the same guard.",
+      "symbols": [
+        "credentialSet",
+        "isCredentialHelper",
+        "credentialStoreDelete",
+        "credentialStoreSet"
+      ],
+      "source_files": [
+        "src/services/credential-store.ts",
+        "src/tools/register-member.ts",
+        "src/tools/credential-store-set.ts",
+        "src/tools/credential-store-delete.ts",
+        "tests/secret-helper-cli-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-02T14:17:28.271Z",
+      "source_file_hashes": {
+        "src/services/credential-store.ts": "2a245ad4f4f683df54ac13da318d12205f35bdc3",
+        "src/tools/credential-store-delete.ts": "58ca70cdb3aed9dd60c33b1491169f5a4e805474",
+        "src/tools/credential-store-set.ts": "9f5b121d75b91cefeeff937146b80e891bd18ebf",
+        "src/tools/register-member.ts": "b1f6289567112746f372a646336ce845b7aaacde",
+        "tests/secret-helper-cli-e2e.test.ts": "92bc59a8b2d8cc8ebd164149ede15643a277e0ff"
+      }
     },
     {
       "id": "5b0c0a37-6e58-4854-b1f4-b672ca0a6080",
