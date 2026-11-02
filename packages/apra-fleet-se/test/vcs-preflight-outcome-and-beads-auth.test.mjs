@@ -312,6 +312,19 @@ describe('D. probe-first preflight for non-re-mintable members (Bitbucket)', () 
         assert.equal(calls.filter((c) => isProbe(c.cmd)).length, 1, 'never re-probed this run');
     });
 
+    test('local member probe failure names the by-hand re-provision a 0.4.4-provisioned local member needs', async () => {
+        const { threeBrackets, logs } = makeProbeSync({ record: LOCAL_BB, probe: fail('fatal: Authentication failed') });
+        await threeBrackets('backlog');
+        const line = logs.find((l) => l.includes(VCS_CREDENTIAL_PROBE_FAILED));
+        assert.ok(line, logs.join('\n'));
+        assert.match(line, /provisioned by fleet 0\.4\.4/);
+        assert.match(line, /re-provisioned by hand/);
+        assert.ok(
+            line.includes('provision_vcs_auth member_name=MEMBER provider=bitbucket workspace=WORKSPACE api_token={{secret.bitbucket_api_token}}'),
+            'gives the exact re-provision command',
+        );
+    });
+
     test('probe command sets GIT_TERMINAL_PROMPT=0 and GCM_INTERACTIVE=never, no credential.helper override, posix and powershell', async () => {
         const decode = (cmd) => {
             const m = /^powershell -EncodedCommand (\S+)$/.exec(cmd);

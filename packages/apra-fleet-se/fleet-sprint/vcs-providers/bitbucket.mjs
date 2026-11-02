@@ -239,7 +239,14 @@ const AUTH_REMEDY_HINT =
     + 'credential helper, which can break the operator\'s HTTPS git -- provision '
     + 'a non-local member, or keep the local member on SSH (Atlassian is moving '
     + 'git-over-SSH to ssh.bitbucket.org, cut-off 2026-11-12: use '
-    + 'git@ssh.bitbucket.org:WORKSPACE/REPO.git for SSH remotes). Without a deployed '
+    + 'git@ssh.bitbucket.org:WORKSPACE/REPO.git for SSH remotes). A LOCAL member '
+    + 'provisioned by fleet 0.4.4 still has a helper with the old account-login '
+    + 'username; the sprint never re-provisions a local member, so it fails its '
+    + 'credential probe until it is re-provisioned by hand, once: '
+    + 'provision_vcs_auth member_name=MEMBER provider=bitbucket workspace=WORKSPACE '
+    + `api_token={{secret.${DEFAULT_API_TOKEN_SECRET}}} (this rewrites the host's `
+    + 'global bitbucket.org helper to the fixed username x-bitbucket-api-token-auth). '
+    + 'Without a deployed '
     + 'credential the sprint still completes: no PR is opened and target '
     + 'issues are closed directly on PASS.';
 
