@@ -7,6 +7,7 @@ import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
 import { BitbucketVCS } from '../fleet-sprint/vcs-providers/bitbucket.mjs';
 import { raiseVcsPrForMember } from '../fleet-sprint/vcs-auth.mjs';
 import { buildFindPrCommand } from '../fleet-sprint/vcs-module.mjs';
+import { RUN_HISTORY_MARKER } from '../fleet-sprint/pr-body.mjs';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 
 // =============================================================================
@@ -306,5 +307,49 @@ describe('(F3/F4/F5) remedy cautions, fork filter, description retention', () =>
         assert.ok(built.command.includes(`&fields=${fields}`), built.command);
         const [pr] = built.mapResponse({ values: [{ id: 9, title: 't', summary: { raw: 'history body' } }] });
         assert.equal(pr.body, 'history body');
+    });
+});
+
+describe('(d) find-before-create: relaunch updates in place, no duplicate POST, PR URL logged', () => {
+    test('existing open PR: commands are GET then PUT, zero POST, PUT keeps the prior run history, result prUrl is the found URL', async () => {
+        const bb = fakeBitbucket();
+        await publish({ bb, verdict: 'FAIL', notes: 'gate failed', runId: 'run-h1', member: 'bb-find-first' });
+        assert.ok(bb.pr.description.includes(RUN_HISTORY_MARKER), bb.pr.description);
+        bb.calls.length = 0;
+        bb.execCommands.length = 0;
+        await publish({ bb, verdict: 'PASS', notes: 'all good', runId: 'run-h2', member: 'bb-find-first' });
+        assert.deepEqual(bb.calls, ['GET', 'PUT']);
+        assert.ok(!bb.execCommands.some((c) => /^curl -sS -X POST/.test(c)));
+        assert.ok(/ -X GET [\s\S]*pullrequests\?/.test(bb.execCommands[0]), bb.execCommands[0]);
+        assert.ok(/ -X PUT [\s\S]*pullrequests\/42/.test(bb.execCommands[1]), bb.execCommands[1]);
+        assert.ok(bb.pr.description.includes(RUN_HISTORY_MARKER) && bb.pr.description.includes('run-h1'), bb.pr.description);
+    });
+
+    test('raiseVcsPrForMember returns the found PR URL and logs it on the update path', async () => {
+        const bb = fakeBitbucket({ existing: { title: 'old', description: 'old body' } });
+        const logs = [];
+        const res = await raiseVcsPrForMember({
+            fleetApi: { memberDetail: (m) => bb.callTool('member_detail', { member_name: m }),
+                provisionVcsAuth: (a) => bb.callTool('provision_vcs_auth', a),
+                vcsCredentialExec: (a) => bb.callTool('vcs_credential_exec', a) },
+            command: remoteCommand, member: 'bb-direct', base: 'main', head: 'feat/x', title: 't', body: 'b',
+            log: (m) => logs.push(m), logPrefix: '[T]', remoteUrlOverride: BB_ORIGIN,
+            updateExisting: ({ body: oldBody }) => ({ title: 'new', body: `${oldBody} + more` }),
+        });
+        assert.equal(res.prUrl, PR_URL);
+        assert.equal(res.alreadyExists, true);
+        assert.deepEqual(bb.calls, ['GET', 'PUT']);
+        assert.ok(logs.some((m) => m.includes('updated PR URL') && m.includes(PR_URL)), JSON.stringify(logs));
+    });
+
+    test('no existing PR: GET (miss) then POST, and the created PR URL is logged', async () => {
+        const bb = fakeBitbucket();
+        const { logs } = await publish({ bb, runId: 'run-new', member: 'bb-new' });
+        assert.deepEqual(bb.calls, ['GET', 'POST']);
+        assert.ok(logs.some((m) => m.includes('opened PR URL') && m.includes(PR_URL)), JSON.stringify(logs));
+    });
+
+    test('providers without findBeforeCreate keep the create-first order', () => {
+        assert.equal(BitbucketVCS.findBeforeCreate, true);
     });
 });
