@@ -108,7 +108,7 @@ Each member supports a single VCS provider at a time. Multi-provider configurati
 **Step 6: Deploy credentials** -- call `provision_vcs_auth` with the token user provides
 
 **Step 7: Check/install required skills** based on project + role:
-- Bitbucket + (devops OR code-review) -> `bitbucket-devops` skill
+- Bitbucket + (devops OR code-review) -> `bitbucket` skill
 - ApraPipes project + devops -> `aprapipes-devops` skill
 - GitHub + anything -> no extra skill (gh CLI is sufficient, Claude already knows it)
 - Azure DevOps + (devops OR code-review) -> `azdevops-devops` skill (future, document the intent)
@@ -119,7 +119,7 @@ Each member supports a single VCS provider at a time. Multi-provider configurati
 - VCS: Bitbucket (kumaakh/apra-lic-mgr)
 - Roles: development, code-review
 - Auth: Bitbucket API token (verified)
-- Skills: bitbucket-devops (installed)
+- Skills: bitbucket (installed)
 ```
 
 ## Workstream 3: Versioning, CI & Distribution
@@ -206,7 +206,7 @@ skills/pm/
   bitbucket-auth.md                <- Bitbucket-specific: scope table, token creation steps at id.atlassian.com, test commands, troubleshooting
   github-auth.md                   <- GitHub-specific: gh CLI setup, GitHub App vs PAT, scope mapping
   azure-devops-auth.md             <- Azure DevOps-specific: PAT creation at dev.azure.com, scope table, test commands
-  skill-matrix.md                  <- project type + role -> required skills mapping (bitbucket-devops, aprapipes-devops, etc.)
+  skill-matrix.md                  <- project type + role -> required skills mapping (bitbucket, aprapipes-devops, etc.)
 ```
 
 ## Testing Plan
