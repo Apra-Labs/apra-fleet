@@ -447,6 +447,16 @@ PAT) onto a member as a git credential helper, then verifies it. The result's
 `structuredContent.verificationReason` names the failing verification channel
 when the provider reports one.
 
+**Out-of-band collection:** required non-secret fields (Bitbucket
+`workspace`, Azure DevOps `org_url`) are validated first; a missing one
+returns `credential_assembly_failed` naming the field, without prompting.
+When the secret field (`api_token` / `pat` / `token`) is absent the server
+asks the operator for it out of band -- unless `non_interactive: true`, in
+which case it returns `ok: false`, reason `credential_missing`, with the
+field named in `structuredContent.message`. With no terminal available, the
+fallback text tells the operator to store the value as a named secret
+(`apra-fleet secret --set NAME --persist`) and pass `{{secret.NAME}}`.
+
 **Bitbucket parameters** (`provider: "bitbucket"`):
 
 | Name | Type | Required | Description |

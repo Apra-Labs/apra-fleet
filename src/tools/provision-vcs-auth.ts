@@ -89,6 +89,7 @@ export const provisionVcsAuthSchema = z.object({
   ...memberIdentifier,
   provider: z.enum(['github', 'bitbucket', 'azure-devops']).describe('VCS provider to configure'),
   label: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional().describe('Credential label (slug, e.g. "work-github"). Defaults to provider name. Enables multiple credentials per provider.'),
+  non_interactive: z.boolean().optional().describe('When true, never prompt out of band: a missing secret field (api_token / pat / token) returns ok=false with reason credential_missing naming the field. Use from automation that has no operator at a terminal. Default false.'),
   scope_url: z.string().optional().describe('Git credential scope URL (e.g. "https://github.com/my-org"). Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass "https://ORG.visualstudio.com" so the PAT is bound to the host the member actually pushes to.'),
 
   // GitHub fields
@@ -153,6 +154,8 @@ export type ProvisionVcsAuthReason =
   | 'secret_variable_expired'
   /** Out-of-band credential collection was cancelled or returned nothing. */
   | 'oob_cancelled'
+  /** non_interactive was set and the secret field is absent; nothing was prompted. */
+  | 'credential_missing'
   /** The resolved provider implements no buildCredentials hook (a wiring bug). */
   | 'credential_assembly_unsupported'
   /** The provider rejected the supplied fields (e.g. a required field is absent). */
@@ -305,8 +308,21 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   // Order is unchanged: {{secret.NAME}} resolution first, then OOB collection
   // (an OOB-collected secret is deliberately NOT re-run through
   // resolveSecretField), then credential assembly.
+  //
+  // Every required NON-secret field is validated first, so a call that would
+  // fail credential assembly anyway never prompts the operator for a secret.
+  const nonSecretError = service.validateNonSecretFields?.(resolvedInput) ?? null;
+  if (nonSecretError) {
+    return vcsResult(`[FAIL] ${nonSecretError}`, { ...who, reason: 'credential_assembly_failed' });
+  }
   const missing = service.missingCredential;
   if (missing && missing.isMissing(resolvedInput)) {
+    if (input.non_interactive) {
+      return vcsResult(
+        `[FAIL] The "${missing.field}" field is missing and non_interactive is set, so it was not prompted for. Pass it (e.g. as {{secret.NAME}}).`,
+        { ...who, reason: 'credential_missing' },
+      );
+    }
     const oob = await collectOobApiKey(agent.friendlyName, 'provision_vcs_auth', {
       prompt: missing.promptFor(agent.friendlyName),
     });

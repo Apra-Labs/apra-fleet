@@ -157,6 +157,17 @@ export interface VcsProviderService {
   buildCredentials?(input: VcsCredentialInput): unknown | string;
 
   /**
+   * Check every REQUIRED NON-secret field (e.g. Bitbucket's workspace, Azure
+   * DevOps' org_url) and return an error string naming the missing/invalid
+   * field, or null when they are all present. provision_vcs_auth runs this
+   * BEFORE any out-of-band credential collection, so an operator is never
+   * prompted for a secret the call would then reject for another reason.
+   * Pure, like buildCredentials. OPTIONAL: a provider with no required
+   * non-secret field (GitHub) omits it.
+   */
+  validateNonSecretFields?(input: VcsCredentialInput): string | null;
+
+  /**
    * How this provider's credential is collected when the payload omits it.
    * OPTIONAL: a provider whose credential is always derived server-side (a
    * GitHub App minting flow) has nothing to prompt for.

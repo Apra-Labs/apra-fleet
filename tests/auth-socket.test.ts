@@ -725,19 +725,20 @@ describe('auth-socket', () => {
       }
     }
 
-    it('emits --set and "provide the credential" wording for credential-collection mode (no extraArgs)', () => {
+    it('emits a named-secret --set instruction (never the member name) for credential-collection mode (no extraArgs)', () => {
       stubHeadless();
       const msg = launchAuthTerminal('my-member', [], () => {});
-      expect(msg).toContain('! apra-fleet secret --set my-member');
-      expect(msg).toContain('to provide the credential:');
+      expect(msg).toContain('! apra-fleet secret --set NAME --persist');
+      expect(msg).not.toContain('secret --set my-member');
+      expect(msg).toContain('{{secret.NAME}}');
       expect(msg).not.toContain('--confirm');
     });
 
-    it('emits --set and "provide the credential" wording for API-key mode (--api-key flag)', () => {
+    it('emits a named-secret --set instruction (never the member name) for API-key mode (--api-key flag)', () => {
       stubHeadless();
       const msg = launchAuthTerminal('my-member', ['--api-key'], () => {});
-      expect(msg).toContain('! apra-fleet secret --set my-member');
-      expect(msg).toContain('to provide the credential:');
+      expect(msg).toContain('! apra-fleet secret --set NAME --persist');
+      expect(msg).not.toContain('secret --set my-member');
       expect(msg).not.toContain('--confirm');
     });
 

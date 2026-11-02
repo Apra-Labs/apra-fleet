@@ -609,8 +609,10 @@
  * @property {"ok" | "deployed_unverified" | "deployed_verification_skipped" |
  *   "member_not_found" | "member_offline" | "secret_variable_not_found" |
  *   "secret_variable_denied" | "secret_variable_expired" | "oob_cancelled" |
- *   "credential_assembly_unsupported" | "credential_assembly_failed" | "deploy_threw" |
- *   "deploy_failed"} reason - Machine-readable outcome code. Branch on this, never on the text.
+ *   "credential_missing" | "credential_assembly_unsupported" | "credential_assembly_failed" |
+ *   "deploy_threw" | "deploy_failed"} reason - Machine-readable outcome code. Branch on this,
+ *   never on the text. "credential_missing": non_interactive was set and the secret field is
+ *   absent (message names it; nothing was prompted).
  * @property {string} provider - The VCS provider requested.
  * @property {string} credentialLabel - Credential label the helper was deployed under
  *   (defaults to the provider name).
@@ -647,6 +649,9 @@
  * @property {string} [member_name] - Friendly name of the member
  * @property {"github" | "bitbucket" | "azure-devops"} provider - VCS provider to configure
  * @property {string} [label] - Credential label (slug, e.g. "work-github"). Defaults to provider name.
+ * @property {boolean} [non_interactive] - When true, never prompt out of band: a missing secret
+ *   field (api_token / pat / token) returns ok=false with reason "credential_missing" naming the
+ *   field. Required non-secret fields are validated before any prompt in both modes. Default false.
  * @property {string} [scope_url] - Git credential scope URL (e.g. "https://github.com/my-org").
  *   Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass
  *   "https://ORG.visualstudio.com" so the PAT is bound to the host the member pushes to.

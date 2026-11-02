@@ -547,9 +547,15 @@ PAT, Bitbucket API token, or Azure DevOps PAT) on a member. `provider`
 (`"github" | "bitbucket" | "azure-devops"`) is required; the rest are
 optional and provider-specific: `member_id`, `member_name`, `label`,
 `scope_url`, `github_mode` (`"github-app" | "pat"`), `token`, `git_access`,
-`repos`, `email`, `api_token`, `workspace`, `org_url`, `pat`, and
-`pat_expires_at`. Every secret-bearing field supports a `{{secret.NAME}}`
-token. `pat_expires_at` must be parseable by `Date.parse` -- the server
+`repos`, `email`, `api_token`, `workspace`, `org_url`, `pat`,
+`pat_expires_at` and `non_interactive`. Every secret-bearing field supports a
+`{{secret.NAME}}` token. For Bitbucket, `api_token` and `workspace` are
+required and `email` is optional and ignored for authentication. Required
+non-secret fields (Bitbucket `workspace`, Azure DevOps `org_url`) are
+validated before any out-of-band prompt; a missing one returns reason
+`credential_assembly_failed` naming the field. With `non_interactive: true`
+a missing secret field is never prompted for: the call returns `ok: false`,
+reason `credential_missing`, and `structuredContent.message` names the field. `pat_expires_at` must be parseable by `Date.parse` -- the server
 rejects an unparseable value rather than storing it, because a `NaN` expiry
 silences the near-expiry warning and makes the credential-cleanup timer
 fall back to its default.

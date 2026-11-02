@@ -372,7 +372,11 @@ async function collectOobInput(
           }
         }
         const manualMsg = result.slice('fallback:'.length);
-        resolve({ fallback: `🔐 ${manualMsg}\n\nOnce the user has entered the ${inputType}, call ${toolName} again with the same parameters.` });
+        resolve({
+          fallback: mode === 'confirm'
+            ? `${manualMsg}\n\nOnce the user has entered the ${inputType}, call ${toolName} again with the same parameters.`
+            : `${manualMsg}\n\nThen call ${toolName} again with {{secret.NAME}} in place of the missing ${inputType}.`,
+        });
       }
     });
 
@@ -525,7 +529,21 @@ function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string
   return { cmd: process.argv[0], args: [indexJs, ...cmdArgs] };
 }
 
-function buildHeadlessFallback(memberName: string, reason: string, context?: { command?: string; onMember?: string }, extraArgs?: string[]): string {
+/**
+ * The manual-entry instruction shown when no terminal (and no browser UI) can
+ * collect a credential. ASCII only.
+ *
+ * Credential-collection modes name the credential by the caller's prompt
+ * label (the `--prompt` value in `extraArgs`, e.g. a provider's
+ * missingCredential.promptFor text) and tell the operator to store it under
+ * a secret NAME of their choosing, then pass {{secret.NAME}}. The member name
+ * is never offered as a secret name: `secret --set <member>` stored the value
+ * under the member's name, which no credential field references.
+ *
+ * Confirm mode keeps `secret --confirm <name>`: there `memberName` IS the
+ * credential name being confirmed (see collectOobConfirm).
+ */
+export function buildHeadlessFallback(memberName: string, reason: string, context?: { command?: string; onMember?: string }, extraArgs?: string[]): string {
   const isConfirm = extraArgs?.includes('--confirm') ?? false;
   let contextLines = '';
   if (context?.onMember && context?.command) {
@@ -536,7 +554,14 @@ function buildHeadlessFallback(memberName: string, reason: string, context?: { c
   if (isConfirm) {
     return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to confirm:\n  ! apra-fleet secret --confirm ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.`;
   }
-  return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to provide the credential:\n  ! apra-fleet secret --set ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.`;
+  const promptIdx = extraArgs?.indexOf('--prompt') ?? -1;
+  const promptLabel = extraArgs && promptIdx !== -1 && promptIdx + 1 < extraArgs.length
+    ? extraArgs[promptIdx + 1]
+    : (extraArgs?.includes('--api-key') ? `Enter API key for ${memberName}` : `Enter password for ${memberName}`);
+  return `fallback:${reason}${contextLines}\n\nNo terminal is available to ask for this credential: "${promptLabel}".`
+    + `\nStore it as a named fleet secret (choose any NAME, e.g. one per credential) in a separate terminal:`
+    + `\n  ! apra-fleet secret --set NAME --persist`
+    + `\n(or use credential_store_set), then pass {{secret.NAME}} in the credential field when calling the tool again.`;
 }
 
 /**

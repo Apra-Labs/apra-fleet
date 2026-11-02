@@ -104,6 +104,10 @@ export const bitbucketProvider: VcsProviderService = {
     return creds;
   },
 
+  validateNonSecretFields(input) {
+    return input.workspace ? null : 'Bitbucket requires the "workspace" field.';
+  },
+
   missingCredential: {
     field: 'api_token',
     isMissing: (input) => input.api_token === undefined,
