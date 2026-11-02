@@ -557,6 +557,13 @@ MEMBER session's CONFIRMED read is answered from its checkout bible (2.5) and
 never reaches the provider, so it keeps working. No message, log line or
 queue warning ever contains the secret's value.
 
+When the named credential is a credential helper (a program the server runs
+to mint the token), the same code is raised, with the same queueing, when the
+helper run fails or the helper is inside its retry backoff after a failure
+(reason `helper-failed`; no request is sent), and when the server answers 401
+again after one retry with a token from a fresh helper run (reason
+`rejected`). Neither the token nor the helper's output appears in the message.
+
 ### 3.4 Silent refusals are named but not projectable
 
 Each code also carries `surfaced`: `thrown`, `response-field`, or `silent`. The
