@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, capabilities, PR_DESCRIPTION_MAX_LENGTH } from '../fleet-sprint/vcs-module.mjs';
+import { BitbucketVCS } from '../fleet-sprint/vcs-providers/index.mjs';
 
 // =============================================================================
 // apra-fleet-qeq1.3 -- Bitbucket create-pull-request builder GOLDEN tests.
@@ -295,4 +296,28 @@ test('capabilities: a bitbucket.org remote now reports canOpenPullRequest:true (
     for (const url of ['https://bitbucket.org/kumaakh/apra-analytics.git', 'git@bitbucket.org:kumaakh/apra-analytics.git']) {
         assert.deepEqual(capabilities(url), { hasRemote: true, canOpenPullRequest: true, host: 'bitbucket.org' }, url);
     }
+});
+
+// -----------------------------------------------------------------------------
+// Provisioning args and remedy text: no email anywhere (Bearer API token).
+// -----------------------------------------------------------------------------
+
+test('bitbucket buildProvisionArgs: push access supplies workspace + api_token placeholder; no email in args or note', () => {
+    const out = BitbucketVCS.buildProvisionArgs({
+        base: { member_name: 'm1', provider: 'bitbucket', git_access: 'push' },
+        repoRef: { workspace: 'kumaakh', repo: 'apra-analytics' },
+        availableSecrets: ['bitbucket_api_token'],
+    });
+    assert.equal(out.args.workspace, 'kumaakh');
+    assert.equal(out.args.api_token, '{{secret.bitbucket_api_token}}');
+    assert.ok(!('email' in out.args), JSON.stringify(out.args));
+    assert.ok(!/email/i.test(JSON.stringify(out.args)), JSON.stringify(out.args));
+    assert.ok(!/email/i.test(out.note ?? ''), out.note);
+});
+
+test('bitbucket AUTH_REMEDY_HINT: names bitbucket_api_token, no email', () => {
+    const hint = BitbucketVCS.authRemedy.hint;
+    assert.ok(hint.includes('bitbucket_api_token'));
+    assert.ok(!/email/i.test(hint), hint);
+    assert.ok(hint.includes('ssh.bitbucket.org'));
 });
