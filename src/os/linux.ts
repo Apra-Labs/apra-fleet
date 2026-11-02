@@ -384,8 +384,9 @@ export class LinuxCommands implements OsCommands {
   }
 
   httpGetStatusWithBearer(url: string, token: string): string {
-    // printf is a shell builtin (sh/dash/bash/zsh), so the token never lands
-    // on a child process argv; curl reads the header from stdin (-H @-).
+    // printf is a shell builtin (sh/dash/bash/zsh), so the token is not on
+    // curl's argv; curl reads the header from stdin (-H @-). It is still on
+    // the outer `bash -c` argv that runs this string (see os-commands.ts).
     return `printf 'Authorization: Bearer %s\\n' ${escapeShellArg(token)} | curl -sS -o /dev/null -w '%{http_code}' -H @- ${escapeShellArg(url)}`;
   }
 

@@ -1,12 +1,12 @@
 # Bitbucket Authentication
 
-API tokens (app passwords) tied to a user account. Long-lived, no auto-expire.
+Scoped Atlassian API tokens tied to a user account. Bitbucket app passwords
+are retired (Atlassian CHANGE-3222) and are not supported.
 
 ## Setup
 
 1. Go to `https://id.atlassian.com/manage-profile/security/api-tokens`
-   (or Bitbucket: Settings > Personal Bitbucket settings > App passwords)
-2. Create app password with required scopes (see below)
+2. Choose "Create API token with scopes", app Bitbucket, with the required scopes (see below)
 3. Copy token - shown only once
 4. Store the token as the fleet secret `bitbucket_api_token` (`credential_store_set name=bitbucket_api_token`) and provide the workspace slug. The secret name `bitbucket_api_token` is FIXED: it is not configurable and there is no fallback name. No email is needed.
 
@@ -27,13 +27,14 @@ repository over REST with `Authorization: Bearer` and runs a non-interactive
 
 | Role | Scopes |
 |------|--------|
-| development | `repository:write`, `pullrequest:write` |
-| code-review | `repository:read`, `pullrequest:read` |
-| testing | `repository:read`, `pipeline:read` |
-| devops | `repository:admin`, `pipeline:write`, `pullrequest:write` |
-| debugging | `repository:read` |
+| development | `read:repository:bitbucket`, `write:repository:bitbucket`, `read:pullrequest:bitbucket`, `write:pullrequest:bitbucket` |
+| code-review | `read:repository:bitbucket`, `read:pullrequest:bitbucket` |
+| testing | `read:repository:bitbucket`, `read:pipeline:bitbucket` |
+| devops | `admin:repository:bitbucket`, `write:pipeline:bitbucket`, `write:pullrequest:bitbucket` |
+| debugging | `read:repository:bitbucket` |
 
-Union of all roles assigned to the member.
+Union of all roles assigned to the member. A fleet-sprint member that pushes
+and opens PRs needs the four development scopes.
 
 ## Test
 
@@ -58,7 +59,26 @@ credential_store_set  name=bitbucket_api_token
 execute_command  command="curl -sf -H 'Authorization: Bearer '{{secret.bitbucket_api_token}} https://api.bitbucket.org/2.0/repositories/workspace/repo"
 ```
 
+`{{secret.NAME}}` is substituted already quoted for the member's shell, so
+reference it bare, never inside your own quotes. The example above is for a
+POSIX shell; on a PowerShell member use
+`curl.exe -sf -H ('Authorization: Bearer ' + {{secret.bitbucket_api_token}}) https://api.bitbucket.org/2.0/repositories/workspace/repo`.
+
 The token is resolved server-side and redacted in output (`[REDACTED:bitbucket_api_token]`) - it never appears in the LLM conversation or command logs.
+
+## Upgrading from 0.4.4
+
+- If you followed the older version of this doc you stored the token as
+  `bitbucket_token`. Store it again as `bitbucket_api_token`
+  (`credential_store_set name=bitbucket_api_token`); nothing reads the old name.
+- A remote member is re-provisioned automatically the first time its old
+  helper fails the sprint's credential probe.
+- A LOCAL member is never re-provisioned automatically. Re-provision each one
+  by hand, once:
+  `provision_vcs_auth member_name=MEMBER provider=bitbucket workspace=WORKSPACE api_token={{secret.bitbucket_api_token}}`
+- Azure DevOps members now take the same probe-first path: a rotated PAT is
+  deployed only after the old one fails its probe; re-run `provision_vcs_auth`
+  to deploy it sooner.
 
 ## Troubleshooting
 
@@ -66,6 +86,7 @@ The token is resolved server-side and redacted in output (`[REDACTED:bitbucket_a
 |---------|-----|
 | 401 Unauthorized (`rest_unauthorized`) | Token revoked or missing scopes; regenerate it and update the `bitbucket_api_token` secret |
 | git fails, REST ok (`git_auth_failed`) | Re-run `provision_vcs_auth` so the helper carries the fixed username `x-bitbucket-api-token-auth` |
-| 403 Forbidden | Create new app password with additional scopes |
+| 403 Forbidden | The API token lacks a scope; create a new API token with the missing scopes and store it as `bitbucket_api_token` |
+| 410 Gone | An app password is still in use (retired); replace it with an API token stored as `bitbucket_api_token` |
 | Repository not found | Check workspace slug in Bitbucket URL |
 | Clone prompts for password | Re-run `provision_vcs_auth` |

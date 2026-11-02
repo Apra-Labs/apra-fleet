@@ -57,7 +57,7 @@ revoke_vcs_auth(agent_id: string, provider: github | bitbucket | azure-devops)
 2. **Configures git credential helper** so `git clone/pull/push` works without interactive prompts
 3. **Tests connectivity** via lightweight API call:
    - GitHub: `gh auth status` or API call to `/user`
-   - Bitbucket: `curl -H 'Authorization: Bearer {{secret.bitbucket_api_token}}' https://api.bitbucket.org/2.0/repositories/{workspace}` (no email; the secret name `bitbucket_api_token` is fixed)
+   - Bitbucket: an authenticated REST GET of the origin repository (`Authorization: Bearer <api token>`, no email) plus a non-interactive `git ls-remote` of the origin; both must pass. The secret name `bitbucket_api_token` is fixed.
    - Azure DevOps: `curl -u :pat https://dev.azure.com/{org}/_apis/projects`
 4. **Returns status** -- success/failure with details (authenticated user, accessible repos)
 
@@ -96,7 +96,9 @@ Each member supports a single VCS provider at a time. Multi-provider configurati
 
 **Step 4: Check existing auth** -- run test API call via `execute_command`:
 - GitHub: `gh auth status`
-- Bitbucket: `curl -H 'Authorization: Bearer {{secret.bitbucket_api_token}}' https://api.bitbucket.org/2.0/repositories/{workspace}` (no email; the secret name `bitbucket_api_token` is fixed)
+- Bitbucket (no email; the secret name `bitbucket_api_token` is fixed). `{{secret.NAME}}` is substituted already quoted for the member's shell, so reference it bare, never inside your own quotes:
+  - POSIX shell: `curl -sf -H 'Authorization: Bearer '{{secret.bitbucket_api_token}} https://api.bitbucket.org/2.0/repositories/{workspace}`
+  - PowerShell: `curl.exe -sf -H ('Authorization: Bearer ' + {{secret.bitbucket_api_token}}) https://api.bitbucket.org/2.0/repositories/{workspace}`
 - Azure DevOps: `curl -u :pat https://dev.azure.com/{org}/_apis/projects`
 - If empty work folder with no remotes: ask user for VCS details first
 

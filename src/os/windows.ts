@@ -462,8 +462,9 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   httpGetStatusWithBearer(url: string, token: string): string {
     const u = escapePowerShellArgInner(url);
     const t = escapePowerShellArgInner(token);
-    // Invoke-WebRequest runs in-process, so the token is never on a child
-    // process argv. A non-2xx answer throws; its status is read off the
+    // Invoke-WebRequest runs in-process, so the token is on no child process
+    // argv (it is still on the powershell.exe command line that runs this
+    // script, see os-commands.ts). A non-2xx answer throws; its status is read off the
     // exception's response. No response at all prints a non-numeric marker.
     return [
       `$ProgressPreference = 'SilentlyContinue'`,

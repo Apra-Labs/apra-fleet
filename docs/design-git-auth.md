@@ -387,7 +387,11 @@ secret the tool exists to protect.
 - **Two-channel verification.** A deploy is `verified` only if both an
   authenticated REST read of the origin repository and a non-interactive
   `git ls-remote` succeed. Each channel fails with its own named reason. On
-  POSIX the token is piped to curl (`-H @-`) so it never appears on argv.
+  POSIX the token is piped to curl (`-H @-`), so it is not on curl's argv;
+  on Windows the GET runs in-process (`Invoke-WebRequest`). In both cases
+  the whole command string, token included, is briefly on the argv of the
+  outer `bash -c` / `powershell` process that runs it for the length of the
+  request -- the same exposure as the credential-helper write itself.
 - **Host recognition.** `bitbucket.org` and `ssh.bitbucket.org` are both
   recognised as Bitbucket (anchored matches) for detection and repo parsing.
 - **Validate before asking.** Non-secret required fields are validated before
@@ -399,9 +403,27 @@ secret the tool exists to protect.
   re-minted (Bitbucket, Azure DevOps) and for local members, the sprint
   preflight probes the existing credential with a non-interactive
   `git ls-remote` (prompts disabled), caches the result per member per run,
-  and logs one typed error. Local members share the orchestrator's
-  credentials and are never provisioned or self-healed. GitHub App members
-  keep the mint-and-refresh path.
+  and logs one typed error. A local member of such a provider shares the
+  host's credentials and is never provisioned or self-healed by the sprint;
+  if member_detail cannot say whether a member is local, nothing is
+  provisioned (typed error `vcs_member_lookup_failed`). GitHub App members,
+  local or not, keep the mint-and-refresh path. Azure DevOps members take the
+  same probe-first path: they are no longer re-provisioned on every bracket,
+  so a PAT rotated in the credential store is picked up only once the old one
+  fails its probe -- re-run `provision_vcs_auth` to deploy it sooner.
+- **Upgrading from 0.4.4.**
+  - Secret name: the secret is `bitbucket_api_token`. Users who followed the
+    older skill doc stored it as `bitbucket_token`; store it again under
+    `bitbucket_api_token` (`credential_store_set name=bitbucket_api_token`),
+    or provisioning fails with a typed error naming the missing entry.
+  - Remote members with an HTTPS origin: the first sprint after the upgrade
+    probes the old helper (email username), the probe fails, and the member
+    is re-provisioned once with the fixed username. With an SSH origin the
+    probe passes and the helper is left as is; REST still works because it
+    uses only the token.
+  - Local members: never rewritten automatically. Re-provision each one by
+    hand, once: `provision_vcs_auth member_name=MEMBER provider=bitbucket
+    workspace=WORKSPACE api_token={{secret.bitbucket_api_token}}`.
 - **Redaction on every path.** `provision_vcs_auth` masks the token in its
   raw, URL-encoded, base64 `user:token` and quote-escaped forms, plus
   Authorization values and GitHub token literals, in both the text and the

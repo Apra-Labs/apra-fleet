@@ -180,10 +180,12 @@ export interface OsCommands {
    * Prints ONLY the numeric HTTP status code (e.g. 200, 401) -- never the
    * response body and never the token. On POSIX the header is fed to curl on
    * stdin from the shell's builtin printf, so the token is not on curl's
-   * argv (and so not in the member's process list); on PowerShell it stays
-   * inside the PowerShell process. A transport failure prints a non-numeric
-   * line or exits non-zero. Only ever run server-side via
-   * strategy.execCommand -- the command string itself carries the token.
+   * argv; on PowerShell the request runs in-process (no child argv). The
+   * command string itself carries the token, so it IS on the argv of the
+   * outer `bash -c` / powershell process that runs it, for the length of the
+   * request -- the same exposure as gitCredentialHelperWrite. A transport
+   * failure prints a non-numeric line or exits non-zero. Only ever run
+   * server-side via strategy.execCommand.
    */
   httpGetStatusWithBearer(url: string, token: string): string;
 
