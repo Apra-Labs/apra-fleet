@@ -670,6 +670,16 @@ kb_setup with provider=http, remote=https://<host>, token={{secret.KB_TOKEN}}
   never receives a helper or its token.
 - `kb_setup` accepts `{{secret.NAME}}` for provider http when NAME is a
   registered helper or an existing static secret.
+- On Windows, a bare program name is resolved by trying each `PATHEXT`
+  extension (so an npm shim resolves to `foo.cmd`, not the extensionless
+  script file that cannot be executed directly). A name that already ends in a
+  `PATHEXT` extension, in any case, is tried as given. An extensionless file
+  alone is not a match. POSIX resolution is unchanged.
+- If a member command uses `{{secret.NAME}}` where NAME is a helper, the error
+  says the name is a server-side credential helper that member commands cannot
+  use. It deliberately does not suggest `credential_store_set` (which refuses
+  helper names) and does not reveal the helper program or its path. An
+  unregistered name still gets the ordinary not-found message.
 
 **Where to register it.** On every host whose fleet server talks to the KB
 server. The KB config is per fleet install, and the helper runs inside that
