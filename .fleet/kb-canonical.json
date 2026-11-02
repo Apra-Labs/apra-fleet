@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "a56ec06fc713341573201bc9b7f0a7694c0e33ea",
     "branch": "u1_upstream_main_a56ec06",
-    "entry_count": 110
+    "entry_count": 112
   },
   "entries": [
     {
@@ -989,6 +989,34 @@
       "updated_at": "2026-09-29T06:13:13.250Z"
     },
     {
+      "id": "7854a8e8-228a-49e0-b435-bad737d06410",
+      "type": "knowledge",
+      "title": "HTTP KB helper tokens are cached per credential and audience with one in-flight run",
+      "summary": "credential-helper-cache.ts caches helper tokens per {credential, KB URL}. It refreshes at expires_at minus min(5 min, 10% of lifetime), shares one run across concurrent callers, and backs off 10 s doubling to 5 min. Re-registering the helper resets the entry.",
+      "symbols": [
+        "getHelperToken",
+        "dropHelperToken",
+        "getHelperTokenStatus",
+        "helperRefreshAt",
+        "helperBackoffMs",
+        "kbHelperAudience"
+      ],
+      "source_files": [
+        "src/services/credential-helper-cache.ts",
+        "src/services/knowledge/http-provider.ts",
+        "src/tools/check-status.ts",
+        "tests/knowledge/kb-http-credential-helper.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-02T14:10:59.891Z",
+      "source_file_hashes": {
+        "src/services/credential-helper-cache.ts": "6e546a5d23b2d238659b5fbb7599401e8b5d3ff5",
+        "src/services/knowledge/http-provider.ts": "3cf9f9eedcca9d0f48b08a1fe4df4ad88edccfef",
+        "src/tools/check-status.ts": "118e888853dfa5d2ab4c1078397e1ca82ebd56ee",
+        "tests/knowledge/kb-http-credential-helper.test.ts": "d55160a122f0a9f5957eacb809c30b0b941f8ac4"
+      }
+    },
+    {
       "id": "78f14fd2-717c-4201-9897-fb638379f393",
       "type": "knowledge",
       "title": "Supervisor sprint-row progress is pulled from each child's GET /state?summary=1, never recomputed",
@@ -1316,6 +1344,30 @@
         "src/services/knowledge/bible-import.ts": "9a75635a8ccb17c83c0aef0cc1806386ec3c8cd5",
         "src/services/knowledge/sqlite-provider.ts": "3b70b8d2bfe7a3e3b4c1c522400841d0b5282d6f",
         "tests/knowledge/kb-member-mixed-tier-reads.test.ts": "f452ea5700809ded25e518a2743994214a4bc750"
+      }
+    },
+    {
+      "id": "9bf4de36-f0c9-41e9-b05a-795ba5d40fa6",
+      "type": "learning",
+      "title": "lookupServerSecretMeta reports a credential helper as missing",
+      "summary": "lookupServerSecretMeta/lookupServerSecret return status missing for a helper record, so any caller that validates a token_ref (kb_setup checkTokenRef, fleet_status) must call lookupCredentialHelper first.",
+      "symbols": [
+        "lookupServerSecretMeta",
+        "lookupCredentialHelper",
+        "checkTokenRef",
+        "kbHttpCredentialHealth"
+      ],
+      "source_files": [
+        "src/services/credential-store.ts",
+        "src/tools/kb-setup.ts",
+        "src/tools/check-status.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-02T14:10:59.834Z",
+      "source_file_hashes": {
+        "src/services/credential-store.ts": "2a245ad4f4f683df54ac13da318d12205f35bdc3",
+        "src/tools/check-status.ts": "118e888853dfa5d2ab4c1078397e1ca82ebd56ee",
+        "src/tools/kb-setup.ts": "098b2f04a6d36da2dfb7425c2a6c38a1c6a9d897"
       }
     },
     {
