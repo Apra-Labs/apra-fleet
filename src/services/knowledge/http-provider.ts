@@ -24,6 +24,13 @@ import type {
 import { DEFAULT_REQUEST_TIMEOUT_MS } from './kb-config.js';
 import { lookupServerSecret } from '../credential-store.js';
 import { recordKbHttpSuccess, recordKbHttpRejected } from './kb-http-auth-state.js';
+import {
+  REPOSITORY_HEADER,
+  REPOSITORY_COMMIT_HEADER,
+  COMMIT_SHA,
+  isValidRepositoryValue,
+  type RepositoryIdentity,
+} from './repository-header.js';
 
 export { DEFAULT_REQUEST_TIMEOUT_MS };
 
@@ -37,6 +44,12 @@ const MAX_QUEUE_SIZE = 1000;
 export interface HttpKbProviderOptions {
   /** Socket idle timeout per request, in ms; absent means DEFAULT_REQUEST_TIMEOUT_MS. */
   requestTimeoutMs?: number;
+  /**
+   * The repository every request is about, sent as the X-Repository and
+   * X-Repository-Commit headers. Filled only from fleet's resolved KB anchor
+   * (kb-providers.ts), never from tool input. Absent: neither header is sent.
+   */
+  repository?: RepositoryIdentity;
 }
 
 /**
@@ -122,11 +135,15 @@ export class HttpKbProvider implements MemoryProvider {
   private readonly tokenSource: KbHttpTokenSource;
   private readonly fallback: SqliteProvider;
   private readonly requestTimeoutMs: number;
+  private readonly repository: RepositoryIdentity | undefined;
   readonly offlineQueue: QueuedOperation[] = [];
   private readonly beforeExitHandler: () => void;
 
   constructor(url: string, token: KbHttpTokenSource, fallback?: SqliteProvider, options: HttpKbProviderOptions = {}) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.repository = options.repository && isValidRepositoryValue(options.repository.remote)
+      ? options.repository
+      : undefined;
     this.baseUrl = url.replace(/\/$/, '');
     this.tokenSource = token;
     this.fallback = fallback ?? new SqliteProvider();
@@ -152,6 +169,21 @@ export class HttpKbProvider implements MemoryProvider {
       process.stderr.write('[KB] WARNING: offline queue full (1000), dropping oldest entry\n');
     }
     this.offlineQueue.push(op);
+  }
+
+  // The repository headers for one request. The commit is best effort: an
+  // unreadable or malformed sha omits the header, never fails the request.
+  private repositoryHeaders(): Record<string, string> {
+    if (!this.repository) return {};
+    const headers: Record<string, string> = { [REPOSITORY_HEADER]: this.repository.remote };
+    let commit: string | undefined;
+    try {
+      commit = this.repository.commitOf?.();
+    } catch {
+      commit = undefined;
+    }
+    if (commit && COMMIT_SHA.test(commit)) headers[REPOSITORY_COMMIT_HEADER] = commit;
+    return headers;
   }
 
   /**
@@ -201,10 +233,16 @@ export class HttpKbProvider implements MemoryProvider {
   ): Promise<T> {
     const secretName = typeof this.tokenSource === 'string' ? undefined : this.tokenSource.secretName;
     const attempts = secretName === undefined ? 1 : 2;
+    // Computed once, after the first secret lookup succeeds: a missing secret
+    // fails before the commit is read, and the 401 retry sends the same commit.
+    let repoHeaders: Record<string, string> | undefined;
     for (let attempt = 1; ; attempt++) {
       const token = this.resolveToken();
+      repoHeaders ??= this.repositoryHeaders();
       try {
-        const result = await this.rawRequest<T>(token, method, pathname, body, queryParams, secretName !== undefined);
+        const result = await this.rawRequest<T>(
+          token, method, pathname, body, queryParams, secretName !== undefined, repoHeaders,
+        );
         recordKbHttpSuccess(this.baseUrl);
         return result;
       } catch (err) {
@@ -228,6 +266,7 @@ export class HttpKbProvider implements MemoryProvider {
     body?: unknown,
     queryParams?: Record<string, string>,
     nonJson401IsAuth = false,
+    extraHeaders: Record<string, string> = {},
   ): Promise<T> {
     return new Promise((resolve, reject) => {
       const parsedUrl = new URL(this.baseUrl);
@@ -240,6 +279,8 @@ export class HttpKbProvider implements MemoryProvider {
       const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
+        ...extraHeaders,
+        // Set last so no extra header can replace the bearer token.
         'Authorization': `Bearer ${token}`,
       };
       if (bodyStr) headers['Content-Length'] = Buffer.byteLength(bodyStr).toString();
