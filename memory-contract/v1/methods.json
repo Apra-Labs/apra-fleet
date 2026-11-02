@@ -58,7 +58,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "New row per call unless AUDN dedupes to E-DEDUP-NONE.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-BIBLE-MALFORMED", "E-KB-MAINTAINER-REQUIRED", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-BIBLE-MALFORMED", "E-KB-MAINTAINER-REQUIRED", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-CLAMP", "E-CONTRADICTION-FLAGGED", "E-DEDUP-NONE", "E-DIRECTIVE-QUARANTINE"],
       "see_also": ["Capture provenance and confidence clamp", "Directive quarantine", "Superseding and AUDN matching", "Freshness and content hashing"]
     },
@@ -76,7 +76,7 @@
       "side_effect_class": "append",
       "idempotent": false,
       "idempotent_note": "Read result is stable but each call bumps use_count/last_accessed telemetry.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-QUERY-NO-SELECTOR", "E-BIBLE-MALFORMED", "E-MEMBER-VIEW-REMOTE", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-QUERY-NO-SELECTOR", "E-BIBLE-MALFORMED", "E-MEMBER-VIEW-REMOTE", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Query modes"]
     },
     {
@@ -91,7 +91,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Freshness and content hashing"]
     },
     {
@@ -106,7 +106,7 @@
       ],
       "side_effect_class": "trust-mutating",
       "idempotent": true,
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Freshness and content hashing"]
     },
     {
@@ -135,7 +135,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "see_also": []
     },
     {

@@ -217,6 +217,11 @@
       "status": 500
     },
     {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-AUTH",
+      "title": "The remote (HTTP) KB provider takes its bearer token from a named fleet secret ({{secret.NAME}} token_ref), and that secret is missing, expired or unreadable (no request is sent), or the KB server rejected it with HTTP 401 on the request and again on one retry after re-reading the secret. The message names the secret and the reason (missing / expired / unreadable / rejected), never the value. A capture or invalidate is kept in the offline queue first (the message says so) and is sent once the secret is accepted; the queue is not drained or dropped while the failure lasts. Reads do not fall back to the local store. A literal-token config never raises this code: its 401 keeps the plain HTTP error it always had.",
+      "status": 500
+    },
+    {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-BASIS-NOT-GIT",
       "title": "The folder is not inside a git work tree, so file content at HEAD cannot be read and the bible's file hashes cannot be computed. Nothing is written.",
       "status": 500

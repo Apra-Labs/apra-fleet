@@ -175,9 +175,16 @@ async function selectProjectProvider(
   // open, so the double init is harmless (pinned in
   // tests/knowledge/kb-providers-http-selection.test.ts) -- and any setup
   // HttpKbProvider.init() grows later runs here instead of being skipped.
-  // readKbConfigFromDisk throws on http-without-url/token, so both are present here.
+  // readKbConfigFromDisk throws on http-without-url/token, so the url and one
+  // token source are present here. A token_ref config hands the provider the
+  // secret NAME, never a value: the provider looks it up on every request, so a
+  // secret update (which does not change config.json, hence never re-selects
+  // here) still takes effect on the next call.
+  const tokenSource = config.tokenSecretName !== undefined
+    ? { secretName: config.tokenSecretName }
+    : config.token!;
   const repository = resolveRepositoryIdentity(repoPath, remoteUrl);
-  const httpProvider = new HttpKbProvider(config.url!, config.token!, projectProvider, {
+  const httpProvider = new HttpKbProvider(config.url!, tokenSource, projectProvider, {
     requestTimeoutMs: config.requestTimeoutMs,
     ...(repository ? { repository } : {}),
   });
