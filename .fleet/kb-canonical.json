@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "7d4560d33dd61f96cff755e1ccf569bea71cfbdf",
+    "commit": "a56ec06fc713341573201bc9b7f0a7694c0e33ea",
     "branch": "main",
-    "entry_count": 109
+    "entry_count": 111
   },
   "entries": [
     {
@@ -1433,6 +1433,35 @@
       "updated_at": "2026-10-06T09:41:37.051Z"
     },
     {
+      "id": "b7ec6763-407e-4ca3-8cf7-91183e33e39f",
+      "type": "knowledge",
+      "title": "Bitbucket git helper uses fixed username x-bitbucket-api-token-auth; verification is REST Bearer plus git ls-remote",
+      "summary": "bitbucketProvider.deploy always writes username x-bitbucket-api-token-auth; testConnectivity needs credentials (4th arg) and the member origin, returning reason rest_unauthorized/rest_failed/git_auth_failed/git_failed/ok.",
+      "symbols": [
+        "bitbucketProvider",
+        "BITBUCKET_TOKEN_USERNAME",
+        "parseBitbucketRemote",
+        "httpGetStatusWithBearer",
+        "gitLsRemoteNonInteractive"
+      ],
+      "source_files": [
+        "src/services/vcs/bitbucket.ts",
+        "src/os/linux.ts",
+        "src/os/windows.ts",
+        "src/os/os-commands.ts",
+        "tests/provision-vcs-auth-bitbucket.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-02T19:56:41.775Z",
+      "source_file_hashes": {
+        "src/os/linux.ts": "ef4bf0b3b9945cfd62073df5912271511b2f307e",
+        "src/os/os-commands.ts": "d62dd57a6aa9a10c7e2942e0a264468603f6dfd3",
+        "src/os/windows.ts": "d651e3f6886cbd7e90690fdea72e430f3b14fe66",
+        "src/services/vcs/bitbucket.ts": "b45a3e1f77fc2b557ccbfdb5e35b6508c154c4aa",
+        "tests/provision-vcs-auth-bitbucket.test.ts": "6cb8d4e0286dee1f58ab4b94e9d6a18a9ec097ac"
+      }
+    },
+    {
       "id": "b7fc09bb-cf5b-40bb-a965-9ab9852c7cdf",
       "type": "knowledge",
       "title": "ClaudeProvider.detectUsageLimit treats a bare 429 as a usage limit without the limit-message",
@@ -1697,6 +1726,33 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.358Z"
+    },
+    {
+      "id": "da934546-d15f-42ca-bdce-bfab58ec0e83",
+      "type": "knowledge",
+      "title": "provision_vcs_auth validates required non-secret fields before out-of-band collection",
+      "summary": "VcsProviderService.validateNonSecretFields runs before collectOobApiKey in provisionVcsAuth; non_interactive=true turns a missing secret field into reason credential_missing without prompting.",
+      "symbols": [
+        "provisionVcsAuth",
+        "validateNonSecretFields",
+        "collectOobApiKey"
+      ],
+      "source_files": [
+        "src/tools/provision-vcs-auth.ts",
+        "src/services/vcs/types.ts",
+        "src/services/vcs/bitbucket.ts",
+        "src/services/vcs/azure-devops.ts",
+        "tests/provision-vcs-auth.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-02T19:56:44.031Z",
+      "source_file_hashes": {
+        "src/services/vcs/azure-devops.ts": "d700e69a7b912128bba77db33cd4d6b6ec3a528c",
+        "src/services/vcs/bitbucket.ts": "b45a3e1f77fc2b557ccbfdb5e35b6508c154c4aa",
+        "src/services/vcs/types.ts": "64f8ad879942ce3fd098e910990d1fa3259298c5",
+        "src/tools/provision-vcs-auth.ts": "39ca9fa23f8bf74428773eb3ee59deabd2ad20cf",
+        "tests/provision-vcs-auth.test.ts": "aa71779179a2b17f9ba69174729562f3e2ee0e4b"
+      }
     },
     {
       "id": "dd912ec8-958c-49d0-9926-636ee3a17f95",
