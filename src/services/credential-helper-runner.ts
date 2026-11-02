@@ -62,16 +62,82 @@ export interface HelperInvocation {
   windowsVerbatimArguments: boolean;
 }
 
+/** True for a program Windows can only start through cmd.exe. */
+export function isBatchProgram(program: string): boolean {
+  return /\.(cmd|bat)$/i.test(program);
+}
+
 /**
- * How to start a helper: POSIX programs, scripts and .exe files are spawned
- * directly with argv, no shell. Platform is a parameter so every branch is
+ * Quote one argument (or the program path) for a cmd.exe /c command line that
+ * starts a .cmd/.bat file which may forward its arguments (%*) to a native
+ * program. The only quoting function for that path: no text reaches cmd.exe
+ * except through it.
+ *
+ * - Always wrapped in double quotes, so & | < > ( ) ^ ! and spaces are inert
+ *   for cmd.exe -- both on the /c line and when the batch file re-parses %*.
+ * - An embedded " becomes "" so cmd.exe's quote state never flips (a \" would
+ *   flip it and expose what follows); the receiving program's argv parser
+ *   reads "" inside quotes as one literal ".
+ * - % becomes %%cd:~,% : cmd.exe expands %NAME% even inside quotes, and the
+ *   inserted empty expansion %cd:~,% splits any variable name so the % stays
+ *   literal.
+ * - Backslashes are literal unless they precede a " (embedded or the closing
+ *   one), where they are doubled (argv-parser rule), so a trailing backslash
+ *   cannot escape the closing quote.
+ * - CR, LF and NUL cannot be carried through cmd.exe at all and throw.
+ *
+ * The same scheme Rust's std uses for batch files after CVE-2024-24576. ! is
+ * neutralised by launching cmd.exe with /v:off (see buildHelperInvocation).
+ */
+export function quoteCmdArg(arg: string): string {
+  if (/[\r\n\0]/.test(arg)) {
+    throw new Error('an argument for a .cmd/.bat helper must not contain a line break or NUL');
+  }
+  let out = '"';
+  let backslashes = 0;
+  for (const ch of arg) {
+    if (ch === '\\') {
+      backslashes++;
+      continue;
+    }
+    if (ch === '"') {
+      out += '\\'.repeat(backslashes * 2) + '""';
+    } else if (ch === '%') {
+      out += '\\'.repeat(backslashes) + '%%cd:~,%';
+    } else {
+      out += '\\'.repeat(backslashes) + ch;
+    }
+    backslashes = 0;
+  }
+  return out + '\\'.repeat(backslashes * 2) + '"';
+}
+
+/**
+ * How to start a helper. Platform is a parameter so every branch is
  * unit-testable on any host.
+ *
+ * - A .cmd/.bat program on Windows: cmd.exe /d /v:off /s /c "<quoted line>"
+ *   with verbatim arguments. Node will not spawn a batch file without a shell
+ *   (CVE-2024-27980), so every piece goes through quoteCmdArg. /d skips
+ *   AutoRun, /v:off disables delayed (!) expansion, /s strips exactly the
+ *   outer quote pair.
+ * - Anything else (.exe, POSIX programs and scripts): spawned directly with
+ *   argv, no shell.
  */
 export function buildHelperInvocation(
   program: string,
   args: string[],
-  _platform: NodeJS.Platform,
+  platform: NodeJS.Platform,
+  comSpec: string | undefined = process.env.ComSpec,
 ): HelperInvocation {
+  if (platform === 'win32' && isBatchProgram(program)) {
+    const line = [program, ...args].map(quoteCmdArg).join(' ');
+    return {
+      file: comSpec || 'cmd.exe',
+      args: ['/d', '/v:off', '/s', '/c', `"${line}"`],
+      windowsVerbatimArguments: true,
+    };
+  }
   return { file: program, args: [...args], windowsVerbatimArguments: false };
 }
 
