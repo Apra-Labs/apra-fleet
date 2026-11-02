@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { credentialDelete } from '../services/credential-store.js';
+import { credentialDelete, isCredentialHelper } from '../services/credential-store.js';
 import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreDeleteSchema = z.object({
@@ -9,6 +9,9 @@ export const credentialStoreDeleteSchema = z.object({
 export type CredentialStoreDeleteInput = z.infer<typeof credentialStoreDeleteSchema>;
 
 export async function credentialStoreDelete(input: CredentialStoreDeleteInput): Promise<string> {
+  if (isCredentialHelper(input.name)) {
+    return `[x] '${input.name}' is a credential helper and cannot be deleted through this tool. Use the CLI: apra-fleet secret --delete ${input.name}.`;
+  }
   const deleted = credentialDelete(input.name);
   if (deleted) {
     logLine('credential_store_delete', `name=${input.name}`);

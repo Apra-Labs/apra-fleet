@@ -10,6 +10,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { credentialStoreSet } from '../src/tools/credential-store-set.js';
 import { credentialStoreUpdate } from '../src/tools/credential-store-update.js';
+import { credentialStoreDelete } from '../src/tools/credential-store-delete.js';
+import { registerMember } from '../src/tools/register-member.js';
 import { credentialResolve, lookupServerSecret } from '../src/services/credential-store.js';
 import { executeCommand } from '../src/tools/execute-command.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
@@ -148,6 +150,29 @@ describe('secret --helper (real CLI)', () => {
     expect(out).toContain('not found');
     expect(out).not.toContain(rec.program);
     expect(out).not.toContain(helperScript);
+  });
+
+  it('register_member with a helper secret token refuses and leaves credentials.json byte-identical', async () => {
+    register('rmhelper');
+    const before = fs.readFileSync(credentialsPath());
+    const out = await registerMember({
+      friendly_name: 'rm-target', member_type: 'remote', host: '10.0.0.9', port: 22,
+      username: 'u', auth_type: 'password', password: '{{secret.rmhelper}}',
+      work_folder: '/home/u/work', llm_provider: 'claude', fleet_install: 'skip',
+      cloud_region: 'us-east-1', cloud_idle_timeout_min: 30,
+    } as any);
+    expect(out).toContain('credential helper');
+    expect(out).toContain('NOT registered');
+    expect(fs.readFileSync(credentialsPath()).equals(before)).toBe(true);
+    expect(readRecords().rmhelper.kind).toBe('helper');
+  });
+
+  it('credential_store_delete refuses a helper name and leaves the record unchanged', async () => {
+    register('nodel');
+    const before = fs.readFileSync(credentialsPath());
+    const out = await credentialStoreDelete({ name: 'nodel' });
+    expect(out).toContain('credential helper');
+    expect(fs.readFileSync(credentialsPath()).equals(before)).toBe(true);
   });
 
   it('leaves only credentials.json in the data dir (no temp files)', () => {

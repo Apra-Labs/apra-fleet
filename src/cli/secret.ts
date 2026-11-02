@@ -51,16 +51,16 @@ function handleHelper(args: string[]): void {
     process.exit(1);
   }
   if (!NAME_REGEX.test(name)) {
-    console.error(`✗ Invalid credential name: ${name}`);
+    console.error(`x Invalid credential name: ${name}`);
     console.error('  Name must match [a-zA-Z0-9_-]{1,64}');
     process.exit(1);
   }
   const [program, ...programArgs] = args.slice(2);
   try {
     const rec = credentialHelperSet(name, program, programArgs);
-    console.error(`✓ Credential helper registered for ${name}: ${rec.program}`);
+    console.error(`[OK] Credential helper registered for ${name}: ${rec.program}`);
   } catch (err: any) {
-    console.error(`✗ Failed to register helper: ${err.message}`);
+    console.error(`x Failed to register helper: ${err.message}`);
     process.exit(1);
   }
 }

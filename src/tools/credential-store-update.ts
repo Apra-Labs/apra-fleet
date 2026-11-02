@@ -17,7 +17,7 @@ export async function credentialStoreUpdate(input: CredentialStoreUpdateInput): 
   }
 
   if (isCredentialHelper(input.name)) {
-    return `❌ '${input.name}' is a credential helper and cannot be updated through this tool. Use the CLI: apra-fleet secret --helper / --delete ${input.name}.`;
+    return `[x] '${input.name}' is a credential helper and cannot be updated through this tool. Use the CLI: apra-fleet secret --helper / --delete ${input.name}.`;
   }
 
   const existing = credentialResolve(input.name);

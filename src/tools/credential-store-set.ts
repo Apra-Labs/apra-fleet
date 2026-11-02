@@ -23,7 +23,7 @@ export type CredentialStoreSetInput = z.infer<typeof credentialStoreSetSchema>;
 
 export async function credentialStoreSet(input: CredentialStoreSetInput): Promise<string> {
   if (isCredentialHelper(input.name)) {
-    return `❌ '${input.name}' is a credential helper and cannot be set through this tool. Replace or remove it from the CLI: apra-fleet secret --set / --delete ${input.name}.`;
+    return `[x] '${input.name}' is a credential helper and cannot be set through this tool. Replace or remove it from the CLI: apra-fleet secret --set / --delete ${input.name}.`;
   }
   const result = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt });
 
