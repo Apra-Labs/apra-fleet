@@ -64,7 +64,7 @@ const AUTH_EXPIRED = [
  *  Kept character-for-character in step with
  *  src/utils/vcs-provider-detect.ts's BITBUCKET_HOST_RE -- the two halves of
  *  the same decision must never disagree about who owns a host. */
-const HOST_RE = /^(?:www\.|altssh\.)?bitbucket\.org$/i;
+const HOST_RE = /^(?:www\.|altssh\.|ssh\.)?bitbucket\.org$/i;
 
 function matchesHost(host) {
     return typeof host === 'string' && HOST_RE.test(host.trim());
@@ -126,6 +126,7 @@ function makeRef(workspace, repo) {
  *   git@bitbucket.org:WORKSPACE/REPO[.git]
  *   https://[user@]bitbucket.org/WORKSPACE/REPO[.git][/]
  *   ssh://git@altssh.bitbucket.org[:22]/WORKSPACE/REPO[.git]
+ *   git@ssh.bitbucket.org:WORKSPACE/REPO[.git] and ssh://git@ssh.bitbucket.org/WORKSPACE/REPO[.git]
  *
  * NEVER throws and NEVER partially guesses: anything that is not one of the
  * shapes above -- including a non-Bitbucket host and a lookalike like
@@ -153,7 +154,7 @@ function parseRepoRef(remoteUrl) {
 /** The remote shape parseRepoRef() expects, quoted into every
  *  operator-facing remedy this module produces -- the modern form an
  *  operator copies out of Bitbucket's "Clone" dialog. */
-const REPO_REF_HINT = 'git@bitbucket.org:WORKSPACE/REPO.git or https://bitbucket.org/WORKSPACE/REPO.git';
+const REPO_REF_HINT = 'git@bitbucket.org:WORKSPACE/REPO.git, git@ssh.bitbucket.org:WORKSPACE/REPO.git or https://bitbucket.org/WORKSPACE/REPO.git';
 
 // ---------------------------------------------------------------------------
 // Provisioning (apra-fleet-qeq1.9)
@@ -253,7 +254,9 @@ const AUTH_REMEDY_HINT =
     + '-- use a backlog member dedicated to Bitbucket; (2) on a LOCAL member '
     + 'provision_vcs_auth rewrites the host\'s own global bitbucket.org git '
     + 'credential helper, which can break the operator\'s HTTPS git -- provision '
-    + 'a non-local member, or keep the local member on SSH. Without a deployed '
+    + 'a non-local member, or keep the local member on SSH (Atlassian is moving '
+    + 'git-over-SSH to ssh.bitbucket.org, cut-off 2026-11-12: use '
+    + 'git@ssh.bitbucket.org:WORKSPACE/REPO.git for SSH remotes). Without a deployed '
     + 'credential the sprint still completes: no PR is opened and target '
     + 'issues are closed directly on PASS.';
 
