@@ -2480,6 +2480,43 @@ secret the tool exists to protect.
 4. **Auto-refresh** -- check token expiry before git operations, refresh if needed
 5. **Multi-host backends** -- GitHub, Bitbucket, and Azure DevOps adapters behind the same `provision_vcs_auth` interface (`src/services/vcs/`); GitLab is not implemented
 6. **Member config** -- `git_access` and `git_repos` fields on `register_member` / `update_member`
+
+## Bitbucket and credential-handling invariants
+
+- **Fixed identity.** Bitbucket auth is an API token only. The deployed git
+  helper always uses the username `x-bitbucket-api-token-auth`; REST calls
+  (including the fleet-sprint PR create/find/update builders) use
+  `Authorization: Bearer` with no username. `email` is optional metadata.
+  The secret name is fixed at `bitbucket_api_token`.
+- **Two-channel verification.** A deploy is `verified` only if both an
+  authenticated REST read of the origin repository and a non-interactive
+  `git ls-remote` succeed. Each channel fails with its own named reason. On
+  POSIX the token is piped to curl (`-H @-`) so it never appears on argv.
+- **Host recognition.** `bitbucket.org` and `ssh.bitbucket.org` are both
+  recognised as Bitbucket (anchored matches) for detection and repo parsing.
+- **Validate before asking.** Non-secret required fields are validated before
+  any out-of-band secret prompt. `non_interactive: true` turns a missing
+  secret into a typed `credential_missing` result instead of a prompt;
+  fleet-sprint always sets it. The headless fallback never offers a member
+  name as a secret name.
+- **Probe before provisioning.** For members whose credential cannot be
+  re-minted (Bitbucket, Azure DevOps) and for local members, the sprint
+  preflight probes the existing credential with a non-interactive
+  `git ls-remote` (prompts disabled), caches the result per member per run,
+  and logs one typed error. Local members share the orchestrator's
+  credentials and are never provisioned or self-healed. GitHub App members
+  keep the mint-and-refresh path.
+- **Redaction on every path.** `provision_vcs_auth` masks the token in its
+  raw, URL-encoded, base64 `user:token` and quote-escaped forms, plus
+  Authorization values and GitHub token literals, in both the text and the
+  structured message of every result. Known limitation: the generic
+  Basic/Bearer pattern also masks plain prose such as "HTTP Basic".
+- **PR relaunch is idempotent.** With find-before-create, the open PR for the
+  branch is looked up first and updated via PUT; no second PR is created. The
+  PR URL is logged on open and update.
+- **Failure vocabulary.** A transient read failure is distinguished from an
+  absent credential; remedy text follows the target remote's provider; 410 and
+  403 responses carry hints; a no-op self-heal does not retry.
   </doc>
 
   <doc title="GitHub App Setup" desc="What to set up before setup_git_app, and the exact App permissions each git_access level requests.">
