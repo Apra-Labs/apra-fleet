@@ -539,7 +539,8 @@ supplying a missing reason is a new request, not a retry.
 
 `E-KB-HTTP-AUTH` (remote KB whose token is a named fleet secret) is the one
 code that clears once something outside the request changes -- the operator
-updates the secret, and the identical request then succeeds. It is still
+updates the secret (or, for a credential helper, fixes the helper's environment
+or re-registers it), and the identical request then succeeds. It is still
 `retryable: false`: retrying it unchanged before that update fails the same
 way, and the provider has already done its one retry (re-read the secret, send
 once more) before raising it.

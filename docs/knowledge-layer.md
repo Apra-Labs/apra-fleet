@@ -640,6 +640,166 @@ could not be decrypted.
 For a literal token the line says it cannot be refreshed without re-running
 `kb_setup`, and gives the commands to switch to a named secret.
 
+#### Credential helpers
+
+Instead of a static secret kept fresh by a scheduled refresher, the named
+credential can be a **credential helper**: a program the fleet server runs
+itself to mint the token when it needs one. Static secrets (above) keep working
+unchanged; a name is either a static secret or a helper, never both.
+
+**Register** the helper from the CLI on the host that runs the fleet server.
+The program and its arguments are stored as an argv list, never as a shell
+command line:
+
+```bash
+apra-fleet secret --helper KB_TOKEN -- <program> [args...]
+kb_setup with provider=http, remote=https://<host>, token={{secret.KB_TOKEN}}
+```
+
+- The name must match `[a-zA-Z0-9_-]{1,64}`. A program without a path
+  separator is looked up on PATH; a program with one is resolved as a file.
+  Either way the absolute path is stored. A program that cannot be resolved is
+  refused and nothing is written.
+- Registering again under the same name replaces the helper (and starts a
+  fresh cache entry, see below). `apra-fleet secret --set KB_TOKEN --persist -y`
+  replaces it with a static secret, `apra-fleet secret --delete KB_TOKEN` removes it, and
+  `apra-fleet secret --list` lists it.
+- Helpers are CLI-only and server-only. The MCP tools `credential_store_set`,
+  `credential_store_update` and `credential_store_delete` refuse a helper name,
+  `register_member` refuses one in its password field, and a member command
+  never receives a helper or its token.
+- `kb_setup` accepts `{{secret.NAME}}` for provider http when NAME is a
+  registered helper or an existing static secret.
+
+**Where to register it.** On every host whose fleet server talks to the KB
+server. The KB config is per fleet install, and the helper runs inside that
+host's fleet server process, as the OS user the server runs as. Members do not
+need it: their KB calls go through the fleet server.
+
+**Protocol.** The fleet server starts the program with its stored arguments,
+writes one JSON object to its stdin and closes stdin:
+
+```json
+{"credential":"KB_TOKEN","audience":"https://<host>"}
+```
+
+`audience` is the KB server URL from the KB config, without a trailing slash.
+The helper prints one JSON object to stdout and exits 0:
+
+```json
+{"token":"<token>","expires_at":"2026-01-01T12:00:00Z"}
+```
+
+- `token`: non-empty, no whitespace.
+- `expires_at`: ISO 8601 date-time with an explicit zone (`Z` or `+hh:mm`),
+  in the future.
+- Limits: stdout up to 64 KiB; the run is killed (whole process tree) after
+  30 seconds. A non-zero exit, a timeout, too much output, invalid JSON or a
+  missing/invalid field is a failed run.
+- The helper's stderr is read and discarded. Neither the token, stdout nor
+  stderr ever reaches an error, a log line or `fleet_status`.
+- On Windows a `.cmd`/`.bat` program is started through `cmd.exe /d /v:off /s /c`
+  with every piece quoted; any other program (`.exe`, POSIX programs and
+  scripts with a shebang) is started directly, with no shell.
+
+**Caching.** Tokens are cached in the fleet server's memory per
+{credential, audience}. A cached token is reused until its refresh point,
+`expires_at` minus the smaller of 5 minutes and 10% of the token's lifetime;
+the next KB call after that runs the helper before it sends the request. The
+helper is never run per request: concurrent KB calls share one in-flight run.
+A fleet server restart starts with an empty cache, so the first KB call after
+it runs the helper.
+
+**Failure behaviour.**
+
+- A failed run raises `E-KB-HTTP-AUTH` (reason `helper-failed`) naming the
+  credential, the program path and the cause (for example `exit code 1` or
+  `timed out after 30000ms`); no request is sent. Captures and invalidates are
+  queued offline exactly as for a static secret.
+- After a failed run the helper is not run again until a backoff has passed:
+  10 seconds, doubling with each consecutive failure, up to 5 minutes. KB
+  calls inside the window fail with the same code at once and say when the
+  helper will next run. If the failed run was a refresh and the previous token
+  has not yet expired, that token keeps being used meanwhile. Registering the
+  helper again clears the backoff.
+- On HTTP 401 the rejected token is dropped from the cache, the helper runs
+  once more and the request is retried once. A second 401 raises
+  `E-KB-HTTP-AUTH` (reason `rejected`).
+
+**fleet_status.** For a helper the `kb credential:` line reads
+`helper NAME | program: <path> | resolves: not run|refreshing|ok|failed|expired
+| last refresh | token expiry (JWT exp, or none)`, then, after a failure,
+`| last failure: <cause> | next helper run after: <time>`, then the
+`last ok call` / `last rejected call` times. The state is this fleet server
+process's: `not run` until the first KB call after a start or a
+re-registration. The program path is shown in plain text; its arguments and
+the token are not.
+
+**Entra ID with az: one wrapper per OS.** The wrapper reads fleet's request
+from stdin, asks `az account get-access-token` for a token for the KB
+server's Entra app (`<app-id-uri>`, passed as the wrapper's argument) and
+prints the protocol JSON. az's `expires_on` (Unix seconds) becomes
+`expires_at`. Run each wrapper by hand once, as the fleet server's user, to
+check it before registering it.
+
+Linux (`/opt/kb/kb-az-token.sh`, `chmod 755`):
+
+```sh
+#!/bin/sh
+# Usage: kb-az-token.sh <app-id-uri>. Fleet's request on stdin is not needed.
+cat > /dev/null
+out=$(az account get-access-token --resource "$1" --query "[accessToken, expires_on]" -o tsv) || exit 1
+set -- $out
+[ -n "$1" ] && [ -n "$2" ] || exit 1
+printf '{"token":"%s","expires_at":"%s"}\n' "$1" "$(date -u -d "@$2" +%Y-%m-%dT%H:%M:%SZ)"
+```
+
+```bash
+apra-fleet secret --helper KB_TOKEN -- /opt/kb/kb-az-token.sh <app-id-uri>
+```
+
+macOS: the same script with the BSD `date` form,
+`date -u -r "$2" +%Y-%m-%dT%H:%M:%SZ`, in place of `date -u -d "@$2" ...`.
+
+Windows (`C:\kb\kb-az-token.ps1`):
+
+```powershell
+param([Parameter(Mandatory = $true)][string]$Resource)
+$null = [Console]::In.ReadToEnd()   # fleet's request; not needed here
+$json = az account get-access-token --resource $Resource -o json
+if ($LASTEXITCODE -ne 0) { exit 1 }
+$t = ($json -join "`n") | ConvertFrom-Json   # az prints several lines
+$exp = [DateTimeOffset]::FromUnixTimeSeconds([long]$t.expires_on).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
+@{ token = $t.accessToken; expires_at = $exp } | ConvertTo-Json -Compress
+```
+
+```powershell
+apra-fleet secret --helper KB_TOKEN -- powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\kb\kb-az-token.ps1 <app-id-uri>
+```
+
+**Headless and SSH failure modes.** The helper runs non-interactively, in the
+fleet server's environment. Fleet does not fix that environment; every
+problem below surfaces as `E-KB-HTTP-AUTH` reason `helper-failed` (usually
+`exit code 1`, since az's own message goes to the discarded stderr), and as
+`resolves: failed` with the cause on the `fleet_status` line. Run the wrapper
+by hand, as the same user and in the same kind of session, to see az's
+message.
+
+- **No az login state.** az keeps its login per OS user. If the user the
+  fleet server runs as never ran `az login` (or the refresh token expired or
+  was revoked), az fails. Log in as that user, or use a non-interactive login
+  such as a service principal or a managed identity (`az login --identity`). A
+  helper that waits for an interactive login is killed after 30 seconds.
+- **Windows: DPAPI "Encryption failed" under key-based SSH logon.** On
+  Windows az encrypts its token cache with DPAPI. In a session started by SSH
+  public-key authentication the user's DPAPI keys are not available, so az
+  fails with an "Encryption failed" error even when the same user works in an
+  interactive desktop. Run the fleet server from a session where DPAPI works
+  (an interactive logon, or a password-based logon such as a scheduled task
+  that stores the password), or turn off az's cache encryption with
+  `az config set core.encrypt_token_cache=false` and accept a plaintext token
+  cache on that host.
+
 **Test and stand-in servers.** `kb-server --token-file <path>` reads the server
 token from a file (instead of `--generate-token`; the two cannot be combined)
 and re-reads it about every 250 ms, so rotating the file takes effect without
@@ -837,7 +997,8 @@ With a named secret the config holds a reference instead of a ciphertext:
 ```
 
 Write it with `kb_setup ... token={{secret.KB_TOKEN}}`; see
-[Named credentials and refreshers](#named-credentials-and-refreshers).
+[Named credentials and refreshers](#named-credentials-and-refreshers). The
+same `token_ref` can name a [credential helper](#credential-helpers).
 
 `HttpKbProvider` proxy behavior:
 - **Reads** (query, context, prime): if server unreachable, fall back to local
@@ -1003,3 +1164,13 @@ time later than the `last ok call` time (or the error reason is `rejected`),
 the secret exists but the server no longer accepts its value, so the refresher
 is stale or the server token was rotated. `resolves: unreadable` means the
 credential store itself could not be read or decrypted. See [Named credentials](#named-credentials-and-refreshers).
+
+**Credential helper** (NAME registered with `apra-fleet secret --helper`): the
+error names the helper and its program. Reason `helper-failed` means the
+helper run failed or is inside its retry backoff; `fleet_status` shows the
+cause and the next run time. Run the helper by hand as the fleet server's
+user, fix what it reports (for az, see
+[Headless and SSH failure modes](#credential-helpers)), then wait for the
+backoff or register the helper again to retry at once. Reason `rejected`
+means a freshly minted token was still refused with 401: the helper is
+minting for the wrong resource or tenant, or the server's expectations changed.
