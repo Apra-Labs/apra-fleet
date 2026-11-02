@@ -461,7 +461,7 @@ fallback text tells the operator to store the value as a named secret
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `api_token` | string | yes | Bitbucket API token. Store it as the fleet secret `bitbucket_api_token` and pass `{{secret.bitbucket_api_token}}` |
+| `api_token` | string | yes | Bitbucket API token. Store it as the fleet secret `bitbucket_api_token` (a FIXED name: not configurable, no fallback) and pass `{{secret.bitbucket_api_token}}` |
 | `workspace` | string | yes | Bitbucket workspace slug |
 | `email` | string | no | Ignored for authentication; kept only as metadata if given |
 

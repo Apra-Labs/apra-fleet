@@ -2360,7 +2360,7 @@ credential `label` and `scope_url`, and a per-provider credential group:
 
 - **GitHub**: `github_mode` (`github-app` | `pat`), `token`, and the
   `git_access` / `repos` overrides for the GitHub App path.
-- **Bitbucket**: `email`, `api_token`, `workspace`.
+- **Bitbucket**: `api_token`, `workspace`. No email is needed; git uses the fixed username `x-bitbucket-api-token-auth`. Store the token under the FIXED secret name `bitbucket_api_token` (not configurable, no fallback).
 - **Azure DevOps**: `org_url`, `pat`, `pat_expires_at`.
 
 Secret-bearing fields accept a `{{secret.NAME}}` token, resolved from the

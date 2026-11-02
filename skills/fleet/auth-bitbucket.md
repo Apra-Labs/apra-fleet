@@ -8,7 +8,7 @@ API tokens (app passwords) tied to a user account. Long-lived, no auto-expire.
    (or Bitbucket: Settings > Personal Bitbucket settings > App passwords)
 2. Create app password with required scopes (see below)
 3. Copy token - shown only once
-4. Store the token as the fleet secret `bitbucket_api_token` (`credential_store_set name=bitbucket_api_token`) and provide the workspace slug. No email is needed.
+4. Store the token as the fleet secret `bitbucket_api_token` (`credential_store_set name=bitbucket_api_token`) and provide the workspace slug. The secret name `bitbucket_api_token` is FIXED: it is not configurable and there is no fallback name. No email is needed.
 
 ## Deploy
 
