@@ -3,7 +3,7 @@ import { findExecutableOnPath, npxUnavailableReason } from '../src/utils/find-on
 
 // Injected file table: no real PATH or filesystem is consulted.
 const filesIn = (...files: string[]) => (p: string) => files.includes(p);
-const pathExt = '.EXE;.CMD';
+const pathExt = '.exe;.cmd';
 
 describe('findExecutableOnPath win32 PATHEXT resolution', () => {
   it('prefers foo.cmd over extensionless foo and foo.ps1 in the same dir', () => {
