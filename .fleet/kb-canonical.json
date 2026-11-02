@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "a56ec06fc713341573201bc9b7f0a7694c0e33ea",
     "branch": "u1_upstream_main_a56ec06",
-    "entry_count": 113
+    "entry_count": 114
   },
   "entries": [
     {
@@ -2102,6 +2102,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.060Z"
+    },
+    {
+      "id": "ef75ce51-0d09-493f-99ac-b8fedcc74b41",
+      "type": "knowledge",
+      "title": "win32 findExecutableOnPath never matches an extensionless file for a bare name",
+      "summary": "On win32, findExecutableOnPath tries a bare name only as name+PATHEXT ext. A name already ending in a PATHEXT extension (case-insensitive) is tried as-is. An npm-style extensionless POSIX shim next to foo.cmd is therefore skipped.",
+      "symbols": [
+        "findExecutableOnPath",
+        "candidateExtensions",
+        "resolveHelperProgram"
+      ],
+      "source_files": [
+        "src/utils/find-on-path.ts",
+        "src/services/credential-store.ts",
+        "tests/find-on-path.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-02T19:32:36.007Z",
+      "source_file_hashes": {
+        "src/services/credential-store.ts": "2a245ad4f4f683df54ac13da318d12205f35bdc3",
+        "src/utils/find-on-path.ts": "ca7b5be4f6a9df2fa26dcd082b21603de00a9172",
+        "tests/find-on-path.test.ts": "fb235700a4ba8460b92fbd0e95013cb3a6997140"
+      }
     },
     {
       "id": "efc3bf05-c36c-480f-a69e-7ece4b2536bd",
