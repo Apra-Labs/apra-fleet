@@ -37,7 +37,8 @@ import type { Agent } from '../types.js';
  *      returning, the same defence execute-command.ts's redactOutput applies.
  *
  * The same helper stdout also carries a `username=` line (the basic-auth
- * user provision_vcs_auth wrote -- for Bitbucket, the provisioning email),
+ * user provision_vcs_auth wrote -- for Bitbucket, the fixed token username
+ * x-bitbucket-api-token-auth, never an email),
  * so `{{vcs_username}}` / `{{vcs_username_inline}}` get the identical
  * two-dialect treatment for providers whose REST API needs `user:token`
  * basic auth rather than a bearer token (apra-fleet-qeq1.1). The username is
@@ -84,7 +85,9 @@ export const VCS_TOKEN_INLINE_PLACEHOLDER = '{{vcs_token_inline}}';
  *
  * The value is read from the `username=` line of the SAME credential-helper
  * stdout the token comes from -- provision_vcs_auth wrote it there (see
- * src/services/vcs/bitbucket.ts, which passes the provisioning email). No
+ * src/services/vcs/bitbucket.ts, which always writes the fixed token
+ * username x-bitbucket-api-token-auth; Bitbucket REST itself is called with
+ * a Bearer token, so this placeholder is not needed for it). No
  * extra member round trip is involved.
  */
 export const VCS_USERNAME_PLACEHOLDER = '{{vcs_username}}';

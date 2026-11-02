@@ -2,7 +2,7 @@ import { defaultWindowsPidWrapper } from './windows-wrapper.js';
 export { defaultWindowsPidWrapper as pidWrapWindows };
 ﻿import { execFileSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
-import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
+import { escapeWindowsArg, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER } from './os-commands.js';
 import { escapeBatchMetachars, escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
 import { logWarn } from '../utils/log-helpers.js';
@@ -447,6 +447,28 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   gitRemoteOrigin(folder: string): string {
     const f = escapeWindowsArg(folder);
     return `try { $u = git -C "${f}" remote get-url origin 2>$null; if (-not $u) { $u = git -C "${f}" config --get remote.origin.url 2>$null }; if ($u) { Write-Output $u } } catch {}`;
+  }
+
+  gitLsRemoteNonInteractive(url: string): string {
+    const u = escapePowerShellArgInner(url);
+    return [
+      `$env:GIT_TERMINAL_PROMPT = '0'`,
+      `$env:GCM_INTERACTIVE = 'never'`,
+      `git ls-remote '${u}' HEAD`,
+      `if ($LASTEXITCODE -eq 0) { Write-Output '${GIT_LS_REMOTE_OK_MARKER}' } else { exit $LASTEXITCODE }`,
+    ].join('; ');
+  }
+
+  httpGetStatusWithBearer(url: string, token: string): string {
+    const u = escapePowerShellArgInner(url);
+    const t = escapePowerShellArgInner(token);
+    // Invoke-WebRequest runs in-process, so the token is never on a child
+    // process argv. A non-2xx answer throws; its status is read off the
+    // exception's response. No response at all prints a non-numeric marker.
+    return [
+      `$ProgressPreference = 'SilentlyContinue'`,
+      `try { $r = Invoke-WebRequest -UseBasicParsing -Method Get -Uri '${u}' -Headers @{ Authorization = 'Bearer ${t}' }; Write-Output ([int]$r.StatusCode) } catch { $resp = $_.Exception.Response; if ($resp) { Write-Output ([int]$resp.StatusCode) } else { Write-Output 'FLEET_HTTP_NO_RESPONSE' } }`,
+    ].join('; ');
   }
 
   // --- Process management ---

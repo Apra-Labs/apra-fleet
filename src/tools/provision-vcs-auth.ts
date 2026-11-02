@@ -15,7 +15,7 @@ import { PROVIDER_HOSTS } from '../services/vcs/constants.js';
 import { logLine, logWarn } from '../utils/log-helpers.js';
 import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import type { Agent } from '../types.js';
-import type { VcsProviderService } from '../services/vcs/types.js';
+import type { VcsProviderService, VcsDeployResult } from '../services/vcs/types.js';
 
 /**
  * The three distinct {{secret.NAME}} resolution failures. Previously all three
@@ -98,9 +98,9 @@ export const provisionVcsAuthSchema = z.object({
   repos: z.array(z.string()).optional().describe('GitHub App repository list override'),
 
   // Bitbucket fields
-  email: z.string().optional().describe('Bitbucket account email'),
-  api_token: z.string().optional().describe('Bitbucket API token. Supports {{secret.NAME}} token -- value is resolved from the credential store before use.'),
-  workspace: z.string().optional().describe('Bitbucket workspace slug'),
+  email: z.string().optional().describe('OPTIONAL Bitbucket account email. Ignored for authentication (git uses the fixed token username x-bitbucket-api-token-auth, REST uses a Bearer token); kept only as metadata if given.'),
+  api_token: z.string().optional().describe('Bitbucket API token (required for bitbucket). Store it as the fleet secret bitbucket_api_token and pass {{secret.bitbucket_api_token}} -- the value is resolved from the credential store before use.'),
+  workspace: z.string().optional().describe('Bitbucket workspace slug (required for bitbucket). Verification GETs the member origin repository in this workspace over REST, then runs git ls-remote against the origin.'),
 
   // Azure DevOps fields
   org_url: z.string().optional().describe('Azure DevOps organization URL (e.g. https://dev.azure.com/myorg, or the legacy https://myorg.visualstudio.com)'),
@@ -183,6 +183,13 @@ interface ProvisionVcsAuthFields {
   /** True when testConnectivity() reported it did not perform the check. */
   verificationSkipped: boolean;
   /**
+   * The provider's machine-readable verification cause when it reports one
+   * (Bitbucket: 'ok', 'rest_unauthorized', 'rest_failed', 'git_auth_failed',
+   * 'git_failed'), naming which channel failed; null when the provider
+   * reports none or no check ran.
+   */
+  verificationReason: string | null;
+  /**
    * The provider's own deploy metadata, filtered through
    * filterProviderMetadata()'s PROVIDER_METADATA_KEY_ALLOWLIST before it
    * reaches this field (the same filter also gates the rendered `text`).
@@ -253,6 +260,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
         expiresAt: fields.expiresAt ?? null,
         verified: fields.verified ?? false,
         verificationSkipped: fields.verificationSkipped ?? false,
+        verificationReason: fields.verificationReason ?? null,
         metadata: fields.metadata ?? null,
         expiryWarning: fields.expiryWarning ?? null,
         memberId: fields.memberId ?? null,
@@ -421,9 +429,9 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   scheduleCredentialCleanup(agent.id, deployResult.metadata?.expiresAt);
 
   // Best-effort connectivity test
-  let connectivity;
+  let connectivity: VcsDeployResult;
   try {
-    connectivity = await service.testConnectivity(agent, exec, scopeUrl);
+    connectivity = await service.testConnectivity(agent, exec, scopeUrl, creds);
   } catch {
     connectivity = { success: false, message: 'connectivity test threw' };
   }
@@ -480,6 +488,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
       expiresAt: deployResult.metadata?.expiresAt ?? null,
       verified: !connectivity.skipped && connectivity.success === true,
       verificationSkipped: connectivity.skipped === true,
+      verificationReason: connectivity.skipped ? null : (connectivity.reason ?? null),
       metadata: filteredMetadata,
       expiryWarning: expiryWarning ?? null,
     },

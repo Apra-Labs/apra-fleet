@@ -620,6 +620,10 @@
  *   instead of scraping an "expiresAt:" line out of the summary text.
  * @property {boolean} verified - True only when testConnectivity() actually ran AND succeeded.
  * @property {boolean} verificationSkipped - True when the connectivity check was not performed.
+ * @property {string|null} verificationReason - The provider's machine-readable verification
+ *   cause naming which channel failed, when it reports one (Bitbucket: "ok",
+ *   "rest_unauthorized", "rest_failed", "git_auth_failed", "git_failed"); null when the
+ *   provider reports none or the check was skipped.
  * @property {Record<string, string>|null} metadata - The provider's own deploy metadata,
  *   filtered through a server-side key allowlist before it reaches this field (an unrecognised
  *   key is dropped, never passed through). Providers additionally mask the token value here to
@@ -653,10 +657,13 @@
  * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [git_access] - GitHub App access
  *   level override
  * @property {string[]} [repos] - GitHub App repository list override
- * @property {string} [email] - Bitbucket account email
- * @property {string} [api_token] - Bitbucket API token. Supports {{secret.NAME}} token --
- *   resolved from the credential store server-side before use.
- * @property {string} [workspace] - Bitbucket workspace slug
+ * @property {string} [email] - OPTIONAL Bitbucket account email. Ignored for authentication
+ *   (git uses the fixed token username x-bitbucket-api-token-auth, REST uses a Bearer token);
+ *   kept only as metadata if given.
+ * @property {string} [api_token] - Bitbucket API token (required for bitbucket). Store it as the
+ *   fleet secret bitbucket_api_token and pass {{secret.bitbucket_api_token}} -- resolved from
+ *   the credential store server-side before use.
+ * @property {string} [workspace] - Bitbucket workspace slug (required for bitbucket).
  * @property {string} [org_url] - Azure DevOps organization URL (e.g. https://dev.azure.com/myorg,
  *   or the legacy https://myorg.visualstudio.com)
  * @property {string} [pat] - Azure DevOps personal access token. Supports {{secret.NAME}}
