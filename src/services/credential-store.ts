@@ -4,6 +4,7 @@ import path from 'node:path';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { enforceOwnerOnly } from '../utils/file-permissions.js';
 import { FLEET_DIR } from '../paths.js';
+import { findExecutableOnPath } from '../utils/find-on-path.js';
 
 // ---------------------------------------------------------------------------
 // Session-tier encryption (AES-256-GCM, key lives only in this process)
@@ -58,9 +59,28 @@ interface PersistentRecord {
   expiresAt?: string;
 }
 
+/**
+ * A credential helper: a program plus argv (never a shell string) that the
+ * server runs to mint a token. Registered from the CLI only; it shares the
+ * name space with static secrets (a name is one or the other).
+ */
+export interface HelperRecord {
+  kind: 'helper';
+  name: string;
+  program: string;
+  args: string[];
+  created_at: string;
+}
+
+type StoredRecord = PersistentRecord | HelperRecord;
+
+function isHelperRecord(rec: StoredRecord | undefined): rec is HelperRecord {
+  return !!rec && (rec as HelperRecord).kind === 'helper';
+}
+
 interface CredentialFile {
   version: string;
-  credentials: Record<string, PersistentRecord>;
+  credentials: Record<string, StoredRecord>;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +185,45 @@ export function credentialSet(
   return { name, scope: 'session', network_policy, created_at, allowedMembers, expiresAt };
 }
 
+/** True when `name` is a registered credential helper (not a static secret). */
+export function isCredentialHelper(name: string): boolean {
+  return isHelperRecord(loadCredentialFile().credentials[name]);
+}
+
+/** The helper registered under `name`, or null (static secrets and unknown names give null). */
+export function lookupCredentialHelper(name: string): HelperRecord | null {
+  const rec = loadCredentialFile().credentials[name];
+  return isHelperRecord(rec) ? rec : null;
+}
+
+/**
+ * Register a credential helper under `name`, replacing any static secret or
+ * helper of that name. The program is resolved on PATH (or, when it carries a
+ * path separator, as a file) and stored as an absolute path; an unresolvable
+ * program throws and nothing is written.
+ */
+export function credentialHelperSet(name: string, program: string, args: string[]): HelperRecord {
+  const resolved = resolveHelperProgram(program);
+  if (!resolved) {
+    throw new Error(`credential helper program '${program}' could not be resolved on PATH`);
+  }
+  const record: HelperRecord = { kind: 'helper', name, program: resolved, args: [...args], created_at: new Date().toISOString() };
+  const file = loadCredentialFile();
+  file.credentials[name] = record;
+  saveCredentialFile(file);
+  sessionStore.delete(name);
+  return record;
+}
+
+function resolveHelperProgram(program: string): string | null {
+  if (program.includes('/') || program.includes('\\')) {
+    const abs = path.resolve(program);
+    try { return fs.statSync(abs).isFile() ? abs : null; } catch { return null; }
+  }
+  const found = findExecutableOnPath(program);
+  return found ? path.resolve(found) : null;
+}
+
 export function credentialList(): CredentialMeta[] {
   const results: CredentialMeta[] = [];
 
@@ -175,7 +234,13 @@ export function credentialList(): CredentialMeta[] {
   const file = loadCredentialFile();
   for (const record of Object.values(file.credentials)) {
     const existing = results.findIndex(r => r.name === record.name);
-    const meta: CredentialMeta = {
+    const meta: CredentialMeta = isHelperRecord(record) ? {
+      name: record.name,
+      scope: 'persistent',
+      network_policy: 'deny',
+      created_at: record.created_at,
+      allowedMembers: [],
+    } : {
       name: record.name,
       scope: 'persistent',
       network_policy: record.network_policy,
@@ -241,7 +306,10 @@ export function credentialResolve(
 ): { plaintext: string; meta: CredentialMeta } | { denied: string } | { expired: string } | null {
   // Persistent wins
   const file = loadCredentialFile();
-  const persistent = file.credentials[name];
+  const stored = file.credentials[name];
+  // A helper is never handed to a member: treat it as not found.
+  if (isHelperRecord(stored)) return null;
+  const persistent = stored;
   if (persistent) {
     const allowedMembers = persistent.allowedMembers ?? '*';
 
@@ -324,7 +392,10 @@ function isExpired(expiresAt: string | undefined): expiresAt is string {
  * deleted, so an expired record stays visible as expired.
  */
 export function lookupServerSecretMeta(name: string): ServerSecretStatus {
-  const persistent = loadCredentialFile().credentials[name];
+  const stored = loadCredentialFile().credentials[name];
+  // Helpers are not static secrets; lookupCredentialHelper reads them.
+  if (isHelperRecord(stored)) return { status: 'missing' };
+  const persistent = stored;
   const rec = persistent ?? sessionStore.get(name);
   if (!rec) return { status: 'missing' };
   const meta: ServerSecretMeta = {
@@ -344,7 +415,8 @@ export function lookupServerSecretMeta(name: string): ServerSecretStatus {
 export function lookupServerSecret(name: string): ServerSecretLookup {
   const found = lookupServerSecretMeta(name);
   if (found.status !== 'ok') return found;
-  const persistent = loadCredentialFile().credentials[name];
+  const stored = loadCredentialFile().credentials[name];
+  const persistent = isHelperRecord(stored) ? undefined : stored;
   let value: string;
   if (persistent) {
     value = decryptPassword(persistent.encryptedValue);
@@ -378,7 +450,9 @@ function allowedToMembers(allowed: string[] | '*'): string {
 
 export function credentialUpdate(name: string, patch: CredentialUpdatePatch): CredentialUpdateResult | null {
   const file = loadCredentialFile();
-  const persistent = file.credentials[name];
+  const stored = file.credentials[name];
+  if (isHelperRecord(stored)) return null;
+  const persistent = stored;
   if (persistent) {
     if (patch.members !== undefined) {
       persistent.allowedMembers = membersToAllowed(patch.members);
@@ -435,7 +509,7 @@ export function purgeExpiredCredentials(): void {
   const now = Date.now();
   let changed = false;
   for (const [name, record] of Object.entries(file.credentials)) {
-    if (record.expiresAt && now > new Date(record.expiresAt).getTime()) {
+    if (!isHelperRecord(record) && record.expiresAt && now > new Date(record.expiresAt).getTime()) {
       delete file.credentials[name];
       sessionStore.delete(name);
       changed = true;
