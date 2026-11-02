@@ -40,8 +40,8 @@ import type { Agent } from '../types.js';
  * user provision_vcs_auth wrote -- for Bitbucket, the fixed token username
  * x-bitbucket-api-token-auth, never an email),
  * so `{{vcs_username}}` / `{{vcs_username_inline}}` get the identical
- * two-dialect treatment for providers whose REST API needs `user:token`
- * basic auth rather than a bearer token (apra-fleet-qeq1.1). The username is
+ * two-dialect treatment for a command that needs the helper's git username
+ * (apra-fleet-qeq1.1; Bitbucket REST itself now takes a Bearer token). The username is
  * one half of a credential pair, so it is redacted on the same footing as
  * the token -- under its own marker so a reader can tell the two apart.
  *
@@ -77,9 +77,8 @@ export const VCS_TOKEN_PLACEHOLDER = '{{vcs_token}}';
 export const VCS_TOKEN_INLINE_PLACEHOLDER = '{{vcs_token_inline}}';
 
 /**
- * The basic-auth USERNAME half of the same credential, for providers whose
- * REST API authenticates with `user:token` rather than a bearer token
- * (Bitbucket Cloud). Reference this one BARE, exactly like
+ * The git USERNAME half of the same credential (the helper's username=
+ * line). Reference this one BARE, exactly like
  * {{vcs_token}}: the substituted value arrives already shell-escaped AND
  * quoted for the member's shell.
  *
@@ -113,10 +112,12 @@ export const vcsCredentialExecSchema = z.object({
     + 'server substitutes it with the value escaped for the interior of a single-quoted string, with '
     + 'no quotes of its own (use this one when the token must be interpolated into a larger quoted '
     + 'value, e.g. an Authorization header). Both may appear in the same command. '
-    + 'For a provider that needs basic auth (user:token, e.g. Bitbucket) the matching username '
+    + 'Bitbucket REST uses the token as a Bearer value (-H \'Authorization: Bearer '
+    + '{{vcs_token_inline}}\'), with no username and no email. The optional username '
     + 'placeholders {{vcs_username}} (bare) and {{vcs_username_inline}} (inside your own single '
-    + 'quotes) substitute the credential helper\'s username under the same two dialects; they are '
-    + 'optional and may not appear alone -- a token placeholder is still required. '
+    + 'quotes) substitute the credential helper\'s git username under the same two dialects (for '
+    + 'Bitbucket always x-bitbucket-api-token-auth, a git-only username, never a REST login); they '
+    + 'may not appear alone -- a token placeholder is still required. '
     + 'The plaintext credential never leaves the server and never appears in this tool\'s result.'
   ),
   label: z.string().regex(/^[a-zA-Z0-9._-]{1,64}$/).optional().describe(
