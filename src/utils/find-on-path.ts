@@ -40,9 +40,7 @@ export function findExecutableOnPath(name: string, opts: FindOnPathOptions = {})
   const envPath = opts.envPath ?? process.env.PATH ?? '';
   const isFile = opts.isFile ?? defaultIsFile;
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
-  const exts = platform === 'win32'
-    ? ['', ...(opts.pathExt ?? process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
-    : [''];
+  const exts = candidateExtensions(name, platform, opts.pathExt);
   for (const dir of splitPath(envPath, platform)) {
     for (const ext of exts) {
       const candidate = join(dir, name + ext);
@@ -50,6 +48,20 @@ export function findExecutableOnPath(name: string, opts: FindOnPathOptions = {})
     }
   }
   return null;
+}
+
+/**
+ * Suffixes to try per PATH dir. On win32 CreateProcess/cmd.exe only accept
+ * PATHEXT matches for a bare name, so an extensionless sibling (an npm POSIX
+ * shim next to foo.cmd) must not match: a name already carrying a PATHEXT
+ * extension is tried as-is, anything else only with each PATHEXT extension.
+ */
+function candidateExtensions(name: string, platform: NodeJS.Platform, pathExt?: string): string[] {
+  if (platform !== 'win32') return [''];
+  const pathExts = (pathExt ?? process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+  const lowerName = name.toLowerCase();
+  if (pathExts.some((ext) => lowerName.endsWith(ext.toLowerCase()))) return [''];
+  return pathExts;
 }
 
 /**
