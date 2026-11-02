@@ -13,6 +13,7 @@ import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import { scheduleCredentialCleanup, cancelCredentialCleanup } from '../services/credential-cleanup.js';
 import { PROVIDER_HOSTS } from '../services/vcs/constants.js';
 import { logLine, logWarn } from '../utils/log-helpers.js';
+import { redactKnownSecrets } from '../utils/redact-known-secrets.js';
 import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import type { Agent } from '../types.js';
 import type { VcsProviderService, VcsDeployResult } from '../services/vcs/types.js';
@@ -216,9 +217,11 @@ interface ProvisionVcsAuthFields {
    * an ok result. Previously this text only ever reached the caller inside
    * `text`, so a structured-content-only caller saw nothing but the bare
    * `reason` code (e.g. 'deploy_failed') and lost the actual cause. Derived
-   * from the same sanitized strings already rendered into `text` -- never a
-   * new source of information -- so it carries no plaintext secret that
-   * wasn't already caller-visible.
+   * from the same text rendered into `text`, after the known credential
+   * values in play (raw, URL-encoded, base64 user:token, quote-escaped) and
+   * any Authorization header value have been replaced with **** by
+   * redactKnownSecrets(). Provider/OS error text is NOT otherwise sanitized,
+   * which is why every result goes through that redaction.
    */
   message: string | null;
 }
@@ -247,10 +250,18 @@ function stripResultMarker(text: string): string {
 
 export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<ProvisionVcsAuthResult> {
   const label = input.label ?? input.provider;
+  // Secret values in play (resolved token/api_token/pat, OOB-collected value).
+  // Every result built below is redacted against this list so a provider or OS
+  // error that echoes the credential never reaches `text`, `message` or a log.
+  const knownSecrets: string[] = [];
+  const knownUsernames = ['x-bitbucket-api-token-auth', 'x-access-token', 'git', 'oauth2'];
+  if (input.email) knownUsernames.push(input.email);
+  const redact = (t: string): string => redactKnownSecrets(t, knownSecrets, knownUsernames);
   const vcsResult = (
-    text: string,
+    rawText: string,
     fields: Partial<ProvisionVcsAuthFields> & { reason: ProvisionVcsAuthReason },
   ): ProvisionVcsAuthResult => {
+    const text = redact(rawText);
     const ok = fields.ok ?? VCS_OK_REASONS.includes(fields.reason);
     return {
       text,
@@ -268,7 +279,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
         expiryWarning: fields.expiryWarning ?? null,
         memberId: fields.memberId ?? null,
         memberName: fields.memberName ?? null,
-        message: fields.message ?? (ok ? null : stripResultMarker(text)),
+        message: fields.message != null ? redact(fields.message) : (ok ? null : stripResultMarker(text)),
       },
     };
   };
@@ -294,6 +305,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
       const r = resolveSecretField(resolvedInput[field]!, agent.friendlyName);
       if ('error' in r) return vcsResult(`[FAIL] ${r.error}`, { ...who, reason: r.code });
       resolvedInput[field] = r.resolved;
+      if (r.resolved) knownSecrets.push(r.resolved);
       legacyNames.push(...r.legacyNames);
     }
   }
@@ -330,6 +342,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
       return vcsResult(oob.fallback ?? 'Error: OOB operation cancelled.', { ...who, reason: 'oob_cancelled' });
     }
     resolvedInput[missing.field] = decryptPassword(oob.password!);
+    knownSecrets.push(resolvedInput[missing.field] as string);
   }
 
   // buildCredentials is still optional on VcsProviderService while the seam is
