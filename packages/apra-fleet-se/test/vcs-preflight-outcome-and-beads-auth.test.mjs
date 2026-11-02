@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createGitSync, createSyncBrackets } from '../fleet-sprint/git-sync.mjs';
-import { createVcsAuthPreflightCallback } from '../fleet-sprint/vcs-auth.mjs';
+import { createVcsAuthPreflightCallback, createVcsAuthSelfHealCallback, VCS_CREDENTIAL_PROBE_FAILED } from '../fleet-sprint/vcs-auth.mjs';
+import { getVcsProvider } from '../fleet-sprint/vcs-module.mjs';
+import { getSeCommands } from '../fleet-sprint/se-os-commands.mjs';
 import { preflightBeadsHealthGate, invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 import { DoltSyncError, UnpublishedSchemaMigrationsError } from '../fleet-sprint/errors.mjs';
 
@@ -242,5 +244,168 @@ describe('C. migrated-but-unpushed beads clone at the preflight D-pull', () => {
         const flat = order.filter(Boolean);
         assert.equal(flat[0], 'ensure');
         assert.ok(flat.filter((c) => c.includes('bd dolt push')).length === 1);
+    });
+});
+
+// apra-fleet-d1pk.4: probe-first VCS preflight for members whose credential
+// the fleet cannot mint (provider authRemedy.serverSideReMintable === false,
+// e.g. Bitbucket). Driven through the REAL createVcsAuthPreflightCallback and
+// the REAL createGitSync beads brackets (syncBeadsBefore/After), so a revert
+// of the probe-first branch in vcs-auth.mjs turns these red.
+describe('D. probe-first preflight for non-re-mintable members (Bitbucket)', () => {
+    const BB_REMOTE = { ok: true, output: 'https://bitbucket.org/acme/widgets.git', error: null };
+    const BITBUCKET_HINT = getVcsProvider('bitbucket').authRemedy.hint;
+    const isProbe = (cmd) => cmd.includes('git ls-remote origin');
+
+    function makeProbeSync({ record, probe, store = ['bitbucket_api_token'], provisionResult = provisioned(null), remote = BB_REMOTE }) {
+        const tools = [];
+        const callTool = async (name, args) => {
+            tools.push({ name, args });
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify(record) }] };
+            if (name === 'credential_store_list') return { content: [{ text: JSON.stringify(store.map((n) => ({ name: n }))) }] };
+            return provisionResult;
+        };
+        const logs = [];
+        const log = (m) => logs.push(m);
+        const { command, calls } = makeCommandMock({ 'git ls-remote origin': [probe], 'git remote get-url origin': [remote] });
+        const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command, log });
+        const gitSync = createGitSync({
+            brackets: createSyncBrackets({ setPauseGuard: () => {} }),
+            command, log, branch: 'b', baseBranch: 'main', args: {},
+            agent: async () => ({}), doltPushMutex: undefined, sprintId: 's',
+            onAuthFailure: undefined, resolveMemberProvider: undefined, ensureVcsAuthFresh,
+            syncMemberBefore: async () => {}, syncMemberAfter: async () => {},
+            syncMemberAfterOrdered: async () => {}, isNoMutationDispatchFailure: () => false,
+        });
+        const threeBrackets = async (member) => {
+            await gitSync.syncBeadsBefore(member, { readinessGate: true });
+            await gitSync.syncBeadsBefore(member, { fatal: true });
+            await gitSync.syncBeadsAfter(member, { pushBeads: true });
+        };
+        return { gitSync, threeBrackets, ensureVcsAuthFresh, tools, logs, calls };
+    }
+
+    const LOCAL_BB = { type: 'local', os: 'linux', vcsProvider: 'bitbucket' };
+    const provisionCalls = (tools) => tools.filter((t) => t.name === 'provision_vcs_auth');
+
+    test('local Bitbucket member, probe ok: three brackets -> zero provision_vcs_auth calls, exactly one probe', async () => {
+        const { threeBrackets, tools, calls } = makeProbeSync({ record: LOCAL_BB, probe: OK });
+        await threeBrackets('backlog');
+        assert.equal(provisionCalls(tools).length, 0, `provision_vcs_auth called: ${JSON.stringify(provisionCalls(tools))}`);
+        assert.equal(calls.filter((c) => isProbe(c.cmd)).length, 1, 'exactly one credential probe per run');
+        assert.ok(calls.some((c) => c.cmd.includes('bd dolt pull')), 'the brackets still ran their beads sync');
+    });
+
+    test('local Bitbucket member, probe fails: three brackets -> exactly one typed ASCII error with the Bitbucket remedy, no provisioning', async () => {
+        // A non-ASCII char in git's output must not reach the log line.
+        const probe = fail("fatal: Authentication failed for 'https://bitbucket.org/acme/widgets.git/' \u2014 denied");
+        const { threeBrackets, tools, logs, calls } = makeProbeSync({ record: LOCAL_BB, probe });
+        await threeBrackets('backlog');
+        const errors = logs.filter((l) => l.includes(VCS_CREDENTIAL_PROBE_FAILED));
+        assert.equal(errors.length, 1, `expected one typed error line, got:\n${errors.join('\n')}`);
+        const line = errors[0];
+        assert.ok([...line].every((ch) => ch.charCodeAt(0) < 128), `non-ASCII in: ${line}`);
+        assert.match(line, /ERROR vcs_credential_probe_failed: local member 'backlog' \(provider 'bitbucket'\)/);
+        assert.ok(line.includes(BITBUCKET_HINT), 'names the Bitbucket remedy hint');
+        assert.match(line, /Authentication failed/, 'carries the probe detail');
+        assert.equal(provisionCalls(tools).length, 0, 'a local member is never provisioned (would overwrite the host credential)');
+        assert.equal(calls.filter((c) => isProbe(c.cmd)).length, 1, 'never re-probed this run');
+    });
+
+    test('probe command sets GIT_TERMINAL_PROMPT=0 and GCM_INTERACTIVE=never, no credential.helper override, posix and powershell', async () => {
+        const decode = (cmd) => {
+            const m = /^powershell -EncodedCommand (\S+)$/.exec(cmd);
+            assert.ok(m, `expected an encoded PowerShell envelope, got: ${cmd}`);
+            return Buffer.from(m[1], 'base64').toString('utf16le');
+        };
+        const posix = getSeCommands({ os: 'linux' }).gitLsRemoteProbe();
+        const gitbash = getSeCommands({ os: 'windows', shell: 'gitbash' }).gitLsRemoteProbe();
+        const ps = decode(getSeCommands({ os: 'windows', shell: '' }).gitLsRemoteProbe());
+        for (const script of [posix, gitbash]) {
+            assert.ok(script.includes('GIT_TERMINAL_PROMPT=0'), script);
+            assert.ok(script.includes('GCM_INTERACTIVE=never'), script);
+            assert.ok(script.includes('git ls-remote origin'), script);
+            assert.ok(!script.includes('credential.helper'), script);
+        }
+        assert.match(ps, /\$env:GIT_TERMINAL_PROMPT='0'/);
+        assert.match(ps, /\$env:GCM_INTERACTIVE='never'/);
+        assert.ok(ps.includes('git ls-remote origin') && !ps.includes('credential.helper'), ps);
+
+        // And the callback actually dispatches the member's own dialect.
+        const { ensureVcsAuthFresh, calls } = makeProbeSync({ record: { ...LOCAL_BB, os: 'windows', shell: 'powershell5' }, probe: OK });
+        // The command mock's key match cannot see inside the encoding, so
+        // every non-matching command (the probe included) answers OK.
+        await ensureVcsAuthFresh('win-backlog');
+        const issued = calls.map((c) => c.cmd).filter((c) => c.startsWith('powershell -EncodedCommand '));
+        assert.equal(issued.length, 1, `expected one PowerShell probe, got: ${JSON.stringify(calls.map((c) => c.cmd))}`);
+        assert.equal(decode(issued[0]), ps);
+    });
+
+    test('remote Bitbucket member, failed probe: one non-interactive provision with workspace and api_token placeholder, no email; not repeated', async () => {
+        const { threeBrackets, tools, logs } = makeProbeSync({
+            record: { type: 'ssh', os: 'linux', vcsProvider: 'bitbucket' },
+            probe: fail('fatal: Authentication failed'),
+        });
+        await threeBrackets('bb-remote');
+        const provs = provisionCalls(tools);
+        assert.equal(provs.length, 1, 'exactly one provisioning attempt per run');
+        assert.deepEqual(provs[0].args, {
+            member_name: 'bb-remote',
+            provider: 'bitbucket',
+            git_access: 'push',
+            repos: ['acme/widgets'],
+            workspace: 'acme',
+            api_token: '{{secret.bitbucket_api_token}}',
+            non_interactive: true,
+        });
+        assert.ok(!JSON.stringify(provs[0].args).includes('email'), 'no email field / missing-email path');
+        assert.equal(logs.filter((l) => l.includes(VCS_CREDENTIAL_PROBE_FAILED)).length, 0, 'a successful provision logs no error');
+    });
+
+    test('remote Bitbucket member whose provision also fails: one typed error, provision attempted once, non-interactive', async () => {
+        const { threeBrackets, tools, logs } = makeProbeSync({
+            record: { type: 'ssh', os: 'linux', vcsProvider: 'bitbucket' },
+            probe: fail('fatal: Authentication failed'),
+            provisionResult: { content: [{ text: '[FAIL] api_token missing' }], structuredContent: { ok: false, reason: 'credential_missing' } },
+        });
+        await threeBrackets('bb-remote');
+        const provs = provisionCalls(tools);
+        assert.equal(provs.length, 1);
+        assert.equal(provs[0].args.non_interactive, true);
+        const errors = logs.filter((l) => l.includes(VCS_CREDENTIAL_PROBE_FAILED));
+        assert.equal(errors.length, 1, errors.join('\n'));
+        assert.ok(errors[0].includes(BITBUCKET_HINT));
+    });
+
+    test('regression: GitHub-App local backlog member with an expiring cached credential still calls provision_vcs_auth, never probes', async () => {
+        const { ensureVcsAuthFresh, tools, calls } = makeProbeSync({
+            record: { type: 'local', os: 'linux', vcsProvider: 'github' },
+            probe: OK,
+            remote: { ok: true, output: 'https://github.com/acme/widgets.git', error: null },
+            // Inside the 10-minute expiring-soon window, so every call refreshes.
+            provisionResult: provisioned(expiryIn(5 * 60 * 1000)),
+        });
+        await ensureVcsAuthFresh('gh-backlog');
+        await ensureVcsAuthFresh('gh-backlog');
+        const provs = provisionCalls(tools);
+        assert.equal(provs.length, 2, 'expiring credential re-provisioned on the second call');
+        assert.equal(provs[0].args.github_mode, 'github-app');
+        assert.equal(provs[0].args.non_interactive, true);
+        assert.equal(calls.filter((c) => isProbe(c.cmd)).length, 0, 'a GitHub-App member is never probed');
+    });
+
+    test('reactive self-heal refuses to re-provision a LOCAL Bitbucket member (would overwrite the host credential)', async () => {
+        const tools = [];
+        const callTool = async (name, args) => {
+            tools.push({ name, args });
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify(LOCAL_BB) }] };
+            return provisioned(null);
+        };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command: async () => BB_REMOTE, log: () => {} });
+        await assert.rejects(
+            () => onAuthFailure({ member: 'backlog', label: 'D-push', error: 'fatal: Authentication failed' }),
+            /local member on 'bitbucket': not re-provisioning it/,
+        );
+        assert.equal(provisionCalls(tools).length, 0);
     });
 });
