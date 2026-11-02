@@ -155,13 +155,13 @@ describe('(a) no Bitbucket credential on the member degrades, never fails the sp
 });
 
 describe('(b) a relaunch rewrites the open Bitbucket PR', () => {
-    test('Publish PR FAIL -> PASS: POST fails, the open PR is found (GET) and rewritten (PUT)', async () => {
+    test('Publish PR FAIL -> PASS: first run GET miss + POST; relaunch finds the open PR (GET) and rewrites it (PUT), no second POST', async () => {
         const bb = fakeBitbucket();
         await publish({ bb, verdict: 'FAIL', notes: 'gate failed', runId: 'run-1', member: 'bb-relaunch' });
         assert.equal(bb.pr.title, 'fleet-sprint [FAIL]: feat/x');
         const { result, logs } = await publish({ bb, verdict: 'PASS', notes: 'all good', runId: 'run-2', member: 'bb-relaunch' });
         assert.deepEqual(result, { pushed: true });
-        assert.deepEqual(bb.calls, ['POST', 'POST', 'GET', 'PUT']);
+        assert.deepEqual(bb.calls, ['GET', 'POST', 'GET', 'PUT']);
         assert.equal(bb.pr.title, 'fleet-sprint [PASS]: feat/x');
         assert.ok(bb.pr.description.includes('all good') && !bb.pr.description.includes('gate failed'), bb.pr.description);
         assert.ok(logs.some((m) => m.includes('updated its title and body') && PR_URL_RE.test(m)), JSON.stringify(logs));
@@ -174,7 +174,7 @@ describe('(b) a relaunch rewrites the open Bitbucket PR', () => {
         const { result } = await abortRun({ bb, member: 'bb-abort-existing' });
         assert.equal(result.reason, 'already-exists');
         assert.equal(result.prUrl, PR_URL);
-        assert.deepEqual(bb.calls, ['POST', 'GET', 'PUT']);
+        assert.deepEqual(bb.calls, ['GET', 'PUT']);
         assert.equal(bb.pr.title, 'fleet-sprint [ABORTED]: feat/x');
     });
 
@@ -184,7 +184,7 @@ describe('(b) a relaunch rewrites the open Bitbucket PR', () => {
             () => publish({ bb, runId: 'run-x', member: 'bb-real-400' }),
             /\[Publish PR Failed\].*HTTP 400: mock HTTP 400/,
         );
-        assert.deepEqual(bb.calls, ['POST', 'GET']);
+        assert.deepEqual(bb.calls, ['GET', 'POST', 'GET']);
     });
 });
 
@@ -193,7 +193,7 @@ describe('(c) auth failures on a skip-provisioned provider', () => {
         const bb = fakeBitbucket({ postStatus: 401 });
         const { result, logs } = await publish({ bb, runId: 'run-401', member: 'bb-401' });
         assert.deepEqual(result, { pushed: true });
-        assert.deepEqual(bb.calls, ['POST']);
+        assert.deepEqual(bb.calls, ['GET', 'POST']);
         assert.deepEqual(bb.provisionCalls, []);
         const skipped = logs.find((m) => m.startsWith('[Publish PR Skipped]'));
         assert.ok(skipped && skipped.includes('HTTP 401') && REMEDY_URL_RE.test(skipped), JSON.stringify(logs));
@@ -212,8 +212,8 @@ describe('(F1) the PR provider follows the target remote host, not the member re
         const { result, logs } = await publish({ bb, runId: 'run-f1', member: 'bb-gh-registered' });
         assert.deepEqual(result, { pushed: true });
         assert.deepEqual(bb.provisionCalls, [], 'the member\'s GitHub credential must never be minted for, or replaced by, a Bitbucket repo');
-        assert.deepEqual(bb.execLabels, ['bitbucket']);
-        assert.deepEqual(bb.calls, ['POST']);
+        assert.deepEqual(bb.execLabels, ['bitbucket', 'bitbucket']);
+        assert.deepEqual(bb.calls, ['GET', 'POST']);
         assert.ok(logs.some((m) => m.includes("registered for VCS provider 'github'") && m.includes("served by 'bitbucket'")), JSON.stringify(logs));
     });
 

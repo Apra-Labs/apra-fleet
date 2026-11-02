@@ -600,6 +600,8 @@ export const BitbucketVCS = Object.freeze({
     // apra-fleet-qeq1.9: API tokens are never minted server-side -- see
     // above.
     authRemedy,
+    // Create is not an upsert: look the open PR up first and update it.
+    findBeforeCreate: true,
     defaultAuthMode: null,
     // create/find/update pull-request builders; capabilitiesForHost lets the
     // Publish PR phase dispatch them via VCSModule.capabilities().

@@ -931,6 +931,28 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         }
     };
 
+    // Providers whose create is not an upsert (and whose duplicate-PR
+    // response is unverified) declare `findBeforeCreate`: look up the open PR
+    // for head -> base FIRST and update it in place (preserving the run
+    // history block) instead of POSTing a second PR. A failed lookup falls
+    // through to the normal create path.
+    if (typeof updateExisting === 'function') {
+        const preImpl = getVcsProvider(provider);
+        if (preImpl && preImpl.findBeforeCreate === true) {
+            const pre = await findOpenPrs();
+            if (pre.ok && pre.prs.length) {
+                const pr = pre.prs[0];
+                const upd = await updateExistingPr(pr);
+                const updUrl = upd.prUrl || pr.url;
+                if (updUrl) log(`${logPrefix}: updated PR URL for member '${member}': ${updUrl}`);
+                return { ok: true, alreadyExists: true, prUrl: updUrl, error: null, authFailure: false, updated: upd.updated, updateError: upd.updateError };
+            }
+            if (!pre.ok) {
+                log(`${logPrefix}: could not check for an existing open PR before creating (${pre.error}); creating a new one.`);
+            }
+        }
+    }
+
     let authHealAttempted = false;
     // apra-fleet PR-body length fix: buildCreatePrCommand deterministically
     // truncates `body` to PR_DESCRIPTION_MAX_LENGTH and reports it back via
@@ -1018,6 +1040,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             const mapped = (impl && impl.pullRequestResponse && typeof impl.pullRequestResponse.map === 'function')
                 ? impl.pullRequestResponse.map(respBody, repoRef ? { repoRef } : { repo })
                 : { id: null, url: null };
+            if (mapped.url) log(`${logPrefix}: opened PR URL for member '${member}': ${mapped.url}`);
             return { ok: true, alreadyExists: false, prUrl: mapped.url, error: null, authFailure: false };
         }
 
