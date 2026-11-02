@@ -232,7 +232,12 @@ describe('createVcsAuthPreflightCallback', () => {
     });
 
     test('a provision_vcs_auth failure during preflight is logged and swallowed -- NEVER throws, never blocks the dispatch (the reactive self-heal remains the real safety net)', async () => {
-        const callTool = async () => { throw new Error('provision_vcs_auth: fleet server unreachable'); };
+        // member_detail answers (a member_detail failure is the separate
+        // fail-closed case); only provision_vcs_auth itself fails.
+        const callTool = async (name) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+            throw new Error('provision_vcs_auth: fleet server unreachable');
+        };
         const logs = [];
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand, log: (m) => logs.push(m) });
 

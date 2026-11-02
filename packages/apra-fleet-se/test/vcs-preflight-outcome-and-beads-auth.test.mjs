@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createGitSync, createSyncBrackets } from '../fleet-sprint/git-sync.mjs';
-import { createVcsAuthPreflightCallback, createVcsAuthSelfHealCallback, VCS_CREDENTIAL_PROBE_FAILED } from '../fleet-sprint/vcs-auth.mjs';
+import { createVcsAuthPreflightCallback, createVcsAuthSelfHealCallback, VCS_CREDENTIAL_PROBE_FAILED, VCS_MEMBER_LOOKUP_FAILED } from '../fleet-sprint/vcs-auth.mjs';
 import { getVcsProvider } from '../fleet-sprint/vcs-module.mjs';
 import { getSeCommands } from '../fleet-sprint/se-os-commands.mjs';
 import { preflightBeadsHealthGate, invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
@@ -404,6 +404,72 @@ describe('D. probe-first preflight for non-re-mintable members (Bitbucket)', () 
         const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command: async () => BB_REMOTE, log: () => {} });
         await assert.rejects(
             () => onAuthFailure({ member: 'backlog', label: 'D-push', error: 'fatal: Authentication failed' }),
+            /local member on 'bitbucket': not re-provisioning it/,
+        );
+        assert.equal(provisionCalls(tools).length, 0);
+    });
+
+    // The local-member guard must fail CLOSED: when member_detail cannot say
+    // whether the member is local, nothing is provisioned (a local member's
+    // provision would overwrite the host's own credential helper).
+    // `failFirst` rejects the first N member_detail calls, then answers LOCAL_BB,
+    // so a later lookup inside the provisioning path could succeed.
+    function flakyMemberDetail(failFirst) {
+        const tools = [];
+        let detailCalls = 0;
+        const callTool = async (name, args) => {
+            tools.push({ name, args });
+            if (name === 'member_detail') {
+                detailCalls += 1;
+                if (detailCalls <= failFirst) throw new Error('fleet server transiently unreachable');
+                return { content: [{ text: JSON.stringify(LOCAL_BB) }] };
+            }
+            if (name === 'credential_store_list') return { content: [{ text: JSON.stringify([{ name: 'bitbucket_api_token' }]) }] };
+            return provisioned(null);
+        };
+        return { tools, callTool };
+    }
+    const isAscii = (s) => [...s].every((ch) => ch.charCodeAt(0) < 128);
+
+    test('preflight: member_detail fails -> no provisioning, one typed ASCII error naming the member', async () => {
+        const { tools, callTool } = flakyMemberDetail(1);
+        const logs = [];
+        const { command } = makeCommandMock({ 'git ls-remote origin': [OK], 'git remote get-url origin': [BB_REMOTE] });
+        const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command, log: (m) => logs.push(m) });
+        await ensureVcsAuthFresh('bb-local');
+        assert.equal(provisionCalls(tools).length, 0, `provisioned despite an unknown member type: ${JSON.stringify(provisionCalls(tools))}`);
+        const errors = logs.filter((l) => l.includes(VCS_MEMBER_LOOKUP_FAILED));
+        assert.equal(errors.length, 1, `expected one typed error line, got:\n${logs.join('\n')}`);
+        assert.match(errors[0], /ERROR vcs_member_lookup_failed: .*member 'bb-local'/);
+        assert.ok(isAscii(errors[0]), `non-ASCII in: ${errors[0]}`);
+    });
+
+    test('self-heal: provider resolves but the local-member lookup fails -> typed error naming the member, no provisioning', async () => {
+        // Call 1 (resolveProvider) succeeds, call 2 (the local check) fails.
+        const tools = [];
+        let detailCalls = 0;
+        const callTool = async (name, args) => {
+            tools.push({ name, args });
+            if (name === 'member_detail') {
+                detailCalls += 1;
+                if (detailCalls === 2) throw new Error('fleet server transiently unreachable');
+                return { content: [{ text: JSON.stringify(LOCAL_BB) }] };
+            }
+            return provisioned(null);
+        };
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command: async () => BB_REMOTE, log: () => {} });
+        await assert.rejects(
+            () => onAuthFailure({ member: 'bb-local', label: 'D-push', error: 'fatal: Authentication failed' }),
+            (err) => err.code === VCS_MEMBER_LOOKUP_FAILED && /member 'bb-local'/.test(err.message) && isAscii(err.message),
+        );
+        assert.equal(provisionCalls(tools).length, 0);
+    });
+
+    test('self-heal: provider resolution fails, a later lookup says local Bitbucket -> refused, no provisioning', async () => {
+        const { tools, callTool } = flakyMemberDetail(1);
+        const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command: async () => BB_REMOTE, log: () => {} });
+        await assert.rejects(
+            () => onAuthFailure({ member: 'bb-local', label: 'D-push', error: 'fatal: Authentication failed' }),
             /local member on 'bitbucket': not re-provisioning it/,
         );
         assert.equal(provisionCalls(tools).length, 0);

@@ -270,7 +270,7 @@ function detectVcsProviderFromRemote(remoteUrl) {
     return (impl && impl.name) || null;
 }
 
-async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = DEFAULT_SYNC_GIT_ACCESS, azdevopsPatSecretName, remoteUrlOverride, resolvedProvider }) {
+async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = DEFAULT_SYNC_GIT_ACCESS, azdevopsPatSecretName, remoteUrlOverride, resolvedProvider, refuseLocalNonReMintable = false }) {
     let repos;
     let derivedRepo = null;
     let derivedRef = null;
@@ -401,6 +401,12 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         authMode = isAuthBackend(impl) ? impl.defaultAuthMode : null;
         const remoteSource = remoteUrlOverride ? 'the supplied remote URL' : 'its git remote';
         log(`${logPrefix}: member '${member}' had no registered VCS provider; detected '${provider}' from ${remoteSource} and will provision it now`);
+    }
+    // A caller that could not run its own local-member check (e.g. the
+    // self-heal whose provider lookup failed) asks for it here, now that the
+    // provider is known. Fails CLOSED -- see assertNotLocalNonReMintable.
+    if (refuseLocalNonReMintable) {
+        await assertNotLocalNonReMintable({ fleetApi, member, provider });
     }
     // apra-fleet-5co8.2.1: the argument shape itself is now provider-owned.
     // What follows is the DEFAULT (GitHub-App) shape; a provider that declares
@@ -1265,27 +1271,27 @@ export function createVcsAuthSelfHealCallback(opts = {}) {
         // self-heal attempt -- `resolved` simply stays undefined and
         // provisionVcsAuthForMember falls back to its own lookup.
         let resolved;
-        let refuseLocalProvider = null;
         try {
             resolved = await resolveProvider(member, { fleetApi });
+        } catch (resolveErr) {
+            log(`[Sync] self-heal: could not resolve member '${member}' (${label})'s VCS provider to check for an auth remedy hint (continuing with the self-heal attempt): ${resolveErr.message}`);
+        }
+        if (resolved) {
             const { provider } = resolved;
             const impl = getVcsProvider(provider);
             if (impl && impl.authRemedy && impl.authRemedy.serverSideReMintable === false) {
                 log(`[Sync] self-heal: member '${member}' (${label}) uses '${provider}', whose credentials cannot be re-minted server-side. ${impl.authRemedy.hint}`);
                 // apra-fleet-d1pk.3: re-provisioning a LOCAL member of such a
                 // provider rewrites the host's own credential helper and
-                // cannot mint anything new, so the self-heal refuses it.
-                const record = await readMemberRecord(member, fleetApi).catch(() => null);
-                if (record && record.type === 'local') refuseLocalProvider = provider;
+                // cannot mint anything new, so the self-heal refuses it --
+                // and refuses too when the lookup fails (fail closed, F4).
+                await assertNotLocalNonReMintable({ fleetApi, member, provider });
             }
-        } catch (resolveErr) {
-            log(`[Sync] self-heal: could not resolve member '${member}' (${label})'s VCS provider to check for an auth remedy hint (continuing with the self-heal attempt): ${resolveErr.message}`);
         }
-
-        if (refuseLocalProvider) {
-            throw new Error(`member '${member}' is a local member on '${refuseLocalProvider}': not re-provisioning it, which would overwrite the host's own credential; fix the host's credential instead.`);
-        }
-        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName, resolvedProvider: resolved });
+        // When the provider could not be resolved above, the local check has
+        // not run yet: provisionVcsAuthForMember runs it once its own lookup
+        // has named the provider.
+        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName, resolvedProvider: resolved, refuseLocalNonReMintable: !resolved });
 
         log(`[Sync] self-heal: credentials re-provisioned for member '${member}' (${label}); the failed command will be retried once.`);
     }
@@ -1336,6 +1342,49 @@ export function selfHealMemoryKey(member, error) {
  * fixed by the fleet. Stable, so log readers and tests match it, not prose.
  */
 export const VCS_CREDENTIAL_PROBE_FAILED = 'vcs_credential_probe_failed';
+
+/**
+ * Typed error code for the local-member guard failing CLOSED: member_detail
+ * could not say whether a member is local, so a credential the fleet cannot
+ * mint is NOT provisioned (on a local member it would overwrite the host's own
+ * credential helper). Stable, so log readers and tests match it, not prose.
+ */
+export const VCS_MEMBER_LOOKUP_FAILED = 'vcs_member_lookup_failed';
+
+/**
+ * Throw unless `member` is known NOT to be a local member, when `provider` is
+ * one whose credential the fleet cannot mint (authRemedy.serverSideReMintable
+ * === false). Re-provisioning a local member of such a provider rewrites the
+ * host's own credential helper, so: a local record -> refuse; a member_detail
+ * failure or non-record answer -> refuse with VCS_MEMBER_LOOKUP_FAILED (fail
+ * closed, never provision on an unknown member type). Any other provider is a
+ * no-op. Messages are ASCII-only.
+ * @param {{ fleetApi: object, member: string, provider: string }} opts
+ */
+async function assertNotLocalNonReMintable({ fleetApi, member, provider }) {
+    const impl = getVcsProvider(provider);
+    if (!impl || !impl.authRemedy || impl.authRemedy.serverSideReMintable !== false) return;
+    let record = null;
+    let why = 'member_detail did not return a member record';
+    try {
+        record = await readMemberRecord(member, fleetApi);
+    } catch (err) {
+        why = `member_detail failed: ${err && err.message ? err.message : String(err)}`;
+    }
+    if (!record) {
+        const err = new Error(
+            `ERROR ${VCS_MEMBER_LOOKUP_FAILED}: could not confirm member '${member}' is not a local member (${why}); `
+            + `not provisioning its '${provider}' credential, which on a local member would overwrite the host's own credential. `
+            + 'Retry once the fleet server answers member_detail for this member.',
+        );
+        err.message = err.message.replace(/[^\x20-\x7e]+/g, ' ');
+        err.code = VCS_MEMBER_LOOKUP_FAILED;
+        throw err;
+    }
+    if (record.type === 'local') {
+        throw new Error(`member '${member}' is a local member on '${provider}': not re-provisioning it, which would overwrite the host's own credential; fix the host's credential instead.`);
+    }
+}
 
 /**
  * Parsed member_detail JSON for `member` (type, os, shell, vcsProvider, ...),
@@ -1489,11 +1538,17 @@ export function createVcsAuthPreflightCallback(opts = {}) {
     }
 
     return async function ensureVcsAuthFresh(member) {
-        let plan = { probe: false };
+        let plan;
         try {
             plan = await planFor(member);
         } catch (err) {
-            log(`[Sync] preflight: could not read member '${member}''s record to choose probe vs provision (falling back to provisioning): ${err.message}`);
+            // Fail CLOSED: without the record this cannot tell a local member
+            // (whose host credential must never be overwritten) from a remote
+            // one, so nothing is provisioned. Not cached: the next call
+            // retries the lookup. Still never throws (see above).
+            const line = `[Sync] preflight: ERROR ${VCS_MEMBER_LOOKUP_FAILED}: could not read member '${member}''s record (member_detail) to choose probe vs provision; provision_vcs_auth skipped for member '${member}' (fail closed, a local member's host credential must not be overwritten): ${err && err.message ? err.message : String(err)}`;
+            log(line.replace(/[^\x20-\x7e]+/g, ' '));
+            return;
         }
         if (plan.probe) {
             try {
