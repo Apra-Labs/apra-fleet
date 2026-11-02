@@ -13,6 +13,10 @@ import { githubProvider } from '../src/services/vcs/github.js';
 import { bitbucketProvider } from '../src/services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../src/services/vcs/azure-devops.js';
 import { redactKnownSecrets } from '../src/utils/redact-known-secrets.js';
+import { LinuxCommands } from '../src/os/linux.js';
+import { MacOSCommands } from '../src/os/macos.js';
+import { WindowsCommands } from '../src/os/windows.js';
+import { WindowsGitBashCommands } from '../src/os/windows-gitbash.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const logged: string[] = [];
@@ -133,6 +137,35 @@ describe('provision_vcs_auth redaction of known credential values', () => {
   it('redactKnownSecrets masks an Authorization header whose value is not a known secret', () => {
     expect(redactKnownSecrets('curl -H "Authorization: Bearer abcdef123456"', [])).toContain('Bearer ****');
     expect(redactKnownSecrets('Authorization: Basic dXNlcjpwYXNz', [])).toContain('Basic ****');
+  });
+
+  // The redactor must mask the token in the exact escaped form each OS command
+  // builder writes it in, so an echo of that command (a failed helper write,
+  // a PowerShell "At line:1" echo) never leaks it. The token carries every
+  // character those escapers rewrite; the alnum segments between them are
+  // what must not survive.
+  describe('escaped forms the real command builders emit', () => {
+    const SPECIAL = 'Ab12\'Cd34"Ef56$Gh78\\Ij90!Kl12&Mn34|Op56^Qr78%St90`Uv12<Wx34>Yz56';
+    const SEGMENTS = ['Cd34', 'Ef56', 'Gh78', 'Ij90', 'Kl12', 'Mn34', 'Op56', 'Qr78', 'St90', 'Uv12', 'Wx34', 'Yz56'];
+    const builders = [
+      { os: 'linux', cmds: new LinuxCommands() },
+      { os: 'macos', cmds: new MacOSCommands() },
+      { os: 'windows (powershell)', cmds: new WindowsCommands() },
+      { os: 'windows (git bash)', cmds: new WindowsGitBashCommands() },
+    ];
+    for (const b of builders) {
+      it(`${b.os}: gitCredentialHelperWrite and ghAuthLogin echo -> no token segment survives`, () => {
+        const sent = [
+          b.cmds.gitCredentialHelperWrite('bitbucket.org', USER, SPECIAL, 'bitbucket'),
+          b.cmds.ghAuthLogin(SPECIAL, 'github.com'),
+          b.cmds.httpGetStatusWithBearer('https://api.bitbucket.org/2.0/repositories/ws/r', SPECIAL),
+        ];
+        for (const cmd of sent) {
+          const out = redactKnownSecrets(`fatal: command failed:\n${cmd}`, [SPECIAL], [USER]);
+          for (const seg of SEGMENTS) expect(out, `segment ${seg} leaked from: ${out}`).not.toContain(seg);
+        }
+      });
+    }
   });
 
   it('redactKnownSecrets leaves unrelated text intact and ignores very short secrets', () => {
