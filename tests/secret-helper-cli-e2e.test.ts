@@ -147,9 +147,25 @@ describe('secret --helper (real CLI)', () => {
       command: 'echo {{secret.handed}}',
       timeout_s: 5,
     }));
-    expect(out).toContain('not found');
+    expect(out).toContain('"handed"');
+    expect(out).toContain('credential helper');
+    expect(out).toContain('server-side');
+    expect(out).toContain('never handed to members');
+    expect(out).not.toContain('credential_store_set');
     expect(out).not.toContain(rec.program);
     expect(out).not.toContain(helperScript);
+  });
+
+  it('a member command referencing an unregistered name still reports not found', async () => {
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
+    const out = resultText(await executeCommand({
+      member_id: member.id,
+      command: 'echo {{secret.nosuchname}}',
+      timeout_s: 5,
+    }));
+    expect(out).toContain('Credential "nosuchname" not found');
+    expect(out).not.toContain('credential helper');
   });
 
   it('register_member with a helper secret token refuses and leaves credentials.json byte-identical', async () => {
