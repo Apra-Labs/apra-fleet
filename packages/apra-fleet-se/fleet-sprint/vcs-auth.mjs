@@ -447,7 +447,10 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     if (registeredMismatch) {
         throw new Error(`member '${member}' is registered for VCS provider '${registeredMismatch}', which does not serve this '${provider}' remote; not provisioning '${provider}' on it, because that would revoke the member's '${registeredMismatch}' credential. Use a backlog member dedicated to '${provider}' for this repository.`);
     }
-    const provisionRes = await fleetApi.provisionVcsAuth(provisionArgs);
+    // apra-fleet-d1pk.3: fleet-sprint runs unattended, so it never lets
+    // provision_vcs_auth fall into its out-of-band secret prompt -- a missing
+    // secret comes back as reason credential_missing instead.
+    const provisionRes = await fleetApi.provisionVcsAuth({ ...provisionArgs, non_interactive: true });
     const provisionText = resultText(provisionRes);
     // provision_vcs_auth NEVER throws on failure -- it reports failure via
     // structuredContent.ok === false (apra-fleet-3swo.13; see
@@ -1262,17 +1265,26 @@ export function createVcsAuthSelfHealCallback(opts = {}) {
         // self-heal attempt -- `resolved` simply stays undefined and
         // provisionVcsAuthForMember falls back to its own lookup.
         let resolved;
+        let refuseLocalProvider = null;
         try {
             resolved = await resolveProvider(member, { fleetApi });
             const { provider } = resolved;
             const impl = getVcsProvider(provider);
             if (impl && impl.authRemedy && impl.authRemedy.serverSideReMintable === false) {
                 log(`[Sync] self-heal: member '${member}' (${label}) uses '${provider}', whose credentials cannot be re-minted server-side. ${impl.authRemedy.hint}`);
+                // apra-fleet-d1pk.3: re-provisioning a LOCAL member of such a
+                // provider rewrites the host's own credential helper and
+                // cannot mint anything new, so the self-heal refuses it.
+                const record = await readMemberRecord(member, fleetApi).catch(() => null);
+                if (record && record.type === 'local') refuseLocalProvider = provider;
             }
         } catch (resolveErr) {
             log(`[Sync] self-heal: could not resolve member '${member}' (${label})'s VCS provider to check for an auth remedy hint (continuing with the self-heal attempt): ${resolveErr.message}`);
         }
 
+        if (refuseLocalProvider) {
+            throw new Error(`member '${member}' is a local member on '${refuseLocalProvider}': not re-provisioning it, which would overwrite the host's own credential; fix the host's credential instead.`);
+        }
         await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName, resolvedProvider: resolved });
 
         log(`[Sync] self-heal: credentials re-provisioned for member '${member}' (${label}); the failed command will be retried once.`);
@@ -1318,6 +1330,31 @@ export function selfHealMemoryKey(member, error) {
     return `${member}|${text}`;
 }
 
+/**
+ * Typed error code the VCS preflight logs (once per member per run) when a
+ * non-re-mintable member's existing credential fails its probe and cannot be
+ * fixed by the fleet. Stable, so log readers and tests match it, not prose.
+ */
+export const VCS_CREDENTIAL_PROBE_FAILED = 'vcs_credential_probe_failed';
+
+/**
+ * Parsed member_detail JSON for `member` (type, os, shell, vcsProvider, ...),
+ * or null when the response is not JSON (e.g. an unknown member's plain-text
+ * answer). A failing memberDetail() call rejects; callers decide.
+ * @param {string} member
+ * @param {{ memberDetail: Function }} fleetApi
+ * @returns {Promise<object|null>}
+ */
+async function readMemberRecord(member, fleetApi) {
+    const res = await fleetApi.memberDetail({ member_name: member, format: 'json' });
+    try {
+        const parsed = JSON.parse(resultText(res));
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
 // How far ahead of a credential's known expiry the preflight treats it as
 // "expiring soon" and re-provisions early, rather than letting it lapse
 // mid-dispatch. Mirrors the server's own EXPIRY_WARNING_MS threshold
@@ -1355,8 +1392,117 @@ export function createVcsAuthPreflightCallback(opts = {}) {
     const fleetApi = new ApraFleet({ callTool });
     /** @type {Map<string, Date|null>} member -> last-known expiresAt (null = no expiry tracked, e.g. PAT mode). */
     const knownGoodUntil = new Map();
+    // apra-fleet-d1pk.3: PROBE-FIRST branch for members whose credential the
+    // fleet cannot mint (provider authRemedy.serverSideReMintable === false,
+    // e.g. Bitbucket API tokens, Azure DevOps PATs). Provisioning such a
+    // member just redeploys a stored secret -- and on a LOCAL member it
+    // rewrites the host's own git credential helper -- so the preflight first
+    // asks whether the credential ALREADY in place works (a non-interactive
+    // `git ls-remote origin HEAD`, see getSeCommands().gitLsRemoteProbe()),
+    // and decides once per member per run:
+    //   'ok'     -- probe passed, or a remote member was provisioned after a
+    //               failed probe: never probe or provision again this run.
+    //   'failed' -- one typed ERROR line naming the provider remedy was
+    //               logged; never re-probed, re-provisioned or re-logged.
+    // A GitHub-App (server-side re-mintable) member never enters this branch
+    // and keeps the expiry-based refresh below exactly as before.
+    /** @type {Map<string, { probe: boolean, provider?: string, impl?: object, local?: boolean, target?: { os: string, shell: string } }>} */
+    const plans = new Map();
+    /** @type {Map<string, 'ok'|'failed'>} */
+    const probeVerdicts = new Map();
+
+    async function planFor(member) {
+        if (plans.has(member)) return plans.get(member);
+        let plan = { probe: false };
+        const record = await readMemberRecord(member, fleetApi);
+        if (record) {
+            let provider = typeof record.vcsProvider === 'string' && getVcsProvider(record.vcsProvider) ? record.vcsProvider : null;
+            if (!provider) {
+                // No registered provider: detect it from the member's own
+                // remote with the same anchored auth-host match the
+                // provisioning path's LAYER 2 fallback uses, so an
+                // unregistered local Bitbucket member is never provisioned.
+                const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
+                const remoteUrl = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
+                provider = remoteUrl ? detectVcsProviderFromRemote(remoteUrl) : null;
+            }
+            const impl = provider ? getVcsProvider(provider) : null;
+            if (impl && impl.authRemedy && impl.authRemedy.serverSideReMintable === false) {
+                plan = {
+                    probe: true,
+                    provider,
+                    impl,
+                    local: record.type === 'local',
+                    target: { os: typeof record.os === 'string' ? record.os : '', shell: typeof record.shell === 'string' ? record.shell : '' },
+                };
+            }
+        }
+        plans.set(member, plan);
+        return plan;
+    }
+
+    function logProbeFailure(member, plan, why) {
+        const where = plan.local ? 'local member' : 'member';
+        const line = `[Sync] preflight: ERROR ${VCS_CREDENTIAL_PROBE_FAILED}: ${where} '${member}' (provider '${plan.provider}') cannot reach its origin with the credential already in place: ${why}. ${plan.impl.authRemedy.hint}`;
+        // ASCII only, whatever git or the member shell printed.
+        log(line.replace(/[^\x20-\x7e]+/g, ' '));
+    }
+
+    async function probeFirst(member, plan) {
+        const verdict = probeVerdicts.get(member);
+        if (verdict) {
+            log(verdict === 'ok'
+                ? `[Sync] preflight: provision_vcs_auth skipped for member '${member}': its '${plan.provider}' credential already passed this run's probe.`
+                : `[Sync] preflight: provision_vcs_auth skipped for member '${member}': its '${plan.provider}' credential probe already failed this run (reported once above).`);
+            return;
+        }
+        log(`[Sync] preflight: probing member '${member}''s existing '${plan.provider}' credential (git ls-remote origin, non-interactive) instead of provisioning.`);
+        let res;
+        try {
+            res = await command(getSeCommands(plan.target).gitLsRemoteProbe(), { member_name: member, silent: true, failSoft: true });
+        } catch (err) {
+            res = { ok: false, error: err && err.message ? err.message : String(err) };
+        }
+        if (res && res.ok) {
+            probeVerdicts.set(member, 'ok');
+            log(`[Sync] preflight: member '${member}''s existing '${plan.provider}' credential works; provision_vcs_auth skipped for this run.`);
+            return;
+        }
+        const detail = String((res && (res.error || res.output)) || 'git ls-remote origin failed').trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' / ').slice(0, 300);
+        if (plan.local) {
+            // Never provision a LOCAL non-re-mintable member: it would
+            // rewrite the host operator's own credential helper.
+            probeVerdicts.set(member, 'failed');
+            logProbeFailure(member, plan, `${detail}; not provisioning a local member, which would overwrite the host's own credential`);
+            return;
+        }
+        // A remote member gets exactly ONE non-interactive provision attempt.
+        try {
+            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName });
+            probeVerdicts.set(member, 'ok');
+            knownGoodUntil.set(member, expiresAt);
+            log(`[Sync] preflight: provision_vcs_auth succeeded for member '${member}' after its credential probe failed.`);
+        } catch (err) {
+            probeVerdicts.set(member, 'failed');
+            logProbeFailure(member, plan, `${detail}; provision_vcs_auth also failed: ${err.message}`);
+        }
+    }
 
     return async function ensureVcsAuthFresh(member) {
+        let plan = { probe: false };
+        try {
+            plan = await planFor(member);
+        } catch (err) {
+            log(`[Sync] preflight: could not read member '${member}''s record to choose probe vs provision (falling back to provisioning): ${err.message}`);
+        }
+        if (plan.probe) {
+            try {
+                await probeFirst(member, plan);
+            } catch (err) {
+                log(`[Sync] preflight: credential probe for member '${member}' failed unexpectedly (continuing): ${err.message}`);
+            }
+            return;
+        }
         if (knownGoodUntil.has(member)) {
             const expiresAt = knownGoodUntil.get(member);
             if (expiresAt === null || expiresAt.getTime() - now() > VCS_AUTH_EXPIRY_PREFLIGHT_MS) {

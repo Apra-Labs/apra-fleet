@@ -17,10 +17,17 @@ import { AzureDevOpsVCS } from '../fleet-sprint/vcs-providers/index.mjs';
 const AZ_REMOTE = 'https://dev.azure.com/apralabs/e2e-fleet-testing/_git/fleet-e2e-toy';
 const GH_REMOTE = 'https://github.com/acme/widgets.git';
 
+// apra-fleet-d1pk.3: a non-re-mintable provider's member (Azure DevOps here)
+// is probed with `git ls-remote origin` before any provisioning. These tests
+// pin the PROVISIONING arguments, so the probe always fails: the remote member
+// then gets its one non-interactive provision attempt.
+const PROBE_FAILED = { ok: false, output: '', error: 'fatal: Authentication failed' };
+const isProbe = (cmd) => cmd.includes('git ls-remote origin');
+
 const remoteCommandFor = (url) => async (cmd) => (
     cmd === 'git remote get-url origin'
         ? { ok: true, output: url, error: null }
-        : { ok: true, output: '', error: null }
+        : isProbe(cmd) ? PROBE_FAILED : { ok: true, output: '', error: null }
 );
 
 const memberDetail = (provider) => ({ content: [{ text: JSON.stringify({ vcsProvider: provider }) }] });
@@ -167,6 +174,7 @@ describe('unattended provisioning dispatches through the hook (apra-fleet-5co8.2
             provider: 'azure-devops',
             org_url: 'https://dev.azure.com/apralabs',
             pat: '{{secret.azdevops_pat}}',
+            non_interactive: true,
         });
         // No raw token value anywhere in what the runner sent.
         assert.match(JSON.stringify(calls[0].args), /\{\{secret\.azdevops_pat\}\}/);
@@ -188,6 +196,7 @@ describe('unattended provisioning dispatches through the hook (apra-fleet-5co8.2
             org_url: 'https://dev.azure.com/apralabs',
             pat: '{{secret.azdevops_pat}}',
             scope_url: 'https://apralabs.visualstudio.com',
+            non_interactive: true,
         });
     });
 
@@ -214,7 +223,7 @@ describe('unattended provisioning dispatches through the hook (apra-fleet-5co8.2
             callTool,
             command: async (cmd) => {
                 if (cmd === 'git remote get-url origin') throw new Error('Request "tools/call" (id=31) aborted before a response was received.');
-                return { ok: true, output: '', error: null };
+                return isProbe(cmd) ? PROBE_FAILED : { ok: true, output: '', error: null };
             },
             log: (m) => logs.push(m),
         });
@@ -237,7 +246,7 @@ describe('unattended provisioning dispatches through the hook (apra-fleet-5co8.2
             command: async (cmd) => (
                 cmd === 'git remote get-url origin'
                     ? { ok: false, output: '', error: "fatal: No such remote 'origin'" }
-                    : { ok: true, output: '', error: null }
+                    : isProbe(cmd) ? PROBE_FAILED : { ok: true, output: '', error: null }
             ),
             log: (m) => logs.push(m),
         });
@@ -280,6 +289,7 @@ describe('unattended provisioning dispatches through the hook (apra-fleet-5co8.2
             github_mode: 'github-app',
             git_access: 'push',
             repos: ['acme/widgets'],
+            non_interactive: true,
         });
     });
 });

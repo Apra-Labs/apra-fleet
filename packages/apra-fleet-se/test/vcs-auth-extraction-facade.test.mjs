@@ -110,6 +110,9 @@ const MOVED_PRIVATE_SYMBOLS = [
     // after the extraction; vcs-auth.mjs-only, never exported by runner.js.
     'selfHealMemoryKey',
     'FUTILE_HEAL_TTL_MS',
+    // apra-fleet-d1pk.3: added after the move (not part of runner.js's facade).
+    'VCS_CREDENTIAL_PROBE_FAILED',
+    'readMemberRecord',
 ];
 
 const declaresTopLevel = (src, name) =>
