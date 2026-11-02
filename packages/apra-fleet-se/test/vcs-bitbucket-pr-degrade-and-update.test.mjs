@@ -166,7 +166,7 @@ describe('(b) a relaunch rewrites the open Bitbucket PR', () => {
         assert.ok(bb.pr.description.includes('all good') && !bb.pr.description.includes('gate failed'), bb.pr.description);
         assert.ok(logs.some((m) => m.includes('updated its title and body') && PR_URL_RE.test(m)), JSON.stringify(logs));
         const find = bb.execCommands.find((c) => c.startsWith('curl -sS -X GET'));
-        assert.ok(find.includes("-u '{{vcs_username_inline}}:{{vcs_token_inline}}'"), `find must authenticate with both halves: ${find}`);
+        assert.ok(find.includes("-H 'Authorization: Bearer {{vcs_token_inline}}'") && !/ -u /.test(find), `find must authenticate with Bearer: ${find}`);
     });
 
     test('finalizeAbort on a branch with an open PR -> already-exists, rewritten as ABORTED', async () => {
@@ -287,7 +287,7 @@ describe('(F3/F4/F5) remedy cautions, fork filter, description retention', () =>
         assert.ok(BitbucketVCS.authRemedy.hint.includes('LOCAL member'));
     });
 
-    const FIND = { provider: 'bitbucket', repoRef: { workspace: 'acme', repo: 'widgets' }, base: 'main', head: 'feat/x', token: 't', username: 'u', os: 'linux' };
+    const FIND = { provider: 'bitbucket', repoRef: { workspace: 'acme', repo: 'widgets' }, base: 'main', head: 'feat/x', token: 't', os: 'linux' };
 
     test('find drops a PR whose source repository is a fork', () => {
         const built = buildFindPrCommand(FIND);

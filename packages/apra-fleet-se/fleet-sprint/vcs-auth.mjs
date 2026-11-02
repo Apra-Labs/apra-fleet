@@ -821,15 +821,8 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     // top-level declarations symbol-for-symbol and a new const desyncs that
     // census.
     const token = '{{vcs_token_inline}}';
-    // apra-fleet-qeq1.3: Bitbucket REST needs basic auth 'username:token'
-    // (unlike Azure DevOps/GitHub, which pass an empty or no username at
-    // all) -- see the PLANNER DECISION note on the epic apra-fleet-qeq1.
-    // Passed the same INLINE-placeholder way as `token` above: a provider
-    // that does not read `username` (github.mjs, azure-devops.mjs) simply
-    // ignores it, so this is additive. Inlined here rather than hoisted to a
-    // module constant for the SAME reason `token` is -- see the comment
-    // above it.
-    const username = '{{vcs_username_inline}}';
+    // Bitbucket REST authenticates with a Bearer token (the same inline
+    // token placeholder as above); no username is sent for any provider.
     // Both os AND shell feed the command builder: os picks the curl binary
     // token (curl.exe vs curl), shell picks the quoting dialect. A Windows
     // member whose registered shell is gitbash needs POSIX quoting, not
@@ -892,7 +885,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             return { ok: false, error: `${what} failed: HTTP ${parsed.status ?? '(unknown)'}: ${msg}${skippedProvider && isPrAuthFailure(parsed.status, msg) ? skippedRemedy() : ''}` };
         }
     };
-    const coords = () => ({ provider, ...(repoRef ? { repoRef } : { repo }), token, username, os, shell });
+    const coords = () => ({ provider, ...(repoRef ? { repoRef } : { repo }), token, os, shell });
     // Open PRs for head -> base: { ok: true, prs } or { ok: false, error }.
     // Never throws (a missing builder comes back as { ok: false }).
     const findOpenPrs = async () => {
@@ -950,7 +943,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         const built = buildCreatePrCommand({
             provider,
             ...(repoRef ? { repoRef } : { repo }),
-            base, head, title, body, token, username, os, shell,
+            base, head, title, body, token, os, shell,
         });
 
         if (built.descriptionTruncated && !truncationWarned) {
