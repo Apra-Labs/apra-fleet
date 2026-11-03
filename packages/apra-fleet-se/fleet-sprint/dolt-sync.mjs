@@ -85,7 +85,8 @@
  * ASCII only.
  */
 
-import { DoltDivergedError, DoltSyncError, UnpublishedSchemaMigrationsError } from './errors.mjs';
+import { DoltDivergedError, DoltSyncError, DoltWindowsSpawnLimitError, UnpublishedSchemaMigrationsError } from './errors.mjs';
+import { bdSyncCommandFor, normalizeMemberTarget, POSIX_MEMBER_TARGET } from './bd-sync-command.mjs';
 import { classifyFailure, toDoltVerdict, commandBinary } from './vcs-module.mjs';
 import { buildSettleCallback } from './dolt-settle.mjs';
 
@@ -683,6 +684,82 @@ export function doltBackoffDelayMs(attempt, baseMs = DOLT_BACKOFF_BASE_MS, maxMs
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// ---------------------------------------------------------------------------
+// Member OS/shell for the bd sync command string
+// ---------------------------------------------------------------------------
+//
+// A Windows member runs every `bd dolt pull`/`bd dolt push` with a bounded
+// GOMAXPROCS (see bd-sync-command.mjs for why and for the exact strings), so
+// runDoltStep needs the member's { os, shell }. Two sources, in order:
+//   1. `opts.memberTarget` on the call -- an { os, shell } object or a
+//      `(member) => { os, shell }` function (tests, and any caller that has
+//      already resolved the member);
+//   2. the sprint-wide resolver installed once at sprint start with
+//      setMemberTargetResolver() -- the runner wires the cached
+//      member_detail-backed resolveMemberTarget there, so no extra
+//      member_detail round trip happens per sync once a member is resolved.
+// With neither, or when resolution fails, the member is treated as POSIX and
+// the command strings stay byte-identical to the pre-existing ones.
+
+/** @type {((member: string) => Promise<{ os: string, shell: string }>|{ os: string, shell: string })|null} */
+let memberTargetResolver = null;
+
+/**
+ * Install (or clear, with null) the sprint-wide member { os, shell } resolver
+ * runDoltStep falls back to when a call passes no `memberTarget`.
+ *
+ * @param {Function|null} resolver
+ */
+export function setMemberTargetResolver(resolver) {
+    memberTargetResolver = typeof resolver === 'function' ? resolver : null;
+}
+
+/**
+ * Resolve `member`'s { os, shell } for command construction. Never throws: a
+ * failed lookup is logged and degrades to POSIX (the unchanged strings).
+ *
+ * @param {string} member
+ * @param {object|Function|undefined} memberTarget
+ * @param {Function} log
+ * @returns {Promise<{ os: string, shell: string }>}
+ */
+async function resolveDoltMemberTarget(member, memberTarget, log) {
+    const source = (memberTarget !== undefined && memberTarget !== null) ? memberTarget : memberTargetResolver;
+    if (!source) return POSIX_MEMBER_TARGET;
+    try {
+        const target = typeof source === 'function' ? await source(member) : source;
+        const normalized = normalizeMemberTarget(target);
+        return normalized.os ? normalized : POSIX_MEMBER_TARGET;
+    } catch (err) {
+        log(`[Dolt] could not resolve the OS/shell of member '${member}' (${(err && err.message) || err}); building its bd sync commands for a POSIX shell.`);
+        return POSIX_MEMBER_TARGET;
+    }
+}
+
+/** Remedy text of the typed Windows spawn-limit sync failure. */
+export const WINDOWS_SPAWN_LIMIT_REMEDY =
+    'Remedy: on that Windows member, stop other process-heavy work (or wait for it to finish) and re-run the sync; '
+    + 'if it recurs, shrink the environment block the member\'s processes inherit (deduplicate PATH, drop oversized variables) '
+    + 'and run the fleet service in an interactive session so it does not exhaust the non-interactive desktop heap.';
+
+/**
+ * The typed terminal error for a step that ended on the Windows
+ * process-creation limit (runDoltStep's `spawnLimit` flag).
+ *
+ * @param {string} member
+ * @param {string} operation - e.g. 'pull', 'push', 'push-reconcile'
+ * @param {{ error: string }} step
+ * @returns {DoltWindowsSpawnLimitError}
+ */
+function windowsSpawnLimitSyncError(member, operation, step) {
+    return new DoltWindowsSpawnLimitError(
+        `[Dolt] D-${operation} for member '${member}' failed: Windows refused to start bd's git child processes (the Windows process-creation limit, `
+        + `CreateProcess ERROR_NOT_ENOUGH_MEMORY) on every attempt until the transient retry budget ran out. Not a credential, remote or data problem. `
+        + `${WINDOWS_SPAWN_LIMIT_REMEDY} Raw: ${step.error}`,
+        { member, doltOutput: step.error, details: { operation } },
+    );
+}
+
 /**
  * Run a single `bd dolt` command via the injected command() with failSoft,
  * retrying ONLY transient failures up to `maxTransientRetries` times, with a
@@ -709,7 +786,11 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *
  * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'missing-tool'|'unknown', missingTool?: string }>}
  */
-async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS, timeoutS = DOLT_STEP_TIMEOUT_S, spawnOutageBudgetMs = DOLT_SPAWN_OUTAGE_BUDGET_MS, now = Date.now }) {
+async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS, timeoutS = DOLT_STEP_TIMEOUT_S, spawnOutageBudgetMs = DOLT_SPAWN_OUTAGE_BUDGET_MS, now = Date.now, memberTarget }) {
+    // `cmd` stays the LOGICAL command (classification, commandBinary, labels);
+    // `issued` is the member-bound string, which on a Windows member bounds
+    // GOMAXPROCS for bd (resolved once per step, not per attempt).
+    const issued = bdSyncCommandFor(cmd, await resolveDoltMemberTarget(member, memberTarget, log));
     let attempt = 0;
     let authHealAttempted = false;
     /** The info the self-heal was invoked with, reported back on a failed retry. */
@@ -726,7 +807,7 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
         : DOLT_SPAWN_OUTAGE_MAX_RETRIES;
     // eslint-disable-next-line no-constant-condition
     while (true) {
-        const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label, timeout_s: timeoutS });
+        const res = await command(issued, { member_name: member, silent: true, failSoft: true, label, timeout_s: timeoutS });
         if (res && res.ok) {
             if (authHealAttempted) log(`[Dolt] self-heal recovered: ${label} succeeded for member '${member}' on the retry after re-provisioning credentials.`);
             return res;
@@ -823,7 +904,11 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
             }
         }
         log(`[Dolt] ${label} FAILED (${kind}) -- reads/writes for member '${member}' may be stale until this is resolved. Raw: ${error}`);
-        return { ok: false, output: res ? res.output : '', error, kind, selfHealed: authHealAttempted };
+        // A transient failure that is still the Windows process-creation
+        // limit after the retry budget is flagged so the caller throws the
+        // typed DoltWindowsSpawnLimitError instead of a generic sync failure.
+        const spawnLimit = kind === 'transient' && WINDOWS_SPAWN_LIMIT_RE.test(String(rawError || ''));
+        return { ok: false, output: res ? res.output : '', error, kind, selfHealed: authHealAttempted, ...(spawnLimit ? { spawnLimit: true } : {}) };
     }
 }
 
@@ -1433,7 +1518,7 @@ export async function doltPullBefore(member, opts = {}) {
     // `maxTransientRetries` is deliberately NOT defaulted here: runDoltStep()
     // must see whether the caller passed it (an explicit value caps both
     // retry ladders; undefined selects each ladder's own default).
-    const { command, log = () => {}, maxTransientRetries, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, remoteTipFingerprint = true, spawnOutageBudgetMs, now } = opts;
+    const { command, log = () => {}, maxTransientRetries, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, remoteTipFingerprint = true, spawnOutageBudgetMs, now, memberTarget } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPullBefore requires an injected command() in opts");
     }
@@ -1479,7 +1564,7 @@ export async function doltPullBefore(member, opts = {}) {
 
     const pull = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
+        label: `D-pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget,
     });
     if (!pull.ok) {
         if (pull.kind === 'no-remote') {
@@ -1537,6 +1622,7 @@ export async function doltPullBefore(member, opts = {}) {
                 { member, doltOutput: pull.error, remoteUrl: url },
             );
         }
+        if (pull.spawnLimit) throw windowsSpawnLimitSyncError(member, 'pull', pull);
         throw new DoltSyncError(
             `[Dolt] D-pull failed for member '${member}': ${pull.error}`,
             { member, doltOutput: pull.error },
@@ -1735,7 +1821,7 @@ export async function doltPushAfter(member, opts = {}) {
     // doltPullBefore. `remoteTipFingerprint` is accepted for call-site parity
     // with doltPullBefore but has nothing to switch off on the push side any
     // more: a push never probes and never records (it only forgets).
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS, spawnOutageBudgetMs, now } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS, spawnOutageBudgetMs, now, memberTarget } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPushAfter requires an injected command() in opts");
     }
@@ -1865,8 +1951,12 @@ export async function doltPushAfter(member, opts = {}) {
             log(`[Dolt] ${label} reported success but the push did NOT land: ${verdict.why}. Retrying the push once.`);
             const retry = await runDoltStep({
                 command, member, cmd: 'bd dolt push',
-                label: `D-push retry after an unlanded push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
+                label: `D-push retry after an unlanded push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget,
             });
+            if (!retry.ok && retry.spawnLimit) {
+                clearLastSyncedTip(member);
+                throw windowsSpawnLimitSyncError(member, 'push retry after an unlanded push', retry);
+            }
             const firstWhy = verdict.why;
             verdict = retry.ok
                 ? await checkDoltPushLanded(member, { command, check: landedCheck })
@@ -1894,7 +1984,7 @@ export async function doltPushAfter(member, opts = {}) {
     async function doltPushGuarded() {
     let push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
+        label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget,
     });
     if (push.ok) {
         return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: false }, `D-push for member '${member}'`);
@@ -1943,6 +2033,7 @@ export async function doltPushAfter(member, opts = {}) {
                 { member, doltOutput: push.error, remoteUrl: url },
             );
         }
+        if (push.spawnLimit) throw windowsSpawnLimitSyncError(member, 'push', push);
         throw new DoltSyncError(
             `[Dolt] D-push for member '${member}' failed: ${push.error}`,
             { member, doltOutput: push.error },
@@ -1955,7 +2046,7 @@ export async function doltPushAfter(member, opts = {}) {
     log(`[Dolt] D-push for member '${member}' was rejected (another writer pushed first); reconciling with a single D-pull then one re-push (first-successful-pusher-wins).`);
     const reconcile = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
+        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget,
     });
     if (!reconcile.ok) {
         if (reconcile.kind === 'diverged') {
@@ -1967,6 +2058,7 @@ export async function doltPushAfter(member, opts = {}) {
                 'push-reconcile',
             );
         }
+        if (reconcile.spawnLimit) throw windowsSpawnLimitSyncError(member, 'push reconcile pull', reconcile);
         throw new DoltSyncError(
             `[Dolt] D-push reconcile pull for member '${member}' failed: ${reconcile.error}`,
             { member, doltOutput: reconcile.error },
@@ -1979,7 +2071,7 @@ export async function doltPushAfter(member, opts = {}) {
     landedCheck = await beginDoltPushLandedCheck(member, { command, log });
     push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
+        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget,
     });
     if (push.ok) {
         return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: true }, `D-push re-push after reconcile for member '${member}'`);
@@ -2041,7 +2133,7 @@ export async function doltPushAfter(member, opts = {}) {
 
         const secondReconcile = await runDoltStep({
             command, member, cmd: 'bd dolt pull',
-            label: `D-push second reconcile pull for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
+            label: `D-push second reconcile pull for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget,
         });
         if (!secondReconcile.ok) {
             if (secondReconcile.kind === 'diverged') {
@@ -2053,6 +2145,7 @@ export async function doltPushAfter(member, opts = {}) {
                     'push-reconcile',
                 );
             }
+            if (secondReconcile.spawnLimit) throw windowsSpawnLimitSyncError(member, 'push second reconcile pull', secondReconcile);
             throw new DoltSyncError(
                 `[Dolt] D-push second reconcile pull for member '${member}' failed: ${secondReconcile.error}`,
                 { member, doltOutput: secondReconcile.error },
@@ -2062,7 +2155,7 @@ export async function doltPushAfter(member, opts = {}) {
         landedCheck = await beginDoltPushLandedCheck(member, { command, log });
         push = await runDoltStep({
             command, member, cmd: 'bd dolt push',
-            label: `D-push second re-push after reconcile for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
+            label: `D-push second re-push after reconcile for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget,
         });
         if (push.ok) {
             return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: true }, `D-push second re-push after reconcile for member '${member}'`);

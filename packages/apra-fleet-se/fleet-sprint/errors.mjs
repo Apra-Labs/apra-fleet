@@ -364,6 +364,29 @@ export class DoltSyncError extends WorkflowError {
     }
 }
 
+/** Stable error code of DoltWindowsSpawnLimitError. */
+export const DOLT_WINDOWS_SPAWN_LIMIT_CODE = 'DOLT_WINDOWS_SPAWN_LIMIT';
+
+/**
+ * A D-pull/D-push that kept failing because Windows refused to start bd/dolt's
+ * git child processes (CreateProcess ERROR_NOT_ENOUGH_MEMORY, the Windows
+ * process-creation limit) until its transient retry budget ran out. A
+ * DoltSyncError subtype, so every existing DoltSyncError handler (degrade/fatal
+ * policy, classifySyncError -> 'transient') still applies; the stable `code`
+ * lets a caller tell it apart from a generic sync failure.
+ */
+export class DoltWindowsSpawnLimitError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: 'transient', cause: 'windows-spawn-limit', ...opts.details } });
+        this.name = 'DoltWindowsSpawnLimitError';
+        this.code = DOLT_WINDOWS_SPAWN_LIMIT_CODE;
+    }
+}
+
 /**
  * Thrown by preflightBeadsHealthGate() when the backlog member's beads clone
  * holds local schema migrations bd auto-applied but never published (the
