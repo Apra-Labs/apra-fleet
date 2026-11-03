@@ -18,6 +18,7 @@ import {
     WINDOWS_SPAWN_LIMIT_REMEDY,
 } from '../fleet-sprint/dolt-sync.mjs';
 import { DoltWindowsSpawnLimitError, DoltSyncError, DOLT_WINDOWS_SPAWN_LIMIT_CODE } from '../fleet-sprint/errors.mjs';
+import { stderrText } from './helpers/vcs-stderr-corpus.mjs';
 
 // Exact strings per member OS/shell.
 const EXPECTED = [
@@ -164,5 +165,83 @@ describe('Windows spawn-limit exhaustion is a typed error', () => {
         assert.ok(err instanceof DoltSyncError);
         assert.ok(!(err instanceof DoltWindowsSpawnLimitError));
         assert.strictEqual(err.code, 'DOLT_SYNC_FAILED');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// End to end through the real entry points, with the member os/shell lookup
+// recorded: every bd dolt pull/push a sync issues -- including the push-side
+// reconcile pull and re-push -- carries GOMAXPROCS on a Windows member and
+// never on linux/macOS. Plus the typed spawn-limit terminal on the push side
+// and the kept transient retry.
+// ---------------------------------------------------------------------------
+
+const DIVERGED = stderrText('dolt/diverged/push-no-common-ancestor');
+
+describe('every recorded sync command, through the push reconcile ladder', () => {
+    for (const row of EXPECTED) {
+        test(`${row.name}: D-pull, then a rejected D-push -> reconcile pull -> re-push`, async () => {
+            const lookups = [];
+            setMemberTargetResolver(async (member) => { lookups.push(member); return row.target; });
+            let pushes = 0;
+            const rec = recordingCommand((cmd) => {
+                if (cmd.endsWith('bd dolt push')) {
+                    pushes += 1;
+                    return pushes === 1 ? { ok: false, output: '', error: DIVERGED } : { ok: true, output: '', error: null };
+                }
+                return { ok: true, output: '', error: null };
+            });
+            await doltPullBefore('m1', { command: rec.command, remoteTipFingerprint: false });
+            const result = await doltPushAfter('m1', { command: rec.command });
+            assert.strictEqual(result.reconciled, true, 'the reconcile ladder ran');
+
+            const sync = rec.syncCalls();
+            assert.deepStrictEqual(sync, [row.pull, row.push, row.pull, row.push]);
+            const isWindows = row.target.os === 'windows';
+            for (const cmd of sync) {
+                if (isWindows) assert.match(cmd, /GOMAXPROCS=?'?1'?;? bd dolt (pull|push)$/, `Windows sync command must set GOMAXPROCS: ${cmd}`);
+                else assert.doesNotMatch(cmd, /GOMAXPROCS/, `POSIX sync command must not mention GOMAXPROCS: ${cmd}`);
+            }
+            // One lookup per sync step, always for the synced member.
+            assert.deepStrictEqual(lookups, ['m1', 'm1', 'm1', 'm1']);
+        });
+    }
+});
+
+describe('Windows spawn limit: typed terminal and kept transient retry (push and pull)', () => {
+    test('a D-push failing with the spawn limit on every attempt ends with the typed code (instant clock)', async () => {
+        let clock = 0;
+        const rec = recordingCommand(() => ({ ok: false, output: '', error: SPAWN_LIMIT_OUTPUT }));
+        const err = await doltPushAfter('win-m', {
+            command: rec.command,
+            memberTarget: { os: 'windows', shell: 'gitbash' },
+            now: () => clock,
+            sleep: async (ms) => { clock += ms; },
+        }).then(() => null, (e) => e);
+        assert.ok(err instanceof DoltWindowsSpawnLimitError, `expected the typed error, got ${err && err.name}: ${err && err.message}`);
+        assert.strictEqual(err.code, 'DOLT_WINDOWS_SPAWN_LIMIT');
+        assert.match(err.message, /^\[Dolt\] D-push for member 'win-m' failed: Windows refused/);
+        assert.ok(err.message.includes(WINDOWS_SPAWN_LIMIT_REMEDY));
+        assert.ok(rec.syncCalls().length > 1, 'retried before giving up');
+        for (const cmd of rec.syncCalls()) assert.strictEqual(cmd, 'GOMAXPROCS=1 bd dolt push');
+    });
+
+    test('the spawn limit once, then success: the D-pull and D-push both succeed (transient retry kept)', async () => {
+        for (const op of ['pull', 'push']) {
+            let attempts = 0;
+            const sleeps = [];
+            const rec = recordingCommand(() => {
+                attempts += 1;
+                return attempts === 1 ? { ok: false, output: '', error: SPAWN_LIMIT_OUTPUT } : { ok: true, output: '', error: null };
+            });
+            const opts = { command: rec.command, memberTarget: { os: 'windows', shell: '' }, sleep: async (ms) => { sleeps.push(ms); } };
+            const result = op === 'pull'
+                ? await doltPullBefore('win-m', { ...opts, remoteTipFingerprint: false })
+                : await doltPushAfter('win-m', opts);
+            assert.strictEqual(result.ok, true, `${op} must succeed after one spawn-limit failure`);
+            assert.strictEqual(attempts, 2, `${op}: exactly one retry`);
+            assert.strictEqual(sleeps.length, 1, `${op}: one backoff between the attempts`);
+            assert.deepStrictEqual(rec.syncCalls(), [`$env:GOMAXPROCS='1'; bd dolt ${op}`, `$env:GOMAXPROCS='1'; bd dolt ${op}`]);
+        }
     });
 });
