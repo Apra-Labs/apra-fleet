@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "a56ec06fc713341573201bc9b7f0a7694c0e33ea",
+    "commit": "0e4b793e5dd16c8d60fda5c58c7db4e8143006b0",
     "branch": "main",
-    "entry_count": 114
+    "entry_count": 117
   },
   "entries": [
     {
@@ -151,6 +151,31 @@
       "updated_at": "2026-09-29T06:13:11.978Z"
     },
     {
+      "id": "18ed0717-9b70-4d66-af9a-f27499c122d3",
+      "type": "knowledge",
+      "title": "execute_command takes no per-member lock, so a concurrent probe command on a busy member is allowed",
+      "summary": "src/tools/execute-command.ts only calls markBusy (statusline write) around a command, and the workflow engine's command() has no per-member queue, so the engine can run a short diagnostic command on a member while another command there is still in flight.",
+      "symbols": [
+        "markBusy",
+        "executeCommand",
+        "probeLockHolders"
+      ],
+      "source_files": [
+        "src/tools/execute-command.ts",
+        "src/services/member-busy.ts",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-03T04:14:29.339Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs": "e747a510cd852320f2084c706391c2acf632acbc",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs": "a57d737eb1288209baeccc09802a50500fabb8b2",
+        "src/services/member-busy.ts": "8be5fc484df4b2af07b6ca8b18d175dad9b45885",
+        "src/tools/execute-command.ts": "3f070b13364bd947767b41685df0f1a785969086"
+      }
+    },
+    {
       "id": "19197697-8273-4c51-9d9e-ecffe39d2dc7",
       "type": "knowledge",
       "title": "The slow lane runs in bd REPLAY mode despite bypassing run-tests.mjs",
@@ -167,6 +192,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:39.994Z"
+    },
+    {
+      "id": "1b2df6eb-33c9-4deb-8253-2a553183fcfe",
+      "type": "learning",
+      "title": "Repo pre-commit hook rejects PowerShell backtick escapes in JS sources",
+      "summary": "The commit hook's [PS-escape] check blocks backtick-t/n/r sequences in member-bound PowerShell strings, even inside .mjs files. Build tab-separated PowerShell output with -join [char]9 instead.",
+      "symbols": [
+        "buildLockHolderProbe"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-lock-probe.mjs",
+        "packages/apra-fleet-se/test/dolt-lock-holder-watchdog.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-03T04:14:29.241Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-lock-probe.mjs": "24a2cdf5c3b8f5459703f0d4e1d0b4a68b0d5d5d",
+        "packages/apra-fleet-se/test/dolt-lock-holder-watchdog.test.mjs": "117c99590697bca8e1dc0eb47958c65d6d71aad6"
+      }
     },
     {
       "id": "1be49eaa-30f9-4ae0-917e-5b98d3d37eeb",
@@ -274,6 +318,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:33.419Z"
+    },
+    {
+      "id": "2b244307-8635-4406-904f-6a2290d54490",
+      "type": "learning",
+      "title": "check-generic-boundary tokenizer treats slash-star inside a template literal as a comment",
+      "summary": "scripts/check-generic-boundary.mjs strips /* ... */ even inside template text, so a template literal containing a shell glob like /proc/[0-9]*/fd/* or ${p%%/*} makes the scan throw 'unbalanced literal at EOF'. Put such globs in single-quoted constants and interpolate them.",
+      "symbols": [
+        "extractStringLiterals",
+        "PROC_FD_GLOB"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/scripts/check-generic-boundary.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-lock-probe.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-03T04:14:29.438Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-lock-probe.mjs": "24a2cdf5c3b8f5459703f0d4e1d0b4a68b0d5d5d",
+        "packages/apra-fleet-se/scripts/check-generic-boundary.mjs": "5f9c5bc363ea29f886622654056f4705b61311eb"
+      }
     },
     {
       "id": "2d11a53b-f992-4a4a-aa83-f3670dc08959",
