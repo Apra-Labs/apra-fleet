@@ -1079,6 +1079,15 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 throw (outcome && outcome.error) || err;
             }
 
+            // A member that cannot receive its stored credentials fails the same
+            // way on every attempt, on EVERY ladder (abortOnNonRetryable or not):
+            // stop after the first failure and name the remedy. No self-heal.
+            if (!completedButSyncFailed && err?.details?.reason === SECRET_DELIVERY_UNAVAILABLE_REASON) {
+                ctx.log(`${roleLabel} dispatch failed: member '${member}' cannot receive its stored credentials (${SECRET_DELIVERY_UNAVAILABLE_REASON}); not retrying. Remedy: ${SECRET_DELIVERY_UNAVAILABLE_REMEDY}. Detail: ${err.message}`);
+                if (!err.message.includes(SECRET_DELIVERY_UNAVAILABLE_REMEDY)) err.message += ` [${SECRET_DELIVERY_UNAVAILABLE_REMEDY}]`;
+                if (retry.rethrowsUnhealedNonRetryable) throw err;
+                break;
+            }
             // Auth/workspace-trust failures are deterministic -- no retry can
             // succeed -- so a ladder that declares abortOnNonRetryable ends
             // rather than burning its remaining attempts on the same wall.
@@ -1103,12 +1112,6 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                         healRetryIsFinal = retry.authSelfHealShortCircuits;
                         continue;
                     }
-                }
-                if (err?.details?.reason === SECRET_DELIVERY_UNAVAILABLE_REASON) {
-                    ctx.log(`${roleLabel} dispatch failed: member '${member}' cannot receive its stored credentials (${SECRET_DELIVERY_UNAVAILABLE_REASON}); not retrying. Remedy: ${SECRET_DELIVERY_UNAVAILABLE_REMEDY}. Detail: ${err.message}`);
-                    if (!err.message.includes(SECRET_DELIVERY_UNAVAILABLE_REMEDY)) err.message += ` [${SECRET_DELIVERY_UNAVAILABLE_REMEDY}]`;
-                    if (retry.rethrowsUnhealedNonRetryable) throw err;
-                    break;
                 }
                 ctx.log(
                     `${roleLabel} dispatch threw a non-retryable error (auth/trust): ${err.message}. Aborting ` +

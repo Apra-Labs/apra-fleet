@@ -16,7 +16,7 @@ const secretDeliveryError = () => new AgentDispatchError(
     { details: { reason: 'secret_delivery_unavailable' } },
 );
 
-const ROLES = Object.keys(ROLE_POLICIES).filter((r) => ROLE_POLICIES[r].retry?.abortOnNonRetryable && ROLE_CALL_OPTS[r]);
+const ROLES = Object.keys(ROLE_CALL_OPTS).filter((r) => ROLE_POLICIES[r]);
 
 describe('secret_delivery_unavailable classification', () => {
     test('is non-retryable', () => {
@@ -33,8 +33,9 @@ describe('secret_delivery_unavailable classification', () => {
 });
 
 describe('dispatch retry loop and secret_delivery_unavailable', () => {
-    test('at least one role ladder aborts on non-retryable errors', () => {
-        assert.ok(ROLES.length > 0, 'expected abortOnNonRetryable roles to be found');
+    test('every role in the harness is covered, including ladders that do not abortOnNonRetryable', () => {
+        assert.ok(ROLES.length > 0, 'expected roles to be found');
+        assert.ok(ROLES.includes('reviewer') && ROLES.includes('plan-reviewer'), 'non-aborting ladders must be covered');
     });
 
     for (const role of ROLES) {
