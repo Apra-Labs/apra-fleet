@@ -99,7 +99,9 @@ describe('buildHelperInvocation (runs on every OS)', () => {
       args: ['/d', '/v:off', '/s', '/c', `"${[program, ...args].map(quoteCmdArg).join(' ')}"`],
       windowsVerbatimArguments: true,
     });
-    expect(buildHelperInvocation('C:/x/helper.BAT', [], 'win32', undefined).file).toBe('cmd.exe');
+    // An empty ComSpec stands for "unset": an explicit undefined would trigger the parameter default,
+    // process.env.ComSpec, which is set on every Windows host.
+    expect(buildHelperInvocation('C:/x/helper.BAT', [], 'win32', '').file).toBe('cmd.exe');
   });
 
   it('spawns a .exe on Windows directly, never through cmd.exe', () => {
