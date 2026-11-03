@@ -10,7 +10,7 @@ import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationE
 // runner.js call site uses the purpose-based entry points on DoltSync
 // (apra-fleet-417.2.2); the named primitives are imported here only to be
 // re-exported below for the existing unit suites that drive them directly.
-import { DoltSync, doltPullBefore, doltPushAfter, preflightBeadsHealthGate } from './dolt-sync.mjs';
+import { DoltSync, doltPullBefore, doltPushAfter, preflightBeadsHealthGate, setMemberTargetResolver } from './dolt-sync.mjs';
 
 import { parseUnmergedPaths } from './conflict-ladder.mjs';
 // The deterministic dolt conflict settlement callback (docs/dolt-sync-
@@ -1141,6 +1141,14 @@ async function runSprintCycle(context) {
         callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
         log,
     });
+
+    // Every `bd dolt pull`/`bd dolt push` DoltSync issues is built per member
+    // OS/shell (a Windows member runs bd with a bounded GOMAXPROCS). Install
+    // the sprint's cached member_detail-backed resolver once, here; with no
+    // fleet client the resolver is cleared and members are treated as POSIX.
+    setMemberTargetResolver(sprintState.fleetApi
+        ? (member) => resolveMemberTarget({ fleetApi: sprintState.fleetApi, member, log })
+        : null);
 
     // Guards every resume re-dispatch below against spawning a second
     // concurrent session on top of a prior one that is presumed dead/timed out

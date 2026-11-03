@@ -1,11 +1,34 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "a56ec06fc713341573201bc9b7f0a7694c0e33ea",
+    "commit": "0e4b793e5dd16c8d60fda5c58c7db4e8143006b0",
     "branch": "main",
-    "entry_count": 114
+    "entry_count": 121
   },
   "entries": [
+    {
+      "id": "0349a241-9b26-47c6-91d5-2bd998154430",
+      "type": "knowledge",
+      "title": "A JSON tool result never gets the onboarding display content item",
+      "summary": "The tool-registry wrapper adds an <apra-fleet-display> user-audience content item only when the handler result is not JSON. isJsonResponse is just a check that the text starts with { or [, so a JSON-returning tool's MCP answer is a single content item.",
+      "symbols": [
+        "isJsonResponse",
+        "getOnboardingPreamble",
+        "listFleetMembers"
+      ],
+      "source_files": [
+        "src/services/tool-registry.ts",
+        "src/services/onboarding.ts",
+        "packages/apra-fleet-se/src/supervisor/fleet-members.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-03T06:38:46.790Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/src/supervisor/fleet-members.mjs": "186eaa038d775ac2912e80b9b2214da2ae00bf3a",
+        "src/services/onboarding.ts": "20513f4211fed7b80c6d86d321a1fcf3afb01382",
+        "src/services/tool-registry.ts": "9b38a4b703924d141c74ccc300f92f8a7bb3315e"
+      }
+    },
     {
       "id": "0b6a7734-3224-4b5e-b407-6353af651e29",
       "type": "learning",
@@ -151,6 +174,62 @@
       "updated_at": "2026-09-29T06:13:11.978Z"
     },
     {
+      "id": "17b581e1-3760-4947-b4fa-b7793874384a",
+      "type": "knowledge",
+      "title": "GOMAXPROCS=1 default for bd/dolt on Windows members lives in go-concurrency.ts",
+      "summary": "withGoMaxProcsDefault (pure, used for local env) plus the GO_MAXPROCS_DEFAULT_PWSH / GO_MAXPROCS_DEFAULT_GITBASH statements (used for remote launch and execute_command wrappers) set GOMAXPROCS=1 only when it is unset. Linux and macOS builders are untouched.",
+      "symbols": [
+        "withGoMaxProcsDefault",
+        "GO_MAXPROCS_DEFAULT_PWSH",
+        "GO_MAXPROCS_DEFAULT_GITBASH",
+        "getCleanEnv",
+        "cleanExec",
+        "buildAgentPromptCommand",
+        "wrapInWorkFolder"
+      ],
+      "source_files": [
+        "src/os/go-concurrency.ts",
+        "src/os/windows.ts",
+        "src/os/windows-gitbash.ts",
+        "tests/go-concurrency-default.test.ts",
+        "tests/windows-gomaxprocs-builders.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-03T05:07:27.781Z",
+      "source_file_hashes": {
+        "src/os/go-concurrency.ts": "88e5c3ac9d365a58b52b9fa98312c59708c3104c",
+        "src/os/windows-gitbash.ts": "a6b1853afc3220537553f5dec286f60eb334c58a",
+        "src/os/windows.ts": "cdade4c6fc907e43671da60a685254b8295a0673",
+        "tests/go-concurrency-default.test.ts": "7ac1b504ac84589832822b0f3340e8a351db531e",
+        "tests/windows-gomaxprocs-builders.test.ts": "e19b5155dc8e670671d574da1192b5983cd333ae"
+      }
+    },
+    {
+      "id": "18ed0717-9b70-4d66-af9a-f27499c122d3",
+      "type": "knowledge",
+      "title": "execute_command takes no per-member lock, so a concurrent probe command on a busy member is allowed",
+      "summary": "src/tools/execute-command.ts only calls markBusy (statusline write) around a command, and the workflow engine's command() has no per-member queue, so the engine can run a short diagnostic command on a member while another command there is still in flight.",
+      "symbols": [
+        "markBusy",
+        "executeCommand",
+        "probeLockHolders"
+      ],
+      "source_files": [
+        "src/tools/execute-command.ts",
+        "src/services/member-busy.ts",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-03T04:14:29.339Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs": "e747a510cd852320f2084c706391c2acf632acbc",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs": "a57d737eb1288209baeccc09802a50500fabb8b2",
+        "src/services/member-busy.ts": "8be5fc484df4b2af07b6ca8b18d175dad9b45885",
+        "src/tools/execute-command.ts": "3f070b13364bd947767b41685df0f1a785969086"
+      }
+    },
+    {
       "id": "19197697-8273-4c51-9d9e-ecffe39d2dc7",
       "type": "knowledge",
       "title": "The slow lane runs in bd REPLAY mode despite bypassing run-tests.mjs",
@@ -167,6 +246,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:39.994Z"
+    },
+    {
+      "id": "1b2df6eb-33c9-4deb-8253-2a553183fcfe",
+      "type": "learning",
+      "title": "Repo pre-commit hook rejects PowerShell backtick escapes in JS sources",
+      "summary": "The commit hook's [PS-escape] check blocks backtick-t/n/r sequences in member-bound PowerShell strings, even inside .mjs files. Build tab-separated PowerShell output with -join [char]9 instead.",
+      "symbols": [
+        "buildLockHolderProbe"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-lock-probe.mjs",
+        "packages/apra-fleet-se/test/dolt-lock-holder-watchdog.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-03T04:14:29.241Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-lock-probe.mjs": "24a2cdf5c3b8f5459703f0d4e1d0b4a68b0d5d5d",
+        "packages/apra-fleet-se/test/dolt-lock-holder-watchdog.test.mjs": "117c99590697bca8e1dc0eb47958c65d6d71aad6"
+      }
     },
     {
       "id": "1be49eaa-30f9-4ae0-917e-5b98d3d37eeb",
@@ -274,6 +372,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:33.419Z"
+    },
+    {
+      "id": "2b244307-8635-4406-904f-6a2290d54490",
+      "type": "learning",
+      "title": "check-generic-boundary tokenizer treats slash-star inside a template literal as a comment",
+      "summary": "scripts/check-generic-boundary.mjs strips /* ... */ even inside template text, so a template literal containing a shell glob like /proc/[0-9]*/fd/* or ${p%%/*} makes the scan throw 'unbalanced literal at EOF'. Put such globs in single-quoted constants and interpolate them.",
+      "symbols": [
+        "extractStringLiterals",
+        "PROC_FD_GLOB"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/scripts/check-generic-boundary.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-lock-probe.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-03T04:14:29.438Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-lock-probe.mjs": "24a2cdf5c3b8f5459703f0d4e1d0b4a68b0d5d5d",
+        "packages/apra-fleet-se/scripts/check-generic-boundary.mjs": "5f9c5bc363ea29f886622654056f4705b61311eb"
+      }
     },
     {
       "id": "2d11a53b-f992-4a4a-aa83-f3670dc08959",
@@ -1231,6 +1349,26 @@
       "updated_at": "2026-09-29T06:13:12.954Z"
     },
     {
+      "id": "9699c735-270e-439f-8313-c01fd6c98814",
+      "type": "learning",
+      "title": "NoDefaultCurrentDirectoryInExePath hides the Windows cwd exe-search in spawn tests",
+      "summary": "Node/libuv on Windows searches the spawn cwd before PATH for a bare program name unless NoDefaultCurrentDirectoryInExePath is set. When a host has it set, a planted-exe test passes even against vulnerable code; tests/git-executable.test.ts deletes it for its real case and restores it afterwards.",
+      "symbols": [
+        "gitExecutable",
+        "resolveGitExecutable"
+      ],
+      "source_files": [
+        "src/os/git-executable.ts",
+        "tests/git-executable.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-03T05:07:27.892Z",
+      "source_file_hashes": {
+        "src/os/git-executable.ts": "911757de562b85d7bfed11f6f974fd41c678e421",
+        "tests/git-executable.test.ts": "9d54c45047abcfe851769e65b86962a85fe04469"
+      }
+    },
+    {
       "id": "96a63862-eb7a-43f3-8352-4cd686412d43",
       "type": "knowledge",
       "title": "gitRepos is an access list; only a single URL-shaped entry is a usable origin",
@@ -1745,6 +1883,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.358Z"
+    },
+    {
+      "id": "da7d0105-e454-43d0-b12f-c27d00e7f337",
+      "type": "learning",
+      "title": "libuv reads NoDefaultCurrentDirectoryInExePath from the parent env, not the spawn env option",
+      "summary": "On Windows, whether a bare program name passed to child_process is searched in the spawn cwd depends on NoDefaultCurrentDirectoryInExePath in the PARENT process env. Setting or removing it in the spawn's env option has no effect, so tests must mutate process.env.",
+      "symbols": [],
+      "source_files": [
+        "src/os/git-executable.ts",
+        "tests/git-executable.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-03T05:31:52.236Z",
+      "source_file_hashes": {
+        "src/os/git-executable.ts": "911757de562b85d7bfed11f6f974fd41c678e421",
+        "tests/git-executable.test.ts": "9d54c45047abcfe851769e65b86962a85fe04469"
+      }
     },
     {
       "id": "da934546-d15f-42ca-bdce-bfab58ec0e83",

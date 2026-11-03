@@ -317,6 +317,41 @@ export function createSupervisor(deps = {}) {
         setImmediate(() => { stop('http:/api/shutdown').catch((e) => logError(e)); });
     });
 
+    // Shutdown bounds. A seam whose stop() never settles (or an SSE/keep-alive
+    // connection that keeps server.close() from completing) must not keep the
+    // process alive: each seam gets its own bound, and a forced exit fires a
+    // fixed time after shutdown starts (unref'd, so it never itself holds the
+    // process open). forcedExitMs 0 disables the forced exit (library/tests).
+    const seamStopTimeoutMs = Number.isFinite(deps.seamStopTimeoutMs) && deps.seamStopTimeoutMs > 0 ? deps.seamStopTimeoutMs : 3000;
+    const forcedExitMs = Number.isFinite(deps.forcedExitMs) && deps.forcedExitMs > 0 ? deps.forcedExitMs : 0;
+    const exitFn = deps.exit ?? ((code) => process.exit(code));
+    /** @type {string[]} */
+    const hungSeams = [];
+
+    /** Resolves 'done' | 'timeout' | 'error'; never rejects, never hangs past ms. */
+    function boundedStop(name, fn, ms) {
+        return new Promise((resolve) => {
+            let settled = false;
+            const timer = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                hungSeams.push(name);
+                logError(`[supervisor] shutdown: ${name} did not stop within ${ms}ms (hung); continuing without it`);
+                resolve('timeout');
+            }, ms);
+            Promise.resolve().then(fn).then(
+                () => { if (!settled) { settled = true; clearTimeout(timer); resolve('done'); } },
+                (err) => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timer);
+                    logError(`[supervisor] seam ${name} stop failed:`, err);
+                    resolve('error');
+                },
+            );
+        });
+    }
+
     let stopping = null;
     /**
      * Idempotent teardown: close the HTTP server and stop every seam, then
@@ -327,14 +362,25 @@ export function createSupervisor(deps = {}) {
         if (stopping) return stopping;
         stopping = (async () => {
             log(`[supervisor] shutting down (${reason})`);
-            await new Promise((resolve) => {
+            if (forcedExitMs > 0) {
+                const forced = setTimeout(() => {
+                    logError(`[supervisor] shutdown did not complete within ${forcedExitMs}ms; forcing exit. Hung: ${hungSeams.length ? hungSeams.join(', ') : '(none recorded; still stopping a seam or closing the http server)'}`);
+                    exitFn(0);
+                }, forcedExitMs);
+                if (typeof forced.unref === 'function') forced.unref();
+            }
+            await boundedStop('http-server', () => new Promise((resolve) => {
                 if (!server || !server.listening) { resolve(); return; }
                 server.close(() => resolve());
-            });
+                // Long-lived SSE / keep-alive connections would otherwise keep
+                // close() from ever completing.
+                if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+            }), seamStopTimeoutMs);
             // Stop seams in reverse of a natural start order; isolate each so
-            // one failing seam cannot block the others' teardown.
-            for (const seam of [seams.doltOrphanSweep, seams.idAllocator, seams.doltMutex, seams.dashboard, seams.watchdog, seams.spawner, seams.ledger]) {
-                try { await seam.stop?.(); } catch (err) { logError(`[supervisor] seam ${seam.name ?? ''} stop failed:`, err); }
+            // one failing or hung seam cannot block the others' teardown.
+            const ordered = [['doltOrphanSweep', seams.doltOrphanSweep], ['idAllocator', seams.idAllocator], ['doltMutex', seams.doltMutex], ['dashboard', seams.dashboard], ['watchdog', seams.watchdog], ['spawner', seams.spawner], ['ledger', seams.ledger]];
+            for (const [key, seam] of ordered) {
+                await boundedStop(seam.name ?? key, () => seam.stop?.(), seamStopTimeoutMs);
             }
             shutdownResolve();
         })();
@@ -395,5 +441,7 @@ export function createSupervisor(deps = {}) {
         get port() { return port; },
         /** Resolves once the supervisor has fully shut down. */
         get shutdownRequested() { return shutdownRequested; },
+        /** Names of seams whose stop() exceeded its bound during shutdown. */
+        get hungSeams() { return [...hungSeams]; },
     };
 }

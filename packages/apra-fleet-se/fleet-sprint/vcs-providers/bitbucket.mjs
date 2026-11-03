@@ -238,7 +238,7 @@ const AUTH_REMEDY_HINT =
     + 'provision_vcs_auth rewrites the host\'s own global bitbucket.org git '
     + 'credential helper, which can break the operator\'s HTTPS git -- provision '
     + 'a non-local member, or keep the local member on SSH (Atlassian is moving '
-    + 'git-over-SSH to ssh.bitbucket.org, cut-off 2026-11-12: use '
+    + 'git-over-SSH to ssh.bitbucket.org: use '
     + 'git@ssh.bitbucket.org:WORKSPACE/REPO.git for SSH remotes). A LOCAL member '
     + 'provisioned by fleet 0.4.4 still has a helper with the old account-login '
     + 'username; the sprint never re-provisions a local member, so it fails its '

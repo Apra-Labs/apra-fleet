@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { KBEntry, StalenessResult } from './types.js';
 import { logWarn } from '../../utils/log-helpers.js';
+import { gitExecutable } from '../../os/git-executable.js';
 
 // T3.1 (D4 fold-in, Phase 2 review MEDIUM yashr-d8b): computeFileHashBatch
 // gains an optional { cwd } anchor so a caller resolving a bible/basis against
@@ -42,7 +43,7 @@ export async function computeFileHash(filePath: string): Promise<FileHashResult 
   if (!fs.existsSync(filePath)) return null;
 
   try {
-    const { stdout } = await execFileAsync('git', ['hash-object', filePath]);
+    const { stdout } = await execFileAsync(gitExecutable(), ['hash-object', filePath]);
     const hash = stdout.trim();
     if (hash.length > 0) {
       return { hash, type: 'git' };
@@ -87,7 +88,7 @@ export async function computeFileHashBatch(
     let gitSucceeded = false;
     try {
       const { stdout } = await execFileAsync(
-        'git',
+        gitExecutable(),
         ['hash-object', ...chunk.map(resolvePath)],
         root ? { cwd: root } : undefined
       );
@@ -198,7 +199,7 @@ export class KbHeadHashError extends Error {
 
 function gitWithStdin(args: string[], cwd: string, input: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, { cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(gitExecutable(), args, { cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     child.stdout.on('data', (d: Buffer) => out.push(d));
@@ -240,7 +241,7 @@ export async function computeHeadFileHashBatch(
 
   let prefix: string;
   try {
-    const { stdout } = await execFileAsync('git', ['rev-parse', '--is-inside-work-tree', '--show-prefix'], { cwd });
+    const { stdout } = await execFileAsync(gitExecutable(), ['rev-parse', '--is-inside-work-tree', '--show-prefix'], { cwd });
     const lines = stdout.split('\n');
     if (lines[0].trim() !== 'true') throw new Error('not inside a work tree');
     prefix = (lines[1] ?? '').trim();
@@ -252,7 +253,7 @@ export async function computeHeadFileHashBatch(
   for (const p of filePaths) result[p] = null;
 
   try {
-    await execFileAsync('git', ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], { cwd });
+    await execFileAsync(gitExecutable(), ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], { cwd });
   } catch {
     return result; // unborn HEAD: nothing is committed, so nothing matches
   }

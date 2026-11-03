@@ -498,7 +498,26 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
         ownerDataDirPrefix: sweepOwnerDataDir,
     });
 
-    const supervisor = createSupervisor({ port, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex, doltOrphanSweep, beadsIdentity, backlogMember });
+    // Shutdown bounds (see server.mjs stop()): each seam's stop() is bounded and
+    // the process is force-exited FORCE_EXIT ms after shutdown starts, naming any
+    // hung seam. Test-only hook FLEET_SE_TEST_HANG_SEAM=<seam name> makes that
+    // seam's stop() never settle so the bound can be exercised end to end.
+    const envMs = (name, dflt) => {
+        const n = Number(process.env[name]);
+        return Number.isFinite(n) && n > 0 ? n : dflt;
+    };
+    const hangSeam = process.env.FLEET_SE_TEST_HANG_SEAM;
+    const hangable = { dashboard, watchdog, doltOrphanSweep };
+    if (hangSeam && hangable[hangSeam]) {
+        hangable[hangSeam] = { ...hangable[hangSeam], name: hangSeam, stop: () => new Promise(() => {}) };
+        console.warn(`[supervisor] TEST HOOK: seam '${hangSeam}' stop() will never settle`);
+    }
+    const supervisor = createSupervisor({
+        port, ledger, spawner, watchdog: hangable.watchdog, dashboard: hangable.dashboard, idAllocator, doltMutex,
+        doltOrphanSweep: hangable.doltOrphanSweep, beadsIdentity, backlogMember,
+        seamStopTimeoutMs: envMs('FLEET_SE_SHUTDOWN_SEAM_TIMEOUT_MS', 3000),
+        forcedExitMs: envMs('FLEET_SE_SHUTDOWN_FORCE_EXIT_MS', 10_000),
+    });
     registerIdAllocatorRoutes(supervisor, idAllocator, { readJsonBody, sendJson });
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
 
@@ -616,8 +635,10 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // Keep the process alive until an explicit shutdown resolves. Awaiting this
     // is what makes `fleet-se serve` "always-on" -- nothing else drives exit.
     await supervisor.shutdownRequested;
-    beadsView.stop();
-    if (typeof backlogMember.stop === 'function') backlogMember.stop();
+    try { beadsView.stop(); } catch (err) { console.error('[supervisor] beadsView stop failed:', err); }
+    try { if (typeof backlogMember.stop === 'function') backlogMember.stop(); } catch (err) { console.error('[supervisor] backlogMember stop failed:', err); }
+    const hung = supervisor.hungSeams;
+    console.log(`[supervisor] exiting (code 0)${hung.length ? `; seams that did not stop in time: ${hung.join(', ')}` : ''}`);
     return { exitCode: 0 };
 }
 

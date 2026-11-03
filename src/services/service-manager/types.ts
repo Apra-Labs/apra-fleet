@@ -69,4 +69,10 @@ export interface ServiceManager {
   stop(): Promise<boolean | void>;
   query(): Promise<ServiceStatus>;
   isInstalled(): Promise<boolean>;
+  /**
+   * Windows only: the legacy-task upgrade guidance when the installed task is a
+   * legacy (e.g. elevated) one that install had to reuse, else null. Lets install
+   * print it instead of a start hint that would hit the same refusal.
+   */
+  legacyGuidance?(): string | null;
 }

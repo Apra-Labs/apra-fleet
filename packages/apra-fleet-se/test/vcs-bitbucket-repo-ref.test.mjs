@@ -164,7 +164,7 @@ test('capabilities: a bitbucket.org remote is recognized (host + hasRemote) and 
 });
 
 // =============================================================================
-// ssh.bitbucket.org (Atlassian SSH host move, cut-off 2026-11-12)
+// ssh.bitbucket.org (Atlassian SSH host move)
 // =============================================================================
 
 const SSH_HOSTS_ACCEPT = ['ssh.bitbucket.org', 'SSH.Bitbucket.ORG'];

@@ -634,6 +634,14 @@ export class WindowsServiceManager implements ServiceManager {
     }
   }
 
+  /** See ServiceManager.legacyGuidance: a reused legacy task refused /run because it cannot be replaced from here. */
+  legacyGuidance(): string | null {
+    const problems = this.installedLegacyProblems();
+    if (problems.length === 0) return null;
+    if (!problems.includes('elevated')) problems.push('elevated');
+    return legacyTaskGuidance(problems);
+  }
+
   private legacyProblemsOf(raw: Buffer | string): LegacyTaskProblem[] {
     const launcherPath = launcherPathFor(this.wrapperPath);
     // Only OUR task (wrapper, split wrapper, or wscript + our launcher) gets

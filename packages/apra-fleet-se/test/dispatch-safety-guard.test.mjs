@@ -544,7 +544,10 @@ const DOLT_SYNC_PATH = path.join(__dirname, '../fleet-sprint/dolt-sync.mjs');
 // refs/dolt/data`, and readUnpushedDoltChanges()'s `bd vc status --json` and
 // `bd diff remotes/origin/<branch> <branch> --json` -- each passes
 // member_name: member.
-const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 7;
+// 7 -> 8 (lock-holder watchdog): probeLockHolders()'s beads lock-holder probe,
+// run on the same member while a silent sync attempt is still in flight --
+// passes member_name: member.
+const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 8;
 
 test('every command() call site in dolt-sync.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(DOLT_SYNC_PATH);

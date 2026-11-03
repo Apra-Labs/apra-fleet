@@ -6,6 +6,7 @@ import { escapeWindowsArg, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER } from './
 import { escapeBatchMetachars, escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
 import { logWarn } from '../utils/log-helpers.js';
+import { withGoMaxProcsDefault, GO_MAXPROCS_DEFAULT_PWSH } from './go-concurrency.js';
 
 /**
  * Wrap a PowerShell script as a base64 `-EncodedCommand` invocation.
@@ -114,7 +115,8 @@ export class WindowsCommands implements OsCommands {
     // docs/troubleshooting.md ("Not enough memory resources").
     const { env, report } = boundChildEnv(JSON.parse(result.trim()) as Record<string, string>);
     if (report.dropped.length || report.overCap) logWarn('clean_env', describeBoundedEnv(report));
-    this.cachedEnv = env;
+    // GOMAXPROCS default for bd/dolt on Windows (only when unset) -- see go-concurrency.ts.
+    this.cachedEnv = withGoMaxProcsDefault(env);
     return this.cachedEnv;
   }
 
@@ -182,7 +184,9 @@ export class WindowsCommands implements OsCommands {
     }
 
     // Setup: working directory + PATH so the CLI executable is resolvable
-    const setupCmd = `Set-Location "${escapedFolder}"; ${CLI_PATH}`;
+    // GOMAXPROCS default (only when the member has none) for bd/dolt the agent
+    // runs -- see go-concurrency.ts.
+    const setupCmd = `Set-Location "${escapedFolder}"; ${GO_MAXPROCS_DEFAULT_PWSH}${CLI_PATH}`;
 
     // Executable extracted from provider (e.g. "claude" from "claude <args>")
     const filePath = provider.cliCommand('').trim();
@@ -431,7 +435,7 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   // --- Shell ---
 
   wrapInWorkFolder(folder: string, command: string): string {
-    return `Set-Location "${escapeWindowsArg(folder)}"; $env:Path = "$env:Path;${FLEET_BIN_PATH_WINDOWS}"; ${command}`;
+    return `Set-Location "${escapeWindowsArg(folder)}"; ${GO_MAXPROCS_DEFAULT_PWSH}$env:Path = "$env:Path;${FLEET_BIN_PATH_WINDOWS}"; ${command}`;
   }
 
   wrapPidCapture(command: string): string {

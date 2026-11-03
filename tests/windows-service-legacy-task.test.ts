@@ -337,6 +337,39 @@ describe('status and stop with a legacy task installed', () => {
   });
 });
 
+describe('WindowsServiceManager.legacyGuidance (reused task refused /run)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+  });
+  const mgrFor = (xml: string | Error) => new WindowsServiceManager(
+    vi.fn((args: string[]) => {
+      if (args.includes('/xml')) { if (xml instanceof Error) throw xml; return xml; }
+      return '';
+    }), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false });
+
+  it('a legacy task yields the elevated schtasks /delete + install --force guidance', () => {
+    const g = mgrFor(LEGACY_XML).legacyGuidance();
+    expect(g).toBe(legacyTaskGuidance(['no-revive', 'visible-console', 'elevated']));
+    expect(g).toContain('schtasks /delete /tn ApraFleet /f');
+    expect(g).toContain('apra-fleet install --force');
+  });
+
+  it('adds the elevated problem even when the XML alone looks user-owned', () => {
+    const userOwnedOld = CURRENT_QUERIED_XML.replace(/<Repetition>[\s\S]*?<\/Repetition>/, '');
+    const g = mgrFor(userOwnedOld).legacyGuidance();
+    expect(g).toContain('schtasks /delete /tn ApraFleet /f');
+  });
+
+  it('a current task returns null', () => {
+    expect(mgrFor(CURRENT_QUERIED_XML).legacyGuidance()).toBeNull();
+  });
+
+  it('an unreadable task returns null', () => {
+    expect(mgrFor(new Error('ERROR: The system cannot find the file specified.')).legacyGuidance()).toBeNull();
+  });
+});
+
 describe('legacyTaskFix names an install command that works for a standalone install', () => {
   it('the running installer names its own path, not a bare apra-fleet (not on PATH)', () => {
     const exe = 'C:\\Users\\x\\Downloads\\apra-fleet-installer-win-x64.exe';
