@@ -66,6 +66,7 @@ import { isPermissionScopePostDispatchSyncFailure } from '../dispatch-failure.mj
 import { policyFor } from '../role-policies.mjs';
 import { CLAIMED_ELSEWHERE_REASON } from '../orphan-reclaim.mjs';
 import { openBlocksDependents } from '../beads-scope.mjs';
+import { classifyBlockedReport } from '../set-aside.mjs';
 
 /**
  * Runs ONE Develop round: streak grouping, per-doer worklist packing, and the
@@ -113,6 +114,10 @@ export async function runDevelopPhase({
     // `bdListScoped` is read only to find the open in-scope dependents of a
     // doer-BLOCKED bead (see doctorBlockedIds below).
     bdListScoped,
+    // Read only on the doer-BLOCKED path, right after bdListScoped(''), so it
+    // is served from the same snapshot: the status of a prerequisite that
+    // lies outside the sprint scope.
+    fetchAllBeadsShared,
     claimBeadsBatched,
     verifyDoerStreakClosed,
     normalizeTierToken,
@@ -161,10 +166,22 @@ export async function runDevelopPhase({
     // { kind: 'blocked'|'dependent', blockedBy, reason, cycle, round } --
     // `blockedBy` is the bead the doer reported (itself, for kind 'blocked'),
     // and cycle/round record when the bead was first set aside. Lane-mates of
-    // the blocked bead that do not depend on it are NOT set aside: they stay
-    // open and ready, so they return to the next round's pool.
+    // the blocked bead are NOT set aside: lower-order ones return to the next
+    // round's pool; higher-order ones stay open but are held back by lane
+    // order (the runner's holdBackByLaneOrder), and count as stuck for the
+    // immediate-stall check. Dependents over a file-conflict edge (the
+    // dependent's metadata.fileConflicts names the blocked bead) are not set
+    // aside either: that edge is treated as satisfied and they are released.
     sprintState.doctorBlockedIds = sprintState.doctorBlockedIds || new Map();
     const doctorBlockedIds = sprintState.doctorBlockedIds;
+    // Beads a doer reported BLOCKED while they still had an open prerequisite
+    // in this sprint: they WAIT (id -> { on, cycle, round }) instead of being
+    // set aside, and doctorBlockedIds keeps genuine blockers only. The runner's
+    // ready set (dispatchableReadyLeafBeads) holds a waiting bead back until
+    // its prerequisites close; the entry is kept for the "Waited this run"
+    // report line and to bound the retry (a second BLOCKED sets it aside).
+    sprintState.waitingIds = sprintState.waitingIds || new Map();
+    const waitingIds = sprintState.waitingIds;
     const setAsideReady = currentReady.filter((b) => doctorBlockedIds.has(b.id));
     if (setAsideReady.length > 0) {
         log(
@@ -226,20 +243,53 @@ export async function runDevelopPhase({
         // never parsed.
         const rawNotes = typeof report.notes === 'string' ? report.notes.replace(/\s+/g, ' ').trim() : '';
         const doerNotes = rawNotes.length > 300 ? `${rawNotes.slice(0, 297)}...` : rawNotes;
+        const doerReason = `doer on member '${doerMember}' reported BLOCKED on streak [${streakIds.join(', ')}]` +
+            (doerNotes ? `: ${doerNotes}` : '');
+
+        // Wait vs set-aside, decided mechanically from the bead graph (never
+        // from the notes): a reported bead that still has an open
+        // prerequisite in this sprint -- an open 'blocks' dependency or an
+        // open lower-order lane-mate -- WAITS (sprintState.waitingIds) instead
+        // of being set aside; it is not dispatched again until those close. A
+        // bead with no open prerequisite, or one that already waited once, or
+        // one whose open prerequisite lies outside the sprint scope (it cannot
+        // close in this run), is set aside as before. The streak's own beads
+        // are read from the verified unclosedIds (fresh) rather than the
+        // possibly older snapshot.
+        let scopeBeads = [];
+        let allBeads = [];
+        if (typeof bdListScoped === 'function') {
+            const closedNow = new Set(streakIds.filter((id) => !unclosedIds.includes(id)));
+            scopeBeads = (await bdListScoped('')).map((b) => (b && closedNow.has(b.id) ? { ...b, status: 'closed' } : b));
+            if (typeof fetchAllBeadsShared === 'function') allBeads = await fetchAllBeadsShared();
+        }
+        const decision = classifyBlockedReport({
+            blockedIds, scopeBeads, allBeads, doctorBlockedIds, waitingIds,
+        });
         const fresh = [];
-        for (const id of blockedIds) {
-            if (doctorBlockedIds.has(id)) continue;
-            doctorBlockedIds.set(id, {
-                kind: 'blocked', blockedBy: id,
-                reason: `doer on member '${doerMember}' reported BLOCKED on streak [${streakIds.join(', ')}]` +
-                    (doerNotes ? `: ${doerNotes}` : ''),
+        const waitedNow = [];
+        for (const w of decision.wait) {
+            waitingIds.set(w.id, { on: [...w.on], ...where });
+            waitedNow.push(w.id);
+        }
+        for (const s of decision.setAside) {
+            doctorBlockedIds.set(s.id, {
+                kind: 'blocked', blockedBy: s.id,
+                reason: s.suffix ? `${doerReason}${s.suffix}` : doerReason,
                 ...where,
             });
-            fresh.push(id);
+            fresh.push(s.id);
         }
+        for (const id of waitedNow) {
+            log(
+                `Doer BLOCKED wait C${cycle} R${devRounds}: bead '${id}' waiting on ${waitingIds.get(id).on.join(', ')} ` +
+                '(open prerequisite(s) in this sprint) -- not set aside; it is not dispatched again until they close.'
+            );
+        }
+        if (fresh.length === 0) return;
         let dependents = new Map();
         if (typeof bdListScoped === 'function') {
-            dependents = openBlocksDependents(blockedIds, await bdListScoped(''));
+            dependents = openBlocksDependents(fresh, scopeBeads);
         }
         const freshDependents = [];
         for (const [id, root] of dependents) {
