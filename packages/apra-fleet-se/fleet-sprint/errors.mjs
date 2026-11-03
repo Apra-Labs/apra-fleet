@@ -387,6 +387,29 @@ export class DoltWindowsSpawnLimitError extends DoltSyncError {
     }
 }
 
+/** Stable error code of DoltLockHeldError. */
+export const DOLT_BEADS_LOCK_HELD_CODE = 'DOLT_BEADS_LOCK_HELD';
+
+/**
+ * A D-pull/D-push that was still waiting after the lock-holder watchdog fired
+ * while a process OTHER than this sync (one that started before the sync
+ * attempt did) held a beads lock on the member. Raised in bounded time instead
+ * of waiting out the inactivity timeout; `details.holders` lists each holder
+ * ({ pid, ageS, lock, commandLine }). A DoltSyncError subtype, so every
+ * existing DoltSyncError handler still applies.
+ */
+export class DoltLockHeldError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: 'lock-held', ...opts.details } });
+        this.name = 'DoltLockHeldError';
+        this.code = DOLT_BEADS_LOCK_HELD_CODE;
+    }
+}
+
 /**
  * Thrown by preflightBeadsHealthGate() when the backlog member's beads clone
  * holds local schema migrations bd auto-applied but never published (the

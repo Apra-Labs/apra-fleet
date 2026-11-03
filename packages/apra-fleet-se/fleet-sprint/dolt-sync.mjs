@@ -85,8 +85,9 @@
  * ASCII only.
  */
 
-import { DoltDivergedError, DoltSyncError, DoltWindowsSpawnLimitError, UnpublishedSchemaMigrationsError } from './errors.mjs';
+import { DoltDivergedError, DoltSyncError, DoltWindowsSpawnLimitError, DoltLockHeldError, UnpublishedSchemaMigrationsError } from './errors.mjs';
 import { bdSyncCommandFor, normalizeMemberTarget, POSIX_MEMBER_TARGET } from './bd-sync-command.mjs';
+import { buildLockHolderProbe, parseLockHolderProbe, describeLockProcess } from './beads-lock-probe.mjs';
 import { classifyFailure, toDoltVerdict, commandBinary } from './vcs-module.mjs';
 import { buildSettleCallback } from './dolt-settle.mjs';
 
@@ -761,6 +762,165 @@ function windowsSpawnLimitSyncError(member, operation, step) {
 }
 
 /**
+ * The typed terminal error for a step whose beads lock was held by a foreign
+ * process (runDoltStep's 'lock-held' kind).
+ *
+ * @param {string} member
+ * @param {string} operation
+ * @param {{ error: string, lockHolders?: object[] }} step
+ * @returns {DoltLockHeldError}
+ */
+function lockHeldSyncError(member, operation, step) {
+    const holders = step.lockHolders || [];
+    return new DoltLockHeldError(
+        `[Dolt] D-${operation} for member '${member}' failed: a beads lock on that member is held by another process that started before this sync -- `
+        + `${holders.map(describeLockProcess).join('; ') || 'holder unknown'}. The sync was waiting on that lock silently. `
+        + 'Remedy: stop that process on the member (it is not part of this sync) or wait for it to exit, then re-run the sync.',
+        { member, doltOutput: step.error, details: { operation, holders } },
+    );
+}
+
+/**
+ * The typed terminal error a failed step maps to, or null for a generic
+ * failure (the caller then throws its own DoltSyncError).
+ *
+ * @param {string} member
+ * @param {string} operation
+ * @param {{ kind?: string, spawnLimit?: boolean, error: string }} step
+ * @returns {DoltSyncError|null}
+ */
+function typedStepError(member, operation, step) {
+    if (step.kind === 'lock-held') return lockHeldSyncError(member, operation, step);
+    if (step.spawnLimit) return windowsSpawnLimitSyncError(member, operation, step);
+    return null;
+}
+
+// ---------------------------------------------------------------------------
+// Lock-holder watchdog for a silent `bd dolt pull`/`bd dolt push`
+// ---------------------------------------------------------------------------
+//
+// A bd sync that waits on a beads lock prints nothing until it gets the lock,
+// so a lock held by some other long-lived process on the member used to look
+// like a silent hang ending in the DOLT_STEP_TIMEOUT_S inactivity kill. Each
+// attempt that is still in flight after DOLT_LOCK_PROBE_AFTER_MS gets exactly
+// ONE lock-holder probe (beads-lock-probe.mjs): a separate short command on
+// the same member, run while the sync is still waiting. Its result is logged.
+//
+// FOREIGN vs OWN holder. The bd process this attempt started legitimately
+// holds the lock while it works, and a slow incremental pull can run for
+// minutes. So a holder only counts as contention when it is provably older
+// than this attempt: its process age exceeds the attempt's elapsed time by
+// more than DOLT_LOCK_HOLDER_AGE_SLACK_S. Both are durations (member clock vs
+// orchestrator clock), so no clock sync is assumed. An own or unknown-age
+// holder is logged and the attempt keeps waiting.
+//
+// THE BOUND. A foreign holder fails the attempt at once with a typed
+// DoltLockHeldError naming it: at most DOLT_LOCK_PROBE_AFTER_MS plus the
+// probe's own timeout (60s + 30s = 90s) after the attempt started, instead of
+// the 600s inactivity kill. 60s is far past a healthy sync (seconds; the
+// incident's retry landed in 4s) yet short enough to name the holder while it
+// is still alive. A lock-held failure is not retried: the holder is long-lived
+// by construction, so a retry would just wait on it again.
+//
+// The abandoned sync command keeps running on the member (there is no
+// cancel channel); its promise is handed to `onAbandonedAttempt` so the push
+// bracket can hold the push mutex until it ends (see doltPushAfter).
+//
+// Side effects of running the probe concurrently: the member's statusline
+// busy marker may flip to idle when the probe ends while the sync is still in
+// flight, and a resumed run's journal replay sees the probe as an extra
+// command whose position depends on timing, so replay diverges at that point
+// and continues live.
+
+/** How long a bd sync attempt may stay silent before its lock-holder probe. */
+export const DOLT_LOCK_PROBE_AFTER_MS = 60_000;
+
+/** Timeout of the lock-holder probe command itself. */
+export const DOLT_LOCK_PROBE_TIMEOUT_S = 30;
+
+/** A holder must be at least this much older than the attempt to count as foreign. */
+export const DOLT_LOCK_HOLDER_AGE_SLACK_S = 5;
+
+const defaultLockProbeTimer = {
+    set(fn, ms) {
+        const handle = setTimeout(fn, ms);
+        if (handle && typeof handle.unref === 'function') handle.unref();
+        return handle;
+    },
+    clear(handle) {
+        clearTimeout(handle);
+    },
+};
+
+/**
+ * Run the lock-holder probe once for a sync attempt that is still in flight,
+ * log what it found, and return the foreign holders. Never throws for an
+ * ordinary failure (a failed probe is logged and reports no holder); a
+ * cancellation still propagates.
+ *
+ * @returns {Promise<{ foreignHolders: object[] }>}
+ */
+async function probeLockHolders({ command, member, target, label, log, attemptStartedAt, now }) {
+    const elapsedS = Math.max(0, Math.round((now() - attemptStartedAt) / 1000));
+    let res;
+    try {
+        res = await command(buildLockHolderProbe(target), {
+            member_name: member, silent: true, failSoft: true,
+            label: `beads lock-holder probe for '${member}'`, timeout_s: DOLT_LOCK_PROBE_TIMEOUT_S,
+        });
+    } catch (err) {
+        if (err && err.name === 'CancelledError') throw err;
+        res = { ok: false, output: '', error: (err && err.message) || String(err) };
+    }
+    if (!res || !res.ok) {
+        log(`[Dolt] ${label} has produced no result after ${elapsedS}s on member '${member}'; the beads lock-holder probe failed (${(res && res.error) || 'no result'}), so the holders are unknown. Still waiting.`);
+        return { foreignHolders: [] };
+    }
+    const parsed = parseLockHolderProbe(res.output);
+    const foreignHolders = parsed.holders.filter((h) => h.ageS !== null && h.ageS > elapsedS + DOLT_LOCK_HOLDER_AGE_SLACK_S);
+    const parts = [`[Dolt] ${label} has produced no result after ${elapsedS}s on member '${member}'.`];
+    if (parsed.noLookup) parts.push(`Beads lock holders cannot be listed on this member: ${parsed.noLookup}.`);
+    if (parsed.holders.length > 0) parts.push(`Beads lock holders: ${parsed.holders.map(describeLockProcess).join('; ')}.`);
+    else if (!parsed.noLookup) parts.push('Beads lock holders: none found.');
+    if (parsed.candidates.length > 0) parts.push(`Running bd/dolt processes (candidates): ${parsed.candidates.map(describeLockProcess).join('; ')}.`);
+    parts.push(foreignHolders.length > 0
+        ? `Held by a process that started before this sync (more than ${DOLT_LOCK_HOLDER_AGE_SLACK_S}s older than the ${elapsedS}s attempt) -- failing fast.`
+        : 'No lock held by a process older than this sync -- still waiting.');
+    log(parts.join(' '));
+    return { foreignHolders };
+}
+
+/**
+ * Await one sync attempt under the lock-holder watchdog. Resolves to
+ * `{ res }` when the command finishes (probe or not), or to `{ lockHeld }`
+ * when the probe names a foreign holder first.
+ */
+async function awaitSyncAttempt({ pending, command, member, target, label, log, attemptStartedAt, now, lockProbeAfterMs, lockProbeTimer }) {
+    if (!(Number(lockProbeAfterMs) > 0)) return { res: await pending };
+    const timer = lockProbeTimer || defaultLockProbeTimer;
+    let fired = false;
+    let handle = null;
+    const probed = new Promise((resolve, reject) => {
+        handle = timer.set(() => {
+            fired = true;
+            probeLockHolders({ command, member, target, label, log, attemptStartedAt, now }).then(resolve, reject);
+        }, Number(lockProbeAfterMs));
+    });
+    const first = await Promise.race([
+        pending.then((res) => ({ done: true, res })),
+        probed.then((probe) => ({ done: false, probe })),
+    ]);
+    if (first.done) {
+        if (!fired) timer.clear(handle);
+        // A probe that was already running finishes and logs on its own.
+        probed.catch(() => {});
+        return { res: first.res };
+    }
+    if (first.probe.foreignHolders.length > 0) return { lockHeld: first.probe.foreignHolders };
+    return { res: await pending };
+}
+
+/**
  * Run a single `bd dolt` command via the injected command() with failSoft,
  * retrying ONLY transient failures up to `maxTransientRetries` times, with a
  * bounded exponential backoff between attempts (doltBackoffDelayMs; override
@@ -786,11 +946,13 @@ function windowsSpawnLimitSyncError(member, operation, step) {
  *
  * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'missing-tool'|'unknown', missingTool?: string }>}
  */
-async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS, timeoutS = DOLT_STEP_TIMEOUT_S, spawnOutageBudgetMs = DOLT_SPAWN_OUTAGE_BUDGET_MS, now = Date.now, memberTarget }) {
+async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS, timeoutS = DOLT_STEP_TIMEOUT_S, spawnOutageBudgetMs = DOLT_SPAWN_OUTAGE_BUDGET_MS, now = Date.now, memberTarget, lockProbeAfterMs = DOLT_LOCK_PROBE_AFTER_MS, lockProbeTimer, onAbandonedAttempt }) {
     // `cmd` stays the LOGICAL command (classification, commandBinary, labels);
     // `issued` is the member-bound string, which on a Windows member bounds
-    // GOMAXPROCS for bd (resolved once per step, not per attempt).
-    const issued = bdSyncCommandFor(cmd, await resolveDoltMemberTarget(member, memberTarget, log));
+    // GOMAXPROCS for bd (resolved once per step, not per attempt). The same
+    // target builds the lock-holder probe.
+    const target = await resolveDoltMemberTarget(member, memberTarget, log);
+    const issued = bdSyncCommandFor(cmd, target);
     let attempt = 0;
     let authHealAttempted = false;
     /** The info the self-heal was invoked with, reported back on a failed retry. */
@@ -807,7 +969,20 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
         : DOLT_SPAWN_OUTAGE_MAX_RETRIES;
     // eslint-disable-next-line no-constant-condition
     while (true) {
-        const res = await command(issued, { member_name: member, silent: true, failSoft: true, label, timeout_s: timeoutS });
+        const attemptStartedAt = now();
+        const pending = Promise.resolve(command(issued, { member_name: member, silent: true, failSoft: true, label, timeout_s: timeoutS }));
+        const waited = await awaitSyncAttempt({ pending, command, member, target, label, log, attemptStartedAt, now, lockProbeAfterMs, lockProbeTimer });
+        if (waited.lockHeld) {
+            // The sync command is still waiting on the member; stop waiting
+            // for it here and hand it to the caller (the push bracket keeps
+            // its mutex until it ends). Not retried -- see the watchdog notes.
+            pending.catch(() => {});
+            if (typeof onAbandonedAttempt === 'function') onAbandonedAttempt(pending);
+            const error = `beads lock held by another process: ${waited.lockHeld.map(describeLockProcess).join('; ')}`;
+            log(`[Dolt] ${label} FAILED (lock-held) for member '${member}' -- not retrying while that process holds the lock: ${error}`);
+            return { ok: false, output: '', error, kind: 'lock-held', lockHolders: waited.lockHeld, selfHealed: authHealAttempted };
+        }
+        const res = waited.res;
         if (res && res.ok) {
             if (authHealAttempted) log(`[Dolt] self-heal recovered: ${label} succeeded for member '${member}' on the retry after re-provisioning credentials.`);
             return res;
@@ -1518,7 +1693,7 @@ export async function doltPullBefore(member, opts = {}) {
     // `maxTransientRetries` is deliberately NOT defaulted here: runDoltStep()
     // must see whether the caller passed it (an explicit value caps both
     // retry ladders; undefined selects each ladder's own default).
-    const { command, log = () => {}, maxTransientRetries, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, remoteTipFingerprint = true, spawnOutageBudgetMs, now, memberTarget } = opts;
+    const { command, log = () => {}, maxTransientRetries, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, remoteTipFingerprint = true, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPullBefore requires an injected command() in opts");
     }
@@ -1564,7 +1739,7 @@ export async function doltPullBefore(member, opts = {}) {
 
     const pull = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget,
+        label: `D-pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
     });
     if (!pull.ok) {
         if (pull.kind === 'no-remote') {
@@ -1622,7 +1797,8 @@ export async function doltPullBefore(member, opts = {}) {
                 { member, doltOutput: pull.error, remoteUrl: url },
             );
         }
-        if (pull.spawnLimit) throw windowsSpawnLimitSyncError(member, 'pull', pull);
+        const typedPullError = typedStepError(member, 'pull', pull);
+        if (typedPullError) throw typedPullError;
         throw new DoltSyncError(
             `[Dolt] D-pull failed for member '${member}': ${pull.error}`,
             { member, doltOutput: pull.error },
@@ -1821,7 +1997,15 @@ export async function doltPushAfter(member, opts = {}) {
     // doltPullBefore. `remoteTipFingerprint` is accepted for call-site parity
     // with doltPullBefore but has nothing to switch off on the push side any
     // more: a push never probes and never records (it only forgets).
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS, spawnOutageBudgetMs, now, memberTarget } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer } = opts;
+    // Sync commands this push gave up on while they were still running on the
+    // member (a lock-held fail-fast, see runDoltStep). The push mutex is kept
+    // until they end -- see the release in the finally below.
+    const abandonedAttempts = [];
+    const onAbandonedAttempt = (pending) => {
+        abandonedAttempts.push(pending);
+        if (typeof opts.onAbandonedAttempt === 'function') opts.onAbandonedAttempt(pending);
+    };
     if (typeof command !== 'function') {
         throw new Error("doltPushAfter requires an injected command() in opts");
     }
@@ -1890,13 +2074,27 @@ export async function doltPushAfter(member, opts = {}) {
         landedCheck = await beginDoltPushLandedCheck(member, { command, log });
         return await doltPushGuarded();
     } finally {
-        if (renewTimer) clearInterval(renewTimer);
-        if (grant && mutex && typeof mutex.release === 'function') {
-            try {
-                await mutex.release(grant.token);
-            } catch (relErr) {
-                log(`[Dolt] mutex release after D-push for member '${member}' failed (non-fatal; lease will expire): ${relErr.message}`);
+        const releaseMutex = async () => {
+            if (renewTimer) clearInterval(renewTimer);
+            if (grant && mutex && typeof mutex.release === 'function') {
+                try {
+                    await mutex.release(grant.token);
+                } catch (relErr) {
+                    log(`[Dolt] mutex release after D-push for member '${member}' failed (non-fatal; lease will expire): ${relErr.message}`);
+                }
             }
+        };
+        if (abandonedAttempts.length > 0 && grant) {
+            // A `bd dolt push` this bracket stopped waiting for is still
+            // running on the member and could still publish once the lock
+            // frees. Releasing the mutex now would let another writer push
+            // concurrently with it, so the mutex (and its lease renewal) is
+            // held until that command ends -- bounded by its own command
+            // timeout -- while this call returns immediately.
+            log(`[Dolt] D-push for member '${member}' stopped waiting for a sync command that is still running on the member; keeping the push mutex until that command ends so it cannot publish concurrently with another writer.`);
+            Promise.allSettled(abandonedAttempts).then(releaseMutex);
+        } else {
+            await releaseMutex();
         }
     }
 
@@ -1951,11 +2149,12 @@ export async function doltPushAfter(member, opts = {}) {
             log(`[Dolt] ${label} reported success but the push did NOT land: ${verdict.why}. Retrying the push once.`);
             const retry = await runDoltStep({
                 command, member, cmd: 'bd dolt push',
-                label: `D-push retry after an unlanded push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget,
+                label: `D-push retry after an unlanded push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
             });
-            if (!retry.ok && retry.spawnLimit) {
+            const typedRetryError = retry.ok ? null : typedStepError(member, 'push retry after an unlanded push', retry);
+            if (typedRetryError) {
                 clearLastSyncedTip(member);
-                throw windowsSpawnLimitSyncError(member, 'push retry after an unlanded push', retry);
+                throw typedRetryError;
             }
             const firstWhy = verdict.why;
             verdict = retry.ok
@@ -1984,7 +2183,7 @@ export async function doltPushAfter(member, opts = {}) {
     async function doltPushGuarded() {
     let push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget,
+        label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
     });
     if (push.ok) {
         return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: false }, `D-push for member '${member}'`);
@@ -2033,7 +2232,8 @@ export async function doltPushAfter(member, opts = {}) {
                 { member, doltOutput: push.error, remoteUrl: url },
             );
         }
-        if (push.spawnLimit) throw windowsSpawnLimitSyncError(member, 'push', push);
+        const typedPushError = typedStepError(member, 'push', push);
+        if (typedPushError) throw typedPushError;
         throw new DoltSyncError(
             `[Dolt] D-push for member '${member}' failed: ${push.error}`,
             { member, doltOutput: push.error },
@@ -2046,7 +2246,7 @@ export async function doltPushAfter(member, opts = {}) {
     log(`[Dolt] D-push for member '${member}' was rejected (another writer pushed first); reconciling with a single D-pull then one re-push (first-successful-pusher-wins).`);
     const reconcile = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget,
+        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
     });
     if (!reconcile.ok) {
         if (reconcile.kind === 'diverged') {
@@ -2058,7 +2258,8 @@ export async function doltPushAfter(member, opts = {}) {
                 'push-reconcile',
             );
         }
-        if (reconcile.spawnLimit) throw windowsSpawnLimitSyncError(member, 'push reconcile pull', reconcile);
+        const typedReconcileError = typedStepError(member, 'push reconcile pull', reconcile);
+        if (typedReconcileError) throw typedReconcileError;
         throw new DoltSyncError(
             `[Dolt] D-push reconcile pull for member '${member}' failed: ${reconcile.error}`,
             { member, doltOutput: reconcile.error },
@@ -2071,7 +2272,7 @@ export async function doltPushAfter(member, opts = {}) {
     landedCheck = await beginDoltPushLandedCheck(member, { command, log });
     push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget,
+        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
     });
     if (push.ok) {
         return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: true }, `D-push re-push after reconcile for member '${member}'`);
@@ -2133,7 +2334,7 @@ export async function doltPushAfter(member, opts = {}) {
 
         const secondReconcile = await runDoltStep({
             command, member, cmd: 'bd dolt pull',
-            label: `D-push second reconcile pull for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget,
+            label: `D-push second reconcile pull for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
         });
         if (!secondReconcile.ok) {
             if (secondReconcile.kind === 'diverged') {
@@ -2145,7 +2346,8 @@ export async function doltPushAfter(member, opts = {}) {
                     'push-reconcile',
                 );
             }
-            if (secondReconcile.spawnLimit) throw windowsSpawnLimitSyncError(member, 'push second reconcile pull', secondReconcile);
+            const typedSecondReconcileError = typedStepError(member, 'push second reconcile pull', secondReconcile);
+            if (typedSecondReconcileError) throw typedSecondReconcileError;
             throw new DoltSyncError(
                 `[Dolt] D-push second reconcile pull for member '${member}' failed: ${secondReconcile.error}`,
                 { member, doltOutput: secondReconcile.error },
@@ -2155,7 +2357,7 @@ export async function doltPushAfter(member, opts = {}) {
         landedCheck = await beginDoltPushLandedCheck(member, { command, log });
         push = await runDoltStep({
             command, member, cmd: 'bd dolt push',
-            label: `D-push second re-push after reconcile for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget,
+            label: `D-push second re-push after reconcile for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
         });
         if (push.ok) {
             return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: true }, `D-push second re-push after reconcile for member '${member}'`);
