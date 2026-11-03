@@ -3,9 +3,32 @@
   "provenance": {
     "commit": "0e4b793e5dd16c8d60fda5c58c7db4e8143006b0",
     "branch": "main",
-    "entry_count": 120
+    "entry_count": 121
   },
   "entries": [
+    {
+      "id": "0349a241-9b26-47c6-91d5-2bd998154430",
+      "type": "knowledge",
+      "title": "A JSON tool result never gets the onboarding display content item",
+      "summary": "The tool-registry wrapper adds an <apra-fleet-display> user-audience content item only when the handler result is not JSON. isJsonResponse is just a check that the text starts with { or [, so a JSON-returning tool's MCP answer is a single content item.",
+      "symbols": [
+        "isJsonResponse",
+        "getOnboardingPreamble",
+        "listFleetMembers"
+      ],
+      "source_files": [
+        "src/services/tool-registry.ts",
+        "src/services/onboarding.ts",
+        "packages/apra-fleet-se/src/supervisor/fleet-members.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-03T06:38:46.790Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/src/supervisor/fleet-members.mjs": "186eaa038d775ac2912e80b9b2214da2ae00bf3a",
+        "src/services/onboarding.ts": "20513f4211fed7b80c6d86d321a1fcf3afb01382",
+        "src/services/tool-registry.ts": "9b38a4b703924d141c74ccc300f92f8a7bb3315e"
+      }
+    },
     {
       "id": "0b6a7734-3224-4b5e-b407-6353af651e29",
       "type": "learning",
