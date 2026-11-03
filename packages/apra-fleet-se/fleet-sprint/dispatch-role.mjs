@@ -2,6 +2,8 @@ import { policyFor, PRE_DISPATCH_STEPS_IN_BRACKET } from './role-policies.mjs';
 import {
     isNonRetryableDispatchError,
     isAuthDispatchError,
+    SECRET_DELIVERY_UNAVAILABLE_REASON,
+    SECRET_DELIVERY_UNAVAILABLE_REMEDY,
     isPostDispatchSyncFailure,
     isInfraDispatchFailure,
     isUsageLimitDispatchError,
@@ -1101,6 +1103,12 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                         healRetryIsFinal = retry.authSelfHealShortCircuits;
                         continue;
                     }
+                }
+                if (err?.details?.reason === SECRET_DELIVERY_UNAVAILABLE_REASON) {
+                    ctx.log(`${roleLabel} dispatch failed: member '${member}' cannot receive its stored credentials (${SECRET_DELIVERY_UNAVAILABLE_REASON}); not retrying. Remedy: ${SECRET_DELIVERY_UNAVAILABLE_REMEDY}. Detail: ${err.message}`);
+                    if (!err.message.includes(SECRET_DELIVERY_UNAVAILABLE_REMEDY)) err.message += ` [${SECRET_DELIVERY_UNAVAILABLE_REMEDY}]`;
+                    if (retry.rethrowsUnhealedNonRetryable) throw err;
+                    break;
                 }
                 ctx.log(
                     `${roleLabel} dispatch threw a non-retryable error (auth/trust): ${err.message}. Aborting ` +

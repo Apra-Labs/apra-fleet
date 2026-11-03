@@ -485,6 +485,16 @@ export class DoltBinaryUnavailableError extends WorkflowError {
 // AgentDispatchError -- checked FIRST below since it can't be fooled by
 // auth-like noise in an unrelated failure's message text; the regex remains
 // as a fallback for older/mocked errors that only ever set `.message`.
+// The server refuses a dispatch (no LLM call made) when the member's stored
+// credential env vars cannot be delivered without a command line: a relay
+// member or one with SFTP disabled. Deterministic -- the member's channel does
+// not change between attempts -- so it is non-retryable. It is deliberately
+// NOT an LLM-auth failure (isAuthDispatchError): the credential is present
+// but undeliverable, so provision_llm_auth self-heal cannot fix it; the
+// operator must enable SFTP or clear/provide the credential on the member.
+export const SECRET_DELIVERY_UNAVAILABLE_REASON = 'secret_delivery_unavailable';
+export const SECRET_DELIVERY_UNAVAILABLE_REMEDY = 'enable SFTP on the member, or clear its stored credentials (provision_llm_auth with clear_stored_credentials) and provide the credential on the member itself';
+
 const NON_RETRYABLE_DISPATCH_RE = /authentication failed|failed to authenticate|oauth session expired|could not be refreshed|not logged in|workspace not trusted|has not been trusted/i;
 
 /**
@@ -497,7 +507,8 @@ const NON_RETRYABLE_DISPATCH_RE = /authentication failed|failed to authenticate|
 export function isNonRetryableDispatchError(err) {
     const reason = err?.details?.reason;
     if (reason === 'auth' || reason === 'workspace_not_trusted'
-        || reason === 'preflight_auth_missing' || reason === 'preflight_auth_expired') return true;
+        || reason === 'preflight_auth_missing' || reason === 'preflight_auth_expired'
+        || reason === SECRET_DELIVERY_UNAVAILABLE_REASON) return true;
     return NON_RETRYABLE_DISPATCH_RE.test(String(err?.message ?? ''));
 }
 
