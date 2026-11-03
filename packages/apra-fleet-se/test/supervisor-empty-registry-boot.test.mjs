@@ -83,6 +83,44 @@ async function waitFor(fn, what, ms) {
     }
 }
 
+// The launch's scope guard D-pulls on the LOCAL backlog member, i.e. runs real
+// `bd` through the fleet server's member command path. That path rebuilds a
+// clean login env from the (sandboxed) HOME, so a bd that is only on this test
+// process's PATH (CI: npm -g under the setup-node toolcache) is not found
+// (exit 127). Install it the way a member install does when bd is not on the
+// system PATH: a launcher in <home>/.apra-fleet/bin, which every work-folder
+// command appends to PATH. Returns the native bd path, or null if none found.
+function resolveNativeBd() {
+    const win = process.platform === 'win32';
+    for (const dir of (process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+        for (const name of win ? ['bd.exe', 'bd.cmd'] : ['bd']) {
+            const p = path.join(dir, name);
+            if (!fs.existsSync(p)) continue;
+            let real = p;
+            try { real = fs.realpathSync(p); } catch { /* keep p */ }
+            // npm's @beads/bd: a node launcher (bin/bd.js) next to the native binary.
+            const npmNative = (base) => path.join(base, win ? 'bd.exe' : 'bd');
+            let native = real;
+            if (real.endsWith('.js')) native = npmNative(path.dirname(real));
+            else if (real.toLowerCase().endsWith('.cmd')) native = npmNative(path.join(dir, 'node_modules', '@beads', 'bd', 'bin'));
+            if (fs.existsSync(native)) return native;
+        }
+    }
+    return null;
+}
+
+async function installMemberBd(home) {
+    const native = resolveNativeBd();
+    if (!native) return;
+    const binDir = path.join(home, '.apra-fleet', 'bin');
+    await fsp.mkdir(binDir, { recursive: true });
+    const posixTarget = native.replace(/\\/g, '/').replace(/'/g, `'\\''`);
+    await fsp.writeFile(path.join(binDir, 'bd'), `#!/bin/sh\nexec '${posixTarget}' "$@"\n`, { mode: 0o755 });
+    if (process.platform === 'win32') {
+        await fsp.writeFile(path.join(binDir, 'bd.cmd'), `@"${native}" %*\r\n`);
+    }
+}
+
 function spawnLogged(args, opts) {
     let out = '';
     const child = spawn(process.execPath, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -105,6 +143,7 @@ describe(
             await fsp.mkdir(home, { recursive: true });
             await fsp.mkdir(fleetData, { recursive: true });
             await fsp.mkdir(seData, { recursive: true });
+            await installMemberBd(home);
             const fleetPort = await getFreePort();
             const supPort = await getFreePort();
             const fixture = await createBeadsFixture();
