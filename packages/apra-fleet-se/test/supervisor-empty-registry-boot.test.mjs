@@ -153,8 +153,16 @@ describe(
                 base: 'main',
                 members: ['dev-a'],
             });
-            assert.doesNotMatch(launch.body, /fleet member list unavailable|backlog member is not ready|not yet ensured/,
-                `launch refused for a fleet-readiness reason (${launch.status}): ${launch.body}`);
+            // Positive signal: the request passed BOTH hard-pin gates (backlog member
+            // ready, fleet list readable) and spawned a sprint child -- 201, not 503.
+            // A merely-absent refusal text would also pass if an earlier 4xx fired.
+            let launched = null;
+            try { launched = JSON.parse(launch.body); } catch { /* asserted below */ }
+            if (launched && launched.pid) {
+                cleanups.push(async () => { try { process.kill(launched.pid, 'SIGKILL'); } catch { /* gone */ } });
+            }
+            assert.equal(launch.status, 201, `launch must be accepted (gates passed): ${launch.body}`);
+            assert.doesNotMatch(launch.body, /fleet member list unavailable|backlog member is not ready|not yet ensured/);
 
             const out = sup.output();
             assert.doesNotMatch(out, /failed to list fleet members/, out);
