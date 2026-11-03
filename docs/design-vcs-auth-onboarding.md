@@ -57,7 +57,7 @@ revoke_vcs_auth(agent_id: string, provider: github | bitbucket | azure-devops)
 2. **Configures git credential helper** so `git clone/pull/push` works without interactive prompts
 3. **Tests connectivity** via lightweight API call:
    - GitHub: `gh auth status` or API call to `/user`
-   - Bitbucket: `curl -u email:token https://api.bitbucket.org/2.0/repositories/{workspace}`
+   - Bitbucket: an authenticated REST GET of the origin repository (`Authorization: Bearer <api token>`, no email) plus a non-interactive `git ls-remote` of the origin; both must pass. The secret name `bitbucket_api_token` is fixed.
    - Azure DevOps: `curl -u :pat https://dev.azure.com/{org}/_apis/projects`
 4. **Returns status** -- success/failure with details (authenticated user, accessible repos)
 
@@ -96,7 +96,9 @@ Each member supports a single VCS provider at a time. Multi-provider configurati
 
 **Step 4: Check existing auth** -- run test API call via `execute_command`:
 - GitHub: `gh auth status`
-- Bitbucket: `curl -u email:token https://api.bitbucket.org/2.0/repositories/{workspace}`
+- Bitbucket (no email; the secret name `bitbucket_api_token` is fixed). `{{secret.NAME}}` is substituted already quoted for the member's shell, so reference it bare, never inside your own quotes:
+  - POSIX shell: `curl -sf -H 'Authorization: Bearer '{{secret.bitbucket_api_token}} https://api.bitbucket.org/2.0/repositories/{workspace}`
+  - PowerShell: `curl.exe -sf -H ('Authorization: Bearer ' + {{secret.bitbucket_api_token}}) https://api.bitbucket.org/2.0/repositories/{workspace}`
 - Azure DevOps: `curl -u :pat https://dev.azure.com/{org}/_apis/projects`
 - If empty work folder with no remotes: ask user for VCS details first
 
@@ -108,7 +110,7 @@ Each member supports a single VCS provider at a time. Multi-provider configurati
 **Step 6: Deploy credentials** -- call `provision_vcs_auth` with the token user provides
 
 **Step 7: Check/install required skills** based on project + role:
-- Bitbucket + (devops OR code-review) -> `bitbucket-devops` skill
+- Bitbucket + (devops OR code-review) -> `bitbucket` skill
 - ApraPipes project + devops -> `aprapipes-devops` skill
 - GitHub + anything -> no extra skill (gh CLI is sufficient, Claude already knows it)
 - Azure DevOps + (devops OR code-review) -> `azdevops-devops` skill (future, document the intent)
@@ -119,7 +121,7 @@ Each member supports a single VCS provider at a time. Multi-provider configurati
 - VCS: Bitbucket (kumaakh/apra-lic-mgr)
 - Roles: development, code-review
 - Auth: Bitbucket API token (verified)
-- Skills: bitbucket-devops (installed)
+- Skills: bitbucket (installed)
 ```
 
 ## Workstream 3: Versioning, CI & Distribution
@@ -206,7 +208,7 @@ skills/pm/
   bitbucket-auth.md                <- Bitbucket-specific: scope table, token creation steps at id.atlassian.com, test commands, troubleshooting
   github-auth.md                   <- GitHub-specific: gh CLI setup, GitHub App vs PAT, scope mapping
   azure-devops-auth.md             <- Azure DevOps-specific: PAT creation at dev.azure.com, scope table, test commands
-  skill-matrix.md                  <- project type + role -> required skills mapping (bitbucket-devops, aprapipes-devops, etc.)
+  skill-matrix.md                  <- project type + role -> required skills mapping (bitbucket, aprapipes-devops, etc.)
 ```
 
 ## Testing Plan
@@ -249,7 +251,7 @@ Neither context alone produces the right output. The review loop bridges them. T
 
 ## Design Decisions
 
-1. **Credential storage** -- single file per member with templated key names. Keys follow the pattern `{provider}_{field}` (e.g., `bitbucket_workspace`, `bitbucket_email`, `bitbucket_api_token`, `azdevops_org_url`, `azdevops_pat`, `github_pat`). One file, no bloat. Location: `~/.fleet/credentials/{agent_id}.json` on the member, or the member's work folder under `.claude/credentials.json`.
+1. **Credential storage** -- single file per member with templated key names. Keys follow the pattern `{provider}_{field}` (e.g., `bitbucket_workspace`, `bitbucket_api_token`, `azdevops_org_url`, `azdevops_pat`, `github_pat`). One file, no bloat. Location: `~/.fleet/credentials/{agent_id}.json` on the member, or the member's work folder under `.claude/credentials.json`.
 
 2. **Token rotation** -- lazy approach. No proactive rotation. When a member operation fails due to expired/invalid token, the PM detects the auth failure and initiates token refresh -- ideally without user involvement (e.g., re-mint GitHub App token automatically) but without compromising security (e.g., don't store long-lived tokens that bypass expiry). For Bitbucket/Azure DevOps API tokens that don't auto-expire, no rotation needed unless the user revokes them.
 

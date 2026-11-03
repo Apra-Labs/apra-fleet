@@ -438,6 +438,42 @@ The correct env var name is automatically determined from the member's
 | AGY | `ANTIGRAVITY_API_KEY` |
 | OpenCode | none (auth is handled by the OpenCode CLI itself) |
 
+### `provision_vcs_auth`
+
+Deploys a VCS credential (GitHub App/PAT, Bitbucket API token, Azure DevOps
+PAT) onto a member as a git credential helper, then verifies it. The result's
+`structuredContent.reason` is `ok`, `deployed_unverified` or
+`deployed_verification_skipped` when the credential was deployed, and
+`structuredContent.verificationReason` names the failing verification channel
+when the provider reports one.
+
+**Out-of-band collection:** required non-secret fields (Bitbucket
+`workspace`, Azure DevOps `org_url`) are validated first; a missing one
+returns `credential_assembly_failed` naming the field, without prompting.
+When the secret field (`api_token` / `pat` / `token`) is absent the server
+asks the operator for it out of band -- unless `non_interactive: true`, in
+which case it returns `ok: false`, reason `credential_missing`, with the
+field named in `structuredContent.message`. With no terminal available, the
+fallback text tells the operator to store the value as a named secret
+(`apra-fleet secret --set NAME --persist`) and pass `{{secret.NAME}}`.
+
+**Bitbucket parameters** (`provider: "bitbucket"`):
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `api_token` | string | yes | Bitbucket API token. Store it as the fleet secret `bitbucket_api_token` (a FIXED name: not configurable, no fallback) and pass `{{secret.bitbucket_api_token}}` |
+| `workspace` | string | yes | Bitbucket workspace slug |
+| `email` | string | no | Ignored for authentication; kept only as metadata if given |
+
+The deployed helper always uses the fixed git username
+`x-bitbucket-api-token-auth` (never an email). Re-provisioning a member whose
+helper still carries an email username (0.4.4) rewrites it. Verification runs
+two channels against the member's `origin` remote: an authenticated REST
+`GET /2.0/repositories/<workspace>/<repo>` with `Authorization: Bearer`
+(`rest_unauthorized` on 401/403, `rest_failed` otherwise), then a
+non-interactive `git ls-remote` through the deployed helper (`git_auth_failed`
+or `git_failed`). `verified` is true only when both pass.
+
 ### `setup_ssh_key`
 
 Generates an SSH key pair and migrates a remote member from password-based SSH

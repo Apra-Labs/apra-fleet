@@ -184,6 +184,11 @@
  *                                                // not yet implemented" (fails
  *                                                // closed with a typed ERROR:,
  *                                                // never a silently wrong command)
+ *     findBeforeCreate: boolean,          // OPTIONAL; create is not an upsert.
+ *                                         //   raiseVcsPrForMember runs
+ *                                         //   find-pull-request first and
+ *                                         //   updates a hit (PUT) instead of
+ *                                         //   POSTing a duplicate.
  *     authRemedy: {                       // OPTIONAL; auth-self-heal axis
  *       serverSideReMintable: boolean,    //   (apra-fleet-5co8.4.2). Whether
  *       hint: string                      //   the REACTIVE self-heal callback

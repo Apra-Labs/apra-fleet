@@ -600,7 +600,14 @@ const VCS_AUTH_PATH = path.join(__dirname, '../fleet-sprint/vcs-auth.mjs');
 // `git rev-list --count` (commits-ahead-of-base check) and `git diff --name-only`
 // (workflow-path diff) call sites, both carrying member_name -- raising the
 // count to 3.
-const EXPECTED_VCS_AUTH_COMMAND_COUNT = 3;
+//
+// raiseVcsPrForMember's own `git remote get-url origin` read (added with the
+// Bitbucket PR follow-ups) made it 4 without this count being raised, and
+// apra-fleet-d1pk.3 added two more in createVcsAuthPreflightCallback's
+// probe-first branch: the unregistered-provider remote read and the
+// non-interactive `git ls-remote origin` credential probe, both carrying
+// member_name -- 6.
+const EXPECTED_VCS_AUTH_COMMAND_COUNT = 6;
 
 test('every command() call site in vcs-auth.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(VCS_AUTH_PATH);

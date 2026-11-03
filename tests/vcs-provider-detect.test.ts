@@ -8,6 +8,8 @@
  * vcs-providers/*.mjs descriptor's matchesHost().
  */
 import { describe, it, expect } from 'vitest';
+// @ts-expect-error -- untyped .mjs sibling package
+import { BitbucketVCS } from '../packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs';
 import { detectVcsProviderFromRemoteUrl, parseRemoteHost } from '../src/utils/vcs-provider-detect.js';
 
 describe('detectVcsProviderFromRemoteUrl', () => {
@@ -107,5 +109,29 @@ describe('parseRemoteHost', () => {
     expect(parseRemoteHost('file:///srv/bare.git')).toBeNull();
     expect(parseRemoteHost('/srv/bare.git')).toBeNull();
     expect(parseRemoteHost('')).toBeNull();
+  });
+});
+
+describe('ssh.bitbucket.org (Atlassian SSH host move)', () => {
+  const accept = ['ssh.bitbucket.org', 'SSH.Bitbucket.ORG', 'bitbucket.org', 'www.bitbucket.org', 'altssh.bitbucket.org'];
+  const reject = ['ssh.bitbucket.org.evil.com', 'evilssh.bitbucket.org', 'sshbitbucket.org', 'bitbucket.org.evil.com'];
+
+  it('detects bitbucket from ssh.bitbucket.org remotes', () => {
+    expect(detectVcsProviderFromRemoteUrl('git@ssh.bitbucket.org:WS/REPO.git')).toBe('bitbucket');
+    expect(detectVcsProviderFromRemoteUrl('ssh://git@ssh.bitbucket.org/WS/REPO')).toBe('bitbucket');
+    expect(detectVcsProviderFromRemoteUrl('git@SSH.BITBUCKET.ORG:WS/REPO.git')).toBe('bitbucket');
+  });
+
+  it('does not detect bitbucket from lookalike hosts', () => {
+    for (const h of reject) {
+      expect(detectVcsProviderFromRemoteUrl(`git@${h}:WS/REPO.git`)).not.toBe('bitbucket');
+    }
+  });
+
+  it('parity: src detection and the fleet-sprint matchesHost agree on every host', () => {
+    for (const h of [...accept, ...reject]) {
+      const srcSays = detectVcsProviderFromRemoteUrl(`https://${h}/WS/REPO.git`) === 'bitbucket';
+      expect(srcSays, h).toBe(BitbucketVCS.matchesHost(h));
+    }
   });
 });

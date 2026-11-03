@@ -348,7 +348,7 @@ describe('check 2: provision_vcs_auth reason codes', () => {
     addAgent(member);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
 
-    const { structuredContent } = await provisionVcsAuth({ member_id: member.id, provider: 'bitbucket' });
+    const { structuredContent } = await provisionVcsAuth({ member_id: member.id, provider: 'bitbucket', workspace: 'ws' });
 
     expect(structuredContent.reason).toBe('oob_cancelled');
     expect(structuredContent.ok).toBe(false);
@@ -366,7 +366,7 @@ describe('check 2: provision_vcs_auth reason codes', () => {
     })).structuredContent.reason;
 
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
-    const oob = (await provisionVcsAuth({ member_id: member.id, provider: 'bitbucket' })).structuredContent.reason;
+    const oob = (await provisionVcsAuth({ member_id: member.id, provider: 'bitbucket', workspace: 'ws' })).structuredContent.reason;
 
     expect(new Set([structuredContent.reason, offline, oob]).size).toBe(3);
   });

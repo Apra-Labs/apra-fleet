@@ -166,4 +166,22 @@ describe('raiseVcsPrForMember (fleet-sprint/vcs-auth.mjs)', () => {
         assert.notEqual(res.prUrl, 'https://github.com/acme/widgets/pull/42', 'a response missing the real url field must NOT yield the expected prUrl -- if it does, the mapping assertion above is not exercising real behavior');
         assert.equal(res.prUrl, null);
     });
+
+    test('GitHub (no findBeforeCreate): the first dispatched command is still the create POST and the PR URL is logged', async () => {
+        const fleetApi = makeFleetApi({
+            vcsCredentialExecImpl: () => credExecResult({
+                status: 201,
+                body: { number: 42, html_url: 'https://github.com/acme/widgets/pull/42' },
+            }),
+        });
+        const logs = [];
+        await raiseVcsPrForMember({
+            fleetApi, command, member: 'm', base: 'main', head: 'feat/x', title: 't', body: 'b',
+            log: (m) => logs.push(m), logPrefix: '[T]',
+            updateExisting: () => ({ title: 't', body: 'b' }),
+        });
+        assert.equal(fleetApi.vcsCredentialExecCalls.length, 1);
+        assert.match(fleetApi.vcsCredentialExecCalls[0].command, /-X POST/);
+        assert.ok(logs.some((m) => m.includes('opened PR URL') && m.includes('pull/42')), JSON.stringify(logs));
+    });
 });
