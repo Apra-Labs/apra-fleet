@@ -22,9 +22,12 @@ import { createBeadsFixture, envWithoutBeadsDir } from './helpers/beads-fixture.
 // Nothing here is stubbed: a REAL fleet server (dist/index.js, http transport,
 // sandboxed data dir => empty registry) answers list_members through the REAL
 // tool-registry wrapper, and a REAL bin/serve.mjs supervisor attaches to it
-// via the server.json in the shared sandbox data dir. Reverting either half of
-// the fix (src/tools/list-members.ts json early return, or the
-// fleet-members.mjs content-item parse) makes the parse path fail here.
+// via the server.json in the shared sandbox data dir. Reverting the
+// src/tools/list-members.ts json early return makes this test fail. The
+// fleet-members.mjs content-item selection is NOT covered end-to-end here (the
+// real wrapper sends a single JSON content item for format json); it is guarded
+// by fleet-members.test.mjs ('display content item before the JSON item is
+// skipped without a parse error') -- do not delete that unit test as redundant.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVE_BIN = path.join(__dirname, '../bin/serve.mjs');
