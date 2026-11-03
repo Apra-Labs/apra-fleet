@@ -1071,15 +1071,13 @@ describe('install --force over a reused elevated task that refuses run', () => {
     return lines.join('\n');
   }
 
-  const GUIDANCE = [
-    'The ApraFleet scheduled task was registered by an older apra-fleet from an elevated prompt,',
-    '  - run elevated',
-  ].join('\n');
+  const GUIDANCE = legacyTaskGuidance(['elevated']);
 
   it('prints the legacy-task guidance, not "Start it with: apra-fleet start"', async () => {
     const out = await installAndCapture(fakeMgr({
-      legacyGuidance: vi.fn().mockReturnValue(`${GUIDANCE}\n    schtasks /delete /tn ApraFleet /f\n    apra-fleet install --force`),
+      legacyGuidance: vi.fn().mockReturnValue(GUIDANCE),
     }));
+    expect(GUIDANCE).toContain("'apra-fleet stop' cannot disable the task");
     expect(out).toContain(GUIDANCE);
     expect(out).toContain('schtasks /delete /tn ApraFleet /f');
     expect(out).toContain('install --force');
