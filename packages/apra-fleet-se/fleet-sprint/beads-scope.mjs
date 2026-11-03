@@ -353,24 +353,13 @@ function blocksPrereqIds(bead) {
 }
 
 // ---------------------------------------------------------------------------
-// Prerequisites: blocks edges, lane order, and file-conflict edges
+// Prerequisites: blocks edges and lane order
 // ---------------------------------------------------------------------------
 //
 // A bead's prerequisites are (1) its open 'blocks' dependencies and (2) its
 // open lane-mates with a LOWER `streakOrder` (same `metadata.streak`): inside
 // a lane the planner orders work by `streakOrder` only, never by an edge, so
 // lane order is a real prerequisite too.
-//
-// A cross-lane 'blocks' edge the planner added only to serialise two lanes
-// that touch the same files is marked on the DEPENDENT bead:
-// `metadata.fileConflicts = { "<prerequisite-id>": ["<path>", ...] }`. The
-// engine keys on the ids only (the paths are for humans). Such an edge still
-// orders the two beads, but it does not spread a set-aside (the dependent
-// does not need the prerequisite's work), and once the prerequisite is set
-// aside for the run the edge counts as satisfied: nothing left to collide
-// with. An entry whose target is in the dependent's OWN streak means nothing
-// (one streak is one doer, run in order) and is ignored. Plans without
-// `fileConflicts` keep every 'blocks' edge as a real dependency.
 
 /** A bead's metadata as an object (bd may hand it back as a JSON string). */
 function metadataOf(bead) {
@@ -398,33 +387,6 @@ export function laneOf(bead) {
     return { streak, order };
 }
 
-/** The bead ids a bead's `metadata.fileConflicts` names (object or JSON string). */
-export function fileConflictTargets(bead) {
-    let fc = metadataOf(bead).fileConflicts;
-    if (typeof fc === 'string') {
-        try { fc = JSON.parse(fc); } catch { fc = null; }
-    }
-    if (!fc || typeof fc !== 'object' || Array.isArray(fc)) return new Set();
-    return new Set(Object.keys(fc).map(String));
-}
-
-/**
- * True when `dependent`'s 'blocks' edge onto `targetId` is a file-conflict
- * edge: listed in its `fileConflicts`, and the target is not in its own
- * streak (a same-streak entry is ignored).
- * @param {object} dependent
- * @param {string} targetId
- * @param {Map<string, object>} byId
- */
-export function isFileConflictEdge(dependent, targetId, byId) {
-    if (!fileConflictTargets(dependent).has(String(targetId))) return false;
-    const own = metadataOf(dependent).streak;
-    const target = byId instanceof Map ? byId.get(String(targetId)) : null;
-    const targetStreak = target ? metadataOf(target).streak : undefined;
-    if (typeof own === 'string' && own.trim() !== '' && own === targetStreak) return false;
-    return true;
-}
-
 function indexById(beads) {
     const byId = new Map();
     for (const b of beads || []) {
@@ -436,8 +398,7 @@ function indexById(beads) {
 /**
  * A bead's UNMET prerequisites, mechanically, from the bead graph alone:
  *   - `inScope`: open in-scope 'blocks' dependencies plus open lower-order
- *     lane-mates (a file-conflict edge onto a set-aside bead is satisfied and
- *     listed under `released` instead);
+ *     lane-mates;
  *   - `outOfScope`: open 'blocks' dependencies outside the sprint scope
  *     (known only when `allBeads` is given) -- they cannot close in this run.
  *
@@ -445,26 +406,19 @@ function indexById(beads) {
  * @param {object} ctx
  * @param {Array<object>} ctx.scopeBeads every in-scope bead, any status
  * @param {Array<object>} [ctx.allBeads] every bead, any status (out-of-scope lookups)
- * @param {Set<string>|Map<string, any>} [ctx.setAsideIds] beads set aside for this run
- * @returns {{ inScope: string[], outOfScope: string[], released: string[] }}
+ * @returns {{ inScope: string[], outOfScope: string[] }}
  */
-export function unmetPrerequisites(bead, { scopeBeads, allBeads = null, setAsideIds = new Set() }) {
+export function unmetPrerequisites(bead, { scopeBeads, allBeads = null }) {
     const scopeById = scopeBeads instanceof Map ? scopeBeads : indexById(scopeBeads);
     const allById = allBeads instanceof Map ? allBeads : indexById(allBeads || []);
-    const setAside = setAsideIds instanceof Map ? new Set(setAsideIds.keys()) : new Set(setAsideIds || []);
     const inScope = [];
     const outOfScope = [];
-    const released = [];
     const id = String(bead && bead.id);
     for (const pre of blocksPrereqIds(bead)) {
         if (pre === id) continue;
         const target = scopeById.get(pre);
         if (target) {
             if (target.status === 'closed') continue;
-            if (setAside.has(pre) && isFileConflictEdge(bead, pre, scopeById)) {
-                released.push(pre);
-                continue;
-            }
             inScope.push(pre);
         } else {
             const outside = allById.get(pre);
@@ -482,56 +436,14 @@ export function unmetPrerequisites(bead, { scopeBeads, allBeads = null, setAside
         mates.sort((a, b) => laneOf(a).order - laneOf(b).order || String(a.id).localeCompare(String(b.id)));
         for (const m of mates) if (!inScope.includes(String(m.id))) inScope.push(String(m.id));
     }
-    return { inScope, outOfScope, released };
-}
-
-/**
- * Open in-scope beads bd's `--ready` hides ONLY because of file-conflict
- * edges onto beads set aside for this run: every other 'blocks' dependency is
- * closed and each remaining open one is a file-conflict edge onto a set-aside
- * bead. The engine treats those edges as satisfied (the set-aside bead will
- * not run this sprint, so there is nothing left to collide with) and adds
- * these beads to its own ready set. Beads set aside themselves, decomposed
- * parents (`excludeIds`) and beads already ready are skipped.
- *
- * @param {Array<object>} scopeBeads every in-scope bead, any status
- * @param {Set<string>|Map<string, any>} setAsideIds
- * @param {{ readyIds?: Iterable<string>, excludeIds?: Iterable<string> }} [opts]
- * @returns {object[]}
- */
-export function releasedFileConflictDependents(scopeBeads, setAsideIds, opts = {}) {
-    const setAside = setAsideIds instanceof Map ? new Set(setAsideIds.keys()) : new Set(setAsideIds || []);
-    if (setAside.size === 0) return [];
-    const scope = Array.isArray(scopeBeads) ? scopeBeads : [];
-    const byId = indexById(scope);
-    const skip = new Set([...(opts.readyIds || []), ...(opts.excludeIds || [])].map(String));
-    const out = [];
-    for (const b of scope) {
-        if (!b || b.status !== 'open') continue;
-        const id = String(b.id);
-        if (skip.has(id) || setAside.has(id)) continue;
-        let releasedAny = false;
-        let blocked = false;
-        for (const pre of blocksPrereqIds(b)) {
-            const target = byId.get(pre);
-            if (!target || target.status === 'closed') continue;
-            if (setAside.has(pre) && isFileConflictEdge(b, pre, byId)) { releasedAny = true; continue; }
-            blocked = true;
-            break;
-        }
-        if (releasedAny && !blocked) out.push(b);
-    }
-    return out;
+    return { inScope, outOfScope };
 }
 
 /**
  * Every OPEN (non-closed) bead in `scopeBeads` that depends on one of
  * `rootIds` over 'blocks' edges, directly or transitively, mapped to the root
  * id its chain leads back to (the first root reached, breadth-first). The
- * roots themselves are not included. Parent-child edges are not followed,
- * and neither are file-conflict edges (an edge whose target the dependent
- * lists in its `metadata.fileConflicts`, from a different streak): the
- * dependent only had to wait for the files to be free, not for the work.
+ * roots themselves are not included. Parent-child edges are not followed.
  *
  * @param {Iterable<string>} rootIds
  * @param {Array<object>} scopeBeads - in-scope beads, any status, with `dependencies`
@@ -540,13 +452,11 @@ export function releasedFileConflictDependents(scopeBeads, setAsideIds, opts = {
 export function openBlocksDependents(rootIds, scopeBeads) {
     const scope = Array.isArray(scopeBeads) ? scopeBeads : [];
     const roots = new Set([...rootIds].map(String));
-    const byId = indexById(scope);
     // prerequisite id -> beads that list it as a 'blocks' prerequisite
     const dependentsOf = new Map();
     for (const b of scope) {
         if (!b || b.id === undefined || b.id === null) continue;
         for (const pre of blocksPrereqIds(b)) {
-            if (isFileConflictEdge(b, pre, byId)) continue;
             if (!dependentsOf.has(pre)) dependentsOf.set(pre, []);
             dependentsOf.get(pre).push(b);
         }

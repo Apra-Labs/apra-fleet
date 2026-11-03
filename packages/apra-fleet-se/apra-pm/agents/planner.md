@@ -316,15 +316,6 @@ Wire dependencies (semantics: `bd dep add A B` means A is blocked by B -- B must
   is done, add `bd dep add <B-task> <A-last-task>` for EVERY task in lane B against the
   LAST (highest `streakOrder`) task of lane A. Wiring only B's first task would let B's
   later tasks become ready out of order.
-- When such a cross-lane edge exists ONLY to serialise two lanes that touch the same files
-  (B does not need A's work, only for A to be out of those files), record that on the
-  dependent task, listing the overlapping files, keyed by the task it is blocked by:
-  `bd update <B-task> --set-metadata 'fileConflicts={"<A-last-task>": ["<path>", ...]}'`
-  (one entry per such edge; merge entries when a task has several). The engine keys on
-  the task ids only: an edge marked this way keeps the order, but if A is set aside for
-  the run, B is not set aside with it and runs anyway. Leave it off an edge where B
-  genuinely needs A's work. Never write `fileConflicts` between tasks of the SAME lane --
-  inside a lane, order comes from `streakOrder` and one doer runs the whole lane.
 - Sibling tasks in different lanes with no enabling relationship get no edge.
 
 ## Step 4 -- Validate your own DAG

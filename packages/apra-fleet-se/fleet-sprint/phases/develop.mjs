@@ -169,9 +169,7 @@ export async function runDevelopPhase({
     // the blocked bead are NOT set aside: lower-order ones return to the next
     // round's pool; higher-order ones stay open but are held back by lane
     // order (the runner's holdBackByLaneOrder), and count as stuck for the
-    // immediate-stall check. Dependents over a file-conflict edge (the
-    // dependent's metadata.fileConflicts names the blocked bead) are not set
-    // aside either: that edge is treated as satisfied and they are released.
+    // immediate-stall check.
     sprintState.doctorBlockedIds = sprintState.doctorBlockedIds || new Map();
     const doctorBlockedIds = sprintState.doctorBlockedIds;
     // Beads a doer reported BLOCKED while they still had an open prerequisite

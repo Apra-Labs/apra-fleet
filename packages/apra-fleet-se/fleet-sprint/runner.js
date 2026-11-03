@@ -249,9 +249,8 @@ import {
     // Develop-dispatch goal filter: below-goal ready leaves are excluded
     // unless they block in-goal work or the sprint already worked on them.
     partitionReadyByGoal, formatBelowGoalExclusionLog,
-    // Set-aside v2: file-conflict edges onto set-aside beads are satisfied,
-    // and a waiting bead is held until its prerequisites close.
-    releasedFileConflictDependents, unmetPrerequisites,
+    // Set-aside v2: a waiting bead is held until its prerequisites close.
+    unmetPrerequisites,
     // apra-fleet-rp7a.1: the deferred split the Cycle Evaluation completion
     // math and phases/final-review.mjs's closing count BOTH apply, so the two
     // cannot drift apart. See its own doc comment for why 'deferred' -- and
@@ -2865,8 +2864,6 @@ async function runSprintCycle(context) {
     // deadlock diagnosis is about the graph, not about goal membership.
     //
     // Set-aside v2 (all in-memory over the same scope read, no extra bd call):
-    //   - a bead bd's --ready hides only because of file-conflict edges onto
-    //     beads set aside for this run is added (those edges are satisfied);
     //   - a bead that WAITS after a BLOCKED report (sprintState.waitingIds)
     //     is held while any prerequisite of it is still open;
     //   - lane order is a prerequisite: a laned bead whose lower-order
@@ -2875,29 +2872,15 @@ async function runSprintCycle(context) {
     //     the returned list (phases/develop.mjs excludes them and the
     //     start-of-round check reads them) but never count as "ahead" of a
     //     lane-mate.
-    // A hold/release line is logged whenever it changes.
+    // A hold line is logged whenever it changes.
     const loggedBelowGoalExclusions = new Set();
     let lastDispatchHoldLog = '';
     async function dispatchableReadyLeafBeads() {
-        const [readyRaw, scopeAll] = await Promise.all([readyLeafBeads(), bdListScoped('')]);
+        const [ready, scopeAll] = await Promise.all([readyLeafBeads(), bdListScoped('')]);
         const setAsideMap = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map();
         const waitingMap = sprintState.waitingIds instanceof Map ? sprintState.waitingIds : new Map();
         const permissionBlocked = sprintState.permissionScopeBlockedBeads instanceof Map ? sprintState.permissionScopeBlockedBeads : new Map();
-        let ready = readyRaw;
         const holdLines = [];
-        if (setAsideMap.size > 0) {
-            const parentIds = new Set(scopeAll.filter((b) => b && b.parent).map((b) => b.parent));
-            const released = releasedFileConflictDependents(scopeAll, setAsideMap, {
-                readyIds: readyRaw.map((b) => b.id), excludeIds: parentIds,
-            });
-            if (released.length > 0) {
-                ready = [...readyRaw, ...released];
-                holdLines.push(
-                    `RELEASED ${released.map((b) => b.id).join(', ')} -- their only open prerequisites are file-conflict ` +
-                    'edges onto beads set aside for this run, which are treated as satisfied'
-                );
-            }
-        }
         const { dispatchable, excluded } = partitionReadyByGoal(ready, scopeAll, validated.goal, { workedOnIds: workedOnBeadIds });
         const fresh = excluded.filter((e) => !loggedBelowGoalExclusions.has(e.id));
         if (fresh.length > 0) {
@@ -2909,7 +2892,7 @@ async function runSprintCycle(context) {
             const stillWaiting = [];
             candidates = dispatchable.filter((b) => {
                 if (!waitingMap.has(b.id)) return true;
-                const on = unmetPrerequisites(b, { scopeBeads: scopeAll, setAsideIds: setAsideMap }).inScope;
+                const on = unmetPrerequisites(b, { scopeBeads: scopeAll }).inScope;
                 if (on.length === 0) return true;
                 stillWaiting.push(`${b.id} waiting on ${on.join(', ')}`);
                 return false;

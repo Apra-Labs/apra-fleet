@@ -1,8 +1,7 @@
 // Unit coverage for the BLOCKED set-aside v2 rules (fleet-sprint):
 //   1. lane order is a prerequisite (goal filter closure + hold-back);
 //   2. a BLOCKED report on a bead with an open in-sprint prerequisite waits;
-//   3. file-conflict edges do not spread a set-aside and are satisfied once
-//      their target is set aside; same-streak entries are ignored;
+//      a set-aside still spreads over every 'blocks' edge;
 //   4. an out-of-scope prerequisite sets the bead aside, naming it;
 //   5. stall accounting for waiting/held beads;
 //   6. the "Waited this run" report line.
@@ -11,8 +10,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    partitionReadyByGoal, openBlocksDependents, releasedFileConflictDependents,
-    unmetPrerequisites, isFileConflictEdge, laneOf, fileConflictTargets,
+    partitionReadyByGoal, openBlocksDependents, unmetPrerequisites, laneOf,
 } from '../fleet-sprint/beads-scope.mjs';
 import { holdBackByLaneOrder } from '../fleet-sprint/worklists.mjs';
 import {
@@ -24,11 +22,10 @@ import { buildAnalysisText } from '../fleet-sprint/sprint-report.mjs';
 
 const GOAL = 'P1/P2';
 const blocks = (issueId, dependsOnId) => ({ issue_id: issueId, depends_on_id: dependsOnId, type: 'blocks' });
-const bead = (id, { priority = 2, status = 'open', streak, order, deps = [], fileConflicts } = {}) => {
+const bead = (id, { priority = 2, status = 'open', streak, order, deps = [] } = {}) => {
     const metadata = {};
     if (streak) metadata.streak = streak;
     if (order !== undefined) metadata.streakOrder = order;
-    if (fileConflicts) metadata.fileConflicts = fileConflicts;
     return { id, priority, status, metadata, dependencies: deps.map((d) => blocks(id, d)) };
 };
 const ids = (beads) => beads.map((b) => b.id).sort();
@@ -36,14 +33,13 @@ const ids = (beads) => beads.map((b) => b.id).sort();
 // The Sprint 2 shape: lane install-a ends with an impl task (P3, order 5) and
 // its [test] task (P3, order 6); every task of lane install-b (P2) is blocked
 // by install-a's last task to serialise the two lanes on shared files.
-function sprint2({ withFileConflicts = true } = {}) {
-    const fc = withFileConflicts ? { 'a-test': ['src/install.ts'] } : undefined;
+function sprint2() {
     const aEarlier = bead('a-4', { priority: 2, status: 'closed', streak: 'install-a', order: 4 });
     const impl = bead('a-impl', { priority: 3, streak: 'install-a', order: 5 });
     const tst = bead('a-test', { priority: 3, streak: 'install-a', order: 6 });
-    const b1 = bead('b-1', { priority: 2, streak: 'install-b', order: 1, deps: ['a-test'], fileConflicts: fc });
-    const b2 = bead('b-2', { priority: 2, streak: 'install-b', order: 2, deps: ['a-test'], fileConflicts: fc });
-    const b3 = bead('b-3', { priority: 2, streak: 'install-b', order: 3, deps: ['a-test'], fileConflicts: fc });
+    const b1 = bead('b-1', { priority: 2, streak: 'install-b', order: 1, deps: ['a-test'] });
+    const b2 = bead('b-2', { priority: 2, streak: 'install-b', order: 2, deps: ['a-test'] });
+    const b3 = bead('b-3', { priority: 2, streak: 'install-b', order: 3, deps: ['a-test'] });
     return { scope: [aEarlier, impl, tst, b1, b2, b3], ready: [impl, tst] };
 }
 
@@ -102,56 +98,29 @@ describe('rule 1: lane order is a prerequisite', () => {
     });
 });
 
-describe('rule 3: fileConflicts edges', () => {
-    test('a set-aside does not spread over a fileConflicts edge; a real blocks edge still spreads', () => {
-        const scope = [
+describe('set-aside spreading and lane metadata', () => {
+    test('a set-aside spreads over every blocks edge, transitively, as before', () => {
+        const { scope } = sprint2();
+        assert.deepEqual([...openBlocksDependents(['a-test'], scope).keys()].sort(), ['b-1', 'b-2', 'b-3']);
+        const chain = [
             bead('root', { streak: 'A', order: 1 }),
-            bead('fc', { streak: 'B', order: 1, deps: ['root'], fileConflicts: { root: ['f.ts'] } }),
             bead('real', { streak: 'C', order: 1, deps: ['root'] }),
             bead('real-2', { streak: 'C', order: 2, deps: ['real'] }),
         ];
-        assert.deepEqual([...openBlocksDependents(['root'], scope).keys()].sort(), ['real', 'real-2']);
+        assert.deepEqual([...openBlocksDependents(['root'], chain).keys()].sort(), ['real', 'real-2']);
     });
 
-    test('old plan without fileConflicts: every blocks edge spreads, exactly as before', () => {
-        const { scope } = sprint2({ withFileConflicts: false });
-        assert.deepEqual([...openBlocksDependents(['a-test'], scope).keys()].sort(), ['b-1', 'b-2', 'b-3']);
-        assert.deepEqual(releasedFileConflictDependents(scope, new Set(['a-test'])), []);
-    });
-
-    test('a fileConflicts-only dependent of a set-aside bead is released; a real dependent is not', () => {
-        const scope = [
-            bead('root', { streak: 'A', order: 1 }),
-            bead('fc', { streak: 'B', order: 1, deps: ['root'], fileConflicts: { root: ['f.ts'] } }),
-            bead('real', { streak: 'C', order: 1, deps: ['root'] }),
-            bead('mixed', { streak: 'D', order: 1, deps: ['root', 'other'], fileConflicts: { root: ['f.ts'] } }),
-            bead('other', { streak: 'E', order: 1 }),
-        ];
-        assert.deepEqual(ids(releasedFileConflictDependents(scope, new Set(['root']))), ['fc']);
-        assert.deepEqual(releasedFileConflictDependents(scope, new Set()), [], 'nothing set aside -> nothing released');
-        assert.deepEqual(releasedFileConflictDependents(scope, new Set(['root']), { readyIds: ['fc'] }), [], 'already ready');
-        const pre = unmetPrerequisites(scope[1], { scopeBeads: scope, setAsideIds: new Set(['root']) });
-        assert.deepEqual(pre, { inScope: [], outOfScope: [], released: ['root'] });
-        // Not set aside: the edge still orders the two beads.
-        assert.deepEqual(unmetPrerequisites(scope[1], { scopeBeads: scope }).inScope, ['root']);
-    });
-
-    test('a fileConflicts entry whose target is in the same streak is ignored (no release, no extra hold)', () => {
+    test('a blocks edge onto a lane-mate counts once among the unmet prerequisites', () => {
         const scope = [
             bead('s1', { streak: 'S', order: 1 }),
-            bead('s2', { streak: 'S', order: 2, deps: ['s1'], fileConflicts: { s1: ['f.ts'] } }),
+            bead('s2', { streak: 'S', order: 2, deps: ['s1'] }),
         ];
-        assert.equal(isFileConflictEdge(scope[1], 's1', new Map(scope.map((b) => [b.id, b]))), false);
-        assert.deepEqual([...openBlocksDependents(['s1'], scope).keys()], ['s2'], 'the same-streak edge stays a real edge');
-        assert.deepEqual(releasedFileConflictDependents(scope, new Set(['s1'])), []);
-        // Ordering comes from lane order only: s2 waits on s1 once, not twice.
-        assert.deepEqual(unmetPrerequisites(scope[1], { scopeBeads: scope }).inScope, ['s1']);
+        assert.deepEqual(unmetPrerequisites(scope[1], { scopeBeads: scope }), { inScope: ['s1'], outOfScope: [] });
     });
 
-    test('metadata and fileConflicts given as JSON strings are read too', () => {
-        const b = { id: 'x', metadata: JSON.stringify({ streak: 'L', streakOrder: '2', fileConflicts: JSON.stringify({ y: ['a'] }) }) };
+    test('metadata given as a JSON string is read too', () => {
+        const b = { id: 'x', metadata: JSON.stringify({ streak: 'L', streakOrder: '2' }) };
         assert.deepEqual(laneOf(b), { streak: 'L', order: 2 });
-        assert.deepEqual([...fileConflictTargets(b)], ['y']);
         assert.equal(laneOf({ id: 'z', metadata: { streak: 'L' } }), null);
     });
 });
@@ -232,12 +201,12 @@ describe('rule 5: stall accounting', () => {
         assert.match(stuck.get('w'), /outside this sprint's scope/);
     });
 
-    test('a fileConflicts-only dependent of a set-aside bead is NOT stuck (it is dispatchable)', () => {
-        const s = [bead('root', { streak: 'A', order: 1 }), bead('fc', { streak: 'B', order: 1, deps: ['root'], fileConflicts: { root: ['f'] } })];
+    test('a blocks dependent of a set-aside bead is covered by the set-aside spread, not by stuck accounting', () => {
+        const s = [bead('root', { streak: 'A', order: 1 }), bead('dep', { streak: 'B', order: 1, deps: ['root'] })];
         const blocked = setAside('root');
-        const stuck = stuckBehindSetAside({ scopeBeads: s, doctorBlockedIds: blocked });
-        assert.equal(stuck.size, 0);
-        assert.equal(evaluateSetAsideStall({ openIds: ['root', 'fc'], doctorBlockedIds: blocked, stuckIds: stuck }), null);
+        // The develop phase sets 'dep' aside with 'root' (openBlocksDependents);
+        // stuck accounting reaches the same verdict from the graph alone.
+        assert.deepEqual([...stuckBehindSetAside({ scopeBeads: s, doctorBlockedIds: blocked }).keys()], ['dep']);
     });
 
     test('lane successors held behind a set-aside bead are stuck, transitively', () => {

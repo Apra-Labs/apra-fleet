@@ -2,16 +2,13 @@
 // End-to-end mock sprints for BLOCKED set-aside v2:
 //   (a) the Sprint 2 shape -- an [impl] and its [test] task in one lane, both
 //       below the goal, with another lane serialised behind the [test] task
-//       by cross-lane edges carrying fileConflicts: the impl runs before the
-//       test, nothing is set aside, and the serialised lane runs;
-//   (b) the same shape without fileConflicts (an old plan): same outcome
-//       when nothing is BLOCKED (lane order still applies);
-//   (c)/(d) the lane's [test] task is genuinely BLOCKED after its impl
-//       closed: with fileConflicts the serialised lane is released and runs;
-//       without them (an old plan) it is set aside with the test, as before;
-//   (e) a [test] task reported BLOCKED while its impl lane-mate is still open
+//       by cross-lane 'blocks' edges: the impl runs before the test, nothing
+//       is set aside, and the serialised lane runs;
+//   (b) the lane's [test] task is genuinely BLOCKED after its impl closed:
+//       it and its 'blocks' dependents are set aside, as before;
+//   (c) a [test] task reported BLOCKED while its impl lane-mate is still open
 //       waits, and runs once the impl closes;
-//   (f) the same, reported BLOCKED again after the impl closed: set aside.
+//   (d) the same, reported BLOCKED again after the impl closed: set aside.
 // =============================================================================
 
 import { test } from 'node:test';
@@ -55,9 +52,8 @@ const SPECS = [
 ];
 
 // Lane install-a = [impl (5), test (6)]; lane install-b = [b1, b2, b3], each
-// blocked by install-a's LAST task (planner file serialisation), optionally
-// marked with fileConflicts.
-const wireSprint2 = (withFileConflicts) => async ({ runCmd: rc, tempDir: td, tasks }) => {
+// blocked by install-a's LAST task (planner file serialisation).
+const wireSprint2 = async ({ runCmd: rc, tempDir: td, tasks }) => {
     const id = (title) => tasks.find((x) => x.title === title).id;
     await rc(`bd update ${id(T.impl)} --set-metadata streak=install-a --set-metadata streakOrder=5`, td);
     await rc(`bd update ${id(T.test)} --set-metadata streak=install-a --set-metadata streakOrder=6`, td);
@@ -65,10 +61,6 @@ const wireSprint2 = (withFileConflicts) => async ({ runCmd: rc, tempDir: td, tas
     for (let i = 0; i < lane.length; i++) {
         await rc(`bd update ${id(lane[i])} --set-metadata streak=install-b --set-metadata streakOrder=${i + 1}`, td);
         await rc(`bd dep add ${id(lane[i])} ${id(T.test)}`, td);
-        if (withFileConflicts) {
-            // \" quoting survives both cmd.exe and POSIX sh as one argument.
-            await rc(`bd update ${id(lane[i])} --set-metadata "fileConflicts={\\"${id(T.test)}\\":[\\"src/install.ts\\"]}"`, td);
-        }
     }
 };
 
@@ -97,65 +89,39 @@ const sprint2Doer = ({ testAlwaysBlocked = false } = {}) => async ({ opts, runCm
     return report({ status: 'VERIFY', closedIds: closed, notes: 'Done.' });
 };
 
-for (const withFileConflicts of [true, false]) {
-    const tag = withFileConflicts ? 'sav2-sprint2-fc' : 'sav2-sprint2-old';
-    test(`(${withFileConflicts ? 'a' : 'b'}) Sprint 2 shape ${withFileConflicts ? 'with' : 'WITHOUT'} fileConflicts: the impl runs before its [test] lane-mate, nothing is set aside, the serialised lane runs`, async () => {
-        resetSyncMemo();
-        await withScenarioMarkers(`set-aside v2 sprint2 ${withFileConflicts ? 'fc' : 'old'}`, async () => {
-            const run = await runDevelopLoopScenario(tag, {
-                members: ['local'],
-                taskSpecs: SPECS,
-                maxCycles: 2,
-                beforeSprint: wireSprint2(withFileConflicts),
-                doerHandler: sprint2Doer(),
-                reviewerHandler: approve,
-            });
-            const id = (title) => run.tasks.find((t) => t.title === title).id;
-            const order = doerOrder(run);
-            assert.ok(order.includes(id(T.impl)), `the impl must be dispatched: ${JSON.stringify(order)}`);
-            assert.ok(order.indexOf(id(T.impl)) < order.indexOf(id(T.test)), `impl before test: ${JSON.stringify(order)}`);
-            assert.ok(!setAsideLogged(run.logs), 'nothing may be set aside');
-            for (const t of Object.values(T)) {
-                assert.equal(run.finalBeadsById.get(id(t)).status, 'closed', `${t} must close`);
-            }
-            assert.ok(!run.error, `no error expected: ${run.error ? run.error.message : ''}`);
-        });
-    });
-}
-
-test('(c) the [test] task genuinely BLOCKED with fileConflicts: only it is set aside; the serialised lane is released and runs', async () => {
+// The recording tags keep their '-old' suffix: renaming them would orphan
+// the recorded fixtures.
+test('(a) Sprint 2 shape: the impl runs before its [test] lane-mate, nothing is set aside, the serialised lane runs', async () => {
     resetSyncMemo();
-    await withScenarioMarkers('set-aside v2 genuine block fc', async () => {
-        const run = await runDevelopLoopScenario('sav2-genuine-fc', {
+    await withScenarioMarkers('set-aside v2 sprint2 old', async () => {
+        const run = await runDevelopLoopScenario('sav2-sprint2-old', {
             members: ['local'],
             taskSpecs: SPECS,
             maxCycles: 2,
-            beforeSprint: wireSprint2(true),
-            doerHandler: sprint2Doer({ testAlwaysBlocked: true }),
+            beforeSprint: wireSprint2,
+            doerHandler: sprint2Doer(),
             reviewerHandler: approve,
         });
         const id = (title) => run.tasks.find((t) => t.title === title).id;
-        const tst = id(T.test);
-        for (const t of [T.b1, T.b2, T.b3, T.impl]) {
+        const order = doerOrder(run);
+        assert.ok(order.includes(id(T.impl)), `the impl must be dispatched: ${JSON.stringify(order)}`);
+        assert.ok(order.indexOf(id(T.impl)) < order.indexOf(id(T.test)), `impl before test: ${JSON.stringify(order)}`);
+        assert.ok(!setAsideLogged(run.logs), 'nothing may be set aside');
+        for (const t of Object.values(T)) {
             assert.equal(run.finalBeadsById.get(id(t)).status, 'closed', `${t} must close`);
         }
-        assert.equal(timesDispatched(run, tst), 1, 'the BLOCKED test task is dispatched once');
-        assert.ok(run.logs.some((m) => /Develop dispatch: RELEASED /.test(m)), 'the release must be logged');
-        assert.ok(run.error && run.error.code === 'SPRINT_STALLED', `expected the set-aside stall, got: ${run.error ? run.error.message : 'no error'}`);
-        assert.deepEqual(run.error.blockerIds, [tst]);
-        assert.ok(run.error.blockerReasons[tst].includes(ENV_NOTES), run.error.blockerReasons[tst]);
-        assert.equal(run.error.setAside.length, 1);
+        assert.ok(!run.error, `no error expected: ${run.error ? run.error.message : ''}`);
     });
 });
 
-test('(d) the [test] task genuinely BLOCKED in an old plan without fileConflicts: it and its blocks dependents are set aside, as before', async () => {
+test('(b) the [test] task genuinely BLOCKED: it and its blocks dependents are set aside, as before', async () => {
     resetSyncMemo();
     await withScenarioMarkers('set-aside v2 genuine block old', async () => {
         const run = await runDevelopLoopScenario('sav2-genuine-old', {
             members: ['local'],
             taskSpecs: SPECS,
             maxCycles: 2,
-            beforeSprint: wireSprint2(false),
+            beforeSprint: wireSprint2,
             doerHandler: sprint2Doer({ testAlwaysBlocked: true }),
             reviewerHandler: approve,
         });
@@ -206,7 +172,7 @@ const pairDoer = ({ blockAgain }) => {
     };
 };
 
-test('(e) a [test] task reported BLOCKED while its impl lane-mate is open waits, then runs after the impl closes', async () => {
+test('(c) a [test] task reported BLOCKED while its impl lane-mate is open waits, then runs after the impl closes', async () => {
     resetSyncMemo();
     await withScenarioMarkers('set-aside v2 wait then run', async () => {
         const run = await runDevelopLoopScenario('sav2-wait-run', {
@@ -230,7 +196,7 @@ test('(e) a [test] task reported BLOCKED while its impl lane-mate is open waits,
     });
 });
 
-test('(f) a waiting [test] task reported BLOCKED again after its impl closed is set aside (one extra dispatch at most)', async () => {
+test('(d) a waiting [test] task reported BLOCKED again after its impl closed is set aside (one extra dispatch at most)', async () => {
     resetSyncMemo();
     await withScenarioMarkers('set-aside v2 wait then set aside', async () => {
         const run = await runDevelopLoopScenario('sav2-wait-aside', {

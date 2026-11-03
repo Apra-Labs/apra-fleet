@@ -157,10 +157,9 @@ export function formatSetAsideStallMessage(stall, { where, scope }) {
  * prerequisite of theirs cannot close: an unmet in-scope prerequisite (an
  * open 'blocks' dependency or an open lower-order lane-mate) that is set
  * aside or itself stuck, transitively; or, for a bead that is WAITING after a
- * BLOCKED report, an open prerequisite outside the sprint scope. A
- * file-conflict edge onto a set-aside bead is satisfied (that dependent is
- * dispatchable), so it never makes a bead stuck. A bead whose prerequisites
- * can all still close is not stuck: it keeps the run going.
+ * BLOCKED report, an open prerequisite outside the sprint scope. A bead
+ * whose prerequisites can all still close is not stuck: it keeps the run
+ * going.
  *
  * @param {object} opts
  * @param {Array<object>} opts.scopeBeads every in-scope bead, any status
@@ -176,7 +175,7 @@ export function stuckBehindSetAside({ scopeBeads, allBeads = [], doctorBlockedId
     if (blocked.size === 0 && waiting.size === 0) return out;
     const open = (Array.isArray(scopeBeads) ? scopeBeads : [])
         .filter((b) => b && b.status !== 'closed' && !blocked.has(String(b.id)));
-    const pre = new Map(open.map((b) => [String(b.id), unmetPrerequisites(b, { scopeBeads, allBeads, setAsideIds: blocked })]));
+    const pre = new Map(open.map((b) => [String(b.id), unmetPrerequisites(b, { scopeBeads, allBeads })]));
     let changed = true;
     while (changed) {
         changed = false;
@@ -264,7 +263,7 @@ export function classifyBlockedReport({ blockedIds, scopeBeads, allBeads = [], d
         if (blocked.has(id)) continue;
         const bead = scopeById.get(id);
         const pre = bead
-            ? unmetPrerequisites(bead, { scopeBeads, allBeads, setAsideIds: blocked })
+            ? unmetPrerequisites(bead, { scopeBeads, allBeads })
             : { inScope: [], outOfScope: [] };
         const priorWait = waiting.get(id);
         if (pre.outOfScope.length > 0) {
