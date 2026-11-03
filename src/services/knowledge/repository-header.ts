@@ -12,6 +12,7 @@
 
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { gitExecutable } from '../../os/git-executable.js';
 
 export const REPOSITORY_HEADER = 'X-Repository';
 export const REPOSITORY_COMMIT_HEADER = 'X-Repository-Commit';
@@ -156,7 +157,7 @@ function gitOut(folder: string, args: string[]): string | undefined {
   // repository, never a checkout it merely sits inside.
   const env = { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(folder) };
   try {
-    return execFileSync('git', args, {
+    return execFileSync(gitExecutable(), args, {
       cwd: folder, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
   } catch {

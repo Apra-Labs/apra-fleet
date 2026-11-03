@@ -28,12 +28,15 @@
 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { gitExecutable } from '../../os/git-executable.js';
 
 export const OWN_BIBLE_REL = '.fleet/kb-canonical.json';
 
 function gitBuffer(args: string[], cwd: string): Promise<Buffer | null> {
   return new Promise((resolve) => {
-    execFile('git', ['--no-replace-objects', ...args], {
+    let gitBin: string;
+    try { gitBin = gitExecutable(); } catch { resolve(null); return; }
+    execFile(gitBin, ['--no-replace-objects', ...args], {
       cwd, windowsHide: true, timeout: 30_000, maxBuffer: 256 * 1024 * 1024, encoding: 'buffer',
     }, (err, stdout) => resolve(err ? null : stdout));
   });
