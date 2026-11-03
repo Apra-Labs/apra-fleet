@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "0e4b793e5dd16c8d60fda5c58c7db4e8143006b0",
     "branch": "main",
-    "entry_count": 119
+    "entry_count": 120
   },
   "entries": [
     {
@@ -1860,6 +1860,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.358Z"
+    },
+    {
+      "id": "da7d0105-e454-43d0-b12f-c27d00e7f337",
+      "type": "learning",
+      "title": "libuv reads NoDefaultCurrentDirectoryInExePath from the parent env, not the spawn env option",
+      "summary": "On Windows, whether a bare program name passed to child_process is searched in the spawn cwd depends on NoDefaultCurrentDirectoryInExePath in the PARENT process env. Setting or removing it in the spawn's env option has no effect, so tests must mutate process.env.",
+      "symbols": [],
+      "source_files": [
+        "src/os/git-executable.ts",
+        "tests/git-executable.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-03T05:31:52.236Z",
+      "source_file_hashes": {
+        "src/os/git-executable.ts": "911757de562b85d7bfed11f6f974fd41c678e421",
+        "tests/git-executable.test.ts": "9d54c45047abcfe851769e65b86962a85fe04469"
+      }
     },
     {
       "id": "da934546-d15f-42ca-bdce-bfab58ec0e83",
