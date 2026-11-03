@@ -317,7 +317,7 @@ shipped single-executable binary is bundled by `scripts/build-sea.mjs` with
 shipped binary and ssh2 always uses the JS cipher there. A startup warning
 would fire for every shipped install and carry no actionable remedy (users
 cannot rebuild a SEA binary), so it would be noise. The check is therefore a
-contributor/CI guard only, not a runtime feature.
+contributor/CI guard only, not a runtime feature. Users who install the npm package (`npm i -g @apralabs/apra-fleet`) can run `node <global-prefix>/lib/node_modules/@apralabs/apra-fleet/node_modules/ssh2/lib/protocol/crypto/build/Release/sshcrypto.node` presence check (file exists = native active); the same rebuild remedy applies.
 
 ## Stuck agents
 
