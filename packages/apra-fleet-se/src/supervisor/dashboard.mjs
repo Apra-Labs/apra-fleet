@@ -1407,6 +1407,9 @@ export function createDashboard(deps = {}) {
     const eventsIntervalMs = Number.isInteger(deps.eventsIntervalMs) && deps.eventsIntervalMs > 0
         ? deps.eventsIntervalMs
         : DEFAULT_EVENTS_INTERVAL_MS;
+    // Injectable timer fns so a unit test can prove stop() clears the interval.
+    const setIntervalFn = deps.setInterval ?? setInterval;
+    const clearIntervalFn = deps.clearInterval ?? clearInterval;
     let eventsTimer = null;
 
     /**
@@ -1520,11 +1523,11 @@ export function createDashboard(deps = {}) {
             // Idempotent -- a second start() (e.g. a supervisor restart-in-
             // place test) must not leak a second interval.
             if (eventsTimer) return;
-            eventsTimer = setInterval(() => changeEmitter.emit('change'), eventsIntervalMs);
+            eventsTimer = setIntervalFn(() => changeEmitter.emit('change'), eventsIntervalMs);
         },
         async stop() {
             if (eventsTimer) {
-                clearInterval(eventsTimer);
+                clearIntervalFn(eventsTimer);
                 eventsTimer = null;
             }
         },
