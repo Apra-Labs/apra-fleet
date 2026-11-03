@@ -1,0 +1,113 @@
+# Example policy for the apra-fleet project itself (v0.5 period).
+# Copy to <repo>/.fleet/policy.yaml on the integration branch and edit.
+# Changes to this file are always propose_blocking and never auto-merged.
+version: 1
+project: apra-fleet
+tenant: apra
+customer_visible_labels: [customer-visible]
+
+phase_default: open_window
+phases:
+  open_window:
+    risk_budget: { wasted_sprints: 4, reverted_merges: 1, defaults_fired: 15, usd: 600 }
+    authority:
+      merge_pr.low: do_notify
+      parallel_prs_when_merge_blocked: do
+      member_upgrade: do_notify
+  stabilizing:
+    risk_budget: { wasted_sprints: 2, reverted_merges: 0, defaults_fired: 8, usd: 400 }
+    authority:
+      launch_sprint.feature: propose
+      merge_pr.low: do_notify
+  release_candidate:
+    risk_budget: { wasted_sprints: 1, reverted_merges: 0, defaults_fired: 4, usd: 250 }
+    authority:
+      launch_sprint.feature: forbid
+      merge_pr.low: propose
+      member_upgrade: propose
+    promotion: { dogfood_sprint_hours: 40, max_regressions: 0 }
+
+base:
+  hard:
+    tenant_isolation: strict
+    customer_release: forbid
+    policy_file_change: propose_blocking
+  spend:
+    per_week_usd: 600
+    per_sprint_usd: 80
+  authority:
+    launch_sprint.autoqueue: do
+    launch_sprint.feature: do_notify
+    launch_sprint.other: propose
+    retry_after_abort: { mode: do, max_per_root: 1 }
+    ci_fix_sprint: { mode: do, max_per_pr: 2, max_per_branch_red: 2 }
+    merge_pr.low: propose
+    merge_pr.high: propose_blocking
+    parallel_prs_when_merge_blocked:
+      mode: propose
+      when_blocked_by: [awaiting_human_review, ci_infra_outage, merge_freeze]
+      require: independent_paths_or_stack_depth_2
+      max_open_prs: 6
+    groom_mutation: do_notify
+    mark_ready: do_notify
+    member_upgrade: propose
+    resume_run: propose
+    file_bead: { mode: do_notify, max_per_day: 10 }
+    kb_reconcile: do_notify
+    filler_job: { mode: do, max_concurrent: 2 }
+  gates:
+    default_expiry_hours: 24
+  backpressure:
+    max_prs_awaiting_human: 5
+    max_chain_depth: 3
+    breaker_consecutive_failures: 3
+  queue:
+    min_ready: 2
+    max_ready: 10
+  risk_budget:
+    replenish: weekly
+    grow_if_clean_weeks: 3
+    grow_factor: 1.25
+    max_factor: 2.0
+  merge:
+    stage: silent
+    protected_targets: [main]
+    max_files: 60
+    max_lines: 1500
+    high_paths:
+      - ".fleet/**"
+      - "src/services/credential-store.ts"
+      - "src/services/auth-*.ts"
+      - "src/tools/compose-permissions.ts"
+      - "src/cli/install.ts"
+      - "src/cli/uninstall.ts"
+      - "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs"
+      - "packages/apra-fleet-se/fleet-sprint/git-sync.mjs"
+      - ".github/workflows/**"
+    risk_guide: >-
+      High risk: credentials and secrets, authentication and tokens, permission
+      composition, install/upgrade/uninstall paths, Dolt and git sync, the
+      generic engine boundary, CI workflows. Low risk: UI pages, docs, tests,
+      new isolated modules behind a flag, refactors with unchanged tests.
+  director:
+    enforce: false                  # flip to true per 09 section 7
+    max_usd_per_call: 1.50
+    max_turns_per_call: 30
+    max_usd_per_day: 15
+  groomer:
+    max_runs_per_day: 8
+  dogfood:
+    enabled: true
+    canary_members: 1
+    canary_hours: 6
+  os_rotation:
+    mode: weighted_least_recent
+    cross_os_review: true
+    pinned_labels: [hw:jetson, hw:camera-bench]
+  intake:
+    github: { repos: ["Apra-Labs/apra-fleet"], labels: [] }
+  report_engine_bugs: { tracker: Apra-Labs/apra-fleet }
+  notify:
+    email: operator@example.com
+    digest_at: "07:30"
+    quiet_hours: "22:00-07:00"

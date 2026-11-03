@@ -1,0 +1,42 @@
+# Example vision for the apra-fleet project itself (v0.5 period).
+# Copy to <repo>/.fleet/vision.yaml on the integration branch and edit.
+# The operator owns every number and sentence here; these are a starting draft.
+version: 1
+project: apra-fleet
+objectives:
+  - id: fleet-autonomy
+    weight: 0.35
+    outcome: "The fleet runs weekends unattended; the operator answers fewer than 5 gates a day."
+    measures: [member_utilization, gap_latency_hours, gates_per_day, pass_to_merge_hours]
+    epics: ["label:objective:fleet-autonomy"]
+    meta: true
+  - id: v05-console
+    weight: 0.35
+    outcome: "v0.5 console ships with S26/S27 end-to-end green on macOS and Windows."
+    measures: [open_p1_in_scope, regression_pass, waves_remaining]
+    epics: ["label:objective:v05-console"]
+  - id: windows-parity
+    weight: 0.15
+    outcome: "No Windows-only regression reaches the integration branch."
+    measures: [windows_regressions_per_week]
+    epics: ["label:objective:windows-parity", "label:windows"]
+  - id: engine-reliability
+    weight: 0.10
+    outcome: "Sprint engine bugs found by dogfooding are fixed within a week."
+    measures: [open_engine_bugs, median_engine_bug_age_days]
+    epics: ["label:objective:engine-reliability"]
+  - id: explore
+    weight: 0.05
+    outcome: "Small bets that might change the roadmap."
+    measures: []
+    epics: ["label:objective:explore"]
+tradeoffs:
+  - "Reliability over features: never start a feature sprint while the integration branch is red."
+  - "Prefer objectives marked meta when weights are close: improving the system compounds."
+  - "Finish an epic before starting a new one at equal weight."
+  - "Fix the product, not the environment: a manual workaround repeated twice becomes product work."
+  - "Prefer changes that keep the sprint engine generic; target-specific behaviour goes in target config."
+non_goals:
+  - "No new LLM provider integrations during v0.5."
+  - "No hosted hub / multi-tenant work during v0.5."
+precedents: decisions

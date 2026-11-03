@@ -1,0 +1,67 @@
+# Example policy for a client delivery project: fixed target platform,
+# conservative authority, no release-cycle phases, strict tenant isolation.
+version: 1
+project: client-nvr
+tenant: client-a
+customer_visible_labels: [customer-visible, client-facing]
+
+phase_default: steady
+phases:
+  steady:
+    risk_budget: { wasted_sprints: 1, reverted_merges: 0, defaults_fired: 3, usd: 200 }
+
+base:
+  hard:
+    tenant_isolation: strict
+    customer_release: forbid
+    policy_file_change: propose_blocking
+  spend:
+    per_week_usd: 200
+    per_sprint_usd: 60
+  authority:
+    launch_sprint.autoqueue: do_notify
+    launch_sprint.feature: propose
+    launch_sprint.other: propose
+    retry_after_abort: { mode: propose, max_per_root: 1 }
+    ci_fix_sprint: { mode: do_notify, max_per_pr: 1, max_per_branch_red: 1 }
+    merge_pr.low: propose
+    merge_pr.high: propose_blocking
+    parallel_prs_when_merge_blocked: { mode: forbid }
+    groom_mutation: propose
+    mark_ready: propose
+    member_upgrade: propose
+    resume_run: propose
+    file_bead: { mode: propose, max_per_day: 5 }
+    kb_reconcile: propose
+    filler_job: { mode: forbid, max_concurrent: 0 }
+  gates:
+    default_expiry_hours: 48
+  backpressure:
+    max_prs_awaiting_human: 3
+    max_chain_depth: 2
+    breaker_consecutive_failures: 2
+  queue:
+    min_ready: 1
+    max_ready: 4
+  risk_budget:
+    replenish: weekly
+    grow_if_clean_weeks: 4
+    grow_factor: 1.1
+    max_factor: 1.5
+  merge:
+    stage: silent
+    protected_targets: [main, release/*]
+  director:
+    enforce: false
+    max_usd_per_call: 1.00
+    max_turns_per_call: 20
+    max_usd_per_day: 5
+  report_engine_bugs: { tracker: none }   # client data never leaves this tenant
+  dogfood:
+    enabled: false
+  os_rotation:
+    mode: off
+    pinned_labels: [hw:jetson]
+  notify:
+    email: operator@example.com
+    digest_at: "07:30"
