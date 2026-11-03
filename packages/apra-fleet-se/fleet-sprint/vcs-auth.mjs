@@ -1527,7 +1527,7 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         }
         // A remote member gets exactly ONE non-interactive provision attempt.
         try {
-            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName });
+            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName, refuseLocalNonReMintable: true });
             probeVerdicts.set(member, 'ok');
             knownGoodUntil.set(member, expiresAt);
             log(`[Sync] preflight: provision_vcs_auth succeeded for member '${member}' after its credential probe failed.`);
@@ -1573,7 +1573,7 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         }
         log(`[Sync] preflight: ensuring member '${member}' has a fresh VCS credential before dispatch; calling provision_vcs_auth.`);
         try {
-            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName });
+            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName, refuseLocalNonReMintable: true });
             knownGoodUntil.set(member, expiresAt);
             log(`[Sync] preflight: provision_vcs_auth succeeded for member '${member}'${expiresAt ? ` (expires ${expiresAt.toISOString()})` : ''}.`);
         } catch (err) {
