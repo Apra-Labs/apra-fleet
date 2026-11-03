@@ -3628,6 +3628,28 @@ version known to match the installed CLT, or update `node-gyp` itself. Check
 the npm debug log path printed in the failure output for the exact compiler
 error before assuming this is the cause.
 
+### ssh2 runs without native crypto (silent pure-JS cipher fallback)
+
+**Symptom:** `npm ci` exits 0 but ssh2's optional addon `sshcrypto.node` was
+not built (no compiler / python / make). ssh2 then silently uses its pure-JS
+ciphers: SSH still works but is slower, and timing-sensitive tests such as
+`tests/sftp-subsystem-refusal.test.ts` can behave differently.
+
+**How to tell if native crypto is active (source/dev installs):**
+`node scripts/check-ssh2-native.mjs` exits 0 and prints the binding path when
+active; it exits 1 and names `sshcrypto.node` plus the fix when not. Fix:
+install build tools and run `npm rebuild ssh2` (or re-run `npm ci`). CI runs
+this check in the node_modules cache action before saving the cache, so a tree
+without the binding fails the job and is never cached.
+
+**Decision: apra-fleet does NOT warn at startup.** What was checked: the
+shipped single-executable binary is bundled by `scripts/build-sea.mjs` with
+`loader: { '.node': 'empty' }`, so `sshcrypto.node` is never part of the
+shipped binary and ssh2 always uses the JS cipher there. A startup warning
+would fire for every shipped install and carry no actionable remedy (users
+cannot rebuild a SEA binary), so it would be noise. The check is therefore a
+contributor/CI guard only, not a runtime feature.
+
 ## Stuck agents
 
 **A member is stuck after a session reset**
