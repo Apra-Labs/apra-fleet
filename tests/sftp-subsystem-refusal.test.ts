@@ -24,9 +24,12 @@ function duplexPair(): [Duplex, Duplex] {
   let a: Duplex;
   let b: Duplex;
   const make = (peer: () => Duplex) => new Duplex({
-    write(chunk, _enc, cb) { peer().push(chunk); cb(); },
+    // Deliver on a later tick: setImmediate callbacks run FIFO, so chunk (and
+    // end-of-stream) order is preserved. Synchronous delivery lets the peer
+    // reply re-entrantly mid-packet, which breaks ssh2's pure-JS AES-GCM path.
+    write(chunk, _enc, cb) { setImmediate(() => { peer().push(chunk); cb(); }); },
     read() {},
-    final(cb) { peer().push(null); cb(); },
+    final(cb) { setImmediate(() => { peer().push(null); cb(); }); },
   });
   a = make(() => b);
   b = make(() => a);

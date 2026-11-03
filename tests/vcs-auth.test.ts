@@ -140,7 +140,7 @@ describe('GitHub provider', () => {
 });
 
 describe('Bitbucket provider', () => {
-  it('deploy: writes credential helper with email and api_token', async () => {
+  it('deploy: writes credential helper with the fixed token username and api_token', async () => {
     const execCalls: string[] = [];
     const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
 
@@ -153,7 +153,8 @@ describe('Bitbucket provider', () => {
     expect(result.metadata?.email).toBe('dev@example.com');
     expect(result.metadata?.workspace).toBe('my-team');
     expect(execCalls[0]).toContain('bitbucket.org');
-    expect(execCalls[0]).toContain('dev@example.com');
+    expect(execCalls[0]).toContain('username=x-bitbucket-api-token-auth');
+    expect(execCalls[0]).not.toContain('dev@example.com');
     expect(execCalls[0]).toContain('ATBB_secret');
   });
 
@@ -166,16 +167,19 @@ describe('Bitbucket provider', () => {
     expect(execCalls[0]).toContain('credential.https://bitbucket.org.helper');
   });
 
-  it('testConnectivity: succeeds when API responds', async () => {
+  it('testConnectivity: skips (never a false success) without credentials to verify with', async () => {
     const exec = async () => '{"username":"dev"}';
     const result = await bitbucketProvider.testConnectivity(makeAgent(), exec);
-    expect(result.success).toBe(true);
+    expect(result.skipped).toBe(true);
   });
 
-  it('testConnectivity: fails when API throws', async () => {
+  it('testConnectivity: fails with rest_failed when the REST call throws', async () => {
     const exec = async () => { throw new Error('401'); };
-    const result = await bitbucketProvider.testConnectivity(makeAgent(), exec);
+    const member = makeAgent({ gitRepos: ['https://bitbucket.org/my-team/app.git'] });
+    const result = await bitbucketProvider.testConnectivity(member, exec, undefined,
+      { api_token: 'ATBB_secret', workspace: 'my-team' });
     expect(result.success).toBe(false);
+    expect(result.reason).toBe('rest_failed');
   });
 });
 
@@ -510,19 +514,23 @@ describe('provider credential assembly (apra-fleet-5co8.3.1)', () => {
       .toBe('GitHub PAT mode requires "token" field.');
   });
 
-  it('bitbucket: returns the credential when all three fields are present', () => {
+  it('bitbucket: returns the credential when api_token and workspace are present (email kept as metadata only)', () => {
     expect(bitbucketProvider.buildCredentials!({ provider: 'bitbucket', email: 'd@co.com', api_token: 't', workspace: 'ws' }))
       .toEqual({ email: 'd@co.com', api_token: 't', workspace: 'ws' });
   });
 
-  it('bitbucket: returns the error string when any field is missing', () => {
+  it('bitbucket: returns the error string when api_token or workspace is missing', () => {
     for (const input of [
-      { provider: 'bitbucket' as const, api_token: 't', workspace: 'ws' },
       { provider: 'bitbucket' as const, email: 'd@co.com', workspace: 'ws' },
       { provider: 'bitbucket' as const, email: 'd@co.com', api_token: 't' },
     ]) {
-      expect(bitbucketProvider.buildCredentials!(input)).toBe('Bitbucket requires "email", "api_token", and "workspace" fields.');
+      expect(bitbucketProvider.buildCredentials!(input)).toBe('Bitbucket requires "api_token" and "workspace" fields.');
     }
+  });
+
+  it('bitbucket: email is optional', () => {
+    expect(bitbucketProvider.buildCredentials!({ provider: 'bitbucket', api_token: 't', workspace: 'ws' }))
+      .toEqual({ api_token: 't', workspace: 'ws' });
   });
 
   // apra-fleet-5co8.3.3: azure-devops's buildCredentials had no dedicated

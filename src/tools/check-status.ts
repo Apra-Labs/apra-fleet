@@ -30,6 +30,7 @@ import { kbHelperAudience } from '../services/knowledge/http-provider.js';
 import { lookupServerSecret, lookupServerSecretMeta, lookupCredentialHelper } from '../services/credential-store.js';
 import { jwtExpiry } from '../utils/jwt-expiry.js';
 import { getHelperTokenStatus, type HelperTokenState } from '../services/credential-helper-cache.js';
+import { gitExecutable } from '../os/git-executable.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -276,7 +277,7 @@ function readGitNexusMeta(repoDir: string): GitNexusMeta | null {
 
 function currentHead(repoDir: string): string | null {
   try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], {
+    return execFileSync(gitExecutable(), ['rev-parse', 'HEAD'], {
       cwd: repoDir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
   } catch {
@@ -286,7 +287,7 @@ function currentHead(repoDir: string): string | null {
 
 function commitsBehindCount(repoDir: string, lastCommit: string, head: string): number | null {
   try {
-    const out = execFileSync('git', ['rev-list', '--count', `${lastCommit}..${head}`], {
+    const out = execFileSync(gitExecutable(), ['rev-list', '--count', `${lastCommit}..${head}`], {
       cwd: repoDir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
     const count = Number.parseInt(out, 10);

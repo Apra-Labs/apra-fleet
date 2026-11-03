@@ -31,6 +31,7 @@ import { getKbProviders, getGlobalKbProvider, getProjectSlug, type KbProviders }
 import { getMemberBibleView } from './member-bible-view.js';
 import { requireSqliteProject } from './require-sqlite-project.js';
 import type { SqliteProvider } from './sqlite-provider.js';
+import { gitExecutable } from '../../os/git-executable.js';
 
 /** Explicit KB anchor for in-process callers. Not exposed on any tool schema. */
 export interface KbAnchor {
@@ -87,7 +88,7 @@ function gitOut(folder: string, args: string[]): string | null {
   // for that checkout.
   const env = { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(folder) };
   try {
-    return execFileSync('git', args, {
+    return execFileSync(gitExecutable(), args, {
       cwd: folder, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
   } catch {

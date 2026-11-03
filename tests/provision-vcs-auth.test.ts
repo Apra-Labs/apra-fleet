@@ -697,3 +697,81 @@ describe('provisionVcsAuth', () => {
     });
   });
 });
+
+describe('provisionVcsAuth -- non_interactive and pre-OOB validation', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    mockCollectOobApiKey.mockResolvedValue({ fallback: '[FAIL] OOB cancelled in test.' });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  function addMember(name: string) {
+    const member = makeTestAgent({ friendlyName: name });
+    addAgent(member);
+    return member;
+  }
+
+  it('non_interactive + missing api_token -> credential_missing naming api_token, OOB never called', async () => {
+    const member = addMember('ni-missing-token');
+    const { structuredContent } = await provisionVcsAuth({
+      member_id: member.id, provider: 'bitbucket', workspace: 'ws', non_interactive: true,
+    });
+    expect(structuredContent.ok).toBe(false);
+    expect(structuredContent.reason).toBe('credential_missing');
+    expect(structuredContent.message).toContain('api_token');
+    expect(mockCollectOobApiKey).toHaveBeenCalledTimes(0);
+    expect(mockExecCommand).toHaveBeenCalledTimes(0);
+  });
+
+  it('non_interactive + missing pat (azure-devops) -> credential_missing naming pat', async () => {
+    const member = addMember('ni-missing-pat');
+    const { structuredContent } = await provisionVcsAuth({
+      member_id: member.id, provider: 'azure-devops', org_url: 'https://dev.azure.com/o', non_interactive: true,
+    });
+    expect(structuredContent.reason).toBe('credential_missing');
+    expect(structuredContent.message).toContain('pat');
+    expect(mockCollectOobApiKey).toHaveBeenCalledTimes(0);
+  });
+
+  for (const nonInteractive of [false, true]) {
+    it(`missing workspace (bitbucket) -> credential_assembly_failed naming workspace, no OOB (non_interactive=${nonInteractive})`, async () => {
+      const member = addMember(`ni-no-ws-${nonInteractive}`);
+      const { structuredContent } = await provisionVcsAuth({
+        member_id: member.id, provider: 'bitbucket', non_interactive: nonInteractive,
+      });
+      expect(structuredContent.ok).toBe(false);
+      expect(structuredContent.reason).toBe('credential_assembly_failed');
+      expect(structuredContent.message).toContain('workspace');
+      expect(mockCollectOobApiKey).toHaveBeenCalledTimes(0);
+    });
+  }
+
+  it('interactive with all non-secret fields present and api_token absent still reaches OOB', async () => {
+    const member = addMember('ni-interactive-oob');
+    mockCollectOobApiKey.mockResolvedValueOnce({ password: encryptPassword('ATBB_from_oob') });
+    const { structuredContent } = await provisionVcsAuth({
+      member_id: member.id, provider: 'bitbucket', workspace: 'ws',
+    });
+    expect(mockCollectOobApiKey).toHaveBeenCalledTimes(1);
+    expect(mockCollectOobApiKey).toHaveBeenCalledWith(
+      'ni-interactive-oob', 'provision_vcs_auth',
+      expect.objectContaining({ prompt: 'Enter Bitbucket API token for ni-interactive-oob' }),
+    );
+    expect(structuredContent.ok).toBe(true);
+  });
+
+  it('non_interactive with the secret present deploys normally', async () => {
+    const member = addMember('ni-present');
+    const { structuredContent } = await provisionVcsAuth({
+      member_id: member.id, provider: 'bitbucket', workspace: 'ws', api_token: 'ATBB_x', non_interactive: true,
+    });
+    expect(structuredContent.ok).toBe(true);
+    expect(mockCollectOobApiKey).toHaveBeenCalledTimes(0);
+  });
+});

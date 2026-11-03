@@ -364,6 +364,52 @@ export class DoltSyncError extends WorkflowError {
     }
 }
 
+/** Stable error code of DoltWindowsSpawnLimitError. */
+export const DOLT_WINDOWS_SPAWN_LIMIT_CODE = 'DOLT_WINDOWS_SPAWN_LIMIT';
+
+/**
+ * A D-pull/D-push that kept failing because Windows refused to start bd/dolt's
+ * git child processes (CreateProcess ERROR_NOT_ENOUGH_MEMORY, the Windows
+ * process-creation limit) until its transient retry budget ran out. A
+ * DoltSyncError subtype, so every existing DoltSyncError handler (degrade/fatal
+ * policy, classifySyncError -> 'transient') still applies; the stable `code`
+ * lets a caller tell it apart from a generic sync failure.
+ */
+export class DoltWindowsSpawnLimitError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: 'transient', cause: 'windows-spawn-limit', ...opts.details } });
+        this.name = 'DoltWindowsSpawnLimitError';
+        this.code = DOLT_WINDOWS_SPAWN_LIMIT_CODE;
+    }
+}
+
+/** Stable error code of DoltLockHeldError. */
+export const DOLT_BEADS_LOCK_HELD_CODE = 'DOLT_BEADS_LOCK_HELD';
+
+/**
+ * A D-pull/D-push that was still waiting after the lock-holder watchdog fired
+ * while a process OTHER than this sync (one that started before the sync
+ * attempt did) held a beads lock on the member. Raised in bounded time instead
+ * of waiting out the inactivity timeout; `details.holders` lists each holder
+ * ({ pid, ageS, lock, commandLine }). A DoltSyncError subtype, so every
+ * existing DoltSyncError handler still applies.
+ */
+export class DoltLockHeldError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: 'lock-held', ...opts.details } });
+        this.name = 'DoltLockHeldError';
+        this.code = DOLT_BEADS_LOCK_HELD_CODE;
+    }
+}
+
 /**
  * Thrown by preflightBeadsHealthGate() when the backlog member's beads clone
  * holds local schema migrations bd auto-applied but never published (the
@@ -439,6 +485,16 @@ export class DoltBinaryUnavailableError extends WorkflowError {
 // AgentDispatchError -- checked FIRST below since it can't be fooled by
 // auth-like noise in an unrelated failure's message text; the regex remains
 // as a fallback for older/mocked errors that only ever set `.message`.
+// The server refuses a dispatch (no LLM call made) when the member's stored
+// credential env vars cannot be delivered without a command line: a relay
+// member or one with SFTP disabled. Deterministic -- the member's channel does
+// not change between attempts -- so it is non-retryable. It is deliberately
+// NOT an LLM-auth failure (isAuthDispatchError): the credential is present
+// but undeliverable, so provision_llm_auth self-heal cannot fix it; the
+// operator must enable SFTP or clear/provide the credential on the member.
+export const SECRET_DELIVERY_UNAVAILABLE_REASON = 'secret_delivery_unavailable';
+export const SECRET_DELIVERY_UNAVAILABLE_REMEDY = 'enable SFTP on the member, or clear its stored credentials (provision_llm_auth with clear_stored_credentials) and provide the credential on the member itself';
+
 const NON_RETRYABLE_DISPATCH_RE = /authentication failed|failed to authenticate|oauth session expired|could not be refreshed|not logged in|workspace not trusted|has not been trusted/i;
 
 /**
@@ -451,7 +507,8 @@ const NON_RETRYABLE_DISPATCH_RE = /authentication failed|failed to authenticate|
 export function isNonRetryableDispatchError(err) {
     const reason = err?.details?.reason;
     if (reason === 'auth' || reason === 'workspace_not_trusted'
-        || reason === 'preflight_auth_missing' || reason === 'preflight_auth_expired') return true;
+        || reason === 'preflight_auth_missing' || reason === 'preflight_auth_expired'
+        || reason === SECRET_DELIVERY_UNAVAILABLE_REASON) return true;
     return NON_RETRYABLE_DISPATCH_RE.test(String(err?.message ?? ''));
 }
 

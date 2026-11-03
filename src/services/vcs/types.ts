@@ -32,7 +32,10 @@ export interface GitHubPatCredentials {
 export type GitHubCredentials = GitHubAppCredentials | GitHubPatCredentials;
 
 export interface BitbucketCredentials {
-  email: string;
+  /** OPTIONAL account email. Never used for auth (git or REST) -- kept only
+   *  as deploy metadata when the caller supplied it. Git authenticates with
+   *  the fixed token username (see src/services/vcs/bitbucket.ts). */
+  email?: string;
   api_token: string;
   workspace: string;
 }
@@ -79,6 +82,13 @@ export interface VcsDeployResult {
    * result that actually ran the check (success or failure).
    */
   skipped?: boolean;
+  /**
+   * OPTIONAL machine-readable cause a testConnectivity() result carries
+   * when it names which verification channel failed (e.g. Bitbucket's
+   * 'rest_unauthorized', 'rest_failed', 'git_auth_failed', 'git_failed'),
+   * or 'ok' when every channel passed. Never carries credential material.
+   */
+  reason?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +157,17 @@ export interface VcsProviderService {
   buildCredentials?(input: VcsCredentialInput): unknown | string;
 
   /**
+   * Check every REQUIRED NON-secret field (e.g. Bitbucket's workspace, Azure
+   * DevOps' org_url) and return an error string naming the missing/invalid
+   * field, or null when they are all present. provision_vcs_auth runs this
+   * BEFORE any out-of-band credential collection, so an operator is never
+   * prompted for a secret the call would then reject for another reason.
+   * Pure, like buildCredentials. OPTIONAL: a provider with no required
+   * non-secret field (GitHub) omits it.
+   */
+  validateNonSecretFields?(input: VcsCredentialInput): string | null;
+
+  /**
    * How this provider's credential is collected when the payload omits it.
    * OPTIONAL: a provider whose credential is always derived server-side (a
    * GitHub App minting flow) has nothing to prompt for.
@@ -178,11 +199,15 @@ export interface VcsProviderService {
    * deploy/revoke -- optional because most providers derive what they need
    * from `agent` alone; Azure DevOps uses it as a repo-derivation fallback
    * when `agent.gitRepos` does not already carry a usable clone URL.
+   * `credentials` is the same object deploy() just received, for a provider
+   * whose check needs an authenticated REST call (Bitbucket's Bearer GET);
+   * an implementation must never echo it into `message` or `reason`.
    */
   testConnectivity(
     agent: Agent,
     exec: (cmd: string) => Promise<string>,
     scopeUrl?: string,
+    credentials?: unknown,
   ): Promise<VcsDeployResult>;
 }
 

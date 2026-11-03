@@ -11,6 +11,7 @@ import { codeIndexReadiness, ensureGitNexusIndexReady, indexChangedDuringCallErr
 import { indexGeneration, readGitNexusIndexState } from './code-index-state.js';
 import { logError } from '../utils/log-helpers.js';
 import { missingOnServerPathMessage, npxUnavailableReason } from '../utils/find-on-path.js';
+import { gitExecutable } from '../os/git-executable.js';
 
 // ONE gitnexus child serves every repo; each live child is a ClientEntry.
 //
@@ -199,7 +200,7 @@ function computeFreshnessNote(repo: string): string | null {
   try {
     const metaPath = join(repo, '.gitnexus', 'meta.json');
     const meta = JSON.parse(readFileSync(metaPath, 'utf-8')) as { lastCommit?: string };
-    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+    const head = execFileSync(gitExecutable(), ['rev-parse', 'HEAD'], {
       cwd: repo, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
 

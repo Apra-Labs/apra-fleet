@@ -367,3 +367,44 @@ test('sendJson writes a JSON response with content-length', async () => {
     assert.deepEqual(res.json, { ok: true });
     await new Promise((r) => server.close(r));
 });
+
+import { createSupervisor as createSupervisorForShutdownBounds } from '../src/supervisor/server.mjs';
+
+describe('shutdown bounds (per-seam timeout and forced exit)', () => {
+    test('a seam whose stop() never settles is bounded, named, and does not block shutdownRequested', async () => {
+        const errors = [];
+        const stopped = [];
+        const sup = createSupervisorForShutdownBounds({
+            port: 0,
+            logger: { log() {}, error: (...a) => errors.push(a.join(' ')) },
+            seamStopTimeoutMs: 100,
+            dashboard: { name: 'dashboard', start() {}, stop: () => new Promise(() => {}) },
+            ledger: { name: 'ledger', start() {}, stop: async () => { stopped.push('ledger'); } },
+        });
+        await sup.start();
+        await sup.stop('test');
+        await sup.shutdownRequested;
+        assert.deepEqual(sup.hungSeams, ['dashboard']);
+        assert.ok(errors.some((e) => /dashboard did not stop within 100ms/.test(e)));
+        assert.deepEqual(stopped, ['ledger'], 'later seams still stop after a hung one');
+    });
+
+    test('forced exit fires with code 0 and names the hung seam when shutdown stalls', async () => {
+        const errors = [];
+        let exitCode;
+        const sup = createSupervisorForShutdownBounds({
+            port: 0,
+            logger: { log() {}, error: (...a) => errors.push(a.join(' ')) },
+            seamStopTimeoutMs: 50,
+            forcedExitMs: 300,
+            exit: (c) => { exitCode = c; },
+            dashboard: { name: 'dashboard', start() {}, stop: () => new Promise(() => {}) },
+            ledger: { name: 'ledger', start() {}, stop: () => new Promise(() => {}) },
+        });
+        await sup.start();
+        void sup.stop('test');
+        await new Promise((r) => setTimeout(r, 700));
+        assert.equal(exitCode, 0);
+        assert.ok(errors.some((e) => /forcing exit/.test(e) && /dashboard/.test(e)));
+    });
+});

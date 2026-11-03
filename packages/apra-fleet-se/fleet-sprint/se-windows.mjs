@@ -193,6 +193,18 @@ export class SeWindowsCommands {
   }
 
   /**
+   * PowerShell twin of SePosixCommands.gitLsRemoteProbe: sets
+   * GIT_TERMINAL_PROMPT=0 and GCM_INTERACTIVE=never in this one-shot
+   * process's environment (the envelope is a fresh powershell, so nothing
+   * persists), then `git ls-remote origin HEAD` with no credential.helper
+   * override. The envelope's $LASTEXITCODE check surfaces git's exit code.
+   * @returns {string}
+   */
+  gitLsRemoteProbe() {
+    return this.wrapForMember("$env:GIT_TERMINAL_PROMPT='0'; $env:GCM_INTERACTIVE='never'; git ls-remote origin HEAD");
+  }
+
+  /**
    * PowerShell twin of SePosixCommands.ensureFile: create the file (and its
    * parent directory) when absent; an existing file is never truncated.
    * Only literal paths, no member environment reads.

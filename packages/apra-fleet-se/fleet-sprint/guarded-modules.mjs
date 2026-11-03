@@ -519,6 +519,20 @@ export const GUARD_REGISTRATION_EXEMPT = {
         'deliberately emits `$HOME`, `$env:USERPROFILE`, `$env:TEMP` and `$( )` because it IS the ' +
         'OS-branched command surface the shell-command invariant tells everyone else to route ' +
         'through; scanning it would report its entire reason for existing as violations.',
+    // beads-lock-probe.mjs: the per-OS/shell builder of the beads
+    // lock-holder probe (a POSIX script with `$( )` and a PowerShell script
+    // with `$_`), the same kind of OS-branched command surface.
+    'beads-lock-probe.mjs':
+        'deliberately emits `$( )` (POSIX) and `$_` (PowerShell) because it IS the OS-branched ' +
+        'builder of the beads lock-holder probe; scanning it would report its entire reason for ' +
+        'existing as violations.',
+    // bd-sync-command.mjs: the per-OS/shell builder of the bd sync command
+    // string (the Windows GOMAXPROCS assignment), the same kind of
+    // OS-branched command surface as the shell builders above.
+    'bd-sync-command.mjs':
+        'deliberately emits the PowerShell `$env:GOMAXPROCS=` assignment because it IS the ' +
+        'OS-branched builder of the bd sync command string; scanning it would report its entire ' +
+        'reason for existing as violations.',
     // dolt-sync.mjs -- reason reused verbatim from the same header (do not
     // re-derive it).
     'dolt-sync.mjs':

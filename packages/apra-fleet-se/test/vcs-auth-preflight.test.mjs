@@ -149,6 +149,7 @@ describe('createVcsAuthPreflightCallback', () => {
             github_mode: 'github-app',
             git_access: 'push',
             repos: ['acme/widgets'],
+            non_interactive: true,
         });
         assert.ok(logs.some((l) => /preflight/.test(l) && /ensuring member 'fleet-mac'/.test(l)), `expected a preflight log entry, got: ${JSON.stringify(logs)}`);
         assert.ok(logs.some((l) => /preflight: provision_vcs_auth succeeded for member 'fleet-mac'/.test(l)), `expected a preflight success log entry, got: ${JSON.stringify(logs)}`);
@@ -231,7 +232,12 @@ describe('createVcsAuthPreflightCallback', () => {
     });
 
     test('a provision_vcs_auth failure during preflight is logged and swallowed -- NEVER throws, never blocks the dispatch (the reactive self-heal remains the real safety net)', async () => {
-        const callTool = async () => { throw new Error('provision_vcs_auth: fleet server unreachable'); };
+        // member_detail answers (a member_detail failure is the separate
+        // fail-closed case); only provision_vcs_auth itself fails.
+        const callTool = async (name) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+            throw new Error('provision_vcs_auth: fleet server unreachable');
+        };
         const logs = [];
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand, log: (m) => logs.push(m) });
 
@@ -263,6 +269,12 @@ describe('createVcsAuthPreflightCallback', () => {
             if (cmd === 'git remote get-url origin') {
                 return { ok: true, output: 'https://bitbucket.org/acme/widgets.git', error: null };
             }
+            // apra-fleet-d1pk.3: a Bitbucket member is probed first; fail
+            // the probe so this REMOTE member falls through to its one
+            // provisioning attempt, whose shape this test pins.
+            if (cmd.includes('git ls-remote origin')) {
+                return { ok: false, output: '', error: 'fatal: Authentication failed' };
+            }
             return { ok: true, output: '', error: null };
         };
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: bitbucketCommand });
@@ -292,6 +304,7 @@ describe('createVcsAuthPreflightCallback', () => {
             // exactly what an unattended preflight must never do.
             workspace: 'acme',
             api_token: '{{secret.bitbucket_api_token}}',
+            non_interactive: true,
         });
         assert.ok(!('github_mode' in provisionCall.args), `expected no github_mode field for a non-GitHub provider, got: ${JSON.stringify(provisionCall.args)}`);
         assert.ok(

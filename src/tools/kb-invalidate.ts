@@ -7,6 +7,7 @@ import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/k
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
+import { gitExecutable } from '../os/git-executable.js';
 
 export const kbInvalidateSchema = z.object({
   files: z.array(z.string()).min(1).optional().describe('File paths to invalidate (context-cache entries for these files will be marked stale)'),
@@ -40,7 +41,7 @@ function gitRevParsePath(repoPath: string, args: string[]): string {
   const command = `git rev-parse ${args.join(' ')}`;
   let out: string;
   try {
-    out = execFileSync('git', ['rev-parse', ...args], {
+    out = execFileSync(gitExecutable(), ['rev-parse', ...args], {
       cwd: repoPath, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     }).trim().split(/\r?\n/)[0]?.trim() ?? '';
   } catch (err) {

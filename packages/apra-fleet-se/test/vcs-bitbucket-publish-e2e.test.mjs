@@ -29,7 +29,7 @@ const check = (cond, msg) => assert.ok(cond, msg);
 //      direct assertion and, more strongly, by construction: the chain test
 //      below only reaches its dispatched curl at all if this gate passed.
 //   2. parseProviderRepoRef yields workspace/repo coordinates.
-//   3. buildCreatePrCommand's URL, method, body and -u argument are pinned
+//   3. buildCreatePrCommand's URL, method, body and Bearer header are pinned
 //      EXACTLY (full string equality, not substring checks), with both
 //      credential halves carried as the server placeholders
 //      {{vcs_username_inline}}/{{vcs_token_inline}} in that exact order --
@@ -167,12 +167,12 @@ test('vcs-bitbucket-publish-e2e: parseProviderRepoRef - yields workspace/repo co
     check(httpsRef.ref.repo === 'apra-analytics', `Expected repo 'apra-analytics' from HTTPS, got: ${httpsRef.ref.repo}`);
 });
 
-// (3) buildCreatePrCommand: the URL, method, body and -u argument are pinned
+// (3) buildCreatePrCommand: the URL, method, body and Bearer header are pinned
 // EXACTLY (full string equality), not by substring checks -- a substring
 // check cannot catch the two credential halves being swapped or reordered,
 // which is exactly the property this assertion exists to pin (see the
 // module doc comment above).
-test('vcs-bitbucket-publish-e2e: buildCreatePrCommand - URL, method, body and -u argument are pinned EXACTLY with server placeholders in order', () => {
+test('vcs-bitbucket-publish-e2e: buildCreatePrCommand - URL, method, body and Bearer header are pinned EXACTLY with server placeholders in order', () => {
     const built = buildCreatePrCommand({
         provider: 'bitbucket',
         repoRef: BB_REPO_REF,
@@ -181,7 +181,6 @@ test('vcs-bitbucket-publish-e2e: buildCreatePrCommand - URL, method, body and -u
         title: 'Test PR',
         body: 'Test body',
         token: '{{vcs_token_inline}}',
-        username: '{{vcs_username_inline}}',
         os: 'linux',
         shell: 'sh',
     });
@@ -192,7 +191,7 @@ test('vcs-bitbucket-publish-e2e: buildCreatePrCommand - URL, method, body and -u
     const expectedPayload = '{"title":"Test PR","source":{"branch":{"name":"auto-sprint/feat-x"}},"destination":{"branch":{"name":"main"}},"description":"Test body"}';
     const expectedCommand = [
         'curl -sS -X POST',
-        "-u '{{vcs_username_inline}}:{{vcs_token_inline}}'",
+        "-H 'Authorization: Bearer {{vcs_token_inline}}'",
         "-H 'Content-Type: application/json'",
         "-H 'Accept: application/json'",
         `-d '${expectedPayload}'`,
@@ -202,11 +201,10 @@ test('vcs-bitbucket-publish-e2e: buildCreatePrCommand - URL, method, body and -u
 
     check(
         built.command === expectedCommand,
-        `Expected the EXACT pinned command (server placeholders in username:token order), got:\n${built.command}\nexpected:\n${expectedCommand}`,
+        `Expected the EXACT pinned command (server token placeholder), got:\n${built.command}\nexpected:\n${expectedCommand}`,
     );
 
     const expectedLogSafeCommand = expectedCommand
-        .replace('{{vcs_username_inline}}', '***REDACTED***')
         .replace('{{vcs_token_inline}}', '***REDACTED***');
     check(
         built.logSafeCommand === expectedLogSafeCommand,
@@ -217,7 +215,7 @@ test('vcs-bitbucket-publish-e2e: buildCreatePrCommand - URL, method, body and -u
 // (4) logSafeCommand redaction: contains neither placeholder's substituted
 // value when real credentials are passed through a mock (proves the
 // redaction layer independently of step 3's placeholder-shape pin).
-test('vcs-bitbucket-publish-e2e: logSafeCommand - redacts both username and token', () => {
+test('vcs-bitbucket-publish-e2e: logSafeCommand - redacts the token; no username or -u', () => {
     const built = buildCreatePrCommand({
         provider: 'bitbucket',
         repoRef: BB_REPO_REF,
@@ -225,16 +223,14 @@ test('vcs-bitbucket-publish-e2e: logSafeCommand - redacts both username and toke
         head: 'auto-sprint/feat-x',
         title: 'Test PR',
         token: 'mock-bb-api-token',
-        username: 'bbuser@example.com',
         os: 'linux',
         shell: 'sh',
     });
 
     check(built.command.includes('mock-bb-api-token'), `Expected command to carry real token, got: ${built.command}`);
-    check(built.command.includes('bbuser@example.com'), `Expected command to carry real username, got: ${built.command}`);
+    check(!/ -u /.test(built.command), `Expected no -u flag, got: ${built.command}`);
     check(built.logSafeCommand.includes('***REDACTED***'), `Expected logSafeCommand to carry redaction marker, got: ${built.logSafeCommand}`);
     check(!built.logSafeCommand.includes('mock-bb-api-token'), `Expected logSafeCommand to NOT contain token, got: ${built.logSafeCommand}`);
-    check(!built.logSafeCommand.includes('bbuser@example.com'), `Expected logSafeCommand to NOT contain username, got: ${built.logSafeCommand}`);
 });
 
 // Response mapping: the provider's pullRequestResponse.map works correctly
@@ -343,8 +339,8 @@ test('finalizeAbort (Bitbucket): a canned 201 body maps to a PR URL constructed 
     // requires -- proving the bb-cred lane's placeholder substitution and
     // the bb-provider lane's builder actually meet.
     check(
-        prCmd.includes("-u 'mock-bitbucket-username:mock-bitbucket-api-token'"),
-        `Expected the curl -u argument to carry 'username:token' in that exact order after substitution, got: ${prCmd}`,
+        prCmd.includes("-H 'Authorization: Bearer mock-bitbucket-api-token'") && !/ -u /.test(prCmd),
+        `Expected the curl Bearer header to carry the token after substitution and no -u, got: ${prCmd}`,
     );
     check(!prCmd.includes('{{vcs_username_inline}}') && !prCmd.includes('{{vcs_token_inline}}'), `Expected no unsubstituted placeholder in the dispatched command, got: ${prCmd}`);
 });
