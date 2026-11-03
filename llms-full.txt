@@ -3605,6 +3605,30 @@ Fix in the product:
   process-creation limit in the surfaced error and strips the misleading
   credential hint lines. The failure is still classified as a transient spawn
   outage and retried as before.
+- Go concurrency is bounded for bd/dolt started by fleet on Windows members.
+  dolt (a Go program) starts one git process per remote chunk at once, and
+  enough concurrent `CreateProcess` calls fail with this error even with a
+  small env block. Fleet sets `GOMAXPROCS=1` ONLY when it is not already set
+  (an operator value is never overridden) -- rule in src/os/go-concurrency.ts:
+  - local Windows members: the child env built by `getCleanEnv()` /
+    `WindowsGitBashCommands.cleanExec()`;
+  - remote Windows members: the agent launch command and the
+    `execute_command` wrapper, as a PowerShell or Git Bash statement chosen
+    per member shell. So `bd dolt pull/push` run by a dispatched agent, the
+    groomer, or `execute_command` inherits it. Linux/macOS members are
+    unchanged.
+  Upstream issue: https://github.com/gastownhall/beads/issues/7082
+
+Your own terminal (not started by fleet): fleet cannot set the env of a shell
+you opened yourself, so set the same default before running `bd dolt
+pull`/`bd dolt push` there:
+
+- PowerShell (this session): `$env:GOMAXPROCS = '1'`
+- PowerShell (persist for your user, new shells): `[Environment]::SetEnvironmentVariable('GOMAXPROCS', '1', 'User')`
+- cmd.exe: `set GOMAXPROCS=1` (persist: `setx GOMAXPROCS 1`)
+- Git Bash: `export GOMAXPROCS=1` (persist: add it to `~/.bashrc`)
+
+If you already set `GOMAXPROCS` to another value on purpose, fleet keeps it.
 
 **`bd init` errors "already initialized" on a second run**
 
