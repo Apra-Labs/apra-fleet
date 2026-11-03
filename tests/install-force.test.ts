@@ -8,6 +8,7 @@ import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { runInstall, isApraFleetRunning, killApraFleet, _setSeaOverride, _setManifestOverride, _setInstallForceTimingOverride } from '../src/cli/install.js';
 import { getServiceManager } from '../src/services/service-manager/index.js';
+import { legacyTaskGuidance } from '../src/services/service-manager/windows.js';
 import type { ServiceManager } from '../src/services/service-manager/types.js';
 
 vi.mock('node:os', () => ({
@@ -1010,5 +1011,84 @@ describe('install --force stops only the relevant pids, never itself or unrelate
     expect(alive.has(process.pid)).toBe(true);
 
     exitSpy.mockRestore();
+  });
+});
+
+// Reused elevated legacy task that refuses /run during install --force: the
+// user must get the legacy-task guidance (elevated schtasks /delete, then
+// install --force), not "Start it with: apra-fleet start", which would hit
+// the same refusal.
+describe('install --force over a reused elevated task that refuses run', () => {
+  let serviceStopped = false;
+  function fakeMgr(overrides: Partial<ServiceManager> = {}): ServiceManager {
+    return {
+      register: vi.fn().mockResolvedValue('reused'),
+      unregister: vi.fn().mockResolvedValue(undefined),
+      start: vi.fn().mockRejectedValue(new Error('schtasks /run /tn ApraFleet failed: ERROR: Access is denied.')),
+      stop: vi.fn().mockImplementation(async () => { serviceStopped = true; }),
+      query: vi.fn().mockResolvedValue({ installed: true, running: false }),
+      isInstalled: vi.fn().mockResolvedValue(true),
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    _setSeaOverride(true);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    // A server is running until the registered service is stopped.
+    serviceStopped = false;
+    vi.mocked(execSync).mockImplementation(((cmd: any) => {
+      const c = cmd.toString();
+      if (c === 'pgrep -x apra-fleet') {
+        if (serviceStopped) throw Object.assign(new Error('no match'), { status: 1 });
+        return '5678\n' as any;
+      }
+      const exe = exeLookupResult(c);
+      if (exe !== null) return exe as any;
+      return '' as any;
+    }) as any);
+  });
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+    vi.restoreAllMocks();
+  });
+
+  async function installAndCapture(mgr: ServiceManager): Promise<string> {
+    vi.mocked(getServiceManager).mockResolvedValue(mgr);
+    const lines: string[] = [];
+    const grab = (...a: unknown[]) => { lines.push(a.join(' ')); };
+    vi.spyOn(console, 'log').mockImplementation(grab);
+    vi.spyOn(console, 'warn').mockImplementation(grab);
+    vi.spyOn(console, 'error').mockImplementation(grab);
+    vi.spyOn(process, 'exit').mockImplementation((() => { throw new Error('exit'); }) as any);
+    await runInstall(['--skill', 'none', '--force']).catch(() => {});
+    return lines.join('\n');
+  }
+
+  const GUIDANCE = [
+    'The ApraFleet scheduled task was registered by an older apra-fleet from an elevated prompt,',
+    '  - run elevated',
+  ].join('\n');
+
+  it('prints the legacy-task guidance, not "Start it with: apra-fleet start"', async () => {
+    const out = await installAndCapture(fakeMgr({
+      legacyGuidance: vi.fn().mockReturnValue(`${GUIDANCE}\n    schtasks /delete /tn ApraFleet /f\n    apra-fleet install --force`),
+    }));
+    expect(out).toContain(GUIDANCE);
+    expect(out).toContain('schtasks /delete /tn ApraFleet /f');
+    expect(out).toContain('install --force');
+    expect(out).not.toContain('Start it with:\n    apra-fleet start');
+  });
+
+  it('other start failures (no legacy problem) keep the plain restart hint', async () => {
+    const out = await installAndCapture(fakeMgr({ legacyGuidance: vi.fn().mockReturnValue(null) }));
+    expect(out).toContain('Start it with:');
+    expect(out).not.toContain('scheduled task was registered by an older apra-fleet');
   });
 });

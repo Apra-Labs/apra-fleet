@@ -2334,7 +2334,12 @@ not start automatically.
       }
       // --force stopped the server; reporting success would leave it down silently.
       if (force && (runningScope?.relevant || guardStoppedService)) {
-        const restartHint = guardStoppedService
+        // A reused legacy (e.g. elevated) task refused the start; 'apra-fleet start'
+        // hits the same refusal, so give the upgrade guidance instead.
+        let legacyHint: string | null = null;
+        if (serviceReused) { try { legacyHint = svcMgr.legacyGuidance?.() ?? null; } catch { /* keep the generic hint */ } }
+        const restartHint = legacyHint ? legacyHint
+          : guardStoppedService
           ? `Start it with:\n    ${serviceRestartCommand()}\nthen run 'apra-fleet status' for how to repair the service (apra-fleet never needs an elevated install).`
           : 'Start it with:\n    apra-fleet start';
         console.error(`
