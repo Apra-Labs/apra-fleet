@@ -320,4 +320,6 @@ test('bitbucket AUTH_REMEDY_HINT: names bitbucket_api_token, no email', () => {
     assert.ok(hint.includes('bitbucket_api_token'));
     assert.ok(!/email/i.test(hint), hint);
     assert.ok(hint.includes('ssh.bitbucket.org'));
+    assert.ok(hint.includes('git@ssh.bitbucket.org:WORKSPACE/REPO.git'));
+    assert.ok(!/d{4}-d{2}-d{2}/.test(hint), hint);
 });

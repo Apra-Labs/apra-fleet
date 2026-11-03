@@ -320,6 +320,9 @@ describe('vcs_credential_exec: basic-auth username placeholders (apra-fleet-qeq1
 
     expect(result.structuredContent.reason).toBe('username_empty');
     expect(result.structuredContent.ok).toBe(false);
+    const text = result.text;
+    expect(text).toContain('git username');
+    expect(text).not.toContain('basic-auth username');
     // The whole point: no ':<token>' command reaches the member to surface
     // later as a confusing 401.
     expect(anythingDispatched()).toBe(false);

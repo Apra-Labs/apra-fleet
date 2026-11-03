@@ -30,7 +30,7 @@ repository over REST with `Authorization: Bearer` and runs a non-interactive
 | development | `read:repository:bitbucket`, `write:repository:bitbucket`, `read:pullrequest:bitbucket`, `write:pullrequest:bitbucket` |
 | code-review | `read:repository:bitbucket`, `read:pullrequest:bitbucket` |
 | testing | `read:repository:bitbucket`, `read:pipeline:bitbucket` |
-| devops | `admin:repository:bitbucket`, `write:pipeline:bitbucket`, `write:pullrequest:bitbucket` |
+| devops | `admin:repository:bitbucket`, `read:repository:bitbucket`, `write:repository:bitbucket`, `read:pullrequest:bitbucket`, `write:pullrequest:bitbucket`, `read:pipeline:bitbucket`, `write:pipeline:bitbucket` |
 | debugging | `read:repository:bitbucket` |
 
 Union of all roles assigned to the member. A fleet-sprint member that pushes

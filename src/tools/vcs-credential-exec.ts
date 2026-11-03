@@ -169,7 +169,7 @@ interface VcsCredentialExecFields {
   stderr: string;
   /**
    * How many times credential material had to be redacted out of
-   * stdout+stderr -- the token, plus the basic-auth username when the
+   * stdout+stderr -- the token, plus the git username when the
    * command substituted one. Normally 0; a nonzero count means the
    * dispatched command echoed its own credential back and the redaction
    * earned its keep.
@@ -310,7 +310,7 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
   // never dispatches anything.
   if (needsUsername && !username) {
     return execResult(
-      `[FAIL] The VCS credential for "${agent.friendlyName}" carries no basic-auth username (expected a 'username=' line from '${read.path}'), but the command references ${VCS_USERNAME_PLACEHOLDER}. Re-run provision_vcs_auth for a provider that records one.`,
+      `[FAIL] The VCS credential for "${agent.friendlyName}" carries no git username (expected a 'username=' line from '${read.path}'), but the command references ${VCS_USERNAME_PLACEHOLDER}. Re-run provision_vcs_auth for a provider that records one.`,
       { ...who, reason: 'username_empty' },
     );
   }
