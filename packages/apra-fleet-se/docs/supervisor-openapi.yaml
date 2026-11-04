@@ -596,11 +596,14 @@ paths:
       tags: [dolt-mutex]
       summary: Acquire the global dolt-push mutex (long-polling)
       description: >
-        Serializes every cross-sprint `bd dolt push`. FIFO queue; the HTTP
-        response is DEFERRED until this sprintId is actually granted the
-        mutex -- this is a long-poll, not an immediate accept/reject. A
-        client disconnect before grant cancels the queued wait. There is no
-        409 here: contention is resolved by waiting, not by rejecting.
+        Serializes every cross-sprint `bd dolt push`. FIFO queue; the 200
+        headers go out at once, a space is written every 30s while queued,
+        and the JSON body completes only when this sprintId is actually
+        granted the mutex -- this is a long-poll, not an immediate
+        accept/reject. Clients must therefore read the whole body before
+        trusting the outcome. A client disconnect before grant cancels the
+        queued wait. There is no 409 here: contention is resolved by waiting,
+        not by rejecting.
       parameters:
         - in: path
           name: sprintId
@@ -615,24 +618,23 @@ paths:
                 pid: { type: integer, nullable: true }
       responses:
         "200":
-          description: mutex granted
+          description: >
+            Wait ended. The body is the grant, or { error } if the wait failed
+            (e.g. mutex shutting down), after any heartbeat whitespace.
           content:
             application/json:
               schema:
-                type: object
-                required: [status, token, sprintId, expiresAt]
-                properties:
-                  status: { type: string, enum: [acquired] }
-                  token:
-                    type: string
-                    description: "opaque grant token, format `<sprintId>#<seq>#<base36 timestamp>`; required for release/renew"
-                  sprintId: { type: string }
-                  expiresAt: { type: integer, description: epoch ms; lease default 60000ms, extend via renew }
-        "503":
-          description: acquire failed (e.g. mutex shutting down)
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+                oneOf:
+                  - type: object
+                    required: [status, token, sprintId, expiresAt]
+                    properties:
+                      status: { type: string, enum: [acquired] }
+                      token:
+                        type: string
+                        description: "opaque grant token, format `<sprintId>#<seq>#<base36 timestamp>`; required for release/renew"
+                      sprintId: { type: string }
+                      expiresAt: { type: integer, description: epoch ms; lease default 60000ms, extend via renew }
+                  - $ref: "#/components/schemas/Error"
 
   /api/dolt-push-mutex/{sprintId}/release:
     post:

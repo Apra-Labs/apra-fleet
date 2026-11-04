@@ -218,8 +218,11 @@ Dolt mode wedges on row-level conflicts if two sprints write concurrently:
 
 - **Dolt-push mutex** serializes every cross-sprint `bd dolt push` through
   one FIFO queue. Deliberately implemented as a **long-poll**, not an
-  accept/reject: `POST .../acquire` does not respond until the caller
-  actually holds the mutex. There is no 409 anywhere in this surface --
+  accept/reject: `POST .../acquire` sends 200 headers at once and heartbeat
+  whitespace every 30s (so a client's fetch timeouts cannot end the wait or
+  cost the queue place), and its JSON body completes only when the caller
+  actually holds the mutex, or with `{ error }` if the wait failed. There is
+  no 409 anywhere in this surface --
   contention is resolved by waiting in the queue, and `release`/`renew`
   return a boolean (`released`/`renewed`) rather than erroring on a stale
   token, so a late call from an already-reclaimed holder is a silent no-op,
@@ -361,6 +364,7 @@ answer `503`, and a background retry flips it to `ready`.
   connect/response failed.
 - **503** -- `POST /api/sprints` while the supervisor's backlog member is
   degraded or the fleet member list cannot be read (see step 1a), plus
-  dolt-mutex acquire and id-allocator allocate failures (e.g. the
-  seam shutting down) -- distinct from 500 to signal "try again", not "this
-  request is wrong".
+  id-allocator allocate failures (e.g. the seam shutting down) -- distinct
+  from 500 to signal "try again", not "this request is wrong". A dolt-mutex
+  acquire failure is `{ error }` in the 200 body, since headers already went
+  out.
