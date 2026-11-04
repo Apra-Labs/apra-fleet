@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { Agent, fetch as undiciFetch } from 'undici';
+import { Agent, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 
 import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
 import { createSupervisor, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
@@ -207,9 +207,10 @@ describe('dolt mutex acquire -- failures stay loud', () => {
 
     test('a supervisor that sends headers and then goes silent rejects after a bound', async () => {
         // Headers go out at once, so the body timeout is the only thing bounding
-        // a hung supervisor. Real undici with that limit shortened from 300s; the
-        // client's own init wins over this dispatcher, so a client that turned
-        // the timeout off would fail here too.
+        // a hung supervisor. The client is built as production builds it, with
+        // no fetch, so it uses global fetch; the global dispatcher shortens that
+        // limit from 300s. A client whose default fetch turned the timeout off
+        // would fail here. Restored in finally for the tests after this one.
         const BODY_TIMEOUT_MS = 300;
         const agent = new Agent({ bodyTimeout: BODY_TIMEOUT_MS });
         const silent = http.createServer((req, res) => {
@@ -219,11 +220,12 @@ describe('dolt mutex acquire -- failures stay loud', () => {
         });
         await new Promise((resolve) => silent.listen(0, '127.0.0.1', resolve));
         let deadline;
+        const previousDispatcher = getGlobalDispatcher();
+        setGlobalDispatcher(agent);
         try {
             const client = createHttpDoltPushMutexClient({
                 serviceUrl: `http://127.0.0.1:${silent.address().port}`,
                 sprintId: 'waiter',
-                fetch: (url, init) => undiciFetch(url, { dispatcher: agent, ...init }),
             });
             const hung = new Promise((_, reject) => {
                 deadline = setTimeout(
@@ -237,6 +239,7 @@ describe('dolt mutex acquire -- failures stay loud', () => {
             );
             assert.equal(err.cause?.code, 'UND_ERR_BODY_TIMEOUT', `unexpected rejection: ${err.stack}`);
         } finally {
+            setGlobalDispatcher(previousDispatcher);
             clearTimeout(deadline);
             silent.closeAllConnections();
             await new Promise((resolve) => silent.close(resolve));

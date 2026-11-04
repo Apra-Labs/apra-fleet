@@ -779,9 +779,10 @@ persistence) must be mirrored in both files by hand** -- there is no shared
 module enforcing this today.
 
 The one genuinely new piece in the MCP-hosted copy is the **transport
-adaptation**: the supervisor's HTTP acquire route can long-poll (headers and
-heartbeat whitespace go out at once, and the body completes only when the
-caller owns the mutex), but an MCP tool call cannot block indefinitely. The
+adaptation**: the supervisor's HTTP acquire route can long-poll (headers go
+out at once, heartbeat whitespace follows every 30s, and the body completes
+only when the caller owns the mutex), but an MCP tool call cannot block
+indefinitely. The
 MCP-hosted mutex is therefore **ticketed**:
 `acquire` enqueues the real underlying `acquire()` promise exactly once and
 parks it server-side under a ticket id, returning `{ granted: false, ticket
