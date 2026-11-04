@@ -1532,7 +1532,7 @@ const REVIEW_SCHEMA = {
     },
     "kb_discards": {
       "type": "array",
-      "description": "Promotion candidates this reviewer showed to be WRONG and is discarding (the entry drops out of every later read). Reviewer-only, with the same evidence bar as kb_promotions. An id may not appear in both kb_promotions and kb_discards -- the engine refuses both. The engine makes the discard calls.",
+      "description": "Promotion candidates this reviewer showed to be WRONG and is discarding (the entry drops out of every later read). Reviewer-only, with the same evidence bar as kb_promotions. An id may appear in at most one of kb_promotions, kb_discards and kb_rejects -- the engine refuses duplicates. The engine makes the discard calls.",
       "items": {
         "type": "object",
         "required": [
@@ -1553,6 +1553,29 @@ const REVIEW_SCHEMA = {
         }
       }
     },
+    "kb_rejects": {
+      "type": "array",
+      "description": "Promotion candidates that are TRUE but fail the capture rubric, or are self-contradicting, garbled or mix several claims. Reviewer-only. An id may not appear in more than one of kb_promotions, kb_discards and kb_rejects. The engine retires them with the reason.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- promotion candidates' block in your dispatch prompt. That block is the ONLY source of rejectable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the entry fails the capture rubric or is unusable (contradicting, garbled, multi-claim) -- what you actually checked.",
+            "minLength": 20
+          }
+        }
+      }
+    },
     "kb_captures": {
       "type": "array",
       "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
@@ -1562,7 +1585,7 @@ const REVIEW_SCHEMA = {
           "type",
           "title",
           "summary",
-          "content",
+          "trigger",
           "source_files"
         ],
         "properties": {
@@ -1580,12 +1603,26 @@ const REVIEW_SCHEMA = {
           },
           "summary": {
             "type": "string",
+            "description": "The lesson in at most 2 sentences, present tense, standing alone as current truth.",
             "minLength": 20
+          },
+          "trigger": {
+            "type": "string",
+            "description": "What kind of event produced this lesson. Never \"describes the change\".",
+            "enum": [
+              "failed-attempt",
+              "review-finding",
+              "test-failure",
+              "env-quirk",
+              "hidden-invariant",
+              "design-rationale"
+            ]
           },
           "content": {
             "type": "string",
-            "description": "Full detail of the entry. REQUIRED -- a capture without it is rejected and persists nothing.",
-            "minLength": 40
+            "description": "Optional. Written only when it adds what the summary cannot hold (labelled sections: Context, Symptom, Cause, Rule/Fix, Tried (failed), Evidence). Content that repeats the summary is refused.",
+            "minLength": 40,
+            "maxLength": 2000
           },
           "source_files": {
             "type": "array",
@@ -1597,6 +1634,20 @@ const REVIEW_SCHEMA = {
           },
           "symbols": {
             "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recall_cues": {
+            "type": "array",
+            "description": "Phrases a future reader would search for to find this lesson.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "error_signatures": {
+            "type": "array",
+            "description": "Exact error strings that this lesson explains.",
             "items": {
               "type": "string"
             }
@@ -1774,7 +1825,7 @@ const DOER_STATUS_SCHEMA = {
           "type",
           "title",
           "summary",
-          "content",
+          "trigger",
           "source_files"
         ],
         "properties": {
@@ -1792,12 +1843,26 @@ const DOER_STATUS_SCHEMA = {
           },
           "summary": {
             "type": "string",
+            "description": "The lesson in at most 2 sentences, present tense, standing alone as current truth.",
             "minLength": 20
+          },
+          "trigger": {
+            "type": "string",
+            "description": "What kind of event produced this lesson. Never \"describes the change\".",
+            "enum": [
+              "failed-attempt",
+              "review-finding",
+              "test-failure",
+              "env-quirk",
+              "hidden-invariant",
+              "design-rationale"
+            ]
           },
           "content": {
             "type": "string",
-            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
-            "minLength": 40
+            "description": "Optional. Written only when it adds what the summary cannot hold (labelled sections: Context, Symptom, Cause, Rule/Fix, Tried (failed), Evidence). Content that repeats the summary is refused.",
+            "minLength": 40,
+            "maxLength": 2000
           },
           "source_files": {
             "type": "array",
@@ -1809,6 +1874,20 @@ const DOER_STATUS_SCHEMA = {
           },
           "symbols": {
             "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recall_cues": {
+            "type": "array",
+            "description": "Phrases a future reader would search for to find this lesson.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "error_signatures": {
+            "type": "array",
+            "description": "Exact error strings that this lesson explains.",
             "items": {
               "type": "string"
             }
@@ -2127,7 +2206,7 @@ const HARVEST_SCHEMA = {
           "type",
           "title",
           "summary",
-          "content",
+          "trigger",
           "source_files"
         ],
         "properties": {
@@ -2145,12 +2224,26 @@ const HARVEST_SCHEMA = {
           },
           "summary": {
             "type": "string",
+            "description": "The lesson in at most 2 sentences, present tense, standing alone as current truth.",
             "minLength": 20
+          },
+          "trigger": {
+            "type": "string",
+            "description": "What kind of event produced this lesson. Never \"describes the change\".",
+            "enum": [
+              "failed-attempt",
+              "review-finding",
+              "test-failure",
+              "env-quirk",
+              "hidden-invariant",
+              "design-rationale"
+            ]
           },
           "content": {
             "type": "string",
-            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
-            "minLength": 40
+            "description": "Optional. Written only when it adds what the summary cannot hold (labelled sections: Context, Symptom, Cause, Rule/Fix, Tried (failed), Evidence). Content that repeats the summary is refused.",
+            "minLength": 40,
+            "maxLength": 2000
           },
           "source_files": {
             "type": "array",
@@ -2162,6 +2255,20 @@ const HARVEST_SCHEMA = {
           },
           "symbols": {
             "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recall_cues": {
+            "type": "array",
+            "description": "Phrases a future reader would search for to find this lesson.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "error_signatures": {
+            "type": "array",
+            "description": "Exact error strings that this lesson explains.",
             "items": {
               "type": "string"
             }
@@ -2215,7 +2322,7 @@ const PLANNER_SCHEMA = {
           "type",
           "title",
           "summary",
-          "content",
+          "trigger",
           "source_files"
         ],
         "properties": {
@@ -2233,12 +2340,26 @@ const PLANNER_SCHEMA = {
           },
           "summary": {
             "type": "string",
+            "description": "The lesson in at most 2 sentences, present tense, standing alone as current truth.",
             "minLength": 20
+          },
+          "trigger": {
+            "type": "string",
+            "description": "What kind of event produced this lesson. Never \"describes the change\".",
+            "enum": [
+              "failed-attempt",
+              "review-finding",
+              "test-failure",
+              "env-quirk",
+              "hidden-invariant",
+              "design-rationale"
+            ]
           },
           "content": {
             "type": "string",
-            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
-            "minLength": 40
+            "description": "Optional. Written only when it adds what the summary cannot hold (labelled sections: Context, Symptom, Cause, Rule/Fix, Tried (failed), Evidence). Content that repeats the summary is refused.",
+            "minLength": 40,
+            "maxLength": 2000
           },
           "source_files": {
             "type": "array",
@@ -2250,6 +2371,20 @@ const PLANNER_SCHEMA = {
           },
           "symbols": {
             "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recall_cues": {
+            "type": "array",
+            "description": "Phrases a future reader would search for to find this lesson.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "error_signatures": {
+            "type": "array",
+            "description": "Exact error strings that this lesson explains.",
             "items": {
               "type": "string"
             }
