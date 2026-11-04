@@ -94,7 +94,10 @@ silently.
    matters. Fall back to a full source read when the KB is cold, stale, or says "see
    source for details." Rely on the injected block alone only when `kb_query` is absent.
 3. When you discover something non-obvious and durable (hidden constraint, gotcha,
-   invariant), dedupe it against the KB (`kb_query` when present, otherwise the block); if
+   invariant), follow `_shared/KB-CAPTURE-RUBRIC.md` (the sibling file installed alongside
+   this one) for what qualifies, how to write it, and which `trigger` to set. When an
+   attempt fails, a test goes red for a non-obvious reason, or a reviewer bounces the
+   work, capture the battle before moving on. Dedupe it against the KB (`kb_query` when present, otherwise the block); if
    new, add it to your structured output's `kb_captures` array (shape in
    `agents/schemas/doer-output.json`) -- the engine records it. Do not write to the KB
    yourself. If a KB entry you relied on proves wrong in practice, say so in your final

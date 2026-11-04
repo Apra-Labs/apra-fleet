@@ -64,7 +64,8 @@ silently.
    captures (item 4). This is for verification only; promotion candidates still come
    solely from the block named in Step 5.
 4. **Capture through output, not a tool call.** Add findings (gotchas, missed invariants,
-   non-obvious constraints) to the `kb_captures` array of your structured output (type
+   non-obvious constraints, judged by `_shared/KB-CAPTURE-RUBRIC.md`, the sibling file
+   installed alongside this one, which also defines the required `trigger`) to the `kb_captures` array of your structured output (type
    `knowledge`, `learning`, or `runbook`; shape in Output schema below); the engine
    records them. Captures are clamped to INFERRED regardless of route -- CONFIRMED is
    minted only via Step 5. Dedupe against the KB first (`kb_query` when present,
@@ -173,7 +174,7 @@ still running -- a backgrounded run with no reported outcome is not a completed 
 ## Step 5 -- Promote or discard knowledge you verified
 
 This step covers judgements on existing INFERRED candidates: promote one to CONFIRMED,
-or discard one you showed to be wrong. Fresh findings go in `kb_captures` (Step 0,
+discard one you showed to be wrong, or reject one that is true but not worth keeping. Fresh findings go in `kb_captures` (Step 0,
 item 4) -- the fields are independent and can all be returned. You are the only role
 permitted to mint CONFIRMED. **You do not call any `kb_*` tool for this** -- the
 orchestrator hands you the candidates and executes your decisions.
@@ -183,9 +184,12 @@ orchestrator hands you the candidates and executes your decisions.
    source_files}`. If that block is absent, there is nothing to promote or discard:
    return `[]` for both and move on.
 2. Promote **only** entries whose claim you independently verified during THIS review --
-   by reading the diff, running the tests, or checking the cited files yourself.
+   by reading the diff, running the tests, or checking the cited files yourself -- AND
+   that pass `_shared/KB-CAPTURE-RUBRIC.md`. A true restatement of the diff fails the
+   rubric: truth alone is not enough.
 3. Return them in the `kb_promotions` field of your structured output as
-   `[{id, reason}]`, where `reason` states the evidence (minimum 20 characters), e.g.
+   `[{id, reason}]`, where `reason` states the evidence (minimum 20 characters) and
+   names its kind (diff line, test run, or repro), e.g.
    `"verified against src/auth/token.ts:88 and the expired-token test"`. The orchestrator
    makes the promotion calls.
 4. Promote nothing else. `kb_promotions: []` is a valid, common answer.
@@ -194,9 +198,15 @@ orchestrator hands you the candidates and executes your decisions.
    `kb_discards` field as `[{id, reason}]` with the same evidence bar (minimum 20
    characters, stating what you checked that contradicts the claim). The orchestrator
    discards it, so it drops out of every later read. An entry you merely could not
-   confirm is not wrong: leave it INFERRED. Never list the same id in both
-   `kb_promotions` and `kb_discards` -- the orchestrator refuses both.
-   `kb_discards: []` is a valid, common answer.
+   confirm is not wrong: leave it INFERRED.
+6. **Reject** a candidate that is true but fails the rubric (a diff restatement, a
+   readable-in-the-lines fact, status), or that is self-contradicting, garbled or mixes
+   several claims. Return it in the `kb_rejects` field as `[{id, reason}]` (minimum 20
+   characters, saying which rubric rule it fails). The orchestrator retires it with
+   your reason. Use `kb_discards` only for WRONG entries.
+7. An id appears in at most one of `kb_promotions`, `kb_discards` and `kb_rejects` --
+   the orchestrator refuses duplicates. `kb_discards: []` and `kb_rejects: []` are valid,
+   common answers.
 
 Hard limits:
 
@@ -276,17 +286,21 @@ placeholder):
     { "title": "Add expired-token test", "description": "Cover the expired-token rejection path in auth_test.ts", "priority": "P2" }
   ],
   "kb_promotions": [
-    { "id": "kb-0042", "reason": "verified against src/auth/token.ts:88 and the expired-token test" }
+    { "id": "kb-0042", "reason": "test run: expired-token test fails without the guard at src/auth/token.ts:88" }
   ],
   "kb_discards": [
     { "id": "kb-0051", "reason": "src/auth/session.ts:40 refreshes eagerly; the entry's lazy-refresh claim is wrong" }
+  ],
+  "kb_rejects": [
+    { "id": "kb-0063", "reason": "true but restates the diff: it only says what refreshToken() does (rubric: NOT KB)" }
   ],
   "kb_captures": [
     {
       "type": "knowledge",
       "title": "Token refresh retries are not idempotent",
       "summary": "Retrying a failed refresh call can double-consume the refresh token.",
-      "content": "src/auth/token.ts:refreshToken() does not guard against concurrent retries; a second caller racing a timed-out first call can consume the same refresh token twice, invalidating the session. Confirmed by tracing the retry wrapper in src/auth/retry.ts.",
+      "trigger": "hidden-invariant",
+      "content": "Cause: refreshToken() in src/auth/token.ts does not guard against concurrent retries; a second caller racing a timed-out first call consumes the same refresh token twice, invalidating the session.\nEvidence: the retry wrapper in src/auth/retry.ts.",
       "source_files": ["src/auth/token.ts", "src/auth/retry.ts"]
     }
   ],
@@ -294,8 +308,8 @@ placeholder):
 }
 ```
 
-`kb_promotions`, `kb_discards` and `kb_captures` are all optional -- omit them, or send
-`[]`, when you have nothing to promote, discard or capture this round. `toolUse` is
+`kb_promotions`, `kb_discards`, `kb_rejects` and `kb_captures` are all optional -- omit
+them, or send `[]`, when you have nothing to promote, discard, reject or capture this round. `toolUse` is
 optional in the schema but expected: see Step 0.
 
 **Precedence**: If your dispatch prompt includes a JSON schema instruction, that schema is
