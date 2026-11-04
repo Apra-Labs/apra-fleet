@@ -39,10 +39,10 @@ jobs:
     name: 'pm e2e - ${{ inputs.suite }}'
     env:
       GEMINI_CLI_TRUST_WORKSPACE: "true"
-      # Single source of truth for the beads version the e2e requires. bd 1.1.0 = remote-migrate
-      # schema v53; the toy repo's remote Dolt is migrated to match. Referenced by both the
-      # version-gate step and the opencode CLI-install step below.
-      BEADS_REQ: "1.1.0"
+      # Single source of truth for the beads version the e2e requires: the installer's pin
+      # (BEADS_VERSION in src/cli/beads-pin.ts; tests/apra-pm-beads-pin.test.ts fails on drift).
+      # Referenced by both the version-gate step and the opencode CLI-install step below.
+      BEADS_REQ: "1.3.0"
     runs-on: ${{ inputs.runner != '' && inputs.runner || 'self-hosted' }}
     timeout-minutes: 120
     steps:

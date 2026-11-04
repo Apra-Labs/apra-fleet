@@ -1,46 +1,53 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BEADS_PACKAGE } from '../src/cli/beads-pin.js';
+import { execFileSync } from 'node:child_process';
+import { BEADS_PACKAGE, BEADS_VERSION } from '../src/cli/beads-pin.js';
 
-describe('apra-pm beads pin drift test', () => {
-  it('install.mjs contains @beads/bd@ literals that match BEADS_PACKAGE from beads-pin.ts', () => {
-    // Read the apra-pm installer as text
-    const installMjsPath = path.join(process.cwd(), 'packages/apra-fleet-se/apra-pm/install.mjs');
-    const content = fs.readFileSync(installMjsPath, 'utf-8');
+// bd is pinned to one version everywhere. This reads the real files: every
+// tracked file naming an @beads/bd@X.Y.Z specifier or a BEADS_REQ value must
+// name BEADS_VERSION, so a stale pin added anywhere fails here.
 
-    // Extract all @beads/bd@<version> literals with a regex
-    const beadsRegex = /@beads\/bd@[\d.]+/g;
-    const matches = content.match(beadsRegex);
+const repoRoot = path.resolve(__dirname, '..');
+const SPECIFIER = /@beads\/bd@(\d+\.\d+\.\d+)/g;
+const WORKFLOW_REQ = /^\s*BEADS_REQ:\s*"?(\d+\.\d+\.\d+)"?/gm;
 
-    // Assert (a) at least one was found
-    expect(matches).not.toBeNull();
-    expect(matches!.length).toBeGreaterThan(0);
+// A record of a past migration: it names the version that migration was for.
+const HISTORICAL = new Set(['packages/apra-fleet-se/apra-pm/docs/beads-1.1.0-migration.md']);
 
-    // Assert (b) every one equals BEADS_PACKAGE
-    for (const match of matches!) {
-      expect(match).toBe(BEADS_PACKAGE);
+function pinsIn(file: string): string[] {
+  const text = fs.readFileSync(path.join(repoRoot, file), 'utf-8');
+  return [...text.matchAll(SPECIFIER), ...text.matchAll(WORKFLOW_REQ)].map((m) => m[1]);
+}
+
+function trackedTextFiles(): string[] {
+  return execFileSync('git', ['ls-files'], { cwd: repoRoot, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 })
+    .split('\n')
+    .filter((f) => /\.(?:m?js|cjs|ts|ya?ml|sh|ps1|md)$/.test(f) && !HISTORICAL.has(f) && fs.existsSync(path.join(repoRoot, f)));
+}
+
+describe('bd version pin', () => {
+  it('every install site the owner named is on BEADS_VERSION', () => {
+    for (const file of [
+      'packages/apra-fleet-se/apra-pm/install.mjs',
+      '.github/e2e/fleet-setup.mjs',
+      '.github/workflows/pm-e2e.yml',
+      '.github/workflows/ci.yml',
+    ]) {
+      const pins = pinsIn(file);
+      expect(pins.length, `${file} no longer names a bd version`).toBeGreaterThan(0);
+      for (const pin of pins) expect(pin, file).toBe(BEADS_VERSION);
     }
   });
 
-  it('fails when install.mjs has a mismatched version', () => {
-    // This test documents the expected behavior:
-    // If we temporarily had @beads/bd@1.1.2, this test would fail.
-    // We're verifying the regex works and the assertion catches drifts.
-    const testContent = '@beads/bd@1.1.2';
-    const beadsRegex = /@beads\/bd@[\d.]+/g;
-    const matches = testContent.match(beadsRegex);
-
-    expect(matches).not.toBeNull();
-    expect(matches![0]).not.toBe(BEADS_PACKAGE);
+  it('no tracked file names any other bd version', () => {
+    const stale = trackedTextFiles().flatMap((file) =>
+      pinsIn(file).filter((pin) => pin !== BEADS_VERSION).map((pin) => `${file}: ${pin}`),
+    );
+    expect(stale).toEqual([]);
   });
 
-  it('fails when install.mjs contains no @beads/bd@ literal at all', () => {
-    // This test verifies that the regex correctly fails when no literals exist
-    const testContent = 'some other content';
-    const beadsRegex = /@beads\/bd@[\d.]+/g;
-    const matches = testContent.match(beadsRegex);
-
-    expect(matches).toBeNull();
+  it('BEADS_PACKAGE is built from BEADS_VERSION', () => {
+    expect(BEADS_PACKAGE).toBe(`@beads/bd@${BEADS_VERSION}`);
   });
 });
