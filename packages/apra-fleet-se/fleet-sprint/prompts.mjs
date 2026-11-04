@@ -398,7 +398,31 @@ export function buildDoerPrompt({ beadIds, branch, feedback, kbKnowledge, kbBloc
     return lines.join('\n\n');
 }
 
-export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal, kbCandidates, kbKnowledge, kbBlock }) {
+/**
+ * The review diff range `<merge-base-sha>..<branch>`. The SHA is the fork point
+ * the engine computed on the reviewer's member after fetching the base branch
+ * (resolveReviewMergeBase in git-topology.mjs); a bare `<base>..<branch>` would
+ * name the member's local base branch, which the engine never updates. A
+ * missing or malformed SHA throws -- a reviewer prompt is never built without it.
+ * @param {string} mergeBaseSha
+ * @param {string} branch
+ * @returns {string}
+ */
+export function reviewDiffRange(mergeBaseSha, branch) {
+    if (typeof mergeBaseSha !== 'string' || !/^[0-9a-f]{40,64}$/i.test(mergeBaseSha)) {
+        throw new Error(`review prompt requires the merge-base commit SHA of the base branch and '${branch}' (got ${JSON.stringify(mergeBaseSha)}).`);
+    }
+    return `${mergeBaseSha}..${branch}`;
+}
+
+function reviewDiffRangeLine(range, baseBranch) {
+    return `Diff range to review: ${range} (the merge base of origin/${baseBranch} and the sprint branch, up to the branch). ` +
+        `Use exactly this range for every git diff and git log you run (for example: git diff ${range}, git log ${range}); ` +
+        `do not diff against the local '${baseBranch}' branch or origin/${baseBranch} directly.`;
+}
+
+export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, mergeBaseSha, goal, kbCandidates, kbKnowledge, kbBlock }) {
+    const range = reviewDiffRange(mergeBaseSha, branch);
     const ids = Array.isArray(beadIds) ? beadIds : [];
     const scopeWide = ids.length === 0;
     // Scope-wide re-reviews are fed `bd list --json` (the whole remaining
@@ -416,7 +440,7 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
             ? 'The full sprint scope, from `bd list --json`:'
             : 'Full task detail (including acceptance criteria), from `bd show --json`:',
         wrapUntrustedBlock(scopeCommand, acceptanceCriteriaJson),
-        `Diff range to review: ${baseBranch}..${branch} (base_branch..branch).`,
+        reviewDiffRangeLine(range, baseBranch),
         // Without an explicit scope clause a reviewer can withhold APPROVED
         // over below-goal work the sprint deliberately defers, which starves
         // the completion gate (zero open goal beads AND an APPROVED verdict).
@@ -479,12 +503,13 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
  * }} opts
  * @returns {string}
  */
-export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [], deferredAtGoalIds = [], kbCandidates, kbKnowledge, kbBlock }) {
+export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, mergeBaseSha, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [], deferredAtGoalIds = [], kbCandidates, kbKnowledge, kbBlock }) {
+    const range = reviewDiffRange(mergeBaseSha, branch);
     const lines = [
         `Final review for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
         `Branch: ${branch} (base: ${baseBranch}). Goal priority: ${goal}. The sprint ran ${cyclesRun} cycle(s).`,
         `Evidence: ${closedCount} bead(s) closed in scope; ${openAtGoalCount} bead(s) still open at or above goal priority ${goal}.`,
-        `The evidence above (bead counts, deploy/integ outcomes) is a summary, not proof -- it reflects what the sprint claims, not what the code does. You MUST review the actual net diff yourself before returning PASS; a PASS grounded only in bead-closure counts is not acceptable. Diff range: ${baseBranch}..${branch} (base_branch..branch). Review it as a whole against what closed -- net changes vs. the beads claimed done, not a commit-by-commit walk.`,
+        `The evidence above (bead counts, deploy/integ outcomes) is a summary, not proof -- it reflects what the sprint claims, not what the code does. You MUST review the actual net diff yourself before returning PASS; a PASS grounded only in bead-closure counts is not acceptable. ${reviewDiffRangeLine(range, baseBranch)} Review it as a whole against what closed -- net changes vs. the beads claimed done, not a commit-by-commit walk.`,
     ];
     if (deployFailures.length > 0) {
         lines.push(

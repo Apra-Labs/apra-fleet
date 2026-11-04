@@ -11,9 +11,9 @@ import { buildReviewerPrompt, buildFinalVerdictPrompt } from '../fleet-sprint/pr
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const norm = (s) => s.replace(/\s+/g, ' ');
 
-const reviewerArgs = { beadIds: ['x-1'], acceptanceCriteriaJson: '[]', baseBranch: 'main', branch: 'feat/x', goal: 'P1/P2' };
+const reviewerArgs = { beadIds: ['x-1'], acceptanceCriteriaJson: '[]', baseBranch: 'main', mergeBaseSha: 'abcdef0123456789abcdef0123456789abcdef01', branch: 'feat/x', goal: 'P1/P2' };
 const finalArgs = {
-    targetIssues: ['x-1'], branch: 'feat/x', baseBranch: 'main', goal: 'P1/P2', cyclesRun: 1,
+    targetIssues: ['x-1'], branch: 'feat/x', baseBranch: 'main', mergeBaseSha: 'abcdef0123456789abcdef0123456789abcdef01', goal: 'P1/P2', cyclesRun: 1,
     closedCount: 1, openAtGoalCount: 0, deployFailures: [], integFailures: [],
 };
 

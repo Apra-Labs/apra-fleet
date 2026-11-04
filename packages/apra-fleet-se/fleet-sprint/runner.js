@@ -52,6 +52,7 @@ import { buildCreatePrCommand, resolveProvider, parseProviderRepoRef, getVcsProv
 // brackets that were its only caller here.
 import {
     checkMemberTopology, classifyGitFailure, runGitStep, commandResultToSoftGit,
+    resolveReviewMergeBase,
 } from './git-topology.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resultText, toolErrorText } from './mcp-result.mjs';
@@ -2241,6 +2242,19 @@ async function runSprintCycle(context) {
     }
 
     /**
+     * The review diff base SHA for `member` (see resolveReviewMergeBase in
+     * git-topology.mjs). Shared by the per-round reviewer and Final Review.
+     * @param {string} member
+     * @returns {Promise<string>}
+     */
+    function reviewMergeBaseFor(member) {
+        return resolveReviewMergeBase({
+            command, member, baseBranch: validated.baseBranch, branch: validated.branch,
+            log, onAuthFailure, resolveMemberProvider: resolveMemberVcsProvider,
+        });
+    }
+
+    /**
      * Dispatches one reviewer round and returns its schema-validated verdict.
      * Shared by the per-round Develop/Review dispatch and the Cycle Evaluation
      * re-review so both apply the same contract rule: a `CHANGES_NEEDED`
@@ -2254,6 +2268,11 @@ async function runSprintCycle(context) {
      */
     async function dispatchReview({ beadIds, acceptanceCriteriaJson }) {
         const reviewerPool = getMembersForRole(ROLE_REVIEWER);
+        // The diff range the reviewer is told to use: the fork point of the
+        // sprint branch from a freshly fetched origin/<base>, computed on the
+        // reviewer's own member. Throws (fails the review loudly) rather than
+        // ever falling back to the member's possibly stale local base branch.
+        const mergeBaseSha = await reviewMergeBaseFor(reviewerPool[0]);
         // apra-fleet-0ef: fetch the INFERRED entries this reviewer may promote
         // and hand them to it in the prompt. The reviewer has no MCP kb_* tools
         // of its own, so without this it can never name an entry id and
@@ -2310,6 +2329,7 @@ async function runSprintCycle(context) {
                 acceptanceCriteriaJson,
                 baseBranch: validated.baseBranch,
                 branch: validated.branch,
+                mergeBaseSha,
                 goal: validated.goal,
                 kbCandidates,
                 kbBlock: reviewerKbBlock,
@@ -2325,7 +2345,7 @@ async function runSprintCycle(context) {
                 + (Array.isArray(beadIds) && beadIds.length > 0
                     ? `bead id(s) under review ${beadIds.join(', ')} `
                     : `the entire sprint scope (no individual bead ids -- you are judging whether the sprint as a whole is complete) `)
-                + `on branch ${validated.branch} against base ${validated.baseBranch}. ` +
+                + `on branch ${validated.branch}, diff range ${mergeBaseSha}..${validated.branch} (use exactly this range for git diff and git log). ` +
                 'Finish evaluating the remaining acceptance criteria and return your final verdict now.',
             roleLabel: 'Reviewer',
             resumeLabel: `Review (resume, max_turns=${TURN_BASES.BASE_REVIEWER_MAX_TURNS * 2})`,
@@ -3998,6 +4018,7 @@ async function runSprintCycle(context) {
         kbPriming, kbWork, kbInjection, kbSprintContext, getMemberForRole,
         childIdAllocator, sprintMutexId, resolveSettleShell,
         computeChildFloor, createChildBeadWithAllocatedId, sanitizePrText,
+        reviewMergeBaseFor,
     });
 
     // =======================

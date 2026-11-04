@@ -38,7 +38,7 @@
 // parsed (vcs-module.mjs's own header comment). These two names were imported
 // by runner.js for exactly this call before the move.
 import { classifyFailure, toGitVerdict, commandBinary } from './vcs-module.mjs';
-import { VCS_FAILURE_KINDS } from './errors.mjs';
+import { VCS_FAILURE_KINDS, GitSyncError } from './errors.mjs';
 
 // ---------------------------------------------------------------------------
 // Multi-member topology precondition
@@ -540,4 +540,73 @@ export function commandResultToSoftGit(res) {
 
     const ok = exitCode !== undefined ? exitCode === 0 : !(res && res.isError);
     return { ok, stdout: text, error: ok ? undefined : (text || 'unknown error') };
+}
+
+// ---------------------------------------------------------------------------
+// Review diff base
+// ---------------------------------------------------------------------------
+//
+// The reviewer prompts name a diff range. The member's LOCAL base branch is
+// never updated by the engine (only origin/<base> is fetched), so on an old
+// clone `<base>..<branch>` spans many unrelated commits; and a plain
+// `origin/<base>..<branch>` is wrong too once origin/<base> moves during the
+// sprint (a two-dot diff shows those base commits reversed). The fork point --
+// `git merge-base origin/<base> <branch>` after a fresh fetch of <base> -- is
+// the range that shows exactly the sprint's own changes.
+//
+// Runs on the REVIEWER's member (the checkout the reviewer diffs in), through
+// runGitStep so an auth failure gets the same one-shot self-heal. Any failure
+// throws: there is deliberately no fallback to the local base branch.
+
+const REVIEW_BASE_SHA_RE = /^[0-9a-f]{40,64}$/i;
+
+/**
+ * @param {{ command: Function, member: string, baseBranch: string, branch: string, log?: Function,
+ *   onAuthFailure?: Function, resolveMemberProvider?: (member: string) => Promise<string|undefined> }} opts
+ * @returns {Promise<string>} the merge-base commit SHA
+ */
+export async function resolveReviewMergeBase({ command, member, baseBranch, branch, log = () => {}, onAuthFailure, resolveMemberProvider }) {
+    if (typeof command !== 'function') throw new Error('resolveReviewMergeBase requires an injected command()');
+    if (!member || !baseBranch || !branch) {
+        throw new GitSyncError(
+            `[Review Base] cannot compute the review diff base: member, base branch and branch are all required (got member='${member}', base='${baseBranch}', branch='${branch}').`,
+            { member: member || null },
+        );
+    }
+    const provider = await resolveGitProviderForClassification(resolveMemberProvider, member, log);
+    const fetchCmd = `git fetch origin ${baseBranch}`;
+    const fetchRes = await runGitStep({
+        command, member, cmd: fetchCmd,
+        label: `Fetch base branch '${baseBranch}' for the review diff base`,
+        log, maxTransientRetries: 1, onAuthFailure, provider,
+    });
+    if (!fetchRes.ok) {
+        throw new GitSyncError(
+            `[Review Base] ${fetchCmd} failed on member '${member}', so the review diff base cannot be computed (no fallback to the local '${baseBranch}'): ${fetchRes.error}`,
+            { member, gitOutput: fetchRes.error, details: { baseBranch, branch, kind: fetchRes.kind } },
+        );
+    }
+    const mergeBaseCmd = `git merge-base origin/${baseBranch} ${branch}`;
+    const mbRes = await runGitStep({
+        command, member, cmd: mergeBaseCmd,
+        label: `Merge base of origin/${baseBranch} and '${branch}' for the review diff`,
+        log, maxTransientRetries: 1, onAuthFailure, provider,
+    });
+    if (!mbRes.ok) {
+        throw new GitSyncError(
+            `[Review Base] ${mergeBaseCmd} failed on member '${member}': ${mbRes.error}`,
+            { member, gitOutput: mbRes.error, details: { baseBranch, branch, kind: mbRes.kind } },
+        );
+    }
+    const raw = String(mbRes.output ?? '');
+    const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const sha = lines.length ? lines[lines.length - 1] : '';
+    if (!REVIEW_BASE_SHA_RE.test(sha)) {
+        throw new GitSyncError(
+            `[Review Base] ${mergeBaseCmd} on member '${member}' did not return a commit SHA (output: ${JSON.stringify(raw)}).`,
+            { member, gitOutput: raw, details: { baseBranch, branch } },
+        );
+    }
+    log(`[Review Base] review diff base for '${branch}' on member '${member}': ${sha} (merge-base with origin/${baseBranch}).`);
+    return sha;
 }
