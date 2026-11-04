@@ -1,7 +1,9 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { RootsListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { FULL_TOOL_SCOPE, isToolInScope, runWithSessionMember, scopeHasKbMaintainer, scopeIsEngineOrigin, scopeMemberId, type ToolScope } from './tool-scope.js';
 import { recordMemberToolCall } from './member-call-counts.js';
 import { assertNoRemovedKbScopeKeys } from './knowledge/kb-removed-scope-keys.js';
+import { SessionRootsCache } from './session-roots.js';
 
 export type { ToolScope } from './tool-scope.js';
 
@@ -33,6 +35,29 @@ function scopeGatedServer(base: McpServer, scope: ToolScope): McpServer {
 }
 
 /**
+ * The per-session client-roots cache for a FULL session: asks for roots only
+ * when the client declared the roots capability, and drops the cache on
+ * notifications/roots/list_changed. Minimal test doubles without an
+ * underlying Server get a cache that never reports roots.
+ */
+function createRootsCache(baseServer: McpServer): SessionRootsCache {
+  const inner = (baseServer as { server?: McpServer['server'] }).server;
+  const cache = new SessionRootsCache(() => {
+    try {
+      return !!inner?.getClientCapabilities?.()?.roots;
+    } catch {
+      return false;
+    }
+  });
+  try {
+    inner?.setNotificationHandler?.(RootsListChangedNotificationSchema, async () => { cache.invalidate(); });
+  } catch {
+    // a double without notification support: roots are fetched once per session
+  }
+  return cache;
+}
+
+/**
  * Register the fleet tool surface on ONE session's McpServer. `scope` is
  * derived from the session's identity by the HTTP transport; it defaults to
  * FULL (every tool), which is also what the stdio path uses.
@@ -44,6 +69,10 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   // Whether this member session carries the engine's kb_maintainer grant;
   // handlers read it via getSessionKbMaintainer() (src/services/tool-scope.ts).
   const kbMaintainer = scopeHasKbMaintainer(scope);
+  // FULL session: kb_*/code_* scope comes from the client's MCP roots
+  // (src/services/session-roots.ts, src/services/knowledge/kb-self.ts). A
+  // MEMBER session never reads roots -- its scope is its registered work folder.
+  const rootsCache = sessionMemberId === undefined ? createRootsCache(baseServer) : undefined;
   // Load onboarding functions
   const { getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingNudge, getWelcomeBackPreamble } = await import('./onboarding.js');
 
@@ -159,7 +188,10 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
       const scopedExtra = extra === undefined && sessionMemberId === undefined
         ? undefined
         : { ...(extra ?? {}), sessionMemberId };
-      const raw = await runWithSessionMember(sessionMemberId, () => handler(input, scopedExtra), { kbMaintainer });
+      const roots = rootsCache && (toolName.startsWith('kb_') || toolName.startsWith('code_'))
+        ? await rootsCache.get(extra?.sendRequest?.bind(extra))
+        : undefined;
+      const raw = await runWithSessionMember(sessionMemberId, () => handler(input, scopedExtra), { kbMaintainer, roots });
       const result = typeof raw === 'string' ? raw : raw.text;
       const structuredContent = typeof raw === 'string' ? undefined : raw.structuredContent;
       const isJson = isJsonResponse(result);

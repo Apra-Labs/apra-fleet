@@ -211,8 +211,8 @@ describe('kb (self): a FULL session resolves the server working folder', () => {
     vi.spyOn(process, 'cwd').mockReturnValue(folders.noremote);
     const out = await call(await connect(), 'kb_stats');
     expect(out.isError).toBe(true);
-    expect(out.text).toMatch(/E-SELF-NO-REMOTE: This is a FULL session \(no member identity\), so its KB is the fleet server's own working folder, not the calling client's directory; '[^']+' has no origin remote/);
-    expect(out.text).toMatch(/Remediation: Restart the fleet server with its working folder set to the repository whose KB you want, or call from a member session \(\?member=<id>\)/);
+    expect(out.text).toMatch(/E-SELF-NO-REMOTE: This is a FULL session \(no member identity\) and the client offered no MCP roots, so its scope is the fleet server's own working folder, not the calling client's directory; '[^']+' has no origin remote/);
+    expect(out.text).toMatch(/Remediation: Open the client in the repository \(a client that offers MCP roots is scoped to its first root that is a git repository with an origin remote\), restart the fleet server with its working folder set to that repository, or call from a member session \(\?member=<id>\)/);
     expect(out.text).toContain("git remote add origin <url>");
   });
 
@@ -220,8 +220,8 @@ describe('kb (self): a FULL session resolves the server working folder', () => {
     vi.spyOn(process, 'cwd').mockReturnValue(folders.plain);
     const out = await call(await connect(), 'kb_query', { query: 'anything' });
     expect(out.isError).toBe(true);
-    expect(out.text).toContain(`E-SELF-NOT-A-REPO: This is a FULL session (no member identity), so its KB is the fleet server's own working folder, not the calling client's directory; '${folders.plain}' is not a git repository.`);
-    expect(out.text).toMatch(/Remediation: Restart the fleet server with its working folder set to the repository whose KB you want, or call from a member session \(\?member=<id>\) of a member registered on that repository\./);
+    expect(out.text).toContain(`E-SELF-NOT-A-REPO: This is a FULL session (no member identity) and the client offered no MCP roots, so its scope is the fleet server's own working folder, not the calling client's directory; '${folders.plain}' is not a git repository.`);
+    expect(out.text).toMatch(/Remediation: Open the client in the repository \(a client that offers MCP roots is scoped to its first root that is a git repository with an origin remote\), restart the fleet server with its working folder set to that repository, or call from a member session \(\?member=<id>\) of a member registered on it\./);
   });
 });
 

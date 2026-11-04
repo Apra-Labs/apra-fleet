@@ -85,23 +85,69 @@ export function scopeHasKbMaintainer(scope: ToolScope): boolean {
   return scope.kind === 'member' && scope.kbMaintainer === true;
 }
 
+/**
+ * The MCP client roots (roots/list) a FULL session's client offered, as last
+ * fetched for that session (src/services/session-roots.ts).
+ *
+ * `offered` is every root URI the client returned, in client order.
+ * `folders` is the subset that is a file:// URI naming an existing directory
+ * on THIS host, converted to a local path, in the same order (a remote HTTP
+ * client's roots are paths on its own machine and are skipped).
+ */
+export interface SessionRoots {
+  offered: string[];
+  folders: string[];
+}
+
 interface ToolCallContext {
   sessionMemberId: string | undefined;
   kbMaintainer: boolean;
+  /** Client roots of a FULL session; undefined when none were offered/fetched. */
+  roots?: SessionRoots;
+  /**
+   * Per-call memo for the (self) folder a FULL session resolves to, so kb and
+   * code resolution inside one call probe the roots once and cannot diverge.
+   * Owned by src/services/knowledge/kb-self.ts.
+   */
+  selfMemo?: { value?: unknown; error?: unknown };
 }
 
 const toolCallContext = new AsyncLocalStorage<ToolCallContext>();
 
 /**
  * Run a tool handler with the calling session's member id (and whether that
- * member session carries the kb_maintainer grant) in context.
+ * member session carries the kb_maintainer grant) in context. `roots` carries
+ * the client roots of a FULL session (ignored for a MEMBER session, whose
+ * scope is always its registered work folder).
  */
 export function runWithSessionMember<T>(
   sessionMemberId: string | undefined,
   fn: () => T,
-  opts: { kbMaintainer?: boolean } = {},
+  opts: { kbMaintainer?: boolean; roots?: SessionRoots } = {},
 ): T {
-  return toolCallContext.run({ sessionMemberId, kbMaintainer: opts.kbMaintainer === true }, fn);
+  const ctx: ToolCallContext = { sessionMemberId, kbMaintainer: opts.kbMaintainer === true };
+  if (sessionMemberId === undefined && opts.roots !== undefined) ctx.roots = opts.roots;
+  return toolCallContext.run(ctx, fn);
+}
+
+/**
+ * The client roots of the FULL session whose tool call is currently
+ * executing; undefined for a MEMBER session, a client that offered no roots
+ * (or lacks the roots capability), and outside any tool call.
+ */
+export function getSessionRoots(): SessionRoots | undefined {
+  return toolCallContext.getStore()?.roots;
+}
+
+/**
+ * The per-call memo slot for (self) resolution, or undefined outside a tool
+ * call (no memo: every resolution probes afresh).
+ */
+export function getSelfMemoSlot(): { value?: unknown; error?: unknown } | undefined {
+  const store = toolCallContext.getStore();
+  if (!store) return undefined;
+  if (!store.selfMemo) store.selfMemo = {};
+  return store.selfMemo;
 }
 
 /**

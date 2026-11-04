@@ -113,8 +113,14 @@ the indexed commit.
 ### 2.4 Every kb_* call is scoped to the calling session (KB constraint)
 
 No `kb_*` tool takes a repo/scope argument. The KB a call reads/writes is the
-calling session's own: a member session resolves its registered work folder,
-any other session the fleet server's working folder. A folder that cannot
+calling session's own: a member session resolves its registered work folder.
+Any other (FULL) session resolves from the MCP client's roots (`roots/list`):
+the first offered root that is a git repository with an origin remote wins.
+The fleet server's working folder is used only when the client offers no
+roots (no `roots` capability, an empty list, or no offered root names a folder
+on the server's host). Roots are fetched once per session, on its first
+`kb_*`/`code_*` call, and refetched after `notifications/roots/list_changed`;
+a member session never reads roots. A folder that cannot
 carry a KB identity is refused before the provider is reached
 (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`). A remote
 member's folder lives on another host: the read tools carry it verbatim and
@@ -131,10 +137,15 @@ described as removed) so that an MCP server, which strips undeclared keys,
 cannot silently re-point an old caller at a different KB; a request carrying
 any of them (any value other than absent/undefined) MUST be refused with
 `E-SCOPE-KEY-REMOVED` before any KB is resolved, and the error message names
-every removed key present and what replaces it. A FULL session's self is the
-fleet server's working folder, never the client's directory; its
-self-resolution messages say so and name both fixes (start the server from the
-intended repository, or call from a member session registered on it).
+every removed key present and what replaces it. A FULL session's self is never
+the client's working directory (an HTTP server cannot see it), only an offered
+root or the server's folder. Its self-resolution errors name the missing piece:
+roots were offered but none is a git repository (`E-SELF-NOT-A-REPO`), roots
+were offered but none has an origin remote (`E-SELF-NO-REMOTE`), or the client
+offered no roots and the server folder is not a repository / has no origin
+(`E-SELF-NOT-A-REPO` / `E-SELF-NO-REMOTE`, naming that no roots were offered).
+The remediation names every fix: open the client in the intended repository,
+start the server from it, or call from a member session registered on it.
 
 Two read-tool input forms exist for compatibility: `kb_list` accepts
 `confidence` either as a list of tiers or as one tier string (the
@@ -412,7 +423,13 @@ because import never raises confidence on an existing row.
 
 No `code_*` tool takes a repo/scope argument either. The repo a call is about
 is resolved exactly as for `kb_*` (section 2.4): a member session's registered
-work folder, any other session the fleet server's working folder. A local
+work folder; any other session the first MCP client root that is a git
+repository with an origin remote, else the fleet server's working folder when
+the client offers no roots. Explicit extension of that rule for `code_*` only:
+when roots are offered and none has an origin remote, the first offered root
+that is a git repository is used (a code index needs no KB identity). `kb_*`
+calls in that same session fail with `E-SELF-NO-REMOTE`, so `kb_*` and
+`code_*` never resolve to two different repositories. A local
 folder that is missing or is not a git repository is refused before the
 provider is reached (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`); unlike
 `kb_*`, no origin remote is required, because a code index is keyed by folder,

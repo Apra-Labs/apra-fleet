@@ -105,24 +105,46 @@ carrying one (any value but absent/undefined) with `E-SCOPE-KEY-REMOVED`
 before any KB is resolved or opened. The message names every removed key
 present and what replaces it (nothing: drop it -- a member session acts on
 its registered work folder, a remote member's KB identity is its registered
-origin remote, and a FULL session acts on the server's working folder;
+origin remote, and a FULL session acts on its first client root that is a git
+repository with an origin, else the server's working folder;
 `kb_import` keeps `path` for naming a bible file).
 
 - **Member session** (`?member=<uuid>` or a member JWT): the member's
   registered work folder. The session's member id travels from the HTTP
   transport to the handler through an `AsyncLocalStorage` lane
   (`src/services/tool-scope.ts`), so handlers never receive it as a parameter.
-- **Full session** (no member identity): the fleet server's own working
-  folder (`process.cwd()` of the server process). An HTTP server cannot see a
-  client's cwd, so there is no separate "self" for local non-member callers:
-  a FULL session started from any client directory still reads and writes
-  the KB of the repository the SERVER was started in. When that folder cannot
-  carry a KB identity, the self-resolution error says exactly that -- "This is
-  a FULL session (no member identity), so its KB is the fleet server's own
-  working folder, not the calling client's directory; '<folder>' is not a git
-  repository" (or "has no origin remote") -- and names both fixes: restart
-  the fleet server with its working folder set to the intended repository, or
-  call from a member session (`?member=<id>`) of a member registered on it.
+- **Full session** (no member identity): the MCP client's roots
+  (`roots/list`). The first offered root that is a git repository with an
+  origin remote wins -- for both `kb_*` and `code_*`, so one session never
+  scopes its kb and code tools to two different repositories. The fleet
+  server's own working folder (`process.cwd()`) is used only when the client
+  offers no roots (it lacks the `roots` capability, returns an empty list, or
+  none of its roots is a folder on the server's host -- a remote HTTP
+  client's roots are paths on its own machine). A server auto-started with an
+  unrelated working folder (e.g. a system directory) therefore works from any
+  client opened in a repository.
+
+  Roots are fetched once per session, on its first `kb_*`/`code_*` call,
+  through that call's own request (`src/services/session-roots.ts`), cached,
+  and refetched after `notifications/roots/list_changed`. A failed or
+  timed-out fetch is logged and treated as "no roots" until the client reports
+  a change. The selection is made once per call (`resolveSelfSession()`,
+  memoized in the tool-call context) and shared by kb (self) and code (self).
+  A member session never reads roots.
+
+  **Extension for `code_*` only** (not part of the base rule): a code index
+  needs no origin remote, so when roots are offered and NONE is a git
+  repository with an origin, `code_*` falls back to the first offered root
+  that is a git repository. `kb_*` calls in that session fail with
+  `E-SELF-NO-REMOTE` naming that no offered root has an origin remote, so kb
+  and code still never resolve to two different repositories.
+
+  When neither works, the error names the missing piece: roots were offered
+  but none is a git repository (`E-SELF-NOT-A-REPO`), roots were offered but
+  none has an origin (`E-SELF-NO-REMOTE`, kb only), or the client offered no
+  roots and the server folder is not a git repository / has no origin
+  ("This is a FULL session (no member identity) and the client offered no MCP
+  roots, so its scope is the fleet server's own working folder, ...").
 
 `resolveSelfAnchor()` (`src/services/knowledge/kb-self.ts`) performs the
 resolution and `getSelfKbProviders()` feeds the result to `getKbProviders`.
@@ -137,9 +159,10 @@ directory-name or `default` KB:
 | `E-SELF-NOT-A-REPO` | the folder is not a git repository | run `git init` (or clone the project) there and add an origin remote |
 | `E-SELF-NO-REMOTE` | no origin remote (or, for a remote member, no single known origin URL) | run `git remote add origin <url>` there; for a remote member, record the origin on the member (`update_member git_repos: ["<origin url>"]`) or call from a session on the member's own host |
 
-For a FULL session every remediation leads with the same fix: restart the
-fleet server with its working folder set to the intended repository, or call
-from a member session of a member registered on it (then, as applicable,
+For a FULL session on the server-folder path every remediation leads with the
+same fixes: open the client in the intended repository (a client that offers
+MCP roots), restart the fleet server with its working folder set to it, or
+call from a member session of a member registered on it (then, as applicable,
 make that folder a git repository with an origin remote). The error text is
 `<code>: <problem> Remediation: <fix>`, one line.
 

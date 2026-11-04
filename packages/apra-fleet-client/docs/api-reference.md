@@ -563,7 +563,8 @@ fall back to its default.
 #### kb_* scope keys
 
 Every `kb_*` call acts on the calling session's own KB (a member session's
-registered work folder; a FULL session's fleet server working folder). The
+registered work folder; a FULL session's first MCP client root that is a git
+repository with an origin remote, else the fleet server working folder). The
 pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are removed:
 the server refuses a call carrying any of them with `E-SCOPE-KEY-REMOVED`,
 and `kbExport` / `kbBibleCommit` / `kbDemote` refuse them client-side with the same code
