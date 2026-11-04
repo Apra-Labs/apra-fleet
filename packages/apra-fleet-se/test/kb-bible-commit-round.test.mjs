@@ -491,6 +491,20 @@ describe('commitRound: removal-only bible commits (a discard applied, nothing co
         assert.deepEqual(out, { committed: 0, pending: 0 });
     });
 
+    test('a reviewer reject (kb_rejects) triggers the same removal-only bible commit as a discard', async () => {
+        const { client, events } = harness({ removed: [{ id: 'old-1', reason: 'invalidated' }] });
+        offeredEntries = ['old-1'];
+        await client.promotionCandidates('reviewer-1');
+        await client.apply('reviewer', 'reviewer-1', { kb_rejects: [{ id: 'old-1', reason: REASON }] });
+        const mark = events.length;
+
+        await client.commitRound('review C1');
+
+        const round = events.slice(mark);
+        assert.deepEqual(round.map((e) => e.ev), ['G-pull', 'kb_bible_commit', 'G-push'], JSON.stringify(round));
+        assert.deepEqual(events.filter((e) => e.ev === 'kb_bible_commit')[0].args.ids, []);
+    });
+
     test('the removal-only call carries the kb_maintainer grant', async () => {
         const grants = [];
         const client = createKbWorkClient({

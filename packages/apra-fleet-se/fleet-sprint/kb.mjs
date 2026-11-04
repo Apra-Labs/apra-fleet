@@ -268,22 +268,55 @@ export function vetKbWork(role, result) {
         }
     }
 
-    // One output may not both CONFIRM and DISCARD the same entry: the two
-    // judgements contradict each other, so neither is executed and both sides
-    // are logged.
-    const discardIds = new Set(discards.map((d) => d.id));
-    const conflicted = new Set(promotions.filter((p) => discardIds.has(p.id)).map((p) => p.id));
-    for (const p of promotions) {
-        if (conflicted.has(p.id)) refused.push(`${role}: promotion ${p.id} refused -- the same output also discards it (promote reason: ${p.reason})`);
+    // kb_rejects: the reviewer's REJECT judgement -- a candidate that is true
+    // but fails the capture rubric (or is garbled, self-contradicting or mixes
+    // claims). Same role gate and evidence bar; executed as a retirement that
+    // carries the reason.
+    const rejects = [];
+    const rawRejects = (result && Array.isArray(result.kb_rejects)) ? result.kb_rejects : [];
+    if (rawRejects.length > 0 && !KB_PROMOTER_ROLES.has(role)) {
+        refused.push(`${role}: kb_rejects refused -- reject is reviewer-only`);
+    } else {
+        for (const r of rawRejects) {
+            if (!r || typeof r.id !== 'string' || r.id.length === 0) {
+                refused.push(`${role}: reject missing id`);
+                continue;
+            }
+            if (typeof r.reason !== 'string' || r.reason.trim().length < KB_MIN_PROMOTE_REASON) {
+                refused.push(`${role}: reject ${r.id} has no recorded evidence`);
+                continue;
+            }
+            rejects.push({ id: r.id, reason: r.reason.trim() });
+        }
     }
-    for (const d of discards) {
-        if (conflicted.has(d.id)) refused.push(`${role}: discard ${d.id} refused -- the same output also promotes it (discard reason: ${d.reason})`);
+
+    // One output may judge an entry only once: CONFIRM, DISCARD and REJECT
+    // contradict each other, so an id in more than one of them is executed
+    // nowhere and every side is logged.
+    const judged = [
+        { kind: 'promotion', short: 'promote', verb: 'promotes', items: promotions },
+        { kind: 'discard', short: 'discard', verb: 'discards', items: discards },
+        { kind: 'reject', short: 'reject', verb: 'rejects', items: rejects },
+    ];
+    const conflicted = new Set();
+    for (const j of judged) {
+        for (const x of j.items) {
+            if (judged.some((o) => o !== j && o.items.some((y) => y.id === x.id))) conflicted.add(x.id);
+        }
+    }
+    for (const j of judged) {
+        for (const x of j.items) {
+            if (!conflicted.has(x.id)) continue;
+            const also = judged.filter((o) => o !== j && o.items.some((y) => y.id === x.id)).map((o) => o.verb).join(' and ');
+            refused.push(`${role}: ${j.kind} ${x.id} refused -- the same output also ${also} it (${j.short} reason: ${x.reason})`);
+        }
     }
 
     return {
         captures,
         promotions: promotions.filter((p) => !conflicted.has(p.id)),
         discards: discards.filter((d) => !conflicted.has(d.id)),
+        rejects: rejects.filter((r) => !conflicted.has(r.id)),
         refused,
     };
 }
@@ -562,7 +595,23 @@ export function createKbWorkClient(opts = {}) {
         }
     }
 
-    const zeroCounts = () => ({ captured: 0, promoted: 0, discarded: 0 });
+    const zeroCounts = () => ({ captured: 0, promoted: 0, discarded: 0, rejected: 0 });
+
+    // kb_invalidate {ids} answers {discarded, not_found, already_discarded}.
+    // Every candidate is maintainer-tagged by construction, so a not-found
+    // means the entry is gone: logged, non-fatal, and not counted.
+    function invalidateLanded(p, res) {
+        const parsed = parseResult(res);
+        if (parsed && Array.isArray(parsed.not_found) && parsed.not_found.includes(p.id)) {
+            log(`[kb-work] kb_invalidate: entry ${p.id} not found on the maintainer -- already gone (non-fatal)`);
+            return false;
+        }
+        if (parsed && Array.isArray(parsed.already_discarded) && parsed.already_discarded.includes(p.id)) {
+            log(`[kb-work] kb_invalidate: entry ${p.id} was already discarded (non-fatal)`);
+            return false;
+        }
+        return true;
+    }
 
     const OPS = {
         capture: {
@@ -582,28 +631,23 @@ export function createKbWorkClient(opts = {}) {
             args: (p) => ({ ids: [p.id] }),
             subject: (p) => p.id,
             counter: 'discarded',
-            // kb_invalidate {ids} answers {discarded, not_found,
-            // already_discarded}. Every candidate is maintainer-tagged by
-            // construction, so a not-found means the entry is gone: logged,
-            // non-fatal, and not counted as a discard.
-            accept: (p, res) => {
-                const parsed = parseResult(res);
-                if (parsed && Array.isArray(parsed.not_found) && parsed.not_found.includes(p.id)) {
-                    log(`[kb-work] kb_invalidate: entry ${p.id} not found on the maintainer -- already gone (non-fatal)`);
-                    return false;
-                }
-                if (parsed && Array.isArray(parsed.already_discarded) && parsed.already_discarded.includes(p.id)) {
-                    log(`[kb-work] kb_invalidate: entry ${p.id} was already discarded (non-fatal)`);
-                    return false;
-                }
-                return true;
-            },
+            accept: (p, res) => invalidateLanded(p, res),
+        },
+        // A reviewer REJECT retires the entry exactly like a discard (same
+        // maintainer grant, same non-fatal not-found handling), but the
+        // reviewer's reason is stored with the retirement.
+        reject: {
+            tool: 'kb_invalidate',
+            args: (p) => ({ ids: [p.id], reason: p.reason }),
+            subject: (p) => p.id,
+            counter: 'rejected',
+            accept: (p, res) => invalidateLanded(p, res),
         },
     };
 
     /**
      * Apply one repository's queue in the maintainer's session. Never throws.
-     * @returns {Promise<{captured: number, promoted: number, discarded: number}>}
+     * @returns {Promise<{captured: number, promoted: number, discarded: number, rejected: number}>}
      */
     async function flushRepo(repo) {
         const counts = zeroCounts();
@@ -685,14 +729,15 @@ export function createKbWorkClient(opts = {}) {
             }
             if (typeof spec.accept === 'function' && !spec.accept(op.payload, res)) continue;
             counts[spec.counter]++;
-            if (op.kind === 'discard') retirements.add(repo);
+            if (op.kind === 'discard' || op.kind === 'reject') retirements.add(repo);
+            if (op.kind === 'reject') log(`[kb-work] rejected ${op.payload.id} on maintainer '${maintainer}' (${repo}): ${op.payload.reason}`);
             if (op.kind === 'promote') {
                 if (!confirmations.has(repo)) confirmations.set(repo, new Set());
                 confirmations.get(repo).add(op.payload.id);
             }
         }
-        if (counts.captured || counts.promoted || counts.discarded) {
-            log(`[kb-work] maintainer '${maintainer}' (${repo}): captured ${counts.captured}, promoted ${counts.promoted}, discarded ${counts.discarded}`);
+        if (counts.captured || counts.promoted || counts.discarded || counts.rejected) {
+            log(`[kb-work] maintainer '${maintainer}' (${repo}): captured ${counts.captured}, promoted ${counts.promoted}, discarded ${counts.discarded}, rejected ${counts.rejected}`);
         }
         return counts;
     }
@@ -1262,23 +1307,24 @@ export function createKbWorkClient(opts = {}) {
          * record or a bare name); it decides WHICH repository, never which
          * session -- no write is ever sent to it unless it is the maintainer.
          *
-         * @returns {Promise<{captured: number, promoted: number, discarded: number, refused: number}>}
+         * @returns {Promise<{captured: number, promoted: number, discarded: number, rejected: number, refused: number}>}
          *   counts of the writes applied by this call's flush (writes left
          *   queued for a busy or unreachable maintainer are not counted).
          */
         async apply(role, member, result) {
-            const { captures, promotions, discards, refused } = vetKbWork(role, result);
+            const { captures, promotions, discards, rejects, refused } = vetKbWork(role, result);
 
             for (const r of refused) log(`[kb-work] refused -- ${r}`);
             // Log every promotion with its stated evidence BEFORE attempting it.
             // This log is the audit trail the bible never had.
             for (const p of promotions) log(`[kb-work] promote ${p.id} (${role}): ${p.reason}`);
             for (const d of discards) log(`[kb-work] discard ${d.id} (${role}): ${d.reason}`);
+            for (const r of rejects) log(`[kb-work] reject ${r.id} (${role}): ${r.reason}`);
 
             let extraRefused = 0;
             const done = (counts) => ({ ...counts, refused: refused.length + extraRefused });
-            if (captures.length === 0 && promotions.length === 0 && discards.length === 0) return done(zeroCounts());
-            const dropped = `${captures.length} capture(s), ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`;
+            if (captures.length === 0 && promotions.length === 0 && discards.length === 0 && rejects.length === 0) return done(zeroCounts());
+            const dropped = `${captures.length} capture(s), ${promotions.length} promotion(s), ${discards.length} discard(s) and ${rejects.length} reject(s) dropped`;
 
             const producer = memberNameOf(member);
             // Without a resolved member there is no repository the writes
@@ -1308,7 +1354,7 @@ export function createKbWorkClient(opts = {}) {
                 }
             }
             const repos = new Set(target ? [target.repo] : []);
-            if (promotions.length > 0 || discards.length > 0) {
+            if (promotions.length > 0 || discards.length > 0 || rejects.length > 0) {
                 const review = reviewMaintainerFor(producer);
                 if (review) {
                     // Only ids offered in this dispatch's candidate block may be
@@ -1322,9 +1368,10 @@ export function createKbWorkClient(opts = {}) {
                     };
                     for (const p of promotions) if (inBlock('promotion', p)) enqueue(review.repo, 'promote', role, p);
                     for (const d of discards) if (inBlock('discard', d)) enqueue(review.repo, 'discard', role, d);
+                    for (const r of rejects) if (inBlock('reject', r)) enqueue(review.repo, 'reject', role, r);
                     repos.add(review.repo);
                 } else {
-                    log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`);
+                    log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${promotions.length} promotion(s), ${discards.length} discard(s) and ${rejects.length} reject(s) dropped`);
                 }
             }
             const counts = zeroCounts();
@@ -1689,7 +1736,11 @@ export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'pri
     const label = source === 'query' ? 'kb_query --top_entries' : 'kb_session_prime --top_entries';
     const captureLine = captureChannel
         ? 'If you discover something non-obvious and durable while working, report it in the '
-            + '`kb_captures` field of your structured output and the orchestrator will record it.\n'
+            + '`kb_captures` field of your structured output and the orchestrator will record it. '
+            + 'Each capture needs a `trigger` (failed-attempt, review-finding, test-failure, '
+            + 'env-quirk, hidden-invariant or design-rationale) and must pass the capture rubric: '
+            + 'a lesson the next developer would miss, not a description of the change. A capture '
+            + 'without a valid trigger, or failing the capture lint, is refused.\n'
         : 'If you discover something non-obvious and durable while working, note it in your '
             + 'own report.\n';
     if (injectable.length === 0) {
@@ -1732,14 +1783,17 @@ export function kbPromotionBlock(kbCandidates) {
     return [
         'KNOWLEDGE BANK -- promotion candidates. These entries were captured during this '
         + 'sprint and sit at INFERRED. You are the only role that can promote them to '
-        + 'CONFIRMED, or discard them. Do NOT call any kb_* tool yourself: return your '
+        + 'CONFIRMED, discard them, or reject them. Do NOT call any kb_* tool yourself: return your '
         + 'decisions in your structured output and the orchestrator executes them -- '
         + '`kb_promotions` as [{id, reason}] for entries to CONFIRM, `kb_discards` as '
-        + '[{id, reason}] for entries to DISCARD.\n'
-        + 'Promote ONLY entries whose claim you independently verified during THIS review '
-        + '-- by reading the diff, running the tests, or checking the cited files yourself. '
-        + 'The `reason` must state that evidence (at least 20 characters, e.g. "verified '
-        + 'against server/transit.js:88 and the reopen test"). Evidence, not plausibility: '
+        + '[{id, reason}] for entries to DISCARD, `kb_rejects` as [{id, reason}] for entries '
+        + 'to REJECT.\n'
+        + 'Promotion needs truth AND rubric value. Promote ONLY entries whose claim you independently '
+        + 'verified during THIS review -- by reading the diff, running the tests, or checking the '
+        + 'cited files yourself -- AND that pass the capture rubric (a lesson the next developer '
+        + 'would miss, not a restatement of the diff). '
+        + 'The `reason` must state that evidence and name its kind (diff, test run or repro; at '
+        + 'least 20 characters, e.g. "verified against server/transit.js:88 and the reopen test"). Evidence, not plausibility: '
         + 'if an entry merely looks correct, leave it INFERRED -- that is a perfectly good '
         + 'resting state, and a wrong CONFIRMED entry is worse than no entry. Never '
         + 'blanket-promote, and never promote by module, tag or timestamp. Promoting '
@@ -1747,8 +1801,13 @@ export function kbPromotionBlock(kbCandidates) {
         + 'Discard ONLY entries you showed to be WRONG during this review, with the same '
         + 'evidence bar: the `reason` states what you checked that contradicts the claim. '
         + 'A discarded entry drops out of every later read. An entry you cannot confirm '
-        + 'is not thereby wrong -- leave it INFERRED. Never list the same id in both '
-        + 'fields; the orchestrator refuses both.\n'
+        + 'is not thereby wrong -- leave it INFERRED.\n'
+        + 'Reject an entry that is TRUE but fails the capture rubric (a restatement of the diff, '
+        + 'a fact readable in the cited lines, status), or that is garbled, self-contradicting or '
+        + 'mixes several claims. The `reason` (at least 20 characters) names the rubric rule it '
+        + 'fails; the orchestrator retires the entry and stores that reason.\n'
+        + 'Never list the same id in more than one of the three fields; '
+        + 'the orchestrator refuses every side.\n'
         + wrapUntrustedBlock('kb_query --tag member:<maintainer> --confidence INFERRED', JSON.stringify(
             kbCandidates.map((e) => ({
                 id: e.id,

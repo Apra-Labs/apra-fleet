@@ -2663,7 +2663,7 @@ const KB_EXEC_SCHEMA = {
 /**
  * Validate what a role returned. Anything that would be refused downstream is
  * dropped HERE, with a reason logged, so a bad payload never becomes a tool call.
- * Returns { captures, promotions, rejected } -- all plain data.
+ * Returns { captures, promotions, rejects, rejected } -- all plain data.
  */
 function vetKbWork(role, result) {
   const captures = [];
@@ -2737,6 +2737,35 @@ function vetKbWork(role, result) {
     }
   }
 
+  // kb_rejects: the reviewer's REJECT judgement (true but fails the capture
+  // rubric). Vetted exactly like the fleet-sprint engine so the copies agree;
+  // an id also promoted in the same output is refused on both sides.
+  const rejects = [];
+  const rawRejects = (result && Array.isArray(result.kb_rejects)) ? result.kb_rejects : [];
+  if (rawRejects.length > 0 && !KB_PROMOTER_ROLES.has(role)) {
+    rejected.push(`${role}: kb_rejects refused -- reject is reviewer-only`);
+  } else {
+    for (const r of rawRejects) {
+      if (!r || typeof r.id !== 'string' || r.id.length === 0) {
+        rejected.push(`${role}: reject missing id`);
+        continue;
+      }
+      if (typeof r.reason !== 'string' || r.reason.trim().length < KB_MIN_PROMOTE_REASON) {
+        rejected.push(`${role}: reject ${r.id} has no recorded evidence`);
+        continue;
+      }
+      rejects.push({ id: r.id, reason: r.reason.trim() });
+    }
+  }
+  const rejectIds = new Set(rejects.map((r) => r.id));
+  const conflicted = new Set(promotions.filter((p) => rejectIds.has(p.id)).map((p) => p.id));
+  for (const p of promotions) {
+    if (conflicted.has(p.id)) rejected.push(`${role}: promotion ${p.id} refused -- the same output also rejects it (promote reason: ${p.reason})`);
+  }
+  for (const r of rejects) {
+    if (conflicted.has(r.id)) rejected.push(`${role}: reject ${r.id} refused -- the same output also promotes it (reject reason: ${r.reason})`);
+  }
+
   // kb_discards is applied only by the fleet-sprint engine (maintainer-routed
   // kb_invalidate). This legacy workflow has no discard path, so refuse and log
   // rather than silently dropping a reviewer's DISCARD.
@@ -2744,7 +2773,12 @@ function vetKbWork(role, result) {
     rejected.push(`${role}: kb_discards refused -- not supported by this workflow (${result.kb_discards.length} dropped)`);
   }
 
-  return { captures, promotions, rejected };
+  return {
+    captures,
+    promotions: promotions.filter((p) => !conflicted.has(p.id)),
+    rejects: rejects.filter((r) => !conflicted.has(r.id)),
+    rejected,
+  };
 }
 
 /**
@@ -2752,9 +2786,13 @@ function vetKbWork(role, result) {
  * common case costs no dispatch at all.
  */
 async function runKbWork(repoPath, role, result) {
-  const { captures, promotions, rejected } = vetKbWork(role, result);
+  const { captures, promotions, rejects, rejected } = vetKbWork(role, result);
 
   for (const r of rejected) log(`KB refused -- ${r}`);
+  // kb_rejects, like kb_discards, is executed only by the fleet-sprint engine
+  // (maintainer-routed kb_invalidate with the reason). Log every vetted reject
+  // rather than silently dropping the reviewer's judgement.
+  for (const r of rejects) log(`KB refused -- ${role}: kb_rejects ${r.id} not supported by this workflow (reject reason: ${r.reason})`);
   // Every promotion is logged with its stated evidence, whether or not the call
   // later succeeds. This log IS the audit trail the bible never had.
   for (const p of promotions) log(`KB promote ${p.id} (${role}): ${p.reason}`);

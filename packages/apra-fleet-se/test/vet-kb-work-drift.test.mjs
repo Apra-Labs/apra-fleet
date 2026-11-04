@@ -100,6 +100,15 @@ const CASES = [
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, trigger: 'failed-attempt' }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, trigger: 'failed-attempt', content: 'Cause: the cache is keyed by tenant only, so ids collide.' }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, trigger: 'failed-attempt', content: 'Rule/Fix: key the cache by tenant and id, never by tenant only.' }] }],
+    // kb_rejects: reviewer-only, needs evidence, conflicts with a promotion.
+    ['reviewer', { kb_rejects: [{ id: 'abc', reason: GOOD_REASON }] }],
+    ['reviewer', { kb_rejects: [{ id: 'abc', reason: 'too short' }] }],
+    ['reviewer', { kb_rejects: [{ reason: GOOD_REASON }] }],
+    ['reviewer', { kb_rejects: [{ id: 'abc', reason: 'x'.repeat(19) }] }],
+    ['doer', { kb_rejects: [{ id: 'abc', reason: GOOD_REASON }] }],
+    ['planner', { kb_rejects: [{ id: 'abc', reason: GOOD_REASON }] }],
+    ['reviewer', { kb_promotions: [{ id: 'abc', reason: GOOD_REASON }], kb_rejects: [{ id: 'abc', reason: GOOD_REASON }] }],
+    ['reviewer', { kb_promotions: [{ id: 'abc', reason: GOOD_REASON }], kb_rejects: [{ id: 'def', reason: GOOD_REASON }] }],
 ];
 
 describe('vetKbWork copies do not drift (apra-fleet-4wz.9)', () => {
@@ -109,6 +118,7 @@ describe('vetKbWork copies do not drift (apra-fleet-4wz.9)', () => {
             const b = pmVet(role, payload);
             assert.deepEqual(a.captures, b.captures, 'captures differ between the two copies');
             assert.deepEqual(a.promotions, b.promotions, 'promotions differ between the two copies');
+            assert.deepEqual(a.rejects, b.rejects, 'rejects differ between the two copies');
             // The refusal REASONS are prose and may be worded per engine, but the
             // COUNT of refusals must match -- a rule that fires in one copy and
             // not the other is exactly the drift this guards.
