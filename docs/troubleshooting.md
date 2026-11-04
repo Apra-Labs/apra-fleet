@@ -291,13 +291,25 @@ Fix in the product:
   (`go build`, `go test`, other Go tools) also runs with `GOMAXPROCS=1`, so it
   is effectively serialized to one OS thread and can be slower than expected.
 
-  Override it in the member's own user environment; fleet never replaces a
-  value that is already set:
+  Override it by setting `GOMAXPROCS` yourself; fleet never replaces a value
+  that is already set. Set it as a Windows user environment variable on the
+  member (for example `[Environment]::SetEnvironmentVariable('GOMAXPROCS', '4', 'User')`),
+  then:
 
-  - Windows PowerShell / user environment: set `GOMAXPROCS` to the value you
-    want (for example `[Environment]::SetEnvironmentVariable('GOMAXPROCS', '4', 'User')`,
-    then start a new session).
-  - Git Bash: `export GOMAXPROCS=4` in `~/.bashrc`.
+  - Remote Windows member (PowerShell or Git Bash shell): nothing else. Each
+    dispatch opens a new SSH session, which reads the user environment.
+  - Local Windows member, PowerShell shell: restart the fleet server
+    (`apra-fleet stop`, then `apra-fleet start`). The server reads the
+    machine and user environment once and caches it for its lifetime.
+  - Local Windows member, Git Bash shell: restart the fleet server too.
+    Commands run as a non-interactive `bash -c` with the server's own process
+    environment, so `~/.bashrc` is not read. The server sees the new user
+    variable only when it starts from a fresh environment (the service, or
+    `apra-fleet start` from a terminal opened after the change).
+
+  For one command only, set it in the command itself; the default is applied
+  before the command runs, so this needs no restart: `$env:GOMAXPROCS = '4';
+  go test ./...` (PowerShell) or `GOMAXPROCS=4 go test ./...` (Git Bash).
 
   Trade-off: a raised value re-exposes `bd dolt pull/push` to the Windows
   process-creation limit above, because dolt may start several git processes
