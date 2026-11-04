@@ -101,7 +101,7 @@ describe('promotion candidates: the maintainer read and the sprint window', () =
         const h = harness();
         const capture = {
             type: 'knowledge', title: 'queued claim', summary: 'a claim captured this round',
-            content: 'the content of the claim captured this round', source_files: ['src/a.ts'],
+            content: 'the content of the claim captured this round', trigger: 'hidden-invariant', source_files: ['src/a.ts'],
         };
         // Queue a capture behind a busy maintainer.
         await h.client.dispatchStarted('maint');
@@ -134,7 +134,7 @@ describe('promotion candidates: the maintainer read and the sprint window', () =
         });
         await client.apply('doer', 'doer', { kb_captures: [{
             type: 'knowledge', title: 'queued claim', summary: 'a claim captured this round',
-            content: 'the content of the claim captured this round', source_files: ['src/a.ts'],
+            content: 'the content of the claim captured this round', trigger: 'hidden-invariant', source_files: ['src/a.ts'],
         }] });
         assert.equal(client.pendingCount(), 1);
         down = false;

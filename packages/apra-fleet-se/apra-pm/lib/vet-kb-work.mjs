@@ -20,6 +20,65 @@ export const KB_MIN_PROMOTE_REASON = 20;
 
 export const KB_CAPTURE_TYPES = ['knowledge', 'learning', 'runbook'];
 
+// What kind of event produced a captured lesson. Mirrors CAPTURE_TRIGGERS in
+// the server's knowledge types: the server accepts a trigger-less capture for
+// backward compatibility, so refusing one is the engine's job.
+export const KB_CAPTURE_TRIGGERS = ['failed-attempt', 'review-finding', 'test-failure', 'env-quirk', 'hidden-invariant', 'design-rationale'];
+
+// Capture lint length caps (characters): title 100, summary 400, content 2000.
+export const KB_MAX_CAPTURE_TITLE = 100;
+export const KB_MAX_CAPTURE_SUMMARY = 400;
+export const KB_MAX_CAPTURE_CONTENT = 2000;
+// Content must add at least this many normalised characters beyond the
+// summary, or it only repeats the summary.
+export const KB_MIN_CONTENT_EXTRA = 40;
+
+// A double-brace placeholder token ({{<word>.<KEY>}}), built generically so no
+// particular placeholder prefix is spelled out here.
+const KB_PLACEHOLDER_RE = new RegExp('\\{\\{\\s*[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+\\s*\\}\\}');
+// First-person narrative words as whole words. A path, flag or dotted name
+// (us-east-1, my.cnf, C:\Users\me) is not a word here.
+const KB_FIRST_PERSON_RE = /(?<![\w/\\.-])(?:me|my|we|our|us)(?![\w/\\-]|\.\w)/i;
+const KB_FIRST_PERSON_I_RE = /(?<![\w/\\.-])I(?![\w/\\-]|\.\w)/;
+// A line-number reference: a path:digits token or the phrase "line N".
+const KB_LINE_REF_RE = /[\w.-]+\.[A-Za-z][A-Za-z0-9]*:\d+|\bline\s+\d+\b/i;
+// The labelled sections a failed-attempt capture's content must carry.
+const KB_CAUSE_SECTION_RE = /(?:^|\n)[ \t>*#-]*Cause[ \t*]*(?::|\n|$)/i;
+const KB_RULE_FIX_SECTION_RE = /(?:^|\n)[ \t>*#-]*(?:Rule\/Fix|Rule|Fix)[ \t*]*(?::|\n|$)/i;
+
+function kbNormText(s) {
+  return String(s).toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+// Lint one capture. Returns null when it passes, or "rule <name>: <detail>"
+// naming the first rule it fails. `content` is the trimmed content ('' when
+// absent).
+function lintKbCapture(c, content) {
+  const cues = Array.isArray(c.recall_cues) ? c.recall_cues : [];
+  const sigs = Array.isArray(c.error_signatures) ? c.error_signatures : [];
+  const all = [c.title, c.summary, content, ...cues, ...sigs];
+  if (all.some((s) => /[^\x00-\x7F]/.test(s))) return 'rule ascii-only: non-ASCII character';
+  if (c.title.length > KB_MAX_CAPTURE_TITLE) return `rule length: title over ${KB_MAX_CAPTURE_TITLE} chars`;
+  if (c.summary.length > KB_MAX_CAPTURE_SUMMARY) return `rule length: summary over ${KB_MAX_CAPTURE_SUMMARY} chars`;
+  if (content.length > KB_MAX_CAPTURE_CONTENT) return `rule length: content over ${KB_MAX_CAPTURE_CONTENT} chars`;
+  if (all.some((s) => KB_PLACEHOLDER_RE.test(s))) return 'rule placeholder: double-brace placeholder token';
+  const prose = [c.title, c.summary, content, ...cues];
+  if (prose.some((s) => KB_FIRST_PERSON_RE.test(s) || KB_FIRST_PERSON_I_RE.test(s))) return 'rule first-person: narrative first-person word';
+  const named = Array.isArray(c.symbols) && c.symbols.some((s) => typeof s === 'string' && s.trim().length > 0);
+  if (!named && [c.title, c.summary, content].some((s) => KB_LINE_REF_RE.test(s))) return 'rule line-number-only: line reference with no symbol named';
+  if (content.length > 0) {
+    const ns = kbNormText(c.summary);
+    const nc = kbNormText(content);
+    if (nc === ns || (nc.includes(ns) && nc.length - ns.length < KB_MIN_CONTENT_EXTRA)) return 'rule content-repeats-summary: content repeats the summary';
+  }
+  if (c.trigger === 'failed-attempt' && !(KB_CAUSE_SECTION_RE.test(content) && KB_RULE_FIX_SECTION_RE.test(content))) {
+    return 'rule failed-attempt-sections: content needs a Cause and a Rule/Fix section';
+  }
+  return null;
+}
+
+const isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string');
+
 export function vetKbWork(role, result) {
   const captures = [];
   const promotions = [];
@@ -41,20 +100,37 @@ export function vetKbWork(role, result) {
       rejected.push(`${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
       continue;
     }
-    // apra-fleet-23c: kbCaptureSchema requires content (z.string().min(1)).
-    // Omitting it meant every kb_capture failed zod validation at the MCP
-    // boundary and persisted nothing.
-    if (typeof c.content !== 'string' || c.content.trim().length === 0) {
-      rejected.push(`${role}: capture "${c.title}" has no content`);
+    if (!KB_CAPTURE_TRIGGERS.includes(c.trigger)) {
+      rejected.push(`${role}: capture "${c.title}" refused -- rule trigger: missing or unknown trigger ${String(c.trigger)}`);
+      continue;
+    }
+    // content is optional: absent or empty forwards no content key and the
+    // server stores the summary as the content.
+    if (c.content !== undefined && c.content !== null && typeof c.content !== 'string') {
+      rejected.push(`${role}: capture "${c.title}" refused -- rule content: content is not a string`);
+      continue;
+    }
+    if ((c.recall_cues !== undefined && !isStringArray(c.recall_cues))
+      || (c.error_signatures !== undefined && !isStringArray(c.error_signatures))) {
+      rejected.push(`${role}: capture "${c.title}" refused -- rule cues: recall_cues/error_signatures must be arrays of strings`);
+      continue;
+    }
+    const content = typeof c.content === 'string' ? c.content.trim() : '';
+    const lint = lintKbCapture(c, content);
+    if (lint) {
+      rejected.push(`${role}: capture "${c.title}" refused -- ${lint}`);
       continue;
     }
     captures.push({
       type: c.type,
       title: c.title,
       summary: c.summary,
-      content: c.content,
+      ...(content.length > 0 ? { content: c.content } : {}),
+      trigger: c.trigger,
       source_files: c.source_files,
       symbols: Array.isArray(c.symbols) ? c.symbols : [],
+      ...(Array.isArray(c.recall_cues) && c.recall_cues.length > 0 ? { recall_cues: c.recall_cues } : {}),
+      ...(Array.isArray(c.error_signatures) && c.error_signatures.length > 0 ? { error_signatures: c.error_signatures } : {}),
     });
   }
 

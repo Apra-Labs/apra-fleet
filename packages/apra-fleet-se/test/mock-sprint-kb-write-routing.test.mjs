@@ -183,6 +183,7 @@ const captureFor = (title) => ({
     title,
     summary: `${title} -- a durable claim about the widget cache.`,
     content: `${CITED} keys every entry by tenant id; ${title}.`,
+    trigger: 'hidden-invariant',
     source_files: [CITED],
 });
 

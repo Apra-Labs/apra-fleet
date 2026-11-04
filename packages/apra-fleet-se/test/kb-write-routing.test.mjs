@@ -22,6 +22,7 @@ const CAPTURE = Object.freeze({
     title: 'The widget cache is keyed per tenant',
     summary: 'WidgetCache.get keys every entry by tenant id, so tenants never share a hit.',
     content: 'src/widget-cache.ts builds its key as `${tenant}:${id}`; a cross-tenant read always misses.',
+    trigger: 'hidden-invariant',
     source_files: ['src/widget-cache.ts'],
 });
 const capture = (title) => ({ ...CAPTURE, title });

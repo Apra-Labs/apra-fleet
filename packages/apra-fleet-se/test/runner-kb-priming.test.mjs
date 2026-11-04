@@ -382,6 +382,7 @@ const GOOD_CAPTURE = {
     title: 'getKbProviders is the only KB accessor',
     summary: 'Every kb_* tool routes through getKbProviders so the KB is repo-scoped.',
     content: 'getKbProviders(repo_path) resolves the per-repo sqlite store; every kb_* tool goes through it.',
+    trigger: 'hidden-invariant',
     source_files: ['src/services/knowledge/kb-providers.ts'],
     symbols: ['getKbProviders'],
 };
@@ -464,16 +465,20 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
             'content is required by kbCaptureSchema; dropping it makes every capture a no-op');
     });
 
-    test('a capture with no content is refused rather than sent to fail server-side', async () => {
+    // kb_capture content is optional now (the server stores the summary as the
+    // content), so a contentless capture is forwarded with no content key.
+    test('a capture with no content is forwarded with no content key', async () => {
         const { calls, memberCall } = recorder();
         const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
         const { content, ...noContent } = GOOD_CAPTURE;
 
         const out = await client.apply('doer', ALPHA, { kb_captures: [noContent] });
 
-        assert.equal(out.captured, 0);
-        assert.equal(calls.filter((c) => c.name === 'kb_capture').length, 0);
-        assert.equal(out.refused, 1);
+        assert.equal(out.captured, 1);
+        const sent = calls.filter((c) => c.name === 'kb_capture');
+        assert.equal(sent.length, 1);
+        assert.ok(!('content' in sent[0].args));
+        assert.equal(out.refused, 0);
     });
 
     // apra-fleet-23c, second half: an MCP error result resolves, so `captured++` ran
