@@ -1,0 +1,17 @@
+{
+  "tool": "kb_promote",
+  "case": "setup-second-promote-for-demote",
+  "kind": "happy",
+  "request": {
+    "id": "212a4796-bc68-497d-bdf9-b5aeeafa9970",
+    "reason": "Second promotion (INFERRED -> CONFIRMED) so kb_demote has a CONFIRMED entry to lower."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"212a4796-bc68-497d-bdf9-b5aeeafa9970\",\"previous_confidence\":\"CONFIRMED\",\"new_confidence\":\"CONFIRMED\"}"
+      }
+    ]
+  }
+}

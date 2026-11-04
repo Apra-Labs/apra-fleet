@@ -90,9 +90,16 @@ export interface NewProjectScriptOptions {
   /** Extra NON-SECRET environment for the agy process. The script text is part of
    *  the member command line -- credentials go through stageAuthEnv instead. */
   env?: Record<string, string>;
-  /** Test seam: run this executable (plus leading args) instead of `agy`. */
+  /** Test seam: run this executable (plus leading args) instead of `agy`.
+   *  AGY_NODE_SELF means the node binary running the member-side script. */
   agyCommand?: { file: string; args: string[] };
 }
+
+/** agyCommand.file sentinel: spawn the member-side node itself
+ *  (process.execPath evaluated ON THE MEMBER). Keeps host paths out of the
+ *  member command line -- a host absolute path is meaningless on a remote
+ *  member and is environment-derived text in a shell command. */
+export const AGY_NODE_SELF = '<node-self>';
 
 /**
  * Member-side node script: list ~/.gemini/config/projects, run
@@ -131,7 +138,7 @@ const extra = [path.join(home, '.local', 'bin')];
 if (process.platform === 'win32' && env.LOCALAPPDATA) extra.push(path.join(env.LOCALAPPDATA, 'agy', 'bin'));
 env[pathKey] = extra.join(path.delimiter) + path.delimiter + (env[pathKey] || '');
 const args = ${JSON.stringify(args)}.map(function (a) { return a === '__LOG_FILE__' ? logFile : a; });
-const r = cp.spawnSync(${JSON.stringify(file)}, args, { cwd: ${JSON.stringify(opts.workFolder)}, env: env, encoding: 'utf8', timeout: ${NEW_PROJECT_SPAWN_TIMEOUT_MS}, windowsHide: true });
+const r = cp.spawnSync(${file === AGY_NODE_SELF ? 'process.execPath' : JSON.stringify(file)}, args, { cwd: ${JSON.stringify(opts.workFolder)}, env: env, encoding: 'utf8', timeout: ${NEW_PROJECT_SPAWN_TIMEOUT_MS}, windowsHide: true });
 const created = list().filter(function (f) { return !before.has(f); }).map(function (f) { return f.slice(0, -5); });
 const logIds = [];
 try {
@@ -331,7 +338,7 @@ export async function provisionAgyProject(
   // ~/.gemini and run a model turn. Without a test override the stand-in
   // exits 97 and provisioning fails ("agy exited 97").
   if (!agyCommand && process.env.NODE_ENV === 'test') {
-    agyCommand = { file: process.execPath, args: ['-e', 'process.exit(97)', '--'] };
+    agyCommand = { file: AGY_NODE_SELF, args: ['-e', 'process.exit(97)', '--'] };
   }
   const model = getModelOverride('agy', 'cheap') ?? AGY_MODEL_FOR_TIER.cheap;
   // Stored auth env vars reach agy through the staged env file the command

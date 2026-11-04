@@ -52,8 +52,8 @@ export type DetectedVcsProvider = 'github' | 'bitbucket' | 'azure-devops';
 /** github.com and its ssh alias. Anchored -- see the header note on GHE. */
 const GITHUB_HOST_RE = /^(?:www\.|ssh\.)?github\.com$/i;
 
-/** bitbucket.org and its alternate-SSH host. */
-const BITBUCKET_HOST_RE = /^(?:www\.|altssh\.)?bitbucket\.org$/i;
+/** bitbucket.org and its SSH hosts (altssh, ssh). */
+const BITBUCKET_HOST_RE = /^(?:www\.|altssh\.|ssh\.)?bitbucket\.org$/i;
 
 /** dev.azure.com, its v3 ssh host, and the legacy <org>.visualstudio.com.
  *  Kept identical to azure-devops.mjs's HOST_RE. */

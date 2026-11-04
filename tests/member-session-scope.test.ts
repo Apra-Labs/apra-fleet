@@ -324,6 +324,15 @@ describe('member KB write policy: kb_setup / kb_export never, kb_promote / kb_re
 });
 
 /**
+ * The kb_maintainer-grant suites spawn many git processes per test (init,
+ * commits, clones, rev-parse through the tool handlers); on CI macOS/Windows
+ * runners one test routinely takes 6-8s, past the 5s vitest default. Every
+ * describe that uses useKbMemberRepo passes KB_GIT_SUITE.
+ */
+const KB_GIT_SUITE = { timeout: 30_000 };
+const KB_GIT_HOOK_TIMEOUT_MS = 30_000;
+
+/**
  * Per-test KB fixture for the kb_maintainer-grant suites: a member whose work
  * folder is a temp git repo with an origin remote, and a temp SqliteProvider
  * the getKbProviders spy hands to every kb_* handler. Registers its own
@@ -389,13 +398,19 @@ function useKbMemberRepo() {
     const agent = makeTestLocalAgent({ friendlyName: 'kb-gate-member', workFolder: fx.clone });
     addAgent(agent);
     fx.memberId = agent.id;
-  });
+  }, KB_GIT_HOOK_TIMEOUT_MS);
 
-  afterEach(() => {
+  // Vitest runs afterEach hooks in stack order, so this runs BEFORE the
+  // file-level afterEach: close the sessions/servers (which may still hold the
+  // clone or the sqlite file open) and the provider here, then remove the root
+  // with retries -- Windows reports EBUSY on a handle released a moment ago.
+  afterEach(async () => {
+    for (const c of clients.splice(0)) { try { await c.close(); } catch { /* ignore */ } }
+    for (const h of handles.splice(0)) { try { await h.close(); } catch { /* ignore */ } }
     vi.restoreAllMocks();
     fx.provider.close();
-    fs.rmSync(fx.root, { recursive: true, force: true });
-  });
+    fs.rmSync(fx.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }, KB_GIT_HOOK_TIMEOUT_MS);
 
   return fx;
 }
@@ -419,7 +434,7 @@ const MAINTAINER_PARAMS = { origin: 'engine', kb_maintainer: '1' };
 // the first test (the plain session lists it); dropping the explicit-path guard
 // in src/tools/kb-import.ts fails the kb_import test (the hand-made bible's
 // entry lands CONFIRMED in the member's DB).
-describe('kb_maintainer grant gates CONFIRMED minting via kb_reconcile_prefilter and kb_import with a path', () => {
+describe('kb_maintainer grant gates CONFIRMED minting via kb_reconcile_prefilter and kb_import with a path', KB_GIT_SUITE, () => {
   const fx = useKbMemberRepo();
 
   /** A genuine AUDN contradiction pair whose challenger alone still matches the worktree. */
@@ -520,7 +535,7 @@ describe('kb_maintainer grant gates CONFIRMED minting via kb_reconcile_prefilter
 // FALSIFICATION: making kb-import.ts read the work-tree file for a no-grant
 // session again fails the edited-work-tree test (the forged entry lands
 // CONFIRMED) and the untracked-bible test (the import succeeds).
-describe('kb_import in a member session without the grant imports only the committed bible', () => {
+describe('kb_import in a member session without the grant imports only the committed bible', KB_GIT_SUITE, () => {
   const fx = useKbMemberRepo();
 
   async function forgedConfirmedBible(): Promise<string> {
@@ -629,7 +644,7 @@ describe('kb_import in a member session without the grant imports only the commi
 // kb-bible-commit.ts fails the maintainer and fresh-clone tests, and dropping
 // it in kb-import.ts fails the seeding and FULL-session tests (the no-grant
 // import is refused).
-describe('kb_import trust anchor: a no-grant import needs a bible the maintainer side recorded', () => {
+describe('kb_import trust anchor: a no-grant import needs a bible the maintainer side recorded', KB_GIT_SUITE, () => {
   const fx = useKbMemberRepo();
   const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
   const BIBLE_REL = '.fleet/kb-canonical.json';
@@ -965,7 +980,7 @@ describe('kb_import trust anchor: a no-grant import needs a bible the maintainer
 // it as false) fails "a plain ?member= session cannot retire a CONFIRMED bible
 // entry by id" (the entry is discarded and the next bible commit removes it)
 // and the {files} test.
-describe('kb_invalidate needs the kb_maintainer grant to retire a CONFIRMED bible entry', () => {
+describe('kb_invalidate needs the kb_maintainer grant to retire a CONFIRMED bible entry', KB_GIT_SUITE, () => {
   const fx = useKbMemberRepo();
   const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
 
@@ -1065,7 +1080,7 @@ describe('kb_invalidate needs the kb_maintainer grant to retire a CONFIRMED bibl
 // FALSIFICATION: dropping the keepConfirmed option in src/tools/kb-capture.ts
 // fails the two plain-session CONFIRMED tests (the target is superseded and the
 // next bible commit removes it).
-describe('kb_capture supersedes needs the kb_maintainer grant to retire a CONFIRMED entry', () => {
+describe('kb_capture supersedes needs the kb_maintainer grant to retire a CONFIRMED entry', KB_GIT_SUITE, () => {
   const fx = useKbMemberRepo();
   const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
 

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
-import { parseBibleText, importBibleEntries } from '../services/knowledge/bible-import.js';
+import { parseBibleDocument, importBibleEntries, type BibleDocument } from '../services/knowledge/bible-import.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import {
@@ -137,6 +137,14 @@ export interface KbImportReport {
    * bible, so re-importing an old bible deliberately drops those entries.
    */
   rejected: number;
+  /**
+   * Local rows taken CONFIRMED -> INFERRED by an EXPLICIT demotion tombstone in
+   * the imported bible -- the cross-clone half of kb_demote. Counts rows
+   * actually changed, not tombstones read: a tombstone naming an id this clone
+   * does not hold, or one whose row was re-promoted after the demotion, adds
+   * nothing. An entry merely ABSENT from the bible is never demoted.
+   */
+  demoted: number;
   sweep: { checked: number; staled: number; unstaled: number };
   /**
    * Present exactly when the bible was read from git rather than the file
@@ -171,7 +179,9 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
   // importing anything (reject otherwise -- non-zero exit at the CLI).
   // Parsing (both on-disk shapes) is shared with the member bible view
   // (services/knowledge/bible-import.ts); a malformed file throws KbBibleError.
-  let bibleEntries: unknown[];
+  // The DOCUMENT parse, not the entries-only one: the demotion tombstones are
+  // the cross-clone half of this import and must come from the same parse.
+  let bibleDoc: BibleDocument;
   // Set whenever the bible was read from git (no-grant sessions always; any
   // session passing `ref`): the ref read, the hash-verified blob id, and
   // whether the work-tree copy differed.
@@ -215,14 +225,14 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
     // Line endings are normalized for the comparison only (autocrlf checkouts).
     const lf = (t: string) => t.replace(/\r\n/g, '\n');
     committedSource = { ref, worktree_ignored: worktree === null || lf(worktree) !== lf(committed.text), blobId: committed.blobId };
-    bibleEntries = parseBibleText(committed.text, ref + ':' + rel, 'kb_import');
+    bibleDoc = parseBibleDocument(committed.text, ref + ':' + rel, 'kb_import');
   } else {
     if (!fs.existsSync(biblePath)) {
       throw new Error('kb_import: bible file not found: ' + biblePath);
     }
     // Read once: the bytes parsed are the bytes whose blob id is recorded.
     fileBytes = fs.readFileSync(biblePath);
-    bibleEntries = parseBibleText(fileBytes.toString('utf-8'), biblePath, 'kb_import');
+    bibleDoc = parseBibleDocument(fileBytes.toString('utf-8'), biblePath, 'kb_import');
   }
 
   // repoAnchor (resolved above) selects the KB, so an import 'for' repo B can
@@ -247,7 +257,13 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
   // Same entry loop the member bible view uses: import mode (bible confidence
   // preserved, directives quarantined), id-exists skip first, per-entry
   // isolation of capture basis rejections.
-  const { imported, skipped, linked, flagged, rejected } = await importBibleEntries(provider, bibleEntries);
+  // Tombstones ride along in the same call so entries and demotions can never
+  // be applied from two different reads of the file.
+  const { imported, skipped, linked, flagged, rejected, demoted } = await importBibleEntries(
+    provider,
+    bibleDoc.entries,
+    { demotions: bibleDoc.demotions },
+  );
 
   // A FULL or kb_maintainer session is trusted to import at bible confidence,
   // so the bible it just imported becomes trusted for member sessions too:
@@ -287,7 +303,7 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
     : await provider.freshnessSweep(repoAnchor);
 
   const report: KbImportReport = committedSource
-    ? { imported, skipped, linked, flagged, rejected, sweep, bible_source: committedSource.ref, worktree_ignored: committedSource.worktree_ignored }
-    : { imported, skipped, linked, flagged, rejected, sweep };
+    ? { imported, skipped, linked, flagged, rejected, demoted, sweep, bible_source: committedSource.ref, worktree_ignored: committedSource.worktree_ignored }
+    : { imported, skipped, linked, flagged, rejected, demoted, sweep };
   return JSON.stringify(report);
 }

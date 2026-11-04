@@ -7,7 +7,8 @@ import { isWindowsPosixUname } from '../utils/platform.js';
 import { gitBashCandidates } from './git-bash-candidates.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
 import { logWarn } from '../utils/log-helpers.js';
-import type { ProviderAdapter } from './os-commands.js';
+import type { ProviderAdapter, PromptOptions } from './os-commands.js';
+import { withGoMaxProcsDefault, GO_MAXPROCS_DEFAULT_GITBASH } from './go-concurrency.js';
 
 /**
  * Dependencies resolveGitBashPath needs, injectable so its logic is testable
@@ -284,7 +285,23 @@ export class WindowsGitBashCommands extends LinuxCommands {
     // docs/troubleshooting.md ("Not enough memory resources").
     const bounded = boundChildEnv(env, { sep: process.platform === 'win32' ? ';' : ':' });
     if (bounded.report.dropped.length || bounded.report.overCap) logWarn('clean_env', describeBoundedEnv(bounded.report));
-    return { command, env: bounded.env, shell: resolveGitBashPath() };
+    // GOMAXPROCS default for bd/dolt on Windows (only when unset) -- see go-concurrency.ts.
+    return { command, env: withGoMaxProcsDefault(bounded.env), shell: resolveGitBashPath() };
+  }
+
+  // --- Remote agent launch / execute_command (GOMAXPROCS default) ---
+  //
+  // A remote Git Bash member's env is only known to its own shell, so the
+  // GOMAXPROCS default (only when the member has none) is a Git Bash statement
+  // prefixed to the launch and execute_command wrappers -- see
+  // go-concurrency.ts. LinuxCommands (linux/macOS) is unchanged.
+
+  override buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
+    return `${GO_MAXPROCS_DEFAULT_GITBASH}${super.buildAgentPromptCommand(provider, opts)}`;
+  }
+
+  override wrapInWorkFolder(folder: string, command: string): string {
+    return `${GO_MAXPROCS_DEFAULT_GITBASH}${super.wrapInWorkFolder(folder, command)}`;
   }
 
   // --- Process management ---

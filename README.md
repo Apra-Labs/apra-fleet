@@ -18,6 +18,7 @@ workforce -- on any machine, anywhere, using every LLM provider at once.
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/Apra-Labs/apra-fleet/releases)
 [![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Apra-Labs/apra-fleet)
+[![Security: A - Skills Directory](https://www.skillsdirectory.com/api/skills/apra-labs-apra-fleet/badge)](https://www.skillsdirectory.com/skills/apra-labs-apra-fleet)
 
 [Quick Start](#quick-start-5-minutes) - [Live Demo](#watch-a-fleet-work) - [How It Works](#how-it-works) - [fleet-sprint Getting Started Guide](docs/fleet-sprint-getting-started.md) - [Website](https://apra-labs.github.io/apra-fleet)
 
@@ -227,6 +228,7 @@ MCP tools that ship with the KB:
 | `kb_context` | Batch file freshness check (single git call for N files) |
 | `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` |
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED (FULL session, or the sprint's kb_maintainer member session only) |
+| `kb_demote` | Withdraw trust: lower a CONFIRMED entry back to INFERRED (the one reversible rung; never a ladder in its own direction) |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
 | `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible (FULL session only) |
 | `kb_bible_commit` | Merge confirmed entry ids into the bible (format v3, per-entry file hashes), remove superseded or invalidated entries, and commit locally with base-branch provenance (used by the sprint kb_maintainer); on an http KB project it is a no-op that returns `bible_skipped: true` |
@@ -250,6 +252,9 @@ no separate "server mode" build. A config with no remote, or any config the
 reader cannot parse, always falls back to the local SQLite provider -- see
 [Client-side provider selection](docs/knowledge-layer-design.md#client-side-provider-selection)
 for the exact selection rule and its fallback-construction invariant.
+`--token {{secret.NAME}}` stores a reference to a refreshable fleet secret instead of a token, so an
+expiring server token can be rotated with `apra-fleet secret --set NAME --persist -y` and no restart (see
+[Named credentials](docs/knowledge-layer.md#named-credentials-and-refreshers)).
 `--request_timeout_ms <ms>` (1000-120000, default 5000) sets the socket idle
 timeout for each request to the remote KB server. It is not a per-request
 deadline: a call can wait up to about twice the value while queued offline

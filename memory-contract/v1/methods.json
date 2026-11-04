@@ -19,7 +19,7 @@
     },
     "kb_self_resolution": {
       "confirmed_by": "src/services/knowledge/kb-self.ts (resolveSelfAnchor, validateSelfFolder), src/tools/kb-*.ts",
-      "finding": "No kb_* tool takes a repo/scope argument. Every kb_* call operates on the CALLING SESSION's own KB: a member session resolves the member's registered work folder, any other session the fleet server's working folder. A local folder must exist, be a git repository and have an origin remote, else the call throws E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE BEFORE getKbProviders is reached. A remote member's folder lives on another host, so its KB identity is the member's single known origin remote and the folder is carried verbatim (N-ANCHOR-VERBATIM-MISSING for the read tools); the WRITING tools kb_export, kb_bible_commit and kb_import then refuse with E-REPO-PATH-INVALID because they need the folder on this host (kb_export is never served to a member session -- spec.md section 2.5a -- so for it this refusal is defence in depth). Recorded per affected tool below as 'anchor_validation' ('self-validated' | 'self-validated+local-folder-required'). The removed pre-redesign scope keys (repo_path, repo, repo_remote_url) are still declared on every kb_* input schema, described as REMOVED, so they reach the tool wrapper, which refuses them with E-SCOPE-KEY-REMOVED before any self-resolution -- they are never silently stripped.",
+      "finding": "No kb_* tool takes a repo/scope argument. Every kb_* call operates on the CALLING SESSION's own KB: a member session resolves the member's registered work folder, any other session the fleet server's working folder. A local folder must exist, be a git repository and have an origin remote, else the call throws E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE BEFORE getKbProviders is reached. A remote member's folder lives on another host, so its KB identity is the member's single known origin remote and the folder is carried verbatim (N-ANCHOR-VERBATIM-MISSING for the read tools); the WRITING tools kb_export, kb_bible_commit and kb_import then refuse with E-REPO-PATH-INVALID because they need the folder on this host (kb_export is never served to a member session -- spec.md section 2.5a -- so for it this refusal is defence in depth). Recorded per affected tool below as 'anchor_validation' ('self-validated' | 'self-validated+local-folder-required'). The removed pre-redesign scope keys (repo_path, repo, repo_remote_url) are still declared on every kb_* input schema, described as REMOVED, so they reach the tool wrapper, which refuses them with E-SCOPE-KEY-REMOVED before any self-resolution -- they are never silently stripped. The scope keys are removed from TOOL inputs only: at the provider seam fleet passes the repository it resolved for the session, which the HTTP provider sends on every request as the X-Repository (normalised origin remote, host/path, no credentials) and X-Repository-Commit (HEAD sha, when readable) headers, never a local path; providers may ignore it.",
       "affected_methods": ["P-2 capture", "P-3 query", "P-7 prime", "P-10 stats", "P-11 touch", "X-1 list", "X-3 freshnessSweep", "X-6 hasEntry", "X-8 getSourceFileBases"]
     },
     "not_in_scope": "approveDirective, rejectDirective, addDirective, flaggedPairs (INVENTORY.md section 4.2) are CLI-only and not reachable by any registered MCP tool, so they have no entry here.",
@@ -58,7 +58,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "New row per call unless AUDN dedupes to E-DEDUP-NONE.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-BIBLE-MALFORMED", "E-KB-MAINTAINER-REQUIRED", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-BIBLE-MALFORMED", "E-KB-MAINTAINER-REQUIRED", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-CLAMP", "E-CONTRADICTION-FLAGGED", "E-DEDUP-NONE", "E-DIRECTIVE-QUARANTINE"],
       "see_also": ["Capture provenance and confidence clamp", "Directive quarantine", "Superseding and AUDN matching", "Freshness and content hashing"]
     },
@@ -76,7 +76,7 @@
       "side_effect_class": "append",
       "idempotent": false,
       "idempotent_note": "Read result is stable but each call bumps use_count/last_accessed telemetry.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-QUERY-NO-SELECTOR", "E-BIBLE-MALFORMED", "E-MEMBER-VIEW-REMOTE", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-QUERY-NO-SELECTOR", "E-BIBLE-MALFORMED", "E-MEMBER-VIEW-REMOTE", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Query modes"]
     },
     {
@@ -91,7 +91,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Freshness and content hashing"]
     },
     {
@@ -106,7 +106,7 @@
       ],
       "side_effect_class": "trust-mutating",
       "idempotent": true,
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-PROVIDER-UNINITIALIZED", "E-KB-HTTP-UNSUPPORTED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED", "E-KB-HTTP-UNSUPPORTED"],
       "see_also": ["Freshness and content hashing"]
     },
     {
@@ -135,7 +135,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "see_also": []
     },
     {
@@ -143,7 +143,7 @@
       "member": "promote",
       "kind": "interface-method",
       "interface": "MemoryProvider",
-      "signature": "promote(id: string, reason?: string): Promise<{id, confidence_before, confidence_after}>",
+      "signature": "promote(id: string, reason?: string, opts?: {ownerTag?: string}): Promise<{id, confidence_before, confidence_after}>",
       "purpose": "Upgrade an entry's confidence one tier (UNVERIFIED -> INFERRED -> CONFIRMED), appending the reason as an evidence note.",
       "tools": [
         { "name": "kb_promote", "request_schema_ref": "schemas/kb_promote.request.json", "response_schema_ref": "schemas/kb_promote.response.json", "anchor_validation": "self-validated" }
@@ -152,6 +152,22 @@
       "idempotent": false,
       "idempotent_note": "No-op only at the CONFIRMED ceiling; below it every call advances one tier.",
       "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-PROMOTE-SUPERSEDED", "E-PROMOTE-REFUSED-DIRECTIVE", "E-PROMOTE-REASON-REQUIRED", "E-PROMOTE-BASIS-UNRESOLVED", "E-PROVIDER-UNINITIALIZED"],
+      "see_also": ["Directive quarantine"]
+    },
+    {
+      "id": "P-13",
+      "member": "demote",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "demote(id: string, reason: string, evidenceFiles?: string[], opts?: {ownerTag?: string}): Promise<{id, confidence_before, confidence_after}>",
+      "purpose": "Withdraw trust from a CONFIRMED entry, lowering it to INFERRED, appending the reason and the required evidence files as an audit note and snapshotting the sha256 of each cited source file as it is on disk at demote time.",
+      "tools": [
+        { "name": "kb_demote", "request_schema_ref": "schemas/kb_demote.request.json", "response_schema_ref": "schemas/kb_demote.response.json", "anchor_validation": "self-validated" }
+      ],
+      "side_effect_class": "trust-mutating",
+      "idempotent": false,
+      "idempotent_note": "Not a ladder and never a no-op: only CONFIRMED is demotable, so a second call on the now-INFERRED entry is REFUSED with E-DEMOTE-NOT-CONFIRMED rather than returning unchanged.",
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-DEMOTE-SUPERSEDED", "E-DEMOTE-REFUSED-DIRECTIVE", "E-DEMOTE-NOT-CONFIRMED", "E-DEMOTE-REASON-REQUIRED", "E-DEMOTE-EVIDENCE-UNRESOLVED", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Directive quarantine"]
     },
     {
@@ -338,6 +354,24 @@
       "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-REPO-PATH-INVALID", "E-PROVIDER-UNINITIALIZED"],
       "error_codes_note": "E-REPO-PATH-INVALID (a remote member session, whose folder is not on this host -- defence in depth, since no member session is served kb_export) and the E-SELF-* codes are thrown by kb_export before this member is reached.",
       "see_also": ["X-1"]
+    },
+    {
+      "id": "X-9",
+      "member": "getDemotionState",
+      "kind": "undeclared-member",
+      "interface": "SqliteProvider (not declared on MemoryProvider)",
+      "signature": "getDemotionState(ids: string[]): Map<string, {confidence: Confidence, demoted_at?: string}>",
+      "purpose": "Synchronous read of the current confidence and demoted_at of the given entry ids; an unknown id is simply absent from the map. kb_bible_commit admits a demoted_ids tombstone only when the local row really records a withdrawal of trust (demoted_at set, confidence now below CONFIRMED). Deliberately NOT routed through list(), which excludes stale and superseded rows: a demoted entry that later went stale is exactly the one whose tombstone other clones need, because their bible still carries the entry.",
+      "tools": [
+        { "name": "kb_bible_commit", "request_schema_ref": "schemas/kb_bible_commit.request.json", "response_schema_ref": "schemas/kb_bible_commit.response.json", "anchor_validation": "self-validated+local-folder-required" }
+      ],
+      "tools_note": "Called only on the demoted_ids half of kb_bible_commit; the ids half resolves entries through X-1 list as before.",
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "idempotent_note": "Synchronous (non-Promise) member; chunked SELECT, no writes.",
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-REPO-PATH-INVALID", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes_note": "E-REPO-PATH-INVALID (a remote member session, whose folder is not on this host) and the E-SELF-* codes are thrown by kb_bible_commit before this member is reached.",
+      "see_also": ["X-1", "P-13"]
     }
   ],
   "properties": [

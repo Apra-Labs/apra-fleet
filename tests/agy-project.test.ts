@@ -29,6 +29,7 @@ import {
   buildAgyProjectDeleteScript,
   isValidAgyProjectId,
   setAgyCommandForTests,
+  AGY_NODE_SELF,
   AgyProjectError,
 } from '../src/services/agy-project.js';
 import { buildAgyNodeCommand, AgyProvider } from '../src/providers/agy.js';
@@ -43,7 +44,7 @@ function fakeAgy(opts: { mode?: string; argsFile?: string } = {}): { file: strin
   const args = [FAKE_AGY, '--fake-home', fakeHome];
   if (opts.mode) args.push('--fake-mode', opts.mode);
   if (opts.argsFile) args.push('--fake-args-file', opts.argsFile);
-  return { file: process.execPath, args };
+  return { file: AGY_NODE_SELF, args };
 }
 
 const scratchDirs: string[] = [];

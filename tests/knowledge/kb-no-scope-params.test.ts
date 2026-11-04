@@ -34,7 +34,7 @@ async function registeredKbTools(): Promise<Map<string, { shape: Record<string, 
 // exercised with every removed key.
 const FAMILIES: Record<string, string[]> = {
   read: ['kb_query', 'kb_list', 'kb_context', 'kb_session_prime', 'kb_stats'],
-  write: ['kb_capture', 'kb_feedback', 'kb_promote', 'kb_invalidate', 'kb_harvest'],
+  write: ['kb_capture', 'kb_feedback', 'kb_promote', 'kb_demote', 'kb_invalidate', 'kb_harvest'],
   bible: ['kb_export', 'kb_import', 'kb_bible_commit'],
   maintenance: ['kb_freshness_sweep', 'kb_reconcile_prefilter', 'kb_resolve_contradiction', 'kb_setup'],
 };
@@ -42,7 +42,7 @@ const FAMILIES: Record<string, string[]> = {
 describe('kb_* tool input schemas carry the removed scope keys only as refusal markers', () => {
   it('the families partition exactly the registered kb_* tools', async () => {
     const tools = await registeredKbTools();
-    expect(tools.size).toBe(17);
+    expect(tools.size).toBe(18);
     expect(Object.values(FAMILIES).flat().sort()).toEqual([...tools.keys()].sort());
   });
 

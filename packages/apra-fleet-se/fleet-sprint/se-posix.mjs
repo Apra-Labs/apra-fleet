@@ -249,6 +249,21 @@ export class SePosixCommands {
   }
 
   /**
+   * Non-interactive read-only probe of the credential ALREADY in place for
+   * the member's `origin` remote: `git ls-remote origin HEAD` with
+   * GIT_TERMINAL_PROMPT=0 (git never asks on a terminal) and
+   * GCM_INTERACTIVE=never (Git Credential Manager never opens a dialog). No
+   * credential.helper override -- the point is to test whatever helper the
+   * member already uses. Exit 0 = the remote answered with that credential.
+   * Env is set as a per-command prefix, so nothing leaks into later commands.
+   * Caller: vcs-auth.mjs createVcsAuthPreflightCallback (probe-first branch).
+   * @returns {string}
+   */
+  gitLsRemoteProbe() {
+    return this.wrapForMember('GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git ls-remote origin HEAD');
+  }
+
+  /**
    * Create a work-folder-relative file (and its parent directory) when it is
    * absent; an existing file is never truncated or modified. Idempotent.
    * Caller: beads-identity-check.mjs member beads set-up (an empty

@@ -16,6 +16,7 @@ import {
   hasInteractiveDesktop,
   launchAuthTerminal,
   submitPassword,
+  buildHeadlessFallback,
 } from '../src/services/auth-socket.js';
 
 describe('auth-socket', () => {
@@ -725,19 +726,20 @@ describe('auth-socket', () => {
       }
     }
 
-    it('emits --set and "provide the credential" wording for credential-collection mode (no extraArgs)', () => {
+    it('emits a named-secret --set instruction (never the member name) for credential-collection mode (no extraArgs)', () => {
       stubHeadless();
       const msg = launchAuthTerminal('my-member', [], () => {});
-      expect(msg).toContain('! apra-fleet secret --set my-member');
-      expect(msg).toContain('to provide the credential:');
+      expect(msg).toContain('! apra-fleet secret --set NAME --persist');
+      expect(msg).not.toContain('secret --set my-member');
+      expect(msg).toContain('{{secret.NAME}}');
       expect(msg).not.toContain('--confirm');
     });
 
-    it('emits --set and "provide the credential" wording for API-key mode (--api-key flag)', () => {
+    it('emits a named-secret --set instruction (never the member name) for API-key mode (--api-key flag)', () => {
       stubHeadless();
       const msg = launchAuthTerminal('my-member', ['--api-key'], () => {});
-      expect(msg).toContain('! apra-fleet secret --set my-member');
-      expect(msg).toContain('to provide the credential:');
+      expect(msg).toContain('! apra-fleet secret --set NAME --persist');
+      expect(msg).not.toContain('secret --set my-member');
       expect(msg).not.toContain('--confirm');
     });
 
@@ -748,6 +750,41 @@ describe('auth-socket', () => {
       expect(msg).toContain('to confirm:');
       expect(msg).not.toContain('--set');
     });
+  });
+});
+
+describe('buildHeadlessFallback -- credential-collection text', () => {
+  const PROMPT = 'Enter Bitbucket API token for bb-member';
+  afterEach(async () => { await cleanupAuthSocket(); });
+  const msg = buildHeadlessFallback('bb-member', 'No graphical display detected (SSH or headless session).', {}, ['--api-key', '--prompt', PROMPT]);
+
+  it('is ASCII only (every char code < 128)', () => {
+    for (const ch of msg) expect(ch.charCodeAt(0)).toBeLessThan(128);
+  });
+
+  it('uses the supplied provider prompt label', () => {
+    expect(msg).toContain(PROMPT);
+  });
+
+  it('never names the member as the secret in the secret --set line', () => {
+    const setLines = msg.split('\n').filter((l) => l.includes('secret --set'));
+    expect(setLines.length).toBeGreaterThan(0);
+    for (const line of setLines) {
+      expect(line).not.toMatch(/secret --set\s+bb-member\b/);
+      expect(line).toContain('secret --set NAME');
+    }
+  });
+
+  it('the composed OOB fallback (collectOobApiKey, headless) is ASCII and names the label', async () => {
+    const prompt = 'Enter Azure DevOps personal access token for az-member';
+    const launchFn = (member: string, extra: string[] | undefined) =>
+      buildHeadlessFallback(member, 'No graphical display detected (SSH or headless session).', {}, extra);
+    const res = await collectOobApiKey('az-member', 'provision_vcs_auth', { prompt, launchFn, waitTimeoutMs: 2000 });
+    expect(res.fallback).toBeDefined();
+    for (const ch of res.fallback!) expect(ch.charCodeAt(0)).toBeLessThan(128);
+    expect(res.fallback).toContain(prompt);
+    expect(res.fallback).not.toMatch(/secret --set\s+az-member\b/);
+    expect(res.fallback).toContain('{{secret.NAME}}');
   });
 });
 

@@ -27,7 +27,8 @@ describe('WindowsCommands.getCleanEnv', () => {
 
     const env = getCleanEnv(new WindowsCommands());
 
-    expect(env).toEqual({ Path: 'C:\\Windows' });
+    // GOMAXPROCS=1 is the Windows bd/dolt default added when the env has none (go-concurrency.ts).
+    expect(env).toEqual({ Path: 'C:\\Windows', GOMAXPROCS: '1' });
     expect(mockExecFileSync).toHaveBeenCalledTimes(1);
     const [file, args, opts] = mockExecFileSync.mock.calls[0] as [string, string[], { timeout?: number }];
     expect(file).toBe('powershell.exe');

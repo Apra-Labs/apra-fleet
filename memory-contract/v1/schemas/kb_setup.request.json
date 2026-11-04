@@ -24,7 +24,7 @@
         },
         "token": {
           "type": "string",
-          "description": "Authentication token for remote KB server (stored encrypted, never logged)"
+          "description": "Authentication token for remote KB server. Either a literal token (stored encrypted, never logged) or exactly one named fleet secret placeholder of the form {{secret.NAME}} with nothing around it: then only the placeholder is stored and the server looks the secret up on each request, so rotating the secret needs no kb_setup re-run. For provider http the secret must already exist (apra-fleet secret --set NAME --persist -y)."
         },
         "request_timeout_ms": {
           "type": "integer",

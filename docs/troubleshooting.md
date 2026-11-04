@@ -274,6 +274,30 @@ Fix in the product:
   process-creation limit in the surfaced error and strips the misleading
   credential hint lines. The failure is still classified as a transient spawn
   outage and retried as before.
+- Go concurrency is bounded for bd/dolt started by fleet on Windows members.
+  dolt (a Go program) starts one git process per remote chunk at once, and
+  enough concurrent `CreateProcess` calls fail with this error even with a
+  small env block. Fleet sets `GOMAXPROCS=1` ONLY when it is not already set
+  (an operator value is never overridden) -- rule in src/os/go-concurrency.ts:
+  - local Windows members: the child env built by `getCleanEnv()` /
+    `WindowsGitBashCommands.cleanExec()`;
+  - remote Windows members: the agent launch command and the
+    `execute_command` wrapper, as a PowerShell or Git Bash statement chosen
+    per member shell. So `bd dolt pull/push` run by a dispatched agent, the
+    groomer, or `execute_command` inherits it. Linux/macOS members are
+    unchanged.
+  Upstream issue: https://github.com/gastownhall/beads/issues/7082
+
+Your own terminal (not started by fleet): fleet cannot set the env of a shell
+you opened yourself, so set the same default before running `bd dolt
+pull`/`bd dolt push` there:
+
+- PowerShell (this session): `$env:GOMAXPROCS = '1'`
+- PowerShell (persist for your user, new shells): `[Environment]::SetEnvironmentVariable('GOMAXPROCS', '1', 'User')`
+- cmd.exe: `set GOMAXPROCS=1` (persist: `setx GOMAXPROCS 1`)
+- Git Bash: `export GOMAXPROCS=1` (persist: add it to `~/.bashrc`)
+
+If you already set `GOMAXPROCS` to another value on purpose, fleet keeps it.
 
 **`bd init` errors "already initialized" on a second run**
 
@@ -296,6 +320,28 @@ Line Tools (`xcode-select --install` / reinstall), or build against a Node
 version known to match the installed CLT, or update `node-gyp` itself. Check
 the npm debug log path printed in the failure output for the exact compiler
 error before assuming this is the cause.
+
+### ssh2 runs without native crypto (silent pure-JS cipher fallback)
+
+**Symptom:** `npm ci` exits 0 but ssh2's optional addon `sshcrypto.node` was
+not built (no compiler / python / make). ssh2 then silently uses its pure-JS
+ciphers: SSH still works but is slower, and timing-sensitive tests such as
+`tests/sftp-subsystem-refusal.test.ts` can behave differently.
+
+**How to tell if native crypto is active (source/dev installs):**
+`node scripts/check-ssh2-native.mjs` exits 0 and prints the binding path when
+active; it exits 1 and names `sshcrypto.node` plus the fix when not. Fix:
+install build tools and run `npm rebuild ssh2` (or re-run `npm ci`). CI runs
+this check in the node_modules cache action before saving the cache, so a tree
+without the binding fails the job and is never cached.
+
+**Decision: apra-fleet does NOT warn at startup.** What was checked: the
+shipped single-executable binary is bundled by `scripts/build-sea.mjs` with
+`loader: { '.node': 'empty' }`, so `sshcrypto.node` is never part of the
+shipped binary and ssh2 always uses the JS cipher there. A startup warning
+would fire for every shipped install and carry no actionable remedy (users
+cannot rebuild a SEA binary), so it would be noise. The check is therefore a
+contributor/CI guard only, not a runtime feature. Users who install the npm package (`npm i -g @apralabs/apra-fleet`) can run `node <global-prefix>/lib/node_modules/@apralabs/apra-fleet/node_modules/ssh2/lib/protocol/crypto/build/Release/sshcrypto.node` presence check (file exists = native active); the same rebuild remedy applies.
 
 ## Stuck agents
 

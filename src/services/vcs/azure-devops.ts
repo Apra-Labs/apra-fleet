@@ -237,6 +237,16 @@ export const azureDevOpsProvider: VcsProviderService = {
     return { org_url: input.org_url, pat: azPat, expires_at: input.pat_expires_at };
   },
 
+  // Non-secret checks run before any OOB prompt (see VcsProviderService.
+  // validateNonSecretFields); buildCredentials repeats them afterwards.
+  validateNonSecretFields(input) {
+    if (!input.org_url) return 'Azure DevOps requires the "org_url" field.';
+    if (input.pat_expires_at !== undefined && Number.isNaN(Date.parse(input.pat_expires_at))) {
+      return `Azure DevOps "pat_expires_at" is not a parseable date/time: ${input.pat_expires_at}`;
+    }
+    return null;
+  },
+
   // apra-fleet-5co8.3.2: the former
   // `if (provider === 'azure-devops' && pat === undefined && token === undefined)`
   // block, verbatim. Either field can carry the PAT, so the credential only

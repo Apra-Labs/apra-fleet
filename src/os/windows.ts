@@ -2,10 +2,11 @@ import { defaultWindowsPidWrapper } from './windows-wrapper.js';
 export { defaultWindowsPidWrapper as pidWrapWindows };
 ﻿import { execFileSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
-import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
+import { escapeWindowsArg, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER } from './os-commands.js';
 import { escapeBatchMetachars, escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
 import { logWarn } from '../utils/log-helpers.js';
+import { withGoMaxProcsDefault, GO_MAXPROCS_DEFAULT_PWSH } from './go-concurrency.js';
 
 /**
  * Wrap a PowerShell script as a base64 `-EncodedCommand` invocation.
@@ -114,7 +115,8 @@ export class WindowsCommands implements OsCommands {
     // docs/troubleshooting.md ("Not enough memory resources").
     const { env, report } = boundChildEnv(JSON.parse(result.trim()) as Record<string, string>);
     if (report.dropped.length || report.overCap) logWarn('clean_env', describeBoundedEnv(report));
-    this.cachedEnv = env;
+    // GOMAXPROCS default for bd/dolt on Windows (only when unset) -- see go-concurrency.ts.
+    this.cachedEnv = withGoMaxProcsDefault(env);
     return this.cachedEnv;
   }
 
@@ -182,7 +184,9 @@ export class WindowsCommands implements OsCommands {
     }
 
     // Setup: working directory + PATH so the CLI executable is resolvable
-    const setupCmd = `Set-Location "${escapedFolder}"; ${CLI_PATH}`;
+    // GOMAXPROCS default (only when the member has none) for bd/dolt the agent
+    // runs -- see go-concurrency.ts.
+    const setupCmd = `Set-Location "${escapedFolder}"; ${GO_MAXPROCS_DEFAULT_PWSH}${CLI_PATH}`;
 
     // Executable extracted from provider (e.g. "claude" from "claude <args>")
     const filePath = provider.cliCommand('').trim();
@@ -431,7 +435,7 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   // --- Shell ---
 
   wrapInWorkFolder(folder: string, command: string): string {
-    return `Set-Location "${escapeWindowsArg(folder)}"; $env:Path = "$env:Path;${FLEET_BIN_PATH_WINDOWS}"; ${command}`;
+    return `Set-Location "${escapeWindowsArg(folder)}"; ${GO_MAXPROCS_DEFAULT_PWSH}$env:Path = "$env:Path;${FLEET_BIN_PATH_WINDOWS}"; ${command}`;
   }
 
   wrapPidCapture(command: string): string {
@@ -447,6 +451,29 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   gitRemoteOrigin(folder: string): string {
     const f = escapeWindowsArg(folder);
     return `try { $u = git -C "${f}" remote get-url origin 2>$null; if (-not $u) { $u = git -C "${f}" config --get remote.origin.url 2>$null }; if ($u) { Write-Output $u } } catch {}`;
+  }
+
+  gitLsRemoteNonInteractive(url: string): string {
+    const u = escapePowerShellArgInner(url);
+    return [
+      `$env:GIT_TERMINAL_PROMPT = '0'`,
+      `$env:GCM_INTERACTIVE = 'never'`,
+      `git ls-remote '${u}' HEAD`,
+      `if ($LASTEXITCODE -eq 0) { Write-Output '${GIT_LS_REMOTE_OK_MARKER}' } else { exit $LASTEXITCODE }`,
+    ].join('; ');
+  }
+
+  httpGetStatusWithBearer(url: string, token: string): string {
+    const u = escapePowerShellArgInner(url);
+    const t = escapePowerShellArgInner(token);
+    // Invoke-WebRequest runs in-process, so the token is on no child process
+    // argv (it is still on the powershell.exe command line that runs this
+    // script, see os-commands.ts). A non-2xx answer throws; its status is read off the
+    // exception's response. No response at all prints a non-numeric marker.
+    return [
+      `$ProgressPreference = 'SilentlyContinue'`,
+      `try { $r = Invoke-WebRequest -UseBasicParsing -Method Get -Uri '${u}' -Headers @{ Authorization = 'Bearer ${t}' }; Write-Output ([int]$r.StatusCode) } catch { $resp = $_.Exception.Response; if ($resp) { Write-Output ([int]$resp.StatusCode) } else { Write-Output 'FLEET_HTTP_NO_RESPONSE' } }`,
+    ].join('; ');
   }
 
   // --- Process management ---

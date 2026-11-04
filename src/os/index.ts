@@ -6,6 +6,7 @@ import { WindowsCommands } from './windows.js';
 import { WindowsGitBashCommands } from './windows-gitbash.js';
 
 export type { OsCommands, MemberShell } from './os-commands.js';
+export { GIT_LS_REMOTE_OK_MARKER } from './os-commands.js';
 export { LinuxCommands } from './linux.js';
 export { MacOSCommands } from './macos.js';
 export { WindowsCommands } from './windows.js';

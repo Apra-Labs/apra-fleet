@@ -25,7 +25,7 @@ import path from 'node:path';
 import { backupAndResetRegistry, restoreRegistry, makeTestAgent } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
-import { setAgyCommandForTests } from '../src/services/agy-project.js';
+import { setAgyCommandForTests, AGY_NODE_SELF } from '../src/services/agy-project.js';
 
 const HOST_OS: 'windows' | 'macos' | 'linux' =
   process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux';
@@ -80,7 +80,7 @@ beforeEach(() => {
   // Doubles as findProfilesDir()'s isolation and as the member home a LOCAL
   // member's "~/" config path resolves against.
   vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
-  setAgyCommandForTests({ file: process.execPath, args: [path.resolve(__dirname, 'fixtures', 'fake-agy.cjs'), '--fake-home', fakeHome] });
+  setAgyCommandForTests({ file: AGY_NODE_SELF, args: [path.resolve(__dirname, 'fixtures', 'fake-agy.cjs'), '--fake-home', fakeHome] });
 });
 
 afterEach(() => {

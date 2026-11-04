@@ -130,7 +130,14 @@ export async function listFleetMembers(deps = {}) {
         const mcpClient = new McpClient(transport);
         const fleetApi = new ApraFleet(mcpClient);
         const listRes = await fleetApi.listMembers({ format: 'json' });
-        const text = listRes && listRes.content && listRes.content[0] ? listRes.content[0].text : JSON.stringify(listRes);
+        // The tool-registry wrapper may prepend an <apra-fleet-display> (user-audience)
+        // content item; the tool result is the first text item that is not one.
+        const items = listRes && Array.isArray(listRes.content) ? listRes.content : [];
+        const resultItem = items.find((c) => c && typeof c.text === 'string'
+            && !c.text.trimStart().startsWith('<apra-fleet-display')
+            && !(c.annotations && Array.isArray(c.annotations.audience)
+                && c.annotations.audience.length > 0 && !c.annotations.audience.includes('assistant')));
+        const text = resultItem ? resultItem.text : JSON.stringify(listRes);
         const parsed = JSON.parse(text);
         if (!parsed || !Array.isArray(parsed.members)) {
             return markFleetMembersUnavailable({ members: [] }, 'list_members returned no members array');

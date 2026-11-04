@@ -17,6 +17,7 @@ import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
 import { indexInconsistency, isPidAlive, readGitNexusIndexState, type RecordedIndexBuild } from './code-index-state.js';
 import { excludeLineFor } from '../services/member-config-io.js';
 import type { CodeIndexNotReadyState, CodeIndexReadiness } from './code-intelligence-readiness.js';
+import { gitExecutable } from '../os/git-executable.js';
 
 /** Why automatic rebuilds of a repo are paused: the automatic run that failed. */
 export interface AutoReindexPause {
@@ -261,7 +262,7 @@ export const GITNEXUS_REPO_ARTIFACTS: readonly string[] = ['.gitnexus/'];
  */
 export function ensureLocalGitExcluded(repoPath: string, relPaths: readonly string[]): boolean {
   try {
-    const out = execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], {
+    const out = execFileSync(gitExecutable(), ['rev-parse', '--git-path', 'info/exclude'], {
       cwd: repoPath, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim().split(/\r?\n/)[0]?.trim() ?? '';
     if (!out) return false;

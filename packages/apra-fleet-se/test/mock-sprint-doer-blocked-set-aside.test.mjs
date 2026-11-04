@@ -10,9 +10,10 @@ import {
 // A bead a doer reports BLOCKED (named per bead via the report's blockedIds)
 // is set aside for the rest of the run together with every open bead that
 // depends on it over 'blocks' edges (sprintState.doctorBlockedIds in
-// phases/develop.mjs). Lane-mates that do not depend on it return to the
-// ready pool. A report that leaves beads open WITHOUT status BLOCKED sets
-// nothing aside.
+// phases/develop.mjs). Its higher-order lane-mates are NOT set aside but are
+// held by lane order (lane order is a prerequisite), and count as stuck for
+// the immediate stall. A report that leaves beads open WITHOUT status
+// BLOCKED sets nothing aside.
 // =============================================================================
 
 const check = (cond, msg) => assert.ok(cond, msg);
@@ -78,7 +79,7 @@ test('unit: openBlocksDependents walks blocks edges transitively, skips closed a
     assert.equal(openBlocksDependents([], scope).size, 0);
 });
 
-test('mock sprint: a BLOCKED bead and its dependent chain are set aside; its lane-mates are re-dispatched and close', async () => {
+test('mock sprint: a BLOCKED bead and its dependent chain are set aside; its later lane-mates are held by lane order, not set aside', async () => {
     resetSyncMemo();
     await withScenarioMarkers('doer blocked set-aside', async () => {
         let blockedId = null;
@@ -109,18 +110,16 @@ test('mock sprint: a BLOCKED bead and its dependent chain are set aside; its lan
         check(blockedId === a, 'the doer must have been dispatched on the lane first bead');
 
         const doers = doerDispatches(scenario);
-        check(doers.length >= 2, `expected at least 2 doer dispatches, got ${doers.length}`);
         assert.deepEqual(dispatchedIds(doers[0]).slice().sort(), [a, b, c].sort(), 'round 1 dispatches the whole lane');
-        // Never dispatched again in the run (later rounds; the run stalls before a second cycle).
-        for (const dd of doers.slice(1)) {
-            const ids = dispatchedIds(dd);
-            for (const setAside of [a, d, e]) check(!ids.includes(setAside), `set-aside bead ${setAside} re-dispatched: ${JSON.stringify(ids)}`);
-        }
-        // The other two lane beads come back the next round and close.
-        assert.deepEqual(dispatchedIds(doers[1]).slice().sort(), [b, c].sort(), 'round 2 dispatches the two remaining lane beads');
-        if (scenario.finalBeadsById) {
-            for (const closed of [b, c]) assert.equal(scenario.finalBeadsById.get ? scenario.finalBeadsById.get(closed).status : scenario.finalBeadsById[closed].status, 'closed');
-        }
+        // Intentional v2 change: b and c come after the set-aside a in lane
+        // order, so they are held, never re-dispatched in this run (before,
+        // they came back the next round and closed).
+        assert.equal(doers.length, 1, `only round 1 dispatches: ${JSON.stringify(doers.map(dispatchedIds))}`);
+        for (const held of [b, c]) assert.notEqual(scenario.finalBeadsById.get(held).status, 'closed', `${held} must stay open`);
+        check(
+            scenario.logs.some((m) => m.includes('HELD by lane order') && m.includes(`${b} (after ${a})`)),
+            'the lane-order hold must be logged',
+        );
 
         const entries = setAsideEntries(scenario.logs);
         assert.deepEqual(Object.keys(entries).sort(), [a, d, e].sort(), `set-aside ids: ${JSON.stringify(entries)}`);
@@ -136,20 +135,20 @@ test('mock sprint: a BLOCKED bead and its dependent chain are set aside; its lan
             assert.equal(entry.cycle, 1);
             assert.equal(entry.round, 1);
         }
-        check(
-            scenario.logs.some((m) => m.includes('set aside after a doer BLOCKED report')),
-            'a later round must log the set-aside exclusion',
-        );
-        // Once the two lane-mates close, everything left open is set aside, so
-        // the run stalls at once in C1 instead of spending a second cycle.
+        // Everything left open is set aside or held behind a set-aside bead,
+        // so the run stalls at once in C1 instead of spending a second cycle.
         check(scenario.error, 'the run must end in a stall once only set-aside beads remain');
         assert.equal(scenario.error.code, 'SPRINT_STALLED');
         assert.equal(scenario.error.details.cycle, 1, 'the stall must be declared in C1');
         check(!scenario.logs.some((m) => /\bC2 R\d|Cycle 2\b/.test(m)), 'no second cycle may start');
-        for (const setAside of [a, d, e]) {
+        for (const setAside of [a, b, c, d, e]) {
             check(scenario.error.blockerIds.includes(setAside), `blockerIds must name ${setAside}: ${JSON.stringify(scenario.error.blockerIds)}`);
             check(scenario.error.blockerReasons[setAside], `blockerReasons must explain ${setAside}`);
         }
+        for (const held of [b, c]) {
+            check(scenario.error.blockerReasons[held].startsWith(`held on ${a}`), `held reason: ${scenario.error.blockerReasons[held]}`);
+        }
+        assert.deepEqual(scenario.error.setAside.map((x) => x.id).sort(), [a, d, e].sort(), 'held beads are not set aside');
     });
 });
 

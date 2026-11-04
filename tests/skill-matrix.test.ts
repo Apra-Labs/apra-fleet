@@ -19,16 +19,16 @@ describe('getRequiredSkills -- skill matrix utility', () => {
 
   // ---------------------------------------------------------------- bitbucket
   describe('Bitbucket VCS', () => {
-    it('tags:["devops"] + VCS=bitbucket resolves to bitbucket-devops', () => {
-      expect(getRequiredSkills(['devops'], 'bitbucket')).toEqual(['bitbucket-devops']);
+    it('tags:["devops"] + VCS=bitbucket resolves to bitbucket', () => {
+      expect(getRequiredSkills(['devops'], 'bitbucket')).toEqual(['bitbucket']);
     });
 
-    it('tags:["code-review"] + VCS=bitbucket resolves to bitbucket-devops', () => {
-      expect(getRequiredSkills(['code-review'], 'bitbucket')).toEqual(['bitbucket-devops']);
+    it('tags:["code-review"] + VCS=bitbucket resolves to bitbucket', () => {
+      expect(getRequiredSkills(['code-review'], 'bitbucket')).toEqual(['bitbucket']);
     });
 
     it('tags:["devops","code-review"] + VCS=bitbucket deduplicates to single skill', () => {
-      expect(getRequiredSkills(['devops', 'code-review'], 'bitbucket')).toEqual(['bitbucket-devops']);
+      expect(getRequiredSkills(['devops', 'code-review'], 'bitbucket')).toEqual(['bitbucket']);
     });
 
     it('tags:["development"] + VCS=bitbucket needs no skills', () => {
@@ -78,7 +78,7 @@ describe('getRequiredSkills -- skill matrix utility', () => {
 
     it('tags:["devops"] + project=ApraPipes + VCS=bitbucket adds both skills', () => {
       const skills = getRequiredSkills(['devops'], 'bitbucket', 'ApraPipes');
-      expect(skills).toContain('bitbucket-devops');
+      expect(skills).toContain('bitbucket');
       expect(skills).toContain('aprapipes-devops');
     });
   });
@@ -86,11 +86,11 @@ describe('getRequiredSkills -- skill matrix utility', () => {
   // ----------------------------------------------------------------- casing
   describe('tag casing', () => {
     it('treats tag "Devops" same as "devops"', () => {
-      expect(getRequiredSkills(['Devops'], 'bitbucket')).toEqual(['bitbucket-devops']);
+      expect(getRequiredSkills(['Devops'], 'bitbucket')).toEqual(['bitbucket']);
     });
 
     it('treats VCS "Bitbucket" same as "bitbucket"', () => {
-      expect(getRequiredSkills(['devops'], 'Bitbucket')).toEqual(['bitbucket-devops']);
+      expect(getRequiredSkills(['devops'], 'Bitbucket')).toEqual(['bitbucket']);
     });
   });
 });

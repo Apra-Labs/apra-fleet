@@ -103,7 +103,7 @@ beforeEach(async () => {
 afterEach(() => {
   provider.close();
   vi.restoreAllMocks();
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
 describe('bible admission on a real maintainer work tree: dirty edits never flip the verdict, commits do', () => {

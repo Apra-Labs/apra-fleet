@@ -162,3 +162,46 @@ test('capabilities: a bitbucket.org remote is recognized (host + hasRemote) and 
         assert.equal(caps.canOpenPullRequest, true, 'Bitbucket provider now has capabilitiesForHost and is PR-capable');
     }
 });
+
+// =============================================================================
+// ssh.bitbucket.org (Atlassian SSH host move)
+// =============================================================================
+
+const SSH_HOSTS_ACCEPT = ['ssh.bitbucket.org', 'SSH.Bitbucket.ORG'];
+const HOSTS_REJECT = ['ssh.bitbucket.org.evil.com', 'evilssh.bitbucket.org', 'sshbitbucket.org'];
+
+test('ssh.bitbucket.org matches (any case); lookalikes do not', () => {
+    for (const h of SSH_HOSTS_ACCEPT) assert.equal(BitbucketVCS.matchesHost(h), true, h);
+    for (const h of HOSTS_REJECT) assert.equal(BitbucketVCS.matchesHost(h), false, h);
+});
+
+test('parseRepoRef: ssh.bitbucket.org shapes equal the bitbucket.org shape', () => {
+    for (const url of [
+        'git@ssh.bitbucket.org:kumaakh/apra-analytics',
+        'git@ssh.bitbucket.org:kumaakh/apra-analytics.git',
+        'ssh://git@ssh.bitbucket.org/kumaakh/apra-analytics',
+        'ssh://git@ssh.bitbucket.org/kumaakh/apra-analytics.git',
+    ]) {
+        assert.deepEqual(BitbucketVCS.parseRepoRef(url), CANONICAL, url);
+    }
+});
+
+test('parseRepoRef: legacy bitbucket.org, altssh and www forms still parse', () => {
+    for (const url of [
+        'https://bitbucket.org/kumaakh/apra-analytics.git',
+        'git@bitbucket.org:kumaakh/apra-analytics.git',
+        'ssh://git@altssh.bitbucket.org:443/kumaakh/apra-analytics.git',
+        'https://www.bitbucket.org/kumaakh/apra-analytics',
+    ]) {
+        assert.deepEqual(BitbucketVCS.parseRepoRef(url), CANONICAL, url);
+    }
+});
+
+test('parseRepoRef: lookalike ssh hosts return null', () => {
+    assert.equal(BitbucketVCS.parseRepoRef('git@ssh.bitbucket.org.evil.com:a/b.git'), null);
+    assert.equal(BitbucketVCS.parseRepoRef('git@evilssh.bitbucket.org:a/b.git'), null);
+});
+
+test('repoRefHint names ssh.bitbucket.org', () => {
+    assert.match(BitbucketVCS.repoRefHint, /ssh\.bitbucket\.org/);
+});

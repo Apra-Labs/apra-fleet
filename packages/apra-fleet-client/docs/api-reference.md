@@ -372,6 +372,21 @@ Calls `fleet_status` -- status of all fleet members.
 
 KB health (`kbHealth` in JSON) covers every project KB scope on the server plus the global KB, one entry per scope -- it never depends on the server's working directory.
 
+When the KB config selects the http provider, `kbHealth.credential`
+(`FleetStatusKbCredential`; compact: one `kb credential:` line) reports the
+remote KB credential for this host -- one block, shared by every scope the
+http provider serves. For a named secret (`kind: "secret"`): `secretName`,
+`resolves` (`ok` / `missing` / `expired`, from metadata; an expired record is
+never deleted; `unreadable` when the credential store cannot be read or the
+value cannot be decrypted -- the line is still shown, with `lastWritten` kept
+if only the decrypt failed), `lastWritten` (the secret's `created_at`), `tokenExpiry` (the
+`exp` of a JWT value decoded locally, else `null`), and `lastSuccessfulCall` /
+`lastRejectedCall` (this server process; `null`, shown as `never`, until the
+first call). A literal-token config (`kind: "literal"`) carries the call times
+and a `hint` that the token cannot be refreshed and how to switch to
+`{{secret.NAME}}`. A sqlite config has no `credential`. The token value and
+any JWT claim other than `exp` never appear.
+
 #### `memberDetail(options)`
 
 Calls `member_detail` -- detailed status for one member: connectivity,
@@ -532,9 +547,15 @@ PAT, Bitbucket API token, or Azure DevOps PAT) on a member. `provider`
 (`"github" | "bitbucket" | "azure-devops"`) is required; the rest are
 optional and provider-specific: `member_id`, `member_name`, `label`,
 `scope_url`, `github_mode` (`"github-app" | "pat"`), `token`, `git_access`,
-`repos`, `email`, `api_token`, `workspace`, `org_url`, `pat`, and
-`pat_expires_at`. Every secret-bearing field supports a `{{secret.NAME}}`
-token. `pat_expires_at` must be parseable by `Date.parse` -- the server
+`repos`, `email`, `api_token`, `workspace`, `org_url`, `pat`,
+`pat_expires_at` and `non_interactive`. Every secret-bearing field supports a
+`{{secret.NAME}}` token. For Bitbucket, `api_token` and `workspace` are
+required and `email` is optional and ignored for authentication. Required
+non-secret fields (Bitbucket `workspace`, Azure DevOps `org_url`) are
+validated before any out-of-band prompt; a missing one returns reason
+`credential_assembly_failed` naming the field. With `non_interactive: true`
+a missing secret field is never prompted for: the call returns `ok: false`,
+reason `credential_missing`, and `structuredContent.message` names the field. `pat_expires_at` must be parseable by `Date.parse` -- the server
 rejects an unparseable value rather than storing it, because a `NaN` expiry
 silences the near-expiry warning and makes the credential-cleanup timer
 fall back to its default.
@@ -545,7 +566,7 @@ Every `kb_*` call acts on the calling session's own KB (a member session's
 registered work folder; a FULL session's fleet server working folder). The
 pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are removed:
 the server refuses a call carrying any of them with `E-SCOPE-KEY-REMOVED`,
-and `kbExport` / `kbBibleCommit` refuse them client-side with the same code
+and `kbExport` / `kbBibleCommit` / `kbDemote` refuse them client-side with the same code
 before sending (`assertNoRemovedKbScopeKeys`, `KB_REMOVED_SCOPE_KEYS` are
 exported). For direct `callTool` users: `kb_list` accepts `confidence` as a
 list or as one tier string, and `kb_context` defaults to
@@ -565,6 +586,15 @@ provider cannot serve: `kb_invalidate` with `ids`, or a member `kb_promote`
 whose ownership check got entries without tags from the server; nothing is
 changed) and `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
 different project; nothing is read or written).
+
+`E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_harvest`, `kb_invalidate`,
+`kb_query`, `kb_context`, `kb_session_prime`, `kb_list` and `kb_promote` when the remote (HTTP) KB takes
+its token from a named fleet secret (`kb_setup` token `{{secret.NAME}}`) and that
+secret is missing, expired, or still rejected (HTTP 401) after one re-read and
+retry. The message names the secret and the reason, never the value. A capture
+or invalidate is queued offline first and sent once the secret is accepted.
+Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
+restart.
 
 `kb_import` in a member session without the kb_maintainer grant fails with
 `E-KB-MAINTAINER-REQUIRED` and imports nothing when: it names an explicit
@@ -619,12 +649,42 @@ CONFIRMED id citing no source file is skipped with its own reason
 `no_source_files` (its existing bible entry is kept too); no mergeable ids or an unchanged
 entry set (nothing merged, nothing removed) makes no commit. Re-running with the same ids after resetting to a
 newer HEAD re-merges, so a rejected push can be retried without a manual
-merge. Result JSON: `{path, merged, skipped, removed, entry_count, committed}`.
+merge.
+
+Optional `demoted_ids` records DEMOTIONS explicitly. An id is admitted only when
+its local row carries a `demoted_at` and is now below CONFIRMED (`kb_demote` ran
+on it); any other id is skipped with reason `not_demoted_or_unknown` and nothing
+changes for it. An admitted id is removed from `entries` and upserted into the
+bible's optional top-level `demotions` array as `{id, at, reason}`, so another
+clone applies the demotion explicitly instead of inferring it from an absence.
+Tombstones already in the file survive a later commit carrying unrelated ids, and
+re-committing a tombstoned id through `ids` (a re-promotion) restores its entry
+and clears its tombstone. `provenance.entry_count` counts entries only.
+
+Result JSON: `{path, merged, demoted, skipped, removed, entry_count, committed}`.
 Under the http KB provider the call is skipped, never an error: the result is
-`{path, merged: [], skipped: [], removed: [], entry_count, backfilled: 0,
-committed: false, bible_skipped: true, reason}`, where `entry_count` counts
-the entries of the existing bible file (0 when it is absent or unreadable);
-the KB is not read and nothing is written or committed.
+`{path, merged: [], demoted: [], skipped: [], removed: [], entry_count,
+backfilled: 0, committed: false, bible_skipped: true, reason}`, where
+`entry_count` counts the entries of the existing bible file (0 when it is
+absent or unreadable); the KB is not read and nothing is written or committed.
+
+#### `kbDemote(options: KbDemoteOptions)`
+
+Calls `kb_demote` -- withdraws trust from a CONFIRMED entry, lowering it to
+INFERRED (the inverse of `kbPromote`). Options: `id` (required), `reason`
+(required; at least 20 characters once newlines are collapsed to spaces and
+the result trimmed; appended to the entry content as the audit trail),
+`evidence_files` (required: at least one repo-relative file backing the
+demotion -- an absent or empty list is an input-validation error, raised before
+the tool runs; each file must resolve to a real file inside the calling
+session's repo, else `E-DEMOTE-EVIDENCE-UNRESOLVED`). Not a ladder: calling it on
+an entry that is not CONFIRMED is REFUSED with `E-DEMOTE-NOT-CONFIRMED` rather
+than returned as an unchanged no-op. `promoted_at` and `source` are left
+untouched. Like `kbExport` / `kbBibleCommit`, the removed scope keys
+(`repo_path`, `repo`, `repo_remote_url`) are refused client-side with
+`E-SCOPE-KEY-REMOVED` before anything is sent.
+
+Result JSON: `{id, previous_confidence, new_confidence}`.
 Called from the kb_maintainer session or a FULL session, it also records the
 git blob id of the bible it wrote as trusted in the hub-side KB, which is what
 lets a member session without the grant `kb_import` that bible once it is

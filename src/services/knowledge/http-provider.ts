@@ -23,6 +23,15 @@ import type {
 } from './types.js';
 
 import { DEFAULT_REQUEST_TIMEOUT_MS } from './kb-config.js';
+import { lookupServerSecret } from '../credential-store.js';
+import { recordKbHttpSuccess, recordKbHttpRejected } from './kb-http-auth-state.js';
+import {
+  REPOSITORY_HEADER,
+  REPOSITORY_COMMIT_HEADER,
+  COMMIT_SHA,
+  isValidRepositoryValue,
+  type RepositoryIdentity,
+} from './repository-header.js';
 
 export { DEFAULT_REQUEST_TIMEOUT_MS };
 
@@ -45,6 +54,72 @@ export interface HttpKbProviderOptions {
    * with that project's KB. Absent means no header is sent.
    */
   projectSlug?: string;
+  /**
+   * The repository every request is about, sent as the X-Repository and
+   * X-Repository-Commit headers. Filled only from fleet's resolved KB anchor
+   * (kb-providers.ts), never from tool input. Absent: neither header is sent.
+   */
+  repository?: RepositoryIdentity;
+}
+
+/**
+ * Where the bearer token comes from. A string is a literal token fixed for the
+ * provider's lifetime (the behaviour before named secrets). `{ secretName }`
+ * names a fleet secret that is looked up on EVERY request, so a secret updated
+ * outside fleet is used by the very next call with no restart.
+ */
+export type KbHttpTokenSource = string | { secretName: string };
+
+export type KbHttpAuthReason = 'missing' | 'expired' | 'rejected' | 'unreadable';
+
+/**
+ * E-KB-HTTP-AUTH: the remote KB's token comes from a named fleet secret and
+ * that secret is missing, expired, unreadable, or was rejected by the server
+ * (HTTP 401) on the request and on one retry after re-reading it. The message
+ * names the secret and the reason, never the value. `queued` is true when the
+ * operation (a capture or invalidate) was kept in the offline queue and will
+ * be sent once the secret is accepted.
+ */
+export class KbHttpAuthError extends Error {
+  readonly code = 'E-KB-HTTP-AUTH' as const;
+  readonly secretName: string;
+  readonly reason: KbHttpAuthReason;
+  readonly remediation: string;
+  readonly queued: boolean;
+  /** The problem sentence, without the code prefix and remediation. */
+  readonly problem: string;
+  constructor(secretName: string, reason: KbHttpAuthReason, problem: string, queued = false) {
+    const remediation = `apra-fleet secret --set ${secretName} --persist -y (the next KB call uses the new value; no restart needed)`;
+    const queuedNote = queued
+      ? ' The operation was queued offline and is sent once the secret is accepted.'
+      : '';
+    super(`E-KB-HTTP-AUTH: ${problem}${queuedNote} Remediation: ${remediation}`);
+    this.name = 'KbHttpAuthError';
+    this.secretName = secretName;
+    this.reason = reason;
+    this.remediation = remediation;
+    this.queued = queued;
+    this.problem = problem;
+  }
+
+  /** The same error, marked as having left its operation in the offline queue. */
+  asQueued(): KbHttpAuthError {
+    if (this.queued) return this;
+    return new KbHttpAuthError(this.secretName, this.reason, this.problem, true);
+  }
+}
+
+function isAuthError(err: unknown): err is KbHttpAuthError {
+  return err instanceof KbHttpAuthError;
+}
+
+function isHttp401(err: unknown): boolean {
+  return err instanceof Error && (err as NodeJS.ErrnoException).code === 'HTTP_401';
+}
+
+/** Defensive: a server that echoes the Authorization header must not leak the token into an error. */
+function redactToken(text: string, token: string): string {
+  return token ? text.split(token).join('[REDACTED]') : text;
 }
 
 type QueuedOperation =
@@ -98,6 +173,16 @@ function describeErrorBody(data: string): string {
   const parts = [body.title, body.code, body.detail]
     .filter((v): v is string => typeof v === 'string' && v.length > 0);
   return boundErrorText(parts.length > 0 ? parts.join(' - ') : data);
+}
+
+/** True when `text` parses as JSON. */
+function isJsonText(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** `url` with any user:password removed, for error text. */
@@ -179,10 +264,11 @@ export class HttpKbProvider implements MemoryProvider {
   private baseUrl: string;
   /** baseUrl with any user:password removed: the only form put in error text. */
   private readonly displayUrl: string;
-  private readonly token: string;
+  private readonly tokenSource: KbHttpTokenSource;
   private readonly projectSlug: string | undefined;
   private readonly fallback: SqliteProvider;
   private readonly requestTimeoutMs: number;
+  private readonly repository: RepositoryIdentity | undefined;
   readonly offlineQueue: QueuedOperation[] = [];
   private readonly beforeExitHandler: () => void;
   /**
@@ -200,11 +286,14 @@ export class HttpKbProvider implements MemoryProvider {
    */
   private offlineStore: MemoryProvider | undefined;
 
-  constructor(url: string, token: string, fallback?: SqliteProvider, options: HttpKbProviderOptions = {}) {
+  constructor(url: string, token: KbHttpTokenSource, fallback?: SqliteProvider, options: HttpKbProviderOptions = {}) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.repository = options.repository && isValidRepositoryValue(options.repository.remote)
+      ? options.repository
+      : undefined;
     this.baseUrl = url.replace(/\/$/, '');
     this.displayUrl = redactUrlUserinfo(this.baseUrl);
-    this.token = token;
+    this.tokenSource = token;
     this.projectSlug = options.projectSlug;
     this.fallback = fallback ?? new SqliteProvider();
     const fallbackStore = this.fallback;
@@ -260,11 +349,102 @@ export class HttpKbProvider implements MemoryProvider {
     this.offlineQueue.push(op);
   }
 
-  private rawRequest<T>(
+  // The repository headers for one request. The commit is best effort: an
+  // unreadable or malformed sha omits the header, never fails the request.
+  private repositoryHeaders(): Record<string, string> {
+    if (!this.repository) return {};
+    const headers: Record<string, string> = { [REPOSITORY_HEADER]: this.repository.remote };
+    let commit: string | undefined;
+    try {
+      commit = this.repository.commitOf?.();
+    } catch {
+      commit = undefined;
+    }
+    if (commit && COMMIT_SHA.test(commit)) headers[REPOSITORY_COMMIT_HEADER] = commit;
+    return headers;
+  }
+
+  /**
+   * The token to send now. A literal is returned as is. A secret name is
+   * looked up (server-side lookup: allowedMembers does not apply, an expired
+   * record is reported and kept) and a missing/expired/unreadable secret
+   * raises E-KB-HTTP-AUTH before any request is sent.
+   */
+  private resolveToken(): string {
+    const source = this.tokenSource;
+    if (typeof source === 'string') return source;
+    const name = source.secretName;
+    let found: ReturnType<typeof lookupServerSecret>;
+    try {
+      found = lookupServerSecret(name);
+    } catch {
+      // Fixed text: the underlying parser/decrypt error can quote ciphertext.
+      throw new KbHttpAuthError(
+        name, 'unreadable',
+        `the KB server token comes from fleet secret "${name}", which could not be read (credential store unreadable or value could not be decrypted).`,
+      );
+    }
+    if (found.status === 'missing') {
+      throw new KbHttpAuthError(name, 'missing', `the KB server token comes from fleet secret "${name}", which does not exist.`);
+    }
+    if (found.status === 'expired') {
+      throw new KbHttpAuthError(
+        name, 'expired',
+        `the KB server token comes from fleet secret "${name}", which expired at ${found.expiresAt}.`,
+      );
+    }
+    return found.value;
+  }
+
+  /**
+   * One authenticated request. Literal token: exactly the old behaviour (a
+   * 401 is thrown as the plain HTTP_401 error, no retry). Secret name: the
+   * secret is looked up for this request; on 401 it is looked up once more
+   * and the request retried once; a second 401 raises E-KB-HTTP-AUTH.
+   * Records the last success / last 401 for fleet_status either way.
+   */
+  private async request<T>(
     method: string,
     pathname: string,
     body?: unknown,
     queryParams?: Record<string, string>
+  ): Promise<T> {
+    const secretName = typeof this.tokenSource === 'string' ? undefined : this.tokenSource.secretName;
+    const attempts = secretName === undefined ? 1 : 2;
+    // Computed once, after the first secret lookup succeeds: a missing secret
+    // fails before the commit is read, and the 401 retry sends the same commit.
+    let repoHeaders: Record<string, string> | undefined;
+    for (let attempt = 1; ; attempt++) {
+      const token = this.resolveToken();
+      repoHeaders ??= this.repositoryHeaders();
+      try {
+        const result = await this.rawRequest<T>(
+          token, method, pathname, body, queryParams, secretName !== undefined, repoHeaders,
+        );
+        recordKbHttpSuccess(this.baseUrl);
+        return result;
+      } catch (err) {
+        if (!isHttp401(err)) throw err;
+        recordKbHttpRejected(this.baseUrl);
+        if (secretName === undefined) throw err;
+        if (attempt >= attempts) {
+          throw new KbHttpAuthError(
+            secretName, 'rejected',
+            `the KB server rejected the token from fleet secret "${secretName}" (HTTP 401), also on one retry after re-reading the secret.`,
+          );
+        }
+      }
+    }
+  }
+
+  private rawRequest<T>(
+    token: string,
+    method: string,
+    pathname: string,
+    body?: unknown,
+    queryParams?: Record<string, string>,
+    nonJson401IsAuth = false,
+    extraHeaders: Record<string, string> = {},
   ): Promise<T> {
     return new Promise((resolve, reject) => {
       const parsedUrl = new URL(this.baseUrl);
@@ -277,7 +457,9 @@ export class HttpKbProvider implements MemoryProvider {
       const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.token}`,
+        ...extraHeaders,
+        // Set last so no extra header can replace the bearer token.
+        'Authorization': `Bearer ${token}`,
       };
       if (this.projectSlug !== undefined) headers[KB_PROJECT_HEADER] = this.projectSlug;
       if (bodyStr) headers['Content-Length'] = Buffer.byteLength(bodyStr).toString();
@@ -306,7 +488,13 @@ export class HttpKbProvider implements MemoryProvider {
             }
           }
           if (status !== undefined && status >= 400) {
-            const httpErr = new Error(`HTTP ${status}: ${describeErrorBody(data)}`) as NodeJS.ErrnoException;
+            // An auth proxy in front of the KB (e.g. Entra) answers 401 with
+            // an empty or HTML body. For a named-secret token the message is
+            // fixed text, so the proxy's page never reaches the tool result.
+            const text = nonJson401IsAuth && status === 401 && !isJsonText(data)
+              ? 'KB server rejected the token'
+              : describeErrorBody(data);
+            const httpErr = new Error(redactToken(`HTTP ${status}: ${text}`, token)) as NodeJS.ErrnoException;
             httpErr.code = `HTTP_${status}`;
             reject(httpErr);
             return;
@@ -334,20 +522,24 @@ export class HttpKbProvider implements MemoryProvider {
     });
   }
 
+  // Stops (keeping the queue) on a connection error AND on E-KB-HTTP-AUTH: an
+  // auth failure is not the queued op's fault, and dropping it would lose
+  // every queued capture the moment the secret goes wrong. Any other error is
+  // specific to that op, which is dropped as before.
   private async tryFlushQueue(): Promise<void> {
     while (this.offlineQueue.length > 0) {
       const op = this.offlineQueue[0];
       try {
         if (op.op === 'capture') {
-          await this.rawRequest('POST', '/api/kb/capture', op.input);
+          await this.request('POST', '/api/kb/capture', op.input);
         } else if (op.op === 'invalidate') {
-          await this.rawRequest('POST', '/api/kb/invalidate', { files: op.files });
+          await this.request('POST', '/api/kb/invalidate', { files: op.files });
         }
         this.offlineQueue.shift();
       } catch (err) {
         // Unreachable, or the wrong project's server: keep the queue for the
         // right server rather than dropping what could not be sent.
-        if (isConnectionError(err) || err instanceof KbHttpProjectMismatchError) {
+        if (isConnectionError(err) || isAuthError(err) || err instanceof KbHttpProjectMismatchError) {
           break;
         }
         this.offlineQueue.shift();
@@ -362,13 +554,19 @@ export class HttpKbProvider implements MemoryProvider {
   async capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }> {
     await this.tryFlushQueue();
     try {
-      return await this.rawRequest<{ id: string; audn_decision: AudnDecision }>(
+      return await this.request<{ id: string; audn_decision: AudnDecision }>(
         'POST', '/api/kb/capture', input
       );
     } catch (err) {
       if (isConnectionError(err)) {
         this.enqueue({ op: 'capture', input });
         return { id: `offline-${randomBytes(8).toString('hex')}`, audn_decision: 'add' };
+      }
+      if (isAuthError(err)) {
+        // Queued exactly as for server-down, but the call still fails with
+        // E-KB-HTTP-AUTH: unlike an outage, this needs the operator to act.
+        this.enqueue({ op: 'capture', input });
+        throw err.asQueued();
       }
       throw err;
     }
@@ -399,7 +597,7 @@ export class HttpKbProvider implements MemoryProvider {
     if (tag) params.tag = tag;
 
     try {
-      const result = await this.rawRequest<KBResult>('GET', '/api/kb/query', undefined, params);
+      const result = await this.request<KBResult>('GET', '/api/kb/query', undefined, params);
       return opts.owner_tag ? this.keepOwned(result, opts.owner_tag, opts.tag) : result;
     } catch (err) {
       if (isConnectionError(err)) {
@@ -424,7 +622,7 @@ export class HttpKbProvider implements MemoryProvider {
       // caller's own (as the SQLite provider does in SQL), so another member's
       // newer entry cannot hide it; ownership is re-checked below.
       if (ownerTag) ctxParams.tag = ownerTag;
-      const result = await this.rawRequest<{ results: FileContextResult[] }>(
+      const result = await this.request<{ results: FileContextResult[] }>(
         'GET', '/api/kb/context', undefined, ctxParams
       );
       if (!ownerTag) return result.results;
@@ -444,13 +642,17 @@ export class HttpKbProvider implements MemoryProvider {
   async invalidate(files: string[]): Promise<{ invalidated: number }> {
     await this.tryFlushQueue();
     try {
-      return await this.rawRequest<{ invalidated: number }>(
+      return await this.request<{ invalidated: number }>(
         'POST', '/api/kb/invalidate', { files }
       );
     } catch (err) {
       if (isConnectionError(err)) {
         this.enqueue({ op: 'invalidate', files });
         return { invalidated: 0 };
+      }
+      if (isAuthError(err)) {
+        this.enqueue({ op: 'invalidate', files });
+        throw err.asQueued();
       }
       throw err;
     }
@@ -477,6 +679,19 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
+  // Delegated to the local fallback store like touch: "is the row I hold still
+  // live CONFIRMED" is a question about the LOCAL store by definition, and
+  // there is no remote route for it. An unreadable local store degrades to an
+  // empty map, i.e. "no local row for any of these" -- the cold seed then
+  // behaves exactly as it did before this predicate existed.
+  getLiveConfirmedState(ids: string[]): Map<string, boolean> {
+    try {
+      return this.fallback.getLiveConfirmedState(ids);
+    } catch {
+      return new Map();
+    }
+  }
+
   // Delegated to the local store like getLinked: the graph lives alongside the
   // entries, and there is no remote route for it. Never throws -- a graph miss
   // must degrade to "no related claims", not fail a prime.
@@ -494,7 +709,7 @@ export class HttpKbProvider implements MemoryProvider {
     // to the server's answer here instead.
     const { owner_tag: ownerTag, ...body } = opts;
     try {
-      const primed = await this.rawRequest<PrimedContext>('POST', '/api/kb/prime', body);
+      const primed = await this.request<PrimedContext>('POST', '/api/kb/prime', body);
       if (!ownerTag) return primed;
       const owned = await this.ownedIds(ownerTag);
       return {
@@ -525,7 +740,7 @@ export class HttpKbProvider implements MemoryProvider {
     let result: Record<string, unknown>;
     try {
       if (opts?.ownerTag) await this.requireOwnedEntry(id, opts.ownerTag);
-      result = await this.rawRequest<Record<string, unknown>>('POST', '/api/kb/promote', body);
+      result = await this.request<Record<string, unknown>>('POST', '/api/kb/promote', body);
     } catch (err) {
       if (isConnectionError(err)) {
         throw new Error(
@@ -557,7 +772,7 @@ export class HttpKbProvider implements MemoryProvider {
    */
   private async listRequest(params: Record<string, string>): Promise<{ results?: KBEntry[] }> {
     try {
-      return await this.rawRequest<{ results?: KBEntry[] }>('GET', '/api/kb/list', undefined, params);
+      return await this.request<{ results?: KBEntry[] }>('GET', '/api/kb/list', undefined, params);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'HTTP_404') {
         throw new KbHttpUnsupportedError(
@@ -653,6 +868,24 @@ export class HttpKbProvider implements MemoryProvider {
   private keepOwnedSummaries(results: FileContextResult[], owned: Set<string>): FileContextResult[] {
     return results.map(r =>
       r.entry_id === undefined || !owned.has(r.entry_id) ? { file: r.file, status: 'missing' as const } : r);
+  }
+
+  /**
+   * kb_demote is NOT delegated to the local fallback the way promote() is, and
+   * that asymmetry is deliberate. A demotion's whole value is its
+   * demoted_basis_hashes snapshot of the cited files as they are on disk at
+   * demote time; the fallback store is this host's local cache, not the remote
+   * KB that owns the entry, so a "successful" demote here would stamp a basis
+   * taken from the wrong tree onto a row nobody else ever sees. Refuse loudly
+   * and write NOTHING, as discard() does for the same class of operation.
+   */
+  async demote(
+    _id: string,
+    _reason: string,
+    _evidenceFiles: string[],
+    _opts?: { ownerTag?: string },
+  ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
+    throw new Error('kb_demote is not supported for an HTTP KB: the remote provider has no demote route, and demoting against the local fallback store would snapshot the wrong tree. Nothing was changed.');
   }
 
   async sync(_opts?: SyncOptions): Promise<SyncResult> {
