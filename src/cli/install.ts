@@ -32,7 +32,7 @@ import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { installBeads, type BeadsInstallDeps } from './beads-install.js';
 import {
   classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText, selfInvocationLines,
-  writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG,
+  writeMemberInstallMarker, clearMemberInstallMarker, recordFullInstallPort, FORCE_STOP_FULL_INSTALL_FLAG,
 } from './install-guard.js';
 import { detectRunningFleetSe, fleetSeRefusalText, realFleetSeProbes, IGNORE_RUNNING_SPRINTS_FLAG, type FleetSeProbes } from './fleet-se-guard.js';
 import { writeServiceNotice, clearServiceNoticeContaining, SERVICE_NOTICE_PATH } from '../services/service-notice.js';
@@ -2285,6 +2285,9 @@ ${manualStopHint(pidsAfterStop)}
   // non-zero (E-MEMBER-AUTOSTART) but leaves the marker, so the next fleet_install
   // "auto" recognises its own half-finished install and retries.
   if (memberMode) writeMemberInstallMarker(serverVersion, memberPort);
+  // A full install records its port (or clears the record) the same way, so
+  // start / service launch / logon autostart bind what the MCP registration says.
+  else recordFullInstallPort(serverVersion);
 
   // Every install holds a member access secret (owner-only, in its data dir):
   // its server accepts a ?member= session only with it, so another local
