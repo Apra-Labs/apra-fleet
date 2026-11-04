@@ -7,7 +7,7 @@ import net from 'node:net';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { HttpKbProvider, KbHttpAuthError } from '../../src/services/knowledge/http-provider.js';
-import { getKbProviders, resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
+import { getKbProviders, getProjectSlug, resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { KB_CONFIG_PATH } from '../../src/services/knowledge/kb-config.js';
 import { resetKbHttpAuthState } from '../../src/services/knowledge/kb-http-auth-state.js';
 import { kbHealthSummary, kbCredentialCompactLine } from '../../src/tools/check-status.js';
@@ -80,7 +80,10 @@ const setSecret = (value: string) => secretCli(['--set', NAME, '--persist', '-y'
 
 function probe(token: string): Promise<number> {
   return new Promise((resolve) => {
-    const req = http.get(`${kbUrl}/api/kb/query?query=probe`, { headers: { Authorization: `Bearer ${token}` } }, (res) => {
+    const req = http.get(`${kbUrl}/api/kb/query?query=probe`, {
+      // The server runs in repo, so it serves repo's project and refuses any other (409).
+      headers: { Authorization: `Bearer ${token}`, 'X-KB-Project': getProjectSlug(repo) },
+    }, (res) => {
       res.resume();
       res.on('end', () => resolve(res.statusCode ?? 0));
     });

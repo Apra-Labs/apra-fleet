@@ -3,8 +3,8 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } 
 // Named-secret token for the HTTP KB provider (kb_setup token {{secret.NAME}}
 // stored as token_ref): the provider looks the secret up on every request,
 // retries once on 401 after re-reading it, and otherwise raises
-// E-KB-HTTP-AUTH -- with captures kept in the offline queue and a MEMBER
-// session's CONFIRMED reads still served from its checkout bible.
+// E-KB-HTTP-AUTH -- with captures kept in the offline queue, and a MEMBER
+// session's reads, which go to the server, reporting it too.
 //
 // Real pieces only: a local stub KB server whose accepted token the test
 // changes, the real credential store (credentials.json under the per-run
@@ -340,8 +340,10 @@ describe('HTTP KB provider with a named-secret token', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Member session: CONFIRMED reads come from the checkout bible under auth
-// failure, as they do when the KB server is down. Over the real HTTP transport.
+// Member session: under the http project provider member reads go to the
+// server, so an auth failure is reported on reads as well as captures (only
+// an unreachable server falls back to the checkout bible). Over the real HTTP
+// transport.
 // ---------------------------------------------------------------------------
 
 describe('member session under auth failure', () => {
@@ -392,14 +394,19 @@ describe('member session under auth failure', () => {
     return { isError: result.isError === true, text };
   }
 
-  it('5. CONFIRMED kb_query is served from the bible; kb_capture reports E-KB-HTTP-AUTH', async () => {
+  it('5. a member kb_query reaches the server and reports E-KB-HTTP-AUTH; kb_capture does too', async () => {
     stub.accepted = TOKEN_B; // secret is still A: every remote call is rejected
     const client = await connect();
 
+    // Under the http project provider a member read goes to the server, not
+    // the checkout bible, so an auth failure is reported rather than hidden
+    // behind the bible's answer.
     const read = await call(client, 'kb_query', { query: 'gear' });
-    expect(read.isError, read.text).toBe(false);
-    expect(JSON.parse(read.text).l1_results.map((e: { id: string }) => e.id)).toEqual(['bible-gear-1']);
-    expect(count('/api/kb/query')).toBe(0);
+    expect(read.isError, read.text).toBe(true);
+    expect(read.text).toContain('E-KB-HTTP-AUTH');
+    expect(read.text).toContain(NAME);
+    expect(read.text).not.toContain('bible-gear-1');
+    expect(count('/api/kb/query')).toBeGreaterThan(0);
 
     const write = await call(client, 'kb_capture', {
       type: 'learning', title: 'Member capture under auth failure',

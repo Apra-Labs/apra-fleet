@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { startKbServer, parseKbServerArgs } from '../../src/commands/kb-server.js';
-import { resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
+import { resetKbProviders, getProjectSlug } from '../../src/services/knowledge/kb-providers.js';
 
 let tmp: string;
 let tokenFile: string;
@@ -13,10 +13,14 @@ let port: number;
 const stderrChunks: string[] = [];
 let origWrite: typeof process.stderr.write;
 
+// startKbServer serves the project of process.cwd(); one server serves one
+// project, so every request names it (X-KB-Project) or is refused with 409.
+const SERVER_PROJECT = getProjectSlug();
+
 function status(token: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const req = http.request(
-      { hostname: '127.0.0.1', port, path: '/api/kb/query?query=zz', method: 'GET', headers: { Authorization: `Bearer ${token}` } },
+      { hostname: '127.0.0.1', port, path: '/api/kb/query?query=zz', method: 'GET', headers: { Authorization: `Bearer ${token}`, 'X-KB-Project': SERVER_PROJECT } },
       (res) => { res.resume(); res.on('end', () => resolve(res.statusCode!)); },
     );
     req.on('error', reject);
