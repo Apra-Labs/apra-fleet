@@ -479,6 +479,23 @@ for every accepted shape live in `bible/examples/`.
   resolves a pair on it. The entry is therefore not re-exported until it is
   recaptured (kb_promote and kb_resolve_contradiction do not give it a
   verified basis).
+- Optional entry fields `content`, `recall_cues` and `error_signatures`
+  (design D9) need no version bump: they are optional and every reader that
+  predates them ignores unknown entry properties (the entry schema allows
+  extra properties). A writer adds `content` only when the stored content,
+  with the KB's own audit notes cut (the `[Promoted`, `[Demoted:`,
+  `[confidence clamped:`, `[feedback <time>]` and `[reconciled <time>]`
+  notes, and trailing newlines), is non-empty and differs from `summary`; it
+  never writes more than 2000 characters -- longer content is TRUNCATED to
+  exactly 2000, ending in `...[truncated]`. `recall_cues` and
+  `error_signatures` are written only when non-empty. An entry with none of
+  them therefore serializes byte-identically to the pre-D9 writer. A reader
+  stores `content` when it is a non-empty string of at most 2000 characters,
+  else (absent, wrong type, empty, over the cap) content = summary exactly as
+  before; it stores the string elements of a `recall_cues` /
+  `error_signatures` array and treats any other value as absent. A malformed
+  new field is dropped FIELD-level: the entry still imports and is not
+  counted as skipped. `merge-kb-canonical` treats all three as content fields.
 - No tool request shape changes with v3. The only response change is
   `kb_bible_commit`'s `backfilled` count (above); otherwise the format change is
   confined to the bible file.

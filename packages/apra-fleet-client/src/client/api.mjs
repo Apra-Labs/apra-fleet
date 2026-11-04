@@ -796,6 +796,13 @@
  * @property {string[]} source_files - Repo-relative files the entry cites.
  * @property {string} confidence - CONFIRMED, INFERRED or UNVERIFIED.
  * @property {string} updated_at - Promotion (or creation) timestamp.
+ * @property {string} [content] - Optional lesson body, written only when non-empty and
+ *   different from summary (the KB's own audit notes cut first), at most 2000
+ *   characters (longer content is truncated, ending in '...[truncated]'). Absent:
+ *   kb_import stores content = summary; a malformed or over-length value is dropped.
+ * @property {string[]} [recall_cues] - Optional search phrasings for the entry; written only when non-empty.
+ * @property {string[]} [error_signatures] - Optional verbatim error strings the entry
+ *   explains; written only when non-empty.
  * @property {Object<string, string>} [source_file_hashes] - v3: the per-file hash basis
  *   (repo-relative path -> hash) the entry was admitted against, copied from the
  *   exporting KB's stored basis. kb_import stores it as the entry's basis exactly

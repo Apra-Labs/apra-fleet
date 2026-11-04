@@ -623,6 +623,15 @@ are written to the bible's `provenance.branch` / `provenance.commit`; when
 omitted they default to the export folder's HEAD branch and commit. Result
 JSON (via `parseToolJson`): `{exported, path, scope, committed}`.
 
+Each bible entry (`KbBibleEntry`) may also carry the optional `content`,
+`recall_cues` and `error_signatures` fields (no format version bump): `content`
+is written only when it is non-empty and differs from `summary` (the KB's own
+promotion/demotion/clamp/feedback/reconcile notes are cut first) and is
+truncated to 2000 characters; the arrays are written only when non-empty. An
+entry without them is written exactly as before. `kbImport` stores them when
+present (content defaults to the summary) and drops a malformed value without
+skipping the entry.
+
 #### `kbBibleCommit(options: KbBibleCommitOptions)`
 
 Calls `kb_bible_commit` -- merges exactly `ids` into the bible at entry level

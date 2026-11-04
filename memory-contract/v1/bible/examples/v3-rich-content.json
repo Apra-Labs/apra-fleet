@@ -1,0 +1,26 @@
+{
+  "version": 3,
+  "provenance": {
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "branch": "main",
+    "entry_count": 1
+  },
+  "entries": [
+    {
+      "id": "0b4c3e1a-3333-4a6b-9c1d-000000000003",
+      "type": "learning",
+      "title": "exampleFn throws on a negative input",
+      "summary": "exampleFn in src/example.ts rejects negative numbers; callers must clamp first.",
+      "content": "exampleFn validates its argument before incrementing. A negative input throws RangeError('negative input') instead of returning x + 1. The first attempt to call it from the parser passed raw offsets and failed the test suite; clamping with Math.max(0, x) at the call site fixed it.",
+      "symbols": ["exampleFn"],
+      "source_files": ["src/example.ts"],
+      "recall_cues": ["why does exampleFn throw", "negative offset increment"],
+      "error_signatures": ["RangeError: negative input"],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-03-01T00:00:00.000Z",
+      "source_file_hashes": {
+        "src/example.ts": "3f7a1c0e9b2d4f6a8c1e3b5d7f9a2c4e6b8d0f1a3c5e7b9d1f3a5c7e9b1d3f5a"
+      }
+    }
+  ]
+}

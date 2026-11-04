@@ -43,7 +43,8 @@
  *   added by one side only                     -> keep it
  *   added by both sides under the same id      -> de-duplicate, keep one
  *
- * "Content" is CONTENT_FIELDS, which includes `title` and the v3
+ * "Content" is CONTENT_FIELDS, which includes `title`, the optional
+ * `content`/`recall_cues`/`error_signatures` fields and the v3
  * `source_file_hashes` basis: a re-verified basis on one side is a change
  * and is taken, never silently dropped. A merged entry is the whole entry of
  * the side whose content was taken, so it carries that side's hashes.
@@ -100,7 +101,7 @@ export const DEFAULT_CANONICAL_PATH = '.fleet/kb-canonical.json';
  * "changed by both sides", i.e. an all-conflicts merge. `title` is content
  * (a title edit is a change), and so is the v3 `source_file_hashes` basis.
  */
-export const CONTENT_FIELDS = ['type', 'title', 'summary', 'symbols', 'source_files', 'source_file_hashes', 'confidence'];
+export const CONTENT_FIELDS = ['type', 'title', 'summary', 'content', 'symbols', 'source_files', 'recall_cues', 'error_signatures', 'source_file_hashes', 'confidence'];
 
 /** Thrown for an input the merge cannot interpret (e.g. an entry without an id). */
 export class MalformedInputError extends Error {

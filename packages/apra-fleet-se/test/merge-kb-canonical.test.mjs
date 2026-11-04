@@ -82,6 +82,30 @@ test('content signature ignores id and updated_at, but includes title and source
     assert.notStrictEqual(contentSignature(a), contentSignature(reexport(a, { source_file_hashes: { 'src/a.js': 'h9', 'src/b.js': 'h2' } })));
 });
 
+test('content, recall_cues and error_signatures are content fields: one-side edits win, divergent edits conflict', () => {
+    for (const field of ['content', 'recall_cues', 'error_signatures']) assert.ok(CONTENT_FIELDS.includes(field), field);
+    const a = entry('Rich', { content: 'base body', recall_cues: ['cue'], error_signatures: ['Error: base'] });
+    for (const [field, oursValue, theirsValue] of [
+        ['content', 'ours body', 'theirs body'],
+        ['recall_cues', ['ours cue'], ['theirs cue']],
+        ['error_signatures', ['Error: ours'], ['Error: theirs']],
+    ]) {
+        assert.notStrictEqual(contentSignature(a), contentSignature(reexport(a, { [field]: oursValue })), field);
+        // One side changed the field: taken, no conflict.
+        const oneSide = mergeKbCanonical(doc([a]), doc([reexport(a, { [field]: oursValue })]), doc([reexport(a)]));
+        assert.deepStrictEqual(oneSide.conflicts, [], field);
+        assert.deepStrictEqual(oneSide.merged.entries[0][field], oursValue, field);
+        // Both sides changed it differently: a genuine conflict, never silently resolved.
+        const both = mergeKbCanonical(doc([a]), doc([reexport(a, { [field]: oursValue })]), doc([reexport(a, { [field]: theirsValue })]));
+        assert.strictEqual(both.conflicts.length, 1, field);
+    }
+    // Adding the field where the base had none is a change too.
+    const plain = entry('Plain');
+    const added = mergeKbCanonical(doc([plain]), doc([reexport(plain, { content: 'new body' })]), doc([reexport(plain)]));
+    assert.deepStrictEqual(added.conflicts, []);
+    assert.strictEqual(added.merged.entries[0].content, 'new body');
+});
+
 test('identical-content passthrough: re-exported entries do not look like changes', () => {
     const base = doc([entry('A'), entry('B'), entry('C')]);
     // Both sides re-exported the same three findings (same ids, fresh timestamps).

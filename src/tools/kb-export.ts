@@ -74,6 +74,49 @@ export interface CanonicalEntry {
    * entry carried over from a v1/v2 bible, which has no basis to carry.
    */
   source_file_hashes?: Record<string, string>;
+  /**
+   * Design D9 (optional; no format version bump -- readers ignore unknown
+   * entry properties). The entry's lesson body: written only when it is
+   * non-empty and differs from summary, never longer than
+   * BIBLE_CONTENT_MAX_LENGTH (see bibleContentOf).
+   */
+  content?: string;
+  /** Search phrasings for the entry; written only when non-empty. */
+  recall_cues?: string[];
+  /** Verbatim error strings the entry explains; written only when non-empty. */
+  error_signatures?: string[];
+}
+
+/** The longest `content` a bible entry carries (schema maxLength). */
+export const BIBLE_CONTENT_MAX_LENGTH = 2000;
+const BIBLE_CONTENT_TRUNCATION_SUFFIX = '...[truncated]';
+
+// The audit notes the KB itself appends to an entry's stored content
+// (promote, demote, capture-time confidence clamp, feedback, contradiction
+// resolution). They are this clone's history, not the lesson, and every
+// promoted entry carries one -- so they are cut before export. Each note
+// starts on a new line with one of these bracketed markers.
+const KB_AUDIT_NOTE_START = /\n\[(?:Promoted[ :]|Demoted: |confidence clamped: |feedback \d|reconciled \d)/;
+
+/**
+ * The content a bible entry carries for a stored KB entry, or undefined when
+ * it carries none. The KB's own audit notes are cut first (KB_AUDIT_NOTE_START)
+ * and trailing newlines dropped. Nothing is written when what remains is empty
+ * or equal to the summary -- the importer synthesizes content = summary for an
+ * entry without one, so a KB without rich content exports byte-identically to
+ * the writer that predates the field. Content over BIBLE_CONTENT_MAX_LENGTH is
+ * TRUNCATED to exactly that length, ending in '...[truncated]' (never written
+ * over the cap, never silently dropped).
+ */
+export function bibleContentOf(content: unknown, summary: string): string | undefined {
+  if (typeof content !== 'string') return undefined;
+  const note = KB_AUDIT_NOTE_START.exec(content);
+  let body = (note ? content.slice(0, note.index) : content).replace(/\n+$/, '');
+  if (body.length === 0 || body === summary) return undefined;
+  if (body.length > BIBLE_CONTENT_MAX_LENGTH) {
+    body = body.slice(0, BIBLE_CONTENT_MAX_LENGTH - BIBLE_CONTENT_TRUNCATION_SUFFIX.length) + BIBLE_CONTENT_TRUNCATION_SUFFIX;
+  }
+  return body;
 }
 
 /** The bible format version every writer emits. */
@@ -140,13 +183,21 @@ export function withSourceFileHashes(entry: CanonicalEntry, basis: Record<string
  * falls back to promoted_at, then created_at.
  */
 export function toCanonicalEntry(e: KBEntry, basis?: Record<string, string> | null, trustTime?: string | null): CanonicalEntry {
+  // Optional D9 fields are added only when they carry something, so an entry
+  // without them serializes exactly as before (same keys, same order).
+  const content = bibleContentOf(e.content, e.summary);
+  const recallCues = Array.isArray(e.recall_cues) ? e.recall_cues : [];
+  const errorSignatures = Array.isArray(e.error_signatures) ? e.error_signatures : [];
   const entry: CanonicalEntry = {
     id: e.id,
     type: e.type,
     title: e.title,
     summary: e.summary,
+    ...(content !== undefined ? { content } : {}),
     symbols: e.symbols,
     source_files: e.source_files,
+    ...(recallCues.length > 0 ? { recall_cues: [...recallCues] } : {}),
+    ...(errorSignatures.length > 0 ? { error_signatures: [...errorSignatures] } : {}),
     confidence: e.confidence,
     updated_at: trustTime || e.promoted_at || e.created_at,
   };
