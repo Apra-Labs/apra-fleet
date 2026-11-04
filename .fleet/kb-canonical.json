@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6ecdfda08a76fc206721e855d72cf94b16f5f011",
     "branch": "main",
-    "entry_count": 123
+    "entry_count": 124
   },
   "entries": [
     {
@@ -1592,6 +1592,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.733Z"
+    },
+    {
+      "id": "a888b84b-d7a0-47ad-9318-2f062770cf2f",
+      "type": "learning",
+      "title": "ASCII-only gate scans test fixtures too; write emoji markers as escapes",
+      "summary": "scripts/check-ascii-only.mjs fails npm test on any non-ASCII char in a file not in its baseline, including test files that reproduce emoji-prefixed tool text such as the compose_permissions refusal.",
+      "symbols": [
+        "composeFailureText"
+      ],
+      "source_files": [
+        "scripts/check-ascii-only.mjs",
+        "tests/ascii-only-gate.test.ts",
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T07:14:29.307Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "0dffb028188c744e0bcc172691eb9fc79bfb354b",
+        "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56",
+        "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
     },
     {
       "id": "b03effcd-0488-452b-9b49-ab21049c0ece",
