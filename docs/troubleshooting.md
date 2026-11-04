@@ -296,8 +296,10 @@ Fix in the product:
   member (for example `[Environment]::SetEnvironmentVariable('GOMAXPROCS', '4', 'User')`),
   then:
 
-  - Remote Windows member (PowerShell or Git Bash shell): nothing else. Each
-    dispatch opens a new SSH session, which reads the user environment.
+  - Remote Windows member (PowerShell or Git Bash shell): the member picks it
+    up on the next SSH connection. The fleet server reuses an open connection
+    until it has been idle for 5 minutes, so wait that long or restart the
+    fleet server.
   - Local Windows member, PowerShell shell: restart the fleet server
     (`apra-fleet stop`, then `apra-fleet start`). The server reads the
     machine and user environment once and caches it for its lifetime.

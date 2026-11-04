@@ -599,8 +599,9 @@ export async function resolveReviewMergeBase({ command, member, baseBranch, bran
         );
     }
     const raw = String(mbRes.output ?? '');
-    const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    const sha = lines.length ? lines[lines.length - 1] : '';
+    // The last SHA-shaped line: tolerates stderr/profile noise around it.
+    const shaLines = raw.split(/\r?\n/).map((l) => l.trim()).filter((l) => REVIEW_BASE_SHA_RE.test(l));
+    const sha = shaLines.length ? shaLines[shaLines.length - 1] : '';
     if (!REVIEW_BASE_SHA_RE.test(sha)) {
         throw new GitSyncError(
             `[Review Base] ${mergeBaseCmd} on member '${member}' did not return a commit SHA (output: ${JSON.stringify(raw)}).`,

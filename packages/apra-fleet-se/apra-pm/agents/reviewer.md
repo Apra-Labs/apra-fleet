@@ -96,6 +96,10 @@ search also matches value text, so apply only entries whose KEY contains `+all+`
 
 ## Step 1 -- Context recovery
 
+If your dispatch prompt gives a diff range (`<commit-sha>..<branch>`), use exactly that
+range wherever `<base-branch>..<branch>` appears below, for every `git diff` and
+`git log`. Never diff against a local base branch in that case: it may be stale.
+
 ```bash
 git log --oneline <base-branch>..<branch>
 git diff <base-branch>..<branch> --stat
