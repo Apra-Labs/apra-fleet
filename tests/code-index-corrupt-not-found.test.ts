@@ -2,12 +2,13 @@ import { describe, it, expect, vi, afterAll, beforeEach } from 'vitest';
 
 // Regression: an .mjs symbol answering "Target 'x' not found" from
 // code_impact and "Symbol 'x' not found" from code_context although it
-// exists. Cause: gitnexus 1.6.12's incremental analyze blanks the id, name
-// and filePath of thousands of symbol rows of files it did not change (a
-// fresh index had 0 such rows; one incremental run after a one-line edit left
-// 7774), and later incremental runs keep those rows. The fix: every fleet-run
-// analyze is a full rebuild (--force), and a not-found answer from an index
-// holding blank rows is flagged as unreliable with a rebuild requested.
+// exists. Cause: gitnexus 1.6.12's incremental analyze of a large repo
+// overwrites symbol rows of files it did not change (a fresh index had 43297
+// rows with 43297 ids; one incremental run after a one-line edit left 43298
+// rows with 34011 ids). The fix: every fleet-run analyze is a full rebuild
+// (--force), and a not-found answer from an index whose ids are not unique is
+// flagged as unreliable with a rebuild requested. The detector's query against
+// a real index is pinned in tests/code-index-corrupt-real-gitnexus.test.ts.
 //
 // Isolation: the gitnexus MCP child is a mocked Client (no npx is spawned);
 // its callTool replays the responses gitnexus 1.6.12 gave for the live case
@@ -61,7 +62,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { handleCodeImpact, handleCodeContext } from '../src/tools/code-intelligence.js';
-import { BLANK_SYMBOL_ROWS_QUERY, notFoundName } from '../src/tools/code-intelligence-gitnexus.js';
+import { INDEX_ID_UNIQUENESS_QUERY, notFoundName } from '../src/tools/code-intelligence-gitnexus.js';
 import { GITNEXUS_ANALYZE_ARGS } from '../src/tools/code-intelligence-reindex.js';
 import { scheduleIndexBuild } from '../src/tools/code-index-heal.js';
 
@@ -101,14 +102,16 @@ function contextFound(): unknown {
 }
 
 /** gitnexus 1.6.12 cypher answer: a Markdown table in { markdown, row_count }. */
-function cypherCount(column: string, n: number): unknown {
-  return { content: [{ type: 'text', text: JSON.stringify({ markdown: `| ${column} |\n| --- |\n| ${n} |`, row_count: 1 }, null, 2) }] };
+function cypherIds(damaged: number): unknown {
+  const total = 43298;
+  const markdown = `| total | distinct_ids |\n| --- | --- |\n| ${total} | ${total - damaged} |`;
+  return { content: [{ type: 'text', text: JSON.stringify({ markdown, row_count: 1 }, null, 2) }] };
 }
 
-/** A fake gitnexus child: answers `tool` with `answer`, the blank-row probe with `blank`. */
-function fakeGitnexus(answer: unknown, blank: number): void {
+/** A fake gitnexus child: answers `tool` with `answer`, the id probe with `damaged` rows beyond one per id. */
+function fakeGitnexus(answer: unknown, damaged: number): void {
   mockCallTool.mockImplementation(async ({ name, arguments: args }: { name: string; arguments: Record<string, unknown> }) => {
-    if (name === 'cypher' && args.query === BLANK_SYMBOL_ROWS_QUERY) return cypherCount('blank', blank);
+    if (name === 'cypher' && args.query === INDEX_ID_UNIQUENESS_QUERY) return cypherIds(damaged);
     if (name === 'impact' || name === 'context') return answer;
     throw new Error(`unexpected gitnexus call ${name}`);
   });
@@ -142,18 +145,18 @@ beforeEach(() => {
   mockCallTool.mockReset();
 });
 
-describe('an .mjs symbol answering not found from a corrupt index (blanked symbol rows)', () => {
+describe('an .mjs symbol answering not found from a corrupt index (ids not unique)', () => {
   it('code_impact: the not-found answer is flagged INDEX CORRUPT with confidence LOW and a rebuild is requested', async () => {
     const repo = newRepo();
     fakeGitnexus(impactNotFound(MJS.name), 7774);
     const out = await handleCodeImpact({ target: MJS.name, direction: 'upstream' }, { repo, memberId: 'm' });
     const payload = payloadOf(out);
     expect(payload.error).toBe(`Target '${MJS.name}' not found`);
-    expect(payload.index_integrity).toEqual({ corrupt: true, blank_symbols: 7774, rebuild: { started: true } });
+    expect(payload.index_integrity).toEqual({ corrupt: true, damaged_rows: 7774, rebuild: { started: true } });
     expect(payload.confidence).toBe('LOW');
     expect(payload.risk).toBe('UNKNOWN');
     const texts = textsOf(out);
-    expect(texts).toContain(`[code-intelligence] INDEX CORRUPT: '${MJS.name}' was not found, but 7774 symbol rows`);
+    expect(texts).toContain(`[code-intelligence] INDEX CORRUPT: '${MJS.name}' was not found, but 7774 rows`);
     expect(texts).toContain('NOT evidence that the symbol does not exist');
     expect(texts).toContain('A full rebuild of the index has started');
     expect(texts).toContain('**Next:**');
@@ -166,7 +169,7 @@ describe('an .mjs symbol answering not found from a corrupt index (blanked symbo
     const out = await handleCodeContext({ name: MJS.name }, { repo, memberId: 'm' });
     const payload = payloadOf(out);
     expect(payload.error).toBe(`Symbol '${MJS.name}' not found`);
-    expect(payload.index_integrity).toEqual({ corrupt: true, blank_symbols: 7774, rebuild: { started: true } });
+    expect(payload.index_integrity).toEqual({ corrupt: true, damaged_rows: 7774, rebuild: { started: true } });
     expect(payload.confidence).toBe('LOW');
     expect(textsOf(out)).toContain(`[code-intelligence] INDEX CORRUPT: '${MJS.name}' was not found`);
     expect(schedule).toHaveBeenCalledWith(repo);
@@ -177,7 +180,7 @@ describe('an .mjs symbol answering not found from a corrupt index (blanked symbo
     schedule.mockReturnValue({ started: false, reason: 'cooldown', detail: 'an index build finished less than 120s ago' });
     fakeGitnexus(impactNotFound(MJS.name), 12351);
     const out = await handleCodeImpact({ target: MJS.name, direction: 'upstream' }, { repo, memberId: 'm' });
-    expect(payloadOf(out).index_integrity).toMatchObject({ blank_symbols: 12351, rebuild: { started: false, reason: 'cooldown' } });
+    expect(payloadOf(out).index_integrity).toMatchObject({ damaged_rows: 12351, rebuild: { started: false, reason: 'cooldown' } });
     expect(textsOf(out)).toContain('No rebuild started (cooldown: an index build finished less than 120s ago); run code_reindex');
   });
 
@@ -200,7 +203,7 @@ describe('an .mjs symbol answering not found from a corrupt index (blanked symbo
     expect(schedule).not.toHaveBeenCalled();
   });
 
-  it('a genuinely missing symbol in a healthy index (0 blank rows) is returned unchanged, no rebuild', async () => {
+  it('a genuinely missing symbol in a healthy index (ids unique) is returned unchanged, no rebuild', async () => {
     const repo = newRepo();
     const answer = impactNotFound('noSuchSymbol');
     fakeGitnexus(answer, 0);
@@ -222,5 +225,14 @@ describe('an .mjs symbol answering not found from a corrupt index (blanked symbo
   it('every fleet-run analyze is a full rebuild (--force), so incremental writeback never corrupts the index', () => {
     expect(GITNEXUS_ANALYZE_ARGS).toContain('--index-only');
     expect(GITNEXUS_ANALYZE_ARGS).toContain('--force');
+  });
+
+  it('every analyze command the /pm index skill and the member remediation give is a full rebuild', () => {
+    for (const file of ['packages/apra-fleet-se/apra-pm/skills/pm/index.md', 'packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs']) {
+      const text = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf-8');
+      const commands = text.split('\n').filter((line) => /npx (?:-y )?gitnexus(?:@\S+)? analyze/.test(line));
+      expect(commands.length, file).toBeGreaterThan(0);
+      for (const line of commands) expect(line).toContain('--force');
+    }
   });
 });

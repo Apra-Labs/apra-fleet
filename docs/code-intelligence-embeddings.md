@@ -129,13 +129,13 @@ above can be a documented opt-in but is out of scope for the LOCAL wiring.)
 ## How the flag is wired
 
 - The PM skill's initial index step (`skills/pm/index.md`) runs
-  `npx gitnexus analyze --index-only --embeddings`, and that skill's "The `--embeddings`
+  `npx gitnexus analyze --index-only --force --embeddings`, and that skill's "The `--embeddings`
   flag" section documents the local-ONNX classification, the one-time ~87 MB
   HuggingFace download, the OFF-by-default /
   preserved-unless-`--drop-embeddings` behavior, and the win32 exact-scan
   caveat from this doc.
 - **Gap:** the VERIFY-checkpoint re-index described in the same skill still
-  runs analyze without `--embeddings` (`npx gitnexus analyze --index-only`), so embeddings
+  runs analyze without `--embeddings` (`npx gitnexus analyze --index-only --force`), so embeddings
   are populated at initial index time only, not refreshed on every VERIFY
   re-index.
 - The fleet-run index command line is built in `src/tools/code-intelligence-reindex.ts`

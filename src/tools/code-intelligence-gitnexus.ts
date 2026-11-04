@@ -485,30 +485,31 @@ export function flagResolutionMismatch(result: unknown, requested: unknown, kind
 
 // ---------------------------------------------------------------------------
 // Corrupt-index check (code_impact / code_context "not found"). gitnexus
-// 1.6.12's incremental analyze can blank the id, name and filePath of
-// thousands of symbol rows of files it did not even change (reproduced: one
-// incremental run after a one-line edit blanked 7774 rows of an index that a
-// fresh build had left with none). Those symbols then answer "Target 'x' not
-// found" / "Symbol 'x' not found" although they exist, and because every
-// later incremental run preserves unchanged rows as they are, the index stays
-// broken until a full rebuild. Fleet-run analyzes are full rebuilds
-// (GITNEXUS_ANALYZE_ARGS carries --force), but an index corrupted before that,
-// or by an incremental analyze run by hand, still answers this way. So a
-// not-found answer is cross-checked: when the index holds blank symbol rows,
-// the answer is marked as unreliable and a rebuild is asked for
+// 1.6.12's incremental analyze of a large repo rewrites rows of files it did
+// not change. Reproduced with one one-line edit on a repo of 43297 nodes: the
+// total stayed about the same, but only 34011 distinct ids were left (9287
+// rows now duplicate another row, and an earlier run left 7774 blank ones).
+// Every symbol whose row was overwritten answers "Target 'x' not found" /
+// "Symbol 'x' not found" although it exists, and the index stays broken until
+// a full rebuild. A healthy index has one row per id. Fleet-run analyzes are
+// full rebuilds (GITNEXUS_ANALYZE_ARGS carries --force), but an index corrupted
+// before that, or by an incremental analyze run by hand, still answers this
+// way. So a not-found answer is cross-checked: when ids are not unique, the
+// answer is marked as unreliable and a rebuild is asked for
 // (scheduleIndexBuild: config-, cooldown- and single-flight-gated).
 // ---------------------------------------------------------------------------
 
 const NOT_FOUND_ERROR = /^(?:Target|Symbol) '([\s\S]*)' not found\.?$/;
 
-// Symbol rows whose id was blanked. File, Folder and every symbol node carry
-// a non-empty id ('<Label>:<path>[:<name>]') in a healthy index.
-export const BLANK_SYMBOL_ROWS_QUERY = "MATCH (n) WHERE n.id IS NULL OR n.id = '' RETURN count(n) AS blank";
+// Every node of a healthy index has its own id ('<Label>:<path>[:<name>]').
+// count(DISTINCT) folds duplicated and blank ids and skips null ones, so the
+// difference covers all three.
+export const INDEX_ID_UNIQUENESS_QUERY = 'MATCH (n) RETURN count(n) AS total, count(DISTINCT n.id) AS distinct_ids';
 
 export interface IndexIntegrity {
   corrupt: true;
-  /** Rows in the index whose id/name/filePath were blanked. */
-  blank_symbols: number;
+  /** Rows in the index beyond one per distinct id: overwritten symbols. */
+  damaged_rows: number;
   /** Whether an automatic rebuild started, or why not. */
   rebuild: ScheduleReindexOutcome;
 }
@@ -538,22 +539,23 @@ function splitPayload(result: unknown): { payload: Record<string, unknown>; suff
   } catch { return null; }
 }
 
-/** Number of blanked symbol rows in `repo`'s index, or null when it cannot be read. */
-async function blankSymbolRows(repo: string): Promise<number | null> {
+/** Rows beyond one per distinct id in `repo`'s index, or null when it cannot be read. */
+async function damagedRows(repo: string): Promise<number | null> {
   let result: unknown;
   try {
-    result = await callGitNexus('cypher', { query: BLANK_SYMBOL_ROWS_QUERY, repo });
+    result = await callGitNexus('cypher', { query: INDEX_ID_UNIQUENESS_QUERY, repo });
   } catch { return null; }
   const payload = extractCypherPayload(result);
   if (!payload) return null;
-  const rows = parseMarkdownTable(payload.markdown);
-  const n = Number(rows[0]?.blank);
+  const row = parseMarkdownTable(payload.markdown)[0];
+  if (!row || row.total === undefined || row.distinct_ids === undefined) return null;
+  const n = Number(row.total) - Number(row.distinct_ids);
   return Number.isFinite(n) ? n : null;
 }
 
 /**
  * When a code_impact / code_context answer is "not found" and `repo`'s index
- * holds blank symbol rows, return the answer marked as unreliable (payload
+ * holds overwritten rows (ids that are not unique), return the answer marked as unreliable (payload
  * index_integrity + confidence LOW, plus a warning naming the cause and what
  * happens next) and ask for a rebuild. Any other result, or one whose
  * index checks out, is returned unchanged.
@@ -562,17 +564,17 @@ export async function flagCorruptIndexNotFound(result: unknown, repo: unknown): 
   if (typeof repo !== 'string' || repo === '') return result;
   const name = notFoundName(result);
   if (name === null) return result;
-  const blank = await blankSymbolRows(repo);
-  if (blank === null || blank <= 0) return result;
+  const damaged = await damagedRows(repo);
+  if (damaged === null || damaged <= 0) return result;
 
   const rebuild = scheduleIndexBuild(repo);
-  const integrity: IndexIntegrity = { corrupt: true, blank_symbols: blank, rebuild };
+  const integrity: IndexIntegrity = { corrupt: true, damaged_rows: damaged, rebuild };
   const parts = splitPayload(result) as NonNullable<ReturnType<typeof splitPayload>>;
   const next = rebuild.started
     ? 'A full rebuild of the index has started; retry once code_status reports it ready.'
     : `No rebuild started (${rebuild.reason}${rebuild.detail ? `: ${rebuild.detail}` : ''}); run code_reindex, which always rebuilds the index in full.`;
-  const warning = `[code-intelligence] INDEX CORRUPT: '${name}' was not found, but ${blank} symbol rows in this code index ` +
-    'have lost their name, id and file, so this is NOT evidence that the symbol does not exist. ' +
+  const warning = `[code-intelligence] INDEX CORRUPT: '${name}' was not found, but ${damaged} rows in this code index ` +
+    'have overwritten other symbols, so this is NOT evidence that the symbol does not exist. ' +
     `${next} Until then, use a text search for this symbol.`;
   const patched = { ...parts.payload, index_integrity: integrity, confidence: 'LOW' };
   return {
