@@ -1565,6 +1565,11 @@ Nothing was installed.
   // binary-copy step can bring it back up instead of leaving it down.
   let guardServiceMgr: ServiceManager | null = null;
   let guardStoppedService = false;
+  // The service manager's stop() resolved false: a server pid was left running
+  // because it could not be verified as apra-fleet (so it was not killed).
+  let guardStopLeftRunning = false;
+  // The guard restarted the service itself (no final service step to do it).
+  let guardRestartedService = false;
   if (runningScope?.relevant) {
     if (!force) {
       const killHint = process.platform === 'win32'
@@ -1610,8 +1615,9 @@ ${killHint}
       // A service is registered: stop the SERVICE, never pkill first.
       console.log('  Registered service detected -- stopping it through the service manager.');
       try {
-        await guardServiceMgr.stop();
+        const stopped = await guardServiceMgr.stop({ reason: 'install' });
         guardStoppedService = true;
+        if (stopped === false) guardStopLeftRunning = true;
       } catch (err) {
         console.warn(`    Service stop failed: ${(err as Error).message}`);
       }
@@ -1651,9 +1657,17 @@ ${manualStopHint(pidsAfterStop)}
 `);
       process.exit(1);
     }
-    console.log(pidsBeforeStop.length > 0 || guardStoppedService
-      ? '  Stopped running server.'
-      : '  No running server process of this install was found to stop.');
+    if (guardStopLeftRunning) {
+      // The stop reported a pid it would not force-kill: do not claim it stopped.
+      const { readServerInfoPid } = await import('../services/singleton.js');
+      const leftPid = readServerInfoPid();
+      const who = leftPid !== undefined ? `pid ${leftPid}` : (pidsBeforeStop.length > 0 ? `pid ${pidsBeforeStop.join(', ')}` : 'a server process');
+      console.warn(`  The server ${who} is still running: it did not exit after the stop request and could not be verified as an apra-fleet process, so it was not force-killed. Install continues without stopping it; check ${who} yourself.`);
+    } else {
+      console.log(pidsBeforeStop.length > 0 || guardStoppedService
+        ? '  Stopped running server.'
+        : '  No running server process of this install was found to stop.');
+    }
   }
 
   console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);
@@ -1689,10 +1703,15 @@ ${manualStopHint(pidsAfterStop)}
   // the exact restart command is printed, so a failure at any later step stays
   // recoverable by hand.
   if (guardStoppedService && guardServiceMgr) {
-    console.log(`  The registered service was stopped by --force. Restart command: ${serviceRestartCommand()}`);
+    if (serviceStep) {
+      console.log(`  The registered service was stopped by --force; the final install step re-registers and starts it. (Only if a later step fails, restart it with: ${serviceRestartCommand()})`);
+    } else {
+      console.log(`  The registered service was stopped by --force; restarting it now. (If that fails -- Restart command: ${serviceRestartCommand()})`);
+    }
     if (!serviceStep) {
       try {
         await guardServiceMgr.start();
+        guardRestartedService = true;
         console.log('  Restarted the registered service.');
       } catch (err) {
         console.warn(`  [WARN] Could not restart the registered service: ${(err as Error).message}`);
@@ -2373,7 +2392,9 @@ ${restartHint}
   const claudeModLine = claudeModResult
     ? `\n  Claude mod:  fleet-status ${claudeModResult.status === 'installed' ? `installed (${claudeModResult.dir}${claudeModResult.note ? `; ${claudeModResult.note}` : ''})` : `skipped: ${claudeModResult.reason}`}`
     : '';
-  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `${serviceState}${serviceReused ? ' (existing task reused)' : ''}${serviceRunKey ? ' (logon autostart via HKCU Run, no automatic restart)' : ''}` : 'registration skipped'}` : '';
+  const serviceLine = !serviceStep && guardStoppedService
+    ? `\n  Service:     ${guardRestartedService ? 'restarted after --force stop' : 'NOT restarted (see the warning above; start it with ' + serviceRestartCommand() + ')'}`
+    : serviceStep ? `\n  Service:     ${serviceRegistered ? `${serviceState}${serviceReused ? ' (existing task reused)' : ''}${serviceRunKey ? ' (logon autostart via HKCU Run, no automatic restart)' : ''}` : 'registration skipped'}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}

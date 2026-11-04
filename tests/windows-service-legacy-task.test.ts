@@ -315,6 +315,25 @@ describe('status and stop with a legacy task installed', () => {
     expect(text).toMatch(/A stop made with 'apra-fleet stop' still holds/);
   });
 
+  it('stop called by install --force prints neither the guidance nor the sticky-stop sentence (install owns the guidance), but still stops', async () => {
+    const mgr = new WindowsServiceManager(queryRunner(LEGACY_XML), WRAPPER, { runReg: vi.fn() });
+    expect(await mgr.stop({ reason: 'install' })).toBe(true);
+    expect(mockGracefulStop).toHaveBeenCalled();
+    const text = warn.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(text).toMatch(/Could not disable the ApraFleet task/);
+    expect(text).not.toContain('schtasks /delete');
+    expect(text).not.toMatch(/still holds/);
+    expect(text.split('no automatic revive after a crash').length - 1).toBe(0);
+  });
+
+  it('apra-fleet stop (no reason) keeps the guidance exactly once plus the sticky-stop sentence', async () => {
+    const mgr = new WindowsServiceManager(queryRunner(LEGACY_XML), WRAPPER, { runReg: vi.fn() });
+    await mgr.stop();
+    const text = warn.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(text.split('schtasks /delete /tn ApraFleet /f').length - 1).toBe(1);
+    expect(text.split("A stop made with 'apra-fleet stop' still holds").length - 1).toBe(1);
+  });
+
   it('stop on a current task that cannot be disabled keeps the plain warning', async () => {
     const mgr = new WindowsServiceManager(queryRunner(CURRENT_QUERIED_XML), WRAPPER, { runReg: vi.fn() });
     await mgr.stop();
