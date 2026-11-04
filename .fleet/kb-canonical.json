@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6ecdfda08a76fc206721e855d72cf94b16f5f011",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 125
+    "entry_count": 123
   },
   "entries": [
     {
@@ -956,31 +956,6 @@
       "updated_at": "2026-09-29T06:13:16.498Z"
     },
     {
-      "id": "69279a39-2a18-4b93-bf29-ce6255125509",
-      "type": "knowledge",
-      "title": "Capture lint still refuses hostname:port when the TLD looks like a source extension",
-      "summary": "KB_LINE_REF_RE treats a bare dotted name:digits as a line reference when its last label is in the source-extension list, so ccTLD hosts like api.example.pl:443 or mirror.example.sh:22 are refused as line-number-only unless the capture names a symbol.",
-      "symbols": [
-        "KB_LINE_REF_RE",
-        "lintKbCapture",
-        "vetKbWork"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
-        "packages/apra-fleet-se/apra-pm/lib/vet-kb-work.mjs",
-        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
-        "packages/apra-fleet-se/test/vet-kb-work-drift.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-11-04T06:44:52.026Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js": "66386a96dba63f5fce66ad6c51821fa59b78fa82",
-        "packages/apra-fleet-se/apra-pm/lib/vet-kb-work.mjs": "615190f754457f263410ab15797223d9b7158fad",
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "57d389498cdeeb43d5f4b0d6c004b4ce23258979",
-        "packages/apra-fleet-se/test/vet-kb-work-drift.test.mjs": "6bf4cb02b9414c6f835d2ffcdaaef51cd5ca85a0"
-      }
-    },
-    {
       "id": "698deaad-20a7-468e-9ed6-e696dd03bd0c",
       "type": "learning",
       "title": "kb_import gives a bible entry a fresh id when AUDN links it to an earlier one",
@@ -1655,28 +1630,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T09:41:37.051Z"
-    },
-    {
-      "id": "b4b10bd2-548e-40c6-8dd7-b2307917fce3",
-      "type": "knowledge",
-      "title": "Role output schemas require kb_captures trigger; a trigger-less capture rejects the whole role output",
-      "summary": "The doer/reviewer output schemas list trigger as required with a six-value enum, so a capture without a valid trigger fails schema validation for the whole structured output, which is repaired twice and then degraded, before the engine vetKbWork gate ever runs.",
-      "symbols": [
-        "vetKbWork",
-        "KB_CAPTURE_TRIGGERS"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json",
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
-        "packages/apra-fleet-se/test/mock-sprint-kb-capture-gate.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-11-04T04:36:53.775Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json": "ae4d01affd4281e744396b5cda9630ba479a9a21",
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "a375217db4326ebdfe06b6b18594624db9c37822",
-        "packages/apra-fleet-se/test/mock-sprint-kb-capture-gate.test.mjs": "dfb82b5958eb1462202c38c2eacaae8e19a460b5"
-      }
     },
     {
       "id": "b7ec6763-407e-4ca3-8cf7-91183e33e39f",
