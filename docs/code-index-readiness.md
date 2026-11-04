@@ -22,6 +22,24 @@ empty-looking success:
 Errors are thrown because handlers wrap provider results in an ok envelope; a
 returned error-shaped object would read as success.
 
+## Not-ready answers are machine-readable
+
+The `E-CODE-INDEX-NOT-READY` error result carries `structuredContent`:
+`retry_after_ms` (how long to wait before one retry; 0 when no build is
+running or requested), `retry_will_help` (false when waiting cannot change the
+answer), `build` and, while an analyze runs, `progress`. The tool wrapper turns
+this into an `isError` result. Role prompts instruct callers to wait once,
+retry once, then fall back to ordinary file reads -- never to poll
+`code_status` in a loop.
+
+## Corrupt incremental indexes
+
+The analyzer's incremental update can leave an index that answers "not found"
+for symbols that exist. To avoid this, every analyze is run as a full rebuild
+(`--force`), and a not-found answer from an index judged corrupt is flagged as
+such rather than presented as a genuine absence, so callers reindex instead of
+concluding the symbol is missing.
+
 ## indexedCommit
 
 Every `code_*` result carries `indexedCommit` (applied centrally by
