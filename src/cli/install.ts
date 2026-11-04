@@ -34,7 +34,7 @@ import {
   classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText, selfInvocationLines,
   writeMemberInstallMarker, clearMemberInstallMarker, recordFullInstallPort, FORCE_STOP_FULL_INSTALL_FLAG,
 } from './install-guard.js';
-import { detectRunningFleetSe, fleetSeRefusalText, realFleetSeProbes, IGNORE_RUNNING_SPRINTS_FLAG, type FleetSeProbes } from './fleet-se-guard.js';
+import { detectRunningFleetSe, fleetSeRefusalText, fleetSeRerunArgs, realFleetSeProbes, IGNORE_RUNNING_SPRINTS_FLAG, type FleetSeProbes } from './fleet-se-guard.js';
 import { writeServiceNotice, clearServiceNoticeContaining, SERVICE_NOTICE_PATH } from '../services/service-notice.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
 import { isPidAlive } from '../utils/process-utils.js';
@@ -146,6 +146,23 @@ export function _setFleetSeProbes(overrides: Partial<FleetSeProbes>): void {
 /** Test-only: restore the real running fleet-sprint guard probes. */
 export function _resetFleetSeProbes(): void {
   fleetSeProbes = realFleetSeProbes;
+}
+/**
+ * True when a live apra-fleet server relevant to THIS install is recorded -- the
+ * same classification the running-server guard uses. The fleet-sprint refusal
+ * reads it to put --force on its rerun line. Overridable for tests.
+ */
+function realLiveServerProbe(): boolean {
+  try {
+    return (isSea() || isNpmGlobalInstall()) && isApraFleetRunning() && classifyRunningServer(BIN_DIR)?.relevant === true;
+  } catch {
+    return false;
+  }
+}
+let liveServerProbe: () => boolean = realLiveServerProbe;
+/** Test-only: replace the live-server probe used by the fleet-sprint refusal. */
+export function _setLiveServerProbe(probe: (() => boolean) | null): void {
+  liveServerProbe = probe ?? realLiveServerProbe;
 }
 /** The probes the running fleet-sprint guard uses (shared with update.ts). */
 export function currentFleetSeProbes(): FleetSeProbes { return fleetSeProbes; }
@@ -1522,7 +1539,7 @@ Options:
       });
       const text = fleetSeRefusalText(found, {
         platform: process.platform,
-        rerunLines: self(args),
+        rerunLines: self(fleetSeRerunArgs(args, liveServerProbe())),
         ignoreLines: self([...args, IGNORE_RUNNING_SPRINTS_FLAG]),
       });
       console.error(text);
