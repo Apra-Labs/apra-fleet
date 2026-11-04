@@ -33,9 +33,13 @@ import { MemberReservationResumeError } from './errors.mjs';
  *   POST {serviceUrl}/api/dolt-push-mutex/{sprintId}/acquire  body { pid }
  *   POST {serviceUrl}/api/dolt-push-mutex/{sprintId}/release  body { token }
  *
- * The acquire route long-polls -- it does not answer until this sprint
+ * The acquire route long-polls -- its body does not complete until this sprint
  * genuinely owns the mutex (FIFO after every earlier waiter) -- so a resolved
- * acquire() means this child holds it and no sibling sprint is pushing.
+ * acquire() means this child holds it and no sibling sprint is pushing. The
+ * route sends headers at once and heartbeat whitespace while queued, so fetch's
+ * 300s headers/body timeouts only fire if the supervisor truly stops answering.
+ * A failure during the wait arrives as { error } under a 200, so acquire()
+ * rejects on that, and on any payload without a token.
  *
  * Implemented INLINE rather than imported from src/supervisor/dolt-mutex.mjs
  * because runner.js is copied verbatim next to the bundle and loaded via
@@ -43,8 +47,8 @@ import { MemberReservationResumeError } from './errors.mjs';
  * not resolve in the shipped layout. The { acquire, release } surface is
  * exactly what doltPushAfter() calls.
  *
- * @param {{ serviceUrl: string, sprintId: string, fetch?: typeof fetch, log?: Function }} opts
- * @returns {{ acquire: (sprintId: string, o?: { pid?: number|null }) => Promise<{ token: string|null }>, release: (token: string|null) => Promise<boolean> }}
+ * @param {{ serviceUrl: string, sprintId: string, fetch?: typeof fetch, log?: Function, waitLogMs?: number }} opts
+ * @returns {{ acquire: (sprintId: string, o?: { pid?: number|null }) => Promise<{ token: string }>, release: (token: string|null) => Promise<boolean> }}
  */
 export function createHttpDoltPushMutexClient(opts = {}) {
     const base = String(opts.serviceUrl || '').replace(/\/+$/, '');
@@ -55,6 +59,7 @@ export function createHttpDoltPushMutexClient(opts = {}) {
         throw new Error('createHttpDoltPushMutexClient requires a fetch implementation (Node >=18 global fetch or an injected one)');
     }
     const log = opts.log ?? (() => {});
+    const waitLogMs = opts.waitLogMs > 0 ? opts.waitLogMs : 60_000;
     const routeFor = (sprintId, action) =>
         `${base}/api/dolt-push-mutex/${encodeURIComponent(sprintId)}/${action}`;
 
@@ -75,8 +80,20 @@ export function createHttpDoltPushMutexClient(opts = {}) {
         async acquire(sprintId, o = {}) {
             const id = sprintId || boundSprintId;
             if (!id) throw new Error('[dolt-mutex] acquire requires a sprintId');
-            const payload = await postJson(routeFor(id, 'acquire'), { pid: o.pid ?? null });
-            return { token: payload.token ?? null, sprintId: payload.sprintId, expiresAt: payload.expiresAt };
+            const startedAt = Date.now();
+            const waitLog = setInterval(() => {
+                log(`[dolt-mutex] '${id}' still waiting for the dolt push mutex after ${Math.round((Date.now() - startedAt) / 1000)}s`);
+            }, waitLogMs);
+            waitLog.unref?.();
+            let payload;
+            try {
+                payload = await postJson(routeFor(id, 'acquire'), { pid: o.pid ?? null });
+            } finally {
+                clearInterval(waitLog);
+            }
+            if (payload?.error) throw new Error(`[dolt-mutex] ${payload.error}`);
+            if (!payload?.token) throw new Error(`[dolt-mutex] acquire for '${id}' returned no token`);
+            return { token: payload.token, sprintId: payload.sprintId, expiresAt: payload.expiresAt };
         },
         async release(token) {
             if (token == null) return true;
