@@ -20,7 +20,7 @@ function build(composeText) {
 }
 
 test('a NEVER_AUTO_GRANT refusal is logged as a failure, never ensured, and retried', async () => {
-    const refusal = '❌ Cannot auto-grant dangerous permissions: Bash(docker compose:*). Escalate to user.';
+    const refusal = '\u274c Cannot auto-grant dangerous permissions: Bash(docker compose:*). Escalate to user.';
     const { ensure, logs, calls } = build(refusal);
     await ensure('dev1');
     await ensure('dev1');
