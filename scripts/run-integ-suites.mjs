@@ -426,7 +426,9 @@ function runLane(files, concurrency) {
         '--test-reporter-destination=stdout',
         `--test-reporter=${pathToFileURL(reporterPath).href}`,
         '--test-reporter-destination=stdout',
-        ...files.map((f) => path.join(testDir, f)),
+        // resolve, not join: an argument on another Windows drive is absolute
+        // (path.relative cannot express it) and join would glue the two paths.
+        ...files.map((f) => path.resolve(testDir, f)),
       ],
       {
         cwd: pkgDir,
