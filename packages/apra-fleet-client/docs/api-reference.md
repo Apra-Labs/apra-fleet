@@ -543,7 +543,18 @@ local OAuth session to the member instead. `api_key` supports a
 #### `provisionVcsAuth(options: ProvisionVcsAuthOptions)`
 
 Calls `provision_vcs_auth` -- configures git-host auth (GitHub App token or
-PAT, Bitbucket API token, or Azure DevOps PAT) on a member. `provider`
+PAT, Bitbucket API token, or Azure DevOps PAT) on a member, so it can clone,
+push, create pull requests, dispatch workflows and re-run CI jobs. `git_access`
+applies to GitHub App mode only and decides which of these the token may do:
+
+- `read` (read: contents, metadata): clone and fetch only.
+- `push` (write: contents, workflows; read: metadata): clone and push, including workflow files; cannot create pull requests or dispatch workflows.
+- `push+pr` (write: contents, pull_requests, workflows, actions; read: metadata): clone, push, create pull requests, dispatch workflows and re-run CI jobs.
+- `admin` (write: contents, administration, actions, workflows; read: metadata): clone, push, change repository settings, dispatch workflows and re-run CI jobs; cannot create pull requests.
+- `issues` (write: issues, pull_requests, discussions; read: metadata): manage issues and discussions and create pull requests from existing branches; cannot clone private code, push or dispatch workflows.
+- `full` (write: contents, administration, issues, pull_requests, actions, discussions, workflows; read: metadata): all of the above.
+
+`provider`
 (`"github" | "bitbucket" | "azure-devops"`) is required; the rest are
 optional and provider-specific: `member_id`, `member_name`, `label`,
 `scope_url`, `github_mode` (`"github-app" | "pat"`), `token`, `git_access`,
