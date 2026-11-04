@@ -2358,6 +2358,9 @@ ${manualStopHint(pidsAfterStop)}
           console.error(`
 Error: ${conflict.message}
 `);
+          // The registrations are already rewritten: keep the restart notice
+          // pending (never shown inline on this exit) for the next verb.
+          recordAccessRestartNotice(registrationChanged && !memberMode, false);
           process.exitCode = 1;
           return;
         }
@@ -2420,6 +2423,10 @@ Error: install --force stopped the running apra-fleet server, but the service
 could not be registered/started, so the server is NOT running.
 ${restartHint}
 `);
+        // After register() (which may clear a stale notice): the registrations
+        // changed, so the restart notice must survive this exit. Not shown
+        // inline here, so it stays pending for the next status/start/update.
+        recordAccessRestartNotice(registrationChanged && !memberMode, false);
         process.exit(1);
       }
     }

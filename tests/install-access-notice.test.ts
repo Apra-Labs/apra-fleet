@@ -118,10 +118,8 @@ describe('restart-sessions access notice persisted by a detached install', () =>
     expect(noticePrints()).toBe(0);
   });
 
-  it('runInstall records the notice only for a changed, non-member registration', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'cli', 'install.ts'), 'utf8');
-    expect(src).toContain('recordAccessRestartNotice(registrationChanged && !memberMode,');
-  });
+  // runInstall's own recording (success, failed service start, foreign port
+  // holder) is covered behaviourally in tests/install-force.test.ts.
 
   it('the sandbox is the only place written', () => {
     recordAccessRestartNotice(true, false);
