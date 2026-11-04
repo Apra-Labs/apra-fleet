@@ -197,12 +197,14 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
       } catch (err) {
         // A thrown error carrying machine-readable detail (structuredContent,
         // e.g. E-CODE-INDEX-NOT-READY's retry_after_ms and build progress)
-        // becomes the same one-line isError text the SDK would produce, plus
-        // that detail as the result's structuredContent. Any other error is
-        // left to the SDK unchanged.
+        // becomes a one-line isError text that repeats it (toolText: a client
+        // may pass its model only the text of an error result), plus that
+        // detail as the result's structuredContent. Any other error is left to
+        // the SDK unchanged.
         const sc = err instanceof Error ? (err as { structuredContent?: unknown }).structuredContent : undefined;
         if (err instanceof Error && sc && typeof sc === 'object' && !Array.isArray(sc)) {
-          return { content: [{ type: 'text' as const, text: err.message }], isError: true, structuredContent: sc as Record<string, unknown> };
+          const toolText = (err as { toolText?: unknown }).toolText;
+          return { content: [{ type: 'text' as const, text: typeof toolText === 'string' ? toolText : err.message }], isError: true, structuredContent: sc as Record<string, unknown> };
         }
         throw err;
       }

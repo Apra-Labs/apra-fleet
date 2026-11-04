@@ -759,8 +759,8 @@ changes metadata without re-entering the secret.
 #### `codeReindex()` / `codeStatus()`
 
 Calls `code_reindex` / `code_status` -- index maintenance for the calling
-session's own repo (a member session's registered work folder, otherwise the
-fleet server's folder; neither takes arguments). `codeReindex()` starts a
+session's own repo (a member session's registered work folder, otherwise
+the first MCP client root (roots/list) inside a git repository with an origin remote, else the server working folder; neither takes arguments). `codeReindex()` starts a
 detached `gitnexus analyze`, captures its output to
 `<data>/code-index/<slug>/analyze.log`, and returns after the first tick; its
 `outcome` is `started`, `up-to-date`, `starting`, `already-running` or
@@ -787,6 +787,10 @@ folder whose index is `missing`, `interrupted` or `inconsistent` requests a
 background build automatically (unless `autoReindex.enabled` is false in the
 code-intelligence config.json) and fails with `E-CODE-INDEX-NOT-READY` saying
 so; an answer during which the index changed is discarded with the same error.
+That error's text ends with `[retry_after_ms=N retry_will_help=B build=X state=Y ...]`
+(plus `progress: phase=... elapsed_ms=... line_count=... last_line='...'` while an
+analyze runs), and the result's `structuredContent` holds the same fields. Wait
+`retry_after_ms` once, retry once, then fall back; 0 means retrying will not help.
 A `code_impact` / `code_context` answer whose resolved symbol is not the one
 requested carries `resolution_mismatch` (`{ requested, resolved: { name, id,
 filePath } }`) and `confidence: 'LOW'`, and an impact `risk` is moved to

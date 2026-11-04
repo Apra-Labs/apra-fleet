@@ -125,6 +125,8 @@ export interface AnalyzeStatus {
   failureCause?: AnalyzeFailureCause;
   /** meta.json lastCommit when the run finished (fleet's own record of the build). */
   indexedCommit?: string;
+  /** How long the last finished build of this folder took (estimates the wait for this one). */
+  previousBuildMs?: number;
 }
 
 export type NotStartedReason =
@@ -228,10 +230,10 @@ export const GITNEXUS_PACKAGE_SPEC = `gitnexus@>=${GITNEXUS_MIN_VERSION}`;
 // DB (parser output is still replayed from gitnexus's parse cache for
 // unchanged files, so it costs roughly 2x an incremental run, not a cold
 // build). gitnexus 1.6.12's incremental writeback -- in place and with
-// GITNEXUS_ATOMIC_INCREMENTAL=1 alike -- blanks the id, name and filePath of
-// thousands of symbol rows of files it did not change (reproduced: one run
-// after a one-line edit left 7774, resp. 9334, blank rows in an index a
-// fresh build had left with none). Lookups of those symbols answer "not
+// GITNEXUS_ATOMIC_INCREMENTAL=1 alike -- overwrites thousands of symbol rows of
+// files it did not change on a large repo (reproduced: one run after a one-line
+// edit left 7774, resp. 9334, blank rows, or 9287 rows duplicating another
+// row's id, in an index a fresh build had left with one row per id). Lookups of those symbols answer "not
 // found", and since every later incremental run keeps unchanged rows as they
 // are, the index never recovers on its own. A full rebuild also skips
 // gitnexus's "Already up to date" shortcut, so code_reindex can always
@@ -389,9 +391,11 @@ export function spawnAnalyze(repoPath: string, opts: { auto?: boolean } = {}): S
   try { closeSync(fd); } catch { /* the child holds its own copy */ }
 
   const startedIso = new Date().toISOString();
+  const previousBuildMs = lastBuildDurationMs(dir);
   const status: AnalyzeStatus = {
     repo: repoPath, pid: child.pid ?? null, started: startedIso, lockHeld: false,
     lastLine: '', lineCount: 0, phase: 'starting', result: null, exitCode: null,
+    ...(previousBuildMs !== null ? { previousBuildMs } : {}),
   };
   writeStatus(dir, status);
   state.set(repoPath, {
@@ -581,6 +585,39 @@ export function analyzeProgress(repoPath: string, now: number = Date.now()): Ana
       last_line: lines.length > 0 ? lines[lines.length - 1] : (status.lastLine ?? ''),
       line_count: Math.max(logLineCount(dir), status.lineCount ?? 0),
     };
+  } catch {
+    return null;
+  }
+}
+
+/** Duration of the last run that built this folder's index, read before a new run overwrites status.json. */
+function lastBuildDurationMs(dir: string): number | null {
+  const status = readStatusFile(dir);
+  if (!status) return null;
+  if (status.phase === 'done' && status.result === 'indexed' && status.finished) {
+    const ms = Date.parse(status.finished) - Date.parse(status.started);
+    if (Number.isFinite(ms) && ms > 0) return ms;
+  }
+  return typeof status.previousBuildMs === 'number' ? status.previousBuildMs : null;
+}
+
+const MIN_BUILD_WAIT_MS = 15_000;
+const MAX_BUILD_WAIT_MS = 600_000;
+
+/**
+ * How long the live build of `repo` should still take, from the folder's last
+ * finished build (bounded, with a margin); null when nothing is running or no
+ * earlier build is recorded.
+ */
+export function expectedBuildRemainingMs(repoPath: string, now: number = Date.now()): number | null {
+  try {
+    const status = readStatusFile(codeIndexDir(repoPath));
+    if (!status || status.phase === 'done' || typeof status.previousBuildMs !== 'number') return null;
+    if (typeof status.repo === 'string' && status.repo !== repoPath) return null;
+    const started = Date.parse(status.started);
+    const elapsed = Number.isFinite(started) ? Math.max(0, now - started) : 0;
+    const remaining = Math.round(status.previousBuildMs * 1.2) - elapsed;
+    return Math.min(MAX_BUILD_WAIT_MS, Math.max(MIN_BUILD_WAIT_MS, remaining));
   } catch {
     return null;
   }

@@ -120,10 +120,10 @@ the indexed commit.
 No `kb_*` tool takes a repo/scope argument. The KB a call reads/writes is the
 calling session's own: a member session resolves its registered work folder.
 Any other (FULL) session resolves from the MCP client's roots (`roots/list`):
-the first offered root that is a git repository with an origin remote wins.
-The fleet server's working folder is used only when the client offers no
-roots (no `roots` capability, an empty list, or no offered root names a folder
-on the server's host). Roots are fetched once per session, on its first
+the first offered root inside a git repository with an origin remote wins, and
+stands for that repository's top level. The fleet server's working folder is
+used when no root qualifies or the client offers none (no `roots` capability,
+an empty list, or no offered root names a folder on the server's host). Roots are fetched once per session, on its first
 `kb_*`/`code_*` call, and refetched after `notifications/roots/list_changed`;
 a member session never reads roots. A folder that cannot
 carry a KB identity is refused before the provider is reached
@@ -145,8 +145,9 @@ any of them (any value other than absent/undefined) MUST be refused with
 every removed key present and what replaces it. A FULL session's self is never
 the client's working directory (an HTTP server cannot see it), only an offered
 root or the server's folder. Its self-resolution errors name the missing piece:
-roots were offered but none is a git repository (`E-SELF-NOT-A-REPO`), roots
-were offered but none has an origin remote (`E-SELF-NO-REMOTE`), or the client
+roots were offered but neither they nor the server folder are in a git
+repository (`E-SELF-NOT-A-REPO`), roots were offered but neither they nor the
+server folder have an origin remote (`E-SELF-NO-REMOTE`), or the client
 offered no roots and the server folder is not a repository / has no origin
 (`E-SELF-NOT-A-REPO` / `E-SELF-NO-REMOTE`, naming that no roots were offered).
 The remediation names every fix: open the client in the intended repository,
@@ -462,15 +463,18 @@ pin the two (self) refusals; every `code_*` tool has a
 pinned to `gitnexus`, no index), and `code_query/refusal-intel-disabled` runs as
 the `CODE_OFF` member session (provider `none`).
 
-Every `E-CODE-INDEX-NOT-READY` error result keeps its one-line
-`CODE: problem Remediation: ...` text unchanged and adds machine-readable
-detail as the result's `structuredContent` (the error object's
-`structuredContent`, mapped by `wrapTool`; it survives the MCP boundary, where
-a plain thrown error keeps only its message):
+Every `E-CODE-INDEX-NOT-READY` error result carries machine-readable detail
+as the result's `structuredContent` (the error object's `structuredContent`,
+mapped by `wrapTool`; it survives the MCP boundary, where a plain thrown error
+keeps only its message). The same detail is repeated in the result's one-line
+text, after the `CODE: problem Remediation: ...` message, as
+`[retry_after_ms=N retry_will_help=B build=X state=Y ...]`, because an MCP
+client may pass its model only the text of an error result:
 
 - `retry_after_ms` (number, every state): how long to wait before ONE retry --
-  60000 while an analyze is live or was just requested for this call, 60000
-  after the scheduler's cooldown, 5000 when the index changed under the call,
+  while an analyze is live or was just requested for this call, what should
+  remain of the folder's last build time (15000 to 600000), or 180000 with no
+  earlier build; 60000 after the scheduler's cooldown, 5000 when the index changed under the call,
   and `0` when no build is running and none could be requested (no automatic
   build, builds paused or disabled, the server cannot build, a remote
   member's folder, provider `codebase-memory`).

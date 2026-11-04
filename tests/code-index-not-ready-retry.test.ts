@@ -15,8 +15,10 @@ import { fileURLToPath } from 'node:url';
 //     and analyze.log code_status reports;
 //   - the one-line 'E-CODE-INDEX-NOT-READY: problem Remediation: fix' message
 //     is unchanged;
-//   - through a real McpServer + Client pair the detail arrives as the error
-//     result's structuredContent;
+//   - while a build runs the wait comes from the folder's last build time;
+//   - through a real McpServer + Client pair the TEXT of the error result
+//     carries that detail, because a client may give its model nothing else
+//     (Claude Code does); structuredContent repeats it for programs;
 //   - the role prompts tell agents to wait once, retry once, then fall back,
 //     and never to poll code_status in a loop.
 //
@@ -43,6 +45,7 @@ import { addAgent } from '../src/services/registry.js';
 import { codeIndexDir } from '../src/tools/code-intelligence-reindex.js';
 import {
   CodeIntelError,
+  RETRY_AFTER_BUILDING_MS,
   codeIndexReadiness,
   ensureGitNexusIndexReady,
   indexChangedDuringCallError,
@@ -76,6 +79,15 @@ function stubLiveAnalyze(repo: string, lines: string[]): void {
     repo, pid: process.pid, started: new Date(Date.now() - 5000).toISOString(), lockHeld: false,
     lastLine: lines[lines.length - 1], lineCount: lines.length, phase: 'running', result: null, exitCode: null,
   }));
+}
+
+/** The folder's last build took `ms`: recorded on the live run's status.json as spawnAnalyze does. */
+function recordPreviousBuild(repo: string, ms: number | undefined, startedMsAgo: number): void {
+  const file = path.join(codeIndexDir(repo), 'status.json');
+  const status = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>;
+  status.previousBuildMs = ms;
+  status.started = new Date(Date.now() - startedMsAgo).toISOString();
+  fs.writeFileSync(file, JSON.stringify(status));
 }
 
 function data(err: CodeIntelError): Record<string, unknown> {
@@ -141,9 +153,27 @@ describe('E-CODE-INDEX-NOT-READY: retry_after_ms in every state, progress while 
     expect(progress.line_count).toBe(3);
   });
 
+  it('the wait for a live build is at least a realistic full rebuild, or what should remain of the last build', () => {
+    try {
+      expect(data(indexNotReadyError('gitnexus', repos.building, 'building')).retry_after_ms).toBe(RETRY_AFTER_BUILDING_MS);
+      expect(RETRY_AFTER_BUILDING_MS).toBeGreaterThanOrEqual(126_000);
+      recordPreviousBuild(repos.building, 200_000, 20_000);
+      const remaining = data(indexNotReadyError('gitnexus', repos.building, 'building')).retry_after_ms as number;
+      expect(remaining).toBeGreaterThan(200_000);
+      expect(remaining).toBeLessThanOrEqual(220_000);
+      // A small repo is not told to wait minutes, and an overrun still gets a positive wait.
+      recordPreviousBuild(repos.building, 4_000, 1_000);
+      expect(data(indexNotReadyError('gitnexus', repos.building, 'building')).retry_after_ms).toBe(15_000);
+      recordPreviousBuild(repos.building, 100_000, 500_000);
+      expect(data(indexNotReadyError('gitnexus', repos.building, 'building')).retry_after_ms).toBe(15_000);
+    } finally {
+      recordPreviousBuild(repos.building, undefined, 5_000);
+    }
+  });
+
   it('building: the message text is unchanged', () => {
     const err = indexNotReadyError('gitnexus', repos.building, 'building');
-    expect(err.message).toBe(`E-CODE-INDEX-NOT-READY: The gitnexus code index for '${repos.building}' is still being built. Remediation: Retry the same call in a minute or so (code_status shows the build progress).`);
+    expect(err.message).toBe(`E-CODE-INDEX-NOT-READY: The gitnexus code index for '${repos.building}' is still being built. Remediation: Retry the same call in a few minutes (code_status shows the build progress).`);
   });
 
   it('missing with a build requested: positive retry_after_ms, build requested, message unchanged', () => {
@@ -152,7 +182,7 @@ describe('E-CODE-INDEX-NOT-READY: retry_after_ms in every state, progress while 
     expect(sc.retry_after_ms as number).toBeGreaterThan(0);
     expect(sc.progress).toBeUndefined();
     const err = indexNotReadyError('gitnexus', repos.missing, 'missing', { started: true } as never);
-    expect(err.message).toBe(`E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${repos.missing}'. An index build was requested automatically. Remediation: Retry the same call in a minute or so (code_status shows the build progress).`);
+    expect(err.message).toBe(`E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${repos.missing}'. An index build was requested automatically. Remediation: Retry the same call in a few minutes (code_status shows the build progress).`);
   });
 
   it('missing with builds disabled or paused: retry_after_ms is 0 and retry_will_help false (retrying alone cannot help)', () => {
@@ -209,18 +239,47 @@ describe('E-CODE-INDEX-NOT-READY through a real MCP server and client', () => {
     return client;
   }
 
-  it('the error result keeps the one-line text and carries retry_after_ms (and progress while building) as structuredContent', async () => {
-    for (const [key, expectProgress] of [['building', true], ['missing', false]] as const) {
-      const result = await (await connectAs(key)).callTool({ name: 'code_query', arguments: { query: 'foo' } });
-      expect(result.isError, key).toBe(true);
-      const content = result.content as Array<{ type: string; text: string }>;
-      expect(content).toHaveLength(1);
-      expect(content[0].text, key).toMatch(ONE_LINE);
-      const sc = result.structuredContent as Record<string, unknown>;
-      expect(sc, key).toBeTruthy();
-      expect(typeof sc.retry_after_ms, key).toBe('number');
-      expect(sc.progress !== undefined, key).toBe(expectProgress);
-    }
+  async function errorText(key: string): Promise<{ text: string; result: Awaited<ReturnType<Client['callTool']>> }> {
+    const result = await (await connectAs(key)).callTool({ name: 'code_query', arguments: { query: 'foo' } });
+    expect(result.isError, key).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content, key).toHaveLength(1);
+    return { text: content[0].text, result };
+  }
+
+  it('the text a model receives names the wait, what to do, and the live build progress', async () => {
+    const { text } = await errorText('building');
+    expect(text).toMatch(ONE_LINE);
+    expect(text).toMatch(/\bretry_after_ms=\d{4,}\b/);
+    expect(text).toContain('retry_will_help=true');
+    expect(text).toContain('build=running');
+    expect(text).toContain('state=building');
+    expect(text).toContain('Wait retry_after_ms once, retry once, then fall back to text search');
+    expect(text).toMatch(/progress: phase=running elapsed_ms=\d+ line_count=3 last_line='Parsing files 31\/40'/);
+  });
+
+  it('the text for a requested build has the wait and no progress', async () => {
+    const { text } = await errorText('missing');
+    expect(text).toMatch(ONE_LINE);
+    expect(text).toMatch(/\bretry_after_ms=\d{4,}\b/);
+    expect(text).toContain('build=requested');
+    expect(text).toContain('heal=started');
+    expect(text).not.toContain('progress:');
+  });
+
+  it('the text says plainly when waiting will not help', async () => {
+    scheduleOutcome.value = { started: false, reason: 'disabled' };
+    const { text } = await errorText('missing');
+    expect(text).toContain('retry_after_ms=0');
+    expect(text).toContain('retry_will_help=false');
+    expect(text).toContain('Waiting and retrying will not help');
+  });
+
+  it('structuredContent holds the same values as the text', async () => {
+    const { text, result } = await errorText('building');
+    const sc = result.structuredContent as Record<string, unknown>;
+    expect(text).toContain(`retry_after_ms=${sc.retry_after_ms}`);
+    expect(sc.progress).toBeTruthy();
   });
 });
 

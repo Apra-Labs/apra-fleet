@@ -7,13 +7,13 @@
     "direction": "upstream"
   },
   "error": {
-    "message": "E-CODE-INDEX-NOT-READY: No gitnexus code index found for '<SCRATCH_REPO_CODE>'. An index build was requested automatically. Remediation: Retry the same call in a minute or so (code_status shows the build progress).",
+    "message": "E-CODE-INDEX-NOT-READY: No gitnexus code index found for '<SCRATCH_REPO_CODE>'. An index build was requested automatically. Remediation: Retry the same call in a few minutes (code_status shows the build progress). Wait retry_after_ms once, retry once, then fall back to text search; do not poll code_status in a loop. [retry_after_ms=180000 retry_will_help=true build=requested state=missing heal=started]",
     "thrown": true,
     "structured": {
       "code": "E-CODE-INDEX-NOT-READY",
       "provider": "gitnexus",
       "state": "missing",
-      "retry_after_ms": 60000,
+      "retry_after_ms": 180000,
       "retry_will_help": true,
       "build": "requested",
       "heal": "started"

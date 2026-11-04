@@ -114,34 +114,37 @@ repository with an origin, else the server's working folder;
   transport to the handler through an `AsyncLocalStorage` lane
   (`src/services/tool-scope.ts`), so handlers never receive it as a parameter.
 - **Full session** (no member identity): the MCP client's roots
-  (`roots/list`). The first offered root that is a git repository with an
-  origin remote wins -- for both `kb_*` and `code_*`, so one session never
-  scopes its kb and code tools to two different repositories. The fleet
-  server's own working folder (`process.cwd()`) is used only when the client
-  offers no roots (it lacks the `roots` capability, returns an empty list, or
-  none of its roots is a folder on the server's host -- a remote HTTP
-  client's roots are paths on its own machine). A server auto-started with an
+  (`roots/list`). The first offered root inside a git repository with an
+  origin remote wins, and stands for that repository's top level, so a client
+  opened in a subfolder is scoped to the repository -- for both `kb_*` and
+  `code_*`, so one session never scopes its kb and code tools to two different
+  repositories. The fleet server's own working folder (`process.cwd()`) is used
+  when no root qualifies, or the client offers none (it lacks the `roots`
+  capability, returns an empty list, or none of its roots is a folder on the
+  server's host -- a remote HTTP client's roots are paths on its own machine).
+  A server auto-started with an
   unrelated working folder (e.g. a system directory) therefore works from any
   client opened in a repository.
 
   Roots are fetched once per session, on its first `kb_*`/`code_*` call,
   through that call's own request (`src/services/session-roots.ts`), cached,
   and refetched after `notifications/roots/list_changed`. A failed or
-  timed-out fetch is logged and treated as "no roots" until the client reports
-  a change. The selection is made once per call (`resolveSelfSession()`,
+  timed-out fetch is logged and treated as "no roots" for a minute, then asked
+  again. The selection is made once per call (`resolveSelfSession()`,
   memoized in the tool-call context) and shared by kb (self) and code (self).
   A member session never reads roots.
 
   **Extension for `code_*` only** (not part of the base rule): a code index
-  needs no origin remote, so when roots are offered and NONE is a git
-  repository with an origin, `code_*` falls back to the first offered root
-  that is a git repository. `kb_*` calls in that session fail with
+  needs no origin remote, so when neither an offered root nor the server folder
+  is in a git repository with an origin, `code_*` falls back to the first
+  offered root in a git repository. `kb_*` calls in that session fail with
   `E-SELF-NO-REMOTE` naming that no offered root has an origin remote, so kb
   and code still never resolve to two different repositories.
 
   When neither works, the error names the missing piece: roots were offered
-  but none is a git repository (`E-SELF-NOT-A-REPO`), roots were offered but
-  none has an origin (`E-SELF-NO-REMOTE`, kb only), or the client offered no
+  but neither they nor the server folder are in a git repository
+  (`E-SELF-NOT-A-REPO`), roots were offered but neither they nor the server
+  folder have an origin (`E-SELF-NO-REMOTE`, kb only), or the client offered no
   roots and the server folder is not a git repository / has no origin
   ("This is a FULL session (no member identity) and the client offered no MCP
   roots, so its scope is the fleet server's own working folder, ...").
@@ -717,7 +720,7 @@ Build the initial graph through the fleet, not by hand: member init and the
 `code_reindex` tool run `npx gitnexus@>=1.6.5 analyze --index-only --force` (the
 pinned minimum version; `--index-only` keeps the run from writing into the
 target repo, and `--force` makes it a full rebuild: gitnexus 1.6.12's
-incremental analyze can blank thousands of unchanged symbol rows, which then
+incremental analyze can overwrite thousands of unchanged symbol rows, which then
 answer "not found"). Do not run a plain `gitnexus analyze` in a target repo.
 
 Verify by calling `context` with a symbol name in Claude Code.

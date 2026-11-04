@@ -28,7 +28,11 @@ The `E-CODE-INDEX-NOT-READY` error result carries `structuredContent`:
 `retry_after_ms` (how long to wait before one retry; 0 when no build is
 running or requested), `retry_will_help` (false when waiting cannot change the
 answer), `build` and, while an analyze runs, `progress`. The tool wrapper turns
-this into an `isError` result. Role prompts instruct callers to wait once,
+this into an `isError` result and repeats the detail in its text, because a
+client may pass its model only the text of an error result (Claude Code does).
+While a build runs, `retry_after_ms` is what should remain of the folder's last
+build time, or 180 s with no earlier build (a full rebuild took 126-261 s on a
+repo of about 43000 graph nodes). Role prompts instruct callers to wait once,
 retry once, then fall back to ordinary file reads -- never to poll
 `code_status` in a loop.
 
@@ -38,7 +42,11 @@ The analyzer's incremental update can leave an index that answers "not found"
 for symbols that exist. To avoid this, every analyze is run as a full rebuild
 (`--force`), and a not-found answer from an index judged corrupt is flagged as
 such rather than presented as a genuine absence, so callers reindex instead of
-concluding the symbol is missing.
+concluding the symbol is missing. The check is that node ids are unique: a
+healthy index has one row per id, and one incremental run on a repo of about
+43000 nodes left 34011 distinct ids (generated repos of up to 9201 nodes did not
+reproduce it). `tests/code-index-corrupt-real-gitnexus.test.ts` proves this
+against a real index, nightly.
 
 ## indexedCommit
 
