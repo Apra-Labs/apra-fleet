@@ -35,7 +35,7 @@ import {
   writeMemberInstallMarker, clearMemberInstallMarker, recordFullInstallPort, FORCE_STOP_FULL_INSTALL_FLAG,
 } from './install-guard.js';
 import { detectRunningFleetSe, fleetSeRefusalText, fleetSeRerunArgs, realFleetSeProbes, IGNORE_RUNNING_SPRINTS_FLAG, type FleetSeProbes } from './fleet-se-guard.js';
-import { writeServiceNotice, clearServiceNoticeContaining, SERVICE_NOTICE_PATH } from '../services/service-notice.js';
+import { writeServiceNotice, appendServiceNotice, clearServiceNoticeContaining, SERVICE_NOTICE_PATH } from '../services/service-notice.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
 import { isPidAlive } from '../utils/process-utils.js';
 import { codeIntelPathWarning } from '../utils/find-on-path.js';
@@ -1310,7 +1310,8 @@ export const ACCESS_RESTART_NOTE = '[!] Restart every open LLM CLI session (Clau
  */
 export function recordAccessRestartNotice(changed: boolean, shownInline: boolean, file: string = SERVICE_NOTICE_PATH): void {
   if (!changed) return;
-  writeServiceNotice(ACCESS_RESTART_NOTE, file, new Date(), shownInline);
+  // Append, never overwrite: registration may have left unshown legacy-task guidance.
+  appendServiceNotice(ACCESS_RESTART_NOTE, file, new Date(), shownInline);
 }
 
 export async function runInstall(args: string[]): Promise<void> {

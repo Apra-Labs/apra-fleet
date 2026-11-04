@@ -31,7 +31,7 @@ vi.mock('../src/cli/install.js', async (importOriginal) => ({
 }));
 
 import { ACCESS_RESTART_NOTE, recordAccessRestartNotice } from '../src/cli/install.js';
-import { SERVICE_NOTICE_PATH } from '../src/services/service-notice.js';
+import { SERVICE_NOTICE_PATH, writeServiceNotice } from '../src/services/service-notice.js';
 import { runStatus } from '../src/cli/status.js';
 import { runStart } from '../src/cli/start.js';
 import { runUpdate } from '../src/cli/update.js';
@@ -93,6 +93,34 @@ describe('restart-sessions access notice persisted by a detached install', () =>
     recordAccessRestartNotice(true, true);
     for (const v of ['status', 'start', 'update'] as const) await runVerb(v);
     expect(noticePrints()).toBe(0);
+  });
+
+  it('keeps a pending unshown legacy-task notice: both texts print once', async () => {
+    const LEGACY = 'LEGACY-TASK-GUIDANCE fix the elevated task by hand';
+    writeServiceNotice(LEGACY);
+    recordAccessRestartNotice(true, false);
+    await runVerb('status');
+    const printed = errSpy.mock.calls.map(c => String(c[0])).filter(s => s.includes(ACCESS_RESTART_NOTE));
+    expect(printed).toHaveLength(1);
+    expect(printed[0]).toContain(LEGACY);
+    await runVerb('start');
+    await runVerb('update');
+    expect(noticePrints()).toBe(1);
+  });
+
+  it('an inline-shown access note does not clobber or re-add to a pending notice', async () => {
+    const LEGACY = 'LEGACY-TASK-GUIDANCE fix the elevated task by hand';
+    writeServiceNotice(LEGACY);
+    recordAccessRestartNotice(true, true);
+    await runVerb('status');
+    const printed = errSpy.mock.calls.map(c => String(c[0]));
+    expect(printed.some(s => s.includes(LEGACY))).toBe(true);
+    expect(noticePrints()).toBe(0);
+  });
+
+  it('runInstall records the notice only for a changed, non-member registration', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'cli', 'install.ts'), 'utf8');
+    expect(src).toContain('recordAccessRestartNotice(registrationChanged && !memberMode,');
   });
 
   it('the sandbox is the only place written', () => {
