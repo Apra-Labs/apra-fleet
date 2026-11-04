@@ -405,8 +405,11 @@ function setApiKeyInProfiles(envVarName: string, value: string): void {
     // single-quoted literal.
     const script = `[Environment]::SetEnvironmentVariable(${escapePowerShellArg(envVarName)}, ${escapePowerShellArg(value)}, 'User')`;
     const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    // Resolve outside the try: the resolver error carries no secret and a
+    // missing PowerShell must not be masked by the generic status message.
+    const powershellExe = windowsExecutable('powershell.exe');
     try {
-      execFileSync(windowsExecutable('powershell.exe'), ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { stdio: 'pipe', windowsHide: true });
+      execFileSync(powershellExe, ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { stdio: 'pipe', windowsHide: true });
     } catch (err: any) {
       // Node's error message embeds the full command line (and PowerShell's
       // stderr can echo the script), both of which carry the key -- never
