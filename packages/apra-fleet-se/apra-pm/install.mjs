@@ -18,6 +18,10 @@ import { spawnSync } from 'node:child_process';
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const HOME = os.homedir();
 
+// Beads npm package to install. Must equal BEADS_PACKAGE in src/cli/beads-pin.ts.
+// This installer is plain build-free Node and cannot import the TS module directly.
+const BEADS_PACKAGE = '@beads/bd@1.3.0';
+
 // --- provider config -------------------------------------------------------
 // Each provider gets a config dir; the skill lands in <configDir>/skills/pm,
 // the agents in <configDir>/agents, and permissions merge into settings.json.
@@ -763,9 +767,9 @@ function main() {
   const bdCheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true, windowsHide: true });
   if (bdCheck.error || bdCheck.status !== 0) {
     console.log('  beads (bd) not found -- installing via npm...');
-    const bdInstall = spawnSync('npm', ['install', '-g', '@beads/bd@1.1.2'], { encoding: 'utf-8', shell: true, stdio: 'inherit', windowsHide: true });
+    const bdInstall = spawnSync('npm', ['install', '-g', BEADS_PACKAGE], { encoding: 'utf-8', shell: true, stdio: 'inherit', windowsHide: true });
     if (bdInstall.error || bdInstall.status !== 0) {
-      console.error('  [!] beads install failed. Run manually:  npm install -g @beads/bd@1.1.2');
+      console.error(`  [!] beads install failed. Run manually:  npm install -g ${BEADS_PACKAGE}`);
     } else {
       const bdRecheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true, windowsHide: true });
       console.log(`  beads OK: ${bdRecheck.stdout.trim()}`);
