@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6ecdfda08a76fc206721e855d72cf94b16f5f011",
     "branch": "main",
-    "entry_count": 122
+    "entry_count": 123
   },
   "entries": [
     {
@@ -751,6 +751,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.727Z"
+    },
+    {
+      "id": "4bbf15d9-821e-460f-aea3-10d749f9320b",
+      "type": "knowledge",
+      "title": "The pending service notice is a single slot: a later writeServiceNotice replaces an earlier one",
+      "summary": "src/services/service-notice.ts stores one notice per file and writeServiceNotice overwrites it, so two writers in one install (legacy-task guidance from WindowsServiceManager.register and the access restart note from install.ts) cannot both survive.",
+      "symbols": [
+        "writeServiceNotice",
+        "takePendingServiceNotice",
+        "recordAccessRestartNotice",
+        "reportLegacy"
+      ],
+      "source_files": [
+        "src/services/service-notice.ts",
+        "src/cli/install.ts",
+        "src/services/service-manager/windows.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T07:44:46.404Z",
+      "source_file_hashes": {
+        "src/cli/install.ts": "f2318e7720dda708523636118beb3efc6827a703",
+        "src/services/service-manager/windows.ts": "73148adab209e6031f0e0c050fb1f9e45bd3e219",
+        "src/services/service-notice.ts": "50ca5f5a7c11291cb3d047f8135abe8fc15a0778"
+      }
     },
     {
       "id": "4e315af5-d8ab-460e-850a-36d1d38ce19a",
