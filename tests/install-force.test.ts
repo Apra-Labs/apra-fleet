@@ -1312,8 +1312,7 @@ describe('access restart notice survives the early install exits', () => {
       const c = cmd.toString();
       if (c === 'pgrep -x apra-fleet') {
         if (serviceStopped) throw Object.assign(new Error('no match'), { status: 1 });
-        return '5678
-' as any;
+        return '5678\n' as any;
       }
       const exe = exeLookupResult(c);
       if (exe !== null) return exe as any;
@@ -1328,8 +1327,7 @@ describe('access restart notice survives the early install exits', () => {
       isInstalled: vi.fn().mockResolvedValue(true),
     }, ['--skill', 'none', '--force']);
     expect(process.exit).toHaveBeenCalledWith(1);
-    expect(lines.join('
-')).toContain('the server is NOT running');
+    expect(lines.join('\n')).toContain('the server is NOT running');
     const n = pendingNotice();
     expect(n.text).toContain(ACCESS_RESTART_NOTE);
     expect(n.shownAt).toBeUndefined();
