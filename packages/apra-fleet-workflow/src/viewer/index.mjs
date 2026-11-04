@@ -1009,6 +1009,8 @@ export { HTML_TEMPLATE };
  * @param {import('../workflow/index.mjs').FleetWorkflow} workflow
  * @param {Object} opts - Options object
  * @param {number} [opts.port=8080] - HTTP server port
+ * @param {string} [opts.host='127.0.0.1'] - Interface to bind. Loopback by default; pass '0.0.0.0' (or a
+ *   specific address) to expose the dashboard off-box -- an explicit opt-in.
  * @param {string} [opts.runId] - Stable per-run identifier (generated if not provided)
  * @param {string} [opts.name] - Workflow display name
  * @param {string} [opts.debouncedStatePath] - Path to write state JSON (uses default if not provided)
@@ -1023,6 +1025,7 @@ export { HTML_TEMPLATE };
  */
 export function createDashboardViewer(workflow, opts = {}) {
     const port = (typeof opts.port === 'number') ? opts.port : 8080;
+    const host = (typeof opts.host === 'string' && opts.host) ? opts.host : '127.0.0.1';
     const dashboardExtensions = opts.dashboardExtensions || [];
 
     // apra-fleet-eft.2.3 (renamed under eft.37.1): stable per-run id, NOT an
@@ -1649,8 +1652,10 @@ export function createDashboardViewer(workflow, opts = {}) {
         }
     });
 
-    server.listen(port, () => {
-        console.log(`[Viewer] Workflow Dashboard live at http://localhost:${server.address().port}`);
+    server.listen(port, host, () => {
+        const bound = server.address();
+        const shown = (bound.address === '0.0.0.0' || bound.address === '::') ? '127.0.0.1' : bound.address;
+        console.log(`[Viewer] Workflow Dashboard live at http://${shown}:${bound.port}`);
     });
 
     workflow.on('end', () => {
