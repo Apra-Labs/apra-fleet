@@ -35,7 +35,7 @@ import {
   writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG,
 } from './install-guard.js';
 import { detectRunningFleetSe, fleetSeRefusalText, realFleetSeProbes, IGNORE_RUNNING_SPRINTS_FLAG, type FleetSeProbes } from './fleet-se-guard.js';
-import { writeServiceNotice, clearServiceNoticeContaining } from '../services/service-notice.js';
+import { writeServiceNotice, clearServiceNoticeContaining, SERVICE_NOTICE_PATH } from '../services/service-notice.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
 import { isPidAlive } from '../utils/process-utils.js';
 import { codeIntelPathWarning } from '../utils/find-on-path.js';
@@ -1282,6 +1282,20 @@ export function resolveMemberInstallPort(
   return { port: env ?? recordedPort ?? BUILTIN_DEFAULT_PORT, explicit: false };
 }
 
+/** Restart-sessions text shown after an install that changed an MCP registration (ASCII only). */
+export const ACCESS_RESTART_NOTE = '[!] Restart every open LLM CLI session (Claude Code, Codex, ...): sessions started before this install keep their old MCP registration without the access secret, and the server refuses them (Claude Code shows "Dynamic Client Registration rejected (HTTP 404)").';
+
+/**
+ * Persist ACCESS_RESTART_NOTE as a pending service notice when an install
+ * changed a (non-member) registration. `shownInline` (stdout is a console)
+ * marks it already shown, so an interactive install does not repeat it on the
+ * next service verb; a detached install (apra-fleet update) leaves it pending.
+ */
+export function recordAccessRestartNotice(changed: boolean, shownInline: boolean, file: string = SERVICE_NOTICE_PATH): void {
+  if (!changed) return;
+  writeServiceNotice(ACCESS_RESTART_NOTE, file, new Date(), shownInline);
+}
+
 export async function runInstall(args: string[]): Promise<void> {
   // --help / -h guard - must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {
@@ -2403,9 +2417,11 @@ ${restartHint}
     ? MEMBER_INSTALL_NEXT_STEP
     : llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force && !memberMode ? `\nRestart ${clientName} to reload the MCP server.` : '';
-  const accessNote = registrationChanged && !memberMode
-    ? '\n[!] Restart every open LLM CLI session (Claude Code, Codex, ...): sessions started before this install keep their old MCP registration without the access secret, and the server refuses them (Claude Code shows "Dynamic Client Registration rejected (HTTP 404)").'
-    : '';
+  const accessNote = registrationChanged && !memberMode ? `
+${ACCESS_RESTART_NOTE}` : '';
+  // apra-fleet update runs install detached with stdio ignored, so the note above
+  // never reaches that user: persist it for the next status/start/update.
+  recordAccessRestartNotice(registrationChanged && !memberMode, Boolean(process.stdout.isTTY));
   const settingsLine = memberMode ? '' : `\n  Settings:    ${paths.settingsFile}`;
   const serviceState = serviceHealthy === true ? 'registered and running' : serviceHealthy === false ? 'registered, but NOT answering /health (see the warning above)' : 'registered (health not checked)';
   const claudeModLine = claudeModResult
