@@ -92,6 +92,11 @@ const CASES = [
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, content: `${GOOD_CAPTURE.summary} Also true.` }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, symbols: [], summary: 'The budget is read at src/real.ts:42 during boot.' }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, symbols: [], summary: 'The budget is read on line 42 of the boot file.' }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, symbols: [], summary: 'The budget is read at kb.mjs:130 during boot.' }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, symbols: [], summary: 'The budget is read at C:\\src\\boot.cs:7 during boot.' }] }],
+    // hostname:port and URL authorities are not line references.
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, trigger: 'env-quirk', symbols: [], summary: 'npm install behind the corporate proxy fails until registry.npmjs.org:443 is allowlisted.' }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, trigger: 'env-quirk', symbols: [], summary: 'The health probe calls https://ci.example.dev:8080/health and 10.0.0.5:5432 before boot.' }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary: 'The budget is read at src/real.ts:42 in realSymbol.' }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary: 'The token is passed as {{vault.API_KEY}} in the deploy step.' }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary: 'We found the retry budget is read once at startup.' }] }],

@@ -35,6 +35,17 @@ function refusedBy(capture, rule) {
 }
 
 describe('passing captures', () => {
+    test('an env-quirk naming a hostname:port and a URL with no symbols is not a line reference', () => {
+        for (const summary of [
+            'npm install behind the corporate proxy fails until registry.npmjs.org:443 is allowlisted.',
+            'The health probe calls https://ci.example.dev:8080/health and 10.0.0.5:5432 before boot.',
+        ]) {
+            const { captures, refused } = one('doer', { ...GOOD, trigger: 'env-quirk', symbols: [], summary });
+            assert.deepEqual(refused, [], summary);
+            assert.equal(captures.length, 1);
+        }
+    });
+
     test('a capture with no content is forwarded with trigger and no content key', () => {
         const { captures, refused } = one('doer', GOOD);
         assert.deepEqual(refused, []);
@@ -116,6 +127,10 @@ describe('every refusal rule', () => {
     });
     test('a path:digits reference with no symbol named', () => {
         refusedBy({ ...GOOD, symbols: [], summary: 'The budget is read at src/retry.ts:42 during boot.' }, 'line-number-only');
+    });
+    test('a bare source file name:digits or a Windows path:digits with no symbol named', () => {
+        refusedBy({ ...GOOD, symbols: [], summary: 'The budget is read at kb.mjs:130 during boot.' }, 'line-number-only');
+        refusedBy({ ...GOOD, symbols: [], summary: 'The budget is read at C:\\src\\boot.cs:7 during boot.' }, 'line-number-only');
     });
     test('the phrase "line N" with no symbol named', () => {
         refusedBy({ ...GOOD, symbols: undefined, summary: 'The budget is read on line 42 of the boot file.' }, 'line-number-only');

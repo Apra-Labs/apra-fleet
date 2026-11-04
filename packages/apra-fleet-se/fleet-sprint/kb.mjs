@@ -126,8 +126,12 @@ const KB_PLACEHOLDER_RE = new RegExp('\\{\\{\\s*[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z
 // (us-east-1, my.cnf, C:\Users\me) is not a word here.
 const KB_FIRST_PERSON_RE = /(?<![\w/\\.-])(?:me|my|we|our|us)(?![\w/\\-]|\.\w)/i;
 const KB_FIRST_PERSON_I_RE = /(?<![\w/\\.-])I(?![\w/\\-]|\.\w)/;
-// A line-number reference: a path:digits token or the phrase "line N".
-const KB_LINE_REF_RE = /[\w.-]+\.[A-Za-z][A-Za-z0-9]*:\d+|\bline\s+\d+\b/i;
+// A line-number reference: a path:digits token or the phrase "line N". A
+// path:digits token is either a path with a separator (src/a.ts:42,
+// C:\src\a.cs:7) or a bare file name with a source-like extension
+// (kb.mjs:130). A hostname:port (registry.npmjs.org:443) or a URL authority
+// (https://host.dev:8080) is neither, so it is not a line reference.
+const KB_LINE_REF_RE = /(?<![\w.\/\\:-])(?:[A-Za-z]:)?(?:[\w.-]*[\/\\])+[\w.-]*\.[A-Za-z]\w*:\d+|(?<![\w.\/\\:-])[\w-]+(?:\.[\w-]+)*\.(?:[cmt]?[jt]sx?|py|rb|go|rs|java|kts?|scala|c|h|cc|cpp|cxx|hpp|hh|cs|fs|swift|mm?|php|pl|lua|sh|bash|zsh|ps1|psm1|bat|cmd|sql|vue|svelte|html?|s?css|less|jsonc?|ya?ml|toml|ini|xml|md|txt|gradle|cmake|mk|proto|graphql|tf|dart|exs?|erl|hs|ml|clj|r|jl|zig):\d+|\bline\s+\d+\b/i;
 // The labelled sections a failed-attempt capture's content must carry.
 const KB_CAUSE_SECTION_RE = /(?:^|\n)[ \t>*#-]*Cause[ \t*]*(?::|\n|$)/i;
 const KB_RULE_FIX_SECTION_RE = /(?:^|\n)[ \t>*#-]*(?:Rule\/Fix|Rule|Fix)[ \t*]*(?::|\n|$)/i;
