@@ -309,6 +309,22 @@ function assertRefusedGate(parsed, ctx) {
     : `expected refused to be exactly [${gateId}], got ${JSON.stringify(refused)}`;
 }
 
+function assertDiscardedRich(parsed, ctx) {
+  const liveId = ctx.ids.get('RICH')?.live;
+  return Array.isArray(parsed?.discarded) && parsed.discarded.length === 1 && parsed.discarded[0] === liveId
+    ? null
+    : `expected discarded to be exactly [${liveId}], got ${JSON.stringify(parsed?.discarded)}`;
+}
+
+// A schema-valid response that skipped the id, or changed nothing, would pass.
+function assertEnrichedFoo(parsed, ctx) {
+  const fooId = ctx.ids.get('FOO')?.live;
+  if (!Array.isArray(parsed?.enriched) || parsed.enriched.length !== 1 || parsed.enriched[0] !== fooId) {
+    return `expected enriched to be exactly [${fooId}], got ${JSON.stringify(parsed?.enriched)}`;
+  }
+  return parsed?.committed === true ? null : `expected committed === true, got ${JSON.stringify(parsed?.committed)}`;
+}
+
 function assertConfidenceClamped(parsed) {
   return parsed?.confidence_clamped === true
     ? null
@@ -347,6 +363,7 @@ function assertDirectiveQuarantined(parsed, ctx) {
  *   tool / case  -- locate memory-contract/v1/fixtures/<tool>/<case>.json
  *   captureId    -- name the id this step's live response mints, for later steps
  *   derive       -- { requestField: 'CAPTURED_NAME' | ['CAPTURED_NAME', ...] }, resolved from live ids
+ *   deriveItemIds -- { requestField: 'CAPTURED_NAME' }, sets the id of every item of an array-of-objects field
  *   setup        -- provider-executed preconditions, applied before dispatch
  *   assertParsed -- extra live evidence check (response-field refusals etc.)
  */
@@ -600,6 +617,21 @@ export const SCENARIO = [
   { tool: 'kb_promote', case: 'setup-second-promote-for-retire-refused', derive: { id: 'GATE' } },
   { tool: 'kb_capture', case: 'refusal-retire-needs-kb-maintainer', derive: { supersedes: 'GATE' }, assertParsed: assertRefusedGate },
   { tool: 'kb_invalidate', case: 'refusal-retire-needs-kb-maintainer', derive: { ids: ['GATE'] }, assertParsed: assertRefusedGate },
+  // content is optional, and a capture may carry a trigger and retrieval aids.
+  {
+    tool: 'kb_capture',
+    case: 'happy-no-content',
+    setup: [
+      { op: 'write', repo: 'A', rel: 'src/rich-fields.ts', contents: 'export const richFields = 1;\n' },
+    ],
+  },
+  { tool: 'kb_capture', case: 'happy-trigger-and-cues', captureId: 'RICH' },
+  // reason goes with ids (stored as the retirement note), and is refused with files.
+  { tool: 'kb_invalidate', case: 'happy-ids-with-reason', derive: { ids: ['RICH'] }, assertParsed: assertDiscardedRich },
+  { tool: 'kb_invalidate', case: 'refusal-reason-needs-ids' },
+  // The maintainer's backfill: refused without the grant, applied with it.
+  { tool: 'kb_bible_commit', case: 'refusal-enrich-needs-kb-maintainer', deriveItemIds: { enrich: 'FOO' } },
+  { tool: 'kb_bible_commit', case: 'happy-enrich', deriveItemIds: { enrich: 'FOO' }, assertParsed: assertEnrichedFoo },
 ];
 
 // ---------------------------------------------------------------------------
@@ -999,6 +1031,12 @@ export async function runRoundTrip(provider, rosterTools) {
         else live.push(known.live);
       }
       if (live.length === names.length) request[field] = Array.isArray(nameOrNames) ? live : live[0];
+    }
+    // The same, for a field holding objects: each item's own id is the live one.
+    for (const [field, name] of Object.entries(step.deriveItemIds ?? {})) {
+      const known = ids.get(name);
+      if (!known) fail(`deriveItemIds needs the id captured as ${name}, which no earlier step produced`);
+      else request[field] = request[field].map((item) => ({ ...item, id: known.live }));
     }
     const validateRequest = validatorFor(step.tool, 'request');
     record.requestValid = validateRequest(request);

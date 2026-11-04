@@ -10,6 +10,9 @@
   },
   "errors": [
     {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-INVALIDATE-REASON-NEEDS-IDS"
+    },
+    {
       "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-SCOPE-KEY-REMOVED"
     },
     {

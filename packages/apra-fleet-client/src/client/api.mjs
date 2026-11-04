@@ -759,6 +759,11 @@
  * @property {string} baseBranch - The target base branch, written to provenance.branch.
  * @property {string} baseCommit - The base commit the entries were verified against,
  *   written to provenance.commit.
+ * @property {Array<{id: string, content?: string, recall_cues?: string[], error_signatures?: string[]}>} [enrich] -
+ *   Maintainer backfill: sets those fields on a CONFIRMED entry in the bible (or merged by
+ *   this call) and in the KB row; nothing else in the entry moves. Listed in the result's
+ *   enriched. Skips use reason enrich_invalid, not_in_bible or not_confirmed_or_unknown.
+ *   A member session without the kb_maintainer grant is refused (E-KB-MAINTAINER-REQUIRED).
  * @property {string[]} [demoted_ids] - Ids demoted this round (kb_demote). An id whose
  *   local row carries a demoted_at and is now below CONFIRMED is REMOVED from entries and
  *   recorded as an explicit tombstone {id, at, reason} in the bible's optional top-level

@@ -86,7 +86,9 @@
                       "not_confirmed_or_unknown",
                       "no_source_files",
                       "basis_mismatch",
-                      "not_demoted_or_unknown"
+                      "not_demoted_or_unknown",
+                      "enrich_invalid",
+                      "not_in_bible"
                     ]
                   }
                 },
@@ -125,6 +127,12 @@
             },
             "backfilled": {
               "type": "number"
+            },
+            "enriched": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             },
             "committed": {
               "type": "boolean"

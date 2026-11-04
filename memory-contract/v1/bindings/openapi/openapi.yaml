@@ -37,6 +37,11 @@
   },
   "x-error-catalog": [
     {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-INVALIDATE-REASON-NEEDS-IDS",
+      "title": "kb_invalidate carries reason together with files. A reason is stored as the retirement note of an entry named by id; a file-based invalidation names no entry to attach it to. Nothing is changed.",
+      "status": 400
+    },
+    {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-QUERY-NO-SELECTOR",
       "title": "No query selector was supplied: none of query, tag or flagged_only is present, so there is nothing to search on.",
       "status": 400
@@ -128,7 +133,7 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-MAINTAINER-REQUIRED",
-      "title": "kb_import in a MEMBER session that does not carry the kb_maintainer grant either named an explicit path other than the session's own .fleet/kb-canonical.json, or (without path / with its own path) found no committed copy of its own bible at HEAD. An explicit-path import keeps the bible's confidence, which is equivalent in power to kb_promote, so it needs the same grant; the own bible is trusted only as committed, never as the member-writable work-tree file. Nothing is imported.",
+      "title": "kb_bible_commit enrich in a MEMBER session without the kb_maintainer grant, refused before any KB is opened; or kb_import in a MEMBER session that does not carry the kb_maintainer grant either named an explicit path other than the session's own .fleet/kb-canonical.json, or (without path / with its own path) found no committed copy of its own bible at HEAD. An explicit-path import keeps the bible's confidence, which is equivalent in power to kb_promote, so it needs the same grant; the own bible is trusted only as committed, never as the member-writable work-tree file. Nothing is imported.",
       "status": 403
     },
     {

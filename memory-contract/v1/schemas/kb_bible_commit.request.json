@@ -25,6 +25,46 @@
           },
           "description": "Ids demoted this round (kb_demote). Each must name a local entry that HAS a demoted_at and is now below CONFIRMED; any other id is skipped and reported in skipped with reason not_demoted_or_unknown. An admitted id is REMOVED from entries and recorded as an explicit tombstone {id, at, reason: \"demoted\"} in the bible demotions array, so other clones can apply the demotion instead of inferring it from an absence. Independently, every call does the same for each bible entry this KB holds as demoted, unless that bible entry was promoted after the local demotion (another clone re-promoted it). Re-admitting the same id through ids (a re-promotion) clears its tombstone."
         },
+        "enrich": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "A CONFIRMED entry already in the bible, or merged by this same call through ids."
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000,
+                "description": "The entry's new lesson body. Must differ from its summary."
+              },
+              "recall_cues": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Replaces the entry's recall_cues."
+              },
+              "error_signatures": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Replaces the entry's error_signatures."
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Maintainer backfill: set content, recall_cues and error_signatures on existing CONFIRMED entries, in this KB and in the bible, and commit. Every other field of the entry stays as it is and there is no basis re-admission. An item naming no field, whose content equals the summary or is over the cap, or holding a secret-shaped string is skipped with reason enrich_invalid; an id not in the bible after this call's merge with reason not_in_bible; a row below CONFIRMED with reason not_confirmed_or_unknown. Refused with E-KB-MAINTAINER-REQUIRED in a member session without the kb_maintainer grant, before anything is opened."
+        },
         "baseBranch": {
           "type": "string",
           "minLength": 1,

@@ -255,13 +255,15 @@ const KB_RESPONSE_BODIES = {
   // tombstoned in the bible's demotions array. OPTIONAL so bibles/fixtures
   // recorded before tombstones existed still validate; the handler always emits
   // it. entry_count counts ENTRIES only -- a tombstone is not an entry.
+  // enriched names the ids whose rich fields this call set; optional for the same
+  // reason, and skipped gains enrich_invalid and not_in_bible for the enrich half.
   kb_bible_commit: z.object({
     path: z.string(),
     merged: z.array(z.string()),
     demoted: z.array(z.string()).optional(),
     skipped: z.array(z.object({
       id: z.string(),
-      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown']),
+      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown', 'enrich_invalid', 'not_in_bible']),
     })),
     removed: z.array(z.object({
       id: z.string(),
@@ -269,6 +271,7 @@ const KB_RESPONSE_BODIES = {
     })),
     entry_count: z.number(),
     backfilled: z.number(),
+    enriched: z.array(z.string()).optional(),
     committed: z.boolean(),
   }),
   // F-9: kb_stats spreads ProviderStats (whose supported/reason/coverage are

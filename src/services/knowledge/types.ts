@@ -29,6 +29,15 @@ export type CaptureSource = 'session' | 'review' | 'harvest' | 'promotion' | 'im
 export type AudnDecision = 'add' | 'update' | 'flagged' | 'none';
 
 /**
+ * Where the audit notes the KB itself appends to an entry's stored content begin
+ * (promote, demote, capture-time confidence clamp, feedback, contradiction
+ * resolution). They are this clone's history, not the lesson, and every promoted
+ * entry carries one: cut before bible export, kept when the lesson is rewritten.
+ * Each note starts on a new line with one of these bracketed markers.
+ */
+export const KB_AUDIT_NOTE_START = /\n\[(?:Promoted[ :]|Demoted: |confidence clamped: |feedback \d|reconciled \d)/;
+
+/**
  * What kind of event produced a captured lesson (kb_capture `trigger`).
  * Stored for audit only: the server never requires it -- the capture-time
  * refusal of a trigger-less capture lives in the sprint engine.

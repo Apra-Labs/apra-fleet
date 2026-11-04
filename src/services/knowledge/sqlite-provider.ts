@@ -24,7 +24,7 @@ import {
 import { computeFileHashBatch } from './file-hash.js';
 import { validateFilePaths } from './path-validation.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
-import { CAPTURE_TRIGGERS, KbCaptureRejected, type CaptureTrigger, type DiscardResult, type RetireOptions } from './types.js';
+import { CAPTURE_TRIGGERS, KB_AUDIT_NOTE_START, KbCaptureRejected, type CaptureTrigger, type DiscardResult, type RetireOptions } from './types.js';
 import type {
   MemoryProvider,
   KBEntry,
@@ -1547,6 +1547,29 @@ export class SqliteProvider implements MemoryProvider {
       result.discarded.push(id);
     }
     return result;
+  }
+
+  /**
+   * Set an existing entry's content, recall_cues and/or error_signatures in
+   * place: the maintainer's backfill path (kb_bible_commit enrich). A field that
+   * is undefined stays as it is. New content keeps the entry's audit notes, so
+   * its promotion history survives. Nothing else moves: confidence, promoted_at,
+   * basis and id are untouched. False when the id is unknown.
+   */
+  setEntryRichFields(id: string, fields: { content?: string; recall_cues?: string[]; error_signatures?: string[] }): boolean {
+    const db = this.getDb();
+    const row = db.prepare('SELECT content FROM entries WHERE id = ?').get(id) as { content: string } | undefined;
+    if (!row) return false;
+    const note = KB_AUDIT_NOTE_START.exec(row.content);
+    const content = fields.content === undefined ? row.content : fields.content + (note ? row.content.slice(note.index) : '');
+    db.prepare('UPDATE entries SET content = ?, recall_cues = COALESCE(?, recall_cues), error_signatures = COALESCE(?, error_signatures) WHERE id = ?')
+      .run(
+        content,
+        fields.recall_cues === undefined ? null : JSON.stringify(fields.recall_cues),
+        fields.error_signatures === undefined ? null : JSON.stringify(fields.error_signatures),
+        id,
+      );
+    return true;
   }
 
   /**

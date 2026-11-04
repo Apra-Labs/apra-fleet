@@ -1,0 +1,32 @@
+{
+  "tool": "kb_capture",
+  "case": "happy-trigger-and-cues",
+  "kind": "happy",
+  "request": {
+    "type": "learning",
+    "title": "Capture carrying a trigger, recall cues and error signatures",
+    "summary": "A capture records why it was made and how a reader will look for it.",
+    "content": "Symptom: the reader searches for the error text, not for the fix. Rule/Fix: store both.",
+    "source_files": [
+      "src/rich-fields.ts"
+    ],
+    "symbols": [
+      "richFieldsFixture"
+    ],
+    "trigger": "test-failure",
+    "recall_cues": [
+      "reader cannot find the lesson"
+    ],
+    "error_signatures": [
+      "E-FIXTURE-SIGNATURE: lookup failed"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"463fa975-f5c1-4e77-a6da-ae8f11c5d72d\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

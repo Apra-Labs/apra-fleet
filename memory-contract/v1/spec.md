@@ -356,6 +356,26 @@ either timestamp failing to parse decides nothing. Bible writers record that
 same trust time as the entry's `updated_at`, so every clone compares the same
 value.
 
+- A merged id keeps the `content`, `recall_cues` and `error_signatures` the
+  bible already holds for it, field by field; a field the bible lacks is filled
+  from the KB row. A clone holding an older row therefore cannot overwrite a
+  rewritten entry by re-promoting it.
+- `kb_bible_commit` takes an optional `enrich`: `[{id, content?, recall_cues?,
+  error_signatures?}]`, the one way to change those fields on an existing entry.
+  A named field replaces the old value in the bible entry and, when this KB holds
+  the row, in the row (content keeps the row's audit notes). Nothing else moves:
+  the claim, its basis, confidence and `updated_at` stay, and there is no basis
+  re-admission. It runs after the merge, so it may name an id merged by the same
+  call. Each changed id is listed in `enriched`. Skips: `enrich_invalid` (no field
+  named, content equal to the summary or over 2000 characters, or a secret-shaped
+  string in a field), `not_in_bible`, `not_confirmed_or_unknown` (the row is below
+  CONFIRMED). In a MEMBER session without the kb_maintainer grant the call fails
+  with `E-KB-MAINTAINER-REQUIRED` before any KB is opened, and nothing changes.
+- Secrets never reach a bible through `kb_export` or `kb_bible_commit`: a token
+  shape, a long Bearer/Basic value or a double-brace placeholder in a title,
+  summary, content, cue or signature is written as `[REDACTED]` when an entry is
+  merged, and a warning naming the entry is logged. Entries already in the file
+  are carried as they are.
 - `kb_bible_commit` takes an optional `demoted_ids`. An id is admitted only when
   the LOCAL row exists, carries a `demoted_at` and is now below CONFIRMED;
   anything else is skipped with reason `not_demoted_or_unknown` and the file is
@@ -529,7 +549,7 @@ Additive request fields (no field was removed or made required):
   call retires, and returned on reads of that entry (reads that include
   retired rows: `kb_query` with `include_stale`, or a provider read by id). It
   is separate from the internal superseded/invalidated retirement reason that
-  `kb_bible_commit` reports. Without `reason` the note stays empty and the
+  `kb_bible_commit` reports. Together with `files`, `reason` is refused with `E-INVALIDATE-REASON-NEEDS-IDS`. Without `reason` the note stays empty and the
   response shape is unchanged (`{discarded, not_found, already_discarded}`,
   plus `refused` where section 2.5a applies).
 - The HTTP KB provider forwards a capture payload verbatim and gains no new

@@ -120,7 +120,7 @@ export async function kbInvalidate(input: KbInvalidateInput, anchor?: KbAnchor):
     throw new Error('Provide exactly one of files or ids');
   }
   if (input.reason !== undefined && input.ids === undefined) {
-    throw new Error('reason is accepted only together with ids');
+    throw new Error('E-INVALIDATE-REASON-NEEDS-IDS: reason is accepted only together with ids');
   }
   const keepConfirmed = memberLacksKbMaintainer(anchor);
   if (input.ids) {

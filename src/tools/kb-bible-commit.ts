@@ -9,18 +9,21 @@ import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { TOMBSTONE_DEMOTED, standingAgainstTombstone, type BibleTombstone } from '../services/knowledge/bible-import.js';
 import { bibleBytesBlobId } from '../services/knowledge/bible-blob-id.js';
-import { memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
+import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import {
   asciiSafeStringify,
   assertNoDuplicateBibleIds,
+  BIBLE_CONTENT_MAX_LENGTH,
   BIBLE_FORMAT_VERSION,
   bibleContentChanged,
   commitBiblePath,
   compareById,
+  hasBibleSecret,
   isGitRepo,
   readBibleDocument,
   requireLocalFolder,
   toCanonicalEntry,
+  withBibleRichFields,
   withSourceFileHashes,
   type CanonicalBible,
   type CanonicalEntry,
@@ -54,6 +57,14 @@ import {
 // is rewritten at the current format version and committed, and the response
 // and the commit message report the number of backfilled entries.
 //
+// Rich fields. A merged id keeps the content, recall_cues and error_signatures
+// the bible already holds for it: a re-promotion on a clone with an older row
+// must not overwrite a rewritten entry. A field the bible lacks is filled from
+// the row. The one way to CHANGE them is `enrich`: the maintainer sets them on a
+// CONFIRMED entry that is in the bible, in the row too, without touching
+// anything else in the entry (no re-admission, the text of the claim and its
+// basis do not move). A FULL or kb_maintainer session only.
+//
 // Provenance records the sprint's TARGET BASE branch and the base commit the
 // entries were verified against, as given by the caller -- never the HEAD of
 // the working folder, which is typically a feature branch.
@@ -70,6 +81,13 @@ export const kbBibleCommitSchema = z.object({
     .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB whose recorded file basis still matches the cited files at the repo\'s HEAD commit (the same rule kb_export applies; uncommitted edits are ignored); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown, no_source_files for a CONFIRMED entry citing no source file, or basis_mismatch). Independently of the ids, every bible entry this KB holds as superseded or invalidated is removed and reported in removed; an empty list with no such entry makes no commit.'),
   demoted_ids: z.array(z.string().min(1)).optional()
     .describe('Ids demoted this round (kb_demote). Each must name a local entry that HAS a demoted_at and is now below CONFIRMED; any other id is skipped and reported in skipped with reason not_demoted_or_unknown. An admitted id is REMOVED from entries and recorded as an explicit tombstone {id, at, reason: "demoted"} in the bible demotions array, so other clones can apply the demotion instead of inferring it from an absence. Independently, every call does the same for each bible entry this KB holds as demoted, unless that bible entry was promoted after the local demotion (another clone re-promoted it). Re-admitting the same id through ids (a re-promotion) clears its tombstone.'),
+  enrich: z.array(z.object({
+    id: z.string().min(1).describe('A CONFIRMED entry already in the bible, or merged by this same call through ids.'),
+    content: z.string().min(1).max(BIBLE_CONTENT_MAX_LENGTH).optional().describe('The entry\'s new lesson body. Must differ from its summary.'),
+    recall_cues: z.array(z.string().min(1)).optional().describe('Replaces the entry\'s recall_cues.'),
+    error_signatures: z.array(z.string().min(1)).optional().describe('Replaces the entry\'s error_signatures.'),
+  })).optional()
+    .describe('Maintainer backfill: set content, recall_cues and error_signatures on existing CONFIRMED entries, in this KB and in the bible, and commit. Every other field of the entry stays as it is and there is no basis re-admission. An item naming no field, whose content equals the summary or is over the cap, or holding a secret-shaped string is skipped with reason enrich_invalid; an id not in the bible after this call\'s merge with reason not_in_bible; a row below CONFIRMED with reason not_confirmed_or_unknown. Refused with E-KB-MAINTAINER-REQUIRED in a member session without the kb_maintainer grant, before anything is opened.'),
   baseBranch: z.string().min(1)
     .describe('The sprint\'s target base branch (the branch the work merges into). Written to provenance.branch.'),
   baseCommit: z.string().min(1)
@@ -89,10 +107,14 @@ export type KbBibleCommitInput = z.infer<typeof kbBibleCommitSchema>;
  *  - basis_mismatch: CONFIRMED and cites files, but its recorded basis does not
  *    match those files at HEAD (can clear once the files or the basis agree);
  *  - not_demoted_or_unknown: named in demoted_ids, but the local entry is
- *    unknown, was never demoted, or is CONFIRMED again.
+ *    unknown, was never demoted, or is CONFIRMED again;
+ *  - enrich_invalid: an enrich item names no field, its content equals the
+ *    summary or is over the cap, or a field holds a secret-shaped string;
+ *  - not_in_bible: an enrich id that is not in the bible after this call's merge.
  */
 export type KbBibleCommitSkipReason =
-  'not_confirmed_or_unknown' | 'no_source_files' | 'basis_mismatch' | 'not_demoted_or_unknown';
+  'not_confirmed_or_unknown' | 'no_source_files' | 'basis_mismatch' | 'not_demoted_or_unknown'
+  | 'enrich_invalid' | 'not_in_bible';
 
 export interface KbBibleCommitSkip {
   id: string;
@@ -118,10 +140,46 @@ export interface KbBibleCommitResult {
   entry_count: number;
   /** How many existing bible entries gained source_file_hashes (legacy backfill). */
   backfilled: number;
+  /** Ids whose rich fields this call set through enrich. */
+  enriched: string[];
   committed: boolean;
 }
 
+type KbBibleEnrichItem = NonNullable<KbBibleCommitInput['enrich']>[number];
+
+/** True when an enrich item can be applied to an entry with this summary. */
+function validEnrichItem(item: KbBibleEnrichItem, summary: string): boolean {
+  const { content, recall_cues: cues, error_signatures: signatures } = item;
+  if (content === undefined && cues === undefined && signatures === undefined) return false;
+  if (content !== undefined && (content === summary || content.length > BIBLE_CONTENT_MAX_LENGTH)) return false;
+  return ![content ?? '', ...(cues ?? []), ...(signatures ?? [])].some(hasBibleSecret);
+}
+
+/**
+ * A freshly merged entry, keeping the rich fields the bible already holds for
+ * the same id. See "Rich fields" above.
+ */
+function keepBibleRichFields(fresh: CanonicalEntry, prior: CanonicalEntry | undefined): CanonicalEntry {
+  if (!prior) return fresh;
+  const keptList = (held: unknown, own: string[] | undefined): string[] | undefined =>
+    (Array.isArray(held) && held.length > 0 ? held as string[] : own);
+  return withBibleRichFields(fresh, {
+    content: typeof prior.content === 'string' && prior.content.length > 0 ? prior.content : fresh.content,
+    recall_cues: keptList(prior.recall_cues, fresh.recall_cues),
+    error_signatures: keptList(prior.error_signatures, fresh.error_signatures),
+  });
+}
+
 export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor): Promise<string> {
+  const enrichItems = input.enrich ?? [];
+  // A rewrite of reviewed knowledge is a maintainer act, and the bible this call
+  // would commit is the one other clones trust. Refused before any KB is opened.
+  if (enrichItems.length > 0 && memberLacksKbMaintainer(anchor)) {
+    throw new KbMaintainerGrantError(
+      'kb_bible_commit enrich rewrites entries of the committed bible, which a member session without the kb_maintainer grant may not do.',
+      'Run the enrich from the kb_maintainer session or a FULL session.',
+    );
+  }
   const resolved = resolveKbAnchor(anchor);
   const repoPath = requireLocalFolder(resolved.folder, 'kb_bible_commit');
   const outPath = path.join(repoPath, '.fleet', 'kb-canonical.json');
@@ -132,17 +190,19 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   // entry belongs in the bible, and the demotion half is reported as skipped by
   // the normal not_demoted_or_unknown rule below (it is CONFIRMED, not demoted).
   const requestedDemotions = Array.from(new Set(input.demoted_ids ?? []));
-  const done = (r: Omit<KbBibleCommitResult, 'path'>): string => JSON.stringify({ path: outPath, ...r });
+  const enriched: string[] = [];
+  const done = (r: Omit<KbBibleCommitResult, 'path' | 'enriched'>): string => JSON.stringify({ path: outPath, ...r, enriched });
 
-  // No ids, no demotions and no bible entry that could be removed: nothing to
-  // do, and the KB is not opened.
+  // No ids, no demotions and no bible entry that could be removed or enriched:
+  // nothing to do, and the KB is not opened.
   const existingDoc = readBibleDocument(outPath);
   const existingAtStart = existingDoc?.entries ?? null;
   if (requested.length === 0 && requestedDemotions.length === 0
     && (existingAtStart === null || existingAtStart.length === 0)) {
     return done({
-      merged: [], demoted: [], skipped: [], removed: [],
-      entry_count: existingAtStart?.length ?? 0, backfilled: 0, committed: false,
+      merged: [], demoted: [],
+      skipped: enrichItems.map(item => ({ id: item.id, reason: 'not_in_bible' as const })),
+      removed: [], entry_count: existingAtStart?.length ?? 0, backfilled: 0, committed: false,
     });
   }
 
@@ -253,10 +313,6 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   }
   const backfilled = backfill.size;
 
-  if (merged.length === 0 && removed.length === 0 && admittedDemotions.length === 0 && backfilled === 0) {
-    return done({ merged, demoted, skipped, removed, entry_count: existing?.length ?? 0, backfilled, committed: false });
-  }
-
   // Duplicate-id guard: an existing file holding one id twice would otherwise
   // be silently collapsed by the id map below (dropping an entry). Refuse
   // before anything is written.
@@ -267,9 +323,36 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     byId.set(e.id, basis ? withSourceFileHashes(e, basis) : e);
   }
   for (const r of removed) byId.delete(r.id);
-  for (const id of merged) byId.set(id, confirmed.get(id)!);
+  for (const id of merged) byId.set(id, keepBibleRichFields(confirmed.get(id)!, byId.get(id)));
   // An admitted demotion REMOVES the entry.
   for (const id of demoted) byId.delete(id);
+
+  // ENRICH, after the merge so it can name an id merged by this same call. The
+  // bible entry carries the fields; the row follows so this KB's reads agree.
+  const enrichState = project.getDemotionState(enrichItems.map(item => item.id));
+  for (const item of enrichItems) {
+    const entry = byId.get(item.id);
+    const rowState = enrichState.get(item.id);
+    if (!entry) skipped.push({ id: item.id, reason: 'not_in_bible' });
+    else if (rowState ? rowState.confidence !== 'CONFIRMED' : entry.confidence !== 'CONFIRMED') {
+      skipped.push({ id: item.id, reason: 'not_confirmed_or_unknown' });
+    } else if (!validEnrichItem(item, entry.summary)) skipped.push({ id: item.id, reason: 'enrich_invalid' });
+    else {
+      const { id, content, recall_cues: cues, error_signatures: signatures } = item;
+      byId.set(id, withBibleRichFields(entry, {
+        content: content ?? entry.content,
+        recall_cues: cues === undefined ? entry.recall_cues : (cues.length > 0 ? cues : undefined),
+        error_signatures: signatures === undefined ? entry.error_signatures : (signatures.length > 0 ? signatures : undefined),
+      }));
+      if (rowState) project.setEntryRichFields(id, { content, recall_cues: cues, error_signatures: signatures });
+      enriched.push(id);
+    }
+  }
+
+  if (merged.length === 0 && removed.length === 0 && admittedDemotions.length === 0 && backfilled === 0 && enriched.length === 0) {
+    return done({ merged, demoted, skipped, removed, entry_count: existing?.length ?? 0, backfilled, committed: false });
+  }
+
   const entries = Array.from(byId.values()).sort(compareById);
   assertNoDuplicateBibleIds(entries, 'kb_bible_commit');
 
@@ -312,7 +395,7 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
 
   let committed = false;
   if (isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath)) {
-    const message = bibleCommitMessage(merged.length, removed, entries.length, backfilled, demoted.length);
+    const message = bibleCommitMessage(merged.length, removed, entries.length, backfilled, demoted.length, enriched.length);
     try {
       commitBiblePath(repoPath, outPath, message);
     } catch (err) {
@@ -359,12 +442,17 @@ function repromotedAfter(entry: CanonicalEntry, tombstone: BibleTombstone, now: 
  * single pre-existing subject line. A legacy backfill (existing entries that
  * gained source_file_hashes) adds a body line 'Backfilled source_file_hashes on
  * <n> existing entries.'; a backfill-only commit names the count in its own subject.
+ * An enrich adds a body line, or names the count in the subject when it is all
+ * the commit does.
  */
 export function bibleCommitMessage(
-  mergedCount: number, removed: KbBibleCommitRemoval[], total: number, backfilled = 0, demotedCount = 0,
+  mergedCount: number, removed: KbBibleCommitRemoval[], total: number, backfilled = 0, demotedCount = 0, enrichedCount = 0,
 ): string {
+  const enrichOnly = enrichedCount > 0 && mergedCount === 0 && removed.length === 0 && backfilled === 0;
   let head: string;
-  if (mergedCount === 0 && removed.length === 0 && backfilled > 0) {
+  if (enrichOnly) {
+    head = 'chore(kb): enrich ' + enrichedCount + ' knowledge bible entries';
+  } else if (mergedCount === 0 && removed.length === 0 && backfilled > 0) {
     head = 'chore(kb): backfill source_file_hashes on ' + backfilled + ' knowledge bible entries';
   } else if (removed.length === 0) {
     head = 'chore(kb): commit ' + mergedCount + ' confirmed entries to the knowledge bible';
@@ -380,6 +468,7 @@ export function bibleCommitMessage(
   if (removed.length > 0) body.push('Removed:\n' + removed.map(r => '- ' + r.id + ' (' + r.reason + ')').join('\n'));
   // A backfill-only subject already names the count.
   if (backfilled > 0 && (mergedCount > 0 || removed.length > 0)) body.push('Backfilled source_file_hashes on ' + backfilled + ' existing entries.');
+  if (enrichedCount > 0 && !enrichOnly) body.push('Enriched ' + enrichedCount + ' existing entries.');
   if (body.length === 0) return subject;
   return subject + '\n\n' + body.join('\n\n');
 }

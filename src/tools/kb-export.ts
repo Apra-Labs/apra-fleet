@@ -12,7 +12,7 @@ import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 import { filterProjectBibleCandidates } from '../services/knowledge/bible-basis-filter.js';
 import { extractBibleDemotions, standingAgainstTombstone, type BibleTombstone } from '../services/knowledge/bible-import.js';
 import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
-import type { KBEntry } from '../services/knowledge/types.js';
+import { KB_AUDIT_NOTE_START, type KBEntry } from '../services/knowledge/types.js';
 import { gitExecutable } from '../os/git-executable.js';
 
 // T3.4 (F8b, D8): export half of the shareable, diffable team bible. Writes
@@ -91,27 +91,36 @@ export interface CanonicalEntry {
 export const BIBLE_CONTENT_MAX_LENGTH = 2000;
 const BIBLE_CONTENT_TRUNCATION_SUFFIX = '...[truncated]';
 
-// The audit notes the KB itself appends to an entry's stored content
-// (promote, demote, capture-time confidence clamp, feedback, contradiction
-// resolution). They are this clone's history, not the lesson, and every
-// promoted entry carries one -- so they are cut before export. Each note
-// starts on a new line with one of these bracketed markers.
-const KB_AUDIT_NOTE_START = /\n\[(?:Promoted[ :]|Demoted: |confidence clamped: |feedback \d|reconciled \d)/;
+// What must never reach the committed bible: a provider token shape, a long
+// Bearer/Basic value, or a double-brace placeholder token. Mirrors KB_SECRET_RE
+// and KB_PLACEHOLDER_RE in the engine's capture lint (fleet-sprint kb.mjs); this
+// is the second gate, for captures the lint never saw (direct kb_capture callers).
+const BIBLE_SECRET_SHAPES = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abeoprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,})|\b(?:[Bb]earer|Basic)\s+[A-Za-z0-9._~+/=-]{20,}|\{\{\s*[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z0-9_]+\s*\}\}/g;
+
+/** Text with every secret-shaped run replaced by [REDACTED]. */
+export function scrubBibleSecrets(text: string): string {
+  return text.replace(BIBLE_SECRET_SHAPES, '[REDACTED]');
+}
+
+/** True when scrubBibleSecrets would change the text. */
+export function hasBibleSecret(text: string): boolean {
+  return scrubBibleSecrets(text) !== text;
+}
 
 /**
  * The content a bible entry carries for a stored KB entry, or undefined when
  * it carries none. The KB's own audit notes are cut first (KB_AUDIT_NOTE_START)
- * and trailing newlines dropped. Nothing is written when what remains is empty
- * or equal to the summary -- the importer synthesizes content = summary for an
- * entry without one, so a KB without rich content exports byte-identically to
- * the writer that predates the field. Content over BIBLE_CONTENT_MAX_LENGTH is
- * TRUNCATED to exactly that length, ending in '...[truncated]' (never written
- * over the cap, never silently dropped).
+ * and trailing newlines dropped, and secret-shaped text is scrubbed. Nothing is
+ * written when what remains is empty or equal to the summary -- the importer
+ * synthesizes content = summary for an entry without one, so a KB without rich
+ * content exports byte-identically to the writer that predates the field.
+ * Content over BIBLE_CONTENT_MAX_LENGTH is TRUNCATED to exactly that length,
+ * ending in '...[truncated]' (never written over the cap, never silently dropped).
  */
 export function bibleContentOf(content: unknown, summary: string): string | undefined {
   if (typeof content !== 'string') return undefined;
   const note = KB_AUDIT_NOTE_START.exec(content);
-  let body = (note ? content.slice(0, note.index) : content).replace(/\n+$/, '');
+  let body = scrubBibleSecrets((note ? content.slice(0, note.index) : content).replace(/\n+$/, ''));
   if (body.length === 0 || body === summary) return undefined;
   if (body.length > BIBLE_CONTENT_MAX_LENGTH) {
     body = body.slice(0, BIBLE_CONTENT_MAX_LENGTH - BIBLE_CONTENT_TRUNCATION_SUFFIX.length) + BIBLE_CONTENT_TRUNCATION_SUFFIX;
@@ -183,16 +192,24 @@ export function withSourceFileHashes(entry: CanonicalEntry, basis: Record<string
  * falls back to promoted_at, then created_at.
  */
 export function toCanonicalEntry(e: KBEntry, basis?: Record<string, string> | null, trustTime?: string | null): CanonicalEntry {
+  // Everything below goes to git, and a direct kb_capture caller is not linted:
+  // every free-text field is scrubbed here. The warning names the entry only.
+  const title = scrubBibleSecrets(e.title);
+  const summary = scrubBibleSecrets(e.summary);
   // Optional D9 fields are added only when they carry something, so an entry
   // without them serializes exactly as before (same keys, same order).
-  const content = bibleContentOf(e.content, e.summary);
-  const recallCues = Array.isArray(e.recall_cues) ? e.recall_cues : [];
-  const errorSignatures = Array.isArray(e.error_signatures) ? e.error_signatures : [];
+  const content = bibleContentOf(e.content, summary);
+  const recallCues = (Array.isArray(e.recall_cues) ? e.recall_cues : []).map(scrubBibleSecrets);
+  const errorSignatures = (Array.isArray(e.error_signatures) ? e.error_signatures : []).map(scrubBibleSecrets);
+  if (title !== e.title || summary !== e.summary || (typeof e.content === 'string' && hasBibleSecret(e.content))
+    || recallCues.some(s => s.includes('[REDACTED]')) || errorSignatures.some(s => s.includes('[REDACTED]'))) {
+    logWarn('kb-export', 'entry ' + e.id + ' holds secret-shaped text; it is redacted in the bible. Rewrite or retire the entry.');
+  }
   const entry: CanonicalEntry = {
     id: e.id,
     type: e.type,
-    title: e.title,
-    summary: e.summary,
+    title,
+    summary,
     ...(content !== undefined ? { content } : {}),
     symbols: e.symbols,
     source_files: e.source_files,
@@ -203,6 +220,28 @@ export function toCanonicalEntry(e: KBEntry, basis?: Record<string, string> | nu
   };
   if (basis && Object.keys(basis).length > 0) entry.source_file_hashes = sortedBasis(basis);
   return entry;
+}
+
+/**
+ * A bible entry with its content, recall_cues and error_signatures set to
+ * `rich` (an undefined field is left out), in toCanonicalEntry's key order so
+ * the diff shows only the fields that changed. Every other field stays as it is.
+ */
+export function withBibleRichFields(
+  entry: CanonicalEntry,
+  rich: Pick<CanonicalEntry, 'content' | 'recall_cues' | 'error_signatures'>,
+): CanonicalEntry {
+  const { id, type, title, summary, symbols, source_files, confidence, updated_at,
+    content: _content, recall_cues: _cues, error_signatures: _signatures, ...rest } = entry;
+  return {
+    id, type, title, summary,
+    ...(rich.content !== undefined ? { content: rich.content } : {}),
+    symbols, source_files,
+    ...(rich.recall_cues !== undefined ? { recall_cues: rich.recall_cues } : {}),
+    ...(rich.error_signatures !== undefined ? { error_signatures: rich.error_signatures } : {}),
+    confidence, updated_at,
+    ...rest,
+  };
 }
 
 /**

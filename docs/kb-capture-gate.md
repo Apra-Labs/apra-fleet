@@ -73,6 +73,19 @@ before.
   and the entry still imports (it is not counted as skipped). Absent or
   invalid content falls back to the summary.
 - `merge-kb-canonical` treats all three as content fields.
+- Re-promotion: `kb_bible_commit` keeps the fields the bible already holds for a
+  merged id and fills only what is missing from the row, so a clone with an older
+  row cannot overwrite a rewritten entry.
+- Backfill: `kb_bible_commit {enrich: [{id, content?, recall_cues?,
+  error_signatures?}]}` is the one way to change these fields on an existing
+  CONFIRMED entry. It sets them in the bible and in this KB's row and commits;
+  the claim, basis, confidence and `updated_at` stay, and no basis re-admission
+  runs. kb_maintainer or FULL session only. Other clones get the fields when they
+  read the bible or import a new id; an existing row elsewhere keeps its older
+  content for FULL-session reads, because import skips an id it already holds.
+- Secrets: a merge or an export writes `[REDACTED]` over token-shaped strings and
+  placeholders in every free-text field and logs a warning naming the entry. This
+  is the second gate after the capture lint, for direct `kb_capture` callers.
 
 The normative wording lives in `memory-contract/v1/spec.md` (sections on the
 bible format and capture retrieval aids); schemas, the v3 rich-content example

@@ -634,6 +634,12 @@ skipping the entry.
 
 #### `kbBibleCommit(options: KbBibleCommitOptions)`
 
+`enrich: [{id, content?, recall_cues?, error_signatures?}]` is the maintainer's
+backfill: it sets those fields on a CONFIRMED entry in the bible and its KB row and
+lists the id in `enriched`; a re-merged id otherwise keeps the rich fields the bible
+holds. A member session without the kb_maintainer grant gets
+`E-KB-MAINTAINER-REQUIRED`. Secret-shaped text is written as `[REDACTED]`.
+
 Calls `kb_bible_commit` -- merges exactly `ids` into the bible at entry level
 (only the given ids are added or replaced; every existing entry is kept unless
 the KB holds it as superseded or invalidated), writes `baseBranch` /
