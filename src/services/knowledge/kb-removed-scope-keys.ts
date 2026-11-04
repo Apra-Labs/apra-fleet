@@ -20,7 +20,7 @@ export type KbRemovedScopeKey = 'repo_path' | 'repo' | 'repo_remote_url';
 /** What replaces each removed key, phrased as the caller's fix. */
 export const KB_REMOVED_SCOPE_KEY_REPLACEMENTS: Readonly<Record<KbRemovedScopeKey, string>> = Object.freeze({
   repo_path:
-    "nothing -- drop it: every kb_* call acts on the calling session's own KB (a member session's registered work folder; a FULL session's first MCP client root that is a git repository with an origin remote, else the fleet server working folder). To act on another repository, call from a member session registered on that folder.",
+    "nothing -- drop it: every kb_* call acts on the calling session's own KB (a member session's registered work folder; a FULL session's first MCP client root inside a git repository with an origin remote, or the fleet server working folder when the client offers no roots). To act on another repository, call from a member session registered on that folder.",
   repo:
     "nothing -- drop it: same as repo_path, the KB (and kb_stats' bible drift check) is the calling session's own repository. kb_import names a bible file with path, which is unchanged.",
   repo_remote_url:

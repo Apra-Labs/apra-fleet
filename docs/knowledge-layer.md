@@ -105,8 +105,9 @@ carrying one (any value but absent/undefined) with `E-SCOPE-KEY-REMOVED`
 before any KB is resolved or opened. The message names every removed key
 present and what replaces it (nothing: drop it -- a member session acts on
 its registered work folder, a remote member's KB identity is its registered
-origin remote, and a FULL session acts on its first client root that is a git
-repository with an origin, else the server's working folder;
+origin remote, and a FULL session acts on its first client root inside a git
+repository with an origin, or the server's working folder when the client offers
+no roots;
 `kb_import` keeps `path` for naming a bible file).
 
 - **Member session** (`?member=<uuid>` or a member JWT): the member's

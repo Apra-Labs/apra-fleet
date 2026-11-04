@@ -17,7 +17,8 @@
 // packages/apra-fleet-se/apra-pm/install.mjs (plain, build-free Node: node:
 // builtins only), .github/e2e/fleet-setup.mjs, and the shell steps and env of
 // .github/workflows/ci.yml and pm-e2e.yml. tests/apra-pm-beads-pin.test.ts reads
-// every tracked file and fails the moment any pin disagrees with this one.
+// every tracked script, source, workflow and markdown file and fails the moment a
+// pin there disagrees with this one.
 
 /** The exact @beads/bd version this product installs and supports. */
 export const BEADS_VERSION = '1.3.0';

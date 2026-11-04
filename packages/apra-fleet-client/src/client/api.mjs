@@ -945,7 +945,7 @@ export function assertNoRemovedKbScopeKeys(tool, options) {
     const err = new Error(
         `E-SCOPE-KEY-REMOVED: ${tool} no longer accepts ${present.map((k) => `'${k}'`).join(', ')} ` +
         '(removed in the KB redesign); the call was not sent. Remediation: drop it -- every kb_* call acts on the ' +
-        "calling session's own KB (a member session's registered work folder; a FULL session's first MCP client root that is a git repository with an origin remote, else the fleet server working folder).",
+        "calling session's own KB (a member session's registered work folder; a FULL session's first MCP client root inside a git repository with an origin remote, or the fleet server working folder when the client offers no roots).",
     );
     err.code = 'E-SCOPE-KEY-REMOVED';
     throw err;
