@@ -19,11 +19,9 @@ import { memberUuid, isWriteTool, createFakeFleet, buildCallTool, buildOnCommand
 //   - the reviewer rejects an existing promotion candidate (kb_rejects) and
 //     promotes the good capture (kb_promotions).
 //
-// A capture with NO trigger never reaches vetKbWork through the runner: the
-// role output schema requires trigger, so the dispatch layer rejects the whole
-// doer output (schema repair, then degradation) before any KB work is vetted.
-// vetKbWork's own trigger check is covered at the client level in
-// kb-capture-lint.test.mjs.
+// The role output schemas enforce nothing on a capture item, so a capture with
+// NO trigger also reaches vetKbWork and costs only that capture: see
+// kb-bad-capture-keeps-report.test.mjs and kb-capture-lint.test.mjs.
 //
 // Only the good capture may reach kb_capture; every bad one is refused with a
 // log line naming its rule; the reject becomes one kb_invalidate {ids, reason}

@@ -255,8 +255,8 @@ const KB_RESPONSE_BODIES = {
   // tombstoned in the bible's demotions array. OPTIONAL so bibles/fixtures
   // recorded before tombstones existed still validate; the handler always emits
   // it. entry_count counts ENTRIES only -- a tombstone is not an entry.
-  // enriched names the ids whose rich fields this call set; optional for the same
-  // reason, and skipped gains enrich_invalid and not_in_bible for the enrich half.
+  // enriched names the ids this call's enrich applied, and is present only when
+  // the call sent enrich; skipped gains enrich_invalid and not_in_bible for it.
   kb_bible_commit: z.object({
     path: z.string(),
     merged: z.array(z.string()),

@@ -222,6 +222,23 @@ export function toCanonicalEntry(e: KBEntry, basis?: Record<string, string> | nu
   return entry;
 }
 
+// One writer at a time per bible file. A writer reads the file, awaits the KB and
+// git, then rewrites the whole file, and the MCP SDK starts the next handler
+// without waiting for the last, so parallel calls would each overwrite the
+// others and all report success. Covers this process, which is every MCP call.
+const bibleWriters = new Map<string, Promise<unknown>>();
+
+/** Run fn after every earlier writer of this bible has settled. */
+export function serializeBibleWrite<T>(outPath: string, fn: () => Promise<T>): Promise<T> {
+  const resolved = path.resolve(outPath);
+  const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  const run = (bibleWriters.get(key) ?? Promise.resolve()).then(fn);
+  const settled = run.catch(() => undefined);
+  bibleWriters.set(key, settled);
+  void settled.then(() => { if (bibleWriters.get(key) === settled) bibleWriters.delete(key); });
+  return run;
+}
+
 /**
  * A bible entry with its content, recall_cues and error_signatures set to
  * `rich` (an undefined field is left out), in toCanonicalEntry's key order so
@@ -681,6 +698,7 @@ export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise
   const fileName = scope === 'global' ? 'kb-canonical-global.json' : 'kb-canonical.json';
   const outPath = path.join(fleetDir, fileName);
 
+  return serializeBibleWrite(outPath, async () => {
   if (scope === 'project') {
     return exportProjectBible(requireSqliteProject(providers.project, 'kb_export'), repoPath, outPath, input);
   }
@@ -739,4 +757,5 @@ export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise
   const committed = maybeAutoCommitBible(repoPath, outPath, canonical.length, scope, previousEntryCount);
 
   return JSON.stringify({ exported: canonical.length, path: outPath, scope, committed });
+  });
 }

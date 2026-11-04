@@ -317,7 +317,7 @@
           "source": "src/services/knowledge/kb-maintainer-grant.ts (KbMaintainerGrantError), raised by src/tools/kb-import.ts and src/tools/kb-bible-commit.ts",
           "surfaced": "thrown",
           "retryable": false,
-          "remediation": "Call kb_import without path to import your own committed checkout bible (.fleet/kb-canonical.json at HEAD; commit it first if it is not committed), or run the import from the kb_maintainer session or a FULL session.",
+          "remediation": "For kb_import: call it without path to import your own committed checkout bible (.fleet/kb-canonical.json at HEAD; commit it first if it is not committed), or run the import from the kb_maintainer session or a FULL session. For kb_bible_commit enrich: run it from the kb_maintainer session or a FULL session.",
           "group_decision": "AUTHORITY, not provider_internal: the request is well formed and the KB could serve it; the refusal is the INFERRED-ceiling policy applied to a member session that may not write above it. Thrown before any KB is opened (spec.md section 2.5a).",
           "see_also": ["Capture provenance and confidence clamp"]
         }

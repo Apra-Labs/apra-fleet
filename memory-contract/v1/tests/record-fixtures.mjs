@@ -206,7 +206,9 @@ function sanitizeValue(value) {
     for (const [search, replacement] of PATH_REPLACEMENTS) {
       out = out.split(search).join(replacement);
     }
-    return out;
+    // A path inside a JSON-text response is recorded with forward slashes, so a
+    // fixture does not depend on the recording host.
+    return out.replace(/(<SCRATCH_[A-Z_]+>)((?:\\\\[\w.-]+)+)/g, (_m, root, tail) => root + tail.split('\\\\').join('/'));
   }
   if (Array.isArray(value)) return value.map(sanitizeValue);
   if (value && typeof value === 'object') {

@@ -762,7 +762,9 @@
  * @property {Array<{id: string, content?: string, recall_cues?: string[], error_signatures?: string[]}>} [enrich] -
  *   Maintainer backfill: sets those fields on a CONFIRMED entry in the bible (or merged by
  *   this call) and in the KB row; nothing else in the entry moves. Listed in the result's
- *   enriched. Skips use reason enrich_invalid, not_in_bible or not_confirmed_or_unknown.
+ *   enriched, present only when enrich was sent. A bad item is skipped, never failing the
+ *   call: reason enrich_invalid (the capture rules, content 40 to 2000 chars, at most 20
+ *   cues or signatures of at most 500 chars), not_in_bible or not_confirmed_or_unknown.
  *   A member session without the kb_maintainer grant is refused (E-KB-MAINTAINER-REQUIRED).
  * @property {string[]} [demoted_ids] - Ids demoted this round (kb_demote). An id whose
  *   local row carries a demoted_at and is now below CONFIRMED is REMOVED from entries and

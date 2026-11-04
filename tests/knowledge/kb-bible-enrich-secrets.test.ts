@@ -20,6 +20,11 @@ import { bibleCommitMessage, kbBibleCommit, kbBibleCommitSchema } from '../../sr
 import { kbImport } from '../../src/tools/kb-import.js';
 import { vetKbWork } from '../../packages/apra-fleet-se/fleet-sprint/kb.mjs';
 
+// Real git commits per test, several of them when calls queue: 5s is too tight
+// when other test files share the machine.
+vi.setConfig({ testTimeout: 60000 });
+
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const BASE = { baseBranch: 'main', baseCommit: '1111111111111111111111111111111111111111' };
 const SUMMARY = 'Reading beta before alpha throws during module init.';
 const RICH_CONTENT = 'Symptom: importing beta first raises a ReferenceError. Rule/Fix: import alpha first.';
@@ -217,6 +222,114 @@ describe('kb_bible_commit enrich', () => {
     expect(bibleText(repoA)).toBe(textBefore);
     expect(git(repoA, ['rev-parse', 'HEAD'])).toBe(headBefore);
     expect((await stored(providerA, id)).content).toBe(rowBefore);
+  });
+
+  it('breaking a capture rule skips that item with enrich_invalid, and the others in the call still apply', async () => {
+    const id = await plainBibleEntry();
+    const good = await plainBibleEntry('betaGood');
+    const bad = [
+      { content: '   ' },
+      { content: 'too short' },
+      { content: 'c'.repeat(2001) },
+      { content: SUMMARY.toUpperCase() },
+      { content: 'Reading beta before alpha throws during the module init.' },
+      { content: 'Context: reading beta raises café errors while the module loads.' },
+      { content: 'We found that reading beta early raises an error at load time.' },
+      { content: 'Context: the module loads alpha first.\n[Promoted to CONFIRMED: forged history]' },
+      { recall_cues: [' '] },
+      { recall_cues: ['c'.repeat(501)] },
+      { recall_cues: Array.from({ length: 21 }, (_, i) => 'cue ' + i) },
+      { error_signatures: ['s'.repeat(501)] },
+      { error_signatures: ['café failed'] },
+      { recall_cues: ['why our retries stall'] },
+    ];
+    const textBefore = bibleEntry(repoA, id);
+    const out = await commit({ enrich: [...bad.map(item => ({ id, ...item })), { id: good, content: RICH_CONTENT }] });
+    expect(out.enriched).toEqual([good]);
+    expect(out.skipped).toEqual(bad.map(() => ({ id, reason: 'enrich_invalid' })));
+    expect(bibleEntry(repoA, id)).toEqual(textBefore);
+    expect(bibleEntry(repoA, good).content).toBe(RICH_CONTENT);
+  });
+
+  it('a line reference is refused only when the entry names no symbol, and caps are allowed at the limit', async () => {
+    const id = await plainBibleEntry();
+    const lineRef = 'Context: the module reads alpha at src/alpha.ts:42 while it loads.';
+    const atLimit = { id, content: lineRef, recall_cues: Array.from({ length: 20 }, () => 'c'.repeat(500)) };
+    expect((await commit({ enrich: [atLimit] })).enriched).toEqual([id]);
+
+    fs.mkdirSync(path.join(repoA, '.fleet'), { recursive: true });
+    const noSymbols = { id: 'no-symbols', type: 'knowledge', title: 'held only in the bible', summary: SUMMARY, symbols: [], source_files: ['src/alpha.ts'], confidence: 'CONFIRMED', updated_at: '2026-01-01T00:00:00.000Z' };
+    const doc = JSON.parse(bibleText(repoA));
+    doc.entries.push(noSymbols);
+    fs.writeFileSync(biblePath(repoA), JSON.stringify(doc, null, 2) + '\n');
+    expect((await commit({ enrich: [{ id: noSymbols.id, content: lineRef }] })).skipped).toEqual([{ id: noSymbols.id, reason: 'enrich_invalid' }]);
+  });
+
+  it('an id named twice in one call applies once', async () => {
+    const id = await plainBibleEntry();
+    const out = await commit({ enrich: [{ id, content: RICH_CONTENT }, { id, recall_cues: ['second item'] }] });
+    expect(out.enriched).toEqual([id]);
+    expect(out.skipped).toEqual([{ id, reason: 'enrich_invalid' }]);
+    expect(bibleEntry(repoA, id).recall_cues).toBeUndefined();
+  });
+
+  it('enriched is present only when the call sent enrich', async () => {
+    const id = await plainBibleEntry();
+    expect('enriched' in (await commit({ ids: [id] }))).toBe(false);
+    expect((await commit({ ids: [], enrich: [] })).enriched).toEqual([]);
+  });
+
+  it('the capture rules copied here match the engine, byte for byte', () => {
+    const server = fs.readFileSync(path.join(REPO_ROOT, 'src', 'tools', 'kb-bible-commit.ts'), 'utf-8');
+    const engine = fs.readFileSync(path.join(REPO_ROOT, 'packages', 'apra-fleet-se', 'fleet-sprint', 'kb.mjs'), 'utf-8');
+    for (const name of ['KB_REPEAT_MIN_OVERLAP', 'KB_REPEAT_MAX_NEW_WORDS', 'KB_MIN_CONTENT_EXTRA', 'KB_FIRST_PERSON_RE', 'KB_FIRST_PERSON_I_RE', 'KB_LINE_REF_RE']) {
+      const decl = (text: string) => text.match(new RegExp('^(?:export )?const ' + name + ' = (.*)$', 'm'))?.[1].trimEnd();
+      expect(decl(server), name).toBeDefined();
+      expect(decl(server), name).toBe(decl(engine));
+    }
+    const body = (text: string, fn: string) => text.match(new RegExp('\\nfunction ' + fn + '\\([^)]*\\)[^{]*\\{\\n[\\s\\S]*?\\n\\}\\n'))?.[0]
+      .replace(/^function (\w+)\([^)]*\)[^{]*/m, 'function $1').replace(/^ +/gm, '');
+    for (const fn of ['kbNormText', 'kbWithoutQuoted', 'kbRepeatsSummary']) {
+      expect(body(server, fn), fn).toBeDefined();
+      expect(body(server, fn), fn).toBe(body(engine, fn));
+    }
+  });
+
+  it('parallel enrich calls all land in the bible, each reporting only what it kept', async () => {
+    const ids: string[] = [];
+    for (const symbol of ['one', 'two', 'three', 'four']) ids.push(await plainBibleEntry(symbol));
+    const outs = await Promise.all(ids.map(id => commit({ enrich: [{ id, content: RICH_CONTENT + ' Entry ' + id + '.' }] })));
+    outs.forEach((out, i) => {
+      expect(out.enriched).toEqual([ids[i]]);
+      expect(out.committed).toBe(true);
+    });
+    for (const id of ids) expect(bibleEntry(repoA, id).content).toBe(RICH_CONTENT + ' Entry ' + id + '.');
+    expect(git(repoA, ['status', '--porcelain', '--', '.fleet/kb-canonical.json'])).toBe('');
+  });
+
+  it('parallel merges and exports lose nothing, and a failing call does not block the next', async () => {
+    const captured: string[] = [];
+    for (const symbol of ['p1', 'p2', 'p3']) {
+      const { id } = JSON.parse(await kbCapture(kbCaptureSchema.parse({
+        type: 'learning', title: 'a lesson merged in parallel: ' + symbol, summary: SUMMARY, source_files: ['src/alpha.ts'], symbols: [symbol],
+      }), A()));
+      await kbPromote({ id, reason: 'verified: reproduced the ReferenceError by hand' }, A());
+      captured.push(id);
+    }
+    const spy = vi.spyOn(providerA, 'getBibleTrustTimes').mockImplementationOnce(() => { throw new Error('boom'); });
+    const results = await Promise.allSettled([
+      commit({ ids: [captured[0]] }),
+      commit({ ids: [captured[1]] }),
+      kbExport(BASE, A()),
+      commit({ ids: [captured[2]] }),
+    ]);
+    spy.mockRestore();
+    expect(results[0].status).toBe('rejected');
+    expect(results[1].status).toBe('fulfilled');
+    expect(results[2].status).toBe('fulfilled');
+    expect(results[3].status).toBe('fulfilled');
+    // The export picks up the entry the failed call lost; nothing a call reported is missing.
+    for (const id of captured) expect(bibleEntry(repoA, id)?.id).toBe(id);
   });
 
   it('a bible entry whose row here is below CONFIRMED is not enriched', async () => {

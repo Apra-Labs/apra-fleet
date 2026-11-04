@@ -80,7 +80,11 @@ before.
   error_signatures?}]}` is the one way to change these fields on an existing
   CONFIRMED entry. It sets them in the bible and in this KB's row and commits;
   the claim, basis, confidence and `updated_at` stay, and no basis re-admission
-  runs. kb_maintainer or FULL session only. Other clones get the fields when they
+  runs. kb_maintainer or FULL session only. An item breaking the capture rules
+  (content 40-2000, at most 20 cues or signatures of at most 500 characters, ASCII,
+  and the first-person, line-number, secret and repeat rules) is skipped with
+  `enrich_invalid`, the rule is logged, and the other items still apply. Parallel
+  calls are serialized per bible file inside the server. Other clones get the fields when they
   read the bible or import a new id; an existing row elsewhere keeps its older
   content for FULL-session reads, because import skips an id it already holds.
 - Secrets: a merge or an export writes `[REDACTED]` over token-shaped strings and

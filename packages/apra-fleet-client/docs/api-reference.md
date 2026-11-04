@@ -636,8 +636,9 @@ skipping the entry.
 
 `enrich: [{id, content?, recall_cues?, error_signatures?}]` is the maintainer's
 backfill: it sets those fields on a CONFIRMED entry in the bible and its KB row and
-lists the id in `enriched`; a re-merged id otherwise keeps the rich fields the bible
-holds. A member session without the kb_maintainer grant gets
+lists the id in `enriched` (present only when `enrich` was sent). An item breaking the
+capture rules is skipped with `enrich_invalid` and the rest are applied. A re-merged id
+otherwise keeps the rich fields the bible holds. Parallel calls are serialized per bible. A member session without the kb_maintainer grant gets
 `E-KB-MAINTAINER-REQUIRED`. Secret-shaped text is written as `[REDACTED]`.
 
 Calls `kb_bible_commit` -- merges exactly `ids` into the bible at entry level

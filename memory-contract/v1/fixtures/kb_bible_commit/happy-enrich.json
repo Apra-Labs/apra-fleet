@@ -20,7 +20,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"path\":\"<SCRATCH_REPO_A>\\\\.fleet\\\\kb-canonical.json\",\"merged\":[],\"demoted\":[],\"skipped\":[],\"removed\":[],\"entry_count\":1,\"backfilled\":0,\"committed\":true,\"enriched\":[\"aa8a2ea2-2058-400f-8bcd-fdeb9c86a55c\"]}"
+        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[],\"demoted\":[],\"skipped\":[],\"removed\":[],\"entry_count\":1,\"backfilled\":0,\"committed\":true,\"enriched\":[\"aa8a2ea2-2058-400f-8bcd-fdeb9c86a55c\"]}"
       }
     ]
   }

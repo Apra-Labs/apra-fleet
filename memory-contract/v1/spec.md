@@ -366,10 +366,15 @@ value.
   the row, in the row (content keeps the row's audit notes). Nothing else moves:
   the claim, its basis, confidence and `updated_at` stay, and there is no basis
   re-admission. It runs after the merge, so it may name an id merged by the same
-  call. Each changed id is listed in `enriched`. Skips: `enrich_invalid` (no field
-  named, content equal to the summary or over 2000 characters, or a secret-shaped
-  string in a field), `not_in_bible`, `not_confirmed_or_unknown` (the row is below
-  CONFIRMED). In a MEMBER session without the kb_maintainer grant the call fails
+  call. Each applied id, also one whose values were already there, is listed in
+  `enriched`, which is present only when the call sent `enrich`. Skips:
+  `enrich_invalid` (no field named, an id named twice, or a capture rule broken:
+  blank content or content outside 40 to 2000 characters, content repeating the
+  summary, more than 20 cues or signatures, one blank or over 500 characters,
+  non-ASCII, secret-shaped, first-person or line-number text), `not_in_bible`,
+  `not_confirmed_or_unknown` (the row is below CONFIRMED). A bad item never fails
+  the call: the others are applied. Calls are serialized per bible file within the
+  server, so parallel calls all land. In a MEMBER session without the kb_maintainer grant the call fails
   with `E-KB-MAINTAINER-REQUIRED` before any KB is opened, and nothing changes.
 - Secrets never reach a bible through `kb_export` or `kb_bible_commit`: a token
   shape, a long Bearer/Basic value or a double-brace placeholder in a title,

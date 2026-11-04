@@ -37,25 +37,21 @@
               },
               "content": {
                 "type": "string",
-                "minLength": 1,
-                "maxLength": 2000,
-                "description": "The entry's new lesson body. Must differ from its summary."
+                "description": "The entry's new lesson body, 40 to 2000 characters. Must not repeat its summary."
               },
               "recall_cues": {
                 "type": "array",
                 "items": {
-                  "type": "string",
-                  "minLength": 1
+                  "type": "string"
                 },
-                "description": "Replaces the entry's recall_cues."
+                "description": "Replaces the entry's recall_cues. At most 20, each at most 500 characters."
               },
               "error_signatures": {
                 "type": "array",
                 "items": {
-                  "type": "string",
-                  "minLength": 1
+                  "type": "string"
                 },
-                "description": "Replaces the entry's error_signatures."
+                "description": "Replaces the entry's error_signatures. At most 20, each at most 500 characters."
               }
             },
             "required": [
@@ -63,7 +59,7 @@
             ],
             "additionalProperties": false
           },
-          "description": "Maintainer backfill: set content, recall_cues and error_signatures on existing CONFIRMED entries, in this KB and in the bible, and commit. Every other field of the entry stays as it is and there is no basis re-admission. An item naming no field, whose content equals the summary or is over the cap, or holding a secret-shaped string is skipped with reason enrich_invalid; an id not in the bible after this call's merge with reason not_in_bible; a row below CONFIRMED with reason not_confirmed_or_unknown. Refused with E-KB-MAINTAINER-REQUIRED in a member session without the kb_maintainer grant, before anything is opened."
+          "description": "Maintainer backfill: set content, recall_cues and error_signatures on existing CONFIRMED entries, in this KB and in the bible, and commit. Every other field of the entry stays as it is and there is no basis re-admission. An item that names no field, names an id twice, or breaks the capture rules (blank or out-of-bounds content, content repeating the summary, over-long or too many cues or signatures, non-ASCII, secret-shaped, first-person or line-number text) is skipped with reason enrich_invalid and the rule is logged, so one bad item never fails the batch; an id not in the bible after this call's merge with reason not_in_bible; a row below CONFIRMED with reason not_confirmed_or_unknown. Refused with E-KB-MAINTAINER-REQUIRED in a member session without the kb_maintainer grant, before anything is opened."
         },
         "baseBranch": {
           "type": "string",
