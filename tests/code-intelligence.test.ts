@@ -478,7 +478,7 @@ describe('GitNexusProvider connection resilience', () => {
     const first = (await provider.impact({ target: 'x', direction: 'upstream' })) as { isError?: boolean; content: { text: string }[] };
     expect(first.isError).toBe(true);
     expect(first.content[0].text).toContain('offline');
-    expect(first.content[0].text).toContain('npx gitnexus analyze --index-only');
+    expect(first.content[0].text).toContain('npx gitnexus analyze --index-only --force');
     expect(mockConnect).toHaveBeenCalledTimes(1);
 
     // Second call must attempt a brand-new connection (not await the poisoned promise).
@@ -685,7 +685,7 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
       type: 'text',
       text:
         "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). " +
-        "Results may miss recent changes; run 'npx gitnexus analyze --index-only' to refresh.",
+        "Results may miss recent changes; run 'npx gitnexus analyze --index-only --force' to refresh.",
     });
     expect(mockMaybeScheduleReindex).toHaveBeenCalledTimes(1);
     expect(mockMaybeScheduleReindex).toHaveBeenCalledWith(tempRepo);
@@ -712,7 +712,7 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
       type: 'text',
       text:
         "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). " +
-        "Results may miss recent changes; run 'npx gitnexus analyze --index-only' to refresh." +
+        "Results may miss recent changes; run 'npx gitnexus analyze --index-only --force' to refresh." +
         " A background re-index has been started.",
     });
     expect(mockMaybeScheduleReindex).toHaveBeenCalledTimes(1);
@@ -744,7 +744,7 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
       type: 'text',
       text:
         "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). " +
-        "Results may miss recent changes; run 'npx gitnexus analyze --index-only' to refresh.",
+        "Results may miss recent changes; run 'npx gitnexus analyze --index-only --force' to refresh.",
     });
     expect(mockMaybeScheduleReindex).toHaveBeenCalledTimes(1);
     expect(mockLogError).toHaveBeenCalled();

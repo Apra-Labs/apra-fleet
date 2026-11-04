@@ -714,9 +714,11 @@ Knowledge Layer setup):
 ```
 
 Build the initial graph through the fleet, not by hand: member init and the
-`code_reindex` tool run `npx gitnexus@>=1.6.5 analyze --index-only` (the pinned
-minimum version; `--index-only` keeps the run from writing into the target
-repo). Do not run a plain `gitnexus analyze` in a target repo.
+`code_reindex` tool run `npx gitnexus@>=1.6.5 analyze --index-only --force` (the
+pinned minimum version; `--index-only` keeps the run from writing into the
+target repo, and `--force` makes it a full rebuild: gitnexus 1.6.12's
+incremental analyze can blank thousands of unchanged symbol rows, which then
+answer "not found"). Do not run a plain `gitnexus analyze` in a target repo.
 
 Verify by calling `context` with a symbol name in Claude Code.
 `kb_session_prime` degrades gracefully when GitNexus is absent.
@@ -953,11 +955,13 @@ call from an agent, scoped to that agent's own session folder.
 GitNexus tools return outdated results after a refactor.
 
 **Fix**: rebuild the graph with the `code_reindex` tool (it runs
-`npx gitnexus@>=1.6.5 analyze --index-only`). Do not run a plain
+`npx gitnexus@>=1.6.5 analyze --index-only --force`). Do not run a plain
 `gitnexus analyze` in a target repo.
 
-Run this after large refactors or after renaming many files. The graph update
-is incremental on subsequent runs.
+Run this after large refactors or after renaming many files. Every fleet run
+is a full rebuild (`--force`): parser output for unchanged files is replayed
+from gitnexus's parse cache, but the graph DB is rebuilt, because an
+incremental top-up can corrupt unchanged symbol rows.
 
 ### SQLite lock errors (SQLITE_BUSY)
 

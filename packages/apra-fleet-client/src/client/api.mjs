@@ -1400,7 +1400,9 @@ export class ApraFleet {
     /**
      * code_reindex -- rebuild the code index of the calling session's own repo
      * (a member session's work folder, otherwise the fleet server's folder;
-     * there is no repo argument). Starts gitnexus analyze detached with its
+     * there is no repo argument). Starts gitnexus analyze detached, always as
+     * a full rebuild (--force; an incremental analyze can corrupt unchanged
+     * symbol rows), with its
      * output captured to <data>/code-index/<slug>/analyze.log and returns
      * after the first tick. Extract the JSON with parseToolJson(): `outcome`
      * is 'started' | 'up-to-date' | 'starting' | 'already-running' |

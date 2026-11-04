@@ -6,6 +6,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { CodeIntelligenceProvider } from './code-intelligence.js';
 import { freshnessNote } from './code-intelligence-freshness.js';
 import { maybeScheduleReindex, GITNEXUS_PACKAGE_SPEC } from './code-intelligence-reindex.js';
+import { scheduleIndexBuild, type ScheduleReindexOutcome } from './code-index-heal.js';
 import { isTestPath } from './code-intelligence-tests.js';
 import { codeIndexReadiness, ensureGitNexusIndexReady, indexChangedDuringCallError } from './code-intelligence-readiness.js';
 import { indexGeneration, readGitNexusIndexState } from './code-index-state.js';
@@ -55,7 +56,7 @@ let connectionPromise: Promise<ClientEntry> | null = null;
 // unhandled throw or a silent empty result -- mirrors the F3.1 error shape.
 const OFFLINE_MESSAGE =
   "Code intelligence is offline: the gitnexus service could not be reached. " +
-  "Start or reinstall it by running 'npx gitnexus analyze --index-only' in the repo " +
+  "Start or reinstall it by running 'npx gitnexus analyze --index-only --force' in the repo " +
   "(or /pm index), then retry.";
 
 function offlineResult(detail?: string): { content: Array<{ type: 'text'; text: string }>; isError: true } {
@@ -483,6 +484,108 @@ export function flagResolutionMismatch(result: unknown, requested: unknown, kind
 }
 
 // ---------------------------------------------------------------------------
+// Corrupt-index check (code_impact / code_context "not found"). gitnexus
+// 1.6.12's incremental analyze can blank the id, name and filePath of
+// thousands of symbol rows of files it did not even change (reproduced: one
+// incremental run after a one-line edit blanked 7774 rows of an index that a
+// fresh build had left with none). Those symbols then answer "Target 'x' not
+// found" / "Symbol 'x' not found" although they exist, and because every
+// later incremental run preserves unchanged rows as they are, the index stays
+// broken until a full rebuild. Fleet-run analyzes are full rebuilds
+// (GITNEXUS_ANALYZE_ARGS carries --force), but an index corrupted before that,
+// or by an incremental analyze run by hand, still answers this way. So a
+// not-found answer is cross-checked: when the index holds blank symbol rows,
+// the answer is marked as unreliable and a rebuild is asked for
+// (scheduleIndexBuild: config-, cooldown- and single-flight-gated).
+// ---------------------------------------------------------------------------
+
+const NOT_FOUND_ERROR = /^(?:Target|Symbol) '([\s\S]*)' not found\.?$/;
+
+// Symbol rows whose id was blanked. File, Folder and every symbol node carry
+// a non-empty id ('<Label>:<path>[:<name>]') in a healthy index.
+export const BLANK_SYMBOL_ROWS_QUERY = "MATCH (n) WHERE n.id IS NULL OR n.id = '' RETURN count(n) AS blank";
+
+export interface IndexIntegrity {
+  corrupt: true;
+  /** Rows in the index whose id/name/filePath were blanked. */
+  blank_symbols: number;
+  /** Whether an automatic rebuild started, or why not. */
+  rebuild: ScheduleReindexOutcome;
+}
+
+/** The name a code_impact / code_context result reports as not found, or null. */
+export function notFoundName(result: unknown): string | null {
+  const parts = splitPayload(result);
+  if (!parts) return null;
+  const error = parts.payload.error;
+  if (typeof error !== 'string') return null;
+  const m = NOT_FOUND_ERROR.exec(error.trim());
+  return m ? m[1] : null;
+}
+
+function splitPayload(result: unknown): { payload: Record<string, unknown>; suffix: string; first: Record<string, unknown>; content: unknown[] } | null {
+  if (isErrorResult(result) || !result || typeof result !== 'object' || !('content' in result)) return null;
+  const content = (result as { content: unknown }).content;
+  if (!Array.isArray(content) || content.length === 0) return null;
+  const first = content[0] as Record<string, unknown> | undefined;
+  if (!first || typeof first.text !== 'string') return null;
+  const sep = '\n\n---\n';
+  const cut = first.text.indexOf(sep);
+  try {
+    const parsed = JSON.parse(cut >= 0 ? first.text.slice(0, cut) : first.text) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return { payload: parsed as Record<string, unknown>, suffix: cut >= 0 ? first.text.slice(cut) : '', first, content };
+  } catch { return null; }
+}
+
+/** Number of blanked symbol rows in `repo`'s index, or null when it cannot be read. */
+async function blankSymbolRows(repo: string): Promise<number | null> {
+  let result: unknown;
+  try {
+    result = await callGitNexus('cypher', { query: BLANK_SYMBOL_ROWS_QUERY, repo });
+  } catch { return null; }
+  const payload = extractCypherPayload(result);
+  if (!payload) return null;
+  const rows = parseMarkdownTable(payload.markdown);
+  const n = Number(rows[0]?.blank);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * When a code_impact / code_context answer is "not found" and `repo`'s index
+ * holds blank symbol rows, return the answer marked as unreliable (payload
+ * index_integrity + confidence LOW, plus a warning naming the cause and what
+ * happens next) and ask for a rebuild. Any other result, or one whose
+ * index checks out, is returned unchanged.
+ */
+export async function flagCorruptIndexNotFound(result: unknown, repo: unknown): Promise<unknown> {
+  if (typeof repo !== 'string' || repo === '') return result;
+  const name = notFoundName(result);
+  if (name === null) return result;
+  const blank = await blankSymbolRows(repo);
+  if (blank === null || blank <= 0) return result;
+
+  const rebuild = scheduleIndexBuild(repo);
+  const integrity: IndexIntegrity = { corrupt: true, blank_symbols: blank, rebuild };
+  const parts = splitPayload(result) as NonNullable<ReturnType<typeof splitPayload>>;
+  const next = rebuild.started
+    ? 'A full rebuild of the index has started; retry once code_status reports it ready.'
+    : `No rebuild started (${rebuild.reason}${rebuild.detail ? `: ${rebuild.detail}` : ''}); run code_reindex, which always rebuilds the index in full.`;
+  const warning = `[code-intelligence] INDEX CORRUPT: '${name}' was not found, but ${blank} symbol rows in this code index ` +
+    'have lost their name, id and file, so this is NOT evidence that the symbol does not exist. ' +
+    `${next} Until then, use a text search for this symbol.`;
+  const patched = { ...parts.payload, index_integrity: integrity, confidence: 'LOW' };
+  return {
+    ...(result as Record<string, unknown>),
+    content: [
+      { ...parts.first, text: JSON.stringify(patched, null, 2) + parts.suffix },
+      ...parts.content.slice(1),
+      { type: 'text', text: warning },
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Rung-2 compose support (T2.1 code_map, T2.2 code_flow): gitnexus 1.6.7 has
 // no direct communities/map or flows/processes tool (see
 // docs/code-intelligence-child-surface.md). Both compose over the generic
@@ -780,7 +883,8 @@ export class GitNexusProvider implements CodeIntelligenceProvider {
   }
 
   async impact(params: Record<string, unknown>): Promise<unknown> {
-    return flagResolutionMismatch(await callGitNexus('impact', params), params.target, 'impact');
+    const result = await callGitNexus('impact', params);
+    return flagResolutionMismatch(await flagCorruptIndexNotFound(result, params.repo), params.target, 'impact');
   }
 
   async query(params: Record<string, unknown>): Promise<unknown> {
@@ -788,7 +892,8 @@ export class GitNexusProvider implements CodeIntelligenceProvider {
   }
 
   async context(params: Record<string, unknown>): Promise<unknown> {
-    return flagResolutionMismatch(await callGitNexus('context', params), params.name, 'context');
+    const result = await callGitNexus('context', params);
+    return flagResolutionMismatch(await flagCorruptIndexNotFound(result, params.repo), params.name, 'context');
   }
 
   // T2.1: architectural map via Community nodes (rung 2 -- compose over cypher;

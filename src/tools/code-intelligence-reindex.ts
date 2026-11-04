@@ -223,7 +223,20 @@ export const GITNEXUS_MIN_VERSION = '1.6.5';
 export const GITNEXUS_PACKAGE_SPEC = `gitnexus@>=${GITNEXUS_MIN_VERSION}`;
 // -y is npx's own flag (before the package): the analyze child is hidden, so
 // npx's "Ok to proceed?" install prompt would hang it unseen.
-export const GITNEXUS_ANALYZE_ARGS: readonly string[] = ['-y', GITNEXUS_PACKAGE_SPEC, 'analyze', '--index-only'];
+//
+// `--force` makes every fleet-initiated analyze a FULL rebuild of the graph
+// DB (parser output is still replayed from gitnexus's parse cache for
+// unchanged files, so it costs roughly 2x an incremental run, not a cold
+// build). gitnexus 1.6.12's incremental writeback -- in place and with
+// GITNEXUS_ATOMIC_INCREMENTAL=1 alike -- blanks the id, name and filePath of
+// thousands of symbol rows of files it did not change (reproduced: one run
+// after a one-line edit left 7774, resp. 9334, blank rows in an index a
+// fresh build had left with none). Lookups of those symbols answer "not
+// found", and since every later incremental run keeps unchanged rows as they
+// are, the index never recovers on its own. A full rebuild also skips
+// gitnexus's "Already up to date" shortcut, so code_reindex can always
+// repair a corrupt index at the same commit.
+export const GITNEXUS_ANALYZE_ARGS: readonly string[] = ['-y', GITNEXUS_PACKAGE_SPEC, 'analyze', '--index-only', '--force'];
 
 /**
  * An npx argv that is safe under a shell. On Windows spawn() runs through
@@ -243,7 +256,7 @@ const UNKNOWN_INDEX_ONLY = /unknown option\b.*--index-only|--index-only.*unknown
 /** One-line cause + fix reported wherever the too-old failure surfaces. */
 export const GITNEXUS_TOO_OLD_DETAIL =
   `the installed gitnexus does not support --index-only (needs >= ${GITNEXUS_MIN_VERSION}): upgrade gitnexus ` +
-  `(npx -y ${GITNEXUS_PACKAGE_SPEC} analyze --index-only) or clear the npx cache (npm cache clean --force), then rerun code_reindex`;
+  `(npx -y ${GITNEXUS_PACKAGE_SPEC} analyze --index-only --force) or clear the npx cache (npm cache clean --force), then rerun code_reindex`;
 
 function failureCauseOf(lines: readonly string[]): AnalyzeFailureCause | undefined {
   return lines.some((l) => UNKNOWN_INDEX_ONLY.test(l)) ? 'gitnexus-too-old' : undefined;
@@ -318,7 +331,7 @@ export type SpawnAnalyzeOutcome =
   | { started: false; reason: NotStartedReason; detail?: string };
 
 /**
- * Synchronously start `npx -y gitnexus analyze --index-only` in `repoPath` (detached off win32), with
+ * Synchronously start `npx -y gitnexus analyze --index-only --force` in `repoPath` (detached off win32), with
  * stdout+stderr going straight to analyze.log (a file descriptor, so the run
  * outlives this server) and status.json kept current until exit. Never
  * throws. Does NOT apply config/cooldown -- callers decide whether to start.

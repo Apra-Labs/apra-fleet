@@ -139,7 +139,7 @@ above can be a documented opt-in but is out of scope for the LOCAL wiring.)
   are populated at initial index time only, not refreshed on every VERIFY
   re-index.
 - The fleet-run index command line is built in `src/tools/code-intelligence-reindex.ts`
-  (`GITNEXUS_ANALYZE_ARGS`: `npx -y gitnexus@>=1.6.5 analyze --index-only`), used by
+  (`GITNEXUS_ANALYZE_ARGS`: `npx -y gitnexus@>=1.6.5 analyze --index-only --force`), used by
   `code_reindex` and member init; it does not pass `--embeddings`. The
   `--embeddings` invocations above are PM-skill-dispatched via `execute_command`
   (the fleet's own gitnexus MCP child is spawned separately by
