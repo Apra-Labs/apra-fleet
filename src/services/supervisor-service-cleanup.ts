@@ -34,6 +34,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { BIN_DIR, WORKFLOWS_DIR } from '../cli/config.js';
+import { windowsExecutable } from '../os/windows-executable.js';
 
 export const SUPERVISOR_LINUX_UNIT_NAMES = ['fleet-supervisor.service', 'apra-fleet-supervisor.service'] as const;
 export const SUPERVISOR_MACOS_LABEL = 'com.apra-fleet.supervisor';
@@ -258,7 +259,7 @@ function findWindowsSupervisorPids(): number[] {
     'ForEach-Object { $_.ProcessId }',
   ].join(' | ');
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
-  const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
+  const out = execFileSync(windowsExecutable('powershell.exe'), ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
     encoding: 'utf8', ...QUIET,
   });
   return String(out ?? '')
