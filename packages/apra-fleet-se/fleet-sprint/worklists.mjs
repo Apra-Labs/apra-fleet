@@ -13,6 +13,7 @@
 // <-> worklists.mjs cycle is safe because every use is inside a function
 // body, never at module-evaluation time.
 import { normalizeTierToken, DEFAULT_CONTEXT_CEILING } from './runner.js';
+import { laneOf } from './beads-scope.mjs';
 
 /**
  * Validates a streak-assignment agent() result against the set of currently
@@ -86,9 +87,12 @@ export function selectStreaks(candidate, currentReady) {
  * Ordering is total and stable: within a lane by numeric `streakOrder`
  * ascending (missing/non-numeric last), then `title`, then `id`; lanes by their
  * minimum `streakOrder`, then `streak` id. Members of a ready set are mutually
- * unblocked by definition (a `blocks` edge would keep the blocked side out of
- * the set), so `streakOrder` alone cannot violate a blocks edge and the
- * title/id tiebreak only separates otherwise-equal peers.
+ * unblocked over `blocks` edges (such an edge keeps the blocked side out of
+ * the set), and lane order is enforced before this point by
+ * holdBackByLaneOrder(): a bead whose lower-order lane-mate is open and not
+ * in the same ready set never reaches here. So `streakOrder` alone cannot
+ * violate a prerequisite and the title/id tiebreak only separates
+ * otherwise-equal peers.
  *
  * Pure: no I/O, no agent() calls.
  * @param {Array<{id: string, title?: string, metadata?: {streak?: string, streakOrder?: number|string}}>} currentReady
@@ -133,6 +137,58 @@ export function groupStreaksFromLaneMetadata(currentReady) {
         || String(x.streakId).localeCompare(String(y.streakId)));
 
     return { streaks: laneEntries.map((e) => e.sorted), reason: null };
+}
+
+/**
+ * Lane order is a prerequisite: a laned ready bead is dispatchable only when
+ * every lane-mate with a LOWER `streakOrder` is closed or is itself in the
+ * dispatchable set (it then runs ahead of it in the same streak, since
+ * groupStreaksFromLaneMetadata puts one lane into one streak in order).
+ * Holding one bead can hold its successors, so this runs to a fixpoint. Beads
+ * without a finite `streakOrder` take no part.
+ *
+ * Pure: no I/O.
+ * @param {Array<object>} ready this round's candidate beads, after every other exclusion
+ * @param {Array<object>} scopeBeads every in-scope bead, any status
+ * @returns {{ dispatchable: object[], held: Array<{ id: string, on: string[] }> }}
+ */
+export function holdBackByLaneOrder(ready, scopeBeads) {
+    const list = Array.isArray(ready) ? ready : [];
+    const kept = new Set(list.map((b) => String(b.id)));
+    const openLaned = [];
+    const seen = new Set();
+    for (const b of [...(Array.isArray(scopeBeads) ? scopeBeads : []), ...list]) {
+        if (!b || seen.has(String(b.id))) continue;
+        seen.add(String(b.id));
+        if (b.status !== 'closed' && laneOf(b)) openLaned.push(b);
+    }
+    const lowerOpenMates = (bead) => {
+        const lane = laneOf(bead);
+        if (!lane) return [];
+        return openLaned
+            .filter((m) => String(m.id) !== String(bead.id))
+            .filter((m) => { const ml = laneOf(m); return ml.streak === lane.streak && ml.order < lane.order; })
+            .map((m) => String(m.id));
+    };
+    const heldOn = new Map();
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const b of list) {
+            const id = String(b.id);
+            if (!kept.has(id)) continue;
+            const missing = lowerOpenMates(b).filter((m) => !kept.has(m));
+            if (missing.length > 0) {
+                kept.delete(id);
+                heldOn.set(id, missing.sort());
+                changed = true;
+            }
+        }
+    }
+    return {
+        dispatchable: list.filter((b) => kept.has(String(b.id))),
+        held: [...heldOn.entries()].map(([id, on]) => ({ id, on })),
+    };
 }
 
 export const SIZE_POINTS = Object.freeze({ S: 1, M: 2, L: 4 });

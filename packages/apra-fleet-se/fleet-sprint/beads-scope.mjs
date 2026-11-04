@@ -352,6 +352,93 @@ function blocksPrereqIds(bead) {
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// Prerequisites: blocks edges and lane order
+// ---------------------------------------------------------------------------
+//
+// A bead's prerequisites are (1) its open 'blocks' dependencies and (2) its
+// open lane-mates with a LOWER `streakOrder` (same `metadata.streak`): inside
+// a lane the planner orders work by `streakOrder` only, never by an edge, so
+// lane order is a real prerequisite too.
+
+/** A bead's metadata as an object (bd may hand it back as a JSON string). */
+function metadataOf(bead) {
+    const m = bead && bead.metadata;
+    if (!m) return {};
+    if (typeof m === 'string') {
+        try { const parsed = JSON.parse(m); return parsed && typeof parsed === 'object' ? parsed : {}; } catch { return {}; }
+    }
+    return typeof m === 'object' ? m : {};
+}
+
+/**
+ * A bead's lane position: `{ streak, order }` when it carries a non-empty
+ * `streak` and a finite numeric `streakOrder`, else null (not ordered).
+ * @param {object} bead
+ * @returns {{ streak: string, order: number }|null}
+ */
+export function laneOf(bead) {
+    const m = metadataOf(bead);
+    const streak = m.streak;
+    if (typeof streak !== 'string' || streak.trim() === '') return null;
+    const raw = m.streakOrder;
+    const order = typeof raw === 'number' ? raw : Number.parseInt(raw, 10);
+    if (!Number.isFinite(order)) return null;
+    return { streak, order };
+}
+
+function indexById(beads) {
+    const byId = new Map();
+    for (const b of beads || []) {
+        if (b && b.id !== undefined && b.id !== null && !byId.has(String(b.id))) byId.set(String(b.id), b);
+    }
+    return byId;
+}
+
+/**
+ * A bead's UNMET prerequisites, mechanically, from the bead graph alone:
+ *   - `inScope`: open in-scope 'blocks' dependencies plus open lower-order
+ *     lane-mates;
+ *   - `outOfScope`: open 'blocks' dependencies outside the sprint scope
+ *     (known only when `allBeads` is given) -- they cannot close in this run.
+ *
+ * @param {object} bead
+ * @param {object} ctx
+ * @param {Array<object>} ctx.scopeBeads every in-scope bead, any status
+ * @param {Array<object>} [ctx.allBeads] every bead, any status (out-of-scope lookups)
+ * @returns {{ inScope: string[], outOfScope: string[] }}
+ */
+export function unmetPrerequisites(bead, { scopeBeads, allBeads = null }) {
+    const scopeById = scopeBeads instanceof Map ? scopeBeads : indexById(scopeBeads);
+    const allById = allBeads instanceof Map ? allBeads : indexById(allBeads || []);
+    const inScope = [];
+    const outOfScope = [];
+    const id = String(bead && bead.id);
+    for (const pre of blocksPrereqIds(bead)) {
+        if (pre === id) continue;
+        const target = scopeById.get(pre);
+        if (target) {
+            if (target.status === 'closed') continue;
+            inScope.push(pre);
+        } else {
+            const outside = allById.get(pre);
+            if (outside && outside.status !== 'closed') outOfScope.push(pre);
+        }
+    }
+    const lane = laneOf(bead);
+    if (lane) {
+        const mates = [];
+        for (const m of scopeById.values()) {
+            if (!m || String(m.id) === id || m.status === 'closed') continue;
+            const ml = laneOf(m);
+            if (ml && ml.streak === lane.streak && ml.order < lane.order) mates.push(m);
+        }
+        mates.sort((a, b) => laneOf(a).order - laneOf(b).order || String(a.id).localeCompare(String(b.id)));
+        for (const m of mates) if (!inScope.includes(String(m.id))) inScope.push(String(m.id));
+    }
+    return { inScope, outOfScope };
+}
+
 /**
  * Every OPEN (non-closed) bead in `scopeBeads` that depends on one of
  * `rootIds` over 'blocks' edges, directly or transitively, mapped to the root
@@ -422,12 +509,43 @@ export function partitionReadyByGoal(ready, scopeBeads, goal, opts = {}) {
     for (const b of byId.values()) {
         if (isOpen(b) && !isBelowGoal(b)) queue.push(String(b.id));
     }
+    // Lane order is a prerequisite too: a kept bead's open lower-order
+    // lane-mates are walked like 'blocks' prerequisites, transitively, so an
+    // [impl] task is kept whenever its [test] lane-mate is.
+    const openLaneMates = new Map(); // streak -> open laned beads
+    for (const b of byId.values()) {
+        const lane = laneOf(b);
+        if (!lane || !isOpen(b)) continue;
+        if (!openLaneMates.has(lane.streak)) openLaneMates.set(lane.streak, []);
+        openLaneMates.get(lane.streak).push(b);
+    }
+    const prereqsOf = (bead) => {
+        const out = blocksPrereqIds(bead);
+        const lane = laneOf(bead);
+        if (lane) {
+            for (const m of openLaneMates.get(lane.streak) || []) {
+                if (laneOf(m).order < lane.order) out.push(String(m.id));
+            }
+        }
+        return out;
+    };
     const visited = new Set(queue);
     while (queue.length > 0) {
         const id = queue.shift();
-        for (const pre of blocksPrereqIds(byId.get(id))) {
+        for (const pre of prereqsOf(byId.get(id))) {
             servesInGoal.add(pre);
             if (!visited.has(pre)) { visited.add(pre); queue.push(pre); }
+        }
+    }
+    // A below-goal bead kept for another reason (already worked on) keeps its
+    // lower-order lane-mates too.
+    const keepQueue = [...list].filter((b) => b && workedOn.has(String(b.id))).map((b) => String(b.id));
+    while (keepQueue.length > 0) {
+        const id = keepQueue.shift();
+        for (const pre of prereqsOf(byId.get(id))) {
+            if (servesInGoal.has(pre)) continue;
+            servesInGoal.add(pre);
+            keepQueue.push(pre);
         }
     }
 

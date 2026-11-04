@@ -105,6 +105,9 @@ export async function runPublishPrPhase({
     // The run's set-aside records (../set-aside.mjs collectSetAsideEntries),
     // rendered as the "Set aside this run" section; omitted when empty.
     setAside = [],
+    // The run's wait records (../set-aside.mjs collectWaitEntries), rendered
+    // as one "Waited this run" line; omitted when empty.
+    waited = [],
 }) {
     phase(`Publish PR C${finalCycleLabel}`);
     // The branch push is the LAST step of a sprint that has already done all of
@@ -261,6 +264,7 @@ export async function runPublishPrPhase({
                 lowerQualityBanner || null,
             ],
             setAside,
+            waited,
             costAnalysis,
             previousBody,
         });

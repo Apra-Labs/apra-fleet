@@ -23,7 +23,7 @@
 // ASCII only.
 
 import { PR_DESCRIPTION_MAX_LENGTH } from './vcs-module.mjs';
-import { formatSetAsideItems } from './set-aside.mjs';
+import { formatSetAsideItems, formatWaitedLine } from './set-aside.mjs';
 
 /** Opening token of the hidden run-history block. Versioned so a future
  *  format change can tell its own blocks from this one. */
@@ -201,6 +201,9 @@ function inline(text) {
  * @param {object[]} [opts.setAside] the run's set-aside records (./set-aside.mjs
  *   collectSetAsideEntries), rendered as a "Set aside this run" section; the
  *   section is omitted when empty
+ * @param {object[]} [opts.waited] the run's wait records (./set-aside.mjs
+ *   collectWaitEntries), rendered as one "Waited this run" line after the
+ *   set-aside section; omitted when empty
  * @param {string} [opts.costAnalysis] engine-computed cost block, rendered in a fenced Cost section
  * @param {string} [opts.previousBody] the existing PR's body, for history carry-forward
  * @param {number} [opts.maxLength]
@@ -208,7 +211,7 @@ function inline(text) {
  */
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
-    notes, notesHeading = 'Reviewer notes', details = [], setAside = [], costAnalysis = '', previousBody = '',
+    notes, notesHeading = 'Reviewer notes', details = [], setAside = [], waited = [], costAnalysis = '', previousBody = '',
     maxLength = PR_DESCRIPTION_MAX_LENGTH,
 }) {
     const v = VERDICTS.has(verdict) ? verdict : 'FAIL';
@@ -234,6 +237,7 @@ export function buildSprintPrBody({
 
     const detailLines = (details || []).filter(Boolean).map((d) => `- ${inline(d)}`);
     const setAsideLines = formatSetAsideItems(setAside).map((d) => `- ${inline(d)}`);
+    const waitedLine = formatWaitedLine(waited);
     // The cost block replaces the per-sprint CHANGELOG entry the harvester used
     // to write (a shared prepend-only file that conflicted on every merge).
     const cost = sanitizePrMarkdown(costAnalysis);
@@ -243,6 +247,7 @@ export function buildSprintPrBody({
         setAsideLines.length ? '### Set aside this run\n' : null,
         setAsideLines.length ? setAsideLines.join('\n') : null,
         setAsideLines.length ? '' : null,
+        waitedLine ? `${inline(waitedLine)}\n` : null,
         detailLines.length ? '### Details\n' : null,
         detailLines.length ? detailLines.join('\n') : null,
         detailLines.length ? '' : null,
