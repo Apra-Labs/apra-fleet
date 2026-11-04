@@ -460,6 +460,7 @@ export function encodeTaskXml(xml: string): Buffer {
 
 export class WindowsServiceManager implements ServiceManager {
   private reusedExistingTask = false;
+  private legacyReported = false;
   private readonly runReg: RegRunner;
   private readonly env: Record<string, string | undefined>;
   private readonly now: () => Date;
@@ -572,6 +573,7 @@ export class WindowsServiceManager implements ServiceManager {
       if (!problems.includes('elevated')) problems.push('elevated');
       const guidance = legacyTaskGuidance(problems);
       console.warn(indent(guidance));
+      this.legacyReported = true;
       // A detached install (apra-fleet update) has no console: persist it
       // for the next service verb (already shown when this one is
       // interactive), and leave it in the service log.
@@ -633,6 +635,9 @@ export class WindowsServiceManager implements ServiceManager {
       return [];
     }
   }
+
+  /** See ServiceManager.legacyGuidanceShown. */
+  legacyGuidanceShown(): boolean { return this.legacyReported; }
 
   /** See ServiceManager.legacyGuidance: a reused legacy task refused /run because it cannot be replaced from here. */
   legacyGuidance(): string | null {

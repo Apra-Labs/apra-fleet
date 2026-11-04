@@ -37,6 +37,7 @@ import {
 import { detectRunningFleetSe, fleetSeRefusalText, realFleetSeProbes, IGNORE_RUNNING_SPRINTS_FLAG, type FleetSeProbes } from './fleet-se-guard.js';
 import { writeServiceNotice, clearServiceNoticeContaining } from '../services/service-notice.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
+import { isPidAlive } from '../utils/process-utils.js';
 import { codeIntelPathWarning } from '../utils/find-on-path.js';
 import { gitBashCandidates } from '../os/git-bash-candidates.js';
 import {
@@ -1657,12 +1658,21 @@ ${manualStopHint(pidsAfterStop)}
 `);
       process.exit(1);
     }
+    // The stop reported a pid it would not force-kill: do not claim it stopped --
+    // but only say it is still running if a candidate pid actually is. It may
+    // have exited while waiting for the service stop, in which case the normal
+    // message is the truthful one.
+    let stillRunningWho: string | null = null;
     if (guardStopLeftRunning) {
-      // The stop reported a pid it would not force-kill: do not claim it stopped.
       const { readServerInfoPid } = await import('../services/singleton.js');
       const leftPid = readServerInfoPid();
-      const who = leftPid !== undefined ? `pid ${leftPid}` : (pidsBeforeStop.length > 0 ? `pid ${pidsBeforeStop.join(', ')}` : 'a server process');
-      console.warn(`  The server ${who} is still running: it did not exit after the stop request and could not be verified as an apra-fleet process, so it was not force-killed. Install continues without stopping it; check ${who} yourself.`);
+      const candidates = [...(leftPid !== undefined ? [String(leftPid)] : []), ...pidsBeforeStop]
+        .filter((pid, i, all) => all.indexOf(pid) === i)
+        .filter(pid => isPidAlive(Number(pid)));
+      if (candidates.length > 0) stillRunningWho = `pid ${candidates.join(', ')}`;
+    }
+    if (stillRunningWho) {
+      console.warn(`  The server ${stillRunningWho} is still running: it did not exit after the stop request and could not be verified as an apra-fleet process, so it was not force-killed. Install continues without stopping it; check ${stillRunningWho} yourself.`);
     } else {
       console.log(pidsBeforeStop.length > 0 || guardStoppedService
         ? '  Stopped running server.'
@@ -1715,6 +1725,11 @@ ${manualStopHint(pidsAfterStop)}
         console.log('  Restarted the registered service.');
       } catch (err) {
         console.warn(`  [WARN] Could not restart the registered service: ${(err as Error).message}`);
+        // No service step ran, so nothing else prints the legacy-task guidance
+        // (the install-reason stop suppressed it): print it once here.
+        let guidance: string | null = null;
+        try { guidance = guardServiceMgr.legacyGuidance?.() ?? null; } catch { /* generic warning stands */ }
+        if (guidance) console.warn(guidance);
       }
     }
   }
@@ -2357,7 +2372,11 @@ not start automatically.
         // hits the same refusal, so give the upgrade guidance instead.
         let legacyHint: string | null = null;
         if (serviceReused) { try { legacyHint = svcMgr.legacyGuidance?.() ?? null; } catch { /* keep the generic hint */ } }
-        const restartHint = legacyHint ? legacyHint
+        // register() already printed the full guidance for a reused legacy task:
+        // point at it instead of repeating it, so it appears once per install.
+        const alreadyShown = legacyHint !== null && (svcMgr.legacyGuidanceShown?.() ?? false);
+        const restartHint = alreadyShown ? 'The task could not be started; follow the steps printed above for the existing scheduled task, then re-run install --force.'
+          : legacyHint ? legacyHint
           : guardStoppedService
           ? `Start it with:\n    ${serviceRestartCommand()}\nthen run 'apra-fleet status' for how to repair the service (apra-fleet never needs an elevated install).`
           : 'Start it with:\n    apra-fleet start';

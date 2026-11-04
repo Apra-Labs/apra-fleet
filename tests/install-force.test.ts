@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } fr
 import fs from 'node:fs';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
-import { runInstall, isApraFleetRunning, killApraFleet, _setSeaOverride, _setManifestOverride, _setInstallForceTimingOverride } from '../src/cli/install.js';
+import { runInstall, isApraFleetRunning, killApraFleet, _setSeaOverride, _setManifestOverride, _setInstallForceTimingOverride, _setServiceHealthWaitOverride } from '../src/cli/install.js';
 import { getServiceManager } from '../src/services/service-manager/index.js';
 import { legacyTaskGuidance } from '../src/services/service-manager/windows.js';
 import type { ServiceManager } from '../src/services/service-manager/types.js';
@@ -1084,6 +1084,18 @@ describe('install --force over a reused elevated task that refuses run', () => {
     expect(out).not.toContain('Start it with:\n    apra-fleet start');
   });
 
+  it('guidance printed by register() on reuse is not printed a second time when /run is then refused', async () => {
+    const warn = (...a: unknown[]) => console.warn(...a);
+    const out = await installAndCapture(fakeMgr({
+      register: vi.fn().mockImplementation(async () => { warn(GUIDANCE); return 'reused'; }),
+      legacyGuidance: vi.fn().mockReturnValue(GUIDANCE),
+      legacyGuidanceShown: vi.fn().mockReturnValue(true),
+    }));
+    expect(out.split(GUIDANCE).length - 1).toBe(1);
+    expect(out).toContain('follow the steps printed above');
+    expect(out).not.toContain('Start it with:\n    apra-fleet start');
+  });
+
   it('other start failures (no legacy problem) keep the plain restart hint', async () => {
     const out = await installAndCapture(fakeMgr({ legacyGuidance: vi.fn().mockReturnValue(null) }));
     expect(out).toContain('Start it with:');
@@ -1143,12 +1155,21 @@ describe('install --force stop and restart messages match the real outcome (apra
   }
 
   it('unverified pid that did not exit: no "Stopped running server.", names the pid, and stop is told it is install', async () => {
+    alivePids.add(5678);
     const stop = vi.fn().mockImplementation(async () => { serviceStopped = true; return false; });
     const out = await installAndCapture(mgrWith(stop));
     expect(stop).toHaveBeenCalledWith({ reason: 'install' });
     expect(out).not.toContain('Stopped running server.');
     expect(out).toMatch(/pid 5678 is still running/);
     expect(out).toContain('not force-killed');
+  });
+
+  it('unverified pid that has since exited: does not claim it is still running', async () => {
+    // alivePids stays empty: pid 5678 is gone by the time install looks.
+    const stop = vi.fn().mockImplementation(async () => { serviceStopped = true; return false; });
+    const out = await installAndCapture(mgrWith(stop));
+    expect(out).not.toMatch(/is still running/);
+    expect(out).toContain('Stopped running server.');
   });
 
   it('genuine clean stop still prints "Stopped running server."', async () => {
@@ -1159,6 +1180,7 @@ describe('install --force stop and restart messages match the real outcome (apra
   });
 
   it('service the final step restarts: no unconditional restart-command line, fallback framing, summary says running', async () => {
+    _setServiceHealthWaitOverride(async () => true);
     const stop = vi.fn().mockImplementation(async () => { serviceStopped = true; return true; });
     const out = await installAndCapture(mgrWith(stop));
     expect(out).not.toContain('stopped by --force. Restart command:');

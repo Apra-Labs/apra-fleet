@@ -84,4 +84,6 @@ export interface ServiceManager {
    * print it instead of a start hint that would hit the same refusal.
    */
   legacyGuidance?(): string | null;
+  /** Windows only: true once register() already printed the legacy-task guidance in this process, so install must not print it again. */
+  legacyGuidanceShown?(): boolean;
 }
