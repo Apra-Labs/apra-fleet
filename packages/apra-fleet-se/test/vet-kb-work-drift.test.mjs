@@ -85,9 +85,33 @@ const CASES = [
     // lint rules, one failing case each.
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary: 'A summary with a non-ASCII dash \u2014 in it.' }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, recall_cues: ['caf\u00e9'] }] }],
-    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, title: 't'.repeat(101) }] }],
-    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary: 's'.repeat(401) }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, title: 't'.repeat(160) }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, title: 't'.repeat(161) }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, title: 't'.repeat(7) }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary: 's'.repeat(500) }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary: 's'.repeat(501) }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary: 's'.repeat(19) }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, content: 'too short' }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, content: 'c '.repeat(1001) + 'end' }] }],
+    // first-person precision.
+    ...['Deploy only in the US region, the EU one lacks it.', 'Phase I and Type I builds skip the check step.', 'The poll waits 50 us between reads of the flag.',
+        'Intel ME holds the port, so WE pin is unrelated.', 'The tool prints "We could not find that package" and exits.', 'The error text `my key is bad` comes from the agent.']
+        .map((summary) => ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary }] }]),
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary: 'Our retries stall once the budget is read at boot.' }] }],
+    // section headings: CRLF and Root cause.
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, trigger: 'failed-attempt', content: 'Cause\r\nthe cache is keyed by tenant only.\r\nRule/Fix\r\nkey it by tenant and id.' }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, trigger: 'failed-attempt', content: 'Root cause: the cache is keyed by tenant only.\nFix: key it by tenant and id.' }] }],
+    // ccTLD hosts are not line references; multi-dot file names still are.
+    ...['Connect to api.example.pl:443 fails behind the proxy.', 'Mirror mirror.example.sh:22 rejects keys at the gate.', 'The registry example.pl:443 needs an allowlist entry.', 'The image ghcr.io/org/app.server:20 pins the runtime.',
+        'The budget is read at a.test.ts:42 during boot.', 'The budget is read at kb.md:130 during boot.', 'The budget is read at example.py:17 during boot.']
+        .map((summary) => ['doer', { kb_captures: [{ ...GOOD_CAPTURE, trigger: 'env-quirk', symbols: [], summary }] }]),
+    // near-duplicate content.
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary: 'The retry budget is read once at boot. Editing the budget needs a service restart.', content: 'Editing the budget needs a service restart. The retry budget is read once at boot.' }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary: 'The retry budget is read once at boot. Editing the budget needs a service restart.', content: 'The retry budget is loaded once at startup. Editing the budget needs a service restart.' }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary: 'The retry budget is read once at boot. Editing the budget needs a service restart.', content: 'The retry budget is read once at boot. Editing the budget' }] }],
+    // secrets, built by concatenation.
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary: `The job authenticates with ${'gh' + 'p_' + 'a'.repeat(36)} in the header.` }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, content: `The header is Authorization: ${'Bear' + 'er ' + 'b'.repeat(40)} on every request made.` }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, content: GOOD_CAPTURE.summary }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, content: `${GOOD_CAPTURE.summary} Also true.` }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, symbols: [], summary: 'The budget is read at src/real.ts:42 during boot.' }] }],
@@ -161,7 +185,7 @@ describe('the workflow copy carries the same constants', () => {
 
     test('every copy carries the same six capture triggers as the output schema', () => {
         const schema = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'apra-pm', 'agents', 'schemas', 'doer-output.json'), 'utf-8'));
-        const schemaTriggers = schema.properties.kb_captures.items.properties.trigger.enum;
+        const schemaTriggers = schema.properties.kb_captures.items.properties.trigger.examples;
         assert.deepEqual([...engineTriggers], schemaTriggers);
         assert.deepEqual([...pmTriggers], schemaTriggers);
         const m = src.match(/KB_CAPTURE_TRIGGERS\s*=\s*\[([^\]]*)\]/);
@@ -169,22 +193,44 @@ describe('the workflow copy carries the same constants', () => {
         assert.deepEqual(m[1].split(',').map((t) => t.trim().replace(/'/g, '')).filter(Boolean), schemaTriggers);
     });
 
-    test('auto-sprint.js carries the same capture lint caps', () => {
-        assert.match(src, /KB_MAX_CAPTURE_TITLE\s*=\s*100;/);
-        assert.match(src, /KB_MAX_CAPTURE_SUMMARY\s*=\s*400;/);
-        assert.match(src, /KB_MAX_CAPTURE_CONTENT\s*=\s*2000;/);
-        assert.match(src, /KB_MIN_CONTENT_EXTRA\s*=\s*40;/);
-    });
+    const pmSrc = fs.readFileSync(path.join(__dirname, '..', 'apra-pm', 'lib', 'vet-kb-work.mjs'), 'utf-8');
+    const kbSrc = fs.readFileSync(path.join(__dirname, '..', 'fleet-sprint', 'kb.mjs'), 'utf-8');
+    const copies = [['auto-sprint.js', src], ['vet-kb-work.mjs', pmSrc], ['kb.mjs', kbSrc]];
 
-    test('auto-sprint.js lintKbCapture is byte-identical to the apra-pm mirror', () => {
-        const pmSrc = fs.readFileSync(path.join(__dirname, '..', 'apra-pm', 'lib', 'vet-kb-work.mjs'), 'utf-8');
-        const body = (text) => {
-            const m = text.match(/\nfunction lintKbCapture\(c, content\) \{\n[\s\S]*?\n\}\n/);
-            assert.ok(m, 'lintKbCapture found');
-            return m[0];
-        };
-        assert.equal(body(src), body(pmSrc));
-    });
+    // Every lint constant and regex, as its declaration text with any export
+    // keyword dropped, in all three copies.
+    const LINT_CONSTANTS = [
+        'KB_MIN_CAPTURE_TITLE', 'KB_MAX_CAPTURE_TITLE', 'KB_MIN_CAPTURE_SUMMARY', 'KB_MAX_CAPTURE_SUMMARY',
+        'KB_MIN_CAPTURE_CONTENT', 'KB_MAX_CAPTURE_CONTENT', 'KB_MIN_CONTENT_EXTRA',
+        'KB_REPEAT_MIN_OVERLAP', 'KB_REPEAT_MAX_NEW_WORDS',
+        'KB_PLACEHOLDER_RE', 'KB_SECRET_RE', 'KB_FIRST_PERSON_RE', 'KB_FIRST_PERSON_I_RE', 'KB_LINE_REF_RE',
+        'KB_CAUSE_SECTION_RE', 'KB_RULE_FIX_SECTION_RE',
+    ];
+    for (const name of LINT_CONSTANTS) {
+        test(`${name} is declared identically in every copy`, () => {
+            const declaration = (text) => {
+                const m = text.match(new RegExp(`^(?:export )?const ${name} = (.*)$`, 'm'));
+                assert.ok(m, `${name} found`);
+                return m[1].trimEnd();
+            };
+            const [[, first], ...rest] = copies;
+            for (const [file, text] of rest) assert.equal(declaration(text), declaration(first), `${name} differs in ${file}`);
+        });
+    }
+
+    // Every lint function, compared with indentation normalised: kb.mjs indents
+    // by 4, the other two by 2, and all three are otherwise byte-identical.
+    for (const fn of ['kbNormText', 'kbWithoutQuoted', 'kbRepeatsSummary', 'lintKbCapture']) {
+        test(`${fn} is identical in every copy`, () => {
+            const body = (text) => {
+                const m = text.match(new RegExp(`\\nfunction ${fn}\\([^)]*\\) \\{\\n[\\s\\S]*?\\n\\}\\n`));
+                assert.ok(m, `${fn} found`);
+                return m[0].replace(/^ +/gm, '');
+            };
+            const [[, first], ...rest] = copies;
+            for (const [file, text] of rest) assert.equal(body(text), body(first), `${fn} differs in ${file}`);
+        });
+    }
 
     test('auto-sprint.js still refuses kb_promotions from a non-reviewer role', () => {
         assert.match(src, /promotion is reviewer-only/);

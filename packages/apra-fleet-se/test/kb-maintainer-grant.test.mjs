@@ -71,7 +71,7 @@ describe('kb_maintainer grant on engine KB writes', () => {
         const { client, calls } = harness();
         await client.promotionCandidates('reviewer-1');
         await client.apply('reviewer', 'reviewer-1', {
-            kb_captures: [{ type: 'knowledge', title: 'A captured fact here', summary: 'A summary of the captured fact for the test.', content: 'Content of the captured fact for the test.', trigger: 'hidden-invariant', source_files: ['src/a.ts'] }],
+            kb_captures: [{ type: 'knowledge', title: 'A captured fact here', summary: 'A summary of the captured fact for the test.', content: 'Context: the captured fact holds only while the service runs on one node.', trigger: 'hidden-invariant', source_files: ['src/a.ts'] }],
             kb_discards: [{ id: 'e2', reason: 'superseded by the merged code in this round' }],
         });
         const writes = calls.filter((c) => c.tool === 'kb_capture' || c.tool === 'kb_invalidate');

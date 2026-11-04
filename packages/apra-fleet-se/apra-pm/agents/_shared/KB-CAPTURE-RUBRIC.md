@@ -23,11 +23,14 @@ get it in under a minute from the cited files?** If not, do not capture it.
 
 ## Shape of an entry
 
+- **Length limits**: title 8 to 160 characters, summary 20 to 500, content 40 to 2000
+  when present. ASCII only.
 - **Summary stands alone**: the lesson in at most 2 sentences, present tense, stated as
   current truth.
 - **content is optional.** Write it only when it adds what the summary cannot hold.
-  Content that repeats the summary is refused.
+  Content that repeats the summary, even reworded or reordered, is refused.
 - **One claim per entry.**
+- **No credentials**: no secret placeholders and no token-shaped strings.
 - When you write content, use only the labelled sections you need:
   - Context
   - Symptom (the exact error)
@@ -52,6 +55,9 @@ Every capture carries exactly one `trigger`:
 - `design-rationale` -- why something is built this way, incl. rejected alternatives.
 
 There is no value for "describes the change": such entries are not KB.
+
+A capture that breaks any rule here is refused and logged on its own. It never affects the
+rest of your report, but the lesson in it is lost, so check it before you return it.
 
 ## recall_cues and error_signatures
 

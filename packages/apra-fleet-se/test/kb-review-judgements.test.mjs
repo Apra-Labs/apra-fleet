@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKbWorkClient, vetKbWork, kbPromotionBlock, kbKnowledgeBlock, KB_MAX_PROMOTION_CANDIDATES, KB_MIN_PROMOTE_REASON } from '../fleet-sprint/kb.mjs';
-import { reviewerVerdict, finalVerdict } from '../fleet-sprint/contracts.mjs';
+import { reviewerVerdict, finalVerdict, validateVerdict } from '../fleet-sprint/contracts.mjs';
 import { fakeMaintainerSelector } from './helpers/kb-maintainer-fakes.mjs';
 
 // =============================================================================
@@ -248,6 +248,38 @@ describe('REJECT on the maintainer: kb_rejects retires the entry with its reason
         const out = await h.client.apply('reviewer', 'reviewer', { kb_rejects: [{ id: 'kb-gone', reason: RUBRIC }] });
         assert.equal(out.rejected, 0);
         assert.ok(h.logs.includes('[kb-work] kb_invalidate: entry kb-gone not found on the maintainer -- already gone (non-fatal)'), JSON.stringify(h.logs));
+    });
+
+    test('a retire the maintainer session refuses is not counted, for a reject and for a discard', async () => {
+        const refusing = (args) => ({ discarded: [], not_found: [], already_discarded: [], refused: args.ids });
+        const h = harness({ invalidateResult: refusing });
+        await h.offer(['kb-kept', 'kb-kept-too']);
+        const out = await h.client.apply('reviewer', 'reviewer', {
+            kb_rejects: [{ id: 'kb-kept', reason: RUBRIC }],
+            kb_discards: [{ id: 'kb-kept-too', reason: WRONG }],
+        });
+        assert.equal(out.rejected, 0);
+        assert.equal(out.discarded, 0);
+        for (const id of ['kb-kept', 'kb-kept-too']) {
+            assert.ok(h.logs.some((l) => l.includes('WARN') && l.includes(`refused ${id}`)), JSON.stringify(h.logs));
+        }
+        assert.ok(!h.logs.some((l) => l.startsWith('[kb-work] rejected ')), JSON.stringify(h.logs));
+    });
+
+    test('a final-review kb_rejects entry validates and retires the entry with its reason', async () => {
+        const report = { verdict: 'PASS', notes: 'final', kb_rejects: [{ id: 'kb-final', reason: RUBRIC }] };
+        assert.equal(validateVerdict('finalVerdict', report).valid, true);
+        assert.equal(validateVerdict('finalVerdict', { ...report, kb_rejects: [{ id: 'kb-final', reason: 'short' }] }).valid, false);
+        const r = finalVerdict.properties.kb_rejects;
+        assert.deepEqual(r.items.required, ['id', 'reason']);
+        assert.equal(r.items.properties.reason.minLength, KB_MIN_PROMOTE_REASON);
+        assert.ok(!finalVerdict.required.includes('kb_rejects'), 'optional');
+        const h = harness();
+        await h.offer(['kb-final']);
+        const out = await h.client.apply('reviewer', 'reviewer', report);
+        assert.equal(out.rejected, 1);
+        const call = h.events.find((e) => e.tool === 'kb_invalidate');
+        assert.deepEqual(call.args, { ids: ['kb-final'], reason: RUBRIC });
     });
 
     test('kb_rejects from a doer is refused and nothing is called', async () => {

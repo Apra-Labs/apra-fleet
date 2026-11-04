@@ -12,25 +12,36 @@ workflow in `apra-pm/lib/vet-kb-work.mjs`) refuses a capture when:
 - it has no `trigger`, or the trigger is not one of `failed-attempt`,
   `review-finding`, `test-failure`, `env-quirk`, `hidden-invariant`,
   `design-rationale`. There is deliberately no "describes the change" trigger.
-- `lintKbCapture` finds a defect: non-ASCII text, over-length fields,
-  placeholder tokens, first-person wording, a line-number-only reference,
-  `content` that repeats the `summary`, or a `failed-attempt` whose content has
-  no Cause or Rule/Fix section.
+- `lintKbCapture` finds a defect: non-ASCII text, a field outside its length
+  bounds (title 8-160, summary 20-500, content 40-2000), placeholder tokens,
+  token-shaped credentials, first-person wording, a line-number-only reference,
+  `content` that repeats the `summary` (also near-duplicates: edited, reordered
+  or a prefix), or a `failed-attempt` whose content has no Cause (or Root cause)
+  or Rule/Fix section.
 
 Every refusal is logged with the name of the rule that fired. The shared
 rubric all roles read is `apra-pm/agents/_shared/KB-CAPTURE-RUBRIC.md`.
+
+**A bad capture never costs the report.** The role output schemas document these
+rules in `description` text and enforce none of them for `kb_captures` items, so
+a capture that breaks one fails `vetKbWork` alone: that capture is refused and
+logged, and the verdict and the other captures stand. Do not add `required`,
+`enum`, `minLength` or `maxLength` to a capture item: ajv would then fail the
+whole report, and a degraded reviewer round loses its verdict.
 
 The `kb_capture` tool itself stays permissive: `trigger` is optional and stored
 for audit in its own column, and `content` is optional (the server stores
 `content = summary` when absent). Strictness lives in the engine so other
 callers of the tool are not broken.
 
-The lint exists twice (fleet-sprint and apra-pm); a drift test keeps the copies
-in step. Change both together.
+The lint exists three times (fleet-sprint `kb.mjs`, apra-pm
+`lib/vet-kb-work.mjs`, the inlined workflow `auto-sprint.js`); a drift test pins
+every constant and function across them. Change all three together.
 
-Known lint gaps: the first-person check is case-insensitive, so the country
-name "US" is refused; a `host:port` whose last label looks like a source
-extension (for example a `.pl` or `.sh` host) is read as a line reference.
+Known lint limits: a multi-dot file name with an extension that is also a
+country TLD (`a.test.py:12`) is read as a host, and so is `name.py:443` on a
+well-known port (22, 80, 443, 8080, 8443). The phrase `line N` is refused even
+inside a quoted error when no symbol is named.
 
 ## Reviewer kb_rejects
 
@@ -41,7 +52,9 @@ executes a reject through `kb_invalidate {ids, reason}`. The reason is stored in
 `retired_note`, a column separate from `retired_reason` (the internal
 superseded/invalidated marker that `kb_bible_commit` reports), so retirement
 notes never disturb bible-commit reporting. `reason` is accepted only with
-`ids`; `files` plus `reason` is an error before any write.
+`ids`; `files` plus `reason` is an error before any write. A retire the maintainer
+session refuses (a lost grant) is logged as a WARN and counted as neither
+rejected nor discarded. The final review may return `kb_rejects` too.
 
 ## Rich bible entries
 

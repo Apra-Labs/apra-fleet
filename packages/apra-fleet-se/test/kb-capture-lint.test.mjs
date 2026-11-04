@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
     vetKbWork, createKbWorkClient, KB_CAPTURE_TRIGGERS,
     KB_MAX_CAPTURE_TITLE, KB_MAX_CAPTURE_SUMMARY, KB_MAX_CAPTURE_CONTENT,
+    KB_MIN_CAPTURE_TITLE, KB_MIN_CAPTURE_SUMMARY, KB_MIN_CAPTURE_CONTENT,
 } from '../fleet-sprint/kb.mjs';
 import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
 
@@ -153,6 +154,117 @@ describe('every refusal rule', () => {
 describe('lint does not reject reasonable text', () => {
     test('lowercase i, dotted names, region names and Windows home paths are not first-person', () => {
         const summary = 'for i in range: us-east-1 reads my.cnf from C:\\Users\\me\\app and I/O stays bounded.';
+        assert.deepEqual(one('doer', { ...GOOD, summary }).refused, []);
+    });
+
+    test('names, numerals, units and quoted text are not first-person', () => {
+        for (const summary of [
+            'Do it in the US region, the EU one lacks the quota.',
+            'Phase I rollout and Type I errors both skip the gate.',
+            'The driver polls every 50 us while the queue drains.',
+            'Intel ME keeps the port open, and the WE pin stays low.',
+            'The registry answers "We could not find that package" on a typo.',
+            'The agent prints `our token expired` until the lease renews.',
+        ]) {
+            assert.deepEqual(one('doer', { ...GOOD, summary }).refused, [], summary);
+        }
+    });
+
+    test('quoted text in a fenced block is skipped too', () => {
+        const content = 'Symptom:\n```\nWe could not reach the server\n```\nRule/Fix: retry on the second interface only.';
+        assert.deepEqual(one('doer', { ...GOOD, content }).refused, []);
+    });
+
+    test('unquoted narrative in Title case or lowercase is still refused', () => {
+        for (const summary of ['We found the budget is read once at boot.', 'The budget surprised us during the boot of the node.', 'My first try failed when the budget was edited.']) {
+            refusedBy({ ...GOOD, summary }, 'first-person');
+        }
+    });
+
+    test('a CRLF heading and Root cause satisfy the failed-attempt sections', () => {
+        for (const content of [
+            'Cause\r\nthe lock file is keyed on the branch name only.\r\nRule/Fix\r\nrun the two suites apart.',
+            'Root cause: the lock file is keyed on the branch name only.\nFix: run the two suites apart.',
+            '## Root Cause\nthe lock file is keyed on the branch name only.\n## Rule\nrun the two suites apart.',
+        ]) {
+            assert.deepEqual(one('doer', { ...GOOD, trigger: 'failed-attempt', content }).refused, [], content);
+        }
+    });
+
+    test('a ccTLD host:port is not a line reference, a file name:line still is', () => {
+        for (const summary of [
+            'Connect to api.example.pl:443 fails behind the proxy.',
+            'Mirror mirror.example.sh:22 rejects keys at the gate.',
+            'The host example.pl:443 needs an allowlist entry.',
+            'The image ghcr.io/org/app.server:20 pins the runtime.',
+        ]) {
+            assert.deepEqual(one('doer', { ...GOOD, trigger: 'env-quirk', symbols: [], summary }).refused, [], summary);
+        }
+        for (const summary of [
+            'The budget is read at retry.test.mjs:12 during boot.',
+            'The budget is read at notes.md:130 during boot.',
+            'The budget is read at boot.py:17 during boot.',
+        ]) {
+            refusedBy({ ...GOOD, symbols: [], summary }, 'line-number-only');
+        }
+    });
+
+    test('content with real added detail passes even when it restates the summary first', () => {
+        const content = `${GOOD.summary} Symptom: the old budget stays in effect after the config file changes on disk. Evidence: the integration test reloads and reads the previous value.`;
+        assert.deepEqual(one('doer', { ...GOOD, content }).refused, []);
+    });
+});
+
+describe('length bounds, at and over each cap', () => {
+    test('title and summary at the cap pass, one over is refused', () => {
+        assert.deepEqual(one('doer', { ...GOOD, title: 't'.repeat(KB_MAX_CAPTURE_TITLE) }).refused, []);
+        assert.deepEqual(one('doer', { ...GOOD, summary: 's'.repeat(KB_MAX_CAPTURE_SUMMARY) }).refused, []);
+        refusedBy({ ...GOOD, title: 't'.repeat(KB_MAX_CAPTURE_TITLE + 1) }, 'length');
+        refusedBy({ ...GOOD, summary: 's'.repeat(KB_MAX_CAPTURE_SUMMARY + 1) }, 'length');
+        assert.equal(KB_MAX_CAPTURE_TITLE, 160);
+    });
+
+    test('the minimums the report schema no longer enforces are refused here', () => {
+        refusedBy({ ...GOOD, title: 't'.repeat(KB_MIN_CAPTURE_TITLE - 1) }, 'length');
+        refusedBy({ ...GOOD, summary: 's'.repeat(KB_MIN_CAPTURE_SUMMARY - 1) }, 'length');
+        refusedBy({ ...GOOD, content: 'c'.repeat(KB_MIN_CAPTURE_CONTENT - 1) }, 'length');
+    });
+
+    test('a real 101-char bible title passes', () => {
+        const title = 'Role output schemas require kb_captures trigger; a trigger-less capture rejects the whole role output';
+        assert.equal(title.length, 101);
+        assert.deepEqual(one('doer', { ...GOOD, title }).refused, []);
+    });
+});
+
+describe('near-duplicate content is refused', () => {
+    const summary = 'The retry budget is read once at boot. Editing the budget needs a service restart.';
+    for (const [name, content] of [
+        ['two words changed', 'The retry budget is loaded once at startup. Editing the budget needs a service restart.'],
+        ['sentences reordered', 'Editing the budget needs a service restart. The retry budget is read once at boot.'],
+        ['a prefix of the summary', 'The retry budget is read once at boot. Editing the budget'],
+    ]) {
+        test(name, () => refusedBy({ ...GOOD, summary, content }, 'content-repeats-summary'));
+    }
+});
+
+describe('secrets are refused at capture', () => {
+    // Built by concatenation: no token-shaped literal lives in this repository.
+    const tokens = {
+        'classic GitHub token': 'gh' + 'p_' + 'a1'.repeat(18),
+        'GitHub server token': 'gh' + 's_' + 'b2'.repeat(18),
+        'fine-grained GitHub token': 'github' + '_pat_' + 'c3'.repeat(20),
+        'Slack token': 'xo' + 'xb-' + '1234567890-abcdefgh',
+        'AWS access key': 'AK' + 'IA' + 'ABCDEFGHIJKLMNOP',
+        'bearer value': 'Bear' + 'er ' + 'd4'.repeat(20),
+    };
+    for (const [name, token] of Object.entries(tokens)) {
+        test(`${name} in the summary`, () => refusedBy({ ...GOOD, summary: `The job sends ${token} with each call.` }, 'secret'));
+        test(`${name} in content`, () => refusedBy({ ...GOOD, content: `Context: the job sends ${token} with each outgoing call to the server.` }, 'secret'));
+        test(`${name} in an error signature`, () => refusedBy({ ...GOOD, error_signatures: [`denied for ${token}`] }, 'secret'));
+    }
+    test('prose about tokens passes', () => {
+        const summary = 'A ghp_ prefix marks a classic token; send it as a Bearer token and never log it.';
         assert.deepEqual(one('doer', { ...GOOD, summary }).refused, []);
     });
 });

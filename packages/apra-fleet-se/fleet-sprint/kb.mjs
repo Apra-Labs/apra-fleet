@@ -111,59 +111,93 @@ export const KB_CAPTURE_TYPES = Object.freeze(['knowledge', 'learning', 'runbook
 // backward compatibility, so refusing one is this engine's job.
 export const KB_CAPTURE_TRIGGERS = Object.freeze(['failed-attempt', 'review-finding', 'test-failure', 'env-quirk', 'hidden-invariant', 'design-rationale']);
 
-// Capture lint length caps (characters): title 100, summary 400, content 2000.
-export const KB_MAX_CAPTURE_TITLE = 100;
-export const KB_MAX_CAPTURE_SUMMARY = 400;
+// Capture lint length bounds (characters): title 8-160, summary 20-500, content
+// 40-2000. Measured on real entries: at these caps 2 of 609 titles and 1 of 609
+// summaries are over. The role schemas state the same numbers in description text.
+export const KB_MIN_CAPTURE_TITLE = 8;
+export const KB_MAX_CAPTURE_TITLE = 160;
+export const KB_MIN_CAPTURE_SUMMARY = 20;
+export const KB_MAX_CAPTURE_SUMMARY = 500;
+export const KB_MIN_CAPTURE_CONTENT = 40;
 export const KB_MAX_CAPTURE_CONTENT = 2000;
 // Content must add at least this many normalised characters beyond the
 // summary, or it only repeats the summary.
 export const KB_MIN_CONTENT_EXTRA = 40;
+// Near-duplicate content: at least this share of its distinct words is in the
+// summary AND it brings fewer than this many new words. Real entries with added
+// content stay under 0.4 overlap, so the gap is wide.
+export const KB_REPEAT_MIN_OVERLAP = 0.7;
+export const KB_REPEAT_MAX_NEW_WORDS = 12;
 
 // A double-brace placeholder token ({{<word>.<KEY>}}), built generically so no
 // particular placeholder prefix is spelled out here.
 const KB_PLACEHOLDER_RE = new RegExp('\\{\\{\\s*[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+\\s*\\}\\}');
-// First-person narrative words as whole words. A path, flag or dotted name
-// (us-east-1, my.cnf, C:\Users\me) is not a word here.
-const KB_FIRST_PERSON_RE = /(?<![\w/\\.-])(?:me|my|we|our|us)(?![\w/\\-]|\.\w)/i;
-const KB_FIRST_PERSON_I_RE = /(?<![\w/\\.-])I(?![\w/\\-]|\.\w)/;
+// A raw credential: a provider token shape, or a long Bearer/Basic value. Mirrors
+// BIBLE_SECRET_SHAPES in the server's bible export.
+const KB_SECRET_RE = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abeoprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,})|\b(?:[Bb]earer|Basic)\s+[A-Za-z0-9._~+\/=-]{20,}/;
+// First-person narrative words as whole words, lowercase or Title case only: an
+// all-caps US, ME or WE is a name. A path, flag or dotted name (us-east-1, my.cnf,
+// C:\Users\me) is not a word here, and neither is a unit after a number (50 us).
+const KB_FIRST_PERSON_RE = /(?<![\w/\\.-])(?<!\d\s)(?:[Mm]e|[Mm]y|[Ww]e|[Oo]ur|[Uu]s)(?![\w/\\-]|\.\w)/;
+// The pronoun I, except as a numeral after a noun that takes one (Phase I).
+const KB_FIRST_PERSON_I_RE = /(?<![\w/\\.-])(?<!\b(?:Phase|Type|Tier|Part|Stage|Class|Level|Step|Section|Chapter|Volume|Gen|Rev|Series|Group|Category|Mark)\s)I(?![\w/\\-]|\.\w)/;
 // A line-number reference: a path:digits token or the phrase "line N". A
-// path:digits token is either a path with a separator (src/a.ts:42,
-// C:\src\a.cs:7) or a bare file name with a source-like extension
-// (kb.mjs:130). A hostname:port (registry.npmjs.org:443) or a URL authority
-// (https://host.dev:8080) is neither, so it is not a line reference.
-const KB_LINE_REF_RE = /(?<![\w.\/\\:-])(?:[A-Za-z]:)?(?:[\w.-]*[\/\\])+[\w.-]*\.[A-Za-z]\w*:\d+|(?<![\w.\/\\:-])[\w-]+(?:\.[\w-]+)*\.(?:[cmt]?[jt]sx?|py|rb|go|rs|java|kts?|scala|c|h|cc|cpp|cxx|hpp|hh|cs|fs|swift|mm?|php|pl|lua|sh|bash|zsh|ps1|psm1|bat|cmd|sql|vue|svelte|html?|s?css|less|jsonc?|ya?ml|toml|ini|xml|md|txt|gradle|cmake|mk|proto|graphql|tf|dart|exs?|erl|hs|ml|clj|r|jl|zig):\d+|\bline\s+\d+\b/i;
-// The labelled sections a failed-attempt capture's content must carry.
-const KB_CAUSE_SECTION_RE = /(?:^|\n)[ \t>*#-]*Cause[ \t*]*(?::|\n|$)/i;
+// path:digits token names a source-like extension, with a separator (src/a.ts:42,
+// C:\src\a.cs:7) or as a bare file name (kb.mjs:130, a.test.ts:12). A hostname:port
+// (registry.npmjs.org:443) or a URL authority (https://host.dev:8080) is not one.
+// Extensions that are also country TLDs (.pl, .sh, .md ...) count only as
+// name.ext, so api.example.pl:443 is a host, and never on a well-known port.
+const KB_LINE_REF_RE = /(?<![\w.\/\\:-])(?:[A-Za-z]:)?(?:[\w.-]*[\/\\])+[\w.-]*\.(?:[cmt]?[jt]sx?|rb|go|java|kts?|scala|c|h|cpp|cxx|hpp|hh|cs|fs|swift|m|php|lua|bash|zsh|ps1|psm1|bat|cmd|sql|vue|svelte|html?|s?css|less|jsonc?|ya?ml|toml|ini|xml|txt|gradle|cmake|proto|graphql|dart|exs?|erl|hs|clj|r|jl|zig|cc|md|mk|ml|mm|pl|py|rs|sh|tf):\d+|(?<![\w.\/\\:-])[\w-]+(?:\.[\w-]+)*\.(?:[cmt]?[jt]sx?|rb|go|java|kts?|scala|c|h|cpp|cxx|hpp|hh|cs|fs|swift|m|php|lua|bash|zsh|ps1|psm1|bat|cmd|sql|vue|svelte|html?|s?css|less|jsonc?|ya?ml|toml|ini|xml|txt|gradle|cmake|proto|graphql|dart|exs?|erl|hs|clj|r|jl|zig):\d+|(?<![\w.\/\\:-])[\w-]+\.(?:cc|md|mk|ml|mm|pl|py|rs|sh|tf):(?!(?:22|80|443|8080|8443)\b)\d+|\bline\s+\d+\b/i;
+// The labelled sections a failed-attempt capture's content must carry. CRLF is
+// normalised before these run.
+const KB_CAUSE_SECTION_RE = /(?:^|\n)[ \t>*#-]*(?:Root[ \t]+)?Cause[ \t*]*(?::|\n|$)/i;
 const KB_RULE_FIX_SECTION_RE = /(?:^|\n)[ \t>*#-]*(?:Rule\/Fix|Rule|Fix)[ \t*]*(?::|\n|$)/i;
 
 function kbNormText(s) {
     return String(s).toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 }
 
-/**
- * Lint one capture. Returns null when it passes, or "rule <name>: <detail>"
- * naming the first rule it fails. `content` is the trimmed content ('' when
- * absent).
- */
+// Text with double-quoted and backticked spans removed: a quoted error message
+// is not the writer's own voice. Single quotes are left alone (apostrophes).
+function kbWithoutQuoted(s) {
+    return String(s).replace(/```[\s\S]*?```/g, ' ').replace(/"[^"\n]*"/g, ' ').replace(/`[^`\n]*`/g, ' ');
+}
+
+// True when content only repeats the summary: equal, the summary plus a few
+// characters, or nearly the same words (edited, reordered, or a prefix).
+function kbRepeatsSummary(summary, content) {
+    const ns = kbNormText(summary);
+    const nc = kbNormText(content);
+    if (nc === ns || (nc.includes(ns) && nc.length - ns.length < KB_MIN_CONTENT_EXTRA)) return true;
+    const summaryWords = new Set(ns.split(' '));
+    const contentWords = new Set(nc.split(' '));
+    const newWords = [...contentWords].filter((w) => !summaryWords.has(w)).length;
+    return newWords < KB_REPEAT_MAX_NEW_WORDS && (contentWords.size - newWords) / contentWords.size >= KB_REPEAT_MIN_OVERLAP;
+}
+
+// Lint one capture. Returns null when it passes, or "rule <name>: <detail>"
+// naming the first rule it fails. `content` is the trimmed content ('' when
+// absent).
 function lintKbCapture(c, content) {
     const cues = Array.isArray(c.recall_cues) ? c.recall_cues : [];
     const sigs = Array.isArray(c.error_signatures) ? c.error_signatures : [];
     const all = [c.title, c.summary, content, ...cues, ...sigs];
     if (all.some((s) => /[^\x00-\x7F]/.test(s))) return 'rule ascii-only: non-ASCII character';
+    if (c.title.length < KB_MIN_CAPTURE_TITLE) return `rule length: title under ${KB_MIN_CAPTURE_TITLE} chars`;
     if (c.title.length > KB_MAX_CAPTURE_TITLE) return `rule length: title over ${KB_MAX_CAPTURE_TITLE} chars`;
+    if (c.summary.length < KB_MIN_CAPTURE_SUMMARY) return `rule length: summary under ${KB_MIN_CAPTURE_SUMMARY} chars`;
     if (c.summary.length > KB_MAX_CAPTURE_SUMMARY) return `rule length: summary over ${KB_MAX_CAPTURE_SUMMARY} chars`;
+    if (content.length > 0 && content.length < KB_MIN_CAPTURE_CONTENT) return `rule length: content under ${KB_MIN_CAPTURE_CONTENT} chars`;
     if (content.length > KB_MAX_CAPTURE_CONTENT) return `rule length: content over ${KB_MAX_CAPTURE_CONTENT} chars`;
     if (all.some((s) => KB_PLACEHOLDER_RE.test(s))) return 'rule placeholder: double-brace placeholder token';
-    const prose = [c.title, c.summary, content, ...cues];
+    if (all.some((s) => KB_SECRET_RE.test(s))) return 'rule secret: token-shaped credential';
+    const prose = [c.title, c.summary, content, ...cues].map(kbWithoutQuoted);
     if (prose.some((s) => KB_FIRST_PERSON_RE.test(s) || KB_FIRST_PERSON_I_RE.test(s))) return 'rule first-person: narrative first-person word';
     const named = Array.isArray(c.symbols) && c.symbols.some((s) => typeof s === 'string' && s.trim().length > 0);
     if (!named && [c.title, c.summary, content].some((s) => KB_LINE_REF_RE.test(s))) return 'rule line-number-only: line reference with no symbol named';
-    if (content.length > 0) {
-        const ns = kbNormText(c.summary);
-        const nc = kbNormText(content);
-        if (nc === ns || (nc.includes(ns) && nc.length - ns.length < KB_MIN_CONTENT_EXTRA)) return 'rule content-repeats-summary: content repeats the summary';
-    }
-    if (c.trigger === 'failed-attempt' && !(KB_CAUSE_SECTION_RE.test(content) && KB_RULE_FIX_SECTION_RE.test(content))) {
+    if (content.length > 0 && kbRepeatsSummary(c.summary, content)) return 'rule content-repeats-summary: content repeats the summary';
+    const sections = content.replace(/\r\n?/g, '\n');
+    if (c.trigger === 'failed-attempt' && !(KB_CAUSE_SECTION_RE.test(sections) && KB_RULE_FIX_SECTION_RE.test(sections))) {
         return 'rule failed-attempt-sections: content needs a Cause and a Rule/Fix section';
     }
     return null;
@@ -601,11 +635,17 @@ export function createKbWorkClient(opts = {}) {
 
     const zeroCounts = () => ({ captured: 0, promoted: 0, discarded: 0, rejected: 0 });
 
-    // kb_invalidate {ids} answers {discarded, not_found, already_discarded}.
-    // Every candidate is maintainer-tagged by construction, so a not-found
-    // means the entry is gone: logged, non-fatal, and not counted.
+    // kb_invalidate {ids} answers {discarded, not_found, already_discarded, and
+    // refused for a session without the kb_maintainer grant}. Every candidate
+    // is maintainer-tagged by construction, so a not-found means the entry is
+    // gone: logged, non-fatal, and not counted. A refused id stays live, so
+    // that is a WARN and is not counted either.
     function invalidateLanded(p, res) {
         const parsed = parseResult(res);
+        if (parsed && Array.isArray(parsed.refused) && parsed.refused.includes(p.id)) {
+            log(`[kb-work] WARN: kb_invalidate refused ${p.id} on the maintainer -- the session lacks the kb_maintainer grant, the entry stays live (non-fatal)`);
+            return false;
+        }
         if (parsed && Array.isArray(parsed.not_found) && parsed.not_found.includes(p.id)) {
             log(`[kb-work] kb_invalidate: entry ${p.id} not found on the maintainer -- already gone (non-fatal)`);
             return false;
