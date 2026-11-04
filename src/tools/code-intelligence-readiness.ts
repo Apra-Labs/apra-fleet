@@ -15,7 +15,7 @@
 import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { isRecordedAnalyzeAlive, isReindexRunning, recordedIndexBuild } from './code-intelligence-reindex.js';
+import { analyzeProgress, isRecordedAnalyzeAlive, isReindexRunning, recordedIndexBuild, type AnalyzeProgress } from './code-intelligence-reindex.js';
 import { indexInconsistency, readGitNexusIndexState } from './code-index-state.js';
 import { scheduleIndexBuild, type ScheduleReindexOutcome } from './code-index-heal.js';
 import { missingOnServerPathMessage } from '../utils/find-on-path.js';
@@ -27,12 +27,82 @@ export type CodeIntelErrorCode = 'E-CODE-INDEX-NOT-READY' | 'E-CODE-INTEL-DISABL
 export class CodeIntelError extends Error {
   readonly code: CodeIntelErrorCode;
   readonly remediation: string;
-  constructor(code: CodeIntelErrorCode, problem: string, remediation: string) {
+  /**
+   * Machine-readable detail returned beside the one-line message as the error
+   * tool result's `structuredContent` (the tool wrapper in
+   * src/services/tool-registry.ts maps any thrown error carrying it). Set on
+   * every E-CODE-INDEX-NOT-READY (IndexNotReadyData); absent otherwise.
+   */
+  readonly structuredContent?: Record<string, unknown>;
+  constructor(code: CodeIntelErrorCode, problem: string, remediation: string, structuredContent?: Record<string, unknown>) {
     super(`${code}: ${problem} Remediation: ${remediation}`);
     this.name = 'CodeIntelError';
     this.code = code;
     this.remediation = remediation;
+    if (structuredContent) this.structuredContent = structuredContent;
   }
+}
+
+/** Suggested wait before the single retry while a build runs or was just requested (the message says "in a minute or so"). */
+export const RETRY_AFTER_BUILDING_MS = 60_000;
+/** Suggested wait when a build finished moments ago (the scheduler's cooldown). */
+export const RETRY_AFTER_COOLDOWN_MS = 60_000;
+/** Suggested wait when the index changed under a call (a rebuild may already be done). */
+export const RETRY_AFTER_CHANGED_MS = 5_000;
+
+/**
+ * The structured data on every E-CODE-INDEX-NOT-READY tool result
+ * (`structuredContent`), next to the unchanged one-line text:
+ *
+ *   retry_after_ms  -- always a number: how long to wait before ONE retry.
+ *                      0 together with retry_will_help: false when no build
+ *                      is running and none could be requested, so waiting
+ *                      and retrying will not help (follow the remediation or
+ *                      fall back).
+ *   retry_will_help -- false when no build is running and none was requested.
+ *   state           -- the readiness state ('changed' for an answer discarded
+ *                      because the index changed while the call ran).
+ *   build           -- 'running' (an analyze is live), 'requested' (one was
+ *                      just started for this call), or 'none'.
+ *   heal            -- the automatic build outcome when one was attempted
+ *                      ('started' or the scheduler's not-started reason).
+ *   progress        -- the live analyze's phase, elapsed time, last log line
+ *                      and line count (as code_status shows) when one is
+ *                      recorded for the folder.
+ */
+export interface IndexNotReadyData {
+  code: 'E-CODE-INDEX-NOT-READY';
+  provider: CodeIndexProvider;
+  state: CodeIndexNotReadyState | 'changed';
+  retry_after_ms: number;
+  retry_will_help: boolean;
+  build: 'running' | 'requested' | 'none';
+  heal?: string;
+  progress?: AnalyzeProgress;
+}
+
+function notReadyData(
+  provider: CodeIndexProvider,
+  repo: string | undefined,
+  state: IndexNotReadyData['state'],
+  build: IndexNotReadyData['build'],
+  retryAfterMs: number,
+  heal?: string,
+): Record<string, unknown> {
+  const data: IndexNotReadyData = {
+    code: 'E-CODE-INDEX-NOT-READY',
+    provider,
+    state,
+    retry_after_ms: retryAfterMs,
+    retry_will_help: retryAfterMs > 0,
+    build,
+  };
+  if (heal !== undefined) data.heal = heal;
+  if (provider === 'gitnexus' && repo) {
+    const progress = analyzeProgress(repo);
+    if (progress) data.progress = progress;
+  }
+  return data as unknown as Record<string, unknown>;
 }
 
 export type CodeIndexProvider = 'gitnexus' | 'codebase-memory';
@@ -133,14 +203,22 @@ export function indexNotReadyError(
 ): CodeIntelError {
   const where = repo ? ` for '${repo}'` : '';
   if (provider === 'codebase-memory') {
+    // codebase-memory exposes no building signal and fleet never builds its
+    // index: waiting will not help until someone indexes the project.
     return new CodeIntelError(
       'E-CODE-INDEX-NOT-READY',
       `No codebase-memory code index found${where}.`,
       `Say "Index this project" to your agent (or run 'codebase-memory-mcp cli index_repository' on the repo), then retry.`,
+      notReadyData(provider, repo, state, 'none', 0),
     );
   }
   if (state === 'building') {
-    return new CodeIntelError('E-CODE-INDEX-NOT-READY', `The gitnexus code index${where} is still being built.`, RETRY_SOON);
+    return new CodeIntelError(
+      'E-CODE-INDEX-NOT-READY',
+      `The gitnexus code index${where} is still being built.`,
+      RETRY_SOON,
+      notReadyData(provider, repo, state, 'running', RETRY_AFTER_BUILDING_MS),
+    );
   }
   const problem = state === 'interrupted'
     ? `The gitnexus code index${where} is marked incomplete and no running analyze was found.`
@@ -148,7 +226,14 @@ export function indexNotReadyError(
       ? `The gitnexus code index${where} has inconsistent metadata${detail ? ` (${detail})` : ''}, so its answers cannot be trusted.`
       : `No gitnexus code index found${where}.`;
   const [what, remediation] = healText(heal);
-  return new CodeIntelError('E-CODE-INDEX-NOT-READY', `${problem}${what}`, remediation);
+  const [build, retryAfterMs] = healRetry(heal);
+  const healName = heal ? (heal.started ? 'started' : heal.reason) : undefined;
+  return new CodeIntelError(
+    'E-CODE-INDEX-NOT-READY',
+    `${problem}${what}`,
+    remediation,
+    notReadyData(provider, repo, state, build, retryAfterMs, healName),
+  );
 }
 
 /** [sentence appended to the problem, remediation] for a heal outcome. */
@@ -198,6 +283,15 @@ function healText(heal: IndexHealOutcome | undefined): [string, string] {
   }
 }
 
+/** [build, retry_after_ms] for a heal outcome: only a running/requested build or a cooldown is worth waiting for. */
+function healRetry(heal: IndexHealOutcome | undefined): [IndexNotReadyData['build'], number] {
+  if (!heal) return ['none', 0];
+  if (heal.started) return ['requested', RETRY_AFTER_BUILDING_MS];
+  if (heal.reason === 'already-running') return ['running', RETRY_AFTER_BUILDING_MS];
+  if (heal.reason === 'cooldown') return ['none', RETRY_AFTER_COOLDOWN_MS];
+  return ['none', 0];
+}
+
 /**
  * The typed error for an answer discarded because the index changed while the
  * call ran: `after` is readiness re-read once the call returned. Not ready ->
@@ -210,6 +304,7 @@ export function indexChangedDuringCallError(repo: string, after: CodeIndexReadin
       'E-CODE-INDEX-NOT-READY',
       `The gitnexus code index for '${repo}' changed while this call was answered and is now ${after.state}${after.detail ? ` (${after.detail})` : ''}; the answer was discarded.`,
       'Retry the same call; it requests a rebuild if one is needed (code_status shows the index state).',
+      notReadyData('gitnexus', repo, 'changed', 'none', RETRY_AFTER_CHANGED_MS),
     );
   }
   const why = after.ready ? 'was replaced by an index build' : 'started being rebuilt';
@@ -217,6 +312,9 @@ export function indexChangedDuringCallError(repo: string, after: CodeIndexReadin
     'E-CODE-INDEX-NOT-READY',
     `The gitnexus code index for '${repo}' ${why} while this call was answered; the answer was discarded.`,
     RETRY_SOON,
+    after.ready
+      ? notReadyData('gitnexus', repo, 'changed', 'none', RETRY_AFTER_CHANGED_MS)
+      : notReadyData('gitnexus', repo, 'changed', 'running', RETRY_AFTER_BUILDING_MS),
   );
 }
 

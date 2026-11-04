@@ -191,7 +191,21 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
       const roots = rootsCache && (toolName.startsWith('kb_') || toolName.startsWith('code_'))
         ? await rootsCache.get(extra?.sendRequest?.bind(extra))
         : undefined;
-      const raw = await runWithSessionMember(sessionMemberId, () => handler(input, scopedExtra), { kbMaintainer, roots });
+      let raw: Awaited<ReturnType<typeof handler>>;
+      try {
+        raw = await runWithSessionMember(sessionMemberId, () => handler(input, scopedExtra), { kbMaintainer, roots });
+      } catch (err) {
+        // A thrown error carrying machine-readable detail (structuredContent,
+        // e.g. E-CODE-INDEX-NOT-READY's retry_after_ms and build progress)
+        // becomes the same one-line isError text the SDK would produce, plus
+        // that detail as the result's structuredContent. Any other error is
+        // left to the SDK unchanged.
+        const sc = err instanceof Error ? (err as { structuredContent?: unknown }).structuredContent : undefined;
+        if (err instanceof Error && sc && typeof sc === 'object' && !Array.isArray(sc)) {
+          return { content: [{ type: 'text' as const, text: err.message }], isError: true, structuredContent: sc as Record<string, unknown> };
+        }
+        throw err;
+      }
       const result = typeof raw === 'string' ? raw : raw.text;
       const structuredContent = typeof raw === 'string' ? undefined : raw.structuredContent;
       const isJson = isJsonResponse(result);

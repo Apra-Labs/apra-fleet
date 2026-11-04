@@ -538,6 +538,41 @@ export function isRecordedAnalyzeAlive(repoPath: string, now: number = Date.now(
   }
 }
 
+/**
+ * Progress of the analyze run recorded for `repo` (status.json) while it has
+ * not finished -- the same data code_status reports under `analyze`, reduced
+ * to what a caller waiting on the index needs. null when no run is recorded
+ * for this folder or the recorded run is done. The last line and line count
+ * are read from analyze.log, so they are current even for a run started by an
+ * earlier server instance. Never throws.
+ */
+export interface AnalyzeProgress {
+  phase: AnalyzePhase;
+  /** Milliseconds since the run started; null when its start time is unknown. */
+  elapsed_ms: number | null;
+  last_line: string;
+  line_count: number;
+}
+
+export function analyzeProgress(repoPath: string, now: number = Date.now()): AnalyzeProgress | null {
+  try {
+    const dir = codeIndexDir(repoPath);
+    const status = readStatusFile(dir);
+    if (!status || status.phase === 'done') return null;
+    if (typeof status.repo === 'string' && status.repo !== repoPath) return null;
+    const started = Date.parse(status.started);
+    const lines = readLogLines(dir);
+    return {
+      phase: status.phase,
+      elapsed_ms: Number.isFinite(started) ? Math.max(0, now - started) : null,
+      last_line: lines.length > 0 ? lines[lines.length - 1] : (status.lastLine ?? ''),
+      line_count: Math.max(logLineCount(dir), status.lineCount ?? 0),
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // code_reindex / code_status
 // ---------------------------------------------------------------------------

@@ -29,9 +29,14 @@ ToolTextResponse = { content: [ { type: "text", text: string } ] }
 - `content` is always a single-element array; `text` is the JSON-stringified
   handler payload -- so every response is JSON-parseable in practice even
   though no tool declares a response zod schema (`INVENTORY.md` section 3).
-- No tool in this surface returns `structuredContent`; that channel is unused
-  here (`wrapTool` only forwards it when the handler returns
-  `{text, structuredContent}`, and all 23 handlers return a bare `string`).
+- No tool in this surface returns `structuredContent` on a SUCCESS result;
+  that channel is unused there (`wrapTool` only forwards it when the handler
+  returns `{text, structuredContent}`, and all 23 handlers return a bare
+  `string`). The one use is on an ERROR result: an `E-CODE-INDEX-NOT-READY`
+  refusal is returned as `{ content: [ { type: "text", text: <the unchanged
+  one-line message> } ], isError: true, structuredContent: <detail> }` -- see
+  section 2.7. Every other refusal is a thrown error the MCP server turns into
+  an `isError` text result with no `structuredContent`.
 - **The published schemas are deliberately WIDER than the reachable shape, and
   that is not a contradiction of the two statements above.** Every
   `schemas/*.response.json` permits `content` to hold 1-3 items, allows an
@@ -456,6 +461,34 @@ pin the two (self) refusals; every `code_*` tool has a
 `refusal-index-not-ready` fixture run as the `CODE` member session (provider
 pinned to `gitnexus`, no index), and `code_query/refusal-intel-disabled` runs as
 the `CODE_OFF` member session (provider `none`).
+
+Every `E-CODE-INDEX-NOT-READY` error result keeps its one-line
+`CODE: problem Remediation: ...` text unchanged and adds machine-readable
+detail as the result's `structuredContent` (the error object's
+`structuredContent`, mapped by `wrapTool`; it survives the MCP boundary, where
+a plain thrown error keeps only its message):
+
+- `retry_after_ms` (number, every state): how long to wait before ONE retry --
+  60000 while an analyze is live or was just requested for this call, 60000
+  after the scheduler's cooldown, 5000 when the index changed under the call,
+  and `0` when no build is running and none could be requested (no automatic
+  build, builds paused or disabled, the server cannot build, a remote
+  member's folder, provider `codebase-memory`).
+- `retry_will_help` (boolean): `false` exactly when `retry_after_ms` is `0` --
+  waiting will not help; follow the remediation or fall back.
+- `code`, `provider`, `state` (`missing` | `building` | `interrupted` |
+  `inconsistent` | `changed`), `build` (`running` | `requested` | `none`), and
+  `heal` (`started` or the not-started reason) when an automatic build was
+  attempted.
+- `progress` (gitnexus, when an analyze is recorded for the folder and not
+  finished): `{ phase, elapsed_ms, last_line, line_count }`, the same data
+  `code_status` reports under `analyze`.
+
+The intended caller behaviour is: wait once for `retry_after_ms`, retry once,
+then fall back (e.g. to text search) -- never poll `code_status` in a loop.
+The `refusal-index-not-ready` fixtures record this detail under
+`error.structured` (minus the time-varying `progress`), and the round-trip
+harness compares it key for key.
 
 ### 2.8 Bible file format (v3) and its hash basis
 
