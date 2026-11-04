@@ -211,8 +211,14 @@ export function createDeployPermissionsProvisioner(opts = {}) {
                 grant: prefixes,
                 grant_reason: "deploy.md's declared Permissions section, auto-provisioned before dispatch",
             });
+            const failure = composeFailureText(result);
+            if (failure) {
+                // Refusal (e.g. NEVER_AUTO_GRANT): not ensured, not cached, so a later call retries.
+                log(`[deploy-permissions] compose_permissions refused deploy.md permissions on '${member}' (continuing -- the deployer's own Step 0a check remains the backstop): ${failure}`);
+                return;
+            }
             provisioned.add(member);
-            log(`[deploy-permissions] ensured deploy.md's required permissions on '${member}': ${result}`);
+            log(`[deploy-permissions] ensured deploy.md's required permissions on '${member}': ${resultText(result)}`);
         } catch (err) {
             log(`[deploy-permissions] could not auto-provision deploy.md permissions on '${member}' (continuing -- the deployer's own Step 0a check remains the backstop): ${err.message}`);
         }
