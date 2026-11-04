@@ -122,8 +122,8 @@ calling session's own: a member session resolves its registered work folder.
 Any other (FULL) session resolves from the MCP client's roots (`roots/list`):
 the first offered root inside a git repository with an origin remote wins, and
 stands for that repository's top level. The fleet server's working folder is
-used when no root qualifies or the client offers none (no `roots` capability,
-an empty list, or no offered root names a folder on the server's host). Roots are fetched once per session, on its first
+used only when the client offers no roots (no `roots` capability, an empty
+list, or no offered root names a folder on the server's host). Roots are fetched once per session, on its first
 `kb_*`/`code_*` call, and refetched after `notifications/roots/list_changed`;
 a member session never reads roots. A folder that cannot
 carry a KB identity is refused before the provider is reached
@@ -145,9 +145,8 @@ any of them (any value other than absent/undefined) MUST be refused with
 every removed key present and what replaces it. A FULL session's self is never
 the client's working directory (an HTTP server cannot see it), only an offered
 root or the server's folder. Its self-resolution errors name the missing piece:
-roots were offered but neither they nor the server folder are in a git
-repository (`E-SELF-NOT-A-REPO`), roots were offered but neither they nor the
-server folder have an origin remote (`E-SELF-NO-REMOTE`), or the client
+roots were offered but none is in a git repository (`E-SELF-NOT-A-REPO`), roots
+were offered but none has an origin remote (`E-SELF-NO-REMOTE`), or the client
 offered no roots and the server folder is not a repository / has no origin
 (`E-SELF-NOT-A-REPO` / `E-SELF-NO-REMOTE`, naming that no roots were offered).
 The remediation names every fix: open the client in the intended repository,

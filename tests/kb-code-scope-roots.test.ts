@@ -11,16 +11,17 @@ import { pathToFileURL } from 'node:url';
 //   - the first offered root inside a git repository with an origin remote
 //     wins, as that repository's top level, for BOTH kb_* and code_* (one
 //     session never scopes to two repos);
-//   - no root qualifies, or none offered (no capability / empty list) -> the
-//     server working folder;
-//   - extension for code_* only: neither a root nor the server folder has an
-//     origin -> code_* uses the first offered git repository, kb_* fails with
-//     E-SELF-NO-REMOTE;
+//   - extension for code_* only: roots offered, none with an origin -> code_*
+//     uses the first offered git repository, kb_* fails with E-SELF-NO-REMOTE;
+//   - no roots offered (no capability / empty list) -> the server working
+//     folder, exactly as before; roots offered and none usable never fall back
+//     to it;
 //   - neither usable -> an E-SELF-* error naming the missing piece;
 //   - a MEMBER session ignores roots.
 //
-// The server working folder (process.cwd(), spied) is a NON-repo temp dir
-// unless a case is about the fallback, so a pass cannot come from it.
+// The server working folder (process.cwd(), spied) is a NON-repo temp dir in
+// every roots case, or a usable repo where the case is that it must NOT be used,
+// so a pass cannot come from the cwd fallback.
 //
 // Isolation: tests/setup.ts points APRA_FLEET_DATA_DIR at a per-run temp dir,
 // so every kb.sqlite lands there and the real user profile is never touched;
@@ -232,34 +233,21 @@ describe('FULL session scope from client roots (resolver)', () => {
     expect(selfError(() => validateSelfFolder(sub, 'm')).code).toBe('E-SELF-NOT-A-REPO');
   });
 
-  it('roots that cannot carry a KB fall through to the next root, then to a server folder that can', () => {
+  it('roots that cannot carry a KB fall through to the next root, never to the server folder', () => {
     vi.spyOn(process, 'cwd').mockReturnValue(dirs.cwdRepo);
-    for (const roots of [rootsOf(dirs.plain), rootsOf(dirs.plain, dirs.noOrigin)]) {
-      const { kb, code } = asFull(roots, () => ({ kb: resolveSelfAnchor(), code: resolveCodeSelf() }));
-      expect(kb.folder).toBe(dirs.cwdRepo);
-      expect(code.repo).toBe(dirs.cwdRepo);
-    }
     const next = asFull(rootsOf(dirs.plain, dirs.noOrigin, dirs.withOrigin), () => resolveSelfAnchor());
     expect(next.folder).toBe(dirs.withOrigin);
   });
 
-  it('non-repo roots and a server repo without origin: code uses the server repo, kb says what is missing', () => {
-    vi.spyOn(process, 'cwd').mockReturnValue(dirs.noOrigin2);
-    const roots = rootsOf(dirs.plain);
-    expect(asFull(roots, () => resolveCodeSelf()).repo).toBe(dirs.noOrigin2);
-    const err = asFull(roots, () => selfError(() => resolveSelfAnchor()));
-    expect(err.code).toBe('E-SELF-NO-REMOTE');
-    expect(err.message).toContain('is inside a git repository with an origin remote');
-  });
-
-  it('neither a root nor the server folder has an origin: code uses the first offered git repo; kb fails with E-SELF-NO-REMOTE naming that', () => {
-    vi.spyOn(process, 'cwd').mockReturnValue(dirs.cwdPlain);
+  it('roots offered, none with an origin: code uses the first offered git repo; kb fails with E-SELF-NO-REMOTE naming that no root has an origin', () => {
+    vi.spyOn(process, 'cwd').mockReturnValue(dirs.cwdRepo); // a usable cwd must NOT be used: roots were offered
     const roots = rootsOf(dirs.plain, dirs.noOrigin, dirs.noOrigin2);
     expect(asFull(roots, () => resolveCodeSelf()).repo).toBe(dirs.noOrigin);
     const err = asFull(roots, () => selfError(() => resolveSelfAnchor()));
     expect(err.code).toBe('E-SELF-NO-REMOTE');
-    expect(err.message).toContain("neither the client's MCP roots");
+    expect(err.message).toContain("none of the client's MCP roots");
     expect(err.message).toContain('is in a git repository with an origin remote');
+    expect(err.message).toContain('open the client in a repository that has an origin remote');
     expect(err.message).toContain(`'${dirs.noOrigin}'`);
     expect(err.message.split('Remediation:').length - 1).toBe(1);
   });
@@ -304,8 +292,8 @@ describe('FULL session scope from client roots (resolver)', () => {
     expect(err.message).toContain('has no origin remote');
   });
 
-  it('neither the roots nor the server folder is a git repository: E-SELF-NOT-A-REPO naming that (kb and code alike)', () => {
-    vi.spyOn(process, 'cwd').mockReturnValue(dirs.cwdPlain);
+  it('roots offered but none in a git repository: E-SELF-NOT-A-REPO naming that and the fix, with a usable server folder NOT used (kb and code alike)', () => {
+    vi.spyOn(process, 'cwd').mockReturnValue(dirs.cwdRepo);
     const roots = rootsOf(dirs.plain, dirs.plain2);
     for (const resolve of [() => resolveSelfAnchor(), () => resolveCodeSelf()]) {
       const err = asFull(roots, () => selfError(resolve));
@@ -313,7 +301,8 @@ describe('FULL session scope from client roots (resolver)', () => {
       expect(err.message).toContain('the client offered MCP roots, but none of them');
       expect(err.message).toContain(`'${dirs.plain}'`);
       expect(err.message).toContain(`'${dirs.plain2}'`);
-      expect(err.message).toContain(`'${dirs.cwdPlain}'`);
+      expect(err.message).toContain('Open the client in a git repository with an origin remote');
+      expect(err.message).not.toContain(dirs.cwdRepo);
       expect(err.message.split('Remediation:').length - 1).toBe(1);
     }
   });
@@ -448,14 +437,14 @@ describe('FULL session scope from client roots over the real MCP transport', () 
     expect(answeredFrom(code.text)).toBe('root-with-origin');
   });
 
-  it('neither a root nor the server folder has an origin: code_query uses the first git repo, kb_stats fails with E-SELF-NO-REMOTE', async () => {
-    vi.spyOn(process, 'cwd').mockReturnValue(dirs.cwdPlain);
+  it('roots offered, none with an origin: code_query uses the first git repo, kb_stats fails with E-SELF-NO-REMOTE', async () => {
+    vi.spyOn(process, 'cwd').mockReturnValue(dirs.cwdRepo);
     const { client } = await connectWithRoots({ current: [dirs.plain, dirs.noOrigin] });
     expect(answeredFrom((await call(client, 'code_query', { query: 'w' })).text)).toBe('root-no-origin');
     const kb = await call(client, 'kb_stats');
     expect(kb.isError).toBe(true);
     expect(kb.text).toContain('E-SELF-NO-REMOTE');
-    expect(kb.text).toContain("neither the client's MCP roots");
+    expect(kb.text).toContain("none of the client's MCP roots");
   });
 
   it('a client without the roots capability keeps the server working folder', async () => {

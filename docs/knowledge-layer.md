@@ -119,9 +119,11 @@ repository with an origin, else the server's working folder;
   opened in a subfolder is scoped to the repository -- for both `kb_*` and
   `code_*`, so one session never scopes its kb and code tools to two different
   repositories. The fleet server's own working folder (`process.cwd()`) is used
-  when no root qualifies, or the client offers none (it lacks the `roots`
-  capability, returns an empty list, or none of its roots is a folder on the
-  server's host -- a remote HTTP client's roots are paths on its own machine).
+  only when the client offers no roots (it lacks the `roots` capability, returns
+  an empty list, or none of its roots is a folder on the server's host -- a
+  remote HTTP client's roots are paths on its own machine). When roots are
+  offered and none qualifies the call is refused, never answered from the server
+  folder, which may be an unrelated repository.
   A server auto-started with an
   unrelated working folder (e.g. a system directory) therefore works from any
   client opened in a repository.
@@ -135,16 +137,15 @@ repository with an origin, else the server's working folder;
   A member session never reads roots.
 
   **Extension for `code_*` only** (not part of the base rule): a code index
-  needs no origin remote, so when neither an offered root nor the server folder
-  is in a git repository with an origin, `code_*` falls back to the first
-  offered root in a git repository. `kb_*` calls in that session fail with
+  needs no origin remote, so when roots are offered and NONE is in a git
+  repository with an origin, `code_*` falls back to the first offered root in a
+  git repository. `kb_*` calls in that session fail with
   `E-SELF-NO-REMOTE` naming that no offered root has an origin remote, so kb
   and code still never resolve to two different repositories.
 
   When neither works, the error names the missing piece: roots were offered
-  but neither they nor the server folder are in a git repository
-  (`E-SELF-NOT-A-REPO`), roots were offered but neither they nor the server
-  folder have an origin (`E-SELF-NO-REMOTE`, kb only), or the client offered no
+  but none is in a git repository (`E-SELF-NOT-A-REPO`), roots were offered but
+  none has an origin (`E-SELF-NO-REMOTE`, kb only), or the client offered no
   roots and the server folder is not a git repository / has no origin
   ("This is a FULL session (no member identity) and the client offered no MCP
   roots, so its scope is the fleet server's own working folder, ...").

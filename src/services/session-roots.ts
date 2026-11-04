@@ -2,8 +2,8 @@
 //
 // A FULL session's kb_* and code_* scope comes from the client's roots
 // (MCP roots/list): the first offered root inside a git repository with an
-// origin remote wins (src/services/knowledge/kb-self.ts), else the server's
-// working folder.
+// origin remote wins (src/services/knowledge/kb-self.ts). The server's working
+// folder is used only when the client offers no roots.
 //
 // Scope resolution is synchronous and runs inside many handlers, so the async
 // roots/list round trip happens here, once per session, and the result is

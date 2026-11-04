@@ -1400,7 +1400,7 @@ export class ApraFleet {
     /**
      * code_reindex -- rebuild the code index of the calling session's own repo
      * (a member session's work folder, otherwise
-     * the first MCP client root (roots/list) inside a git repository with an origin remote, else the server working folder;
+     * the first MCP client root (roots/list) inside a git repository with an origin remote, or the server working folder when the client offers no roots;
      * there is no repo argument). Starts gitnexus analyze detached, always as
      * a full rebuild (--force; an incremental analyze can corrupt unchanged
      * symbol rows), with its

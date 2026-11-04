@@ -760,7 +760,7 @@ changes metadata without re-entering the secret.
 
 Calls `code_reindex` / `code_status` -- index maintenance for the calling
 session's own repo (a member session's registered work folder, otherwise
-the first MCP client root (roots/list) inside a git repository with an origin remote, else the server working folder; neither takes arguments). `codeReindex()` starts a
+the first MCP client root (roots/list) inside a git repository with an origin remote, or the server working folder when the client offers no roots; neither takes arguments). `codeReindex()` starts a
 detached `gitnexus analyze`, captures its output to
 `<data>/code-index/<slug>/analyze.log`, and returns after the first tick; its
 `outcome` is `started`, `up-to-date`, `starting`, `already-running` or
