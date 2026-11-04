@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6ecdfda08a76fc206721e855d72cf94b16f5f011",
     "branch": "main",
-    "entry_count": 123
+    "entry_count": 124
   },
   "entries": [
     {
@@ -2265,6 +2265,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:08:07.865Z"
+    },
+    {
+      "id": "f2c0c490-c149-488d-939c-beb60734c8bc",
+      "type": "learning",
+      "title": "service-notice is single-slot; use appendServiceNotice to keep pending guidance",
+      "summary": "writeServiceNotice overwrites the whole file; install writers that may follow register-time legacy guidance must use appendServiceNotice.",
+      "symbols": [],
+      "source_files": [
+        "src/services/service-notice.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T08:03:57.008Z",
+      "source_file_hashes": {
+        "src/services/service-notice.ts": "b80d4b6dc105ee1e0ff1b483bf09cbe6b7f79620"
+      }
     },
     {
       "id": "f33011e2-8ae6-4388-95d4-5e21f1716d0f",
