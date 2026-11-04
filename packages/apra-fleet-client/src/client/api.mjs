@@ -1345,6 +1345,11 @@ export class ApraFleet {
      * entries and tombstoned as {id, at, reason}; entry_count counts entries only.
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
+     * Under an http KB provider the call is skipped, never an error: the result
+     * is {path, merged: [], skipped: [], removed: [], entry_count: <entries in the
+     * existing parseable bible, else 0>, backfilled: 0, committed: false,
+     * bible_skipped: true, reason}; the KB is not read and nothing is written or
+     * committed.
      * @param {KbBibleCommitOptions} options
      */
     async kbBibleCommit(options) {

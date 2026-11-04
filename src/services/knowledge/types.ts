@@ -323,7 +323,8 @@ export interface MemoryProvider {
   init(): Promise<void>;
   capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }>;
   query(opts: QueryOptions): Promise<KBResult>;
-  context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean): Promise<FileContextResult[]>;
+  // ownerTag (MEMBER own-scope): only summaries from entries carrying that tag.
+  context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean, ownerTag?: string): Promise<FileContextResult[]>;
   invalidate(files: string[]): Promise<{ invalidated: number }>;
   // Id-level DISCARD: sets superseded_at (and stale) so the entry drops from every
   // read path; the row is kept. ownerTag restricts the call to entries carrying

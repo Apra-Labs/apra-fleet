@@ -580,13 +580,19 @@ session's `kb_query` / `kb_session_prime` / `kb_stats`), `E-MEMBER-VIEW-REMOTE`
 and `E-BIBLE-BASIS-NOT-GIT` (`kb_export` / `kb_bible_commit` in a folder that is
 not a git work tree).
 
+Under the http KB provider (`kb_setup provider http`), two more codes from the
+same file can be thrown: `E-KB-HTTP-UNSUPPORTED` (an operation the http
+provider cannot serve: `kb_invalidate` with `ids`, or a member `kb_promote`
+whose ownership check got entries without tags from the server; nothing is
+changed) and `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
+different project; nothing is read or written).
+
 `E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_harvest`, `kb_invalidate`,
-`kb_query`, `kb_context` and `kb_session_prime` when the remote (HTTP) KB takes
+`kb_query`, `kb_context`, `kb_session_prime`, `kb_list` and `kb_promote` when the remote (HTTP) KB takes
 its token from a named fleet secret (`kb_setup` token `{{secret.NAME}}`) and that
 secret is missing, expired, or still rejected (HTTP 401) after one re-read and
 retry. The message names the secret and the reason, never the value. A capture
-or invalidate is queued offline first and sent once the secret is accepted; a
-member session's CONFIRMED read comes from its checkout bible and is unaffected.
+or invalidate is queued offline first and sent once the secret is accepted.
 Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
 restart.
 
@@ -656,6 +662,11 @@ re-committing a tombstoned id through `ids` (a re-promotion) restores its entry
 and clears its tombstone. `provenance.entry_count` counts entries only.
 
 Result JSON: `{path, merged, demoted, skipped, removed, entry_count, committed}`.
+Under the http KB provider the call is skipped, never an error: the result is
+`{path, merged: [], demoted: [], skipped: [], removed: [], entry_count,
+backfilled: 0, committed: false, bible_skipped: true, reason}`, where
+`entry_count` counts the entries of the existing bible file (0 when it is
+absent or unreadable); the KB is not read and nothing is written or committed.
 
 #### `kbDemote(options: KbDemoteOptions)`
 

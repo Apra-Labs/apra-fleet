@@ -84,7 +84,7 @@ async function withSelectedProject(
   configFingerprint: string,
 ): Promise<KbProviders> {
   return {
-    project: await selectProjectProvider(base.projectSqlite, repoPath, remoteUrl, configFingerprint),
+    project: await selectProjectProvider(base.projectSqlite, repoPath, remoteUrl, configFingerprint, slug),
     global: base.global,
     projectSlug: slug,
   };
@@ -151,6 +151,7 @@ async function selectProjectProvider(
   repoPath: string,
   remoteUrl: string | undefined,
   configFingerprint: string,
+  slug: string,
 ): Promise<MemoryProvider> {
   let config: KbConfigResult;
   try {
@@ -184,8 +185,11 @@ async function selectProjectProvider(
     ? { secretName: config.tokenSecretName }
     : config.token!;
   const repository = resolveRepositoryIdentity(repoPath, remoteUrl);
+  // The slug goes on every request (X-KB-Project) so a server for another
+  // project refuses it instead of answering with that project's KB.
   const httpProvider = new HttpKbProvider(config.url!, tokenSource, projectProvider, {
     requestTimeoutMs: config.requestTimeoutMs,
+    projectSlug: slug,
     ...(repository ? { repository } : {}),
   });
   try {
@@ -197,6 +201,20 @@ async function selectProjectProvider(
   }
   _httpProviders.push(httpProvider);
   return httpProvider;
+}
+
+/**
+ * True when the KB config selects the http project provider, decided from the
+ * config file alone: no provider is built and no per-repo kb.sqlite is opened.
+ * A config that fails to read gives false, the same SQLite decision
+ * selectProjectProvider makes for it (and warns about on the next provider build).
+ */
+export function kbConfigSelectsHttp(): boolean {
+  try {
+    return readKbConfigFromDisk().provider === 'http';
+  } catch {
+    return false;
+  }
 }
 
 // Keyed by (slug, repoPath), NOT slug alone and NOT a single slot. The fleet

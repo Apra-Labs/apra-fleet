@@ -3,7 +3,6 @@ import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-sc
 import {
   getSelfReadKb, getMemberSplitRead, mergeSplitById, type KbAnchor, type MemberSplitRead,
 } from '../services/knowledge/kb-self.js';
-import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import type { MemoryProvider } from '../services/knowledge/types.js';
 
 const L2_CONTENT_CAP = 3200;
@@ -51,6 +50,12 @@ function passesTrustFilter(
   if (input.confidence?.length && !input.confidence.includes(e.confidence as NonNullable<KbQueryInput['confidence']>[number])) return false;
   if (input.exclude_disputed && (e.flagged_for_review || e.contradiction_of)) return false;
   return true;
+}
+
+// The flagged_only predicate (the same condition SqliteProvider.query applies
+// in SQL): either half of a contradiction pair.
+function isFlagged(e: { flagged_for_review?: boolean; contradiction_of?: string | null }): boolean {
+  return Boolean(e.flagged_for_review || e.contradiction_of);
 }
 
 type L1Opts = Parameters<MemoryProvider['query']>[0] & { limit: number };
@@ -178,9 +183,10 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // A MEMBER request naming CONFIRMED plus another tier is split: CONFIRMED
   // from the checkout bible view, plus the per-repo DB at every requested
   // tier, own captures only (kb-self.ts getMemberSplitRead). flagged_only
-  // never splits.
+  // never splits. Under an http project provider (serverRecall) both halves
+  // are the KB server: its CONFIRMED set, plus the member's own captures.
   if (!input.flagged_only) {
-    const split = await getMemberSplitRead(anchor, input.confidence, 'kb_query');
+    const split = await getMemberSplitRead(anchor, input.confidence, 'kb_query', { serverRecall: true });
     if (split) return splitQuery(split, input);
   }
 
@@ -189,8 +195,18 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // the confidence filter, so it is answered from the view too.
   // A request naming only INFERRED/UNVERIFIED in a MEMBER session goes to the
   // per-repo DB and sees only the caller's own captures (ownerTag).
-  const { providers, ownerTag } = await getSelfReadKb(anchor, input.flagged_only ? undefined : input.confidence);
-  if (ownerTag !== undefined) requireSqliteProject(providers.project, 'kb_query');
+  // Under an http project provider (serverRecall) a MEMBER CONFIRMED-only or
+  // INFERRED/UNVERIFIED-only read goes to the server; ownerTag is enforced
+  // the same way, fleet-side. A flagged_only read never takes serverRecall: a MEMBER flagged read is
+  // answered from the checkout bible view (plus the global KB) under either
+  // provider, exactly as over SQLite. The KB server holds every member's
+  // captures at every tier, and a flagged listing carries no owner tag, so
+  // sending it there would show the member other members' entries.
+  const { providers, ownerTag } = await getSelfReadKb(
+    anchor,
+    input.flagged_only ? undefined : input.confidence,
+    { serverRecall: !input.flagged_only },
+  );
 
   if (input.flagged_only) {
     const flaggedOpts = {
@@ -203,13 +219,16 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
       l1_only: false,
     };
 
-    const projectFlagged = await providers.project.query(flaggedOpts);
-    const globalFlagged = await providers.global.query(flaggedOpts);
+    // isFlagged re-applies the flagged filter to what a provider returned: the
+    // sqlite provider filters in SQL, a remote KB server predating the
+    // flagged_only parameter ignores it and answers with a plain listing.
+    const projectFlagged = (await providers.project.query(flaggedOpts)).results.filter(isFlagged);
+    const globalFlagged = (await providers.global.query(flaggedOpts)).results.filter(isFlagged);
 
-    const seen = new Set(projectFlagged.results.map(e => e.id));
+    const seen = new Set(projectFlagged.map(e => e.id));
     const merged = [
-      ...projectFlagged.results,
-      ...globalFlagged.results.filter(e => !seen.has(e.id)),
+      ...projectFlagged,
+      ...globalFlagged.filter(e => !seen.has(e.id)),
     ];
 
     return JSON.stringify({
@@ -260,15 +279,20 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   let l2Results = mergedL1.slice(0, 5);
 
   if (top5Ids.length > 0) {
-    // L2 fetch: check project first, then global for IDs not found in project
-    const projectL2 = await providers.project.query({ ids: top5Ids });
-    const projectL2Ids = new Set(projectL2.results.map(e => e.id));
+    // L2 fetch: check project first, then global for IDs not found in project.
+    // Each answer keeps only the ids it was asked for: a remote KB server that
+    // ignores the ids parameter must not inject arbitrary entries into L2.
+    const requested = new Set(top5Ids);
+    const projectL2 = (await providers.project.query({ ids: top5Ids })).results
+      .filter(e => requested.has(e.id));
+    const projectL2Ids = new Set(projectL2.map(e => e.id));
     const missingIds = top5Ids.filter(id => !projectL2Ids.has(id));
+    const missing = new Set(missingIds);
     const globalL2Results = missingIds.length > 0
-      ? (await providers.global.query({ ids: missingIds })).results
+      ? (await providers.global.query({ ids: missingIds })).results.filter(e => missing.has(e.id))
       : [];
 
-    l2Results = [...projectL2.results, ...globalL2Results].map(e => ({
+    l2Results = [...projectL2, ...globalL2Results].map(e => ({
       ...e,
       content: e.content.length > L2_CONTENT_CAP
         ? e.content.slice(0, L2_CONTENT_CAP) + '...[truncated]'
