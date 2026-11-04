@@ -85,6 +85,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pathToFileURL } from 'node:url';
+import { ensureTestSandbox } from './test-sandbox.mjs';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), '..');
@@ -467,6 +468,18 @@ async function cmdSupervise(assignedFiles) {
 
   const startMs = Date.now();
 
+  // Enter the per-run test sandbox in THIS (detached supervisor) process, the
+  // way scripts/with-test-sandbox.mjs does: ensureTestSandbox() rewrites
+  // process.env (HOME, USERPROFILE, APPDATA, APRA_FLEET_DATA_DIR, the sandbox
+  // marker and guard preload, beads workspace vars dropped) so os.homedir()
+  // and every lane child resolve inside it. Without it a lane test that spawns
+  // a supervisor or fleet client with no server reachable auto-starts a real
+  // apra-fleet on the default port. statusFile/heartbeatFile/logFile are
+  // already resolved to absolute paths at module load, so --status from a
+  // plain shell still finds them. Owned and cleaned up here, not by the
+  // --start parent (which detaches and exits).
+  const sandbox = ensureTestSandbox(process.env);
+
   // Two sequential (never overlapping) lanes: the bulk of the suite keeps
   // its concurrency=8 wall-clock win, then the dolt-heavy watchdog tests run
   // alone at low concurrency so their per-attempt dolt overhead is never
@@ -482,6 +495,7 @@ async function cmdSupervise(assignedFiles) {
     isolatedExit = await runLane(isolatedFiles, ISOLATED_LANE_CONCURRENCY);
   } finally {
     clearInterval(hb);
+    sandbox.cleanup();
   }
 
   const exitCode = mainExit !== 0 ? mainExit : isolatedExit;
