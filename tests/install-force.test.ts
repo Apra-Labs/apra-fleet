@@ -8,7 +8,7 @@ import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { runInstall, isApraFleetRunning, killApraFleet, _setSeaOverride, _setManifestOverride, _setInstallForceTimingOverride, _setServiceHealthWaitOverride } from '../src/cli/install.js';
 import { getServiceManager } from '../src/services/service-manager/index.js';
-import { legacyTaskGuidance } from '../src/services/service-manager/windows.js';
+import { legacyTaskGuidance, WindowsServiceManager } from '../src/services/service-manager/windows.js';
 import type { ServiceManager } from '../src/services/service-manager/types.js';
 
 vi.mock('node:os', () => ({
@@ -21,6 +21,7 @@ vi.mock('node:fs');
 vi.mock('node:child_process');
 vi.mock('../src/services/service-manager/index.js', () => ({
   getServiceManager: vi.fn(),
+  gracefulStopByServerJson: vi.fn().mockResolvedValue(true),
 }));
 
 const mockHome = '/mock/home';
@@ -1096,6 +1097,46 @@ describe('install --force over a reused elevated task that refuses run', () => {
     expect(out).not.toContain('Start it with:\n    apra-fleet start');
   });
 
+  // End to end with the REAL WindowsServiceManager (only schtasks is faked):
+  // stop (disable refused) -> register (create refused, task reused) -> start
+  // (/run refused). The legacy guidance must appear exactly once in the whole
+  // install output and the sticky-stop sentence never.
+  describe('real WindowsServiceManager over an elevated legacy task', () => {
+    const LEGACY_XML = [
+      '<?xml version="1.0" encoding="UTF-16"?>',
+      '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
+      '  <Principals><Principal id="Author"><UserId>S-1-5-21-1-2-3-1001</UserId>',
+      '    <LogonType>InteractiveToken</LogonType></Principal></Principals>',
+      '  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy></Settings>',
+      '  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>',
+      '  <Actions Context="Author"><Exec><Command>C:\\x\\apra-fleet-service.bat</Command></Exec></Actions>',
+      '</Task>',
+    ].join('\r\n');
+    const STICKY = "A stop made with 'apra-fleet stop' still holds";
+    const count = (hay: string, needle: string) => hay.split(needle).length - 1;
+
+    function realMgr(): WindowsServiceManager {
+      const schtasks = (args: string[]): string => {
+        if (args[0] === '/query') return args.includes('/xml') ? LEGACY_XML : 'ApraFleet';
+        throw new Error(`Command failed: schtasks ${args[0]}\r\nERROR: Access is denied.`);
+      };
+      const mgr = new WindowsServiceManager(schtasks, 'C:\\x\\apra-fleet-service.bat', {
+        runReg: () => '', env: { USERDOMAIN: 'H', USERNAME: 'u' }, probeWsh: () => true,
+        stoppedByUser: () => false, noticePath: '/mock/notice.json', interactive: () => true,
+      });
+      const realStop = mgr.stop.bind(mgr);
+      mgr.stop = async (o) => { serviceStopped = true; return realStop(o); };
+      return mgr;
+    }
+
+    it('install --force prints the guidance exactly once and no sticky-stop text', async () => {
+      const out = await installAndCapture(realMgr());
+      expect(count(out, 'schtasks /delete /tn ApraFleet /f')).toBe(1);
+      expect(count(out, "'apra-fleet stop' cannot disable the task")).toBe(1);
+      expect(out).not.toContain(STICKY);
+    });
+  });
+
   it('other start failures (no legacy problem) keep the plain restart hint', async () => {
     const out = await installAndCapture(fakeMgr({ legacyGuidance: vi.fn().mockReturnValue(null) }));
     expect(out).toContain('Start it with:');
@@ -1186,6 +1227,6 @@ describe('install --force stop and restart messages match the real outcome (apra
     expect(out).not.toContain('stopped by --force. Restart command:');
     expect(out).toContain('the final install step re-registers and starts it');
     expect(out).toContain('Only if a later step fails');
-    expect(out).toMatch(/Service:\s+registered/);
+    expect(out).toMatch(/Service:\s+registered and running/);
   });
 });
