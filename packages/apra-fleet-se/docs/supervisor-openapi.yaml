@@ -620,7 +620,8 @@ paths:
         "200":
           description: >
             Wait ended. The body is the grant, or { error } if the wait failed
-            (e.g. mutex shutting down), after any heartbeat whitespace.
+            (e.g. an invalid pid), after any heartbeat whitespace. A supervisor
+            shutdown drops the connection instead.
           content:
             application/json:
               schema:

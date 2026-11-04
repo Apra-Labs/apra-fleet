@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { Agent, fetch as undiciFetch } from 'undici';
 
 import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
 import { createSupervisor, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
@@ -202,6 +203,45 @@ describe('dolt mutex acquire -- failures stay loud', () => {
             server.closeAllConnections();
             await assert.rejects(waiting);
         });
+    });
+
+    test('a supervisor that sends headers and then goes silent rejects after a bound', async () => {
+        // Headers go out at once, so the body timeout is the only thing bounding
+        // a hung supervisor. Real undici with that limit shortened from 300s; the
+        // client's own init wins over this dispatcher, so a client that turned
+        // the timeout off would fail here too.
+        const BODY_TIMEOUT_MS = 300;
+        const agent = new Agent({ bodyTimeout: BODY_TIMEOUT_MS });
+        const silent = http.createServer((req, res) => {
+            req.resume();
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.flushHeaders();
+        });
+        await new Promise((resolve) => silent.listen(0, '127.0.0.1', resolve));
+        let deadline;
+        try {
+            const client = createHttpDoltPushMutexClient({
+                serviceUrl: `http://127.0.0.1:${silent.address().port}`,
+                sprintId: 'waiter',
+                fetch: (url, init) => undiciFetch(url, { dispatcher: agent, ...init }),
+            });
+            const hung = new Promise((_, reject) => {
+                deadline = setTimeout(
+                    () => reject(new Error('acquire still pending: nothing bounds a silent supervisor')),
+                    scaledTimeout(5000, { concurrency: TEST_CONCURRENCY }),
+                );
+            });
+            const err = await Promise.race([client.acquire('waiter'), hung]).then(
+                () => assert.fail('acquire resolved against a silent supervisor'),
+                (e) => e,
+            );
+            assert.equal(err.cause?.code, 'UND_ERR_BODY_TIMEOUT', `unexpected rejection: ${err.stack}`);
+        } finally {
+            clearTimeout(deadline);
+            silent.closeAllConnections();
+            await new Promise((resolve) => silent.close(resolve));
+            await agent.destroy();
+        }
     });
 });
 

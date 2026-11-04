@@ -366,5 +366,5 @@ answer `503`, and a background retry flips it to `ready`.
   degraded or the fleet member list cannot be read (see step 1a), plus
   id-allocator allocate failures (e.g. the seam shutting down) -- distinct
   from 500 to signal "try again", not "this request is wrong". A dolt-mutex
-  acquire failure is `{ error }` in the 200 body, since headers already went
-  out.
+  acquire failure (e.g. an invalid pid) is `{ error }` in the 200 body, since
+  headers already went out; a supervisor shutdown drops the connection instead.
