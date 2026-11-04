@@ -3,7 +3,8 @@
 // A FULL session's kb_* and code_* scope comes from the client's roots
 // (MCP roots/list): the first offered root inside a git repository with an
 // origin remote wins (src/services/knowledge/kb-self.ts). The server's working
-// folder is used only when the client offers no roots.
+// folder is used only when the client offers no roots: it lacks the capability
+// or returns an empty list.
 //
 // Scope resolution is synchronous and runs inside many handlers, so the async
 // roots/list round trip happens here, once per session, and the result is
@@ -15,15 +16,16 @@
 //     not hold a standalone GET stream open for it;
 //   - only when the client declared the roots capability at initialize;
 //   - invalidated on notifications/roots/list_changed (next call refetches);
-//   - a failed or timed-out fetch is logged and treated as "no roots" for
-//     ROOTS_RETRY_AFTER_FAILURE_MS, so a client that never answers costs one
-//     timeout per interval, not one per call, and one lost answer does not pin
-//     the session to the server's working folder for good.
+//   - a failed or timed-out fetch is its own state, not "no roots": it is logged,
+//     never cached, and the call is refused (kb-self.ts), so unknown roots can
+//     never answer from, or write to, the server's working folder. The next call
+//     asks again, so a client that never answers costs one timeout per call.
 //
 // Roots are file:// URIs. Each is converted with fileURLToPath; a root that is
 // not a file URI or does not name an existing directory on THIS host (a remote
-// HTTP client's roots are paths on its own machine) is kept in `offered` but
-// left out of `folders`.
+// HTTP client's roots are paths on its own machine, or a path was deleted) is
+// kept in `offered` but left out of `folders`: an unusable root, refused when
+// nothing else is usable.
 
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -35,9 +37,6 @@ export type { SessionRoots } from './tool-scope.js';
 
 /** Bound on one roots/list round trip. */
 export const ROOTS_FETCH_TIMEOUT_MS = 5000;
-/** How long a failed fetch counts as "no roots" before the next call asks again. */
-export const ROOTS_RETRY_AFTER_FAILURE_MS = 60_000;
-
 // Deliberately looser than the SDK's ListRootsResultSchema, which requires every
 // uri to be file:// and so would reject the whole list over one other root.
 // toSessionRoots skips what is not a local folder.
@@ -75,10 +74,13 @@ export function toSessionRoots(roots: ReadonlyArray<{ uri: string }>): SessionRo
   return { offered, folders };
 }
 
+function rootsFetchFailed(fetchError: string): SessionRoots {
+  return { offered: [], folders: [], fetchError };
+}
+
 export class SessionRootsCache {
   private snapshot: SessionRoots | undefined;
   private fetched = false;
-  private retryAt = 0;
   private generation = 0;
   private inflight: Promise<SessionRoots | undefined> | null = null;
 
@@ -96,33 +98,30 @@ export class SessionRootsCache {
   }
 
   /**
-   * The session's roots: undefined when the client lacks the roots capability,
-   * returned an empty list, could not be asked (no sendRequest), or the fetch
-   * failed. An empty roots list is reported as undefined -- "no roots offered".
+   * The session's roots: undefined when the client lacks the roots capability
+   * or returned an empty list ("no roots offered"); `fetchError` set when it
+   * declared the capability but could not be asked or the fetch failed.
    */
   async get(sendRequest: RootsSendRequest | undefined): Promise<SessionRoots | undefined> {
     if (!this.clientDeclaresRoots()) return undefined;
-    if (this.fetched && Date.now() >= this.retryAt) this.fetched = this.retryAt === 0;
     if (this.fetched) return this.snapshot;
-    if (typeof sendRequest !== 'function') return undefined;
+    if (typeof sendRequest !== 'function') return rootsFetchFailed('the call has no way to ask the client');
     if (!this.inflight) {
       const gen = this.generation;
       this.inflight = (async () => {
         let snap: SessionRoots | undefined;
-        let retryAt = 0;
         try {
           const res = await sendRequest({ method: 'roots/list' }, LenientListRootsResultSchema, { timeout: this.timeoutMs });
           const s = toSessionRoots(res?.roots ?? []);
           snap = s.offered.length > 0 ? s : undefined;
         } catch (e) {
-          logLine('session', `roots/list failed, using the server working folder: ${e instanceof Error ? e.message : String(e)}`);
-          snap = undefined;
-          retryAt = Date.now() + ROOTS_RETRY_AFTER_FAILURE_MS;
+          const message = e instanceof Error ? e.message : String(e);
+          logLine('session', `roots/list failed, refusing this call: ${message}`);
+          return rootsFetchFailed(message);
         }
         if (gen === this.generation) {
           this.snapshot = snap;
           this.fetched = true;
-          this.retryAt = retryAt;
         }
         return snap;
       })().finally(() => { this.inflight = null; });

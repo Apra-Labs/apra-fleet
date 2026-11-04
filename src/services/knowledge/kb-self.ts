@@ -72,10 +72,6 @@ function whose(memberLabel: string | undefined): string {
 // expected its own directory, so the error names that cause (including
 // whether the client offered roots) and every fix explicitly.
 function fullSessionCause(): string {
-  const roots = getSessionRoots();
-  if (roots && roots.offered.length > 0) {
-    return `This is a FULL session (no member identity) and none of the client's MCP roots (${listForError(roots.offered)}) is a folder on this host, so its scope is the fleet server's own working folder`;
-  }
   return "This is a FULL session (no member identity) and the client offered no MCP roots, so its scope is the fleet server's own working folder, not the calling client's directory";
 }
 const FULL_SESSION_FIX =
@@ -216,17 +212,37 @@ function rootRepoTopLevel(root: string): string | null {
  *   2. Extension for code_* only: when roots are offered and none has an
  *      origin, the first offered root in a git repository
  *      (rootWithoutOrigin: kb_* refuses it).
- *   3. No roots offered (no roots capability, an empty list, or no offered
- *      root is a folder on this host): the server working folder.
+ *   3. No roots offered (no roots capability or an empty list): the server
+ *      working folder.
  *
- * Roots offered on this host but none in a git repository: E-SELF-NOT-A-REPO
- * naming that none of the offered roots qualifies. Never the server folder: it
- * may be an unrelated repository, and the caller could not tell.
+ * Everything else is refused, never answered from the server folder: it may be
+ * an unrelated repository, and the caller could not tell.
+ *   - Asking the client failed: E-SELF-NO-WORKFOLDER naming the failure; the
+ *     next call asks again.
+ *   - No offered root is a folder on this host (a remote client's path, a
+ *     deleted folder, a non-file URI): E-SELF-NO-WORKFOLDER.
+ *   - Roots on this host but none in a git repository: E-SELF-NOT-A-REPO.
  */
 function selectFullSessionFolder(): SelfSession {
   const roots = getSessionRoots();
-  if (!roots || roots.folders.length === 0) {
+  if (roots?.fetchError !== undefined) {
+    throw new KbSelfError(
+      'E-SELF-NO-WORKFOLDER',
+      '',
+      `This is a FULL session (no member identity) and asking the client for its MCP roots failed (${roots.fetchError}), so the session's scope is unknown; the call was not run and the server's working folder was not used in its place.`,
+      'Retry the same call: each call asks the client again. If it keeps failing, restart the client or check that it answers roots/list.',
+    );
+  }
+  if (!roots || roots.offered.length === 0) {
     return { folder: process.cwd(), source: 'cwd', ...(roots ? { roots } : {}) };
+  }
+  if (roots.folders.length === 0) {
+    throw new KbSelfError(
+      'E-SELF-NO-WORKFOLDER',
+      roots.offered[0],
+      `This is a FULL session (no member identity) and the client offered MCP roots, but none of them (${listForError(roots.offered)}) is a folder on this host, so the session has no KB or code scope; the server's working folder was not used in its place.`,
+      'Open the client on this host in a git repository with an origin remote, or call from a member session (?member=<id>) of a member registered on that folder.',
+    );
   }
   let firstRepo: string | undefined;
   for (const root of roots.folders) {

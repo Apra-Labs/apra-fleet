@@ -120,11 +120,12 @@ no roots;
   opened in a subfolder is scoped to the repository -- for both `kb_*` and
   `code_*`, so one session never scopes its kb and code tools to two different
   repositories. The fleet server's own working folder (`process.cwd()`) is used
-  only when the client offers no roots (it lacks the `roots` capability, returns
-  an empty list, or none of its roots is a folder on the server's host -- a
-  remote HTTP client's roots are paths on its own machine). When roots are
-  offered and none qualifies the call is refused, never answered from the server
-  folder, which may be an unrelated repository.
+  only when the client offers no roots (it lacks the `roots` capability or
+  returns an empty list). When roots are offered and none qualifies the call is
+  refused, never answered from the server folder, which may be an unrelated
+  repository. That includes roots that are not folders on the server's host: a
+  remote HTTP client's roots are paths on its own machine, so such a client calls
+  from a member session instead.
   A server auto-started with an
   unrelated working folder (e.g. a system directory) therefore works from any
   client opened in a repository.
@@ -132,8 +133,9 @@ no roots;
   Roots are fetched once per session, on its first `kb_*`/`code_*` call,
   through that call's own request (`src/services/session-roots.ts`), cached,
   and refetched after `notifications/roots/list_changed`. A failed or
-  timed-out fetch is logged and treated as "no roots" for a minute, then asked
-  again. The selection is made once per call (`resolveSelfSession()`,
+  timed-out fetch is not "no roots": the call is refused with
+  `E-SELF-NO-WORKFOLDER` naming the failure, nothing is read or written, and
+  the next call asks again. The selection is made once per call (`resolveSelfSession()`,
   memoized in the tool-call context) and shared by kb (self) and code (self).
   A member session never reads roots.
 
@@ -145,8 +147,9 @@ no roots;
   and code still never resolve to two different repositories.
 
   When neither works, the error names the missing piece: roots were offered
-  but none is in a git repository (`E-SELF-NOT-A-REPO`), roots were offered but
-  none has an origin (`E-SELF-NO-REMOTE`, kb only), or the client offered no
+  but none is a folder on this host (`E-SELF-NO-WORKFOLDER`), none is in a git
+  repository (`E-SELF-NOT-A-REPO`), or none has an origin (`E-SELF-NO-REMOTE`, kb
+  only), asking for the roots failed (`E-SELF-NO-WORKFOLDER`), or the client offered no
   roots and the server folder is not a git repository / has no origin
   ("This is a FULL session (no member identity) and the client offered no MCP
   roots, so its scope is the fleet server's own working folder, ...").

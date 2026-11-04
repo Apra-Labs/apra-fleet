@@ -93,10 +93,13 @@ export function scopeHasKbMaintainer(scope: ToolScope): boolean {
  * `folders` is the subset that is a file:// URI naming an existing directory
  * on THIS host, converted to a local path, in the same order (a remote HTTP
  * client's roots are paths on its own machine and are skipped).
+ * `fetchError` is set, with both lists empty, when asking the client failed: the
+ * roots are unknown, which is not the same as "no roots offered".
  */
 export interface SessionRoots {
   offered: string[];
   folders: string[];
+  fetchError?: string;
 }
 
 interface ToolCallContext {

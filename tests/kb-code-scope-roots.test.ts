@@ -14,8 +14,8 @@ import { pathToFileURL } from 'node:url';
 //   - extension for code_* only: roots offered, none with an origin -> code_*
 //     uses the first offered git repository, kb_* fails with E-SELF-NO-REMOTE;
 //   - no roots offered (no capability / empty list) -> the server working
-//     folder, exactly as before; roots offered and none usable never fall back
-//     to it;
+//     folder, exactly as before; roots offered and none usable (including
+//     roots not on this host) and a failed roots/list never fall back to it;
 //   - neither usable -> an E-SELF-* error naming the missing piece;
 //   - a MEMBER session ignores roots.
 //
@@ -51,7 +51,7 @@ import { createHttpTransport, type HttpTransportHandle } from '../src/services/h
 import { registerAllTools } from '../src/services/tool-registry.js';
 import { addAgent } from '../src/services/registry.js';
 import { runWithSessionMember } from '../src/services/tool-scope.js';
-import { ROOTS_RETRY_AFTER_FAILURE_MS, SessionRootsCache, toSessionRoots } from '../src/services/session-roots.js';
+import { SessionRootsCache, toSessionRoots } from '../src/services/session-roots.js';
 import { resolveSelfAnchor, resolveSelfSession, KbSelfError, validateSelfFolder } from '../src/services/knowledge/kb-self.js';
 import { resolveCodeSelf, PROVIDERS, type CodeIntelligenceProvider } from '../src/tools/code-intelligence.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, memberSecretRequestInit } from './test-helpers.js';
@@ -261,16 +261,38 @@ describe('FULL session scope from client roots (resolver)', () => {
     }
   });
 
-  it('roots that are not folders on this host count as no roots offered (server folder), and the cwd error says so', () => {
+  it('roots that are not folders on this host are refused, with a usable server folder NOT used (kb and code alike)', () => {
     const remoteOnly = toSessionRoots([{ uri: uri(path.join(scratch, 'does-not-exist-here')) }, { uri: 'https://example.test/not-a-file-root' }]);
     expect(remoteOnly.offered).toHaveLength(2);
     expect(remoteOnly.folders).toEqual([]);
     vi.spyOn(process, 'cwd').mockReturnValue(dirs.cwdRepo);
-    expect(asFull(remoteOnly, () => resolveSelfAnchor()).folder).toBe(dirs.cwdRepo);
-    vi.spyOn(process, 'cwd').mockReturnValue(dirs.cwdPlain);
-    const err = asFull(remoteOnly, () => selfError(() => resolveSelfAnchor()));
-    expect(err.code).toBe('E-SELF-NOT-A-REPO');
-    expect(err.message).toContain('is a folder on this host');
+    for (const resolve of [() => resolveSelfAnchor(), () => resolveCodeSelf()]) {
+      const err = asFull(remoteOnly, () => selfError(resolve));
+      expect(err.code).toBe('E-SELF-NO-WORKFOLDER');
+      expect(err.message).toContain('is a folder on this host');
+      expect(err.message).toContain('Open the client on this host in a git repository with an origin remote');
+      expect(err.message).not.toContain(dirs.cwdRepo);
+      expect(err.message.split('Remediation:').length - 1).toBe(1);
+    }
+  });
+
+  it('a missing root does not stop a usable root after it, and with a non-repo root it is still refused', () => {
+    vi.spyOn(process, 'cwd').mockReturnValue(dirs.cwdRepo);
+    const missing = path.join(scratch, 'does-not-exist-here');
+    expect(asFull(rootsOf(missing, dirs.withOrigin), () => resolveSelfAnchor()).folder).toBe(dirs.withOrigin);
+    expect(asFull(rootsOf(missing, dirs.plain), () => selfError(() => resolveSelfAnchor())).code).toBe('E-SELF-NOT-A-REPO');
+  });
+
+  it('a failed fetch is refused naming the failure, with a usable server folder NOT used (kb and code alike)', () => {
+    vi.spyOn(process, 'cwd').mockReturnValue(dirs.cwdRepo);
+    const failed = { offered: [], folders: [], fetchError: 'request timed out' };
+    for (const resolve of [() => resolveSelfAnchor(), () => resolveCodeSelf()]) {
+      const err = asFull(failed, () => selfError(resolve));
+      expect(err.code).toBe('E-SELF-NO-WORKFOLDER');
+      expect(err.message).toContain('asking the client for its MCP roots failed (request timed out)');
+      expect(err.message).toContain('Retry the same call');
+      expect(err.message).not.toContain(dirs.cwdRepo);
+    }
   });
 
   it('no roots and a non-repo server cwd: E-SELF-NOT-A-REPO naming that the client offered no roots', () => {
@@ -352,21 +374,22 @@ describe('SessionRootsCache', () => {
     expect((await cache.get(second))?.folders).toEqual([dirs.withOrigin2]);
   });
 
-  it('a failed fetch counts as no roots for a while, then the next call asks again', async () => {
+  it('a failed fetch is its own state and is never cached: every call asks again until one succeeds, which is cached', async () => {
     const cache = new SessionRootsCache(() => true);
     const failing = vi.fn(async () => { throw new Error('request timed out'); });
-    expect(await cache.get(failing as never)).toBeUndefined();
-    expect(await cache.get(failing as never)).toBeUndefined();
-    expect(failing).toHaveBeenCalledTimes(1);
-    const later = Date.now() + ROOTS_RETRY_AFTER_FAILURE_MS + 1;
-    vi.spyOn(Date, 'now').mockReturnValue(later);
+    expect((await cache.get(failing as never))?.fetchError).toBe('request timed out');
+    expect((await cache.get(failing as never))?.fetchError).toBe('request timed out');
+    expect(failing).toHaveBeenCalledTimes(2);
     const recovered = answer([dirs.withOrigin]);
+    const good = await cache.get(recovered);
+    expect(good?.folders).toEqual([dirs.withOrigin]);
+    expect(good?.fetchError).toBeUndefined();
     expect((await cache.get(recovered))?.folders).toEqual([dirs.withOrigin]);
     expect(recovered).toHaveBeenCalledTimes(1);
-    // A good answer stays cached.
-    vi.spyOn(Date, 'now').mockReturnValue(later + 10 * ROOTS_RETRY_AFTER_FAILURE_MS);
-    expect((await cache.get(recovered))?.folders).toEqual([dirs.withOrigin]);
-    expect(recovered).toHaveBeenCalledTimes(1);
+  });
+
+  it('a client that declares roots but cannot be asked is a failed fetch, not "no roots"', async () => {
+    expect((await new SessionRootsCache(() => true).get(undefined))?.fetchError).toBeTruthy();
   });
 });
 
@@ -445,6 +468,71 @@ describe('FULL session scope from client roots over the real MCP transport', () 
     expect(kb.isError).toBe(true);
     expect(kb.text).toContain('E-SELF-NO-REMOTE');
     expect(kb.text).toContain("none of the client's MCP roots");
+  });
+
+  it('a failed roots/list writes nothing to the server folder KB, and a later successful fetch recovers', async () => {
+    vi.spyOn(process, 'cwd').mockReturnValue(dirs.cwdRepo);
+    const title = `Failed roots capture ${RUN}`;
+    const capture = (client: Client) => call(client, 'kb_capture', {
+      type: 'knowledge', title, summary: 'Must never land in the server folder KB.',
+      content: 'Written only once the client roots are known.', source_files: [INDEX_FILE],
+    });
+    const url = new URL(`http://127.0.0.1:${handle.port}/mcp`);
+    const client = new Client({ name: 'kb-code-scope-roots-failing', version: '1.0.0' }, { capabilities: { roots: { listChanged: true } } });
+    let calls = 0;
+    let fail = true;
+    client.setRequestHandler(ListRootsRequestSchema, async () => {
+      calls++;
+      if (fail) throw new Error('roots unavailable right now');
+      return { roots: [{ uri: uri(dirs.withOrigin) }] };
+    });
+    clients.push(client);
+    await client.connect(new StreamableHTTPClientTransport(url, { reconnectionOptions: RECONNECT, requestInit: memberSecretRequestInit() }));
+
+    const refused = await capture(client);
+    expect(refused.isError, refused.text).toBe(true);
+    expect(refused.text).toContain('E-SELF-NO-WORKFOLDER');
+    expect(refused.text).toContain('roots unavailable right now');
+    expect(refused.text).not.toContain(dirs.cwdRepo);
+    const code = await call(client, 'code_query', { query: 'w' });
+    expect(code.isError, code.text).toBe(true);
+    expect(code.text).toContain('E-SELF-NO-WORKFOLDER');
+    expect(calls).toBe(2); // each call asked again
+
+    // Nothing reached the server folder's KB.
+    const serverKb = await connectPlain();
+    const inServerFolder = () => call(serverKb, 'kb_query', { query: 'Failed roots capture', confidence: ALL_TIERS });
+    const hitsOf = (text: string) => (JSON.parse(text) as { l1_results: Array<{ id: string }> }).l1_results.map(e => e.id);
+    const before = await inServerFolder();
+    expect(before.isError, before.text).toBe(false);
+    expect(hitsOf(before.text)).toEqual([]);
+
+    // The next successful fetch recovers, and the capture lands in the root's KB.
+    fail = false;
+    const recovered = await capture(client);
+    expect(recovered.isError, recovered.text).toBe(false);
+    const { id } = JSON.parse(recovered.text) as { id: string };
+    const rootKb = await connectWithRoots({ current: [dirs.withOrigin] });
+    expect(hitsOf((await call(rootKb.client, 'kb_query', { query: 'Failed roots capture', confidence: ALL_TIERS })).text)).toContain(id);
+    expect(hitsOf((await inServerFolder()).text)).toEqual([]);
+    // A good answer stays cached.
+    const asked = calls;
+    expect((await call(client, 'code_query', { query: 'w' })).isError).toBe(false);
+    expect(calls).toBe(asked);
+  });
+
+  it('roots not on this host write nothing to the server folder KB', async () => {
+    vi.spyOn(process, 'cwd').mockReturnValue(dirs.cwdRepo);
+    const { client } = await connectWithRoots({ current: [path.join(scratch, 'not-on-this-host')] });
+    const title = `Off-host capture ${RUN}`;
+    const refused = await call(client, 'kb_capture', {
+      type: 'knowledge', title, summary: 'Must never land in the server folder KB.',
+      content: 'The root is not a folder on this host.', source_files: [INDEX_FILE],
+    });
+    expect(refused.isError, refused.text).toBe(true);
+    expect(refused.text).toContain('E-SELF-NO-WORKFOLDER');
+    const hits = await call(await connectPlain(), 'kb_query', { query: 'Off-host capture', confidence: ALL_TIERS });
+    expect((JSON.parse(hits.text) as { l1_results: unknown[] }).l1_results).toEqual([]);
   });
 
   it('a client without the roots capability keeps the server working folder', async () => {
