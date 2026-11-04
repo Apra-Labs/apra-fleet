@@ -13,13 +13,11 @@
 // no side effects) so anything may import it -- the installer, tests, and any
 // future status/health reporter -- without dragging in the installer itself.
 //
-// The ONE unavoidable duplicate is packages/apra-fleet-se/apra-pm/install.mjs:
-// that installer is deliberately plain, build-free Node (node: builtins only)
-// and so cannot import from this TypeScript module. Its copy is held equal to
-// this one by tests/apra-pm-beads-pin.test.ts, which fails the moment the two
-// disagree. .github/workflows/ci.yml states the pin a third time for the same
-// reason (a shell step cannot import TypeScript either); that file is owned by
-// another track, so it is deliberately not edited from here.
+// The unavoidable duplicates are sites that cannot import this TypeScript module:
+// packages/apra-fleet-se/apra-pm/install.mjs (plain, build-free Node: node:
+// builtins only), .github/e2e/fleet-setup.mjs, and the shell steps and env of
+// .github/workflows/ci.yml and pm-e2e.yml. tests/apra-pm-beads-pin.test.ts reads
+// every tracked file and fails the moment any pin disagrees with this one.
 
 /** The exact @beads/bd version this product installs and supports. */
 export const BEADS_VERSION = '1.3.0';

@@ -794,7 +794,13 @@ analyze runs), and the result's `structuredContent` holds the same fields. Wait
 A `code_impact` / `code_context` answer whose resolved symbol is not the one
 requested carries `resolution_mismatch` (`{ requested, resolved: { name, id,
 filePath } }`) and `confidence: 'LOW'`, and an impact `risk` is moved to
-`unverified_risk` with `risk: 'UNKNOWN'`. Extract both with `parseToolJson()`.
+`unverified_risk` with `risk: 'UNKNOWN'`. A not-found answer from an index whose
+node ids are not unique (an incremental analyze corrupted it) carries
+`index_integrity` (`{ corrupt: true, damaged_rows, rebuild }`, where `rebuild` is
+`{ started: true }` or `{ started: false, reason, detail? }`) and `confidence: 'LOW'`,
+plus a warning text. A flagged "not found" does NOT prove the symbol is absent:
+use a text search, and retry once `codeStatus()` reports the index ready.
+Extract all of these with `parseToolJson()`.
 
 #### `doltPushMutex(options)`
 

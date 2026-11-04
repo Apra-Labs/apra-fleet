@@ -198,10 +198,6 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-  # npm pack + npm install of this commit into a scratch consumer project,
-  # proving the undici 7.x pin propagates to an installed copy. Too slow for
-  # the per-PR vitest run (2-3 min on Windows), so vitest.config.ts excludes
-  # it unless APRA_RUN_PACK_INSTALL=1; this job is where it runs.
   # Slow proof of the corrupt-index detector against a real gitnexus index
   # (vitest.config.ts keeps it out of the default run). Windows: where the
   # corruption was reproduced.
@@ -235,6 +231,10 @@ jobs:
           APRA_TEST_SUITES_JSON: '[{"name":"vitest","cmd":"npm.cmd","args":["exec","--","vitest","run","tests/code-index-corrupt-real-gitnexus.test.ts"]}]'
         run: node scripts/run-all-tests.mjs
 
+  # npm pack + npm install of this commit into a scratch consumer project,
+  # proving the undici 7.x pin propagates to an installed copy. Too slow for
+  # the per-PR vitest run (2-3 min on Windows), so vitest.config.ts excludes
+  # it unless APRA_RUN_PACK_INSTALL=1; this job is where it runs.
   undici-pack-install:
     name: undici-pack-install (${{ matrix.os }})
     strategy:
