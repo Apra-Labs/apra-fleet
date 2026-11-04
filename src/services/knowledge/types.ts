@@ -29,6 +29,21 @@ export type CaptureSource = 'session' | 'review' | 'harvest' | 'promotion' | 'im
 export type AudnDecision = 'add' | 'update' | 'flagged' | 'none';
 
 /**
+ * What kind of event produced a captured lesson (kb_capture `trigger`).
+ * Stored for audit only: the server never requires it -- the capture-time
+ * refusal of a trigger-less capture lives in the sprint engine.
+ */
+export const CAPTURE_TRIGGERS = [
+  'failed-attempt',
+  'review-finding',
+  'test-failure',
+  'env-quirk',
+  'hidden-invariant',
+  'design-rationale',
+] as const;
+export type CaptureTrigger = typeof CAPTURE_TRIGGERS[number];
+
+/**
  * Thrown by SqliteProvider.capture() when an entry has no checkable basis.
  *
  * Distinct from a generic Error so batch writers (kb_harvest, kb_import) can
@@ -91,11 +106,25 @@ export interface KBEntry {
   // survive a later re-promotion so the demotion stays auditable.
   demoted_at?: string;
   demoted_basis_hashes?: Record<string, string>;
+  // Retrieval aids (design D9): phrasings an agent would search with when it
+  // needs this entry (recall_cues), and verbatim error strings the entry
+  // explains (error_signatures). Optional on input; reads always return an
+  // array (empty when none was captured).
+  recall_cues?: string[];
+  error_signatures?: string[];
+  // kb_capture `trigger` (CaptureTrigger), stored for audit. Absent when the
+  // capture named none.
+  trigger?: CaptureTrigger;
+  // Free-text note recorded when the entry was retired by id with a reason
+  // (kb_invalidate {ids, reason}). Read-only here: only discard() writes it.
+  // Deliberately separate from the internal retired_reason column
+  // (superseded | invalidated), which bible-commit reporting reads.
+  retired_note?: string;
   use_count: number;
   last_accessed?: string;
 }
 
-export type KBEntryInput = Omit<KBEntry, 'id' | 'stale' | 'created_at' | 'superseded_at' | 'use_count' | 'last_accessed'>;
+export type KBEntryInput = Omit<KBEntry, 'id' | 'stale' | 'created_at' | 'superseded_at' | 'use_count' | 'last_accessed' | 'retired_note'>;
 
 // T2.1 (F4, D3, R4): internal-only options for SqliteProvider.capture(). This is
 // a SECOND parameter of capture() -- deliberately NOT a field of KBEntryInput --
@@ -317,6 +346,11 @@ export interface RetireOptions {
    * session without the kb_maintainer grant may not retire CONFIRMED).
    */
   keepConfirmed?: boolean;
+  /**
+   * Free-text retirement note (kb_invalidate {ids, reason}). Stored on every
+   * row discard() retires in this call; ignored by file invalidation.
+   */
+  reason?: string;
 }
 
 export interface MemoryProvider {

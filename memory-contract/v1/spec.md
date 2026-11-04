@@ -483,6 +483,44 @@ for every accepted shape live in `bible/examples/`.
   `kb_bible_commit`'s `backfilled` count (above); otherwise the format change is
   confined to the bible file.
 
+### 2.9 Capture retrieval aids, trigger and retirement notes
+
+Additive request fields (no field was removed or made required):
+
+- `kb_capture.content` is OPTIONAL (still `minLength: 1` when present). When
+  it is absent the stored `content` equals the `summary` -- the same
+  deterministic rule bible import uses for an entry without content -- so
+  AUDN's content-equality dedupe treats both paths alike. The confidence-clamp
+  note (section 4.2) is appended to that stored content as usual.
+- `kb_capture.recall_cues` and `kb_capture.error_signatures` (string arrays)
+  are stored per entry (JSON string arrays, default empty). Every entry read
+  (`kb_query`, `kb_list`, `kb_session_prime`, ...) returns both as arrays,
+  empty when none was captured. A non-string element arriving over the HTTP
+  capture route is dropped before storage.
+- `kb_capture.trigger` (enum `failed-attempt | review-finding | test-failure |
+  env-quirk | hidden-invariant | design-rationale`) is stored in its own
+  `trigger` column (not a tag) for audit, and returned on reads when set.
+  The server does NOT require it: a sprint engine may refuse a trigger-less
+  capture before calling the tool, but the tool accepts one. An out-of-enum
+  value reaching the provider through the HTTP capture route is stored as
+  absent.
+- These fields apply only to the entry a capture INSERTS; an AUDN `none`
+  decision leaves the matched entry unchanged.
+- `kb_invalidate.reason` (string) is accepted only together with `ids`
+  (`files` plus `reason` is refused with an error before any write). It is
+  stored as the free-text retirement note (`retired_note`) of every entry the
+  call retires, and returned on reads of that entry (reads that include
+  retired rows: `kb_query` with `include_stale`, or a provider read by id). It
+  is separate from the internal superseded/invalidated retirement reason that
+  `kb_bible_commit` reports. Without `reason` the note stays empty and the
+  response shape is unchanged (`{discarded, not_found, already_discarded}`,
+  plus `refused` where section 2.5a applies).
+- The HTTP KB provider forwards a capture payload verbatim and gains no new
+  behaviour for these fields; id-level `kb_invalidate` remains unsupported
+  there.
+- Existing databases gain the columns through additive migrations on open;
+  existing rows read empty arrays, no trigger and no note.
+
 ## 3. Error model
 
 `taxonomy.json` in this directory is the source of truth: a CLOSED set of

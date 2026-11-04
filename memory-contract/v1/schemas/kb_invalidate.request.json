@@ -26,6 +26,11 @@
           "minItems": 1,
           "description": "Entry ids to discard (sets superseded_at; the entry drops from all reads). Exactly one of files or ids."
         },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why the ids are being retired. Accepted only together with ids; stored as the retirement note of every entry this call retires."
+        },
         "repo_path": {
           "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
         },
