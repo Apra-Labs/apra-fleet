@@ -6,6 +6,7 @@ import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { CAPTURE_TRIGGERS, type Author, type CaptureSource } from '../services/knowledge/types.js';
+import { ensureKbCodeLinkResolver } from './kb-code-link-resolver.js';
 
 // D5 (T2.3): the full Author enum. Kept as a plain array (not a zod enum on
 // the schema itself) so an invalid role hint degrades to 'unknown' at the
@@ -199,6 +200,10 @@ export async function kbCapture(input: KbCaptureInput, anchor?: KbAnchor): Promi
     ...(input.error_signatures !== undefined ? { error_signatures: input.error_signatures } : {}),
     ...(input.trigger !== undefined ? { trigger: input.trigger } : {}),
   };
+  // Code links (symbols/files -> code-index nodes) resolve in the background
+  // after the store; the resolver comes from this layer (see the header of
+  // kb-code-link-resolver.ts).
+  ensureKbCodeLinkResolver(target, anchor?.memberId);
   const result = keepConfirmed && isSqliteProject(target)
     ? await target.capture(entryInput, { keepConfirmed: true })
     : await target.capture(entryInput);

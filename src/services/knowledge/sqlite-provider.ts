@@ -25,6 +25,7 @@ import { KbKeywordIndex, type KeywordIndexStatus } from './kb-index.js';
 import { VectorStore, type VectorModel, type VectorScore } from './embedding/vector-store.js';
 import { buildVectorInputs, type VectorInput } from './embedding/chunker.js';
 import { EmbedQueue, type EmbedderSource, type EmbedQueueStatus } from './embedding/embed-queue.js';
+import { CodeLinkStore, type CodeLinkResolver, type CodeLinksStatus, type ResolvedCodeLink } from './code-links.js';
 import { validateFilePaths } from './path-validation.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
 import { CAPTURE_TRIGGERS, KB_AUDIT_NOTE_START, KbCaptureRejected, type CaptureTrigger, type DiscardResult, type RetireOptions } from './types.js';
@@ -169,6 +170,8 @@ export class SqliteProvider implements MemoryProvider {
     inputsFor: (id, tokenLimit) => this.entryVectorInputs(id, tokenLimit),
   });
   private embedderSource: EmbedderSource | null = null;
+  /** Entry -> code-index links (design D2a anchors); see code-links.ts. */
+  private readonly codeLinks = new CodeLinkStore(() => this.db);
   readonly dbPath: string;
   readonly projectSlug: string;
   /**
@@ -384,6 +387,47 @@ export class SqliteProvider implements MemoryProvider {
     // background rebuild when they differ (no-op without an embedder).
     this.embedQueue.reopen();
     this.embedQueue.kick();
+
+    // Entry -> code-index links (anchors for hybrid search).
+    this.codeLinks.init();
+  }
+
+  /**
+   * Set the resolver that maps entry symbols/files to code-index nodes. It is
+   * injected by the tool layer (src/tools/kb-code-link-resolver.ts) because
+   * this module must not import src/tools. Null detaches: captures then store
+   * no links (a logged skip).
+   */
+  attachCodeResolver(resolver: CodeLinkResolver | null): void {
+    this.codeLinks.setResolver(resolver);
+  }
+
+  get hasCodeResolver(): boolean {
+    return this.codeLinks.hasResolver;
+  }
+
+  /** Stored code links of one entry. */
+  codeLinksOf(entryId: string): ResolvedCodeLink[] {
+    return this.codeLinks.linksOf(entryId);
+  }
+
+  /**
+   * Live entry ids whose linked files intersect `files`, or whose linked
+   * symbols equal or sit one code-graph hop from any of `symbols` -- the
+   * anchor list of the hybrid search.
+   */
+  lookupAnchors(files: string[], symbols: string[]): string[] {
+    return this.codeLinks.lookupAnchors(files, symbols);
+  }
+
+  /** When code links were last resolved, and why the last attempt was skipped. */
+  codeLinksStatus(): CodeLinksStatus {
+    return this.codeLinks.status();
+  }
+
+  /** Resolve true once code-link resolution has nothing scheduled or running. */
+  waitForCodeLinks(timeoutMs?: number): Promise<boolean> {
+    return this.codeLinks.whenIdle(timeoutMs);
   }
 
   /**
@@ -1033,6 +1077,9 @@ export class SqliteProvider implements MemoryProvider {
   async freshnessSweep(root?: string): Promise<{ checked: number; staled: number; unstaled: number }> {
     const anchor = root ?? this.repoPath;
     if (this.anchorIsMissing(anchor)) return { checked: 0, staled: 0, unstaled: 0 };
+    // Re-resolve every live entry's code links in the background, replacing
+    // stale rows (the code graph moves with the tree the sweep re-hashes).
+    this.codeLinks.enqueueAll();
     const db = this.getDb();
     const rows = db.prepare(
       `SELECT id, stale, superseded_at, flagged_for_review, content_hash, content, source_file_hashes
@@ -1250,6 +1297,8 @@ export class SqliteProvider implements MemoryProvider {
   async capture(input: KBEntryInput, opts?: CaptureOpts): Promise<CaptureResult> {
     const result = await this.captureEntry(input, opts);
     this.embedQueue.kick();
+    // Code links resolve off the request path too (never fails the capture).
+    this.codeLinks.enqueue([result.id]);
     return result;
   }
 
@@ -2782,6 +2831,7 @@ export class SqliteProvider implements MemoryProvider {
   close(): void {
     this.keywordIndex.close();
     this.embedQueue.close();
+    this.codeLinks.close();
     this.db?.close();
     this.db = null;
   }
