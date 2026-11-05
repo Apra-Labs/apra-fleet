@@ -968,6 +968,35 @@ background embedding off for the process (used by sandboxes and the test
 suite) without writing a config file. Changing the model re-embeds every entry
 in the background; queries only ever compare vectors of the active model.
 
+#### Hybrid search invariants and known limits
+
+- **Member read defaults.** A member session that omits `limit` gets 6 slim
+  rows (L1 fields) with full content for the top 3; an explicit `limit` always
+  wins. The engine's per-bead/per-file knowledge injection merges its
+  situations and caps the result at 8.
+- **Keyword index.** Titles, summaries and content are normalized before
+  indexing and querying (camelCase, snake_case, kebab-case and paths are
+  split; words are stemmed), scored by column-weighted bm25 plus a trigram
+  index for partial identifiers. The index carries a version; a version change
+  rebuilds it in the background while queries keep working.
+- **Vectors.** Entries are chunked, each chunk stored as a float16 vector
+  tagged with the model id; an entry scores by its best chunk. Capture never
+  waits for embedding: a background queue embeds, and changing the model or
+  index version re-embeds. Vectors of other models are ignored, never mixed.
+- **Model source.** Downloads are lazy and verified against a pinned sha256.
+  A custom hub model whose revision is left at the default `main` is mutable,
+  so pin a revision for reproducibility.
+- **Event loop.** The ONNX runtime runs on the server's main thread. The embed
+  queue yields only between batches, so a batch of entries can stall the event
+  loop for seconds on CPU. Tests with a fake async embedder do not show this.
+- **Member bible view.** The member-side CONFIRMED view does not attach an
+  embedder, so member reads of the bible (including engine knowledge
+  injection) get keyword, error and anchor lists but no semantic list.
+- **Benchmark scope.** The bench's p95 uses a fake query embedder; a real
+  model adds roughly 150 ms for query embedding on a low-end laptop CPU.
+- **Downgrades.** Downgrading leaves an empty legacy FTS table behind;
+  harmless, but it is not cleaned up.
+
 ### Future: Postgres
 
 To add a Postgres backend, implement `MemoryProvider` in a new class and update

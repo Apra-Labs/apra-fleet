@@ -223,7 +223,7 @@ MCP tools that ship with the KB:
 |------|--------------|
 | `kb_session_prime` | Prime a session: stale files, fresh summaries, GitNexus call list |
 | `kb_capture` | Store a learning, context-cache, runbook, or knowledge entry (`content` optional; sprint captures need a `trigger` - see [KB capture gate](docs/kb-capture-gate.md)) |
-| `kb_query` | Two-level FTS retrieval (L1: title+summary, L2: full content) |
+| `kb_query` | Hybrid two-level retrieval (L1: title+summary, L2: full content): keyword, error-text, semantic (local embedding model, configurable via `embedding.model`) and file/symbol anchor rankings fused by RRF with trust priors. Optional `files`, `symbols`, `error_text` inputs; member sessions default to 6 slim rows. See [Hybrid search and embeddings](docs/knowledge-layer.md#hybrid-search-and-embeddings-sqlite-only) |
 | `kb_list` | Audit-list entries by confidence/type/module/symbol (read-only, no use_count bump) |
 | `kb_context` | Batch file freshness check (single git call for N files) |
 | `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` (optional `reason` is stored as the retirement note) |
