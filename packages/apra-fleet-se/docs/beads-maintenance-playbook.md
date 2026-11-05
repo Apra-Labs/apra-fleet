@@ -40,7 +40,10 @@ choice but to throw away their local `.beads/` and re-clone.
    `bd diff remotes/origin/main main --json`. Anything not on the remote
    before the flatten is permanently lost. Push it if the push can finish
    (see "Pushes that never finish"); otherwise save the diff and replay those
-   changes by hand after the flatten.
+   changes by hand after the flatten. Interactive sessions write beads too, so
+   ask every session to stop first, and just before re-bootstrapping each clone
+   run `bd export` on it and compare with the source's pre-flatten export: a
+   clone whose head moved during the run holds changes nobody pushed.
 2. **All members are "in the know."** Notify every operator/member owner
    before starting: after this runs, their next beads operation may fail or
    show stale/wrong data until they re-bootstrap. Do not run this silently
@@ -130,8 +133,8 @@ Run from any single clone with dolt push access to the shared remote
 6. **Verify:**
    ```bash
    bd status
-   bd doctor
    ```
+   (`bd doctor` is not supported in embedded mode.)
    Confirm issue counts look sane (open/closed totals match expectations
    from the pre-prune dry-run). Then measure the remote's data size (below).
 
@@ -159,6 +162,7 @@ replay any changes saved in prerequisite 1, and restart the supervisor:
 ```bash
 mv .beads .beads.bak-$(date +%s)
 bd bootstrap --yes
+git checkout -- .beads/issues.jsonl   # moved with .beads; tracked, so restore it
 bd status   # confirm issue counts match the freshly-flattened remote
 ```
 
@@ -166,6 +170,7 @@ On Windows/PowerShell:
 ```powershell
 Rename-Item .beads ".beads.bak-$(Get-Date -UFormat %s)"
 bd bootstrap --yes
+git checkout -- .beads/issues.jsonl
 bd status
 ```
 
