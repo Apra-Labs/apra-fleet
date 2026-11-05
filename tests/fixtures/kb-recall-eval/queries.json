@@ -1,0 +1,1045 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "id": "gen-0349a241",
+      "query": "I am about to change code and need to know about: tool-registry wrapper adds apra-fleet-display user-audience only when handler JSON.",
+      "expected": [
+        "0349a241-9b26-47c6-91d5-2bd998154430"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-0b6a7734",
+      "query": "I am about to change code and need to know about: thrown names path like src/tools/ .ts fails apra-fleet-repo-internals rule",
+      "expected": [
+        "0b6a7734-3224-4b5e-b407-6353af651e29"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-0c2d907a",
+      "query": "I am about to change code and need to know about: doer-resume shares role-policies.mjs s policy object doer via ROLE_POLICIES doer-resume ROLE_POLICIES.doer.secondary dispatched",
+      "expected": [
+        "0c2d907a-bee5-4324-b61e-6ee0e2bc4b74"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-0c998153",
+      "query": "I am about to change code and need to know about: printKeptSection src/cli/uninstall.ts hardcodes planned-removal set",
+      "expected": [
+        "0c998153-a3fa-4e2f-a8d8-749917425ed5"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-0cd76690",
+      "query": "I am about to change code and need to know about: SqliteProvider.promote appends ... demote feedback reconcile confidence clamp append notes too.",
+      "expected": [
+        "0cd76690-8f11-4441-8604-d722134a879d"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-0dd36c44",
+      "query": "I am about to change code and need to know about: http-transport refuses request without JWT unless X-Apra-Fleet-Member-Secret matches data dir /member-access.key",
+      "expected": [
+        "0dd36c44-87bd-4743-952c-ba90f5c85c3c"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-0ee42346",
+      "query": "I am about to change code and need to know about: src/tools/provision-auth.ts s array includes alongside / deployed_unverified / deployed_with_errors structuredContent.ok local-member skip.",
+      "expected": [
+        "0ee42346-ce6b-4988-9a0e-325115dce8ad"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-0f432ed4",
+      "query": "I am about to change code and need to know about: Keying KB provider cache slug repoPath means local clones same remote get",
+      "expected": [
+        "0f432ed4-a1fa-4185-8a5f-d7d62fe8cc5d"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-101692b0",
+      "query": "I am about to change code and need to know about: Changing /code_ registration src/services/tool-registry.ts also requires updating hand-copied table memory-contract/v1/generate-contract.mjs INVENTORY.md contract",
+      "expected": [
+        "101692b0-d5e6-4a32-8d6e-e8595ddc39f0"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-1045da8b",
+      "query": "I am about to change code and need to know about: role-policies.mjs resolves timeoutS sentinel because spread replaces already-resolved dispatch-role.mjs throws dispatch time",
+      "expected": [
+        "1045da8b-1650-40db-aa11-2389ad00e9a2"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-17b581e1",
+      "query": "I am about to change code and need to know about: withGoMaxProcsDefault pure used local env plus GO_MAXPROCS_DEFAULT_PWSH / GO_MAXPROCS_DEFAULT_GITBASH statements used remote",
+      "expected": [
+        "17b581e1-3760-4947-b4fa-b7793874384a"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-18ed0717",
+      "query": "I am about to change code and need to know about: src/tools/execute-command.ts only calls markBusy statusline write around workflow engine s has queue",
+      "expected": [
+        "18ed0717-9b70-4d66-af9a-f27499c122d3"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-19197697",
+      "query": "I am about to change code and need to know about: npm run test invokes node --test directly scripts/run-tests.mjs bdMode defaults when APRA_FLEET_BD_MOCK",
+      "expected": [
+        "19197697-8273-4c51-9d9e-ecffe39d2dc7"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-1b2df6eb",
+      "query": "I am about to change code and need to know about: commit s PS-escape check blocks backtick-t/n/r sequences member-bound strings even inside .mjs",
+      "expected": [
+        "1b2df6eb-33c9-4deb-8253-2a553183fcfe"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-1be49eaa",
+      "query": "I am about to change code and need to know about: --json emits when remotes configured.",
+      "expected": [
+        "1be49eaa-30f9-4ae0-917e-5b98d3d37eeb"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-20a4a71f",
+      "query": "I am about to change code and need to know about: role-policies.mjs resolveWatchdogTimeout sets timeouts.maxTotalS timeouts.timeoutS introducing DISPATCH_INACTIVITY_TIMEOUT_S first budgets argument does reach",
+      "expected": [
+        "20a4a71f-bf80-4dab-b90c-d167eb1bd7e2"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-20de02b8",
+      "query": "I am about to change code and need to know about: Because runs inside npm var already own",
+      "expected": [
+        "20de02b8-1dd8-4bb0-9ee3-223babb6866c"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-22dd4e68",
+      "query": "I am about to change code and need to know about: ENGINE_FILE_SET covers only js/mjs/cjs under fleet-sprint md under apra-pm/agents SKILL.md files shipped",
+      "expected": [
+        "22dd4e68-3702-4ecd-a500-df6e9b27f4b3"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-2405734f",
+      "query": "I am about to change code and need to know about: StallDetector._poll gates live per entry probeIntervalMs continues before both stall-threshold skipped tick",
+      "expected": [
+        "2405734f-e88a-42b5-83bb-abce9a2215db"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-266d51a9",
+      "query": "I am about to change code and need to know about: McpServer turns handler error into content text error.message isError true only",
+      "expected": [
+        "266d51a9-b30a-4d52-bf4c-97f26de518d7"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-26b8c94b",
+      "query": "I am about to change code and need to know about: groupStreaksFromLaneMetadata discards value every bead returned arrays still carries metadata.streak identity recoverable",
+      "expected": [
+        "26b8c94b-20c8-4d6e-8862-8e65bc512ba6"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-2b244307",
+      "query": "I am about to change code and need to know about: scripts/check-generic-boundary.mjs strips / ...",
+      "expected": [
+        "2b244307-8635-4406-904f-6a2290d54490"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-2d11a53b",
+      "query": "I am about to change code and need to know about: token_ref KB config makes look up fleet secret every",
+      "expected": [
+        "2d11a53b-f992-4a4a-aa83-f3670dc08959"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-2d4ffb90",
+      "query": "I am about to change code and need to know about: createDoltOrphanSweep .start only setInterval DEFAULT_SWEEP_INTERVAL_MS 5 min never runs sweepOnce eagerly process",
+      "expected": [
+        "2d4ffb90-4bd2-4b84-a143-c2b84dc4cb21"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-2e85c726",
+      "query": "I am about to change code and need to know about: saveCredentialFile writes credentials.json. pid . hex .tmp renames over",
+      "expected": [
+        "2e85c726-b08e-4d07-991d-28a387e4a507"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-2ffc0a85",
+      "query": "I am about to change code and need to know about: src/tools/execute-prompt.ts executePromptSchema ends unrecognized keys src/tools/execute-command.ts executeCommandSchema does removing does make throw",
+      "expected": [
+        "2ffc0a85-7607-49d0-9e9a-f3ca9b8cfbb4"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-304fb583",
+      "query": "I am about to change code and need to know about: Editing agents/schemas/doer-output.json breaks apra-pm auto-sprint schema drift test mock-sprint-happy-path transcript which embeds",
+      "expected": [
+        "304fb583-7651-44f4-a038-61bf9927db8b"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-3377795a",
+      "query": "I am about to change code and need to know about: Client.sftp opens calls back only error without closing exposing it.",
+      "expected": [
+        "3377795a-7d1a-4f6f-98b6-fd721581db37"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-33c1189c",
+      "query": "I am about to change code and need to know about: EXEC_TIMER_NEVER_BINDS_MS 86_400_000 simplified Infinity/MAX_SAFE_INTEGER setTimeout overflow fires immediately nor timeout_s re-couples stall",
+      "expected": [
+        "33c1189c-bf95-4cf3-b875-4b93620bea0f"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-399f2e9b",
+      "query": "I am about to change code and need to know about: test/backlog-role-no-orchestrator-identifiers.test.mjs fails any identifier containing e.g.",
+      "expected": [
+        "399f2e9b-c7d1-4c6a-9785-192062276a11"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-3fe69283",
+      "query": "I am about to change code and need to know about: verifyHostKey throws HostKeyMismatchError inside ssh2 s hostVerifier.",
+      "expected": [
+        "3fe69283-7266-44c7-9f6d-d376847b4873"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-416532bd",
+      "query": "I am about to change code and need to know about: resolveServerPort src/paths.ts decides http binds start/install check explicit else data/member-install.json records else",
+      "expected": [
+        "416532bd-32a5-4056-8cb5-03f2219c2870"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-43bc4917",
+      "query": "I am about to change code and need to know about: tests/integ-playbook-permission-profiles.test.ts asserts every Bash ... bullet playbooks covered composed profiles.",
+      "expected": [
+        "43bc4917-e7c1-4be0-9a0a-c6fc407a155c"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-44cfb13c",
+      "query": "I am about to change code and need to know about: written invalidation contract says every beads-mutating through wrapper drops snapshot wrapper awaits",
+      "expected": [
+        "44cfb13c-397c-4b93-88b3-5731cb417c65"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-44d154ae",
+      "query": "I am about to change code and need to know about: surfaceDoltFailureText applied dolt-sync.mjs runDoltStep.",
+      "expected": [
+        "44d154ae-2927-443c-bdae-fa7aa15f8f1f"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-45fa7bb5",
+      "query": "I am about to change code and need to know about: audn.ts tests NEGATIVE_PATTERNS/POSITIVE_PATTERNS precompiled prefixed longer collides fixed .",
+      "expected": [
+        "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-4694fdaf",
+      "query": "I am about to change code and need to know about: command dispatched through defaultMockCallTool s branch reaches mockFleetApi.executeCommand directly appears commandLog/commandLogDetailed emits",
+      "expected": [
+        "4694fdaf-0c7f-4ad3-90b2-85615da53a92"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-483c4334",
+      "query": "I am about to change code and need to know about: tool allowlist explicit kb_setup kb_export never served session kb_promote kb_resolve_contradiction served only",
+      "expected": [
+        "483c4334-ebbd-4dda-9e66-ca7899110f85"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-48e12361",
+      "query": "I am about to change code and need to know about: session CONFIRMED plus another tier kbSessionPrime runs primeFrom once bible once own",
+      "expected": [
+        "48e12361-051f-4d38-9cf0-ca955eca4fdc"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-4ab868ea",
+      "query": "I am about to change code and need to know about: src/services/http-transport.ts registers request outer try/catch installs unhandledRejection any throw route terminates whole",
+      "expected": [
+        "4ab868ea-bb49-459a-b21e-f2b906d3cb58"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-4bbf15d9",
+      "query": "I am about to change code and need to know about: src/services/service-notice.ts stores per file overwrites two writers install legacy-task guidance WindowsServiceManager.register access",
+      "expected": [
+        "4bbf15d9-821e-460f-aea3-10d749f9320b"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-4e315af5",
+      "query": "I am about to change code and need to know about: imports findDoltDivergedCause back out facade deleting facade dead code would break isTypedAbortError",
+      "expected": [
+        "4e315af5-d8ab-460e-850a-36d1d38ce19a"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-4f62e71d",
+      "query": "I am about to change code and need to know about: timeoutMs handed strategy.execCommand execute-prompt longer timeout_s everyone claude/agy mirror max_total_s 24h never-binds",
+      "expected": [
+        "4f62e71d-0544-49f1-863f-6bbc503604ac"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-50e0fad1",
+      "query": "I am about to change code and need to know about: escapePowerShellArgInner only doubles single quotes while also backslash-escapes embedded double quotes native",
+      "expected": [
+        "50e0fad1-a4ed-4aaf-82cc-486b8cfc5a05"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-5461f16e",
+      "query": "I am about to change code and need to know about: .mjs conditional-marker machinery differs naming division labour error class",
+      "expected": [
+        "5461f16e-7fbf-4e46-9005-1922220c1854"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-5b0c0a37",
+      "query": "I am about to change code and need to know about: withOpenSyncBracket s CROSSING-close branch entered only while another sharing key still openSyncBracketCount",
+      "expected": [
+        "5b0c0a37-6e58-4854-b1f4-b672ca0a6080"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-5b8dec9a",
+      "query": "I am about to change code and need to know about: dist/agents/schemas tells you run npm run copies without pruning dist-only orphan left",
+      "expected": [
+        "5b8dec9a-f054-4867-8422-a7cb3e008952"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-64bedb7a",
+      "query": "I am about to change code and need to know about: Final does receive -- only cites boilerplate comment six other phase modules",
+      "expected": [
+        "64bedb7a-8a2d-46ba-9586-6254a88f6dcd"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-65688ff3",
+      "query": "I am about to change code and need to know about: src/cli/install.ts computes late workflows Dolt Beads KB nothing cross-checking them against counter.",
+      "expected": [
+        "65688ff3-63b2-4d8d-8772-9767a7008a59"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-668bc632",
+      "query": "I am about to change code and need to know about: develop.mjs records plus their open blocks-edge dependents excludes them currentReady every round",
+      "expected": [
+        "668bc632-0c2b-49b8-956b-9da60709ff36"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-66ab34e7",
+      "query": "I am about to change code and need to know about: json emits via formatAgentHost combined string remote members sentinel local/relay members.",
+      "expected": [
+        "66ab34e7-0092-4be5-b77d-17453ddc46c9"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-698deaad",
+      "query": "I am about to change code and need to know about: importBibleEntries keeps only add path.",
+      "expected": [
+        "698deaad-20a7-468e-9ed6-e696dd03bd0c"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-6b538682",
+      "query": "I am about to change code and need to know about: parseNetstatPids matches local address endsWith",
+      "expected": [
+        "6b538682-67b1-4cf2-ab81-ae27d8d2bf8e"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-70f0e881",
+      "query": "I am about to change code and need to know about: bin/cli.mjs resolveRoleMapWithWarnings folds roleMap.orchestrator into roleMap.backlog before buildRunnerArgs s run-log deprecation warning",
+      "expected": [
+        "70f0e881-49d9-40eb-85ab-ff9c8868f49b"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-70f6818d",
+      "query": "I am about to change code and need to know about: packages/apra-fleet-se/scripts/merge-kb-canonical.mjs matches bible entries across base/ours/theirs fallback",
+      "expected": [
+        "70f6818d-fe2c-425e-80b1-e2124b82270c"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-71323701",
+      "query": "I am about to change code and need to know about: getMemberSplitRead kb-self.ts splits tier list naming plus another tier checkout view plus",
+      "expected": [
+        "71323701-67db-4aa8-b7ce-858fb5e2aea7"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-715c2ff2",
+      "query": "I am about to change code and need to know about: LogScope.ok appends Nms after payload per-tick probe-count cannot JSON.parse d whole unlike",
+      "expected": [
+        "715c2ff2-f5fa-43ba-a0e2-1946939af614"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-76754ef3",
+      "query": "I am about to change code and need to know about: fails fallback when taken successful curl only proves something listening",
+      "expected": [
+        "76754ef3-5ff3-4fb4-a7cf-d74504f5013b"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-774ec22a",
+      "query": "I am about to change code and need to know about: raw node --test invocation has wall-clock bound --test-concurrency APRA_FLEET_TEST_CONCURRENCY export",
+      "expected": [
+        "774ec22a-e9a1-448a-bd46-b5b0fd7b17ef"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-780724c4",
+      "query": "I am about to change code and need to know about: tests/install-force.test.ts runs --force against injecting fake schtasks runner",
+      "expected": [
+        "780724c4-bbfa-458d-94fc-ebb733800a55"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-78f14fd2",
+      "query": "I am about to change code and need to know about: dashboard.mjs buildSprintViews longer computes own beads clone",
+      "expected": [
+        "78f14fd2-717c-4201-9897-fb638379f393"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-7a7649d6",
+      "query": "I am about to change code and need to know about: ASCII-only gate fails when has FEWER characters than baseline entry cleaning up",
+      "expected": [
+        "7a7649d6-fd51-4e47-b898-384499d53c54"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-7d7320d0",
+      "query": "I am about to change code and need to know about: checkInstallCurrency member-init-probe.mjs records member-fleet-outdated install which absent GATING_STEPS never flips verified changes",
+      "expected": [
+        "7d7320d0-ed80-4b16-8ac8-c5df806cea55"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-7ec3c926",
+      "query": "I am about to change code and need to know about: SqliteProvider.getRetirementReasons reads new retired_reason column plus content_hash",
+      "expected": [
+        "7ec3c926-46e3-42df-ba26-148260f36a61"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-7f7c5b11",
+      "query": "I am about to change code and need to know about: new optional field distinguishes explicit objection field verdict predates contract which what",
+      "expected": [
+        "7f7c5b11-5779-4c0b-8265-d21a7f0e1d6d"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-7fe61086",
+      "query": "I am about to change code and need to know about: scripts/sandbox-lock.mjs acquire CLI previously recorded self-reported which MSYS-internal pid invisible defaultDeps.isAlive native",
+      "expected": [
+        "7fe61086-2df7-44bf-9d40-a16d6081c1f5"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-81df596b",
+      "query": "I am about to change code and need to know about: check-status.ts kbHttpCredentialHealth builds one kbHealth.credential block config",
+      "expected": [
+        "81df596b-4490-4862-8cef-3ad5ee7c0785"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-84258482",
+      "query": "I am about to change code and need to know about: group SIGTERM reaps shell true wrapper quickly suite loop would fall through",
+      "expected": [
+        "84258482-2b78-4c46-a077-7698d06fc4b4"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-8672df56",
+      "query": "I am about to change code and need to know about: longer depends findCallSites recognising enclosing call identifier.",
+      "expected": [
+        "8672df56-841f-4c14-8e15-f3c6926063f2"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-86ae8b43",
+      "query": "I am about to change code and need to know about: tests/knowledge/kb-member-read-scope-wording.test.ts collects real kb_query/kb_list/kb_context/kb_session_prime descriptions via registerAllTools fake server memory-contract/v1/bindings/mcp/ .json.",
+      "expected": [
+        "86ae8b43-42ad-4606-a961-2755421723be"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-8fdf21fa",
+      "query": "I am about to change code and need to know about: deployed credential helper differs OS shell POSIX linux/macos writes extensionless HOME script",
+      "expected": [
+        "8fdf21fa-e64c-43d2-a22a-edfd21bd6791"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-919a3f50",
+      "query": "I am about to change code and need to know about: runner.js derives own reservation id validated.runId validated.branch standalone non-supervisor launch hands rather",
+      "expected": [
+        "919a3f50-dcb3-4ee9-91d1-767fd503a3b8"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-93bbfb5a",
+      "query": "I am about to change code and need to know about: PATH credential exceed CHILD_ENV_BLOCK_CAP_CHARS still removes largest before reporting overCap can lose",
+      "expected": [
+        "93bbfb5a-0681-45d2-9024-ecf14c44a479"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-962688bf",
+      "query": "I am about to change code and need to know about: server.mjs stop idempotent calls shutdownResolve last server.close every seam stop code await",
+      "expected": [
+        "962688bf-cee4-4461-bc3b-10b87eaf56c4"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-9699c735",
+      "query": "I am about to change code and need to know about: Node/libuv searches before PATH bare program name unless set.",
+      "expected": [
+        "9699c735-270e-439f-8313-c01fd6c98814"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-96a63862",
+      "query": "I am about to change code and need to know about: agent.gitRepos declared optional string usually holds bare Owner/Repo identifiers clone URLs.",
+      "expected": [
+        "96a63862-eb7a-43f3-8352-4cd686412d43"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-98dd92b2",
+      "query": "I am about to change code and need to know about: Three distinct roles share roleMember planner two share roleMember plan-reviewer any guard",
+      "expected": [
+        "98dd92b2-2606-4baa-8d60-fd3cd3dc78a0"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-9af40daa",
+      "query": "I am about to change code and need to know about: importBibleEntries bible-import.ts captures every entry .",
+      "expected": [
+        "9af40daa-2521-430a-a529-7db25d27da87"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-a05ff689",
+      "query": "I am about to change code and need to know about: Two drifted near-duplicate via s generated bd.cmd",
+      "expected": [
+        "a05ff689-9610-4624-ac2f-301d91e83846"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-a098caf8",
+      "query": "I am about to change code and need to know about: runner.js throwIfSetAsideStall runs start Develop round all ready beads set aside Cycle",
+      "expected": [
+        "a098caf8-263f-4b72-b5a7-55fc3d290a07"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-a1a279ec",
+      "query": "I am about to change code and need to know about: reviewScopeBeadIds phases/review.mjs unions each streak s engine bd read-back skipping outcomes flagged",
+      "expected": [
+        "a1a279ec-5537-4820-a23a-c9a7737f2507"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-a3fdac5d",
+      "query": "I am about to change code and need to know about: dispatched role output applied role-policies.mjs row lists postResult",
+      "expected": [
+        "a3fdac5d-31b6-4b87-9456-10d813aa095b"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-a4d684ba",
+      "query": "I am about to change code and need to know about: runDeployPhase records when deployer returns failedStep",
+      "expected": [
+        "a4d684ba-ff2b-48e7-831c-7f68346f5d19"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-a67295f1",
+      "query": "I am about to change code and need to know about: fleet-sprint selects curlBinary OS-keyed while selects shQuote shell-keyed fallback",
+      "expected": [
+        "a67295f1-33ca-4960-93a0-da0275505905"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-a888b84b",
+      "query": "I am about to change code and need to know about: scripts/check-ascii-only.mjs fails npm any non-ASCII char file baseline including files reproduce emoji-prefixed",
+      "expected": [
+        "a888b84b-d7a0-47ad-9318-2f062770cf2f"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-b03effcd",
+      "query": "I am about to change code and need to know about: dolt-sync.mjs classification isSpawnOutageFailure run rawError",
+      "expected": [
+        "b03effcd-0488-452b-9b49-ab21049c0ece"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-b7ec6763",
+      "query": "I am about to change code and need to know about: bitbucketProvider.deploy always writes",
+      "expected": [
+        "b7ec6763-407e-4ca3-8cf7-91183e33e39f"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-b7fc09bb",
+      "query": "I am about to change code and need to know about: apiErrorStatus classified own",
+      "expected": [
+        "b7fc09bb-cf5b-40bb-a965-9ab9852c7cdf"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-b8d328fa",
+      "query": "I am about to change code and need to know about: http-transport records SessionOwner jwt memberId workspaceId access secret initialize refuses GET/DELETE/non-initialize POST",
+      "expected": [
+        "b8d328fa-e22b-498f-98cf-2ff10bd6370a"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-bcd7c247",
+      "query": "I am about to change code and need to know about: WindowsCommands.getCleanEnv WindowsGitBashCommands.cleanExec pass their through src/os/child-env-bound.ts case-insensitively largest non-protected vars dropped until",
+      "expected": [
+        "bcd7c247-9534-4ba5-bc6a-997c94ca7bbd"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-c2899616",
+      "query": "I am about to change code and need to know about: repo_path does exist host remote-member case never fall back process.cwd against either",
+      "expected": [
+        "c2899616-0cb1-41e8-b229-76e291a0cd81"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-c4fb3b10",
+      "query": "I am about to change code and need to know about: Fleet-server callers should use lookupServerSecret/lookupServerSecretMeta credentialResolve they ignore allowedMembers never delete records.",
+      "expected": [
+        "c4fb3b10-577e-46a8-8ddb-bde2844b57c7"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-c5ebfbc3",
+      "query": "I am about to change code and need to know about: createKbWorkClient.commitRepo keeps ids kb_bible_commit skipped queued most KB_BIBLE_SKIP_RETRY_ROUNDS 3 consecutive drops them",
+      "expected": [
+        "c5ebfbc3-a76c-42e4-8254-87fc2c82e39d"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-cc085797",
+      "query": "I am about to change code and need to know about: After final slice runner.js builds label all",
+      "expected": [
+        "cc085797-4b47-455d-9357-fbbb267281ed"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-cdb38747",
+      "query": "I am about to change code and need to know about: controller s MAX_WAIT_S/MAX_REPROBES applies onUsageLimit invocation s total time across repeated clear-then-refail",
+      "expected": [
+        "cdb38747-c24d-47f0-8e38-2d62f13eeb61"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-d1963b85",
+      "query": "I am about to change code and need to know about: scaled-timeout.mjs parses env var Number returns whenever result finite 1",
+      "expected": [
+        "d1963b85-b03a-4da7-85c0-ce433768c615"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-d3016610",
+      "query": "I am about to change code and need to know about: Both lower upper wall-clock slow test resolve through watchdog pin which row",
+      "expected": [
+        "d3016610-0d2a-40db-ba0b-537f49ff1cbf"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-d3e704fd",
+      "query": "I am about to change code and need to know about: collectParentNotesStalenessNotes parent-notes-staleness.mjs lists bead s plain id --json which excludes default most",
+      "expected": [
+        "d3e704fd-d1ee-49d5-aca9-c9eea9c03cb4"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-d3ec9cb9",
+      "query": "I am about to change code and need to know about: apra-fleet-client s returns undefined common teardown idiom await stop inside finally block",
+      "expected": [
+        "d3ec9cb9-285c-4e61-842b-c81393237c68"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-d6a925e2",
+      "query": "I am about to change code and need to know about: buildSweepCommand embeds port range age --data-dir into PowerShell ps awk",
+      "expected": [
+        "d6a925e2-7ffb-409e-9d6d-df112557edda"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-d75f28a9",
+      "query": "I am about to change code and need to know about: workflow package fake API validates outgoing payloads against real zod schemas canned",
+      "expected": [
+        "d75f28a9-bb69-4fd8-bf81-1ad9bd17d51b"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-da7d0105",
+      "query": "I am about to change code and need to know about: Windows whether bare program name passed child_process searched cwd depends process env.",
+      "expected": [
+        "da7d0105-e454-43d0-b12f-c27d00e7f337"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-da934546",
+      "query": "I am about to change code and need to know about: VcsProviderService.validateNonSecretFields runs collectOobApiKey provisionVcsAuth",
+      "expected": [
+        "da934546-d15f-42ca-bdce-bfab58ec0e83"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-dd912ec8",
+      "query": "I am about to change code and need to know about: Exactly policies carry",
+      "expected": [
+        "dd912ec8-958c-49d0-9926-636ee3a17f95"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-ddc0692c",
+      "query": "I am about to change code and need to know about: readMemberVcsCredentialToken parseExpiresAtFromProvisionText completely deleted fleet-sprint/ merely deprecated",
+      "expected": [
+        "ddc0692c-edc3-4883-a409-d6a958b9c71f"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-de1c60a9",
+      "query": "I am about to change code and need to know about: Before adding .gitignore rule under check git ls-files first -- .fleet/kb-canonical.json checked-in",
+      "expected": [
+        "de1c60a9-b27f-411b-a23c-953e37207536"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-deeaaf96",
+      "query": "I am about to change code and need to know about: phase3-dispatch-engine-completeness.test.mjs discovers test/mock-sprint- .test.mjs prefix runtime filename alone decides whether re-run child",
+      "expected": [
+        "deeaaf96-ce12-4249-834c-f7562dda6013"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-e078ec0e",
+      "query": "I am about to change code and need to know about: apra-pm install.mjs round-trips files through string RESOLVABLE_TEXT_EXTENSIONS .md/.json/.txt",
+      "expected": [
+        "e078ec0e-b747-4274-a82b-4155c342928b"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-e0d3a928",
+      "query": "I am about to change code and need to know about: returns kind synchronously while openUrl fires only callback",
+      "expected": [
+        "e0d3a928-0df8-49c1-bd69-3674ad65310a"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-e0de87cc",
+      "query": "I am about to change code and need to know about: Adding function/const fleet-sprint/vcs-auth.mjs requires listing test/vcs-auth-extraction-facade.test.mjs every new call requires raising EXPECTED_VCS_AUTH_COMMAND_COUNT",
+      "expected": [
+        "e0de87cc-0368-4014-8cfe-e1879bbe57f9"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-e1673449",
+      "query": "I am about to change code and need to know about: id drops children unless called --all.",
+      "expected": [
+        "e1673449-1192-4948-bd32-7b743635a820"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-e6525404",
+      "query": "I am about to change code and need to know about: runner.js dispatchableReadyLeafBeads filters readyLeafBeads through partitionReadyByGoal finite-priority bead dropped transitively blocks open",
+      "expected": [
+        "e6525404-e387-4360-8df3-fe08d050a28a"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-e687ffa8",
+      "query": "I am about to change code and need to know about: createLedger s transact persists current in-memory document",
+      "expected": [
+        "e687ffa8-8697-4f7f-9418-ba7f3efd6c2b"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-e7d3e8e5",
+      "query": "I am about to change code and need to know about: state.summary createDashboardViewer only kept current because runs inside plus SIGINT/SIGTERM paths",
+      "expected": [
+        "e7d3e8e5-0564-4f16-8318-f5e81c436302"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-e9f7d4a8",
+      "query": "I am about to change code and need to know about: syncMemberBefore resetToRemoteTip first calls salvageBeforeReset.",
+      "expected": [
+        "e9f7d4a8-575a-4f4f-9342-9bf47b017b6f"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-ec1c087a",
+      "query": "I am about to change code and need to know about: createVcsAuthPreflightCallback whose provider has authRemedy.serverSideReMintable false Bitbucket Azure DevOps non-interactive git ls-remote",
+      "expected": [
+        "ec1c087a-90bd-4475-828a-c684ee1c1342"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-ed948146",
+      "query": "I am about to change code and need to know about: usage-limit-controller.mjs hosts wake real deliberately unbracketed agent dispatch outside because s agent",
+      "expected": [
+        "ed948146-37b6-4146-9d10-b2a31512b0bd"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-ee61d08c",
+      "query": "I am about to change code and need to know about: Taking curl -w trailer rather than any digit-matching search keeps response body",
+      "expected": [
+        "ee61d08c-1bd1-471b-97c4-23afc08470c3"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-efc3bf05",
+      "query": "I am about to change code and need to know about: phase5-consumer-migration-end-state.test.mjs fails contains .includes / .match / .toLowerCase even Array membership checks.",
+      "expected": [
+        "efc3bf05-c36c-480f-a69e-7ece4b2536bd"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-f2c0c490",
+      "query": "I am about to change code and need to know about: writeServiceNotice overwrites whole file",
+      "expected": [
+        "f2c0c490-c149-488d-939c-beb60734c8bc"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-f33011e2",
+      "query": "I am about to change code and need to know about: ensureMemberFleetInstall opts.replaceFull probes member-install marker version short-circuits same-version full install replaced too.",
+      "expected": [
+        "f33011e2-8ae6-4388-95d4-5e21f1716d0f"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-f40ed9c2",
+      "query": "I am about to change code and need to know about: ask client something during e.g.",
+      "expected": [
+        "f40ed9c2-9dd5-4b32-a216-db902c79ddb2"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-f503ec1b",
+      "query": "I am about to change code and need to know about: uses path.win32 only drive-letter UNC backslash-containing paths else path.posix",
+      "expected": [
+        "f503ec1b-2ff6-488f-9f2c-583adaeec7e9"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-f5c5d252",
+      "query": "I am about to change code and need to know about: codeIndexReadiness reports building whenever lock isReindexRunning recorded run alive even meta.json looks",
+      "expected": [
+        "f5c5d252-51e0-4107-a55f-c4eba27ea15d"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-f60d53f5",
+      "query": "I am about to change code and need to know about: member-init-probe finish problem server-named overrides generic only when tools first gating problem.",
+      "expected": [
+        "f60d53f5-f72a-439f-82c9-03b7deaefc9a"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-f76a103e",
+      "query": "I am about to change code and need to know about: runner.js keeps lastDeployFailure latest cycle.",
+      "expected": [
+        "f76a103e-797e-4606-b224-bc130e8243e0"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-f8b2695a",
+      "query": "I am about to change code and need to know about: NAME --persist takes empty aborts token refreshers can pipe command into any",
+      "expected": [
+        "f8b2695a-bfbf-4a63-93de-5dcfe7d6c374"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-fbf058a3",
+      "query": "I am about to change code and need to know about: resolveResumeArg returns opts.resumeSessionId dispatch s err.details.sessionId false.",
+      "expected": [
+        "fbf058a3-a2de-45e1-b97f-ec58b048cbc4"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "gen-ff02b32b",
+      "query": "I am about to change code and need to know about: buildSweepCommand accepts data-dir prefix both shell families enforce wired bin/serve.mjs",
+      "expected": [
+        "ff02b32b-5d77-4af5-ad6b-0d7288e2476f"
+      ],
+      "source": "generated"
+    },
+    {
+      "id": "real-miss-resource-not-accessible",
+      "query": "gh says Resource not accessible by integration when opening a pull request",
+      "expected": [
+        "eval-fixture-vcs-scope-push-pr"
+      ],
+      "source": "owner-notes"
+    }
+  ]
+}

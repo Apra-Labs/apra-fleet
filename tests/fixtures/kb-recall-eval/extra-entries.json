@@ -1,0 +1,14 @@
+{
+  "entries": [
+    {
+      "id": "eval-fixture-vcs-scope-push-pr",
+      "type": "learning",
+      "title": "Mint VCS auth with push+pr access to create pull requests",
+      "summary": "A GitHub \"Resource not accessible by integration\" error on gh pr create means the token was minted with push access only; re-mint it with git_access push+pr.",
+      "symbols": [],
+      "source_files": [],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T00:00:00.000Z"
+    }
+  ]
+}
