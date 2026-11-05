@@ -13,6 +13,9 @@ import { leakage, LEAKAGE_CAP } from './kb-recall-leakage.mjs';
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const bible = JSON.parse(fs.readFileSync(path.join(root, '.fleet/kb-canonical.json'), 'utf-8'));
 const outDir = path.join(root, 'tests/fixtures/kb-recall-eval');
+// The eval reads this pinned snapshot, not the live bible; regenerating refreshes it.
+fs.mkdirSync(outDir, { recursive: true });
+fs.copyFileSync(path.join(root, '.fleet/kb-canonical.json'), path.join(outDir, 'bible-snapshot.json'));
 
 const confirmed = bible.entries.filter(e => e.confidence === 'CONFIRMED');
 const used = new Set();

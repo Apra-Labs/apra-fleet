@@ -16,7 +16,10 @@ import { FLEET_DIR } from '../../src/paths.js';
 // the model is not available locally; npm test never downloads one.
 
 export const EVAL_DIR = path.resolve(__dirname, '../fixtures/kb-recall-eval');
-export const BIBLE_PATH = path.resolve(__dirname, '../../.fleet/kb-canonical.json');
+// Pinned snapshot of .fleet/kb-canonical.json (refreshed only by
+// scripts/gen-kb-recall-eval.mjs together with the queries), so a routine bible
+// promotion cannot turn the coverage check red.
+export const BIBLE_PATH = path.resolve(__dirname, '../fixtures/kb-recall-eval/bible-snapshot.json');
 export const RECALL_K = 5;
 
 /**
