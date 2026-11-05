@@ -3,6 +3,7 @@ import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { CodeIntelligenceProvider } from './code-intelligence.js';
 import { freshnessNote } from './code-intelligence-freshness.js';
 import { maybeScheduleReindex, GITNEXUS_PACKAGE_SPEC } from './code-intelligence-reindex.js';
@@ -13,6 +14,7 @@ import { indexGeneration, readGitNexusIndexState } from './code-index-state.js';
 import { logError } from '../utils/log-helpers.js';
 import { missingOnServerPathMessage, npxUnavailableReason } from '../utils/find-on-path.js';
 import { gitExecutable } from '../os/git-executable.js';
+import { redactKnownSecrets } from '../utils/redact-known-secrets.js';
 
 // ONE gitnexus child serves every repo; each live child is a ClientEntry.
 //
@@ -39,6 +41,8 @@ interface ClientEntry {
   closed: boolean;
   /** Index generation per repo this child last answered from (see below). */
   servedGeneration: Map<string, string>;
+  /** The end of what the child wrote to stderr, safe to show a caller. */
+  stderrTail: () => string;
 }
 
 let sharedEntry: ClientEntry | null = null;
@@ -62,6 +66,37 @@ const OFFLINE_MESSAGE =
 function offlineResult(detail?: string): { content: Array<{ type: 'text'; text: string }>; isError: true } {
   const text = detail ? `${OFFLINE_MESSAGE} (${detail})` : OFFLINE_MESSAGE;
   return { content: [{ type: 'text', text }], isError: true };
+}
+
+// The child's stderr is the only record of why it failed (npx install errors,
+// a crash on start). Reading it also keeps an unread pipe from stalling the
+// child. Only the end is kept, and it is scrubbed before it is cut, so a cut
+// cannot leave half a credential that the patterns no longer recognise.
+const STDERR_KEEP_CHARS = 8000;
+const STDERR_REPORT_CHARS = 2000;
+
+function scrubChildText(text: string): string {
+  return redactKnownSecrets(text, [])
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+    .replace(/(_auth(?:Token)?|_password)(\s*[=:]\s*)\S+/gi, '$1$2****')
+    .replace(/(:\/\/)[^\s/@]+@/g, '$1****@')
+    .replace(/\b(?:npm_[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9_-]+)/g, '****')
+    .replace(/[^\x20-\x7E]+/g, ' ');
+}
+
+function captureChildStderr(transport: StdioClientTransport): () => string {
+  let kept = '';
+  transport.stderr?.on('data', (chunk: unknown) => {
+    kept = (kept + String(chunk)).slice(-STDERR_KEEP_CHARS);
+  });
+  return () => scrubChildText(kept).slice(-STDERR_REPORT_CHARS);
+}
+
+/** Why the child failed: timeout or not, in which stage, how long it took, and its stderr. */
+function childFailureDetail(err: unknown, stage: string, startedAt: number, stderr: string): string {
+  const message = scrubChildText(err instanceof Error ? err.message : String(err));
+  const outcome = (err as { code?: unknown } | null | undefined)?.code === ErrorCode.RequestTimeout ? 'TIMEOUT' : 'failed';
+  return `${outcome} during ${stage} after ${Date.now() - startedAt} ms: ${message}; child stderr: ${stderr || '(empty)'}`;
 }
 
 function closeEntry(entry: ClientEntry): void {
@@ -115,12 +150,13 @@ async function getGitNexusEntry(): Promise<ClientEntry> {
       args: ['-y', GITNEXUS_PACKAGE_SPEC, 'mcp'],
       stderr: 'pipe',
     });
+    const stderrTail = captureChildStderr(transport);
 
     const client = new Client(
       { name: 'apra-fleet', version: '1.0.0' },
       { capabilities: {} },
     );
-    const entry: ClientEntry = { client, inFlight: 0, retired: false, closed: false, servedGeneration: new Map() };
+    const entry: ClientEntry = { client, inFlight: 0, retired: false, closed: false, servedGeneration: new Map(), stderrTail };
 
     // Transport death reset: if the child process dies (close) or the
     // transport/client errors after a successful connect, stop handing it
@@ -136,7 +172,13 @@ async function getGitNexusEntry(): Promise<ClientEntry> {
     client.onclose = onDeath;
     client.onerror = onDeath;
 
-    await client.connect(transport);
+    const connectStart = Date.now();
+    try {
+      await client.connect(transport);
+    } catch (err) {
+      // No entry reaches callGitNexus on this path, so the reason travels in the error.
+      throw new Error(childFailureDetail(err, 'connect', connectStart, stderrTail()), { cause: err });
+    }
 
     if (connectionPromise === pending) {
       // A child that died while connecting is never shared; clear the
@@ -171,16 +213,18 @@ async function getGitNexusEntry(): Promise<ClientEntry> {
 const GITNEXUS_ACQUIRE_ATTEMPTS = 3;
 
 async function acquireGitNexusEntry(): Promise<ClientEntry> {
+  let lastStderr = '';
   for (let attempt = 1; attempt <= GITNEXUS_ACQUIRE_ATTEMPTS; attempt++) {
     const entry = await getGitNexusEntry();
     if (!entry.retired) {
       entry.inFlight += 1;
       return entry;
     }
+    lastStderr = entry.stderrTail();
     if (entry.inFlight === 0) closeEntry(entry);
   }
   throw new Error(
-    `gitnexus child exited or was retired ${GITNEXUS_ACQUIRE_ATTEMPTS} times in a row before it could serve a call (it is crashing on start or being recycled repeatedly)`,
+    `gitnexus child exited or was retired ${GITNEXUS_ACQUIRE_ATTEMPTS} times in a row before it could serve a call (it is crashing on start or being recycled repeatedly); child stderr: ${lastStderr || '(empty)'}`,
   );
 }
 
@@ -274,15 +318,19 @@ async function callGitNexus(name: string, params: Record<string, unknown>): Prom
 
   let result: unknown;
   let entry: ClientEntry | null = null;
+  let callStart = 0;
   try {
     entry = await acquireGitNexusEntry();
+    callStart = Date.now();
     result = await entry.client.callTool({ name, arguments: params });
   } catch (err) {
     // Retire only the child THIS call ran on -- never a fresh child another
     // call already swapped in. A failed connect has no entry: the connect
     // path already cleared its poisoned promise.
     if (entry) retireEntry(entry);
-    let detail = err instanceof Error ? err.message : String(err);
+    let detail = entry
+      ? childFailureDetail(err, `call of ${name}`, callStart, entry.stderrTail())
+      : err instanceof Error ? err.message : String(err);
     if (/\bENOENT\b/.test(detail) && /npx/.test(detail)) detail = `${detail}: ${missingOnServerPathMessage('npx')}`;
     return offlineResult(detail);
   } finally {

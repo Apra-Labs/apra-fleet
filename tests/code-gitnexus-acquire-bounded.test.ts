@@ -20,7 +20,9 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
     onerror?: () => void;
     constructor() { h.spawned += 1; }
     connect = vi.fn(async () => {
-      // The child exits right after the handshake: the client reports close.
+      // The child writes to stderr (delivered on a later tick) and exits right
+      // after the handshake: the client reports close.
+      await new Promise((resolve) => setImmediate(resolve));
       if (h.dieOnConnect) this.onclose?.();
     });
     callTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'answer' }] }));
@@ -28,8 +30,14 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
   }
   return { Client: MockClient };
 });
-vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
-  class MockTransport { onclose?: () => void; onerror?: () => void }
+vi.mock('@modelcontextprotocol/sdk/client/stdio.js', async () => {
+  const { PassThrough } = await import('node:stream');
+  class MockTransport {
+    onclose?: () => void;
+    onerror?: () => void;
+    stderr = new PassThrough();
+    constructor() { this.stderr.write('gitnexus crashed on start'); }
+  }
   return { StdioClientTransport: MockTransport };
 });
 vi.mock('../src/utils/find-on-path.js', async (importOriginal) => {
@@ -52,6 +60,7 @@ describe('acquireGitNexusEntry is bounded when every child dies on start', () =>
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/Code intelligence is offline/);
     expect(result.content[0].text).toMatch(/retired 3 times in a row/);
+    expect(result.content[0].text).toMatch(/child stderr: gitnexus crashed on start/);
     expect(h.spawned).toBe(3);
     expect(h.closed).toBe(3);
   });

@@ -17,13 +17,45 @@ import { execFileSync } from 'node:child_process';
 // redirects, so the test refuses to run without that sandbox. Only the rebuild
 // the detector would request is mocked (tests/setup.ts): the test runs the
 // rebuild itself, to prove --force repairs the index.
+//
+// Environment vs real failure. The fleet's child is the real one, but two things
+// about this runner must not decide the result, and a timeout must read as one:
+// - Its npx install is pre-installed in beforeAll. npx keys its install dir by the
+//   exact spec string, so ANALYZER's install is never the child's, and the child's
+//   env (the MCP SDK's short default list) can also select another npm cache. Left
+//   alone, the child cold-installs inside its connect handshake.
+// - Connect and calls get CHILD_TIMEOUT_MS instead of the SDK's 60 s default, through
+//   a subclass of the real client: there is no product option for this.
+// A child failure surfaces with its reason: the offline text says TIMEOUT or failed,
+// with the child's stderr, and payloadOf prints all of it.
 
 const ANALYZER = 'gitnexus@1.6.12';
 const EDITED_FILE = 'src/services/tool-scope.ts';
+const child = vi.hoisted(() => ({ CHILD_TIMEOUT_MS: 300_000, failures: [] as string[] }));
 
 vi.mock('../src/tools/code-intelligence-reindex.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/tools/code-intelligence-reindex.js')>();
   return { ...actual, maybeScheduleReindex: () => false };
+});
+vi.mock('@modelcontextprotocol/sdk/client/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@modelcontextprotocol/sdk/client/index.js')>();
+  type Base = InstanceType<typeof actual.Client>;
+  class PatientClient extends actual.Client {
+    connect(...[transport, options]: Parameters<Base['connect']>) {
+      return super.connect(transport, { ...options, timeout: child.CHILD_TIMEOUT_MS });
+    }
+    async callTool(...[params, schema, options]: Parameters<Base['callTool']>) {
+      try {
+        const result = await super.callTool(params, schema, { ...options, timeout: child.CHILD_TIMEOUT_MS });
+        if (result.isError) child.failures.push(`${params.name}: ${JSON.stringify(result.content)}`);
+        return result;
+      } catch (err) {
+        child.failures.push(`${params.name}: ${String(err)}`);
+        throw err;
+      }
+    }
+  }
+  return { ...actual, Client: PatientClient };
 });
 vi.mock('../src/services/registry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/registry.js')>();
@@ -33,9 +65,12 @@ vi.mock('../src/services/registry.js', async (importOriginal) => {
 import { handleCodeContext } from '../src/tools/code-intelligence.js';
 import { INDEX_ID_UNIQUENESS_QUERY, parseMarkdownTable } from '../src/tools/code-intelligence-gitnexus.js';
 import { scheduleIndexBuild } from '../src/tools/code-index-heal.js';
+import { GITNEXUS_PACKAGE_SPEC } from '../src/tools/code-intelligence-reindex.js';
+import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const repoRoot = path.resolve(__dirname, '..');
 const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 let scratch: string;
 let repo: string;
 
@@ -47,6 +82,29 @@ function gitnexus(...args: string[]): string {
     cwd: repo, encoding: 'utf8', timeout: 480_000, maxBuffer: 256 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32', windowsHide: true,
   });
+}
+
+// Install the child's package where the child will look for it. Asks npm for the
+// cache under the child's env rather than assuming it; installs with the full env,
+// which build tools need and the child's env lacks.
+function preinstallChildPackage(): void {
+  const shell = process.platform === 'win32';
+  const spec = shell ? `"${GITNEXUS_PACKAGE_SPEC}"` : GITNEXUS_PACKAGE_SPEC;
+  const started = Date.now();
+  try {
+    const cache = execFileSync(npm, ['config', 'get', 'cache'], {
+      env: getDefaultEnvironment(), encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'], shell, windowsHide: true,
+    }).trim();
+    execFileSync(npx, ['-y', spec, '--help'], {
+      env: { ...process.env, npm_config_cache: cache }, encoding: 'utf8', timeout: 480_000, maxBuffer: 256 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'], shell, windowsHide: true,
+    });
+    console.log(`[real-gitnexus] ${GITNEXUS_PACKAGE_SPEC} ready in ${cache} after ${Date.now() - started} ms`);
+  } catch (err) {
+    const e = err as { code?: string; message?: string };
+    const outcome = e.code === 'ETIMEDOUT' ? 'TIMEOUT' : 'failed';
+    throw new Error(`[environment] pre-install of ${GITNEXUS_PACKAGE_SPEC} ${outcome} after ${Date.now() - started} ms: ${e.message}`);
+  }
 }
 
 function cypherRows(query: string): Array<Record<string, string>> {
@@ -66,8 +124,14 @@ function functionIds(): Map<string, string> {
 }
 
 function payloadOf(result: unknown): Record<string, unknown> {
-  const text = (result as { content: Array<{ text: string }> }).content[0].text.split('\n\n---\n')[0];
-  return JSON.parse(text) as Record<string, unknown>;
+  const content = (result as { content: Array<{ text: string }> }).content;
+  try {
+    return JSON.parse(content[0].text.split('\n\n---\n')[0]) as Record<string, unknown>;
+  } catch {
+    const full = content.map((c) => c.text).join('\n');
+    const kind = /\bTIMEOUT during\b/.test(full) ? 'gitnexus child TIMEOUT' : 'gitnexus or fleet failure';
+    return expect.fail(`${kind}: the fleet response is not JSON. Full response:\n${full}`);
+  }
 }
 
 const context = (name: string) => handleCodeContext({ name }, { repo, memberId: 'm' });
@@ -78,7 +142,8 @@ beforeAll(() => {
   scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'code-corrupt-real-')));
   repo = path.join(scratch, 'repo');
   execFileSync('git', ['clone', '-q', '--no-hardlinks', repoRoot, repo], { windowsHide: true });
-}, 300_000);
+  preinstallChildPackage();
+}, 600_000);
 
 afterAll(() => {
   fs.rmSync(scratch, { recursive: true, force: true });
@@ -115,7 +180,9 @@ describe('corrupt-index detector on a real gitnexus index', () => {
     expect(corrupt.error).toBe(`Symbol '${name}' not found`);
     // The count itself is not stable across readers of a corrupt index (seen:
     // 9291 from the CLI, 8299 from the MCP child), so only its sign is asserted.
-    expect(corrupt.index_integrity).toMatchObject({ corrupt: true, rebuild: { started: true } });
+    // The detector's cypher check fails open: without this list, a child failure
+    // there would read as the detector not flagging.
+    expect(corrupt.index_integrity, `child call failures so far: ${JSON.stringify(child.failures)}`).toMatchObject({ corrupt: true, rebuild: { started: true } });
     expect((corrupt.index_integrity as { damaged_rows: number }).damaged_rows).toBeGreaterThan(0);
     expect(corrupt.confidence).toBe('LOW');
     expect(schedule).toHaveBeenCalledWith(repo);
