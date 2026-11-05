@@ -78,6 +78,7 @@
 
 import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
 import { buildFinalVerdictPrompt } from '../prompts.mjs';
+import { resolveFinalReviewMergeBase } from '../git-topology.mjs';
 import { applyGuardedReopens, parseIdWithReasonEntry } from '../beads-transitions.mjs';
 import {
     validateNewTask, buildFallbackNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
@@ -256,7 +257,11 @@ export async function runFinalReviewPhase({
     if (typeof reviewMergeBaseFor !== 'function') {
         throw new Error('runFinalReviewPhase requires reviewMergeBaseFor (the review diff base resolver).');
     }
-    const finalMergeBaseSha = await reviewMergeBaseFor(getMemberForRole('reviewer'));
+    // Retried once; a second failure ends the run loudly with a relaunch hint
+    // (the sprint's work is already on the remote branch).
+    const finalMergeBaseSha = await resolveFinalReviewMergeBase(reviewMergeBaseFor, {
+        member: getMemberForRole('reviewer'), branch: validated.branch, baseBranch: validated.baseBranch, log,
+    });
     const finalReviewOutcome = await dispatchRole(dispatchCtx, 'final-review', {
         prompt: buildFinalVerdictPrompt({
             targetIssues,

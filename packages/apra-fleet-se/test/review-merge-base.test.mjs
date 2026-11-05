@@ -8,7 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveReviewMergeBase } from '../fleet-sprint/git-topology.mjs';
+import { resolveReviewMergeBase, resolveFinalReviewMergeBase } from '../fleet-sprint/git-topology.mjs';
 import { buildReviewerPrompt, buildFinalVerdictPrompt, reviewDiffRange } from '../fleet-sprint/prompts.mjs';
 import { createGitRepoFixture, probeGitRepoFixtureSupport } from './helpers/git-repo-fixture.mjs';
 import { runOnce, uniqueMockBranch, withScenarioMarkers, MOCK_REVIEW_MERGE_BASE_SHA } from './helpers/mock-sprint-harness.mjs';
@@ -85,6 +85,30 @@ test('a failed or non-SHA merge-base fails loudly', async () => {
         resolveReviewMergeBase({ command: garbage, member: 'm1', baseBranch: 'main', branch: 'feat/x' }),
         /did not return a commit SHA/,
     );
+});
+
+test('Final Review base: a transient failure is retried once and succeeds', async () => {
+    let n = 0;
+    const logs = [];
+    const resolve = async () => { n += 1; if (n === 1) throw new Error('fetch failed'); return SHA; };
+    const sha = await resolveFinalReviewMergeBase(resolve, { member: 'm1', branch: 'feat/x', baseBranch: 'main', log: (m) => logs.push(m) });
+    assert.equal(sha, SHA);
+    assert.equal(n, 2);
+    assert.ok(logs.some((m) => /retrying once/.test(m)));
+});
+
+test('Final Review base: a second failure is a loud GitSyncError with a relaunch hint', async () => {
+    let n = 0;
+    const resolve = async () => { n += 1; throw new Error(`fetch failed #${n}`); };
+    await assert.rejects(
+        resolveFinalReviewMergeBase(resolve, { member: 'm1', branch: 'feat/x', baseBranch: 'main' }),
+        (err) => err.name === 'GitSyncError'
+            && /Final Review was NOT dispatched/.test(err.message)
+            && /fetch failed #2/.test(err.message)
+            && /No work is lost/.test(err.message)
+            && /relaunch the sprint on the same branch 'feat\/x' with base 'main'/.test(err.message),
+    );
+    assert.equal(n, 2, 'exactly one retry');
 });
 
 test('both prompts print <sha>..<branch>, say to use exactly that range, and never a bare <base>..<branch>', () => {

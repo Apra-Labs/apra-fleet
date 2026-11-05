@@ -5,7 +5,7 @@ import {
     ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, DoltSyncError, PlanReviewDispatchFailedError, PreSprintValidationError, PRE_SPRINT_REFUSAL_REASONS, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, DoltSyncError, GitSyncError,PlanReviewDispatchFailedError, PreSprintValidationError, PRE_SPRINT_REFUSAL_REASONS, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 // The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Every
 // runner.js call site uses the purpose-based entry points on DoltSync
 // (apra-fleet-417.2.2); the named primitives are imported here only to be
@@ -2255,6 +2255,25 @@ async function runSprintCycle(context) {
     }
 
     /**
+     * The degraded verdict for a review round whose diff base could not be
+     * computed: the reviewer policy's own synthesized-verdict degrade (same
+     * shape, note template, dispatchFailed marker and clear-round-session
+     * step), applied without dispatching the reviewer.
+     * @param {Error} err
+     */
+    function degradedReviewForReviewBase(err) {
+        const reviewerPolicy = policyFor('reviewer');
+        const d = reviewerPolicy.degrade;
+        roundSessions.clear(reviewerPolicy.ladder);
+        log(
+            `Reviewer: review diff base failed, degrading (${d.kind}) -- the reviewer was NOT dispatched this round ` +
+            `and no fallback to the local '${validated.baseBranch}' branch was used: ${err.message}`
+        );
+        const note = d.noteTemplates.dispatch.replace(/\{(message|name)\}/g, (_, f) => (f === 'name' ? err.name : err.message));
+        return { ...d.synthesized, [d.notesField]: note, ...(d.marker ? { [d.marker]: true } : {}) };
+    }
+
+    /**
      * Dispatches one reviewer round and returns its schema-validated verdict.
      * Shared by the per-round Develop/Review dispatch and the Cycle Evaluation
      * re-review so both apply the same contract rule: a `CHANGES_NEEDED`
@@ -2272,7 +2291,21 @@ async function runSprintCycle(context) {
         // sprint branch from a freshly fetched origin/<base>, computed on the
         // reviewer's own member. Throws (fails the review loudly) rather than
         // ever falling back to the member's possibly stale local base branch.
-        const mergeBaseSha = await reviewMergeBaseFor(reviewerPool[0]);
+        //
+        // A GitSyncError here (fetch/merge-base failed after runGitStep's own
+        // retry and auth self-heal) degrades the ROUND exactly like the
+        // reviewer ladder's own read-side sync failure does: the reviewer is
+        // NOT dispatched (never with a wrong range), the round is recorded as a
+        // synthesized CHANGES_NEEDED marked dispatchFailed (counts toward the
+        // stall budget, not a contract violation), and its session is not
+        // resumed by the next round. Anything else still propagates.
+        let mergeBaseSha;
+        try {
+            mergeBaseSha = await reviewMergeBaseFor(reviewerPool[0]);
+        } catch (err) {
+            if (!(err instanceof GitSyncError)) throw err;
+            return degradedReviewForReviewBase(err);
+        }
         // apra-fleet-0ef: fetch the INFERRED entries this reviewer may promote
         // and hand them to it in the prompt. The reviewer has no MCP kb_* tools
         // of its own, so without this it can never name an entry id and

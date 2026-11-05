@@ -611,3 +611,38 @@ export async function resolveReviewMergeBase({ command, member, baseBranch, bran
     log(`[Review Base] review diff base for '${branch}' on member '${member}': ${sha} (merge-base with origin/${baseBranch}).`);
     return sha;
 }
+
+/**
+ * Final Review's review diff base: `resolve(member)` (resolveReviewMergeBase
+ * bound to the sprint), retried ONCE. A second failure throws a GitSyncError
+ * that says the Final Review was not dispatched, that the sprint's pushed
+ * work is untouched, and how to relaunch. Never falls back to a local base.
+ *
+ * @param {(member: string) => Promise<string>} resolve
+ * @param {{ member: string, branch: string, baseBranch: string, log?: Function }} opts
+ * @returns {Promise<string>}
+ */
+export async function resolveFinalReviewMergeBase(resolve, { member, branch, baseBranch, log = () => {} }) {
+    try {
+        return await resolve(member);
+    } catch (first) {
+        log(`[Review Base] Final Review: could not compute the review diff base on member '${member}' (${first && first.message}) -- retrying once.`);
+        try {
+            return await resolve(member);
+        } catch (second) {
+            const message =
+                `[Review Base] Final Review was NOT dispatched: the review diff base (git merge-base origin/${baseBranch} ${branch}) ` +
+                `could not be computed on member '${member}' after one retry, and the review never falls back to the local '${baseBranch}' branch. ` +
+                `Cause: ${second && second.message} ` +
+                `No work is lost: the sprint's commits are on the remote branch '${branch}' and closed beads stay closed. ` +
+                `Fix the fetch on member '${member}', then relaunch the sprint on the same branch '${branch}' with base '${baseBranch}'.`;
+            log(message);
+            throw new GitSyncError(message, {
+                member,
+                gitOutput: second && second.gitOutput ? second.gitOutput : null,
+                details: { baseBranch, branch, stage: 'final-review-base' },
+                cause: second,
+            });
+        }
+    }
+}
