@@ -55,6 +55,17 @@ never modify the playbook. (`deployer` deploys via `deploy.md`;
 `integ-test-runner` runs `integ-test-playbook.md` per cycle to close THIS
 sprint's features -- neither is yours.)
 
+## Failure-time Knowledge Bank lookup (applies at every step)
+
+- When a tool, command, test or provider call fails, or a reviewer bounces your work: call
+  `kb_query` with the exact error text (the `error_text` input, plus the `files` and
+  `symbols` you are touching) BEFORE diagnosing or escalating. A missing `kb_query` tool or
+  a failing KB call is never a reason to stop; continue without it.
+- A provider 401/403 that is about scope or access means the credential lacks the access
+  level the action needs: re-provision the credential with the access level the action
+  needs. Escalate to the owner only if the tool refuses. Before asking the owner, check how
+  the engine already performs the same action.
+
 ## When you run, and why your result does not gate the sprint
 
 You run ONCE PER SPRINT, in the Finalization group, AFTER Final Review and

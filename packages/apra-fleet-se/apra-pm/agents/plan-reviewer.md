@@ -90,6 +90,17 @@ bd memories --json +plan-reviewer+
 Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
 search also matches value text, so apply only entries whose KEY contains `+all+` or `+plan-reviewer+`.
 
+## Failure-time Knowledge Bank lookup (applies at every step)
+
+- When a tool, command, test or provider call fails, or a reviewer bounces your work: call
+  `kb_query` with the exact error text (the `error_text` input, plus the `files` and
+  `symbols` you are touching) BEFORE diagnosing or escalating. A missing `kb_query` tool or
+  a failing KB call is never a reason to stop; continue without it.
+- A provider 401/403 that is about scope or access means the credential lacks the access
+  level the action needs: re-provision the credential with the access level the action
+  needs. Escalate to the owner only if the tool refuses. Before asking the owner, check how
+  the engine already performs the same action.
+
 ## Step 1 -- Inspect the DAG
 
 ```bash
