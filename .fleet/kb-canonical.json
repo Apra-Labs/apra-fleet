@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 130
+    "entry_count": 131
   },
   "entries": [
     {
@@ -2145,6 +2145,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:53.820Z"
+    },
+    {
+      "id": "dfca1666-f21b-4696-b9b4-470eee7daa16",
+      "type": "learning",
+      "title": "Root npm test fails on any non-ASCII literal in a new test file via the ASCII gate",
+      "summary": "tests/ascii-only-gate.test.ts runs scripts/check-ascii-only.mjs over the whole tree, so a non-ASCII string literal in any new non-baselined file (including test fixtures) fails root vitest; write non-ASCII test data as unicode escapes.",
+      "symbols": [],
+      "source_files": [
+        "scripts/check-ascii-only.mjs",
+        "tests/ascii-only-gate.test.ts",
+        "tests/ascii-only-gate-behaviour.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T10:03:45.256Z",
+      "source_file_hashes": {
+        "scripts/check-ascii-only.mjs": "5c2a3676c29b4081bf37c1c1380d6d31cc59774e",
+        "tests/ascii-only-gate-behaviour.test.ts": "b0520b84d8890177e859ffd7425f7485ed570a18",
+        "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
     },
     {
       "id": "e078ec0e-b747-4274-a82b-4155c342928b",
