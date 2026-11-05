@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { credentialResolve, credentialUpdate, isLiveSecret } from '../services/credential-store.js';
+import { BoundSecretError, credentialResolve, credentialUpdate, isLiveSecret } from '../services/credential-store.js';
 import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreUpdateSchema = z.object({
@@ -24,10 +24,6 @@ export async function credentialStoreUpdate(input: CredentialStoreUpdateInput): 
   if (!existing) {
     return `❌ Credential "${input.name}" not found.`;
   }
-  // An update must not bring an expired value back: only a re-set can.
-  if ('expired' in existing) {
-    return `[FAIL] ${existing.expired}`;
-  }
 
   const updates: { members?: string; expiresAt?: number | null; network_policy?: 'allow' | 'confirm' | 'deny' } = {};
   if (input.members !== undefined) updates.members = input.members;
@@ -36,7 +32,13 @@ export async function credentialStoreUpdate(input: CredentialStoreUpdateInput): 
   }
   if (input.network_policy !== undefined) updates.network_policy = input.network_policy;
 
-  const updated = credentialUpdate(input.name, updates);
+  let updated: ReturnType<typeof credentialUpdate>;
+  try {
+    updated = credentialUpdate(input.name, updates);
+  } catch (err) {
+    if (!(err instanceof BoundSecretError)) throw err;
+    return `[FAIL] ${err.message}`;
+  }
   if (!updated) {
     return `❌ Credential "${input.name}" not found.`;
   }

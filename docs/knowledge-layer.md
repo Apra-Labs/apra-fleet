@@ -746,12 +746,11 @@ while that live secret exists.
 - An expired bound secret is kept: the binding is to the name, not the value.
   Member commands get `expired` for it, and the startup purge skips it. A run
   that uses it writes a warning to the fleet log. Update the value with
-  `apra-fleet secret --set R --persist`. A session value set after expiry serves
-  member commands but not the live secret, which reads only the persistent record.
-- Any other expired persistent secret stays until the next server start, and a
-  session value set after expiry takes its place, while one set earlier does not.
-  `credential_store_list` shows whichever is in force. `credential_store_update`
-  refuses an expired secret: re-set it instead.
+  `apra-fleet secret --set R --persist`. `secret --update` and
+  `credential_store_update` refuse it until then, so neither can bring the old
+  value back.
+- A bound name cannot have a session value: setting one is refused, and so is
+  binding a name that has one here. Use `--persist`.
 
 **Refresh.** On access, while the remaining lifetime is at least T the current
 token is handed off; below T, or once expired, a new one is minted first and

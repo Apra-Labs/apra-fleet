@@ -3,6 +3,7 @@ import readline from 'node:readline';
 import { getSocketPath } from '../services/auth-socket.js';
 import { collectSecret } from '../utils/collect-secret.js';
 import {
+  BoundSecretError,
   credentialSet,
   credentialList,
   credentialDelete,
@@ -287,7 +288,15 @@ async function handleUpdate(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const result = credentialUpdate(name, patch);
+  let result: ReturnType<typeof credentialUpdate>;
+  try {
+    result = credentialUpdate(name, patch);
+  } catch (err) {
+    if (!(err instanceof BoundSecretError)) throw err;
+    console.error(`x ${err.message}`);
+    process.exit(1);
+    return;
+  }
   if (!result) {
     console.error(`✗ Credential not found: ${name}`);
     process.exit(1);

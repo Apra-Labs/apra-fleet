@@ -361,6 +361,25 @@ describe('secret --live (real CLI)', () => {
       expect(readRecords().consumer.kind).toBe('live');
     });
 
+    it('secret --update on an expired bound secret fails loudly, changes nothing, and --set --persist fixes it', async () => {
+      bind();
+      expect(cli(['--update', 'R', '--ttl', '1']).status).toBe(0);
+      await new Promise((done) => setTimeout(done, 1200));
+      const before = fs.readFileSync(credentialsPath());
+
+      for (const args of [['--ttl', '3600'], ['--deny'], ['--allow'], ['--members', 'alpha']]) {
+        const refused = cli(['--update', 'R', ...args]);
+        expect(refused.status).toBe(1);
+        expect(refused.stderr).toContain('--persist');
+        expect(refused.stdout).not.toContain('updated');
+      }
+      expect(fs.readFileSync(credentialsPath()).equals(before)).toBe(true);
+
+      setStatic('R', 'rotated-value');
+      expect(cli(['--update', 'R', '--deny']).status).toBe(0);
+      expect(readRecords().R.network_policy).toBe('deny');
+    });
+
     it('session-tier: without --persist the CLI cannot see the secret and says to use --persist', () => {
       const r = cli(['--live', 'L', '--inline', 'echo {{secret.session_only}}']);
       expect(r.status).toBe(1);

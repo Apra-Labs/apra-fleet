@@ -196,6 +196,13 @@ export function credentialSet(
     return { name, scope: 'persistent', network_policy, created_at, allowedMembers, expiresAt };
   }
 
+  // A live secret reads only the persistent record, so a session value under a
+  // bound name would serve members a different value from the one it mints with.
+  const consumers = secretBoundBy(name);
+  if (consumers.length > 0) {
+    throw new BoundSecretError(`secret '${name}' is in use by: ${consumers.join(', ')}, so it cannot have a session value. Store it with: apra-fleet secret --set ${name} --persist`);
+  }
+
   sessionStore.set(name, {
     name,
     scope: 'session',
@@ -233,6 +240,20 @@ function consumersOf(file: CredentialFile, name: string): string[] {
     .filter((rec) => rec.bindings.some((b) => b.secret === name))
     .map((rec) => rec.name)
     .sort();
+}
+
+/** The live secrets bound to `name`, read from the store. */
+export function secretBoundBy(name: string): string[] {
+  return consumersOf(loadCredentialFile(), name);
+}
+
+/** An operation that a binding forbids. The message names the secret and the remedy, never a value. */
+export class BoundSecretError extends Error {
+  readonly code = 'E-SECRET-BOUND';
+  constructor(message: string) {
+    super(message);
+    this.name = 'BoundSecretError';
+  }
 }
 
 /** The named secret is bound to a live secret: it stays until the consuming live secret is deleted. */
@@ -302,10 +323,10 @@ function checkBindings(name: string, bindings: LiveSecretBinding[], file: Creden
     if (isLiveRecord(rec)) {
       throw new LiveRegistrationError('binding-live', `bound secret "${secret}" is a live secret: live secrets cannot be bound to another live secret`);
     }
+    if (sessionStore.has(secret)) {
+      throw new LiveRegistrationError('binding-session', `bound secret "${secret}" has a session value, which a bound secret cannot have: ${persist} ${secret} --persist`);
+    }
     if (!rec) {
-      if (sessionStore.has(secret)) {
-        throw new LiveRegistrationError('binding-session', `bound secret "${secret}" is session-tier and disappears on restart: ${persist} ${secret} --persist`);
-      }
       throw new LiveRegistrationError('binding-missing', `bound secret "${secret}" does not exist as a persistent secret: ${persist} ${secret} --persist`);
     }
     try {
@@ -452,8 +473,6 @@ export function credentialList(): CredentialMeta[] {
 
   const file = loadCredentialFile();
   for (const record of Object.values(file.credentials)) {
-    // List what is in force: the session row stays when it has replaced this record.
-    if (!isLiveRecord(record) && !effectivePersistent(record, record.name)) continue;
     const existing = results.findIndex(r => r.name === record.name);
     const meta: CredentialMeta = isLiveRecord(record) ? {
       name: record.name,
@@ -527,10 +546,8 @@ export function getTaskCredentials(taskId: string): TaskCredential[] {
  *     live secret (only execute_command and the KB provider consume those:
  *     every other caller would keep the value in a file or use it where a
  *     short-lived token cannot work)
- *   - { expired } if the credential has passed its TTL. A persistent record is
- *     kept: a live secret may be bound to it by name, and the startup purge
- *     removes the unbound ones. A session entry set after it expired is used
- *     instead of reporting it. An expired session entry is deleted.
+ *   - { expired } if the credential has passed its TTL (entry is also deleted,
+ *     unless a live secret is bound to it: the binding is to the name)
  *   - null if the credential does not exist
  */
 export function credentialResolve(
@@ -543,13 +560,20 @@ export function credentialResolve(
   if (isLiveRecord(stored)) {
     return { denied: `Credential '${name}' is a live secret: only execute_command and the KB provider can use it, because its value must never be kept in a file.` };
   }
-  const persistent = effectivePersistent(stored, name);
+  const persistent = stored;
   if (persistent) {
     const allowedMembers = persistent.allowedMembers ?? '*';
 
     // TTL check
     if (persistent.expiresAt && Date.now() > new Date(persistent.expiresAt).getTime()) {
-      return { expired: `Credential '${name}' has expired. Re-set with credential_store_set (persist: true to keep it across restarts).` };
+      const consumers = consumersOf(file, name);
+      if (consumers.length > 0) {
+        return { expired: `Credential '${name}' has expired and is in use by: ${consumers.join(', ')}. Update its value: apra-fleet secret --set ${name} --persist` };
+      }
+      delete file.credentials[name];
+      saveCredentialFile(file);
+      sessionStore.delete(name);
+      return { expired: `Credential '${name}' has expired. Re-set with credential_store_set.` };
     }
 
     // Scoping check ('*' as callingMember is a fleet-operator bypass)
@@ -618,20 +642,6 @@ function isExpired(expiresAt: string | undefined): expiresAt is string {
 }
 
 /**
- * The persistent record that speaks for `name`, if any. Persistent wins, except
- * that an expired record gives way to a session entry created after it expired:
- * that is what a re-set with the default persist: false creates. An older session
- * entry must not take over at expiry, with its older value and looser policy. The
- * record itself stays in the file.
- */
-function effectivePersistent(rec: PersistentRecord | undefined, name: string): PersistentRecord | undefined {
-  const session = sessionStore.get(name);
-  const replaced = rec && isExpired(rec.expiresAt) && session
-    && Date.parse(session.created_at) > Date.parse(rec.expiresAt);
-  return replaced ? undefined : rec;
-}
-
-/**
  * Metadata-only server-side lookup (no decryption), for status reporting.
  * Persistent wins over session. allowedMembers is not checked and nothing is
  * deleted, so an expired record stays visible as expired.
@@ -640,7 +650,7 @@ export function lookupServerSecretMeta(name: string): ServerSecretStatus {
   const stored = loadCredentialFile().credentials[name];
   // Live secrets are not static secrets; lookupLiveSecret reads them.
   if (isLiveRecord(stored)) return { status: 'missing' };
-  const persistent = effectivePersistent(stored, name);
+  const persistent = stored;
   const rec = persistent ?? sessionStore.get(name);
   if (!rec) return { status: 'missing' };
   const meta: ServerSecretMeta = {
@@ -661,7 +671,7 @@ export function lookupServerSecret(name: string): ServerSecretLookup {
   const found = lookupServerSecretMeta(name);
   if (found.status !== 'ok') return found;
   const stored = loadCredentialFile().credentials[name];
-  const persistent = isLiveRecord(stored) ? undefined : effectivePersistent(stored, name);
+  const persistent = isLiveRecord(stored) ? undefined : stored;
   let value: string;
   if (persistent) {
     value = decryptPassword(persistent.encryptedValue);
@@ -703,8 +713,16 @@ export function credentialUpdate(name: string, patch: CredentialUpdatePatch): Cr
     saveCredentialFile(file);
     return { members: allowedToMembers(stored.allowedMembers), network_policy: stored.network_policy };
   }
-  const persistent = effectivePersistent(stored, name);
+  const persistent = stored;
   if (persistent) {
+    // Here, not in a caller: the CLI and the tool both come through, and a new
+    // ttl on an expired bound record would bring its old value back.
+    if (isExpired(persistent.expiresAt)) {
+      const consumers = consumersOf(file, name);
+      if (consumers.length > 0) {
+        throw new BoundSecretError(`secret '${name}' has expired and is in use by: ${consumers.join(', ')}, so it cannot be updated. Give it a new value: apra-fleet secret --set ${name} --persist`);
+      }
+    }
     if (patch.members !== undefined) {
       persistent.allowedMembers = membersToAllowed(patch.members);
     }
@@ -762,9 +780,8 @@ export function purgeExpiredCredentials(): void {
   for (const [name, record] of Object.entries(file.credentials)) {
     if (isLiveRecord(record) || consumersOf(file, name).length > 0) continue;
     if (record.expiresAt && now > new Date(record.expiresAt).getTime()) {
-      // A session entry that replaced this record stays; an older one goes with it.
-      if (effectivePersistent(record, name)) sessionStore.delete(name);
       delete file.credentials[name];
+      sessionStore.delete(name);
       changed = true;
     }
   }

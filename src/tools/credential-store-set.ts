@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { collectOobApiKey } from '../services/auth-socket.js';
 import { decryptPassword } from '../utils/crypto.js';
-import { credentialSet, isLiveSecret } from '../services/credential-store.js';
+import { credentialSet, isLiveSecret, secretBoundBy } from '../services/credential-store.js';
 import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreSetSchema = z.object({
@@ -15,7 +15,7 @@ export const credentialStoreSetSchema = z.object({
     'Comma-separated list of member friendly names allowed to use this credential, or "*" for all members (default: "*")'
   ),
   ttl_seconds: z.number().positive().optional().describe(
-    'Time-to-live in seconds. If set, the credential stops resolving after this many seconds. A persistent one is removed at the next server start, unless a live secret is bound to it.'
+    'Time-to-live in seconds. If set, the credential expires after this many seconds and is automatically purged.'
   ),
 });
 
@@ -24,6 +24,11 @@ export type CredentialStoreSetInput = z.infer<typeof credentialStoreSetSchema>;
 export async function credentialStoreSet(input: CredentialStoreSetInput): Promise<string> {
   if (isLiveSecret(input.name)) {
     return `[FAIL] '${input.name}' is a live secret and cannot be set through this tool. Replace or remove it from the CLI: apra-fleet secret --set / --delete ${input.name}.`;
+  }
+  // Refused before asking for a value; credentialSet holds the same rule.
+  const consumers = input.persist ? [] : secretBoundBy(input.name);
+  if (consumers.length > 0) {
+    return `[FAIL] '${input.name}' is in use by: ${consumers.join(', ')}, so it cannot have a session value. Use persist: true, or apra-fleet secret --set ${input.name} --persist.`;
   }
   const result = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt });
 
