@@ -1688,6 +1688,60 @@ const REVIEW_SCHEMA = {
           "description": "Why a value is not \"used\": which tool was missing or failed, or why no lookup was needed."
         }
       }
+    },
+    "kb_used": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries (pushed into your prompt or returned by a query) you actually relied on, and how. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One entry used: an object {id, how}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "how": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: one sentence on how the entry shaped your work."
+          }
+        }
+      }
+    },
+    "kb_wrong": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries that proved wrong in practice. The engine forwards each one as KB feedback. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One wrong entry: an object {id, reason}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: what was wrong, as observed."
+          }
+        }
+      }
     }
   }
 };
@@ -1777,6 +1831,60 @@ const PLAN_REVIEW_SCHEMA = {
           },
           "model": {
             "type": "string"
+          }
+        }
+      }
+    },
+    "kb_used": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries (pushed into your prompt or returned by a query) you actually relied on, and how. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One entry used: an object {id, how}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "how": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: one sentence on how the entry shaped your work."
+          }
+        }
+      }
+    },
+    "kb_wrong": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries that proved wrong in practice. The engine forwards each one as KB feedback. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One wrong entry: an object {id, reason}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: what was wrong, as observed."
           }
         }
       }
@@ -1930,6 +2038,60 @@ const DOER_STATUS_SCHEMA = {
           "description": "Why a value is not \"used\": which tool was missing or failed, or why no lookup was needed."
         }
       }
+    },
+    "kb_used": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries (pushed into your prompt or returned by a query) you actually relied on, and how. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One entry used: an object {id, how}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "how": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: one sentence on how the entry shaped your work."
+          }
+        }
+      }
+    },
+    "kb_wrong": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries that proved wrong in practice. The engine forwards each one as KB feedback. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One wrong entry: an object {id, reason}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: what was wrong, as observed."
+          }
+        }
+      }
     }
   }
 };
@@ -1956,6 +2118,60 @@ const DEPLOYER_SCHEMA = {
         "permissions"
       ],
       "description": "Set to \"permissions\" ONLY when you returned deployed: false because you stopped at Step 0a (the deploy.md Permissions check) before running any deploy command. The orchestrator then does not dispatch the deploy again this run. Omit it for every other outcome, including any failure after a deploy command ran."
+    },
+    "kb_used": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries (pushed into your prompt or returned by a query) you actually relied on, and how. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One entry used: an object {id, how}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "how": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: one sentence on how the entry shaped your work."
+          }
+        }
+      }
+    },
+    "kb_wrong": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries that proved wrong in practice. The engine forwards each one as KB feedback. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One wrong entry: an object {id, reason}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: what was wrong, as observed."
+          }
+        }
+      }
     }
   }
 };
@@ -2043,6 +2259,60 @@ const INTEG_RUN_SCHEMA = {
         }
       },
       "description": "Out-of-scope test failures observed per integ-test-runner.md Step 1c, each cross-linked to an existing bead or a newly filed one. Optional for backward compatibility -- absent/omitted when no out-of-scope failures were observed."
+    },
+    "kb_used": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries (pushed into your prompt or returned by a query) you actually relied on, and how. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One entry used: an object {id, how}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "how": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: one sentence on how the entry shaped your work."
+          }
+        }
+      }
+    },
+    "kb_wrong": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries that proved wrong in practice. The engine forwards each one as KB feedback. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One wrong entry: an object {id, reason}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: what was wrong, as observed."
+          }
+        }
+      }
     }
   }
 };
@@ -2152,6 +2422,60 @@ const REGRESSION_RUN_SCHEMA = {
       "type": "object",
       "additionalProperties": true,
       "description": "Optional structured evidence, so the result is machine-checkable instead of self-reported prose. This schema does not define its shape -- the target repo's regression-test-playbook.md does (the field name is kept for compatibility). Omit if that playbook defines no structured evidence."
+    },
+    "kb_used": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries (pushed into your prompt or returned by a query) you actually relied on, and how. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One entry used: an object {id, how}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "how": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: one sentence on how the entry shaped your work."
+          }
+        }
+      }
+    },
+    "kb_wrong": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries that proved wrong in practice. The engine forwards each one as KB feedback. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One wrong entry: an object {id, reason}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: what was wrong, as observed."
+          }
+        }
+      }
     }
   }
 };
@@ -2177,6 +2501,60 @@ const CI_SCHEMA = {
     },
     "notes": {
       "type": "string"
+    },
+    "kb_used": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries (pushed into your prompt or returned by a query) you actually relied on, and how. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One entry used: an object {id, how}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "how": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: one sentence on how the entry shaped your work."
+          }
+        }
+      }
+    },
+    "kb_wrong": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries that proved wrong in practice. The engine forwards each one as KB feedback. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One wrong entry: an object {id, reason}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: what was wrong, as observed."
+          }
+        }
+      }
     }
   }
 };
@@ -2278,6 +2656,60 @@ const HARVEST_SCHEMA = {
             "items": {
               "type": "string"
             }
+          }
+        }
+      }
+    },
+    "kb_used": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries (pushed into your prompt or returned by a query) you actually relied on, and how. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One entry used: an object {id, how}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "how": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: one sentence on how the entry shaped your work."
+          }
+        }
+      }
+    },
+    "kb_wrong": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries that proved wrong in practice. The engine forwards each one as KB feedback. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One wrong entry: an object {id, reason}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: what was wrong, as observed."
           }
         }
       }
@@ -2396,6 +2828,60 @@ const PLANNER_SCHEMA = {
             "items": {
               "type": "string"
             }
+          }
+        }
+      }
+    },
+    "kb_used": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries (pushed into your prompt or returned by a query) you actually relied on, and how. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One entry used: an object {id, how}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "how": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: one sentence on how the entry shaped your work."
+          }
+        }
+      }
+    },
+    "kb_wrong": {
+      "type": "array",
+      "description": "Optional. Knowledge bank entries that proved wrong in practice. The engine forwards each one as KB feedback. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "description": "One wrong entry: an object {id, reason}.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: the KB entry id exactly as it was given to you."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "REQUIRED string: what was wrong, as observed."
           }
         }
       }

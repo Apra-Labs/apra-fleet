@@ -156,6 +156,16 @@ with the failing command and its output in `notes`.
 - Do NOT attempt to fix or work around failures -- report them and stop
 - Do NOT modify deploy.md
 
+## Reporting KB use
+
+Your output schema has two optional fields about knowledge bank (KB) entries, whether
+they were pushed into your prompt or returned by a query you made:
+`kb_used`, a list of `{"id": "<entry id>", "how": "<how it shaped your work>"}` for each
+entry you actually relied on, and `kb_wrong`, a list of
+`{"id": "<entry id>", "reason": "<what was wrong>"}` for each entry that proved wrong in
+practice. Copy each id exactly as you were given it. Omit both, or send `[]`, when there
+is nothing to report. Not querying the KB is allowed: it is only logged, never blocked.
+
 ## Output schema
 
 The canonical machine-readable contract for this output lives in the sibling file

@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const SCHEMAS = join(dirname(fileURLToPath(import.meta.url)), '..', 'apra-pm', 'agents', 'schemas');
-const KB_FIELDS = ['kb_captures'];
+const KB_FIELDS = ['kb_captures', 'kb_used', 'kb_wrong'];
 
 const outputSchemas = readdirSync(SCHEMAS)
   .filter((f) => f.endsWith('-output.json'))
