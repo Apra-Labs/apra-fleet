@@ -346,12 +346,33 @@ async function commitToBible(
   // nothing to do, and the KB is not opened.
   const existingDoc = readBibleDocument(outPath);
   const existingAtStart = existingDoc?.entries ?? null;
+
+  // PENDING WRITE RECOVERY. A readable bible that differs from HEAD at the start
+  // of a call was written by an earlier call whose local commit failed (or left
+  // uncommitted by another writer). Nothing new to merge must not mean "nothing
+  // to commit": a call that would otherwise change nothing commits the pending
+  // file, and a call that does change it says so in its commit message. A failed
+  // retry throws, like any failed commit -- never a silent committed: false over
+  // a dirty tree.
+  const pendingAtStart = existingDoc !== null && isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath);
+  const commitPending = (entryCount: number): boolean => {
+    if (!pendingAtStart || !bibleContentChanged(repoPath, outPath)) return false;
+    try {
+      commitBiblePath(repoPath, outPath, pendingBibleCommitMessage(entryCount));
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error('kb_bible_commit: the bible holds a pending write from an earlier call and committing it failed again: ' + reason);
+    }
+    return true;
+  };
+
   if (requested.length === 0 && requestedDemotions.length === 0
     && (existingAtStart === null || existingAtStart.length === 0)) {
+    const entryCount = existingAtStart?.length ?? 0;
     return done({
       merged: [], demoted: [],
       skipped: enrichItems.map(item => ({ id: item.id, reason: 'not_in_bible' as const })),
-      removed: [], entry_count: existingAtStart?.length ?? 0, backfilled: 0, committed: false,
+      removed: [], entry_count: entryCount, backfilled: 0, committed: commitPending(entryCount),
     });
   }
 
@@ -508,7 +529,8 @@ async function commitToBible(
   }
 
   if (merged.length === 0 && removed.length === 0 && admittedDemotions.length === 0 && backfilled === 0 && enriched.length === 0) {
-    return done({ merged, demoted, skipped, removed, entry_count: existing?.length ?? 0, backfilled, committed: false });
+    const entryCount = existing?.length ?? 0;
+    return done({ merged, demoted, skipped, removed, entry_count: entryCount, backfilled, committed: commitPending(entryCount) });
   }
 
   const entries = Array.from(byId.values()).sort(compareById);
@@ -531,7 +553,7 @@ async function commitToBible(
     === asciiSafeStringify(demotions);
   if (existing !== null && demotionsUnchanged
     && asciiSafeStringify(existing) === asciiSafeStringify(entries)) {
-    return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed: false });
+    return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed: commitPending(entries.length) });
   }
 
   const bible: CanonicalBible = {
@@ -551,18 +573,6 @@ async function commitToBible(
   const written = Buffer.from(asciiSafeStringify(bible) + '\n', 'utf-8');
   fs.writeFileSync(outPath, written);
 
-  let committed = false;
-  if (isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath)) {
-    const message = bibleCommitMessage(merged.length, removed, entries.length, backfilled, demoted.length, enriched.length);
-    try {
-      commitBiblePath(repoPath, outPath, message);
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw new Error('kb_bible_commit: bible written but the local commit failed: ' + reason);
-    }
-    committed = true;
-  }
-
   // kb_import trust anchor: record the blob id of the bible just written, so
   // a member session without the kb_maintainer grant may import it once it is
   // committed in (or pulled into) any checkout of this repository. Only the
@@ -570,11 +580,26 @@ async function commitToBible(
   // session, and a session without the grant merges over whatever its own
   // work-tree bible holds (possibly hand-edited), so its output must not
   // become trusted. A FULL session and the kb_maintainer session record.
+  // Recorded BEFORE the commit: the trust is in the bytes this call wrote, and
+  // a later call that recovers them after a failed commit commits these bytes.
   if (!memberLacksKbMaintainer(anchor)) {
     // The id of the exact bytes written (LF, unfiltered), hashed in-process:
     // never `git hash-object` on the path, which would re-read the file and
     // run the checkout's member-configured clean filters.
     project.recordTrustedBibleBlob(await bibleBytesBlobId(repoPath, written), 'kb_bible_commit');
+  }
+
+  let committed = false;
+  if (isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath)) {
+    const message = bibleCommitMessage(merged.length, removed, entries.length, backfilled, demoted.length, enriched.length)
+      + (pendingAtStart ? '\n\n' + PENDING_RECOVERY_NOTE : '');
+    try {
+      commitBiblePath(repoPath, outPath, message);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error('kb_bible_commit: bible written but the local commit failed: ' + reason);
+    }
+    committed = true;
   }
 
   return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed });
@@ -591,6 +616,17 @@ function repromotedAfter(entry: CanonicalEntry, tombstone: BibleTombstone, now: 
   const updatedAt = Date.parse(entry.updated_at);
   if (Number.isNaN(updatedAt) || updatedAt > now.getTime()) return false;
   return standingAgainstTombstone(entry.updated_at, tombstone.at) === 'repromoted';
+}
+
+/** The commit-message line naming a recovered pending write. */
+const PENDING_RECOVERY_NOTE = 'Recovers a pending bible write left uncommitted by an earlier call.';
+
+/**
+ * The commit message when a call has nothing of its own to write and commits
+ * the pending bible an earlier call wrote but failed to commit.
+ */
+export function pendingBibleCommitMessage(total: number): string {
+  return 'chore(kb): commit a pending knowledge bible write -- ' + total + ' total\n\n' + PENDING_RECOVERY_NOTE;
 }
 
 /**

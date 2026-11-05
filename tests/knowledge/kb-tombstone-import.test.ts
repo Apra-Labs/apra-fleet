@@ -658,6 +658,9 @@ describe('a re-promotion on one clone is not undone by another', () => {
     // Documented limit: the re-promotion does not raise B's existing row.
     expect(row(providerB, y)!.confidence).toBe('INFERRED');
 
+    // A real pull leaves the bible committed; an uncommitted copy would be a
+    // pending write that kb_bible_commit commits (F5).
+    commitWorkTree(cloneB, 'pull the bible');
     const before = fs.readFileSync(biblePathOf(cloneB), 'utf-8');
     const commit = JSON.parse(await kbBibleCommit({ ids: [], ...BASE }, { folder: cloneB }));
     expect(commit.demoted).toEqual([]);
@@ -721,6 +724,9 @@ describe('a bible-carried tombstone at is clamped to now where it is read', () =
     mergeBibleIntoB();
     await kbImport({ skip_sweep: true }, { folder: cloneB });
 
+    // A real pull leaves the bible committed; an uncommitted copy would be a
+    // pending write that kb_bible_commit commits (F5).
+    commitWorkTree(cloneB, 'pull the bible');
     const before = fs.readFileSync(biblePathOf(cloneB), 'utf-8');
     const commit = JSON.parse(await kbBibleCommit({ ids: [], ...BASE }, { folder: cloneB }));
     expect(commit.demoted).toEqual([]);

@@ -351,7 +351,12 @@ working folder, which is typically a feature branch.
   skipped with its own reason `no_source_files` (never `basis_mismatch`),
   likewise leaving any existing bible entry unchanged. It makes a local commit scoped to
   the bible path (identity `pm-kb`) and never pushes. Nothing merged and
-  nothing removed, or an unchanged entry set, makes no write and no commit. Re-running with
+  nothing removed, or an unchanged entry set, makes no write and no commit --
+  unless the bible file already differed from HEAD when the call started (an
+  earlier call wrote it but its local commit failed): then the call commits that
+  pending file (message noting the recovery) and returns `committed: true`, and
+  if that commit fails again the call throws. A call that does write also notes
+  the recovery in its commit message. No response field changes. Re-running with
   the same ids after resetting to a newer HEAD re-merges at entry level, so a
   rejected push can be retried with no manual merge. An existing bible that
   cannot be parsed is refused (thrown), never overwritten.
