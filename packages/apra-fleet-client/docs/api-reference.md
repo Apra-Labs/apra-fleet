@@ -368,9 +368,21 @@ Calls `fleet_status` -- status of all fleet members.
 | Field | Type | Notes |
 |---|---|---|
 | `format` | `"compact" \| "json"?` | Output format. |
-| `repo_path` | `string?` | Absolute path to a repo checkout. Adds that repo's code-intelligence index health and its KB scope's bible drift. |
+| `repo_path` | `string?` | Absolute path to a repo checkout. Adds that repo's code-intelligence index health and its bible item (`kbHealth.bible`: entries and drift). |
 
 KB health (`kbHealth` in JSON) covers every project KB scope on the server plus the global KB, one entry per scope -- it never depends on the server's working directory.
+
+Each scope (a host database) carries `usage` (`{window_days, returned, cited,
+cited_rate}`, the last 30 days of usage events); the compact line shows it as
+`hit-rate(30d):<cited_rate> (<cited> cited/<returned> returned)`, n/a when
+nothing was returned, and the older entries-retrieved ratio as `retrieved:`.
+`kbHealth.bible` reports the repository bible as its own item, separately from
+the host database counts: `{repoPath, scope, present, entries, drift}` read
+from `<repo_path>/.fleet/kb-canonical.json` (compact: one `kb bible[<scope>]:`
+line). Each half degrades on its own: an unreadable bible nulls `entries`
+(`entriesError`), an unreadable or missing host database nulls `drift`
+(`driftReason`). Without `repo_path` both are null with the
+"pass repo_path" reason and the compact output shows no bible line.
 
 When the KB config selects the http provider, `kbHealth.credential`
 (`FleetStatusKbCredential`; compact: one `kb credential:` line) reports the
