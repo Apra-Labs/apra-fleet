@@ -173,7 +173,7 @@ describe('per-dispatch KB record', () => {
         assert.doesNotThrow(() => { lines = formatDispatchToolCalls(old); });
         assert.match(lines[0], /kb_\* calls: 3, code_\* calls: unknown/);
         assert.doesNotMatch(lines[0], /pushed/, 'an old record gets no KB detail');
-        assert.deepEqual(kbFieldsOf(old[0]), { pushed: { ids: [], bytes: 0 }, kb_used: [], kb_wrong: [], captures: [], rejects: [] });
+        assert.deepEqual(kbFieldsOf(old[0]), { pushed: { ids: [], bytes: 0 }, kb_used: [], kb_wrong: [], captures: [], rejects: [], promoted: [] });
         assert.deepEqual(normalizePushed({ ids: ['a', 'a', 7], bytes: -1 }), { ids: ['a'], bytes: 0 });
     });
 

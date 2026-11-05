@@ -32,6 +32,8 @@
 //   kb_wrong ids the role's report said proved wrong (kb_wrong).
 //   captures [{title, trigger}] the engine accepted from the report.
 //   rejects  [{title, rule, reason}] captures the engine refused.
+//   promoted ids the reviewer's report asked to promote (kb_promotions) that
+//            passed the engine's vetting.
 // The report-side fields are filled after the dispatch returns, by the
 // postResult steps (noteKbReport / noteKbCaptures); a dispatch whose result
 // never reached them (a failure) keeps them empty. A record from before
@@ -250,6 +252,7 @@ export function createDispatchAccounting(deps = {}) {
         r.kb_wrong = f.kb_wrong;
         r.captures = f.captures;
         r.rejects = f.rejects;
+        r.promoted = f.promoted;
         return r;
     }
 
@@ -307,6 +310,7 @@ export function createDispatchAccounting(deps = {}) {
                     kb_wrong: [],
                     captures: [],
                     rejects: [],
+                    promoted: [],
                 });
                 publish();
                 const rec = store[store.length - 1];
@@ -329,10 +333,11 @@ export function createDispatchAccounting(deps = {}) {
         },
         /**
          * The captures the engine accepted ({title, trigger}) and refused
-         * ({title, rule, reason}) from the latest dispatch of `memberName`
+         * ({title, rule, reason}), and the promotion ids that passed vetting,
+         * from the latest dispatch of `memberName`
          * (the 'kb-apply' postResult step). Never throws.
          */
-        noteKbCaptures({ memberName, role } = {}, { captures, rejects } = {}) {
+        noteKbCaptures({ memberName, role } = {}, { captures, rejects, promoted } = {}) {
             const r = memberName ? latestFor(memberName, role) : null;
             if (!r) return;
             ensureKbFields(r);
@@ -342,6 +347,7 @@ export function createDispatchAccounting(deps = {}) {
             for (const c of Array.isArray(rejects) ? rejects : []) {
                 if (c && typeof c === 'object') r.rejects.push({ title: c.title ?? null, rule: c.rule ?? null, reason: c.reason ?? null });
             }
+            r.promoted = idList([...r.promoted, ...idList(promoted)]);
             publish();
         },
     };
@@ -374,6 +380,7 @@ export function kbFieldsOf(r) {
         kb_wrong: idList(rec.kb_wrong),
         captures: (Array.isArray(rec.captures) ? rec.captures : []).filter((c) => c && typeof c === 'object'),
         rejects: (Array.isArray(rec.rejects) ? rec.rejects : []).filter((c) => c && typeof c === 'object'),
+        promoted: idList(rec.promoted),
     };
 }
 
@@ -402,7 +409,7 @@ export function formatDispatchToolCalls(records) {
 }
 
 function hasKbFields(r) {
-    return ['pushed', 'kb_used', 'kb_wrong', 'captures', 'rejects'].some((k) => r[k] !== undefined);
+    return ['pushed', 'kb_used', 'kb_wrong', 'captures', 'rejects', 'promoted'].some((k) => r[k] !== undefined);
 }
 
 /** One-line KB detail of a record ("pushed 3 entr(ies) (1200 bytes), cited 1, ..."). */

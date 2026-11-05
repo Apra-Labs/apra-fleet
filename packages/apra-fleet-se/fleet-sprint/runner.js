@@ -203,7 +203,7 @@ import { runRegressionTestPhase } from './phases/regression-test.mjs';
 // docs/README commits must be G-pushed by its own policy
 // bracket before Publish PR pushes the branch and raises the PR a human reads.
 // See each module's header for where its boundary is drawn.
-import { runHarvestPhase } from './phases/harvest.mjs';
+import { runHarvestPhase, runHarvestKbStep, TERMINAL_KB_STEP_TIMEOUT_MS } from './phases/harvest.mjs';
 import { runPublishPrPhase } from './phases/publish-pr.mjs';
 // The dolt-push-mutex/child-id-allocator clients (HTTP + MCP transport) and
 // the fleet server's own per-member reservation-ledger client. Moved
@@ -1942,7 +1942,7 @@ async function runSprintCycle(context) {
                     const vetted = vetKbWork(policy.agentType, value);
                     dispatchAccounting.noteKbCaptures?.(
                         { memberName: dispatchMemberName(member), role: policy.agentType },
-                        { captures: vetted.captures, rejects: vetted.refusedCaptures },
+                        { captures: vetted.captures, rejects: vetted.refusedCaptures, promoted: vetted.promotions.map((x) => x.id) },
                     );
                 } catch (err) {
                     log(`[kb-work] could not record the dispatch's captures (non-fatal): ${err && err.message ? err.message : err}`);
@@ -4303,6 +4303,23 @@ export async function main(context) {
     try {
         return await runSprintCycle(runContext);
     } catch (err) {
+        // The harvester's KB step also runs when the sprint stalls or aborts
+        // (a terminal failure; never a cooperative /stop or an untyped bug):
+        // queued KB writes are applied and the harvest bible round runs, so
+        // the KB work this sprint gathered is not lost with it. Best-effort
+        // and time-bounded -- it never replaces or delays the error below
+        // beyond its bound. The seal that follows then stops any further
+        // bible commit.
+        if (isTerminalSprintFailure(err) && runContext.kbWork) {
+            const terminalKind = err instanceof StalledSprintError ? 'stalled' : 'aborted';
+            await runHarvestKbStep(runContext.kbWork, {
+                label: `harvest (sprint ${terminalKind})`,
+                log,
+                timeoutMs: Number.isInteger(context.terminalKbStepTimeoutMs) && context.terminalKbStepTimeoutMs > 0
+                    ? context.terminalKbStepTimeoutMs
+                    : TERMINAL_KB_STEP_TIMEOUT_MS,
+            });
+        }
         // An aborted sprint commits nothing further to the KB bible: its
         // queued confirmations are not flushed.
         if (runContext.kbWork && typeof runContext.kbWork.seal === 'function') {

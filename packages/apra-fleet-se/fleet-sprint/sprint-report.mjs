@@ -23,7 +23,7 @@
 
 import { createHash } from 'crypto';
 import { SAFE_TEXT_RE } from './newtask-text.mjs';
-import { formatDispatchToolCalls } from './dispatch-accounting.mjs';
+import { formatDispatchToolCalls, kbFieldsOf } from './dispatch-accounting.mjs';
 import { formatSetAsideItems, formatWaitedLine } from './set-aside.mjs';
 
 // ---------------------------------------------------------------------------
@@ -220,6 +220,7 @@ export function buildAnalysisText({
         ...regressionLines,
         ...kbBibleLines(kbBibleUnpublished),
     ];
+    lines.push('', ...formatKnowledgeBankSection(dispatchToolCalls));
     if (Array.isArray(dispatchToolCalls)) {
         lines.push(
             '',
@@ -231,6 +232,89 @@ export function buildAnalysisText({
         );
     }
     return lines.join('\n');
+}
+
+/**
+ * The engine's KB aggregates over the per-dispatch records (sprint state's
+ * dispatchToolCalls; see dispatch-accounting.mjs for the KB fields). Pure;
+ * a record without KB fields (an older shape) counts as a dispatch with no
+ * KB activity.
+ *
+ * @param {object[]|null|undefined} records
+ * @returns {{
+ *   dispatches: number,
+ *   roles: Array<{role: string, dispatches: number, pushed: number, pushedBytes: number, cited: number, wrong: number}>,
+ *   capturesByTrigger: Record<string, number>,
+ *   promoted: number, rejected: number, wrong: number,
+ *   multiplyCited: Array<{id: string, dispatches: number}>,
+ * }}
+ */
+export function knowledgeBankAggregates(records) {
+    const list = (Array.isArray(records) ? records : []).filter((r) => r && typeof r === 'object');
+    const roles = [];
+    const byRole = new Map();
+    const capturesByTrigger = {};
+    const citedBy = new Map();
+    let promoted = 0;
+    let rejected = 0;
+    let wrong = 0;
+    for (const r of list) {
+        const f = kbFieldsOf(r);
+        const role = r.role ? String(r.role) : '(no role)';
+        let t = byRole.get(role);
+        if (!t) {
+            t = { role, dispatches: 0, pushed: 0, pushedBytes: 0, cited: 0, wrong: 0 };
+            byRole.set(role, t);
+            roles.push(t);
+        }
+        t.dispatches += 1;
+        t.pushed += f.pushed.ids.length;
+        t.pushedBytes += f.pushed.bytes;
+        t.cited += f.kb_used.length;
+        t.wrong += f.kb_wrong.length;
+        for (const c of f.captures) {
+            const trigger = typeof c.trigger === 'string' && c.trigger ? c.trigger : 'unknown';
+            capturesByTrigger[trigger] = (capturesByTrigger[trigger] || 0) + 1;
+        }
+        promoted += f.promoted.length;
+        rejected += f.rejects.length;
+        wrong += f.kb_wrong.length;
+        for (const id of f.kb_used) citedBy.set(id, (citedBy.get(id) || 0) + 1);
+    }
+    const multiplyCited = [...citedBy].filter(([, n]) => n > 1)
+        .map(([id, n]) => ({ id, dispatches: n }))
+        .sort((a, b) => b.dispatches - a.dispatches || a.id.localeCompare(b.id));
+    return { dispatches: list.length, roles, capturesByTrigger, promoted, rejected, wrong, multiplyCited };
+}
+
+/**
+ * The "Knowledge bank this sprint" analysis section, computed by the engine
+ * from the per-dispatch records: pushed vs cited per role, captures by
+ * trigger, promoted/rejected/wrong counts, and the entries cited by more than
+ * one dispatch. With no records it is a heading plus one none line.
+ *
+ * @param {object[]|null|undefined} records
+ * @returns {string[]}
+ */
+export function formatKnowledgeBankSection(records) {
+    const a = knowledgeBankAggregates(records);
+    const lines = ['## Knowledge bank this sprint', ''];
+    if (a.dispatches === 0) {
+        lines.push('No dispatch was recorded this sprint, so there is no knowledge-bank activity to report.');
+        return lines;
+    }
+    lines.push('Pushed vs cited per role (pushed: entries in the KNOWLEDGE BANK block the engine sent; cited: entries the report listed in kb_used):');
+    for (const t of a.roles) {
+        lines.push(`- ${t.role}: ${t.dispatches} dispatch(es), pushed ${t.pushed} entr(ies) (${t.pushedBytes} bytes), cited ${t.cited}, wrong ${t.wrong}.`);
+    }
+    const triggers = Object.entries(a.capturesByTrigger).sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]));
+    lines.push('');
+    lines.push(`Captures by trigger: ${triggers.length > 0 ? triggers.map(([k, n]) => `${k} ${n}`).join(', ') : 'none'}.`);
+    lines.push(`Promoted: ${a.promoted}. Rejected (captures refused by the engine): ${a.rejected}. Wrong (kb_wrong reports): ${a.wrong}.`);
+    lines.push(`Entries cited by more than one dispatch: ${a.multiplyCited.length > 0
+        ? a.multiplyCited.map((m) => `${m.id} (${m.dispatches} dispatches)`).join(', ')
+        : 'none'}.`);
+    return lines;
 }
 
 /**

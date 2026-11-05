@@ -75,6 +75,54 @@ import { buildHarvesterPrompt } from '../prompts.mjs';
  */
 export const SPRINT_ANALYSIS_EXCLUDE_PATTERN = 'docs/sprint-analysis-*.md';
 
+/** Default bound on the KB step when it runs on a stall or abort. */
+export const TERMINAL_KB_STEP_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * The harvester's KB step: apply whatever KB writes are still queued
+ * (captures, promotions, feedback, usage reports -- kbWork.commitRound flushes
+ * every queue first) and run the harvest round's bible commit on each
+ * repository's kb_maintainer, then warn about anything still pending.
+ *
+ * Runs after a normal harvest AND when a sprint stalls or aborts (runner.js
+ * main()), so the KB work a failed sprint gathered is not lost. Best-effort:
+ * never throws, and with `timeoutMs` it gives up waiting after that long, so a
+ * hung maintainer can never mask or delay the stall/abort outcome
+ * indefinitely.
+ *
+ * @param {object|null} kbWork the KB work client (createKbWorkClient)
+ * @param {{ label?: string, log?: Function, timeoutMs?: number }} [opts]
+ * @returns {Promise<{ ran: boolean, error: string|null }>}
+ */
+export async function runHarvestKbStep(kbWork, { label = 'harvest', log = () => {}, timeoutMs = 0 } = {}) {
+    if (!kbWork || typeof kbWork.commitRound !== 'function') return { ran: false, error: null };
+    let timer = null;
+    try {
+        const step = (async () => {
+            const out = await kbWork.commitRound(label);
+            log(`[kb-work] KB step '${label}' ran: ${(out && out.committed) || 0} confirmation(s) committed, ${(out && out.pending) || 0} pending`);
+            if (typeof kbWork.warnPending === 'function') kbWork.warnPending();
+        })();
+        if (timeoutMs > 0) {
+            await Promise.race([
+                step,
+                new Promise((_, reject) => {
+                    timer = setTimeout(() => reject(new Error(`KB step '${label}' did not finish within ${timeoutMs}ms`)), timeoutMs);
+                }),
+            ]);
+        } else {
+            await step;
+        }
+        return { ran: true, error: null };
+    } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        log(`[kb-work] WARN: KB step '${label}' failed (non-fatal): ${message}`);
+        return { ran: true, error: message };
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
 /**
  * Runs the Harvest phase: assemble the sprint-analysis inputs, dispatch the
  * harvester ladder, and log what it reported.
@@ -254,9 +302,6 @@ export async function runHarvestPhase({
     // kb_bible_commit, G-push. A no-op after a FAIL verdict or with nothing
     // pending. Runs after the harvester's own G-push, so its commits are on
     // the branch the bible commit lands on.
-    if (kbWork && typeof kbWork.commitRound === 'function') {
-        await kbWork.commitRound('harvest');
-        if (typeof kbWork.warnPending === 'function') kbWork.warnPending();
-    }
+    await runHarvestKbStep(kbWork, { label: 'harvest', log });
     return { costAnalysis };
 }
