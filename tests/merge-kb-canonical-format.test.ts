@@ -14,7 +14,7 @@ describe('merge-kb-canonical output format', () => {
     // Unsorted on purpose, with a non-ASCII title and a trailing demotion.
     const ours = {
       ...base,
-      entries: [entry('b', 'base'), entry('z', 'café — ours'), entry('a', 'ours-a')],
+      entries: [entry('b', 'base'), entry('z', 'caf\u00e9 \u2014 ours'), entry('a', 'ours-a')],
       demotions: [{ id: 'q', at: 't', reason: 'r' }, { id: 'p', at: 't', reason: 'r' }],
     };
     const theirs = { ...base, entries: [entry('b', 'base'), entry('m', 'theirs-m')] };
