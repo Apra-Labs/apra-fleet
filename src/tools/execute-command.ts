@@ -142,7 +142,7 @@ async function egressRefusal(
   memberName: string,
 ): Promise<string | null> {
   if (policy === 'deny') {
-    return `❌ Blocked: credential "${name}" has network_policy=deny and the command contains a network tool.`;
+    return `[x] Blocked: credential "${name}" has network_policy=deny and the command contains a network tool.`;
   }
   if (policy === 'confirm') {
     const { confirmed, terminalUnavailable } = await collectOobConfirm(name, { command, memberName });
@@ -150,7 +150,7 @@ async function egressRefusal(
       const reason = terminalUnavailable
         ? 'could not be confirmed (terminal unavailable)'
         : 'was not confirmed';
-      return `❌ Network egress for credential "${name}" ${reason}. Command not executed.`;
+      return `[x] Network egress for credential "${name}" ${reason}. Command not executed.`;
     }
   }
   return null;
