@@ -69,13 +69,16 @@ export interface EvalReport {
   perQuery: Array<{ id: string; rank: number | null }>;
 }
 
-export async function loadEvalProvider(): Promise<{ provider: SqliteProvider; dir: string; cleanup: () => void }> {
+export interface EvalImportCounts { imported: number; skipped: number; linked: number; rejected: number }
+
+export async function loadEvalProvider(): Promise<{ provider: SqliteProvider; dir: string; counts: EvalImportCounts; cleanup: () => void }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-recall-eval-'));
   const provider = new SqliteProvider(path.join(dir, 'kb.sqlite'));
   await provider.init();
-  await importBibleEntries(provider, loadEvalEntries(), { verbatim: true });
+  const res = await importBibleEntries(provider, loadEvalEntries(), { verbatim: true });
+  const counts: EvalImportCounts = { imported: res.imported, skipped: res.skipped, linked: res.linked, rejected: res.rejected };
   return {
-    provider, dir,
+    provider, dir, counts,
     cleanup: () => { provider.close(); fs.rmSync(dir, { recursive: true, force: true }); },
   };
 }
@@ -90,4 +93,21 @@ export async function runEval(config: EvalConfig, provider: SqliteProvider, quer
 
 export function formatReport(r: EvalReport): string {
   return `[kb-recall-eval] config="${r.config}" queries=${r.queries} recall@5=${r.recallAt5.toFixed(4)} MRR=${r.mrr.toFixed(4)}`;
+}
+
+/** Labelled expected ids that are not present in the eval KB (a missing label can never hit). */
+export function missingExpectedIds(provider: SqliteProvider, queries: EvalQuery[]): string[] {
+  return [...new Set(queries.flatMap(q => q.expected))].filter(id => !provider.hasEntry(id));
+}
+
+/**
+ * Writes the reports as JSON so a later lane can read the numbers even when the
+ * vitest reporter hides console output. Default location is the OS temp dir
+ * (nothing is written into the repo); override with APRA_KB_RECALL_REPORT.
+ */
+export function writeReportFile(reports: EvalReport[]): string {
+  const file = process.env.APRA_KB_RECALL_REPORT || path.join(os.tmpdir(), 'apra-kb-recall-eval', 'report.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ generatedAt: new Date().toISOString(), reports }, null, 2) + '\n');
+  return file;
 }
