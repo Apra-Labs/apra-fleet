@@ -408,8 +408,9 @@ Other `{{secret.NAME}}` fields refuse a live secret. `credentialStoreSet`,
 (`secret is in use by: <live secrets>`). `credentialStoreList` marks one with
 `kind: "live"`. A persistent secret that has expired now stays listed until the
 next server start, or for as long as a live secret is bound to it; a session value
-set after expiry takes its place, and `credentialStoreUpdate` refuses it while it
-is expired. A live secret's network policy is checked before its script runs.
+set after expiry takes its place, and is what `credentialStoreList` then shows.
+A session value set before expiry does not. `credentialStoreUpdate` refuses a
+secret while it is expired. A live secret's network policy is checked before its script runs.
 
 #### `memberDetail(options)`
 

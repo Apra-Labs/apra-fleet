@@ -24,6 +24,7 @@ import {
   SecretInUseError,
 } from '../src/services/credential-store.js';
 import {
+  dropLiveToken,
   getLiveToken,
   getLiveTokenStatus,
   liveRefreshAt,
@@ -209,6 +210,48 @@ describe('cache', () => {
     expect(status.retryAfter).not.toBeNull();
   });
 
+  it('a failed refresh still serves the unexpired token, then inside the backoff too, with no further run', async () => {
+    writeConfig({ liveSecrets: { refreshFraction: 0.9 } });
+    const failFlag = path.join(tmp, 'refresh.fail');
+    const counter = path.join(tmp, 'refresh.runs');
+    const js = path.join(tmp, 'refresh.js');
+    fs.writeFileSync(js, `
+      const fs = require('fs');
+      fs.appendFileSync(${JSON.stringify(counter)}, 'x');
+      if (fs.existsSync(${JSON.stringify(failFlag)})) process.exit(4);
+      process.stdout.write(JSON.stringify({ token: 'tok-first', expires_at: new Date(Date.now() + 60000).toISOString() }));
+    `);
+    const n = name('refreshfail');
+    const rec = register(n, { program: process.execPath, args: [js] });
+    expect(await getLiveToken(n, rec)).toBe('tok-first');
+
+    // 90% of a 60 s lifetime: below T after about 6 s. Move the clock instead of waiting.
+    fs.writeFileSync(failFlag, '');
+    const realNow = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => realNow + 10_000);
+
+    expect(await getLiveToken(n, rec)).toBe('tok-first'); // the refresh ran and failed
+    expect(fs.readFileSync(counter, 'utf8')).toBe('xx');
+    expect(await getLiveToken(n, rec)).toBe('tok-first'); // inside the backoff: no run
+    expect(fs.readFileSync(counter, 'utf8')).toBe('xx');
+    expect(getLiveTokenStatus(n, rec).state).toBe('failed');
+  }, 30_000);
+
+  it('dropping a token other than the cached one keeps the cached one; dropping the cached one mints', async () => {
+    const n = name('droprule');
+    const script = liveScript('droprule');
+    const rec = register(n, script);
+    expect(await getLiveToken(n, rec)).toBe('tok-1');
+
+    dropLiveToken(n, 'tok-an-older-one'); // a concurrent 401 on a token already replaced
+    expect(await getLiveToken(n, rec)).toBe('tok-1');
+    expect(script.runs()).toBe(1);
+
+    dropLiveToken(n, 'tok-1');
+    expect(await getLiveToken(n, rec)).toBe('tok-2');
+    expect(script.runs()).toBe(2);
+  });
+
   it('a cached token stays cached when the bound value or the policy changes', async () => {
     const r = name('rot');
     const n = name('rotlive');
@@ -310,6 +353,44 @@ describe('bindings are permanent', () => {
     expect((credentialResolve(r, '*') as { plaintext: string }).plaintext).toBe('fresh-value');
   });
 
+  it('a session value set BEFORE expiry does not take over at expiry, with its older value and looser policy', async () => {
+    const r = name('oldersession');
+    credentialSet(r, 'persistent-value', true, 'deny', ['alpha'], 0.05);
+    credentialSet(r, 'older-session-value', false, 'allow', '*');
+    expect(credentialResolve(r, 'beta')).toHaveProperty('denied');
+
+    await new Promise((done) => setTimeout(done, 120));
+
+    expect(credentialResolve(r, 'beta')).toHaveProperty('expired');
+    expect(lookupServerSecret(r).status).toBe('expired');
+    expect(credentialList().find((c) => c.name === r)).toMatchObject({ scope: 'persistent', network_policy: 'deny', allowedMembers: ['alpha'] });
+
+    // A re-set after expiry still recovers.
+    credentialSet(r, 'fresh-value', false, 'allow');
+    expect((credentialResolve(r, 'beta') as { plaintext: string }).plaintext).toBe('fresh-value');
+  });
+
+  it('the purge removes an older session value with the expired record, so it cannot come back', async () => {
+    const r = name('purgeolder');
+    credentialSet(r, 'persistent-value', true, 'deny', '*', 0.05);
+    credentialSet(r, 'older-session-value', false, 'allow');
+    await new Promise((done) => setTimeout(done, 120));
+    purgeExpiredCredentials();
+    expect(credentialResolve(r, '*')).toBeNull();
+  });
+
+  it('credential_store_list shows the session row and its policy when that value is the one in force', () => {
+    const r = name('listinforce');
+    credentialSet(r, 'old-value', true, 'deny', ['alpha'], -1);
+    expect(credentialList().find((c) => c.name === r)).toMatchObject({ scope: 'persistent', network_policy: 'deny' });
+
+    credentialSet(r, 'fresh-value', false, 'allow', '*');
+
+    const rows = credentialList().filter((c) => c.name === r);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ scope: 'session', network_policy: 'allow', allowedMembers: '*' });
+  });
+
   it('an unexpired persistent record still wins over a session value', () => {
     const r = name('stillwins');
     credentialSet(r, 'persistent-value', true, 'allow');
@@ -331,7 +412,7 @@ describe('bindings are permanent', () => {
 
     purgeExpiredCredentials();
     expect(() => credentialDelete(r)).toThrow(SecretInUseError);
-    expect(credentialList().some((c) => c.name === r && c.scope === 'persistent')).toBe(true);
+    expect(persistentStillExpired(r)).toBe(true);
     await expect(mintLiveSecret(lookupLiveSecret(n)!)).resolves.toBeDefined();
   });
 

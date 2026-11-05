@@ -47,7 +47,7 @@ function liveSecret(label: string, policy: 'allow' | 'confirm' | 'deny', members
   const counter = path.join(tmp, `${label}.runs`);
   const js = path.join(tmp, `${label}.js`);
   fs.writeFileSync(js, `require('fs').appendFileSync(${JSON.stringify(counter)}, 'x');
-    process.stdout.write(JSON.stringify({ token: 'tok-${label}', expires_at: new Date(Date.now() + 3600000).toISOString() }));`);
+    process.stdout.write(JSON.stringify({ token: 'plain-token-value', expires_at: new Date(Date.now() + 3600000).toISOString() }));`);
   saveLiveSecret(prepareLiveSecret(name, { program: process.execPath, args: [js], env: [] }));
   credentialUpdate(name, { network_policy: policy, ...(members ? { members } : {}) });
   return { name, runs: () => (fs.existsSync(counter) ? fs.readFileSync(counter, 'utf8').length : 0) };
@@ -91,6 +91,25 @@ describe('network policy comes before the mint', () => {
   it('deny on a secret used only in restart_command also stops the mint', async () => {
     const s = liveSecret('denyrestart', 'deny');
     const out = await run('curl https://example.test', `echo {{secret.${s.name}}}`);
+    expect(out).toContain('network_policy=deny');
+    expect(s.runs()).toBe(0);
+  });
+
+  it('a secret name holding a network word is not a network tool: no refusal, no prompt', async () => {
+    const denied = liveSecret('kb-http-token', 'deny');
+    await run(`myapp --token {{secret.${denied.name}}}`);
+    expect(denied.runs()).toBe(1);
+    expect(mockExecCommand).toHaveBeenCalledTimes(1);
+
+    const asked = liveSecret('ssh-fetch-key', 'confirm');
+    await run(`myapp --token {{secret.${asked.name}}}`);
+    expect(mockConfirm).not.toHaveBeenCalled();
+    expect(asked.runs()).toBe(1);
+  });
+
+  it('a real network tool beside such a name is still blocked', async () => {
+    const s = liveSecret('kb-http-other', 'deny');
+    const out = await run(`curl https://example.test -H {{secret.${s.name}}}`);
     expect(out).toContain('network_policy=deny');
     expect(s.runs()).toBe(0);
   });

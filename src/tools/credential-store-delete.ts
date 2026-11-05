@@ -10,14 +10,14 @@ export type CredentialStoreDeleteInput = z.infer<typeof credentialStoreDeleteSch
 
 export async function credentialStoreDelete(input: CredentialStoreDeleteInput): Promise<string> {
   if (isLiveSecret(input.name)) {
-    return `[x] '${input.name}' is a live secret and cannot be deleted through this tool. Use the CLI: apra-fleet secret --delete ${input.name}.`;
+    return `[FAIL] '${input.name}' is a live secret and cannot be deleted through this tool. Use the CLI: apra-fleet secret --delete ${input.name}.`;
   }
   let deleted: boolean;
   try {
     deleted = credentialDelete(input.name);
   } catch (err) {
     if (!(err instanceof SecretInUseError)) throw err;
-    return `[x] '${input.name}' was not deleted: ${err.message}. Delete those live secrets first: apra-fleet secret --delete <live secret>.`;
+    return `[FAIL] '${input.name}' was not deleted: ${err.message}. Delete those live secrets first: apra-fleet secret --delete <live secret>.`;
   }
   if (deleted) {
     logLine('credential_store_delete', `name=${input.name}`);

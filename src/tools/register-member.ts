@@ -197,7 +197,7 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
     passwordLegacyNames = tokens.filter((t) => t.legacy).map((t) => t.name);
     for (const name of tokenNames) {
       if (isLiveSecret(name)) {
-        return `[x] '${name}' is a live secret, not a static secret, and cannot be used in the password field. Member was NOT registered.`;
+        return `[FAIL] '${name}' is a live secret, not a static secret, and cannot be used in the password field. Member was NOT registered.`;
       }
       const entry = credentialResolve(name, input.friendly_name);
       if (entry && 'denied' in entry) return `❌ ${entry.denied} Member was NOT registered.`;

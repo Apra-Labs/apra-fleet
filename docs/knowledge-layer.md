@@ -749,7 +749,8 @@ while that live secret exists.
   `apra-fleet secret --set R --persist`. A session value set after expiry serves
   member commands but not the live secret, which reads only the persistent record.
 - Any other expired persistent secret stays until the next server start, and a
-  session value set after expiry takes its place. `credential_store_update`
+  session value set after expiry takes its place, while one set earlier does not.
+  `credential_store_list` shows whichever is in force. `credential_store_update`
   refuses an expired secret: re-set it instead.
 
 **Refresh.** On access, while the remaining lifetime is at least T the current

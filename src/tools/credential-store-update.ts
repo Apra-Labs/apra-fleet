@@ -17,7 +17,7 @@ export async function credentialStoreUpdate(input: CredentialStoreUpdateInput): 
   }
 
   if (isLiveSecret(input.name)) {
-    return `[x] '${input.name}' is a live secret and cannot be updated through this tool. Use the CLI: apra-fleet secret --update ${input.name}.`;
+    return `[FAIL] '${input.name}' is a live secret and cannot be updated through this tool. Use the CLI: apra-fleet secret --update ${input.name}.`;
   }
 
   const existing = credentialResolve(input.name);
@@ -26,7 +26,7 @@ export async function credentialStoreUpdate(input: CredentialStoreUpdateInput): 
   }
   // An update must not bring an expired value back: only a re-set can.
   if ('expired' in existing) {
-    return `[x] ${existing.expired}`;
+    return `[FAIL] ${existing.expired}`;
   }
 
   const updates: { members?: string; expiresAt?: number | null; network_policy?: 'allow' | 'confirm' | 'deny' } = {};

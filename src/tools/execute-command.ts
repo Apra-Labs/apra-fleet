@@ -17,7 +17,7 @@ import { LogScope, maskSecrets, truncateForLog, logLine, logWarn } from '../util
 import { getLogPreviewChars } from '../services/user-config.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
 import { preflightCheck } from '../services/preflight-check.js';
-import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
+import { findSecretTokens, legacyTokenWarning, redactSecretTokens } from '../services/secret-token.js';
 import type { Agent } from '../types.js';
 
 export function resolveTilde(p: string): string {
@@ -142,7 +142,7 @@ async function egressRefusal(
   memberName: string,
 ): Promise<string | null> {
   if (policy === 'deny') {
-    return `[x] Blocked: credential "${name}" has network_policy=deny and the command contains a network tool.`;
+    return `[FAIL] Blocked: credential "${name}" has network_policy=deny and the command contains a network tool.`;
   }
   if (policy === 'confirm') {
     const { confirmed, terminalUnavailable } = await collectOobConfirm(name, { command, memberName });
@@ -150,7 +150,7 @@ async function egressRefusal(
       const reason = terminalUnavailable
         ? 'could not be confirmed (terminal unavailable)'
         : 'was not confirmed';
-      return `[x] Network egress for credential "${name}" ${reason}. Command not executed.`;
+      return `[FAIL] Network egress for credential "${name}" ${reason}. Command not executed.`;
     }
   }
   return null;
@@ -278,7 +278,8 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
 
   // -- Live secrets: policy before the mint, so a refused one never runs its script --
   const egressChecked = new Set<string>();
-  if (NETWORK_TOOL_RE.test(input.command)) {
+  // Placeholders are stripped first: a secret's name is not a network tool.
+  if (NETWORK_TOOL_RE.test(redactSecretTokens(input.command))) {
     const referenced = findSecretTokens(`${input.command}\n${input.restart_command ?? ''}`).map((t) => t.name);
     for (const name of new Set(referenced)) {
       const live = lookupLiveSecret(name);

@@ -64,7 +64,7 @@ export default {
     "src/tools/credential-store-delete.ts": 2,
     "src/tools/credential-store-set.ts": 2,
     "src/tools/credential-store-update.ts": 5,
-    "src/tools/execute-command.ts": 12,
+    "src/tools/execute-command.ts": 10,
     "src/tools/member-detail.ts": 3,
     "src/tools/monitor-task.ts": 1,
     "src/tools/receive-files.ts": 8,

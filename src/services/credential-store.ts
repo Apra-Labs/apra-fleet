@@ -452,6 +452,8 @@ export function credentialList(): CredentialMeta[] {
 
   const file = loadCredentialFile();
   for (const record of Object.values(file.credentials)) {
+    // List what is in force: the session row stays when it has replaced this record.
+    if (!isLiveRecord(record) && !effectivePersistent(record, record.name)) continue;
     const existing = results.findIndex(r => r.name === record.name);
     const meta: CredentialMeta = isLiveRecord(record) ? {
       name: record.name,
@@ -617,11 +619,16 @@ function isExpired(expiresAt: string | undefined): expiresAt is string {
 
 /**
  * The persistent record that speaks for `name`, if any. Persistent wins, except
- * that an expired record gives way to a session entry: that is what a re-set
- * with the default persist: false creates. The record itself stays in the file.
+ * that an expired record gives way to a session entry created after it expired:
+ * that is what a re-set with the default persist: false creates. An older session
+ * entry must not take over at expiry, with its older value and looser policy. The
+ * record itself stays in the file.
  */
 function effectivePersistent(rec: PersistentRecord | undefined, name: string): PersistentRecord | undefined {
-  return rec && isExpired(rec.expiresAt) && sessionStore.has(name) ? undefined : rec;
+  const session = sessionStore.get(name);
+  const replaced = rec && isExpired(rec.expiresAt) && session
+    && Date.parse(session.created_at) > Date.parse(rec.expiresAt);
+  return replaced ? undefined : rec;
 }
 
 /**
@@ -755,7 +762,8 @@ export function purgeExpiredCredentials(): void {
   for (const [name, record] of Object.entries(file.credentials)) {
     if (isLiveRecord(record) || consumersOf(file, name).length > 0) continue;
     if (record.expiresAt && now > new Date(record.expiresAt).getTime()) {
-      // A session entry is judged by its own expiry, not this record's.
+      // A session entry that replaced this record stays; an older one goes with it.
+      if (effectivePersistent(record, name)) sessionStore.delete(name);
       delete file.credentials[name];
       changed = true;
     }
