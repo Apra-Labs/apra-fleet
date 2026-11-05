@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 130
+    "entry_count": 132
   },
   "entries": [
     {
@@ -713,6 +713,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T09:57:31.784Z"
+    },
+    {
+      "id": "45a64b2d-bf11-4967-8b69-d63e25332825",
+      "type": "knowledge",
+      "title": "KB keyword reads drain the index queue in a write transaction and can fail when locked",
+      "summary": "KbKeywordIndex.search drains kb_index_pending with BEGIN IMMEDIATE before a ready-index read, so a keyword query blocks on, and throws after busy_timeout because of, another connection's write lock whenever rows are pending.",
+      "symbols": [
+        "KbKeywordIndex.search",
+        "KbKeywordIndex.drain",
+        "KbKeywordIndex.inTxn"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-index.ts",
+        "src/services/knowledge/sqlite-provider.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T12:30:24.376Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-index.ts": "0150c1867e1bbbd7cd0c1c198061dfe80e46fbac",
+        "src/services/knowledge/sqlite-provider.ts": "c926cb5d0ffcfc8f8039ea32f7039b4af44dce52"
+      }
     },
     {
       "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
@@ -1555,6 +1576,31 @@
         "src/services/knowledge/bible-import.ts": "9a75635a8ccb17c83c0aef0cc1806386ec3c8cd5",
         "src/services/knowledge/sqlite-provider.ts": "3b70b8d2bfe7a3e3b4c1c522400841d0b5282d6f",
         "tests/knowledge/kb-member-mixed-tier-reads.test.ts": "f452ea5700809ded25e518a2743994214a4bc750"
+      }
+    },
+    {
+      "id": "9b49976a-e24b-45fb-b25c-6a604cb16be7",
+      "type": "knowledge",
+      "title": "SqliteProvider keyword index is kept in sync by a pending-rowid queue drained before reads",
+      "summary": "entries_kw and entries_tri hold normalized/raw index text computed in JS; pure-SQL triggers on entries enqueue rowids into kb_index_pending and KbKeywordIndex.search drains the queue before every keyword read, so no write path has to update the index itself.",
+      "symbols": [
+        "KbKeywordIndex",
+        "KB_KEYWORD_INDEX_VERSION",
+        "KB_NORMALIZER_VERSION",
+        "SqliteProvider.query",
+        "SqliteProvider.findAudnCandidates"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-index.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/kb-normalize.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T12:30:24.876Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-index.ts": "0150c1867e1bbbd7cd0c1c198061dfe80e46fbac",
+        "src/services/knowledge/kb-normalize.ts": "4853f2b0df90e005c138918ae39864a459311f41",
+        "src/services/knowledge/sqlite-provider.ts": "c926cb5d0ffcfc8f8039ea32f7039b4af44dce52"
       }
     },
     {
