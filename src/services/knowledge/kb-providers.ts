@@ -9,6 +9,22 @@ import { resolveProjectSlug } from './project-slug.js';
 import { resolveRepositoryIdentity } from './repository-header.js';
 import type { MemoryProvider } from './types.js';
 import { FLEET_DIR } from '../../paths.js';
+import { getEmbedder } from './embedding/embedder.js';
+import type { EmbedderSource } from './embedding/embed-queue.js';
+
+/**
+ * Where this host's KB providers get their embedder for background embedding
+ * of captures: the process embedder (embedding.model in the KB config picks
+ * the model, or 'none'), unless the environment sets APRA_FLEET_KB_EMBED=off,
+ * which turns background embedding off for the process (keyword and anchor
+ * search are unaffected). The switch exists for sandboxes and air-gapped CI
+ * that must never attempt a model download without writing a KB config file;
+ * the test suite sets it (tests/setup.ts) and attaches fakes where it needs
+ * vectors. Read when a provider is built.
+ */
+export function kbEmbedderSource(): EmbedderSource | null {
+  return process.env.APRA_FLEET_KB_EMBED === 'off' ? null : getEmbedder;
+}
 import { logWarn } from '../../utils/log-helpers.js';
 
 export interface KbProviders {
@@ -41,6 +57,9 @@ function getGlobalProvider(): Promise<SqliteProvider> {
       const globalDir = path.join(FLEET_DIR, 'knowledge', 'global');
       fs.mkdirSync(globalDir, { recursive: true });
       const provider = new SqliteProvider(path.join(globalDir, 'kb.sqlite'));
+      // Background embedding with the process embedder (lazy: nothing loads
+      // until the first queued entry is embedded, off the request path).
+      provider.attachEmbedder(kbEmbedderSource());
       await provider.init();
       return provider;
     })();
@@ -65,6 +84,7 @@ async function createBaseProvidersForSlug(slug: string, repoPath: string): Promi
   const projectDir = path.join(FLEET_DIR, 'knowledge', slug);
   fs.mkdirSync(projectDir, { recursive: true });
   const projectSqlite = new SqliteProvider(path.join(projectDir, 'kb.sqlite'), repoPath);
+  projectSqlite.attachEmbedder(kbEmbedderSource());
   await projectSqlite.init();
   const global = await getGlobalProvider();
   return { projectSqlite, global };

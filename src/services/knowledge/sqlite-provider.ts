@@ -24,6 +24,7 @@ import { computeFileHashBatch } from './file-hash.js';
 import { KbKeywordIndex, type KeywordIndexStatus } from './kb-index.js';
 import { VectorStore, type VectorModel, type VectorScore } from './embedding/vector-store.js';
 import { buildVectorInputs, type VectorInput } from './embedding/chunker.js';
+import { EmbedQueue, type EmbedderSource, type EmbedQueueStatus } from './embedding/embed-queue.js';
 import { validateFilePaths } from './path-validation.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
 import { CAPTURE_TRIGGERS, KB_AUDIT_NOTE_START, KbCaptureRejected, type CaptureTrigger, type DiscardResult, type RetireOptions } from './types.js';
@@ -161,6 +162,13 @@ export class SqliteProvider implements MemoryProvider {
   private readonly keywordIndex = new KbKeywordIndex(() => this.db);
   /** Per-entry multi-vectors (design D2a vector half); see embedding/vector-store.ts. */
   readonly vectorStore = new VectorStore(() => this.db);
+  /** Off-request-path embedding of kb_embed_pending; see embedding/embed-queue.ts. */
+  private readonly embedQueue = new EmbedQueue({
+    getDb: () => this.db,
+    store: this.vectorStore,
+    inputsFor: (id, tokenLimit) => this.entryVectorInputs(id, tokenLimit),
+  });
+  private embedderSource: EmbedderSource | null = null;
   readonly dbPath: string;
   readonly projectSlug: string;
   /**
@@ -370,6 +378,49 @@ export class SqliteProvider implements MemoryProvider {
     // step with entries by pure-SQL triggers. After the column migrations for
     // the same reason as the keyword index (triggers name recall_cues etc.).
     this.vectorStore.init();
+
+    // Model-change check and backlog: a run off the init call stack compares
+    // the recorded model identity with the active embedder and starts a
+    // background rebuild when they differ (no-op without an embedder).
+    this.embedQueue.reopen();
+    this.embedQueue.kick();
+  }
+
+  /**
+   * Set where this KB gets its embedder (the production wiring passes the
+   * process embedder; tests pass a fake). Null detaches: entries are still
+   * queued by the triggers but nothing embeds them. Never loads a model here:
+   * the first background run does, lazily.
+   */
+  attachEmbedder(source: EmbedderSource | null): void {
+    this.embedderSource = source;
+    this.embedQueue.attach(source);
+  }
+
+  /**
+   * Resolve true once background embedding has nothing scheduled or in
+   * flight (false on timeout). Captures never need this; tests and
+   * maintenance callers do.
+   */
+  waitForEmbeddings(timeoutMs?: number): Promise<boolean> {
+    this.embedQueue.kick();
+    return this.embedQueue.whenIdle(timeoutMs);
+  }
+
+  /** Recorded vector model identity, queue depth and rebuild state. */
+  vectorIndexStatus(): EmbedQueueStatus {
+    return this.embedQueue.status();
+  }
+
+  /**
+   * Score live entries against a query vector made by the ACTIVE embedder:
+   * only rows of its model id + revision + dims (the query's length) are
+   * read. Empty when no embedder is attached or it has no model.
+   */
+  scoreVectors(query: Float32Array, opts?: { limit?: number; entryIds?: string[] }): VectorScore[] {
+    const emb = this.embedderSource?.() ?? null;
+    if (!emb || emb.modelId === null || emb.revision === null) return [];
+    return this.vectorStore.score(query, { modelId: emb.modelId, revision: emb.revision, dims: query.length }, opts);
   }
 
   /**
@@ -1191,7 +1242,18 @@ export class SqliteProvider implements MemoryProvider {
     }
   }
 
+  /**
+   * Store an entry (or AUDN-link it) and return. Its embedding is NOT awaited:
+   * the insert/update triggers queued it in kb_embed_pending and the kick
+   * below only schedules a background run.
+   */
   async capture(input: KBEntryInput, opts?: CaptureOpts): Promise<CaptureResult> {
+    const result = await this.captureEntry(input, opts);
+    this.embedQueue.kick();
+    return result;
+  }
+
+  private async captureEntry(input: KBEntryInput, opts?: CaptureOpts): Promise<CaptureResult> {
     const db = this.getDb();
     const now = new Date().toISOString();
 
@@ -1381,6 +1443,10 @@ export class SqliteProvider implements MemoryProvider {
 
   async query(opts: QueryOptions): Promise<KBResult> {
     const db = this.getDb();
+    // Writes that do not kick the embed queue themselves (promote, demote,
+    // feedback, contradiction resolution) were still queued by the triggers;
+    // a read is a cheap moment to schedule the background run.
+    this.embedQueue.kick();
     const conditions: string[] = [];
     const params: SQLInputValue[] = [];
 
@@ -1594,6 +1660,8 @@ export class SqliteProvider implements MemoryProvider {
         fields.error_signatures === undefined ? null : JSON.stringify(fields.error_signatures),
         id,
       );
+    // Re-embedding was queued by the update trigger; run it off this call.
+    this.embedQueue.kick();
     return true;
   }
 
@@ -2713,6 +2781,7 @@ export class SqliteProvider implements MemoryProvider {
 
   close(): void {
     this.keywordIndex.close();
+    this.embedQueue.close();
     this.db?.close();
     this.db = null;
   }
