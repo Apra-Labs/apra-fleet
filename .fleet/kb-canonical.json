@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "6ecdfda08a76fc206721e855d72cf94b16f5f011",
+    "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 129
+    "entry_count": 130
   },
   "entries": [
     {
@@ -1870,6 +1870,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T10:23:39.272Z"
+    },
+    {
+      "id": "caac0e77-a378-4f1e-bb9e-141c8e82e19a",
+      "type": "learning",
+      "title": "Typing kb_captures item properties conflicts with the keep-the-report capture tests",
+      "summary": "Adding explicit JSON types to kb_captures item properties makes ajv reject the whole role report for a capture of the wrong type. kb-bad-capture-keeps-report.test.mjs and kb-capture-rubric-contract.test.mjs pin that no capture, however bad, may fail the report schema.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json",
+        "packages/apra-fleet-se/test/kb-bad-capture-keeps-report.test.mjs",
+        "packages/apra-fleet-se/test/kb-capture-rubric-contract.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T09:48:25.015Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json": "897d05e362d03d82f9dad30e40cb1ba35013dbd1",
+        "packages/apra-fleet-se/test/kb-bad-capture-keeps-report.test.mjs": "77789b013bc60276b7cd9c9ec7f1318a5f349810",
+        "packages/apra-fleet-se/test/kb-capture-rubric-contract.test.mjs": "b83aa678b0270146df6bf39fc97275b1f29465b0"
+      }
     },
     {
       "id": "cc085797-4b47-455d-9357-fbbb267281ed",
