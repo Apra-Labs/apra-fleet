@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 135
+    "entry_count": 138
   },
   "entries": [
     {
@@ -551,6 +551,30 @@
       "source_file_hashes": {
         "src/services/credential-store.ts": "9150c836c40136de45189ebc0930108d64c3656e",
         "tests/credential-store-atomic-write.test.ts": "a7d3c27ae6925a97c66ead0603609b48001056ed"
+      }
+    },
+    {
+      "id": "2eadf404-bb9c-4d9f-b4a6-5a9c5ec21c75",
+      "type": "knowledge",
+      "title": "KB embedder runs onnxruntime-web WASM with the .wasm embedded as a SEA asset",
+      "summary": "The KB embedder uses onnxruntime-web/wasm (bundle variant, glue inlined) plus @huggingface/tokenizers, never @huggingface/transformers, whose Node entry point loads the native onnxruntime-node and sharp addons at import time and would fail only at runtime in the SEA.",
+      "symbols": [
+        "createOrtRuntime",
+        "loadOrtWasmBinary",
+        "WASM_SEA_ASSET",
+        "Embedder"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/embedder.ts",
+        "scripts/gen-sea-config.mjs",
+        "tests/knowledge/embedder.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T17:04:52.481Z",
+      "source_file_hashes": {
+        "scripts/gen-sea-config.mjs": "479b2800b2080a57fbc3b9c3189f655acaa823df",
+        "src/services/knowledge/embedding/embedder.ts": "ce07589b9d275b8aab4f182e40214300390122ea",
+        "tests/knowledge/embedder.test.ts": "219a56baf219cfaf132726ef577b1f4a7e0a3e4a"
       }
     },
     {
@@ -1473,6 +1497,34 @@
       }
     },
     {
+      "id": "8e76e27c-13eb-40bd-bd9f-65473ee3833b",
+      "type": "learning",
+      "title": "KB capture paths must not write the fleet log in tests: hermetic guards snapshot FLEET_DIR/logs",
+      "summary": "tests/knowledge/kb-bible-rich-content.test.ts snapshots every file under FLEET_DIR (including logs/fleet-<pid>.log) and the repo .fleet dir around each test, and kb-sqlite-stock-and-http-guard asserts console.error is never called during capture+query. Any logLine/logWarn from a capture-triggered background job (embedding, code links) fails them.",
+      "symbols": [
+        "logLine",
+        "logWarn",
+        "CodeLinkStore",
+        "kbEmbedderSource"
+      ],
+      "source_files": [
+        "tests/knowledge/kb-bible-rich-content.test.ts",
+        "tests/knowledge/kb-sqlite-stock-and-http-guard.test.ts",
+        "src/utils/log-helpers.ts",
+        "src/services/knowledge/code-links.ts",
+        "tests/setup.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T17:04:52.929Z",
+      "source_file_hashes": {
+        "src/services/knowledge/code-links.ts": "f16bad872eda804070b0f9559a47be4c367a2899",
+        "src/utils/log-helpers.ts": "27f4f02a8004ceae5d1b8883ada455890a6d6997",
+        "tests/knowledge/kb-bible-rich-content.test.ts": "ab2b5eb4ac2d462bc46cb93546ffe0268718f7cf",
+        "tests/knowledge/kb-sqlite-stock-and-http-guard.test.ts": "0e6dd75876aca3bc4802025a9d5e8b34da5990e6",
+        "tests/setup.ts": "64b0099ea61c3c885cff14c7bf80cce876eceb2a"
+      }
+    },
+    {
       "id": "8fdf21fa-e64c-43d2-a22a-edfd21bd6791",
       "type": "knowledge",
       "title": "Three distinct git-credential-helper file shapes exist across member OS/shell combinations",
@@ -1813,6 +1865,30 @@
         "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "0dffb028188c744e0bcc172691eb9fc79bfb354b",
         "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56",
         "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
+    },
+    {
+      "id": "ab967e3e-4b21-4143-8cf0-6d43065535d9",
+      "type": "learning",
+      "title": "The KB process embedder only loads when something embeds; reads never trigger it",
+      "summary": "Embedder starts idle and loads only inside embedWith (embedQuery/embedDocuments). EmbedQueue calls embedDocuments only for pending entries and SqliteProvider.queryEmbedder requires state ready, so a process whose KB is already embedded never loads the model from reads alone.",
+      "symbols": [
+        "Embedder",
+        "EmbedQueue",
+        "queryEmbedder",
+        "hybridRows"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/embedder.ts",
+        "src/services/knowledge/embedding/embed-queue.ts",
+        "src/services/knowledge/sqlite-provider.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T17:04:51.973Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/embed-queue.ts": "793bf9232fb2cdb4218217f4ac5a262b20aef941",
+        "src/services/knowledge/embedding/embedder.ts": "ce07589b9d275b8aab4f182e40214300390122ea",
+        "src/services/knowledge/sqlite-provider.ts": "1df93b09d7eed6873399f072259f672f4a42954f"
       }
     },
     {
