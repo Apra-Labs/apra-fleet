@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { gitExecutable } from '../os/git-executable.js';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { filterProjectBibleCandidates, hasCarriedBasis, selectLegacyBibleBackfill } from '../services/knowledge/bible-basis-filter.js';
@@ -62,7 +64,10 @@ import {
 // Rich fields. A merged id keeps the content, recall_cues and error_signatures
 // the bible already holds for it: a re-promotion on a clone with an older row
 // must not overwrite a rewritten entry. A field the bible lacks is filled from
-// the row. The one way to CHANGE them is `enrich`: the maintainer sets them on a
+// the row. A re-promoted id (tombstoned, so no longer in the bible) takes them
+// from the newest committed bible version in git history that carried them, so a
+// demote then re-promote on a clone with a poorer row keeps them too. The one
+// way to CHANGE them is `enrich`: the maintainer sets them on a
 // CONFIRMED entry that is in the bible, in the row too, without touching
 // anything else in the entry (no re-admission, the text of the claim and its
 // basis do not move). A FULL or kb_maintainer session only.
@@ -225,6 +230,67 @@ function keepBibleRichFields(fresh: CanonicalEntry, prior: CanonicalEntry | unde
     recall_cues: keptList(prior.recall_cues, fresh.recall_cues),
     error_signatures: keptList(prior.error_signatures, fresh.error_signatures),
   });
+}
+
+/** How many past commits of the bible file a re-promotion looks back through. */
+const BIBLE_HISTORY_MAX_COMMITS = 100;
+
+/** True when the entry carries any of content, recall_cues or error_signatures. */
+function hasRichFields(e: CanonicalEntry): boolean {
+  return (typeof e.content === 'string' && e.content.length > 0)
+    || (Array.isArray(e.recall_cues) && e.recall_cues.length > 0)
+    || (Array.isArray(e.error_signatures) && e.error_signatures.length > 0);
+}
+
+/**
+ * For each id, the most recent COMMITTED bible entry that carried rich fields,
+ * read from the git history of the bible file (newest first, at most
+ * BIBLE_HISTORY_MAX_COMMITS commits). This is the prior a demoted-then-
+ * re-promoted id is merged against: the demotion removed its entry from the
+ * bible, so the current file no longer holds the content and cues it had, and
+ * the re-promoting clone's row may be poorer. Git history is the source because
+ * it is exactly what other clones already share; no bible format change is
+ * needed. Best effort: a folder with no git, a shallow history that lacks the
+ * entry, or an unreadable past version yields no prior (the fresh row wins).
+ */
+function richFieldsFromBibleHistory(repoPath: string, outPath: string, ids: string[]): Map<string, CanonicalEntry> {
+  const found = new Map<string, CanonicalEntry>();
+  if (ids.length === 0 || !isGitRepo(repoPath)) return found;
+  const wanted = new Set(ids);
+  // './' makes the path relative to cwd for both log and show (cwd = repoPath).
+  const rel = './' + path.relative(repoPath, outPath).split(path.sep).join('/');
+  let shas: string[];
+  try {
+    shas = execFileSync(gitExecutable(), ['log', '--format=%H', '-n', String(BIBLE_HISTORY_MAX_COMMITS), '--', rel], {
+      cwd: repoPath, encoding: 'utf-8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
+    }).split('\n').map(s => s.trim()).filter(s => s.length > 0);
+  } catch {
+    return found;
+  }
+  for (const sha of shas) {
+    if (wanted.size === 0) break;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(execFileSync(gitExecutable(), ['show', sha + ':' + rel], {
+        cwd: repoPath, encoding: 'utf-8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true, maxBuffer: 256 * 1024 * 1024,
+      }));
+    } catch {
+      continue;
+    }
+    const entries = Array.isArray(parsed)
+      ? parsed
+      : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { entries?: unknown }).entries)
+        ? (parsed as { entries: unknown[] }).entries : []);
+    for (const candidate of entries) {
+      if (!candidate || typeof candidate !== 'object') continue;
+      const entry = candidate as CanonicalEntry;
+      if (typeof entry.id !== 'string' || !wanted.has(entry.id) || !hasRichFields(entry)) continue;
+      found.set(entry.id, entry);
+      wanted.delete(entry.id);
+    }
+  }
+  return found;
 }
 
 export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor): Promise<string> {
@@ -393,7 +459,13 @@ async function commitToBible(
     byId.set(e.id, basis ? withSourceFileHashes(e, basis) : e);
   }
   for (const r of removed) byId.delete(r.id);
-  for (const id of merged) byId.set(id, keepBibleRichFields(confirmed.get(id)!, byId.get(id)));
+  // A merged id the bible no longer holds but carries a tombstone for was
+  // demoted and is now re-promoted: its prior rich fields come from the bible's
+  // git history (see richFieldsFromBibleHistory).
+  const priorTombstoned = new Set((existingDoc?.demotions ?? []).map(d => d.id));
+  const fromHistory = richFieldsFromBibleHistory(repoPath, outPath,
+    merged.filter(id => !byId.has(id) && priorTombstoned.has(id)));
+  for (const id of merged) byId.set(id, keepBibleRichFields(confirmed.get(id)!, byId.get(id) ?? fromHistory.get(id)));
   // An admitted demotion REMOVES the entry.
   for (const id of demoted) byId.delete(id);
 

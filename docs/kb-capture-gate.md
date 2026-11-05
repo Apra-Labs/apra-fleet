@@ -75,7 +75,8 @@ before.
 - `merge-kb-canonical` treats all three as content fields.
 - Re-promotion: `kb_bible_commit` keeps the fields the bible already holds for a
   merged id and fills only what is missing from the row, so a clone with an older
-  row cannot overwrite a rewritten entry.
+  row cannot overwrite a rewritten entry. After a demotion removed the entry, a
+  re-promotion takes those fields from the bible's git history instead.
 - Backfill: `kb_bible_commit {enrich: [{id, content?, recall_cues?,
   error_signatures?}]}` is the one way to change these fields on an existing
   CONFIRMED entry. It sets them in the bible and in this KB's row and commits;

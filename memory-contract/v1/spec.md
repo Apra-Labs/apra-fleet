@@ -384,7 +384,10 @@ value.
 - A merged id keeps the `content`, `recall_cues` and `error_signatures` the
   bible already holds for it, field by field; a field the bible lacks is filled
   from the KB row. A clone holding an older row therefore cannot overwrite a
-  rewritten entry by re-promoting it.
+  rewritten entry by re-promoting it. For a merged id the bible no longer holds
+  but carries a demotion tombstone for (demoted, now re-promoted), the prior
+  values come from the newest committed version of the bible file in git history
+  (at most 100 commits back) that carried them.
 - `kb_bible_commit` takes an optional `enrich`: `[{id, content?, recall_cues?,
   error_signatures?}]`, the one way to change those fields on an existing entry.
   A named field replaces the old value in the bible entry and, when this KB holds
