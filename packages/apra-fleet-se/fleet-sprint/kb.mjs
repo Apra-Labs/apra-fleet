@@ -448,6 +448,27 @@ export function extractKbUse(result) {
 }
 
 /**
+ * The JSON report object inside a role's final response text: the whole text,
+ * else a fenced json block, else the span from the first '{' to the last '}'.
+ * Null when none of those parses to a plain object. Never throws.
+ */
+function reportObjectFromText(text) {
+    const candidates = [text.trim()];
+    const fenced = /```(?:json)?\s*\n([\s\S]*?)\n\s*```/.exec(text);
+    if (fenced) candidates.push(fenced[1].trim());
+    const first = text.indexOf('{');
+    const last = text.lastIndexOf('}');
+    if (first >= 0 && last > first) candidates.push(text.slice(first, last + 1));
+    for (const c of candidates) {
+        try {
+            const parsed = JSON.parse(c);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+        } catch { /* try the next shape */ }
+    }
+    return null;
+}
+
+/**
  * kb_feedback validates its role hint against the KB author enum; the one
  * role persona whose name differs from its author value is the harvester.
  */
@@ -473,9 +494,13 @@ function feedbackRoleHint(role) {
  * @returns {Promise<{used: string[], wrong: string[], malformed: number, noKbQuery: boolean}>}
  *   the ids the role reported, kept per dispatch on the engine's stepResults
  */
-export async function reportKbUse({ role, member, value, kbWork, log = () => {} }) {
+export async function reportKbUse({ role, member, value: raw, kbWork, log = () => {} }) {
     const who = `${role || 'role'} on ${memberNameOf(member) || 'unknown member'}`;
     const empty = { used: [], wrong: [], malformed: 0, noKbQuery: false };
+    // A row with no schema (the planner) hands back its report as the final
+    // response TEXT, not a parsed object; its kb_used/kb_wrong live in that
+    // JSON. Text that holds no JSON object is a report with no KB fields.
+    const value = typeof raw === 'string' ? (reportObjectFromText(raw) || {}) : raw;
     if (!value || typeof value !== 'object' || value.dispatchFailed === true) return empty;
     let use;
     try {

@@ -192,6 +192,20 @@ describe('a dispatch with no KB query is logged once and never gated', () => {
         assert.equal(logs.filter((l) => l.includes('no KB query reported')).length, 1);
     });
 
+    test('a schema-less role report delivered as text (the planner) is parsed for kb_wrong', async () => {
+        const calls = [];
+        const logs = [];
+        const report = { status: 'OK', notes: 'planned', kb_wrong: [{ id: 'w-p', reason: 'module was renamed' }] };
+        const kbWork = client({ calls, logs });
+        const plain = await reportKbUse({ role: 'planner', member: 'worker', value: JSON.stringify(report), kbWork, log: (m) => logs.push(m) });
+        const fenced = await reportKbUse({ role: 'planner', member: 'worker', value: `Plan done.\n\`\`\`json\n${JSON.stringify(report)}\n\`\`\`\n`, kbWork, log: (m) => logs.push(m) });
+        assert.deepEqual(plain.wrong, ['w-p']);
+        assert.deepEqual(fenced.wrong, ['w-p']);
+        assert.equal(calls.filter((c) => c.tool === 'kb_feedback').length, 2);
+        const prose = await reportKbUse({ role: 'planner', member: 'worker', value: 'Planned three tasks.', kbWork, log: (m) => logs.push(m) });
+        assert.equal(prose.noKbQuery, true, 'text with no JSON report is a report with no KB fields');
+    });
+
     test('a null or engine-fabricated result is skipped silently', async () => {
         const logs = [];
         await reportKbUse({ role: 'reviewer', member: 'worker', value: null, log: (m) => logs.push(m) });
