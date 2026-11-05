@@ -21,7 +21,7 @@ import {
 import { mintLiveSecret } from '../src/services/live-secret-cache.js';
 import { findExecutableOnPath } from '../src/utils/find-on-path.js';
 
-const DOC = fs.readFileSync(path.resolve(__dirname, '..', 'docs', 'knowledge-layer.md'), 'utf-8');
+const DOC = fs.readFileSync(path.resolve(__dirname, '..', 'docs', 'knowledge-layer.md'), 'utf-8').replace(/\r\n/g, '\n');
 const WIN = process.platform === 'win32';
 const hasJq = !WIN && findExecutableOnPath('jq') !== null;
 if (!WIN && !hasJq) console.warn('[live-secret-samples] jq not found: the bash samples are SKIPPED');
