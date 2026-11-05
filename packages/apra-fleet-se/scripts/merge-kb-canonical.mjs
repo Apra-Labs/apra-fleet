@@ -59,6 +59,22 @@
  * The merged envelope keeps the highest input `version` (a v3 input yields
  * a v3 output).
  *
+ * TOMBSTONES (the v3 top-level `demotions` array of {id, at, reason})
+ * ---------------------------------------------------------------
+ * Merged by id across base/ours/theirs too (mergeDemotions):
+ *   added by one or both sides                  -> kept (both added: the
+ *       later `at` wins, ours on a tie)
+ *   in base, unchanged on one side, gone from
+ *       the other                               -> cleared (a re-promotion
+ *       cleared it; that wins over an unchanged tombstone)
+ *   in base, changed on one side                -> the changed one (a newer
+ *       removal), also when the other side cleared it
+ *   changed on both sides                       -> the later `at`
+ * Then every merged entry whose id holds a merged tombstone is DROPPED: a
+ * tombstone on one side and an unchanged entry on the other resolves to the
+ * tombstone. A re-promotion clears its tombstone, so it keeps its entry.
+ * The merged document carries `demotions` only when there are any.
+ *
  * USAGE
  * -----
  *   node merge-kb-canonical.mjs <base> <ours> <theirs> [options]
@@ -168,6 +184,60 @@ function indexById(doc, sideName) {
     return { map, duplicates };
 }
 
+/** A document's well-formed tombstones by id (last wins); malformed ones are dropped, as readers do. */
+function tombstonesById(doc) {
+    const map = new Map();
+    if (!Array.isArray(doc?.demotions)) return map;
+    for (const t of doc.demotions) {
+        if (!t || typeof t !== 'object') continue;
+        if (typeof t.id !== 'string' || t.id === '' || typeof t.at !== 'string' || t.at === '' || typeof t.reason !== 'string' || t.reason === '') continue;
+        map.set(t.id, { id: t.id, at: t.at, reason: t.reason });
+    }
+    return map;
+}
+
+function sameTombstone(a, b) {
+    return a.at === b.at && a.reason === b.reason;
+}
+
+/** The tombstone with the later `at` (parsed; unparseable sorts first), `a` on a tie. */
+function laterTombstone(a, b) {
+    const ta = Date.parse(a.at);
+    const tb = Date.parse(b.at);
+    const na = Number.isNaN(ta) ? -Infinity : ta;
+    const nb = Number.isNaN(tb) ? -Infinity : tb;
+    return nb > na ? b : a;
+}
+
+/**
+ * Id-keyed three-way merge of the `demotions` tombstone arrays (see
+ * TOMBSTONES in the header). Returns the merged tombstones sorted by id.
+ */
+export function mergeDemotions(base, ours, theirs) {
+    const b = tombstonesById(base);
+    const o = tombstonesById(ours);
+    const t = tombstonesById(theirs);
+    const out = new Map();
+    for (const id of new Set([...b.keys(), ...o.keys(), ...t.keys()])) {
+        const bt = b.get(id);
+        const ot = o.get(id);
+        const tt = t.get(id);
+        if (!bt) {
+            if (ot && tt) out.set(id, laterTombstone(ot, tt));
+            else out.set(id, ot ?? tt);
+            continue;
+        }
+        const oChanged = ot !== undefined && !sameTombstone(ot, bt);
+        const tChanged = tt !== undefined && !sameTombstone(tt, bt);
+        if (oChanged && tChanged) { out.set(id, laterTombstone(ot, tt)); continue; }
+        if (oChanged) { out.set(id, ot); continue; }
+        if (tChanged) { out.set(id, tt); continue; }
+        // Unchanged where present: a side that cleared it (re-promotion) wins.
+        if (ot && tt) out.set(id, bt);
+    }
+    return [...out.values()].sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+}
+
 /** Highest numeric `version` among the inputs (a v3 input yields a v3 output). */
 function highestVersion(docs) {
     const versions = docs.map((d) => d.version).filter((v) => typeof v === 'number' && Number.isFinite(v));
@@ -217,6 +287,8 @@ export function mergeKbCanonical(base, ours, theirs) {
         duplicateIds: duplicates.length,
         genuineConflicts: 0,
         mergedEntries: 0,
+        mergedTombstones: 0,
+        droppedByTombstone: 0,
     };
     const conflicts = [...duplicates];
     const merged = new Map();
@@ -276,6 +348,15 @@ export function mergeKbCanonical(base, ours, theirs) {
         merged.set(key, entry);
     }
 
+    // Tombstones: merged by id, then every entry a merged tombstone names is
+    // dropped (see TOMBSTONES in the header).
+    const demotions = mergeDemotions(base, ours, theirs);
+    const tombstoned = new Set(demotions.map((d) => d.id));
+    for (const key of [...merged.keys()]) {
+        if (tombstoned.has(key)) { merged.delete(key); summary.droppedByTombstone += 1; }
+    }
+    summary.mergedTombstones = demotions.length;
+
     const entries = [...merged.values()];
     // Duplicate-id guard on the output itself: never hand back a document in
     // which two entries share an id, whatever produced it.
@@ -289,11 +370,13 @@ export function mergeKbCanonical(base, ours, theirs) {
         return { merged: null, summary, conflicts, duplicates };
     }
 
+    const { demotions: _oursDemotions, ...oursRest } = ours;
     const mergedDoc = {
-        ...ours,
+        ...oursRest,
         version: highestVersion([ours, theirs, base]),
         provenance: { ...(ours.provenance ?? {}), entry_count: entries.length },
         entries,
+        ...(demotions.length > 0 ? { demotions } : {}),
     };
     return { merged: mergedDoc, summary, conflicts, duplicates };
 }
@@ -317,6 +400,8 @@ export function formatSummary(summary) {
         ['duplicate ids', summary.duplicateIds],
         ['genuine conflicts', summary.genuineConflicts],
         ['merged entries', summary.mergedEntries],
+        ['merged tombstones', summary.mergedTombstones],
+        ['entries dropped by a tombstone', summary.droppedByTombstone],
     ];
     const width = Math.max(...rows.map(([label]) => label.length));
     const lines = ['Three-way merge summary (identity key: entry id):'];

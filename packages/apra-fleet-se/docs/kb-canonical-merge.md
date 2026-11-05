@@ -74,3 +74,20 @@ theirs-only additions, rewrites `provenance.entry_count`, and keeps the highest
 input `version` (a v3 input yields a v3 output).
 
 Tests: `test/merge-kb-canonical.test.mjs`.
+
+## Tombstones (`demotions`)
+
+A v3 bible may carry a top-level `demotions` array of `{id, at, reason}`
+tombstones (reason `demoted`, `superseded` or `invalidated`, written by
+`kb_bible_commit`). The merge handles it by id as well (`mergeDemotions`):
+
+- added on one or both sides: kept (both added: the later `at` wins);
+- in base, unchanged on one side and gone from the other: cleared -- a
+  re-promotion cleared it, and that wins over an unchanged tombstone;
+- in base and changed on one side: the changed one, even if the other side
+  cleared it; changed on both sides: the later `at`.
+
+Every merged entry whose id holds a merged tombstone is then dropped, so a
+tombstone on one side and an unchanged entry on the other resolves to the
+tombstone. The merged document carries `demotions` only when there are any; the
+summary counts `merged tombstones` and `entries dropped by a tombstone`.

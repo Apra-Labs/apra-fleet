@@ -1654,6 +1654,25 @@ export class SqliteProvider implements MemoryProvider {
     return out;
   }
 
+  /**
+   * For each id this KB holds as RETIRED (getRetirementReasons), when: its
+   * superseded_at, or null for a row retired by kb_invalidate {files}, which
+   * records no time. kb_bible_commit stamps a removal tombstone with it.
+   * Ids that are unknown, or known and not retired, are absent from the map.
+   */
+  getRetirementTimes(ids: string[]): Map<string, string | null> {
+    const db = this.getDb();
+    const out = new Map<string, string | null>();
+    const stmt = db.prepare('SELECT superseded_at, content_hash FROM entries WHERE id = ?');
+    for (const id of new Set(ids)) {
+      const row = stmt.get(id) as { superseded_at: string | null; content_hash: string | null } | undefined;
+      if (!row) continue;
+      if (row.superseded_at) out.set(id, row.superseded_at);
+      else if (row.content_hash === 'invalidated') out.set(id, null);
+    }
+    return out;
+  }
+
   async invalidate(files: string[], opts?: RetireOptions): Promise<{ invalidated: number; refused?: string[] }> {
     const db = this.getDb();
     let invalidated = 0;
@@ -2256,6 +2275,40 @@ export class SqliteProvider implements MemoryProvider {
       newContent,
       id,
     );
+    return true;
+  }
+
+  /**
+   * Apply ONE explicit superseded or invalidated tombstone from a committed
+   * project bible to the local row with the same id: the retirement the
+   * writing clone applied (kb_bible_commit removed the entry because its KB
+   * holds it as superseded or invalidated). The row gets superseded_at = the
+   * tombstone's at (clamped to now), stale = 1 and retired_reason = reason,
+   * exactly as a local supersede or kb_invalidate {ids} would leave it, so it
+   * stops serving every read path (FULL-session reads included).
+   *
+   * Same rules as applyBibleDemotion, for the same reasons: never create;
+   * only a CONFIRMED row that is not already retired and is not a
+   * user-directive; and only when standingAgainstTombstone says 'withdrawn'
+   * for the row's bible trust time (a row promoted on this clone after the
+   * tombstone is newer evidence and is kept). A row below CONFIRMED is left
+   * alone: it was never trusted on the bible's word. False when nothing was
+   * written.
+   */
+  applyBibleRetirement(id: string, tombstoneAt: string, reason: 'superseded' | 'invalidated'): boolean {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) return false;
+    const entry = this.rowToEntry(row);
+    if (entry.confidence !== 'CONFIRMED') return false;
+    if (entry.superseded_at) return false;
+    if (entry.type === 'user-directive') return false;
+
+    const retiredAt = clampBibleTimeToNow(tombstoneAt);
+    if (standingAgainstTombstone(this.bibleTrustTimeOf(row), retiredAt) !== 'withdrawn') return false;
+
+    db.prepare('UPDATE entries SET superseded_at = ?, stale = 1, retired_reason = ? WHERE id = ?')
+      .run(retiredAt, reason, id);
     return true;
   }
 

@@ -1362,7 +1362,9 @@ export class ApraFleet {
      * {id, reason} with reason not_confirmed_or_unknown, no_source_files (a
      * CONFIRMED id citing no source file), basis_mismatch or
      * not_demoted_or_unknown (a demoted_ids id). Each removed item is {id, reason}
-     * with reason superseded or invalidated. A member session without the
+     * with reason superseded or invalidated, and is also tombstoned in the bible's
+     * demotions array as {id, at, reason} with that reason, so kb_import on another
+     * clone retires its own CONFIRMED copy (counted in that import's retired). A member session without the
      * kb_maintainer grant cannot retire a CONFIRMED entry through the kb_* tools:
      * kb_invalidate leaves CONFIRMED entries untouched, and kb_capture with
      * supersedes links to a CONFIRMED target (refines, both live) instead of

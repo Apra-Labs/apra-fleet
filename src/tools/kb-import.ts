@@ -145,6 +145,14 @@ export interface KbImportReport {
    * nothing. An entry merely ABSENT from the bible is never demoted.
    */
   demoted: number;
+  /**
+   * Local CONFIRMED rows RETIRED by an explicit superseded or invalidated
+   * tombstone in the imported bible -- the cross-clone half of a bible
+   * removal: the writing clone's KB holds the entry as superseded or
+   * invalidated, so this clone stops serving it too. Rows changed, not
+   * tombstones read; the same re-promotion rule as demoted applies.
+   */
+  retired: number;
   sweep: { checked: number; staled: number; unstaled: number };
   /**
    * Present exactly when the bible was read from git rather than the file
@@ -259,7 +267,7 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
   // isolation of capture basis rejections.
   // Tombstones ride along in the same call so entries and demotions can never
   // be applied from two different reads of the file.
-  const { imported, skipped, linked, flagged, rejected, demoted } = await importBibleEntries(
+  const { imported, skipped, linked, flagged, rejected, demoted, retired } = await importBibleEntries(
     provider,
     bibleDoc.entries,
     { demotions: bibleDoc.demotions },
@@ -303,7 +311,7 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
     : await provider.freshnessSweep(repoAnchor);
 
   const report: KbImportReport = committedSource
-    ? { imported, skipped, linked, flagged, rejected, demoted, sweep, bible_source: committedSource.ref, worktree_ignored: committedSource.worktree_ignored }
-    : { imported, skipped, linked, flagged, rejected, demoted, sweep };
+    ? { imported, skipped, linked, flagged, rejected, demoted, retired, sweep, bible_source: committedSource.ref, worktree_ignored: committedSource.worktree_ignored }
+    : { imported, skipped, linked, flagged, rejected, demoted, retired, sweep };
   return JSON.stringify(report);
 }

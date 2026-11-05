@@ -696,6 +696,13 @@ Tombstones already in the file survive a later commit carrying unrelated ids, an
 re-committing a tombstoned id through `ids` (a re-promotion) restores its entry
 and clears its tombstone. `provenance.entry_count` counts entries only.
 
+Every entry removed because this KB holds it as superseded or invalidated (each
+listed in `removed`) is tombstoned the same way, as `{id, at, reason}` with
+reason `superseded` or `invalidated` and the row's retirement time as `at`.
+`kb_import` on another clone retires its own CONFIRMED row for such an id (unless
+that row was promoted there after `at`), so the entry stops serving reads there
+too; the import response counts those rows in `retired`.
+
 Result JSON: `{path, merged, demoted, skipped, removed, entry_count, committed}`.
 
 #### `kbDemote(options: KbDemoteOptions)`

@@ -32,9 +32,9 @@ export class KbBibleError extends Error {
 
 /**
  * An EXPLICIT tombstone in the committed bible: this id was removed from the
- * bible at `at`, for `reason`. Only `reason: 'demoted'` (TOMBSTONE_DEMOTED)
- * lowers a local row on import; every reason keeps the entry out of a bible view
- * and stops kb_export re-adding it. Readers tolerate reason strings they do not
+ * bible at `at`, for `reason`. On import `reason: 'demoted'` (TOMBSTONE_DEMOTED)
+ * lowers a local row and `'superseded'` / `'invalidated'` retire it; every
+ * reason keeps the entry out of a bible view and stops kb_export re-adding it. Readers tolerate reason strings they do not
  * know, so new removal reasons can be added without breaking older readers.
  *
  * A removal is NEVER inferred from an entry merely being absent from the bible
@@ -50,6 +50,15 @@ export interface BibleTombstone {
 
 /** The tombstone reason a kb_demote produces; the only one that demotes on import. */
 export const TOMBSTONE_DEMOTED = 'demoted';
+
+/**
+ * The tombstone reasons kb_bible_commit writes when it removes an entry the
+ * writing KB holds as superseded or invalidated. On import each RETIRES the
+ * local row (SqliteProvider.applyBibleRetirement), the same retirement the
+ * writing clone applied.
+ */
+export const TOMBSTONE_SUPERSEDED = 'superseded';
+export const TOMBSTONE_INVALIDATED = 'invalidated';
 
 /**
  * A parsed bible: its entries AND its tombstones. The two readers that return
@@ -318,6 +327,12 @@ export interface BibleImportCounts {
    * rows changed, not how many tombstones were read.
    */
   demoted: number;
+  /**
+   * Local CONFIRMED rows RETIRED by an explicit superseded or invalidated
+   * tombstone in this bible (SqliteProvider.applyBibleRetirement). Like
+   * demoted, rows changed, not tombstones read.
+   */
+  retired: number;
 }
 
 /**
@@ -358,6 +373,7 @@ export async function importBibleEntries(
   let flagged = 0;
   let rejected = 0;
   let demoted = 0;
+  let retired = 0;
 
   // A bible that carries BOTH an entry and a tombstone for the same id is
   // self-contradictory, and "the file says both" must resolve to the DEMOTION
@@ -458,15 +474,20 @@ export async function importBibleEntries(
   // which is the only population a tombstone is allowed to act on. The provider
   // holds every rule -- never create, standingAgainstTombstone, no ownerTag
   // check -- in applyBibleDemotion; this loop only counts what it changed.
-  // Only a 'demoted' tombstone lowers a row: another removal reason keeps the
-  // entry out of the bible without saying anything about this clone's trust.
+  // A 'demoted' tombstone lowers a row; a 'superseded' or 'invalidated' one
+  // retires it (the writing clone's KB retired it, and its row would otherwise
+  // keep serving FULL-session reads here). Any other reason keeps the entry out
+  // of the bible without saying anything about this clone's trust.
   //
   // Note what is NOT here: nothing walks the local rows looking for ids missing
   // from the bible. Only an id with an EXPLICIT tombstone is ever touched.
   for (const tombstone of options.demotions ?? []) {
-    if (tombstone.reason !== TOMBSTONE_DEMOTED) continue;
-    if (provider.applyBibleDemotion(tombstone.id, tombstone.at)) demoted++;
+    if (tombstone.reason === TOMBSTONE_DEMOTED) {
+      if (provider.applyBibleDemotion(tombstone.id, tombstone.at)) demoted++;
+    } else if (tombstone.reason === TOMBSTONE_SUPERSEDED || tombstone.reason === TOMBSTONE_INVALIDATED) {
+      if (provider.applyBibleRetirement(tombstone.id, tombstone.at, tombstone.reason)) retired++;
+    }
   }
 
-  return { imported, skipped, linked, flagged, rejected, demoted };
+  return { imported, skipped, linked, flagged, rejected, demoted, retired };
 }

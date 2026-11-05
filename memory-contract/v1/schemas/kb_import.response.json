@@ -75,6 +75,9 @@
             "demoted": {
               "type": "number"
             },
+            "retired": {
+              "type": "number"
+            },
             "sweep": {
               "type": "object",
               "properties": {

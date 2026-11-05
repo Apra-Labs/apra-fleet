@@ -367,8 +367,10 @@ The v3 envelope also carries an OPTIONAL top-level `demotions` array of
 `reason`. Only a v3 envelope may carry it; a reader ignores `demotions` on a v2
 envelope or a legacy bare array. It is absent when the bible holds none, so a
 reader that does not know the field -- and every bible written before it
-existed -- keeps working. Readers keep tombstones whose `reason` they do not
-know. `provenance.entry_count` counts ENTRIES only: a tombstone is not an
+existed -- keeps working. `kb_bible_commit` writes three reasons: `demoted`
+(a `kb_demote`), and `superseded` / `invalidated` (an entry it removed because
+the writing KB holds it as superseded or invalidated). Readers keep tombstones
+whose `reason` they do not know, and ignore them on import. `provenance.entry_count` counts ENTRIES only: a tombstone is not an
 entry. Tombstones are never compacted: one stays until a re-promotion clears it.
 
 A demotion is NEVER inferred from an entry being absent from the bible. A clone
@@ -443,12 +445,27 @@ value.
   `{id, at: <local demoted_at>, reason: "demoted"}`. Tombstones already in the
   file are preserved when a later commit carries unrelated ids, and an id
   re-admitted through `ids` (a re-promotion) has its tombstone CLEARED.
+- Every entry `kb_bible_commit` removes because the writing KB holds it as
+  superseded or invalidated (reported in `removed`) is also upserted as
+  `{id, at, reason: "superseded" | "invalidated"}`, in the same array with the
+  same sort, dedupe, preserve and clear rules as a demotion tombstone. `at` is
+  the row's retirement time (`superseded_at`), or the commit time for a row
+  retired by `kb_invalidate {files}`, which records none. No other top-level
+  field is added and `entry_count` still counts entries only.
 - `kb_export` (scope=project) honours tombstones: it does not re-add a tombstoned
   id unless the local row is RE-PROMOTED under the rule above, in which case it
   re-adds the entry and clears the tombstone in the same write.
 - `kb_import` applies `reason: "demoted"` tombstones on the READ side, to a local
   row -- the counterpart of the write-side rules above, and the only place a
-  bible import can lower an already-CONFIRMED row's own confidence. The local
+  bible import can lower an already-CONFIRMED row's own confidence. It applies
+  `reason: "superseded"` and `"invalidated"` tombstones by RETIRING the local
+  row (the retirement the writing clone applied: `superseded_at` = the clamped
+  `at`, stale, retired with that reason), so it stops serving every read,
+  FULL-session reads included, under exactly the conditions below for a
+  demotion (exists, CONFIRMED, not superseded, not a `user-directive`,
+  WITHDRAWN under the rule above); the response counts these rows in
+  `retired`, as it counts demotions in `demoted`. Any other reason is ignored
+  on import. The local
   row is lowered from CONFIRMED to INFERRED ONLY when it still exists, is
   CONFIRMED, is not superseded, is not a `user-directive`, and is WITHDRAWN under
   the rule above; a RE-PROMOTED row is left untouched (it is newer evidence than
@@ -456,7 +473,7 @@ value.
   row gets the same single-line content note as a local `kb_demote`
   (`BIBLE_DEMOTION_REASON`, "demoted in the project bible", standing in for the
   caller-supplied reason), and `promoted_at`/`source` stay untouched, exactly as
-  a local demotion. A tombstone with any other reason only keeps its entry out
+  a local demotion. Every tombstone, whatever its reason, keeps its entry out
   of the member bible view and the cold seed. A bible-carried `updated_at` is
   clamped to the import time when stored, so a future-dated entry cannot
   outrank every later tombstone. Likewise a tombstone's `at` is clamped to now

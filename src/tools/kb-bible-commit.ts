@@ -39,8 +39,10 @@ import {
 // to the bible, merging at ENTRY level: the given ids are added or replaced,
 // and every entry already in <self>/.fleet/kb-canonical.json is kept UNLESS
 // this (the maintainer's) KB holds it as superseded or invalidated -- those
-// are removed, and each removal (id + reason) is listed in the response and in
-// the commit message. Removal runs at every call, also with no ids. An entry
+// are removed, each removal (id + reason) is listed in the response and in
+// the commit message, and each is recorded as a tombstone {id, at, reason:
+// superseded | invalidated} in the bible's demotions array so other clones
+// retire their own copy of the row on kb_import. Removal runs at every call, also with no ids. An entry
 // in the file but absent from the DB is never dropped, nor is one the DB holds
 // as CONFIRMED and current. That keeps a retry after a rejected push safe: the
 // engine resets to the new remote HEAD (which may carry another clone's
@@ -475,6 +477,14 @@ async function commitToBible(
     .filter(e => retired.has(e.id))
     .map(e => ({ id: e.id, reason: retired.get(e.id)! }))
     .sort(compareById);
+  // Each removal is also a tombstone {id, at, reason: superseded | invalidated}
+  // in the existing demotions array, so a clone that already holds the entry
+  // as CONFIRMED retires it on kb_import instead of serving it forever. at is
+  // the row's superseded_at; a row retired by kb_invalidate {files} records no
+  // time, so it is stamped now.
+  const retiredAt = project.getRetirementTimes(removed.map(r => r.id));
+  const nowIso = new Date().toISOString();
+  const removalTombstones: BibleTombstone[] = removed.map(r => ({ id: r.id, at: retiredAt.get(r.id) ?? nowIso, reason: r.reason }));
 
   // Legacy backfill: existing entries with no carried basis, not merged (a
   // merged id gets its fresh entry and basis anyway) and not removed. The
@@ -554,6 +564,7 @@ async function commitToBible(
   const tombstones = new Map<string, BibleTombstone>();
   for (const d of existingDoc?.demotions ?? []) tombstones.set(d.id, d);
   for (const d of admittedDemotions) tombstones.set(d.id, d);
+  for (const d of removalTombstones) tombstones.set(d.id, d);
   for (const id of merged) tombstones.delete(id);
   const demotions = Array.from(tombstones.values()).sort(compareById);
 

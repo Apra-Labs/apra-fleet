@@ -197,6 +197,11 @@ const KB_RESPONSE_BODIES = {
     // bible is never demoted. OPTIONAL so fixtures recorded before tombstones
     // existed still validate; the handler always emits it.
     demoted: z.number().optional(),
+    // Local CONFIRMED rows RETIRED by an explicit superseded or invalidated
+    // tombstone (a bible removal on the writing clone). Rows changed, not
+    // tombstones read. OPTIONAL so older fixtures still validate; the handler
+    // always emits it.
+    retired: z.number().optional(),
     sweep: z.object({
       checked: z.number(),
       staled: z.number(),
