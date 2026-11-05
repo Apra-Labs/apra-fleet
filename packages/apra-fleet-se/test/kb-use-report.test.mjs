@@ -35,7 +35,7 @@ function client({ calls, logs, memberCall } = {}) {
 describe('kb-report is a postResult step of every role row with a persona', () => {
     test('the step is in the vocabulary and the runner implements it with reportKbUse', () => {
         assert.ok(POST_RESULT_STEPS.includes('kb-report'));
-        assert.match(RUNNER, /'kb-report': async \(\{ policy, value, member \}\) => reportKbUse\(\{/);
+        assert.match(RUNNER, /'kb-report': async \(\{ policy, value, member \}\) => \{\s*const use = await reportKbUse\(\{/);
     });
 
     test('at least the planner, plan-reviewer, doer, reviewer, harvester, deployer and both test runners are covered', () => {

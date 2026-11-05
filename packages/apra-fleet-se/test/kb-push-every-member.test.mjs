@@ -108,7 +108,7 @@ describe('KB block reaches verified and unverified members exactly once per role
 
     test('runner.js agent() runs withWrapperKbBlock on every dispatch prompt', () => {
         const src = fs.readFileSync(new URL('../fleet-sprint/runner.js', import.meta.url), 'utf8');
-        assert.match(src, /const agent = async \(prompt, opts = \{\}\) => \{\s*(?:\/\/[^\n]*\n\s*)*const captureChannel = agentTypeAppliesKbCaptures\(opts\.agentType\);\s*const finalPrompt = await withWrapperKbBlock\(prompt, \{/);
+        assert.match(src, /const agent = async \(prompt, opts = \{\}\) => \{\s*(?:\/\/[^\n]*\n\s*)*const captureChannel = agentTypeAppliesKbCaptures\(opts\.agentType\);\s*(?:\/\/[^\n]*\n\s*)*let pushed = null;\s*const finalPrompt = await withWrapperKbBlock\(prompt, \{/);
         assert.match(src, /agentRaw\(finalPrompt,/);
     });
 });

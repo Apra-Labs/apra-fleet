@@ -17,8 +17,26 @@
 // the sprint context (context.isMemberVerified); this module never re-probes.
 // =============================================================================
 
-import { kbKnowledgeBlock, KB_SELF_INJECTING_ROLES } from './kb.mjs';
+import { kbKnowledgeBlock, kbKnowledgeBlockIds, KB_SELF_INJECTING_ROLES } from './kb.mjs';
 import { roleHints } from './kb-hints.mjs';
+
+/** The pushed info of a dispatch that carried no KNOWLEDGE BANK block. */
+export function emptyPushed() {
+    return { ids: [], bytes: 0 };
+}
+
+/**
+ * What one KNOWLEDGE BANK block pushes: the ids of the entries it carries and
+ * its byte length (UTF-8). An absent block is emptyPushed().
+ *
+ * @param {object[]} entries the entries the block was built from
+ * @param {string|undefined} block the block text
+ * @returns {{ids: string[], bytes: number}}
+ */
+export function pushedInfo(entries, block) {
+    if (typeof block !== 'string' || block.length === 0) return emptyPushed();
+    return { ids: kbKnowledgeBlockIds(entries), bytes: Buffer.byteLength(block, 'utf8') };
+}
 
 /**
  * @param {{
@@ -31,11 +49,15 @@ import { roleHints } from './kb-hints.mjs';
  */
 export function createKbInjection(opts = {}) {
     const { kbWork, log = () => {} } = opts;
+    // member name -> { block, pushed } of the latest block built for it. A
+    // prompt-builder role (doer, reviewer) builds its block before the
+    // dispatch wrapper runs; the wrapper reads it back through pushedIn().
+    const lastBlock = new Map();
     const verified = (name) => {
         const fn = typeof opts.isMemberVerified === 'function' ? opts.isMemberVerified : null;
         try { return !!(fn && fn(name)); } catch { return false; }
     };
-    return {
+    const api = {
         /**
          * True when the KNOWLEDGE BANK block must be injected for `memberName`:
          * always -- the block is pushed to every member, verified or not.
@@ -51,8 +73,16 @@ export function createKbInjection(opts = {}) {
          * The KNOWLEDGE BANK block (a 0/1-element array) for one dispatch.
          * @param {{ role: string, member: string, context?: object, captureChannel?: boolean }} d
          */
-        async blockFor({ role, member, context = {}, captureChannel = true }) {
-            if (!member || !kbWork || typeof kbWork.knowledgeFor !== 'function') return [];
+        async blockFor(d) {
+            return (await api.blockWithInfoFor(d)).block;
+        },
+        /**
+         * blockFor plus what the block pushes: { block, pushed: {ids, bytes} }.
+         * The block is exactly what blockFor returns; the pushed info is kept
+         * per member so pushedIn() can attribute it to the dispatch.
+         */
+        async blockWithInfoFor({ role, member, context = {}, captureChannel = true }) {
+            if (!member || !kbWork || typeof kbWork.knowledgeFor !== 'function') return { block: [], pushed: emptyPushed() };
             const ctx = { ...context };
             if (!ctx.diffFiles && typeof opts.diffFiles === 'function' && /^(reviewer|harvester)$/.test(role)) {
                 try { ctx.diffFiles = await opts.diffFiles(member); } catch (err) {
@@ -67,9 +97,23 @@ export function createKbInjection(opts = {}) {
             }
             const hints = roleHints(role, ctx);
             const { entries, source } = await kbWork.knowledgeFor(member, hints);
-            return kbKnowledgeBlock(entries, { captureChannel, source, reportEmpty: true });
+            const block = kbKnowledgeBlock(entries, { captureChannel, source, reportEmpty: true });
+            const pushed = pushedInfo(entries, block[0]);
+            if (block[0]) lastBlock.set(member, { block: block[0], pushed });
+            return { block, pushed };
+        },
+        /**
+         * The pushed info for a dispatch of `prompt` to `memberName`: the
+         * latest block built for that member when the prompt carries it
+         * verbatim, else emptyPushed(). Never throws.
+         */
+        pushedIn(prompt, memberName) {
+            const last = memberName ? lastBlock.get(memberName) : null;
+            if (!last || typeof prompt !== 'string' || !prompt.includes(last.block)) return emptyPushed();
+            return { ids: last.pushed.ids.slice(), bytes: last.pushed.bytes };
         },
     };
+    return api;
 }
 
 /**
@@ -87,13 +131,30 @@ export function createKbInjection(opts = {}) {
  *   context?: object,
  *   captureChannel?: boolean,
  *   fallbackBlock?: () => string[],
+ *   onPushed?: (pushed: {ids: string[], bytes: number}) => void,
  * }} opts  fallbackBlock supplies the block when kbInjection is not bound yet.
+ *   onPushed receives what the block this call appended pushes (ids, bytes);
+ *   it is not called when this call appends nothing (a self-injecting role,
+ *   no member). It never changes the returned prompt.
  * @returns {Promise<string>}
  */
-export async function withWrapperKbBlock(prompt, { kbInjection, agentType, member, context = {}, captureChannel = true, fallbackBlock } = {}) {
+export async function withWrapperKbBlock(prompt, { kbInjection, agentType, member, context = {}, captureChannel = true, fallbackBlock, onPushed } = {}) {
     if (!agentType || KB_SELF_INJECTING_ROLES.has(agentType) || !member) return prompt;
-    const [block] = kbInjection
-        ? await kbInjection.blockFor({ role: agentType, member, context, captureChannel })
-        : (typeof fallbackBlock === 'function' ? fallbackBlock() : []);
+    let block;
+    let pushed = emptyPushed();
+    if (kbInjection && typeof kbInjection.blockWithInfoFor === 'function') {
+        const out = await kbInjection.blockWithInfoFor({ role: agentType, member, context, captureChannel });
+        block = out.block[0];
+        pushed = out.pushed || pushed;
+    } else if (kbInjection) {
+        [block] = await kbInjection.blockFor({ role: agentType, member, context, captureChannel });
+        pushed = pushedInfo([], block);
+    } else {
+        [block] = typeof fallbackBlock === 'function' ? fallbackBlock() : [];
+        pushed = pushedInfo([], block);
+    }
+    if (typeof onPushed === 'function') {
+        try { onPushed(block ? pushed : emptyPushed()); } catch { /* informational only */ }
+    }
     return block ? prompt + '\n\n' + block : prompt;
 }

@@ -1000,6 +1000,8 @@ async function runSprintCycle(context) {
     // Assigned once kbPriming exists (below); until then (no dispatch can run
     // before it) a pass-through.
     let dispatchAccounting = { around: (_info, fn) => fn() };
+    // The member NAME a postResult step's `member` (a name or a record) denotes.
+    const dispatchMemberName = (m) => (typeof m === 'string' ? m : (m && typeof m.name === 'string' ? m.name : null));
     // KNOWLEDGE BANK injection (kb-injection.mjs), bound once kbWork exists
     // below; sprint-level hint sources the dispatch wrapper falls back to.
     let kbInjection = null;
@@ -1019,6 +1021,10 @@ async function runSprintCycle(context) {
         // withWrapperKbBlock because their prompt builders place the block
         // themselves, so every role carries it exactly once.
         const captureChannel = agentTypeAppliesKbCaptures(opts.agentType);
+        // What the pushed block carried (ids, bytes) for this dispatch's KB
+        // record: the block the wrapper appends, or -- for a prompt-builder
+        // role -- the block its builder placed in the prompt.
+        let pushed = null;
         const finalPrompt = await withWrapperKbBlock(prompt, {
             kbInjection,
             agentType: opts.agentType,
@@ -1026,14 +1032,18 @@ async function runSprintCycle(context) {
             context: { ...kbSprintContext, ...(opts.kbContext || {}) },
             captureChannel,
             fallbackBlock: () => kbKnowledgeBlock(kbPriming.knowledgeOf(opts.member_name), { captureChannel }),
+            onPushed: (p) => { pushed = p; },
         });
+        if (!pushed && kbInjection && typeof kbInjection.pushedIn === 'function') {
+            pushed = kbInjection.pushedIn(finalPrompt, opts.member_name);
+        }
         return withKbDispatchLifecycle(opts.member_name, async () => {
             try {
                 // Per-dispatch kb_* and code_* counts: session_stats snapshots of the
                 // dispatched member immediately before and after (best-effort;
                 // an unreadable count is recorded as unknown, never 0).
                 return await dispatchAccounting.around(
-                    { memberName: opts.member_name, role: opts.agentType, label: opts.label },
+                    { memberName: opts.member_name, role: opts.agentType, label: opts.label, pushed },
                     () => agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts }),
                 );
             } finally {
@@ -1517,6 +1527,15 @@ async function runSprintCycle(context) {
         getMemberInit: (name) => sprintState.memberInit.find((r) => r && r.member === name) || null,
         store: sprintState.dispatchToolCalls,
         publishState,
+        // D5: the dispatch's pushed and cited ids to the KB server's usage
+        // report through the kb_maintainer queue. Not awaited: the queue
+        // applies it between the maintainer's dispatches, and a failure is
+        // logged by kbWork, never surfaced to the dispatch.
+        reportUsage: ({ memberName, pushed, cited }) => {
+            if (typeof kbWork.reportUsage !== 'function') return;
+            Promise.resolve().then(() => kbWork.reportUsage(memberName, { pushed, cited }))
+                .catch((err) => log(`[kb-work] usage report failed (non-fatal): ${err && err.message ? err.message : err}`));
+        },
         log,
     });
 
@@ -1917,15 +1936,37 @@ async function runSprintCycle(context) {
                 // repository the writes belong to, and kbWork routes them to
                 // that repository's kb_maintainer.
                 await kbWork.apply(policy.agentType, member, value);
+                // D5: the captures this dispatch's report carried, as the
+                // engine judged them, onto the dispatch's KB record.
+                try {
+                    const vetted = vetKbWork(policy.agentType, value);
+                    dispatchAccounting.noteKbCaptures?.(
+                        { memberName: dispatchMemberName(member), role: policy.agentType },
+                        { captures: vetted.captures, rejects: vetted.refusedCaptures },
+                    );
+                } catch (err) {
+                    log(`[kb-work] could not record the dispatch's captures (non-fatal): ${err && err.message ? err.message : err}`);
+                }
             },
             // D4: every role report's kb_used/kb_wrong. KB use is logged and
             // never gated; each well-formed kb_wrong item is forwarded to
             // kb_feedback through the kb_maintainer queue. The ids the role
             // reported come back on the dispatch's stepResults['kb-report'],
             // so a per-dispatch KB record can store them. Never throws.
-            'kb-report': async ({ policy, value, member }) => reportKbUse({
-                role: policy.agentType, member, value, kbWork, log,
-            }),
+            'kb-report': async ({ policy, value, member }) => {
+                const use = await reportKbUse({ role: policy.agentType, member, value, kbWork, log });
+                // D5: cited/wrong ids onto the dispatch's KB record, and the
+                // cited ids to the KB server's usage report. Never throws.
+                try {
+                    await dispatchAccounting.noteKbReport?.(
+                        { memberName: dispatchMemberName(member), role: policy.agentType },
+                        use,
+                    );
+                } catch (err) {
+                    log(`[kb-use] could not record the dispatch's kb_used/kb_wrong (non-fatal): ${err && err.message ? err.message : err}`);
+                }
+                return use;
+            },
             // deploy.md's active-sprints gate stops for a FOREIGN reservation,
             // so a deployer prompt that does not state this sprint's OWN
             // reservation id makes the deploy treat the sprint as a stranger

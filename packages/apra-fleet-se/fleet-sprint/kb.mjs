@@ -219,40 +219,47 @@ export function vetKbWork(role, result) {
     const captures = [];
     const promotions = [];
     const refused = [];
+    // The same capture refusals as `refused`, structured per capture for the
+    // per-dispatch record: { title, rule, reason }.
+    const refusedCaptures = [];
+    const refuseCapture = (title, rule, text) => {
+        refused.push(text);
+        refusedCaptures.push({ title: typeof title === 'string' ? title : null, rule, reason: text });
+    };
 
     const rawCaptures = (result && Array.isArray(result.kb_captures)) ? result.kb_captures : [];
     for (const c of rawCaptures) {
         if (!c || typeof c.title !== 'string' || typeof c.summary !== 'string') {
-            refused.push(`${role}: capture missing title/summary`);
+            refuseCapture(c && c.title, 'shape', `${role}: capture missing title/summary`);
             continue;
         }
         if (!Array.isArray(c.source_files) || c.source_files.length === 0) {
-            refused.push(`${role}: capture "${c.title}" cites no source files`);
+            refuseCapture(c.title, 'source-files', `${role}: capture "${c.title}" cites no source files`);
             continue;
         }
         if (!KB_CAPTURE_TYPES.includes(c.type)) {
-            refused.push(`${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
+            refuseCapture(c.title, 'type', `${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
             continue;
         }
         if (!KB_CAPTURE_TRIGGERS.includes(c.trigger)) {
-            refused.push(`${role}: capture "${c.title}" refused -- rule trigger: missing or unknown trigger ${String(c.trigger)}`);
+            refuseCapture(c.title, 'trigger', `${role}: capture "${c.title}" refused -- rule trigger: missing or unknown trigger ${String(c.trigger)}`);
             continue;
         }
         // content is optional: absent or empty forwards no content key and the
         // server stores the summary as the content.
         if (c.content !== undefined && c.content !== null && typeof c.content !== 'string') {
-            refused.push(`${role}: capture "${c.title}" refused -- rule content: content is not a string`);
+            refuseCapture(c.title, 'content', `${role}: capture "${c.title}" refused -- rule content: content is not a string`);
             continue;
         }
         if ((c.recall_cues !== undefined && !isStringArray(c.recall_cues))
             || (c.error_signatures !== undefined && !isStringArray(c.error_signatures))) {
-            refused.push(`${role}: capture "${c.title}" refused -- rule cues: recall_cues/error_signatures must be arrays of strings`);
+            refuseCapture(c.title, 'cues', `${role}: capture "${c.title}" refused -- rule cues: recall_cues/error_signatures must be arrays of strings`);
             continue;
         }
         const content = typeof c.content === 'string' ? c.content.trim() : '';
         const lint = lintKbCapture(c, content);
         if (lint) {
-            refused.push(`${role}: capture "${c.title}" refused -- ${lint}`);
+            refuseCapture(c.title, (/^rule ([\w-]+):/.exec(lint) || [])[1] || 'lint', `${role}: capture "${c.title}" refused -- ${lint}`);
             continue;
         }
         captures.push({
@@ -356,6 +363,7 @@ export function vetKbWork(role, result) {
         discards: discards.filter((d) => !conflicted.has(d.id)),
         rejects: rejects.filter((r) => !conflicted.has(r.id)),
         refused,
+        refusedCaptures,
     };
 }
 
@@ -828,6 +836,15 @@ export function createKbWorkClient(opts = {}) {
             subject: (p) => p.id,
             counter: 'feedback',
         },
+        // D5: a dispatch's pushed and cited entry ids, recorded server-side
+        // as returned/cited usage events (kb_usage, maintainer-grant only).
+        // Counted apart from zeroCounts() like feedback.
+        usage: {
+            tool: 'kb_usage',
+            args: (p) => ({ ...(p.pushed.length > 0 ? { pushed: p.pushed } : {}), ...(p.cited.length > 0 ? { cited: p.cited } : {}) }),
+            subject: (p) => `usage report (${p.pushed.length} pushed, ${p.cited.length} cited)`,
+            counter: 'usage',
+        },
     };
 
     /**
@@ -915,6 +932,7 @@ export function createKbWorkClient(opts = {}) {
             if (typeof spec.accept === 'function' && !spec.accept(op.payload, res)) continue;
             counts[spec.counter] = (counts[spec.counter] || 0) + 1;
             if (op.kind === 'feedback') log(`[kb-work] feedback ${op.payload.id} sent on maintainer '${maintainer}' (${repo})`);
+            if (op.kind === 'usage') log(`[kb-work] usage report sent on maintainer '${maintainer}' (${repo}): ${op.payload.pushed.length} pushed, ${op.payload.cited.length} cited`);
             if (op.kind === 'discard' || op.kind === 'reject') retirements.add(repo);
             if (op.kind === 'reject') log(`[kb-work] rejected ${op.payload.id} on maintainer '${maintainer}' (${repo}): ${op.payload.reason}`);
             if (op.kind === 'promote') {
@@ -1604,6 +1622,36 @@ export function createKbWorkClient(opts = {}) {
                 return { forwarded: 0, dropped: 0 };
             }
         },
+        /**
+         * D5: report one dispatch's pushed and cited (kb_used) entry ids to
+         * the KB server's kb_usage, queued per repository on the maintainer
+         * the producing member READ its KB from (reviewMaintainerFor) and
+         * applied by the same flush as every other KB write -- so a busy
+         * maintainer keeps it queued instead of delaying the dispatch.
+         * Never throws or rejects.
+         *
+         * @param {any} member the member whose dispatch the ids belong to
+         * @param {{pushed?: string[], cited?: string[]}} ids
+         * @returns {Promise<{queued: boolean}>}
+         */
+        async reportUsage(member, { pushed, cited } = {}) {
+            const clean = (v) => [...new Set((Array.isArray(v) ? v : []).filter((id) => typeof id === 'string' && id.length > 0))];
+            const payload = { pushed: clean(pushed), cited: clean(cited) };
+            if (payload.pushed.length === 0 && payload.cited.length === 0) return { queued: false };
+            const producer = memberNameOf(member);
+            const target = active && producer ? reviewMaintainerFor(producer) : null;
+            if (!target) {
+                log(`[kb-work] no kb_maintainer for member '${producer || 'unknown'}' -- usage report (${payload.pushed.length} pushed, ${payload.cited.length} cited) dropped (non-fatal)`);
+                return { queued: false };
+            }
+            enqueue(target.repo, 'usage', null, payload);
+            try {
+                await flush(target.repo);
+            } catch (err) {
+                log(`[kb-work] usage report flush failed for ${target.repo} (non-fatal): ${err && err.message ? err.message : String(err)}`);
+            }
+            return { queued: true };
+        },
     };
 }
 
@@ -1948,6 +1996,20 @@ export function kbQueryTerms(beads, beadIds) {
 // role-policies.mjs agentTypeAppliesKbCaptures). When it is not, the block
 // must not promise that the orchestrator records a capture: those roles'
 // prompts tell them to note the finding in their own report instead.
+/**
+ * The ids of the entries kbKnowledgeBlock(entries) carries: the same
+ * CONFIRMED-undisputed filter and cap, in the same order. An entry without a
+ * string id is left out. Pure.
+ *
+ * @param {object[]} entries
+ * @returns {string[]}
+ */
+export function kbKnowledgeBlockIds(entries) {
+    if (!Array.isArray(entries)) return [];
+    return entries.filter(isInjectableKbEntry).slice(0, KB_MAX_KNOWLEDGE_ENTRIES)
+        .map((e) => e.id).filter((id) => typeof id === 'string' && id.length > 0);
+}
+
 export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'prime', reportEmpty = false } = {}) {
     if (!Array.isArray(entries)) return [];
     // CONFIRMED-first, capped at KB_MAX_KNOWLEDGE_ENTRIES. The sources
