@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 136
+    "entry_count": 139
   },
   "entries": [
     {
@@ -649,6 +649,35 @@
       }
     },
     {
+      "id": "3c18010b-49e1-4e66-8cce-60e9fb7c9227",
+      "type": "knowledge",
+      "title": "kb_bible_commit tombstones superseded/invalidated removals and kb_import retires them",
+      "summary": "kb_bible_commit writes {id, at, reason: superseded|invalidated} into the v3 demotions array for every entry it removes, and importBibleEntries retires the matching local CONFIRMED row via SqliteProvider.applyBibleRetirement (kb_import reports retired).",
+      "symbols": [
+        "commitToBible",
+        "importBibleEntries",
+        "applyBibleRetirement",
+        "getRetirementTimes",
+        "mergeDemotions"
+      ],
+      "source_files": [
+        "src/tools/kb-bible-commit.ts",
+        "src/services/knowledge/bible-import.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs",
+        "tests/knowledge/kb-bible-removal-tombstones.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T13:42:26.190Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs": "8a0eb26c019d0a5d1130b4628e44548c60ad794b",
+        "src/services/knowledge/bible-import.ts": "0d41536af4a0af94b1f74092e9b120e2f0a26088",
+        "src/services/knowledge/sqlite-provider.ts": "1ed681d9cbdb65076ed0af9e320e66fa0fac5c0f",
+        "src/tools/kb-bible-commit.ts": "baad2cb8e29cdd66210a29ea9cc0af7af003846a",
+        "tests/knowledge/kb-bible-removal-tombstones.test.ts": "0838148276608cba549d9553f3153731b7d9d9c3"
+      }
+    },
+    {
       "id": "3fe69283-7266-44c7-9f6d-d376847b4873",
       "type": "knowledge",
       "title": "A hostVerifier throw reaches connectWithTOFU as the client 'error' event, so the TOFU heal path is the single host-key re-accept point",
@@ -889,6 +918,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:30.213Z"
+    },
+    {
+      "id": "4f097156-3ede-4c4f-9f54-4bf08e13c3f1",
+      "type": "learning",
+      "title": "kb tool description edits must be mirrored in three places",
+      "summary": "A kb_* tool description lives in src/services/tool-registry.ts, memory-contract/v1/generate-contract.mjs, and verbatim in INVENTORY.md Appendix A; memory-contract-roster-guard.test.ts fails if Appendix A drifts from the live registration.",
+      "symbols": [
+        "registerAllTools"
+      ],
+      "source_files": [
+        "src/services/tool-registry.ts",
+        "memory-contract/v1/generate-contract.mjs",
+        "memory-contract/v1/INVENTORY.md",
+        "tests/memory-contract-roster-guard.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T13:42:21.558Z",
+      "source_file_hashes": {
+        "memory-contract/v1/INVENTORY.md": "1d15773b761173957ed10d45e41f6477a0928dc0",
+        "memory-contract/v1/generate-contract.mjs": "04db0c5b81da35016a91d744ae0b67eee6314526",
+        "src/services/tool-registry.ts": "ee2ab3e94c516df92e5cf3f0d6bf7fad00caaad4",
+        "tests/memory-contract-roster-guard.test.ts": "4b30b1181945497d4ba3a4123208f4b73de1fae4"
+      }
     },
     {
       "id": "4f62e71d-0544-49f1-863f-6bbc503604ac",
@@ -2616,6 +2668,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T06:57:41.197Z"
+    },
+    {
+      "id": "f5d9b1b1-eeea-4209-b0a1-36abae8fa457",
+      "type": "knowledge",
+      "title": "kb_import enriches a same-claim local row instead of skipping its id",
+      "summary": "importBibleEntries no longer always skips an existing id: SqliteProvider.enrichFromBible fills content, recall_cues and error_signatures into a row with the same type, title, summary, source_files and carried basis that lacks them; counted in enriched, not skipped.",
+      "symbols": [
+        "enrichFromBible",
+        "importBibleEntries",
+        "bibleRichContentOf",
+        "kbImport"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/bible-import.ts",
+        "src/tools/kb-import.ts",
+        "tests/knowledge/kb-import-enrich.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T13:42:23.903Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "0d41536af4a0af94b1f74092e9b120e2f0a26088",
+        "src/services/knowledge/sqlite-provider.ts": "1ed681d9cbdb65076ed0af9e320e66fa0fac5c0f",
+        "src/tools/kb-import.ts": "b27b8d6a2585ab698923f08947d1ca249f47e18c",
+        "tests/knowledge/kb-import-enrich.test.ts": "b07095720b3ce08bfc87b942a9b6c8353bcba950"
+      }
     },
     {
       "id": "f60d53f5-f72a-439f-82c9-03b7deaefc9a",
