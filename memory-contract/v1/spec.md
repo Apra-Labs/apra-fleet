@@ -1205,6 +1205,13 @@ request shapes documented elsewhere in this spec: they are OBSERVED, not
 derived from an enforced schema, because no tool in this surface declares
 one. (INV-08, INV-09)
 
+**MEMBER DEFAULTS.** A `kb_query` issued from a MEMBER session that carries no
+`limit` MUST return at most 6 `l1_results`, each holding only `id`, `title`,
+`summary`, `confidence` and `source_files`, and `l2_expanded` for the top 3 only.
+An explicit `limit` always wins and keeps the full row shape and the top-5
+`l2_expanded`; a non-member (FULL) session keeps the defaults of 20 rows, the
+full row shape and the top-5 `l2_expanded`. `related_claims` is unchanged.
+
 **THE PROOF.** The selector guard is `src/tools/kb-query.ts:33-35`: `if
 (!input.query && !input.flagged_only && !input.tag) throw new Error(...)`.
 This is a documented, coded throw, not an undocumented one: `taxonomy.json`

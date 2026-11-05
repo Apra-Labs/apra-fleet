@@ -31,7 +31,7 @@
         },
         "limit": {
           "type": "number",
-          "description": "Max L1 results (default 20)"
+          "description": "Max L1 results. Default 20; a MEMBER session that omits it gets 6 slim rows (id, title, summary, confidence, source_files) with expanded content for the top 3. An explicit limit always wins and keeps the full row shape."
         },
         "include_stale": {
           "type": "boolean",
