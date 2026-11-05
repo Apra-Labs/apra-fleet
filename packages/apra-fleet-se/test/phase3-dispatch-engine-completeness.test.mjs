@@ -747,7 +747,7 @@ describe('(3) the named per-role variances are driven by role-policies.mjs field
         // dispatch happens.
         const ok = await observe(ROLE, { steps, opts: { prompt: `DEPLOYER PROMPT (active sprint: ${SELF_ID})` } });
         assert.strictEqual(ok.thrown, null);
-        assert.deepStrictEqual(ok.rec.steps.map((s) => s.step), [STEP], 'the deployer runs exactly its one pre-dispatch step.');
+        assert.deepStrictEqual(ok.rec.steps.filter((s) => s.phase === 'preDispatch').map((s) => s.step), [STEP], 'the deployer runs exactly its one pre-dispatch step.');
         assert.strictEqual(ok.rec.dispatches.length, 1);
 
         // BASELINE, prompt violating it: the dispatch never happens at all.
@@ -771,7 +771,7 @@ describe('(3) the named per-role variances are driven by role-policies.mjs field
         });
         assert.strictEqual(withoutStep.thrown, null, 'removing the step from the row must remove the invariant.');
         assert.strictEqual(withoutStep.rec.dispatches.length, 1);
-        assert.deepStrictEqual(withoutStep.rec.steps.map((s) => s.step), []);
+        assert.deepStrictEqual(withoutStep.rec.steps.filter((s) => s.phase === 'preDispatch').map((s) => s.step), []);
 
         // MUTATION, the other direction: the same step imposed on a role that
         // does not record it today.

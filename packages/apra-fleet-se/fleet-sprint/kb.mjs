@@ -405,6 +405,114 @@ function memberNameOf(member) {
     return (member && typeof member.name === 'string') ? member.name : null;
 }
 
+/** A short, log-safe rendering of a malformed report item. */
+function describeItem(item) {
+    let text;
+    try { text = JSON.stringify(item); } catch { text = String(item); }
+    if (text === undefined) text = String(item);
+    return text.length > 80 ? `${text.slice(0, 77)}...` : text;
+}
+
+/**
+ * The KB-use fields every role report may carry (D4): kb_used [{id, how}] --
+ * entries the role relied on -- and kb_wrong [{id, reason}] -- entries that
+ * proved wrong in practice. The report schemas admit malformed items on
+ * purpose (permissive type unions), so this is where a bad item is refused:
+ * it is described in `malformed` for the caller to log and is dropped, and
+ * the well-formed items around it still count. Never throws.
+ *
+ * @param {any} result a role's dispatch result
+ * @returns {{used: {id: string, how: string}[], wrong: {id: string, reason: string}[], malformed: string[]}}
+ */
+export function extractKbUse(result) {
+    const out = { used: [], wrong: [], malformed: [] };
+    if (!result || typeof result !== 'object') return out;
+    const take = (field, key, sink) => {
+        const raw = result[field];
+        if (raw === undefined || raw === null) return;
+        if (!Array.isArray(raw)) {
+            out.malformed.push(`${field} is not an array: ${describeItem(raw)}`);
+            return;
+        }
+        raw.forEach((item, i) => {
+            const ok = !!item && typeof item === 'object' && !Array.isArray(item)
+                && typeof item.id === 'string' && item.id.trim().length > 0
+                && typeof item[key] === 'string' && item[key].trim().length > 0;
+            if (ok) sink.push({ id: item.id.trim(), [key]: item[key].trim() });
+            else out.malformed.push(`${field}[${i}] ${describeItem(item)} -- needs {id, ${key}} as non-empty strings`);
+        });
+    };
+    take('kb_used', 'how', out.used);
+    take('kb_wrong', 'reason', out.wrong);
+    return out;
+}
+
+/**
+ * kb_feedback validates its role hint against the KB author enum; the one
+ * role persona whose name differs from its author value is the harvester.
+ */
+function feedbackRoleHint(role) {
+    if (typeof role !== 'string' || role.length === 0) return undefined;
+    return role === 'harvester' ? 'harvest' : role;
+}
+
+/**
+ * The engine half of D4, run once per successful role dispatch (the
+ * 'kb-report' postResult step): read kb_used/kb_wrong off the report, log
+ * what the role relied on, log and drop malformed items, and forward each
+ * well-formed kb_wrong item to kb_feedback through the kb_maintainer queue
+ * (kbWork.feedback). KB use is LOGGED, never gated: a dispatch whose report
+ * shows no KB query gets one log line and nothing else -- no block, no retry.
+ * The engine cannot see a member's tool calls, so "no KB query" is read from
+ * the report itself: toolUse.kb present and not 'used', or (for a role whose
+ * report has no toolUse) no kb_used/kb_wrong item at all.
+ *
+ * Never throws: a feedback failure is logged and the dispatch stands.
+ *
+ * @param {{role: string|null, member: any, value: any, kbWork?: {feedback?: Function}, log?: Function}} args
+ * @returns {Promise<{used: string[], wrong: string[], malformed: number, noKbQuery: boolean}>}
+ *   the ids the role reported, kept per dispatch on the engine's stepResults
+ */
+export async function reportKbUse({ role, member, value, kbWork, log = () => {} }) {
+    const who = `${role || 'role'} on ${memberNameOf(member) || 'unknown member'}`;
+    const empty = { used: [], wrong: [], malformed: 0, noKbQuery: false };
+    if (!value || typeof value !== 'object' || value.dispatchFailed === true) return empty;
+    let use;
+    try {
+        use = extractKbUse(value);
+    } catch (err) {
+        log(`[kb-use] ${who}: could not read kb_used/kb_wrong (non-fatal): ${err && err.message ? err.message : String(err)}`);
+        return empty;
+    }
+    for (const m of use.malformed) log(`[kb-use] ${who}: dropped malformed item ${m}`);
+    if (use.used.length > 0) log(`[kb-use] ${who}: used ${use.used.map((u) => u.id).join(', ')}`);
+    const reportedKb = value.toolUse && typeof value.toolUse === 'object' ? value.toolUse.kb : undefined;
+    const noKbQuery = typeof reportedKb === 'string'
+        ? reportedKb !== 'used'
+        : use.used.length === 0 && use.wrong.length === 0;
+    if (noKbQuery) {
+        log(`[kb-use] ${who}: no KB query reported${typeof reportedKb === 'string' ? ` (toolUse.kb=${reportedKb})` : ''} -- logged only, never gated`);
+    }
+    if (use.wrong.length > 0) {
+        for (const w of use.wrong) log(`[kb-use] ${who}: wrong ${w.id}: ${w.reason}`);
+        if (kbWork && typeof kbWork.feedback === 'function') {
+            try {
+                await kbWork.feedback(role, member, use.wrong);
+            } catch (err) {
+                log(`[kb-use] ${who}: kb_feedback forwarding failed (non-fatal): ${err && err.message ? err.message : String(err)}`);
+            }
+        } else {
+            log(`[kb-use] ${who}: no KB work client -- ${use.wrong.length} kb_wrong item(s) not forwarded`);
+        }
+    }
+    return {
+        used: use.used.map((u) => u.id),
+        wrong: use.wrong.map((w) => w.id),
+        malformed: use.malformed.length,
+        noKbQuery,
+    };
+}
+
 /**
  * Every KB write for a repository goes through that repository's
  * kb_maintainer (kb-maintainer.mjs), in the maintainer's MEMBER session --
@@ -687,6 +795,14 @@ export function createKbWorkClient(opts = {}) {
             counter: 'rejected',
             accept: (p, res) => invalidateLanded(p, res),
         },
+        // D4: a role's kb_wrong item, forwarded as a downvote. Counted apart
+        // from zeroCounts() so apply()'s count shape stays unchanged.
+        feedback: {
+            tool: 'kb_feedback',
+            args: (p) => ({ id: p.id, reason: p.reason, ...(p.role ? { role: p.role } : {}) }),
+            subject: (p) => p.id,
+            counter: 'feedback',
+        },
     };
 
     /**
@@ -772,7 +888,8 @@ export function createKbWorkClient(opts = {}) {
                 continue;
             }
             if (typeof spec.accept === 'function' && !spec.accept(op.payload, res)) continue;
-            counts[spec.counter]++;
+            counts[spec.counter] = (counts[spec.counter] || 0) + 1;
+            if (op.kind === 'feedback') log(`[kb-work] feedback ${op.payload.id} sent on maintainer '${maintainer}' (${repo})`);
             if (op.kind === 'discard' || op.kind === 'reject') retirements.add(repo);
             if (op.kind === 'reject') log(`[kb-work] rejected ${op.payload.id} on maintainer '${maintainer}' (${repo}): ${op.payload.reason}`);
             if (op.kind === 'promote') {
@@ -1424,6 +1541,43 @@ export function createKbWorkClient(opts = {}) {
                 for (const k of Object.keys(counts)) counts[k] += c[k];
             }
             return done(counts);
+        },
+        /**
+         * D4: forward a role's well-formed kb_wrong items to kb_feedback in
+         * the kb_maintainer's session -- queued per repository and applied by
+         * the same flush as captures and promotions, so a busy or unreachable
+         * maintainer keeps them queued instead of delaying anything. The
+         * repository is the one the producing member READ its KB from
+         * (reviewMaintainerFor), since that is where the wrong entry lives.
+         * Never throws; a refused or failed call is logged by the flush.
+         *
+         * @param {string|null} role the producing role persona
+         * @param {any} member the member whose dispatch reported the items
+         * @param {{id: string, reason: string}[]} items already vetted (extractKbUse)
+         * @returns {Promise<{forwarded: number, dropped: number}>}
+         */
+        async feedback(role, member, items) {
+            const list = Array.isArray(items) ? items : [];
+            if (list.length === 0) return { forwarded: 0, dropped: 0 };
+            const producer = memberNameOf(member);
+            if (!active || !producer) {
+                log(`[kb-work] WARN: no member resolved for ${role} -- ${list.length} kb_feedback item(s) dropped`);
+                return { forwarded: 0, dropped: list.length };
+            }
+            const target = reviewMaintainerFor(producer);
+            if (!target) {
+                log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${list.length} kb_feedback item(s) dropped`);
+                return { forwarded: 0, dropped: list.length };
+            }
+            const hint = feedbackRoleHint(role);
+            for (const w of list) enqueue(target.repo, 'feedback', role, { id: w.id, reason: w.reason, role: hint });
+            try {
+                const c = await flush(target.repo);
+                return { forwarded: (c && c.feedback) || 0, dropped: 0 };
+            } catch (err) {
+                log(`[kb-work] kb_feedback flush failed for ${target.repo} (non-fatal): ${err && err.message ? err.message : String(err)}`);
+                return { forwarded: 0, dropped: 0 };
+            }
         },
     };
 }

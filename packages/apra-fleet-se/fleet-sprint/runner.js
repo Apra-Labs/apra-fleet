@@ -220,6 +220,7 @@ import {
 import {
     KB_MAX_KNOWLEDGE_ENTRIES, KB_PROMOTER_ROLES, KB_MIN_PROMOTE_REASON,
     KB_CAPTURE_TYPES, KB_MAX_PROMOTION_CANDIDATES, vetKbWork, createKbWorkClient,
+    reportKbUse,
 } from './kb.mjs';
 // The KB priming client (kb_session_prime/kb_import warm-up, once per
 // sprint) and the prompt-construction helpers (the self-injecting-role
@@ -1917,6 +1918,14 @@ async function runSprintCycle(context) {
                 // that repository's kb_maintainer.
                 await kbWork.apply(policy.agentType, member, value);
             },
+            // D4: every role report's kb_used/kb_wrong. KB use is logged and
+            // never gated; each well-formed kb_wrong item is forwarded to
+            // kb_feedback through the kb_maintainer queue. The ids the role
+            // reported come back on the dispatch's stepResults['kb-report'],
+            // so a per-dispatch KB record can store them. Never throws.
+            'kb-report': async ({ policy, value, member }) => reportKbUse({
+                role: policy.agentType, member, value, kbWork, log,
+            }),
             // deploy.md's active-sprints gate stops for a FOREIGN reservation,
             // so a deployer prompt that does not state this sprint's OWN
             // reservation id makes the deploy treat the sprint as a stranger
