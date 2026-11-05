@@ -50,6 +50,14 @@ describe('gen-sea-config.mjs -- generated SEA manifest', () => {
     expect(keys).toContain('SKILL.md');
   });
 
+  it('embeds the onnxruntime-web WASM binary under the asset name the KB embedder reads', async () => {
+    const { WASM_SEA_ASSET } = await import('../src/services/knowledge/embedding/embedder.js');
+    const config = JSON.parse(readFileSync(configPath, 'utf-8')) as { assets: Record<string, string> };
+    const wasm = config.assets[WASM_SEA_ASSET];
+    expect(wasm).toBe(path.join(root, 'node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.wasm'));
+    expect(existsSync(wasm)).toBe(true);
+  });
+
   it('still includes plain role-agent files alongside the nested ones', () => {
     expect(Object.keys(manifest.agents)).toContain('doer.md');
     expect(Object.keys(manifest.agents)).toContain('planner.md');

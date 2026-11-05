@@ -304,6 +304,18 @@
  */
 
 /**
+ * Local KB embedding model state, `kbHealth.embedding` in fleet_status json
+ * output (one compact `kb embedding:` line in compact output). This host
+ * only; reading it never loads or downloads a model.
+ * @typedef {Object} FleetStatusKbEmbedding
+ * @property {"idle" | "loading" | "ready" | "disabled" | "failed"} state - idle: configured, downloads and loads on first use; disabled: embedding.model none; failed: semantic search off, keyword and anchor search remain
+ * @property {string} [modelId] - Model repo id or local folder (absent when disabled)
+ * @property {string} [revision] - Pinned revision, or "local" for a folder model
+ * @property {number} [dims] - state "ready": vector size
+ * @property {string} [reason] - state "failed": why the download or load failed
+ */
+
+/**
  * @typedef {Object} SendFilesOptions
  * @property {string[]} local_paths - Array of local file paths to upload
  * @property {string} [dest_subdir] - Destination subdirectory relative to work_folder on the member
@@ -1133,7 +1145,8 @@ export class ApraFleet {
     /**
      * Get status of all fleet members. With format "json" the result's
      * kbHealth.credential is a {@link FleetStatusKbCredential} when the KB
-     * config selects the http provider.
+     * config selects the http provider, and kbHealth.embedding is a
+     * {@link FleetStatusKbEmbedding}.
      * @param {FleetStatusOptions} [options]
      */
     async fleetStatus(options = {}) {

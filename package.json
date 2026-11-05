@@ -94,9 +94,11 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@apralabs/apra-fleet-client": "file:packages/apra-fleet-client",
+    "@huggingface/tokenizers": "0.2.0",
     "@inquirer/password": "^5.0.11",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "ajv": "^8.12.0",
+    "onnxruntime-web": "1.31.1",
     "pg": "^8.22.0",
     "smol-toml": "^1.7.1",
     "ssh2": "^1.17.0",

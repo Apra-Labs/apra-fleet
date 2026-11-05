@@ -6,6 +6,14 @@ import { DatabaseSync } from 'node:sqlite';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { SqliteProvider } from '../src/services/knowledge/sqlite-provider.js';
+import { Embedder, _setEmbedderForTest } from '../src/services/knowledge/embedding/embedder.js';
+import { BUILTIN_EMBEDDING_PROFILES, DEFAULT_EMBEDDING_PROFILE } from '../src/services/knowledge/embedding/profiles.js';
+
+// The KB section ends with the embedding-model line; pinned to the default
+// profile, not yet loaded (fleet_status never loads a model).
+const DEFAULT_PROFILE = BUILTIN_EMBEDDING_PROFILES[DEFAULT_EMBEDDING_PROFILE];
+const EMBEDDING_IDLE_LINE =
+  `  kb embedding: ${DEFAULT_PROFILE.modelId}@${DEFAULT_PROFILE.revision} not loaded yet (downloads and loads on first use)`;
 
 // T2.2 (F5/F6, D4/D5 amended) + the cwd-independence fix: fleet_status KB
 // health enumerates every KB scope on disk (never one derived from the fleet
@@ -169,8 +177,12 @@ describe('kbHealthSummary (multi-scope, degraded-safe)', () => {
     kbRoot.dir = root;
     kbRoot.throwOnList = false;
     mockKbStats.mockReset();
+    _setEmbedderForTest(new Embedder({ choice: { kind: 'enabled', profile: DEFAULT_PROFILE } }));
   });
-  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+  afterEach(() => {
+    _setEmbedderForTest(null);
+    rmSync(root, { recursive: true, force: true });
+  });
 
   it('absent knowledge dir degrades to an empty summary with an explicit "none yet" line', async () => {
     const { kbHealthSummary, kbHealthCompactLines } = await import('../src/tools/check-status.js');
@@ -179,7 +191,7 @@ describe('kbHealthSummary (multi-scope, degraded-safe)', () => {
     expect(health!.scopes).toEqual([]);
     expect(health!.global).toBeNull();
     const text = kbHealthCompactLines(health!);
-    expect(text).toBe('kb: no knowledge bases found yet (none captured on this server)');
+    expect(text).toBe(`kb: no knowledge bases found yet (none captured on this server)\n${EMBEDDING_IDLE_LINE}`);
     expect(text).not.toContain('kb: 0 entries');
   });
 
@@ -212,6 +224,7 @@ describe('kbHealthSummary (multi-scope, degraded-safe)', () => {
       '  kb[githubcom-acme-widgets]: 3 entries (confirmed:2 stale:1 flagged:0) | hit-rate:50% | promote-ratio:50%',
       '  kb[global]: 1 entries (confirmed:1 stale:0 flagged:0) | hit-rate:0% | promote-ratio:0%',
       '  kb: empty scope(s): default',
+      EMBEDDING_IDLE_LINE,
     ]);
   });
 

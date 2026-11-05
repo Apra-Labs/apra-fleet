@@ -325,6 +325,19 @@ for (const [, relPath] of Object.entries(claudePlugins)) {
   assets[relPath] = join(root, relPath);
 }
 
+// onnxruntime-web WASM binary for the KB embedder. The asset name must equal
+// WASM_SEA_ASSET in src/services/knowledge/embedding/embedder.ts. Embedded
+// (rather than fetched at runtime) so the binary works offline and stays
+// version-locked to the Emscripten glue esbuild bundled from the same
+// package; the embedding MODEL is never shipped (it downloads on first use).
+const ortWasm = join(root, 'node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.wasm');
+if (!existsSync(ortWasm)) {
+  console.error('Error: node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm is missing (KB embedder runtime).');
+  console.error('Run: npm install');
+  process.exit(1);
+}
+assets['onnxruntime-web/ort-wasm-simd-threaded.wasm'] = ortWasm;
+
 const seaConfig = {
   main: join(distDir, 'sea-bundle.cjs'),
   output: join(distDir, 'sea-prep.blob'),
