@@ -41,8 +41,13 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@modelcontextprotocol/sdk/client/index.js')>();
   type Base = InstanceType<typeof actual.Client>;
   class PatientClient extends actual.Client {
-    connect(...[transport, options]: Parameters<Base['connect']>) {
-      return super.connect(transport, { ...options, timeout: child.CHILD_TIMEOUT_MS });
+    async connect(...[transport, options]: Parameters<Base['connect']>) {
+      try {
+        return await super.connect(transport, { ...options, timeout: child.CHILD_TIMEOUT_MS });
+      } catch (err) {
+        child.failures.push(`connect: ${String(err)}`);
+        throw err;
+      }
     }
     async callTool(...[params, schema, options]: Parameters<Base['callTool']>) {
       try {
