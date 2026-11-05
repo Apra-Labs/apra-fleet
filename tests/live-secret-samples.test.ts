@@ -6,7 +6,7 @@
  * breaks a sample fails here.
  */
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -198,6 +198,40 @@ describe.skipIf(!WIN)('PowerShell samples (Windows)', () => {
     expect(body.get('client_secret')).toBe(SECRET);
     expect(body.get('grant_type')).toBe('client_credentials');
   }, 60_000);
+
+  it('generic OAuth, the registration line exactly as typed in Windows PowerShell, through the real CLI', async () => {
+    const data = path.join(tmp, 'data');
+    fs.mkdirSync(data);
+    const cli = path.resolve(__dirname, '..', 'dist', 'index.js');
+    const env = { ...process.env, APRA_FLEET_DATA_DIR: data };
+    const set = spawnSync(process.execPath, [cli, 'secret', '--set', 'sp_secret', '--persist', '-y'], { env, input: `${SECRET}\n`, encoding: 'utf-8' });
+    expect(set.status).toBe(0);
+    const file = path.join(tmp, 'mint-oauth.ps1');
+    fs.writeFileSync(file, sample('oauth-powershell'));
+    const line = sample('oauth-powershell-register').split('\n')[0];
+    const typed = line
+      .replace('apra-fleet', `& "${process.execPath}" "${cli}"`)
+      .replace('C:\\kb\\mint-oauth.ps1', `"${file}"`)
+      .replace('<token-url>', url)
+      .replace('<client-id>', 'my-client')
+      .replace('<scope>', 'api://kb/.default');
+
+    // Not spawnSync: the script calls the token server running in this process.
+    const child = spawn(windowsSystemTool('powershell') as string, [
+      '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(typed, 'utf16le').toString('base64'),
+    ], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const r = { stdout: '', stderr: '' };
+    child.stdout.on('data', (c) => { r.stdout += c; });
+    child.stderr.on('data', (c) => { r.stderr += c; });
+    await new Promise((resolve) => child.on('close', resolve));
+
+    expect(r.stderr).not.toContain('Usage');
+    expect(r.stderr).not.toContain('FAILED');
+    expect(r.stdout).toMatch(/^OK: expires /);
+    expect(new URLSearchParams(bodies[bodies.length - 1]).get('client_secret')).toBe(SECRET);
+    const stored = JSON.parse(fs.readFileSync(path.join(data, 'credentials.json'), 'utf-8')).credentials.KB_TOKEN;
+    expect(stored.bindings).toEqual([{ env: 'CLIENT_SECRET', secret: 'sp_secret' }]);
+  }, 120_000);
 });
 
 describe('the samples are present and carry no value', () => {

@@ -21,7 +21,7 @@ import { LiveSecretError } from '../services/live-secret-runner.js';
 const NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
 const LIVE_USAGE_INLINE = "  apra-fleet secret --live <name> --inline '<script with {{secret.R}}>'";
-const LIVE_USAGE_FILE = '  apra-fleet secret --live <name> [--env VAR={{secret.R}}]... -- <script file> [args]';
+const LIVE_USAGE_FILE = "  apra-fleet secret --live <name> [--env 'VAR={{secret.R}}']... -- <script file> [args]";
 
 export async function runSecret(args: string[]): Promise<void> {
   // Title the OOB credential-entry console the server opened on Windows
@@ -31,7 +31,9 @@ export async function runSecret(args: string[]): Promise<void> {
     try { process.title = oobTitle; } catch { /* cosmetic only */ }
   }
 
-  if (args.includes('--help') || args.includes('-h') || args.length === 0) {
+  // After `--live <name>` the args belong to the script, or are its inline text.
+  const ownArgs = args[0] === '--live' ? args.slice(0, 2) : args;
+  if (ownArgs.includes('--help') || ownArgs.includes('-h') || args.length === 0) {
     console.error('Usage:');
     console.error('  apra-fleet secret --set <name> [--persist] [-y]');
     console.error(LIVE_USAGE_INLINE);

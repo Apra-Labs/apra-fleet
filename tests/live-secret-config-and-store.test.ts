@@ -33,6 +33,7 @@ import {
 import { LiveSecretError } from '../src/services/live-secret-runner.js';
 import { _resetCache, getLiveSecretRefreshConfig } from '../src/services/user-config.js';
 import { credentialStoreDelete } from '../src/tools/credential-store-delete.js';
+import { credentialStoreUpdate } from '../src/tools/credential-store-update.js';
 import { closeLogFile, getActiveLogFile } from '../src/utils/log-helpers.js';
 
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
@@ -72,6 +73,12 @@ function register(n: string, script: { program: string; args: string[] }, env: A
   const record = prepareLiveSecret(n, { program: script.program, args: script.args, env });
   saveLiveSecret(record);
   return record;
+}
+
+/** True while the persistent record of this name in credentials.json is still expired. */
+function persistentStillExpired(n: string): boolean {
+  const file = JSON.parse(fs.readFileSync(path.join(process.env.APRA_FLEET_DATA_DIR ?? FLEET_DIR, 'credentials.json'), 'utf-8'));
+  return Date.parse(file.credentials[n].expiresAt) < Date.now();
 }
 
 function writeConfig(content: unknown): void {
@@ -283,6 +290,74 @@ describe('bindings are permanent', () => {
     purgeExpiredCredentials();
     expect(credentialList().some((c) => c.name === r)).toBe(false);
     expect(credentialResolve(r, '*')).toBeNull();
+  });
+
+  it('a session value set after expiry resolves, for the member path and the KB path, and survives the purge', () => {
+    const r = name('resetsession');
+    credentialSet(r, 'old-value', true, 'allow', '*', -1);
+    expect(credentialResolve(r, '*')).toHaveProperty('expired');
+
+    credentialSet(r, 'fresh-value', false, 'allow'); // the default of credential_store_set
+
+    const out = credentialResolve(r, '*') as { plaintext: string; meta: { scope: string } };
+    expect(out.plaintext).toBe('fresh-value');
+    expect(out.meta.scope).toBe('session');
+    const kb = lookupServerSecret(r) as { status: string; value: string };
+    expect(kb.status).toBe('ok');
+    expect(kb.value).toBe('fresh-value');
+
+    purgeExpiredCredentials();
+    expect((credentialResolve(r, '*') as { plaintext: string }).plaintext).toBe('fresh-value');
+  });
+
+  it('an unexpired persistent record still wins over a session value', () => {
+    const r = name('stillwins');
+    credentialSet(r, 'persistent-value', true, 'allow');
+    credentialSet(r, 'session-value', false, 'allow');
+    expect((credentialResolve(r, '*') as { plaintext: string }).plaintext).toBe('persistent-value');
+  });
+
+  it('an expired session value over an expired persistent record reports expired', () => {
+    const r = name('bothexpired');
+    credentialSet(r, 'old-value', true, 'allow', '*', -1);
+    credentialSet(r, 'also-old', false, 'allow', '*', -1);
+    expect(credentialResolve(r, '*')).toHaveProperty('expired');
+  });
+
+  it('with a session value over an expired bound record, the record stays and a run still uses it', async () => {
+    const { r, n } = bound(-1);
+    credentialSet(r, 'session-value', false, 'allow');
+    expect((credentialResolve(r, '*') as { plaintext: string }).plaintext).toBe('session-value');
+
+    purgeExpiredCredentials();
+    expect(() => credentialDelete(r)).toThrow(SecretInUseError);
+    expect(credentialList().some((c) => c.name === r && c.scope === 'persistent')).toBe(true);
+    await expect(mintLiveSecret(lookupLiveSecret(n)!)).resolves.toBeDefined();
+  });
+
+  it('credential_store_update refuses an expired secret and does not bring the old value back', async () => {
+    const r = name('norevive');
+    credentialSet(r, 'old-value', true, 'allow', '*', -1);
+
+    for (const patch of [{ ttl_seconds: 3600 }, { ttl_seconds: 0 }, { members: 'a' }, { network_policy: 'deny' as const }]) {
+      const out = await credentialStoreUpdate({ name: r, ...patch });
+      expect(out).toContain('has expired');
+      expect(out).not.toContain('updated');
+    }
+    expect(credentialResolve(r, '*')).toHaveProperty('expired');
+    expect(credentialList().find((c) => c.name === r)?.allowedMembers).toBe('*');
+  });
+
+  it('credential_store_update over an expired record with a session value changes the session value only', async () => {
+    const r = name('updsession');
+    credentialSet(r, 'old-value', true, 'allow', '*', -1);
+    credentialSet(r, 'fresh-value', false, 'allow');
+
+    const out = await credentialStoreUpdate({ name: r, ttl_seconds: 3600 });
+
+    expect(out).toContain('updated');
+    expect((credentialResolve(r, '*') as { plaintext: string; meta: { scope: string } }).meta.scope).toBe('session');
+    expect(persistentStillExpired(r)).toBe(true);
   });
 
   it('the startup purge skips an expired bound record and its consumer', () => {

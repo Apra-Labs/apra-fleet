@@ -268,16 +268,22 @@ export type CommandSecretResolution =
   | { failed: string }
   | null;
 
+/** True when `member` may use this live secret ('*' is the fleet-operator bypass). */
+export function liveSecretAllowsMember(record: LiveSecretRecord, member: string): boolean {
+  return member === '*' || record.allowedMembers === '*' || record.allowedMembers.includes(member);
+}
+
 /**
  * Resolve {{secret.NAME}} for a command on a member: a live secret mints (after
  * the allowedMembers check, so a refused member never causes a mint); anything
- * else is credentialResolve. A failed mint is a `failed` result, leak-free.
+ * else is credentialResolve. A failed mint is a `failed` result, leak-free. The
+ * caller checks network policy before calling, for the same reason.
  */
 export async function resolveCommandSecret(name: string, callingMember: string): Promise<CommandSecretResolution> {
   const live = lookupLiveSecret(name);
   if (!live) return credentialResolve(name, callingMember);
   const allowedMembers = live.allowedMembers;
-  if (callingMember !== '*' && allowedMembers !== '*' && !allowedMembers.includes(callingMember)) {
+  if (!liveSecretAllowsMember(live, callingMember) && allowedMembers !== '*') {
     return { denied: `Credential '${name}' is not accessible to member '${callingMember}'. Allowed: ${allowedMembers.join(', ')}` };
   }
   try {

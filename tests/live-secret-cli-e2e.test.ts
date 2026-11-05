@@ -156,6 +156,35 @@ describe('secret --live (real CLI)', () => {
       });
     }
 
+    for (const flag of ['-h', '--help']) {
+      it(`a script arg ${flag} goes to the script and registration proceeds`, () => {
+        const r = register('helpful', okScript, flag, 'idp.example.test');
+        expect(r.stderr).toBe('');
+        expect(r.status).toBe(0);
+        expect(r.stdout).toMatch(OK_LINE);
+        expect(readRecords().helpful.args).toEqual([okScript, flag, 'idp.example.test']);
+      });
+    }
+
+    it('secret --live --help and secret --help still print usage', () => {
+      for (const args of [['--live', '--help'], ['--live', '-h'], ['--help'], ['--set', 'x', '--help']]) {
+        const r = cli(args);
+        expect(r.status).toBe(0);
+        expect(r.stderr).toContain('--live <name>');
+      }
+    });
+
+    it('the legacy placeholder spelling works, stays off the CLI output, and warns in the log', () => {
+      setStatic('R');
+      const legacy = '{{sec' + 'ure.R}}';
+      const r = cli(['--live', 'oldstyle', '--env', `X=${legacy}`, '--', 'node', okScript]);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toMatch(OK_LINE);
+      expect(r.stderr).toBe('');
+      expect(readRecords().oldstyle.bindings).toEqual([{ env: 'X', secret: 'R' }]);
+      expect(logText()).toContain('deprecated');
+    });
+
     it('an inline script that fails prints nothing of the script', () => {
       const marker = 'INLINE-SCRIPT-TEXT-MARKER';
       const r = cli(['--live', 'inl', '--inline', `exit 3 # ${marker}`]);

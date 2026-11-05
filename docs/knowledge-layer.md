@@ -653,7 +653,7 @@ secret, never both.
 
 ```bash
 apra-fleet secret --live KB_TOKEN --inline '<script with {{secret.R}}>'
-apra-fleet secret --live KB_TOKEN [--env VAR={{secret.R}}]... -- <script file> [args]
+apra-fleet secret --live KB_TOKEN [--env 'VAR={{secret.R}}']... -- <script file> [args]
 kb_setup with provider=http, remote=https://<host>, token={{secret.KB_TOKEN}}
 ```
 
@@ -746,7 +746,11 @@ while that live secret exists.
 - An expired bound secret is kept: the binding is to the name, not the value.
   Member commands get `expired` for it, and the startup purge skips it. A run
   that uses it writes a warning to the fleet log. Update the value with
-  `apra-fleet secret --set R --persist`.
+  `apra-fleet secret --set R --persist`. A session value set after expiry serves
+  member commands but not the live secret, which reads only the persistent record.
+- Any other expired persistent secret stays until the next server start, and a
+  session value set after expiry takes its place. `credential_store_update`
+  refuses an expired secret: re-set it instead.
 
 **Refresh.** On access, while the remaining lifetime is at least T the current
 token is handed off; below T, or once expired, a new one is minted first and
@@ -823,7 +827,7 @@ printf '%s' "$CLIENT_SECRET" | curl -fsS "https://login.microsoftonline.com/$1/o
 
 ```bash
 apra-fleet secret --set sp_secret --persist
-apra-fleet secret --live KB_TOKEN --env CLIENT_SECRET={{secret.sp_secret}} -- /opt/kb/mint-sp.sh <tenant> <client-id> <app-id-uri>/.default
+apra-fleet secret --live KB_TOKEN --env 'CLIENT_SECRET={{secret.sp_secret}}' -- /opt/kb/mint-sp.sh <tenant> <client-id> <app-id-uri>/.default
 ```
 
 **Sample: generic OAuth client credentials, bash.** The same script for any token
@@ -855,9 +859,12 @@ $r = Invoke-RestMethod -UseBasicParsing -Method Post -Uri $TokenUrl -Body $body
 @{ token = $r.access_token; expires_at = [DateTimeOffset]::UtcNow.AddSeconds([long]$r.expires_in).ToString('o') } | ConvertTo-Json -Compress
 ```
 
+<!-- live-secret-sample:oauth-powershell-register -->
 ```powershell
-apra-fleet secret --live KB_TOKEN --env CLIENT_SECRET={{secret.sp_secret}} -- C:\kb\mint-oauth.ps1 <token-url> <client-id> <scope>
+apra-fleet secret --live KB_TOKEN --env 'CLIENT_SECRET={{secret.sp_secret}}' -- C:\kb\mint-oauth.ps1 <token-url> <client-id> <scope>
 ```
+
+Keep `--env` values in quotes: PowerShell reads unquoted braces as a script block.
 
 **Walkthrough.** On the orchestrator, with az logged in as the fleet server's OS
 user:

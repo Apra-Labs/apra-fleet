@@ -15,7 +15,7 @@ export const credentialStoreSetSchema = z.object({
     'Comma-separated list of member friendly names allowed to use this credential, or "*" for all members (default: "*")'
   ),
   ttl_seconds: z.number().positive().optional().describe(
-    'Time-to-live in seconds. If set, the credential expires after this many seconds and is automatically purged.'
+    'Time-to-live in seconds. If set, the credential stops resolving after this many seconds. A persistent one is removed at the next server start, unless a live secret is bound to it.'
   ),
 });
 

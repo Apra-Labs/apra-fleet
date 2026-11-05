@@ -10,8 +10,8 @@ import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper, generateTaskWrapperWindows } from '../services/cloud/task-wrapper.js';
 import { escapeShellArg, escapePowerShellArg, escapeWindowsArg } from '../utils/shell-escape.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
-import { registerTaskCredentials } from '../services/credential-store.js';
-import { resolveCommandSecret } from '../services/live-secret-cache.js';
+import { lookupLiveSecret, registerTaskCredentials } from '../services/credential-store.js';
+import { liveSecretAllowsMember, resolveCommandSecret } from '../services/live-secret-cache.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
 import { LogScope, maskSecrets, truncateForLog, logLine, logWarn } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
@@ -118,6 +118,42 @@ async function resolveSecretTokens(
 
   const legacyWarning = legacyNames.length > 0 ? legacyTokenWarning(legacyNames) : undefined;
   return { resolved, credentials, legacyWarning };
+}
+
+/**
+ * Add `more` to `into` for redaction. Keyed by name and value, because a live
+ * secret can resolve to a different token in command and restart_command when
+ * it refreshes between the two, and every token sent must be redacted.
+ */
+export function mergeCredentials(into: ResolvedCredential[], more: ResolvedCredential[]): void {
+  for (const cred of more) {
+    if (!into.some(c => c.name === cred.name && c.plaintext === cred.plaintext)) into.push(cred);
+  }
+}
+
+/**
+ * The refusal text when policy stops `name` going out in a network command; null
+ * when it may go. On `confirm` this asks the user out of band.
+ */
+async function egressRefusal(
+  name: string,
+  policy: ResolvedCredential['network_policy'],
+  command: string,
+  memberName: string,
+): Promise<string | null> {
+  if (policy === 'deny') {
+    return `❌ Blocked: credential "${name}" has network_policy=deny and the command contains a network tool.`;
+  }
+  if (policy === 'confirm') {
+    const { confirmed, terminalUnavailable } = await collectOobConfirm(name, { command, memberName });
+    if (!confirmed) {
+      const reason = terminalUnavailable
+        ? 'could not be confirmed (terminal unavailable)'
+        : 'was not confirmed';
+      return `❌ Network egress for credential "${name}" ${reason}. Command not executed.`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -240,6 +276,20 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     return '❌ Credentials cannot be passed to LLM sessions — use {{secret.NAME}} tokens instead of sec:// handles.';
   }
 
+  // -- Live secrets: policy before the mint, so a refused one never runs its script --
+  const egressChecked = new Set<string>();
+  if (NETWORK_TOOL_RE.test(input.command)) {
+    const referenced = findSecretTokens(`${input.command}\n${input.restart_command ?? ''}`).map((t) => t.name);
+    for (const name of new Set(referenced)) {
+      const live = lookupLiveSecret(name);
+      // A member it is not shared with gets that refusal from the resolve below, unprompted.
+      if (!live || !liveSecretAllowsMember(live, agent.friendlyName)) continue;
+      const refusal = await egressRefusal(name, live.network_policy, input.command, agent.friendlyName);
+      if (refusal) return refusal;
+      egressChecked.add(name);
+    }
+  }
+
   // -- Resolve {{secret.NAME}} / legacy {{secure.NAME}} tokens --
   const tokenResult = await resolveSecretTokens(input.command, agentOs, agent.friendlyName, agentShell);
   if ('error' in tokenResult) return `❌ ${tokenResult.error}`;
@@ -255,12 +305,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     if ('error' in restartTokenResult) return `❌ ${restartTokenResult.error}`;
     resolvedRestartCommand = restartTokenResult.resolved;
     if (restartTokenResult.legacyWarning) legacyWarnings.push(restartTokenResult.legacyWarning);
-    // Merge any additional credentials from restart_command (de-dup by name)
-    for (const cred of restartTokenResult.credentials) {
-      if (!credentials.find(c => c.name === cred.name)) {
-        credentials.push(cred);
-      }
-    }
+    mergeCredentials(credentials, restartTokenResult.credentials);
   }
 
   if (legacyWarnings.length > 0) {
@@ -270,18 +315,10 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   // -- Network egress check for credentials with confirm/deny policy --
   if (credentials.length > 0 && NETWORK_TOOL_RE.test(resolvedCommand)) {
     for (const cred of credentials) {
-      if (cred.network_policy === 'deny') {
-        return `❌ Blocked: credential "${cred.name}" has network_policy=deny and the command contains a network tool.`;
-      }
-      if (cred.network_policy === 'confirm') {
-        const { confirmed, terminalUnavailable } = await collectOobConfirm(cred.name, { command: input.command, memberName: agent.friendlyName });
-        if (!confirmed) {
-          const reason = terminalUnavailable
-            ? 'could not be confirmed (terminal unavailable)'
-            : 'was not confirmed';
-          return `❌ Network egress for credential "${cred.name}" ${reason}. Command not executed.`;
-        }
-      }
+      if (egressChecked.has(cred.name)) continue;
+      const refusal = await egressRefusal(cred.name, cred.network_policy, input.command, agent.friendlyName);
+      if (refusal) return refusal;
+      egressChecked.add(cred.name);
     }
   }
 

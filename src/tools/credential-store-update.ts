@@ -24,6 +24,10 @@ export async function credentialStoreUpdate(input: CredentialStoreUpdateInput): 
   if (!existing) {
     return `❌ Credential "${input.name}" not found.`;
   }
+  // An update must not bring an expired value back: only a re-set can.
+  if ('expired' in existing) {
+    return `[x] ${existing.expired}`;
+  }
 
   const updates: { members?: string; expiresAt?: number | null; network_policy?: 'allow' | 'confirm' | 'deny' } = {};
   if (input.members !== undefined) updates.members = input.members;

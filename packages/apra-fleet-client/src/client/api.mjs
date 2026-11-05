@@ -1138,7 +1138,8 @@ export class ApraFleet {
     /**
      * Get status of all fleet members. With format "json" the result's
      * kbHealth.credential is a {@link FleetStatusKbCredential} when the KB
-     * config selects the http provider.
+     * config selects the http provider, and liveSecrets is an array of
+     * {@link FleetStatusLiveSecret} when any live secret is registered.
      * @param {FleetStatusOptions} [options]
      */
     async fleetStatus(options = {}) {

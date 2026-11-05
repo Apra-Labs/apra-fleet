@@ -12,7 +12,8 @@ import {
   envValue,
   findOnAbsoluteWindowsPath,
 } from '../os/windows-executable.js';
-import { findSecretTokens, formatSecretToken, hasSecretToken } from './secret-token.js';
+import { appendLogRecord } from '../utils/log-helpers.js';
+import { findSecretTokens, formatSecretToken, hasSecretToken, legacyTokenWarning } from './secret-token.js';
 import { envVarForSecret, type LiveSecretBinding } from './live-secret-runner.js';
 
 // ---------------------------------------------------------------------------
@@ -329,6 +330,12 @@ function checkNameFree(name: string, file: CredentialFile): void {
 export function prepareLiveSecret(name: string, spec: LiveSecretSpec): LiveSecretRecord {
   const file = loadCredentialFile();
   checkNameFree(name, file);
+  const references = 'inline' in spec ? [spec.inline] : spec.env.map((e) => e.value);
+  const legacyNames = findSecretTokens(references.join('\n')).filter((t) => t.legacy).map((t) => t.name);
+  if (legacyNames.length > 0) {
+    // The log only: the CLI prints nothing but the registration result.
+    appendLogRecord('warn', { tag: 'live-secret', msg: legacyTokenWarning(legacyNames) });
+  }
   const fields: Pick<LiveSecretRecord, 'inline' | 'program' | 'args' | 'bindings'> = 'inline' in spec
     ? inlineFields(spec.inline)
     : programFields(spec);
@@ -359,7 +366,7 @@ function inlineFields(script: string): Pick<LiveSecretRecord, 'inline' | 'bindin
 function programFields(spec: Extract<LiveSecretSpec, { program: string }>): Pick<LiveSecretRecord, 'program' | 'args' | 'bindings'> {
   for (const text of [spec.program, ...spec.args]) {
     if (hasSecretToken(text)) {
-      throw new LiveRegistrationError('placeholder-in-args', 'a secret placeholder is not allowed in the script path or its args: pass it with --env VAR={{secret.NAME}}');
+      throw new LiveRegistrationError('placeholder-in-args', 'a secret placeholder is not allowed in the script path or its args: pass it with --env "VAR={{secret.NAME}}"');
     }
     rejectCleartext(text);
   }
@@ -520,7 +527,8 @@ export function getTaskCredentials(taskId: string): TaskCredential[] {
  *     short-lived token cannot work)
  *   - { expired } if the credential has passed its TTL. A persistent record is
  *     kept: a live secret may be bound to it by name, and the startup purge
- *     removes the unbound ones. A session entry is deleted.
+ *     removes the unbound ones. A session entry set after it expired is used
+ *     instead of reporting it. An expired session entry is deleted.
  *   - null if the credential does not exist
  */
 export function credentialResolve(
@@ -533,13 +541,13 @@ export function credentialResolve(
   if (isLiveRecord(stored)) {
     return { denied: `Credential '${name}' is a live secret: only execute_command and the KB provider can use it, because its value must never be kept in a file.` };
   }
-  const persistent = stored;
+  const persistent = effectivePersistent(stored, name);
   if (persistent) {
     const allowedMembers = persistent.allowedMembers ?? '*';
 
     // TTL check
     if (persistent.expiresAt && Date.now() > new Date(persistent.expiresAt).getTime()) {
-      return { expired: `Credential '${name}' has expired. Re-set with credential_store_set.` };
+      return { expired: `Credential '${name}' has expired. Re-set with credential_store_set (persist: true to keep it across restarts).` };
     }
 
     // Scoping check ('*' as callingMember is a fleet-operator bypass)
@@ -608,6 +616,15 @@ function isExpired(expiresAt: string | undefined): expiresAt is string {
 }
 
 /**
+ * The persistent record that speaks for `name`, if any. Persistent wins, except
+ * that an expired record gives way to a session entry: that is what a re-set
+ * with the default persist: false creates. The record itself stays in the file.
+ */
+function effectivePersistent(rec: PersistentRecord | undefined, name: string): PersistentRecord | undefined {
+  return rec && isExpired(rec.expiresAt) && sessionStore.has(name) ? undefined : rec;
+}
+
+/**
  * Metadata-only server-side lookup (no decryption), for status reporting.
  * Persistent wins over session. allowedMembers is not checked and nothing is
  * deleted, so an expired record stays visible as expired.
@@ -616,7 +633,7 @@ export function lookupServerSecretMeta(name: string): ServerSecretStatus {
   const stored = loadCredentialFile().credentials[name];
   // Live secrets are not static secrets; lookupLiveSecret reads them.
   if (isLiveRecord(stored)) return { status: 'missing' };
-  const persistent = stored;
+  const persistent = effectivePersistent(stored, name);
   const rec = persistent ?? sessionStore.get(name);
   if (!rec) return { status: 'missing' };
   const meta: ServerSecretMeta = {
@@ -637,7 +654,7 @@ export function lookupServerSecret(name: string): ServerSecretLookup {
   const found = lookupServerSecretMeta(name);
   if (found.status !== 'ok') return found;
   const stored = loadCredentialFile().credentials[name];
-  const persistent = isLiveRecord(stored) ? undefined : stored;
+  const persistent = isLiveRecord(stored) ? undefined : effectivePersistent(stored, name);
   let value: string;
   if (persistent) {
     value = decryptPassword(persistent.encryptedValue);
@@ -679,7 +696,7 @@ export function credentialUpdate(name: string, patch: CredentialUpdatePatch): Cr
     saveCredentialFile(file);
     return { members: allowedToMembers(stored.allowedMembers), network_policy: stored.network_policy };
   }
-  const persistent = stored;
+  const persistent = effectivePersistent(stored, name);
   if (persistent) {
     if (patch.members !== undefined) {
       persistent.allowedMembers = membersToAllowed(patch.members);
@@ -738,8 +755,8 @@ export function purgeExpiredCredentials(): void {
   for (const [name, record] of Object.entries(file.credentials)) {
     if (isLiveRecord(record) || consumersOf(file, name).length > 0) continue;
     if (record.expiresAt && now > new Date(record.expiresAt).getTime()) {
+      // A session entry is judged by its own expiry, not this record's.
       delete file.credentials[name];
-      sessionStore.delete(name);
       changed = true;
     }
   }
