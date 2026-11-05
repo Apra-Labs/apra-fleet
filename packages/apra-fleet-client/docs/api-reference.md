@@ -543,7 +543,18 @@ local OAuth session to the member instead. `api_key` supports a
 #### `provisionVcsAuth(options: ProvisionVcsAuthOptions)`
 
 Calls `provision_vcs_auth` -- configures git-host auth (GitHub App token or
-PAT, Bitbucket API token, or Azure DevOps PAT) on a member. `provider`
+PAT, Bitbucket API token, or Azure DevOps PAT) on a member, so it can clone,
+push, create pull requests, dispatch workflows and re-run CI jobs. `git_access`
+applies to GitHub App mode only and decides which of these the token may do:
+
+- `read` (read: contents, metadata): clone and fetch only.
+- `push` (write: contents, workflows; read: metadata): clone and push, including workflow files; cannot create pull requests or dispatch workflows.
+- `push+pr` (write: contents, pull_requests, workflows, actions; read: metadata): clone, push, create pull requests, dispatch workflows and re-run CI jobs.
+- `admin` (write: contents, administration, actions, workflows; read: metadata): clone, push, change repository settings, dispatch workflows and re-run CI jobs; cannot create pull requests.
+- `issues` (write: issues, pull_requests, discussions; read: metadata): manage issues and discussions and create pull requests from existing branches; cannot clone private code, push or dispatch workflows.
+- `full` (write: contents, administration, issues, pull_requests, actions, discussions, workflows; read: metadata): all of the above.
+
+`provider`
 (`"github" | "bitbucket" | "azure-devops"`) is required; the rest are
 optional and provider-specific: `member_id`, `member_name`, `label`,
 `scope_url`, `github_mode` (`"github-app" | "pat"`), `token`, `git_access`,
@@ -563,7 +574,9 @@ fall back to its default.
 #### kb_* scope keys
 
 Every `kb_*` call acts on the calling session's own KB (a member session's
-registered work folder; a FULL session's fleet server working folder). The
+registered work folder; a FULL session's first MCP client root inside a git
+repository with an origin remote, or the fleet server working folder when the
+client offers no roots). The
 pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are removed:
 the server refuses a call carrying any of them with `E-SCOPE-KEY-REMOVED`,
 and `kbExport` / `kbBibleCommit` / `kbDemote` refuse them client-side with the same code
@@ -758,8 +771,8 @@ changes metadata without re-entering the secret.
 #### `codeReindex()` / `codeStatus()`
 
 Calls `code_reindex` / `code_status` -- index maintenance for the calling
-session's own repo (a member session's registered work folder, otherwise the
-fleet server's folder; neither takes arguments). `codeReindex()` starts a
+session's own repo (a member session's registered work folder, otherwise
+the first MCP client root (roots/list) inside a git repository with an origin remote, or the server working folder when the client offers no roots; neither takes arguments). `codeReindex()` starts a
 detached `gitnexus analyze`, captures its output to
 `<data>/code-index/<slug>/analyze.log`, and returns after the first tick; its
 `outcome` is `started`, `up-to-date`, `starting`, `already-running` or
@@ -786,10 +799,21 @@ folder whose index is `missing`, `interrupted` or `inconsistent` requests a
 background build automatically (unless `autoReindex.enabled` is false in the
 code-intelligence config.json) and fails with `E-CODE-INDEX-NOT-READY` saying
 so; an answer during which the index changed is discarded with the same error.
+That error's text ends with `[retry_after_ms=N retry_will_help=B build=X state=Y ...]`
+(plus `progress: phase=... elapsed_ms=... line_count=... last_line='...'` while an
+analyze runs), and the result's `structuredContent` holds the same fields. Wait
+`retry_after_ms` once, retry once, then fall back; 0 means retrying will not help.
 A `code_impact` / `code_context` answer whose resolved symbol is not the one
 requested carries `resolution_mismatch` (`{ requested, resolved: { name, id,
 filePath } }`) and `confidence: 'LOW'`, and an impact `risk` is moved to
-`unverified_risk` with `risk: 'UNKNOWN'`. Extract both with `parseToolJson()`.
+`unverified_risk` with `risk: 'UNKNOWN'`. A not-found answer from an index whose
+node ids are not unique (an incremental analyze corrupted it) carries
+`index_integrity` (`{ corrupt: true, damaged_rows, rebuild }`, where `rebuild` is
+`{ started: true }` or `{ started: false, reason, detail? }`, plus `pause` when
+`reason` is `paused`) and `confidence: 'LOW'`,
+plus a warning text. A flagged "not found" does NOT prove the symbol is absent:
+use a text search, and retry once `codeStatus()` reports the index ready.
+Extract all of these with `parseToolJson()`.
 
 #### `doltPushMutex(options)`
 

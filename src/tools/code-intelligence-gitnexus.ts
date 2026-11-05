@@ -6,6 +6,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { CodeIntelligenceProvider } from './code-intelligence.js';
 import { freshnessNote } from './code-intelligence-freshness.js';
 import { maybeScheduleReindex, GITNEXUS_PACKAGE_SPEC } from './code-intelligence-reindex.js';
+import { scheduleIndexBuild, type ScheduleReindexOutcome } from './code-index-heal.js';
 import { isTestPath } from './code-intelligence-tests.js';
 import { codeIndexReadiness, ensureGitNexusIndexReady, indexChangedDuringCallError } from './code-intelligence-readiness.js';
 import { indexGeneration, readGitNexusIndexState } from './code-index-state.js';
@@ -55,7 +56,7 @@ let connectionPromise: Promise<ClientEntry> | null = null;
 // unhandled throw or a silent empty result -- mirrors the F3.1 error shape.
 const OFFLINE_MESSAGE =
   "Code intelligence is offline: the gitnexus service could not be reached. " +
-  "Start or reinstall it by running 'npx gitnexus analyze --index-only' in the repo " +
+  "Start or reinstall it by running 'npx gitnexus analyze --index-only --force' in the repo " +
   "(or /pm index), then retry.";
 
 function offlineResult(detail?: string): { content: Array<{ type: 'text'; text: string }>; isError: true } {
@@ -483,6 +484,110 @@ export function flagResolutionMismatch(result: unknown, requested: unknown, kind
 }
 
 // ---------------------------------------------------------------------------
+// Corrupt-index check (code_impact / code_context "not found"). gitnexus
+// 1.6.12's incremental analyze of a large repo rewrites rows of files it did
+// not change. Reproduced with one one-line edit on a repo of 43297 nodes: the
+// total stayed about the same, but only 34011 distinct ids were left (9287
+// rows now duplicate another row, and an earlier run left 7774 blank ones).
+// Every symbol whose row was overwritten answers "Target 'x' not found" /
+// "Symbol 'x' not found" although it exists, and the index stays broken until
+// a full rebuild. A healthy index has one row per id. Fleet-run analyzes are
+// full rebuilds (GITNEXUS_ANALYZE_ARGS carries --force), but an index corrupted
+// before that, or by an incremental analyze run by hand, still answers this
+// way. So a not-found answer is cross-checked: when ids are not unique, the
+// answer is marked as unreliable and a rebuild is asked for
+// (scheduleIndexBuild: config-, cooldown- and single-flight-gated).
+// ---------------------------------------------------------------------------
+
+const NOT_FOUND_ERROR = /^(?:Target|Symbol) '([\s\S]*)' not found\.?$/;
+
+// Every node of a healthy index has its own id ('<Label>:<path>[:<name>]').
+// count(DISTINCT) folds duplicated and blank ids and skips null ones, so the
+// difference covers all three.
+export const INDEX_ID_UNIQUENESS_QUERY = 'MATCH (n) RETURN count(n) AS total, count(DISTINCT n.id) AS distinct_ids';
+
+export interface IndexIntegrity {
+  corrupt: true;
+  /** Rows in the index beyond one per distinct id: overwritten symbols. */
+  damaged_rows: number;
+  /** Whether an automatic rebuild started, or why not. */
+  rebuild: ScheduleReindexOutcome;
+}
+
+/** The name a code_impact / code_context result reports as not found, or null. */
+export function notFoundName(result: unknown): string | null {
+  const parts = splitPayload(result);
+  if (!parts) return null;
+  const error = parts.payload.error;
+  if (typeof error !== 'string') return null;
+  const m = NOT_FOUND_ERROR.exec(error.trim());
+  return m ? m[1] : null;
+}
+
+function splitPayload(result: unknown): { payload: Record<string, unknown>; suffix: string; first: Record<string, unknown>; content: unknown[] } | null {
+  if (isErrorResult(result) || !result || typeof result !== 'object' || !('content' in result)) return null;
+  const content = (result as { content: unknown }).content;
+  if (!Array.isArray(content) || content.length === 0) return null;
+  const first = content[0] as Record<string, unknown> | undefined;
+  if (!first || typeof first.text !== 'string') return null;
+  const sep = '\n\n---\n';
+  const cut = first.text.indexOf(sep);
+  try {
+    const parsed = JSON.parse(cut >= 0 ? first.text.slice(0, cut) : first.text) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return { payload: parsed as Record<string, unknown>, suffix: cut >= 0 ? first.text.slice(cut) : '', first, content };
+  } catch { return null; }
+}
+
+/** Rows beyond one per distinct id in `repo`'s index, or null when it cannot be read. */
+async function damagedRows(repo: string): Promise<number | null> {
+  let result: unknown;
+  try {
+    result = await callGitNexus('cypher', { query: INDEX_ID_UNIQUENESS_QUERY, repo });
+  } catch { return null; }
+  const payload = extractCypherPayload(result);
+  if (!payload) return null;
+  const row = parseMarkdownTable(payload.markdown)[0];
+  if (!row || row.total === undefined || row.distinct_ids === undefined) return null;
+  const n = Number(row.total) - Number(row.distinct_ids);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * When a code_impact / code_context answer is "not found" and `repo`'s index
+ * holds overwritten rows (ids that are not unique), return the answer marked as unreliable (payload
+ * index_integrity + confidence LOW, plus a warning naming the cause and what
+ * happens next) and ask for a rebuild. Any other result, or one whose
+ * index checks out, is returned unchanged.
+ */
+export async function flagCorruptIndexNotFound(result: unknown, repo: unknown): Promise<unknown> {
+  if (typeof repo !== 'string' || repo === '') return result;
+  const name = notFoundName(result);
+  if (name === null) return result;
+  const damaged = await damagedRows(repo);
+  if (damaged === null || damaged <= 0) return result;
+
+  const rebuild = scheduleIndexBuild(repo);
+  const integrity: IndexIntegrity = { corrupt: true, damaged_rows: damaged, rebuild };
+  const parts = splitPayload(result) as NonNullable<ReturnType<typeof splitPayload>>;
+  const next = rebuild.started
+    ? 'A full rebuild of the index has started; retry once code_status reports it ready.'
+    : `No rebuild started (${rebuild.reason}${rebuild.detail ? `: ${rebuild.detail}` : ''}); run code_reindex, which always rebuilds the index in full.`;
+  const warning = `[code-intelligence] INDEX CORRUPT: '${name}' was not found, but ${damaged} rows in this code index ` +
+    'have overwritten other symbols, so this is NOT evidence that the symbol does not exist. ' +
+    `${next} Until then, use a text search for this symbol.`;
+  const patched = { ...parts.payload, index_integrity: integrity, confidence: 'LOW' };
+  return {
+    ...(result as Record<string, unknown>),
+    content: [
+      { ...parts.first, text: JSON.stringify(patched, null, 2) + parts.suffix },
+      ...parts.content.slice(1),
+      { type: 'text', text: warning },
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Rung-2 compose support (T2.1 code_map, T2.2 code_flow): gitnexus 1.6.7 has
 // no direct communities/map or flows/processes tool (see
 // docs/code-intelligence-child-surface.md). Both compose over the generic
@@ -780,7 +885,8 @@ export class GitNexusProvider implements CodeIntelligenceProvider {
   }
 
   async impact(params: Record<string, unknown>): Promise<unknown> {
-    return flagResolutionMismatch(await callGitNexus('impact', params), params.target, 'impact');
+    const result = await callGitNexus('impact', params);
+    return flagResolutionMismatch(await flagCorruptIndexNotFound(result, params.repo), params.target, 'impact');
   }
 
   async query(params: Record<string, unknown>): Promise<unknown> {
@@ -788,7 +894,8 @@ export class GitNexusProvider implements CodeIntelligenceProvider {
   }
 
   async context(params: Record<string, unknown>): Promise<unknown> {
-    return flagResolutionMismatch(await callGitNexus('context', params), params.name, 'context');
+    const result = await callGitNexus('context', params);
+    return flagResolutionMismatch(await flagCorruptIndexNotFound(result, params.repo), params.name, 'context');
   }
 
   // T2.1: architectural map via Community nodes (rung 2 -- compose over cypher;

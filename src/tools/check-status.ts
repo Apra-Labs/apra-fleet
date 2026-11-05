@@ -416,7 +416,7 @@ export function codeIntelligenceCompactLine(health: CodeIntelligenceHealth): str
     return `code-intel: ${health.reason ?? CODE_INTEL_NO_REPO_REASON}` + topSymbolsFragment(health.topSymbols);
   }
   if (!health.present) {
-    return "code-intel: no index (run 'npx gitnexus analyze --index-only' or /pm index)" + topSymbolsFragment(health.topSymbols);
+    return "code-intel: no index (run 'npx gitnexus analyze --index-only --force' or /pm index)" + topSymbolsFragment(health.topSymbols);
   }
   const nodes = health.nodes ?? 0;
   const edges = health.edges ?? 0;

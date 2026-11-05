@@ -8,6 +8,7 @@ import { credentialResolve } from '../services/credential-store.js';
 import { collectOobApiKey } from '../services/auth-socket.js';
 import { decryptPassword } from '../utils/crypto.js';
 import { githubProvider } from '../services/vcs/github.js';
+import { mapAccessLevel } from '../services/github-app.js';
 import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import { scheduleCredentialCleanup, cancelCredentialCleanup } from '../services/credential-cleanup.js';
@@ -41,6 +42,29 @@ function resolveSecretField(value: string, callingMember: string): { resolved: s
   }
   return { resolved, legacyNames };
 }
+
+/** What each GitHub App git_access level lets a member do, in plain words (grants: mapAccessLevel). */
+export const GIT_ACCESS_ACTIONS = {
+  read: 'clone and fetch only',
+  push: 'clone and push, including workflow files; cannot create pull requests or dispatch workflows',
+  'push+pr': 'clone, push, create pull requests, dispatch workflows and re-run CI jobs',
+  admin: 'clone, push, change repository settings, dispatch workflows and re-run CI jobs; cannot create pull requests',
+  issues: 'manage issues and discussions and create pull requests from existing branches; cannot clone private code, push or dispatch workflows',
+  full: 'clone, push, create pull requests, dispatch workflows, re-run CI jobs, manage issues and discussions, and change repository settings',
+} as const;
+
+/** The GitHub permissions a level requests, read from mapAccessLevel so the text cannot drift from it. */
+export function gitAccessGrants(level: string): string {
+  const permissions = Object.entries(mapAccessLevel(level));
+  const named = (value: string) => permissions.filter(([, v]) => v === value).map(([name]) => name).join(', ');
+  return [`write: ${named('write')}`, `read: ${named('read')}`].filter((part) => !part.endsWith(': ')).join('; ');
+}
+
+const GIT_ACCESS_DESCRIPTION =
+  'GitHub App mode only (ignored for a GitHub PAT, Bitbucket and Azure DevOps, whose token grants what it was created with). ' +
+  "The level the minted token gets, overriding the member's configured one. Pick push+pr to create pull requests or dispatch workflows. Levels: " +
+  Object.entries(GIT_ACCESS_ACTIONS).map(([level, actions]) => `${level} (${gitAccessGrants(level)}): ${actions}.`).join(' ') +
+  ' The GitHub App itself must hold these permissions, or minting fails.';
 
 const providers: Record<string, VcsProviderService> = {
   'github': githubProvider,
@@ -96,7 +120,7 @@ export const provisionVcsAuthSchema = z.object({
   // GitHub fields
   github_mode: z.enum(['github-app', 'pat']).optional().describe('GitHub auth mode: github-app (mint via configured app) or pat (personal access token)'),
   token: z.string().optional().describe('Personal access token (GitHub PAT or Azure DevOps PAT). Supports {{secret.NAME}} token -- value is resolved from the credential store before use.'),
-  git_access: z.enum(['read', 'push', 'push+pr', 'admin', 'issues', 'full']).optional().describe('GitHub App access level override'),
+  git_access: z.enum(['read', 'push', 'push+pr', 'admin', 'issues', 'full']).optional().describe(GIT_ACCESS_DESCRIPTION),
   repos: z.array(z.string()).optional().describe('GitHub App repository list override'),
 
   // Bitbucket fields

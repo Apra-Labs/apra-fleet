@@ -105,24 +105,54 @@ carrying one (any value but absent/undefined) with `E-SCOPE-KEY-REMOVED`
 before any KB is resolved or opened. The message names every removed key
 present and what replaces it (nothing: drop it -- a member session acts on
 its registered work folder, a remote member's KB identity is its registered
-origin remote, and a FULL session acts on the server's working folder;
+origin remote, and a FULL session acts on its first client root inside a git
+repository with an origin, or the server's working folder when the client offers
+no roots;
 `kb_import` keeps `path` for naming a bible file).
 
 - **Member session** (`?member=<uuid>` or a member JWT): the member's
   registered work folder. The session's member id travels from the HTTP
   transport to the handler through an `AsyncLocalStorage` lane
   (`src/services/tool-scope.ts`), so handlers never receive it as a parameter.
-- **Full session** (no member identity): the fleet server's own working
-  folder (`process.cwd()` of the server process). An HTTP server cannot see a
-  client's cwd, so there is no separate "self" for local non-member callers:
-  a FULL session started from any client directory still reads and writes
-  the KB of the repository the SERVER was started in. When that folder cannot
-  carry a KB identity, the self-resolution error says exactly that -- "This is
-  a FULL session (no member identity), so its KB is the fleet server's own
-  working folder, not the calling client's directory; '<folder>' is not a git
-  repository" (or "has no origin remote") -- and names both fixes: restart
-  the fleet server with its working folder set to the intended repository, or
-  call from a member session (`?member=<id>`) of a member registered on it.
+- **Full session** (no member identity): the MCP client's roots
+  (`roots/list`). The first offered root inside a git repository with an
+  origin remote wins, and stands for that repository's top level, so a client
+  opened in a subfolder is scoped to the repository -- for both `kb_*` and
+  `code_*`, so one session never scopes its kb and code tools to two different
+  repositories. The fleet server's own working folder (`process.cwd()`) is used
+  only when the client offers no roots (it lacks the `roots` capability or
+  returns an empty list). When roots are offered and none qualifies the call is
+  refused, never answered from the server folder, which may be an unrelated
+  repository. That includes roots that are not folders on the server's host: a
+  remote HTTP client's roots are paths on its own machine, so such a client calls
+  from a member session instead.
+  A server auto-started with an
+  unrelated working folder (e.g. a system directory) therefore works from any
+  client opened in a repository.
+
+  Roots are fetched once per session, on its first `kb_*`/`code_*` call,
+  through that call's own request (`src/services/session-roots.ts`), cached,
+  and refetched after `notifications/roots/list_changed`. A failed or
+  timed-out fetch is not "no roots": the call is refused with
+  `E-SELF-NO-WORKFOLDER` naming the failure, nothing is read or written, and
+  the next call asks again. The selection is made once per call (`resolveSelfSession()`,
+  memoized in the tool-call context) and shared by kb (self) and code (self).
+  A member session never reads roots.
+
+  **Extension for `code_*` only** (not part of the base rule): a code index
+  needs no origin remote, so when roots are offered and NONE is in a git
+  repository with an origin, `code_*` falls back to the first offered root in a
+  git repository. `kb_*` calls in that session fail with
+  `E-SELF-NO-REMOTE` naming that no offered root has an origin remote, so kb
+  and code still never resolve to two different repositories.
+
+  When neither works, the error names the missing piece: roots were offered
+  but none is a folder on this host (`E-SELF-NO-WORKFOLDER`), none is in a git
+  repository (`E-SELF-NOT-A-REPO`), or none has an origin (`E-SELF-NO-REMOTE`, kb
+  only), asking for the roots failed (`E-SELF-NO-WORKFOLDER`), or the client offered no
+  roots and the server folder is not a git repository / has no origin
+  ("This is a FULL session (no member identity) and the client offered no MCP
+  roots, so its scope is the fleet server's own working folder, ...").
 
 `resolveSelfAnchor()` (`src/services/knowledge/kb-self.ts`) performs the
 resolution and `getSelfKbProviders()` feeds the result to `getKbProviders`.
@@ -137,9 +167,10 @@ directory-name or `default` KB:
 | `E-SELF-NOT-A-REPO` | the folder is not a git repository | run `git init` (or clone the project) there and add an origin remote |
 | `E-SELF-NO-REMOTE` | no origin remote (or, for a remote member, no single known origin URL) | run `git remote add origin <url>` there; for a remote member, record the origin on the member (`update_member git_repos: ["<origin url>"]`) or call from a session on the member's own host |
 
-For a FULL session every remediation leads with the same fix: restart the
-fleet server with its working folder set to the intended repository, or call
-from a member session of a member registered on it (then, as applicable,
+For a FULL session on the server-folder path every remediation leads with the
+same fixes: open the client in the intended repository (a client that offers
+MCP roots), restart the fleet server with its working folder set to it, or
+call from a member session of a member registered on it (then, as applicable,
 make that folder a git repository with an origin remote). The error text is
 `<code>: <problem> Remediation: <fix>`, one line.
 
@@ -691,9 +722,11 @@ Knowledge Layer setup):
 ```
 
 Build the initial graph through the fleet, not by hand: member init and the
-`code_reindex` tool run `npx gitnexus@>=1.6.5 analyze --index-only` (the pinned
-minimum version; `--index-only` keeps the run from writing into the target
-repo). Do not run a plain `gitnexus analyze` in a target repo.
+`code_reindex` tool run `npx gitnexus@>=1.6.5 analyze --index-only --force` (the
+pinned minimum version; `--index-only` keeps the run from writing into the
+target repo, and `--force` makes it a full rebuild: gitnexus 1.6.12's
+incremental analyze can overwrite thousands of unchanged symbol rows, which then
+answer "not found"). Do not run a plain `gitnexus analyze` in a target repo.
 
 Verify by calling `context` with a symbol name in Claude Code.
 `kb_session_prime` degrades gracefully when GitNexus is absent.
@@ -930,11 +963,13 @@ call from an agent, scoped to that agent's own session folder.
 GitNexus tools return outdated results after a refactor.
 
 **Fix**: rebuild the graph with the `code_reindex` tool (it runs
-`npx gitnexus@>=1.6.5 analyze --index-only`). Do not run a plain
+`npx gitnexus@>=1.6.5 analyze --index-only --force`). Do not run a plain
 `gitnexus analyze` in a target repo.
 
-Run this after large refactors or after renaming many files. The graph update
-is incremental on subsequent runs.
+Run this after large refactors or after renaming many files. Every fleet run
+is a full rebuild (`--force`): parser output for unchanged files is replayed
+from gitnexus's parse cache, but the graph DB is rebuilt, because an
+incremental top-up can corrupt unchanged symbol rows.
 
 ### SQLite lock errors (SQLITE_BUSY)
 

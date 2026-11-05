@@ -566,3 +566,11 @@ queries and `bd memories` search behavior. The supervisor and
 sprint screenshots are unretouched captures of a running supervisor. Claims about
 what agents refuse to do (improvising deploys, inventing scope, self-granting
 permissions) are taken from the role contracts verbatim.*
+
+## Network exposure
+
+The supervisor and the viewer bind loopback (`127.0.0.1`) by default, so the
+dashboard and API are reachable only from the same machine. Binding another
+interface requires passing an explicit host option; it is never implied.
+Clients on the same machine, including `localhost` URLs, still connect
+normally.

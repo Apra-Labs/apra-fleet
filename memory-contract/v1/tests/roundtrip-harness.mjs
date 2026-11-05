@@ -726,6 +726,24 @@ function rehydrate(value, substitutions) {
  * recorded one byte-for-byte. Path separators are normalised last because the
  * recording host and the running host need not agree on them.
  */
+// Structured refusal detail that legitimately varies run to run (a live
+// analyze's elapsed time and log tail), so a recording never pins it.
+const VOLATILE_STRUCTURED_KEYS = new Set(['progress']);
+
+/** null when `live` matches the recorded structured detail, else why not. */
+function structuredMismatch(recorded, live) {
+  if (!live || typeof live !== 'object') return `the live refusal carries no structuredContent (recorded ${JSON.stringify(recorded)})`;
+  for (const [key, value] of Object.entries(recorded)) {
+    if (JSON.stringify(live[key]) !== JSON.stringify(value)) {
+      return `${key}: live ${JSON.stringify(live[key])}, recorded ${JSON.stringify(value)}`;
+    }
+  }
+  for (const key of Object.keys(live)) {
+    if (!(key in recorded) && !VOLATILE_STRUCTURED_KEYS.has(key)) return `live key ${key} is not in the recording`;
+  }
+  return null;
+}
+
 function normalizeMessage(message, substitutions, ctx) {
   let out = String(message);
   const reverse = [
@@ -1017,6 +1035,16 @@ export async function runRoundTrip(provider, rosterTools) {
       thrown = err;
       record.dispatched = true;
     }
+    // A refusal that carries machine-readable detail is returned by the tool
+    // wrapper as an isError envelope (text = the one-line message,
+    // structuredContent = the detail) instead of being thrown -- exactly what
+    // the MCP boundary produces for a thrown error, plus the detail. Treat it
+    // as the thrown refusal it stands for.
+    if (!thrown && envelope && envelope.isError === true) {
+      const text = (envelope.content ?? []).map((c) => c?.text ?? '').join('\n');
+      thrown = Object.assign(new Error(text), envelope.structuredContent ? { structuredContent: envelope.structuredContent } : {});
+      envelope = undefined;
+    }
 
     const expectsThrow = Boolean(fixture.error?.thrown);
     if (expectsThrow) {
@@ -1033,6 +1061,13 @@ export async function runRoundTrip(provider, rosterTools) {
           `refusal message does not match the recorded ${fixture.expected_error_code} refusal.\n` +
             `  live:     ${liveMessage}\n  recorded: ${recordedMessage}`,
         );
+      }
+      // The recorded structured detail (error.structured) must match the live
+      // structuredContent key for key; live keys absent from the recording
+      // are allowed only when time-varying (VOLATILE_STRUCTURED_KEYS).
+      if (fixture.error.structured !== undefined) {
+        const problem = structuredMismatch(fixture.error.structured, thrown?.structuredContent);
+        if (problem) fail(`refusal structured detail does not match the recorded ${fixture.expected_error_code} refusal: ${problem}`);
       }
       continue;
     }
