@@ -291,7 +291,9 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
       ? (await providers.global.query({ ids: missingIds })).results
       : [];
 
-    l2Results = [...projectL2.results, ...globalL2Results].map(e => ({
+    // An ids lookup returns rows in table order; keep L2 in the L1 rank order.
+    const fetched = new Map([...projectL2.results, ...globalL2Results].map(e => [e.id, e] as const));
+    l2Results = l2Ids.flatMap(id => (fetched.has(id) ? [fetched.get(id)!] : [])).map(e => ({
       ...e,
       content: e.content.length > L2_CONTENT_CAP
         ? e.content.slice(0, L2_CONTENT_CAP) + '...[truncated]'

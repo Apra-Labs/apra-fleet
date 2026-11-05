@@ -19,9 +19,9 @@ import {
   filesOverlap,
   makeFtsQuery,
   makeAudnDecision,
-  orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
+import { KbKeywordIndex, type KeywordIndexStatus } from './kb-index.js';
 import { validateFilePaths } from './path-validation.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
 import { CAPTURE_TRIGGERS, KB_AUDIT_NOTE_START, KbCaptureRejected, type CaptureTrigger, type DiscardResult, type RetireOptions } from './types.js';
@@ -156,6 +156,7 @@ function trustFilterSql(filter: EntryTrustFilter | undefined): { conditions: str
 
 export class SqliteProvider implements MemoryProvider {
   private db: DatabaseSync | null = null;
+  private readonly keywordIndex = new KbKeywordIndex(() => this.db);
   readonly dbPath: string;
   readonly projectSlug: string;
   /**
@@ -240,31 +241,12 @@ export class SqliteProvider implements MemoryProvider {
       CREATE INDEX IF NOT EXISTS idx_entries_superseded_at ON entries(superseded_at);
       CREATE INDEX IF NOT EXISTS idx_entries_use_count ON entries(use_count);
 
-      CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
-        title,
-        summary,
-        content,
-        tags,
-        content='entries',
-        content_rowid='rowid'
-      );
-
-      CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
-        INSERT INTO entries_fts(rowid, title, summary, content, tags)
-        VALUES (new.rowid, new.title, new.summary, new.content, new.tags);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
-        INSERT INTO entries_fts(entries_fts, rowid, title, summary, content, tags)
-        VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.tags);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
-        INSERT INTO entries_fts(entries_fts, rowid, title, summary, content, tags)
-        VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.tags);
-        INSERT INTO entries_fts(rowid, title, summary, content, tags)
-        VALUES (new.rowid, new.title, new.summary, new.content, new.tags);
-      END;
+      -- The keyword index (entries_kw / entries_tri, normalized and weighted)
+      -- is created by KbKeywordIndex.init() at the end of init(), after the
+      -- column migrations below. DBs from before it carry a legacy
+      -- external-content entries_fts plus entries_ai/ad/au triggers; those
+      -- keep serving keyword reads until the background rebuild finishes and
+      -- drops them. A fresh DB never creates them.
 
       CREATE TABLE IF NOT EXISTS links (
         from_id TEXT NOT NULL,
@@ -371,6 +353,27 @@ export class SqliteProvider implements MemoryProvider {
         recorded_at TEXT NOT NULL
       );
     `);
+
+    // Design D2a keyword index: normalized, column-weighted FTS plus a
+    // trigram index, versioned in kb_index_meta. A version mismatch (an old
+    // DB, or a normalizer change) starts a BACKGROUND rebuild; init and the
+    // first query do not wait for it. Must run after the column migrations
+    // above (its triggers name recall_cues / error_signatures).
+    this.keywordIndex.init();
+  }
+
+  /** Keyword-index version and rebuild state (kb_index_meta). */
+  keywordIndexStatus(): KeywordIndexStatus {
+    return this.keywordIndex.status();
+  }
+
+  /**
+   * Resolve once the keyword index is complete at the current version (true),
+   * or false on timeout / close. Queries never need this -- they fall back
+   * while a rebuild runs -- it exists for maintenance callers and tests.
+   */
+  waitForKeywordIndex(timeoutMs?: number): Promise<boolean> {
+    return this.keywordIndex.waitUntilReady(timeoutMs);
   }
 
   /**
@@ -1011,8 +1014,10 @@ export class SqliteProvider implements MemoryProvider {
   }
 
   private findAudnCandidates(db: DatabaseSync, input: KBEntryInput): KBEntry[] {
-    const ftsQuery = makeFtsQuery(input.title);
-    if (!ftsQuery) return [];
+    // Same title-token selection as makeFtsQuery (OR across tokens), but each
+    // token goes through the keyword-index normalizer.
+    if (!makeFtsQuery(input.title)) return [];
+    const titleTokens = input.title.match(/\b[a-zA-Z0-9_]{3,}\b/g) ?? [];
     try {
       // D2 HALF B (candidate-discovery fix): candidates are discovered by symbol/
       // title overlap across ALL entry types -- the same-type restriction was
@@ -1020,14 +1025,7 @@ export class SqliteProvider implements MemoryProvider {
       // contradicting a 'learning' entry on shared symbols) are discoverable.
       // makeAudnDecision re-imposes candidate.type === input.type for the
       // dedup/update decisions; only the contradiction path stays cross-type.
-      const rows = db.prepare(`
-        SELECT e.* FROM entries e
-        JOIN entries_fts ON entries_fts.rowid = e.rowid
-        WHERE entries_fts MATCH ?
-          AND e.superseded_at IS NULL
-        ORDER BY rank
-        LIMIT 10
-      `).all(ftsQuery) as Record<string, unknown>[];
+      const rows = this.keywordIndex.search({ terms: titleTokens }, ['e.superseded_at IS NULL'], [], 10);
       return rows.map(r => this.rowToEntry(r));
     } catch {
       return [];
@@ -1416,19 +1414,12 @@ export class SqliteProvider implements MemoryProvider {
       // ONE sanitization point. Free text is tokenized then OR-joined; internal
       // callers pass discrete terms via fts_terms. Raw MATCH threw on '.', '-',
       // '(', ')', '/' and implicit-AND'd multi-term queries to zero rows.
-      const ftsQuery = opts.fts_terms?.length
-        ? orJoinFtsTerms(opts.fts_terms)
-        : orJoinFtsTerms(opts.query!.match(/[A-Za-z0-9_]+/g) ?? []);
-      if (!ftsQuery) return { results: [], total: 0, l1_only: !!opts.l1_only };
-      const ftsWhere = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
-      rows = db.prepare(`
-        SELECT e.* FROM entries e
-        JOIN entries_fts ON entries_fts.rowid = e.rowid
-        WHERE entries_fts MATCH ?
-        ${ftsWhere}
-        ORDER BY rank
-        LIMIT ?
-      `).all(ftsQuery, ...params, limit) as Record<string, unknown>[];
+      // Design D2a: the keyword index normalizes both sides (camel/snake/
+      // kebab/path split + stem), ranks with per-column bm25 weights and folds
+      // trigram (partial identifier) hits in below every full-token hit.
+      // orJoinFtsTerms remains the single quoting point (kb-normalize).
+      const search = opts.fts_terms?.length ? { terms: opts.fts_terms } : { query: opts.query! };
+      rows = this.keywordIndex.search(search, conditions, params, limit, { trigram: true });
     } else {
       rows = db.prepare(`
         SELECT e.* FROM entries e
@@ -2687,6 +2678,7 @@ export class SqliteProvider implements MemoryProvider {
   }
 
   close(): void {
+    this.keywordIndex.close();
     this.db?.close();
     this.db = null;
   }
