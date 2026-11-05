@@ -1580,18 +1580,26 @@ const REVIEW_SCHEMA = {
       "type": "array",
       "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
       "items": {
+        "type": [
+          "object",
+          "string"
+        ],
         "description": "One capture. Everything listed under each field is checked by the engine per capture, never by the report schema: a capture that breaks a rule is refused and logged on its own, and the rest of this report stands. See the capture rubric.",
         "properties": {
           "type": {
+            "type": "string",
             "description": "REQUIRED string, one of: knowledge, learning, runbook."
           },
           "title": {
+            "type": "string",
             "description": "REQUIRED string, 8 to 160 characters, ASCII only."
           },
           "summary": {
+            "type": "string",
             "description": "REQUIRED string, 20 to 500 characters, ASCII only. The lesson in at most 2 sentences, present tense, standing alone as current truth."
           },
           "trigger": {
+            "type": "string",
             "description": "REQUIRED string, exactly one of the listed examples: what kind of event produced this lesson. Never \"describes the change\".",
             "examples": [
               "failed-attempt",
@@ -1603,19 +1611,48 @@ const REVIEW_SCHEMA = {
             ]
           },
           "content": {
+            "type": [
+              "string",
+              "number"
+            ],
             "description": "Optional string, 40 to 2000 characters, ASCII only. Written only when it adds what the summary cannot hold (labelled sections: Context, Symptom, Cause, Rule/Fix, Tried (failed), Evidence). Content that repeats the summary is refused. A failed-attempt capture must have Cause and Rule/Fix. No credentials or token-shaped strings."
           },
           "source_files": {
-            "description": "REQUIRED array of strings, at least one: files that make this claim checkable. An entry with no basis is rejected, because the freshness sweep can never stale it."
+            "type": [
+              "array",
+              "string"
+            ],
+            "description": "REQUIRED array of strings, at least one: files that make this claim checkable. An entry with no basis is rejected, because the freshness sweep can never stale it.",
+            "items": {
+              "type": "string"
+            }
           },
           "symbols": {
-            "description": "Optional array of strings: symbols this claim is about."
+            "type": "array",
+            "description": "Optional array of strings: symbols this claim is about.",
+            "items": {
+              "type": "string"
+            }
           },
           "recall_cues": {
-            "description": "Optional array of strings: phrases a future reader would search for to find this lesson."
+            "type": [
+              "array",
+              "string"
+            ],
+            "description": "Optional array of strings: phrases a future reader would search for to find this lesson.",
+            "items": {
+              "type": "string"
+            }
           },
           "error_signatures": {
-            "description": "Optional array of strings: exact error strings that this lesson explains."
+            "type": [
+              "array",
+              "string"
+            ],
+            "description": "Optional array of strings: exact error strings that this lesson explains.",
+            "items": {
+              "type": "string"
+            }
           }
         }
       }
@@ -1785,18 +1822,26 @@ const DOER_STATUS_SCHEMA = {
       "type": "array",
       "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
       "items": {
+        "type": [
+          "object",
+          "string"
+        ],
         "description": "One capture. Everything listed under each field is checked by the engine per capture, never by the report schema: a capture that breaks a rule is refused and logged on its own, and the rest of this report stands. See the capture rubric.",
         "properties": {
           "type": {
+            "type": "string",
             "description": "REQUIRED string, one of: knowledge, learning, runbook."
           },
           "title": {
+            "type": "string",
             "description": "REQUIRED string, 8 to 160 characters, ASCII only."
           },
           "summary": {
+            "type": "string",
             "description": "REQUIRED string, 20 to 500 characters, ASCII only. The lesson in at most 2 sentences, present tense, standing alone as current truth."
           },
           "trigger": {
+            "type": "string",
             "description": "REQUIRED string, exactly one of the listed examples: what kind of event produced this lesson. Never \"describes the change\".",
             "examples": [
               "failed-attempt",
@@ -1808,19 +1853,48 @@ const DOER_STATUS_SCHEMA = {
             ]
           },
           "content": {
+            "type": [
+              "string",
+              "number"
+            ],
             "description": "Optional string, 40 to 2000 characters, ASCII only. Written only when it adds what the summary cannot hold (labelled sections: Context, Symptom, Cause, Rule/Fix, Tried (failed), Evidence). Content that repeats the summary is refused. A failed-attempt capture must have Cause and Rule/Fix. No credentials or token-shaped strings."
           },
           "source_files": {
-            "description": "REQUIRED array of strings, at least one: files that make this claim checkable. An entry with no basis is rejected, because the freshness sweep can never stale it."
+            "type": [
+              "array",
+              "string"
+            ],
+            "description": "REQUIRED array of strings, at least one: files that make this claim checkable. An entry with no basis is rejected, because the freshness sweep can never stale it.",
+            "items": {
+              "type": "string"
+            }
           },
           "symbols": {
-            "description": "Optional array of strings: symbols this claim is about."
+            "type": "array",
+            "description": "Optional array of strings: symbols this claim is about.",
+            "items": {
+              "type": "string"
+            }
           },
           "recall_cues": {
-            "description": "Optional array of strings: phrases a future reader would search for to find this lesson."
+            "type": [
+              "array",
+              "string"
+            ],
+            "description": "Optional array of strings: phrases a future reader would search for to find this lesson.",
+            "items": {
+              "type": "string"
+            }
           },
           "error_signatures": {
-            "description": "Optional array of strings: exact error strings that this lesson explains."
+            "type": [
+              "array",
+              "string"
+            ],
+            "description": "Optional array of strings: exact error strings that this lesson explains.",
+            "items": {
+              "type": "string"
+            }
           }
         }
       }
@@ -2131,18 +2205,26 @@ const HARVEST_SCHEMA = {
       "type": "array",
       "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
       "items": {
+        "type": [
+          "object",
+          "string"
+        ],
         "description": "One capture. Everything listed under each field is checked by the engine per capture, never by the report schema: a capture that breaks a rule is refused and logged on its own, and the rest of this report stands. See the capture rubric.",
         "properties": {
           "type": {
+            "type": "string",
             "description": "REQUIRED string, one of: knowledge, learning, runbook."
           },
           "title": {
+            "type": "string",
             "description": "REQUIRED string, 8 to 160 characters, ASCII only."
           },
           "summary": {
+            "type": "string",
             "description": "REQUIRED string, 20 to 500 characters, ASCII only. The lesson in at most 2 sentences, present tense, standing alone as current truth."
           },
           "trigger": {
+            "type": "string",
             "description": "REQUIRED string, exactly one of the listed examples: what kind of event produced this lesson. Never \"describes the change\".",
             "examples": [
               "failed-attempt",
@@ -2154,19 +2236,48 @@ const HARVEST_SCHEMA = {
             ]
           },
           "content": {
+            "type": [
+              "string",
+              "number"
+            ],
             "description": "Optional string, 40 to 2000 characters, ASCII only. Written only when it adds what the summary cannot hold (labelled sections: Context, Symptom, Cause, Rule/Fix, Tried (failed), Evidence). Content that repeats the summary is refused. A failed-attempt capture must have Cause and Rule/Fix. No credentials or token-shaped strings."
           },
           "source_files": {
-            "description": "REQUIRED array of strings, at least one: files that make this claim checkable. An entry with no basis is rejected, because the freshness sweep can never stale it."
+            "type": [
+              "array",
+              "string"
+            ],
+            "description": "REQUIRED array of strings, at least one: files that make this claim checkable. An entry with no basis is rejected, because the freshness sweep can never stale it.",
+            "items": {
+              "type": "string"
+            }
           },
           "symbols": {
-            "description": "Optional array of strings: symbols this claim is about."
+            "type": "array",
+            "description": "Optional array of strings: symbols this claim is about.",
+            "items": {
+              "type": "string"
+            }
           },
           "recall_cues": {
-            "description": "Optional array of strings: phrases a future reader would search for to find this lesson."
+            "type": [
+              "array",
+              "string"
+            ],
+            "description": "Optional array of strings: phrases a future reader would search for to find this lesson.",
+            "items": {
+              "type": "string"
+            }
           },
           "error_signatures": {
-            "description": "Optional array of strings: exact error strings that this lesson explains."
+            "type": [
+              "array",
+              "string"
+            ],
+            "description": "Optional array of strings: exact error strings that this lesson explains.",
+            "items": {
+              "type": "string"
+            }
           }
         }
       }
@@ -2212,18 +2323,26 @@ const PLANNER_SCHEMA = {
       "type": "array",
       "description": "IGNORED FOR THIS ROLE -- the planner has no apply path, so anything sent here is silently dropped rather than captured. Declared only for forward compatibility and shape-parity with the roles that do capture; always omit it or send []. Do not spend planning effort producing entries for it.",
       "items": {
+        "type": [
+          "object",
+          "string"
+        ],
         "description": "One capture. Everything listed under each field is checked by the engine per capture, never by the report schema: a capture that breaks a rule is refused and logged on its own, and the rest of this report stands. See the capture rubric.",
         "properties": {
           "type": {
+            "type": "string",
             "description": "REQUIRED string, one of: knowledge, learning, runbook."
           },
           "title": {
+            "type": "string",
             "description": "REQUIRED string, 8 to 160 characters, ASCII only."
           },
           "summary": {
+            "type": "string",
             "description": "REQUIRED string, 20 to 500 characters, ASCII only. The lesson in at most 2 sentences, present tense, standing alone as current truth."
           },
           "trigger": {
+            "type": "string",
             "description": "REQUIRED string, exactly one of the listed examples: what kind of event produced this lesson. Never \"describes the change\".",
             "examples": [
               "failed-attempt",
@@ -2235,19 +2354,48 @@ const PLANNER_SCHEMA = {
             ]
           },
           "content": {
+            "type": [
+              "string",
+              "number"
+            ],
             "description": "Optional string, 40 to 2000 characters, ASCII only. Written only when it adds what the summary cannot hold (labelled sections: Context, Symptom, Cause, Rule/Fix, Tried (failed), Evidence). Content that repeats the summary is refused. A failed-attempt capture must have Cause and Rule/Fix. No credentials or token-shaped strings."
           },
           "source_files": {
-            "description": "REQUIRED array of strings, at least one: files that make this claim checkable. An entry with no basis is rejected, because the freshness sweep can never stale it."
+            "type": [
+              "array",
+              "string"
+            ],
+            "description": "REQUIRED array of strings, at least one: files that make this claim checkable. An entry with no basis is rejected, because the freshness sweep can never stale it.",
+            "items": {
+              "type": "string"
+            }
           },
           "symbols": {
-            "description": "Optional array of strings: symbols this claim is about."
+            "type": "array",
+            "description": "Optional array of strings: symbols this claim is about.",
+            "items": {
+              "type": "string"
+            }
           },
           "recall_cues": {
-            "description": "Optional array of strings: phrases a future reader would search for to find this lesson."
+            "type": [
+              "array",
+              "string"
+            ],
+            "description": "Optional array of strings: phrases a future reader would search for to find this lesson.",
+            "items": {
+              "type": "string"
+            }
           },
           "error_signatures": {
-            "description": "Optional array of strings: exact error strings that this lesson explains."
+            "type": [
+              "array",
+              "string"
+            ],
+            "description": "Optional array of strings: exact error strings that this lesson explains.",
+            "items": {
+              "type": "string"
+            }
           }
         }
       }
