@@ -572,6 +572,18 @@ if (idFoo) {
   });
 }
 
+// --- kb_query hybrid inputs (spec section 4.6 HYBRID INPUTS) ---------------
+// files / symbols / error_text are optional and additive: the response keeps
+// the default-branch shape {l1_results, l2_expanded}. Every tier is listed so
+// the anchored example entries are returned.
+await recordHappy('kb_query', 'happy-hybrid', {
+  query: 'exampleFn',
+  files: ['src/example.ts'],
+  symbols: ['exampleFn'],
+  error_text: 'example failure',
+  confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'],
+});
+
 // --- kb_stats -------------------------------------------------------------
 await recordHappy('kb_stats', 'happy', {
   symbols: ['exampleFn'],

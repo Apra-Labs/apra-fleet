@@ -789,6 +789,31 @@
  */
 
 /**
+ * @typedef {Object} KbQueryOptions
+ * @property {string} [query] - Free-text search string. Required unless flagged_only
+ *   is true or tag, files, symbols or error_text is provided.
+ * @property {'context-cache'|'learning'|'knowledge'|'runbook'} [type] - Filter by content type.
+ * @property {string} [tag] - Exact-match tag filter; may be used alone to list a tag.
+ * @property {number} [limit] - Max L1 results (default 20; a MEMBER session that omits
+ *   it gets 6 slim rows).
+ * @property {boolean} [include_stale] - Include stale and superseded entries.
+ * @property {boolean} [flagged_only] - Return contradiction-flagged entries instead
+ *   ({flagged_entries, total, note}).
+ * @property {boolean} [expand_related] - Add related_claims (refines / contradiction_of).
+ * @property {Array<'CONFIRMED'|'INFERRED'|'UNVERIFIED'>} [confidence] - Tier allow-list
+ *   (default ["CONFIRMED"]).
+ * @property {boolean} [exclude_disputed] - Drop entries in an unresolved contradiction.
+ * @property {string[]} [files] - Optional, additive: file paths you are working on;
+ *   entries whose source_files (or code-index links) touch them rank higher.
+ * @property {string[]} [symbols] - Optional, additive: symbol names; entries naming
+ *   them, or linked one code-graph hop away, rank higher.
+ * @property {string} [error_text] - Optional, additive: an error message; matched
+ *   against entries' error_signatures and added to the semantic query text.
+ *   files/symbols/error_text are used by the local SQLite KB only; an HTTP KB
+ *   backend ignores them.
+ */
+
+/**
  * @typedef {Object} KbDemoteOptions
  * @property {string} id - ID of the KB entry to demote.
  * @property {string} reason - Why trust is being withdrawn -- at least 20 characters
@@ -1379,6 +1404,20 @@ export class ApraFleet {
     async kbBibleCommit(options) {
         assertNoRemovedKbScopeKeys('kb_bible_commit', options);
         return this.mcpClient.callTool('kb_bible_commit', options);
+    }
+
+    /**
+     * Search the calling session's KB (kb_query). Result JSON is
+     * {l1_results, l2_expanded, related_claims?}, or {flagged_entries, total,
+     * note} with flagged_only; extract with parseToolJson(). The optional
+     * files / symbols / error_text inputs are additive hybrid-ranking hints.
+     * The removed scope keys (repo_path, repo, repo_remote_url) are refused
+     * with E-SCOPE-KEY-REMOVED before anything is sent.
+     * @param {KbQueryOptions} options
+     */
+    async kbQuery(options) {
+        assertNoRemovedKbScopeKeys('kb_query', options);
+        return this.mcpClient.callTool('kb_query', options);
     }
 
     /**

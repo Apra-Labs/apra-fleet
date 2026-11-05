@@ -897,6 +897,64 @@ Write it with `kb_setup ... token={{secret.KB_TOKEN}}`; see
   and a replayed queued write gets both the current secret and its provider's
   repository headers.
 
+### Hybrid search and embeddings (SQLite only)
+
+Only `SqliteProvider` gets hybrid search, the normalized keyword index (FTS)
+and embeddings. `HttpKbProvider` is a placeholder for third-party KB and memory
+backends and is not improved here: it ignores the `kb_query` hybrid inputs and
+forwards only the existing query parameters.
+
+`kb_query` takes three optional, additive inputs:
+
+- `files` -- paths you are working on; entries whose `source_files` (or
+  code-index links) touch them rank higher.
+- `symbols` -- symbol names; entries naming them, or linked one code-graph hop
+  from them, rank higher.
+- `error_text` -- an error message you hit; matched against each entry's
+  `error_signatures` and added to the semantic query text.
+
+A call without them returns the same keys as before. With any of them, or once
+an embedding model is loaded, `SqliteProvider.query` fuses up to four ranked
+lists by reciprocal rank fusion (k = 60, `src/services/knowledge/hybrid-rank.ts`):
+keyword (the query text), error (error_text against error_signatures),
+semantic (query text plus error_text, scored by each entry's best vector of
+the active model) and anchor (files/symbols). Trust priors then multiply the
+fused score: CONFIRMED up, the existing `use_count` a small capped lift, stale
+down. Every filter (confidence, exclude_disputed, tag, type, include_stale,
+member owner tag) applies to every list. Vector compare is brute force in
+SQLite (no vector database); the budget is under 200 ms per query on CPU.
+
+Fallback: when no model is loaded the semantic list is simply absent and the
+search is keyword + error + anchor, never an error. A read never waits for a
+model load or download: the background embed queue loads the model, and
+until then queries run without the semantic list.
+
+#### embedding.model
+
+Set the embedding model in the KB config file (`<FLEET_DIR>/knowledge/config.json`):
+
+```json
+{ "provider": "sqlite", "embedding": { "model": "bge-small-en-v1.5" } }
+```
+
+- Omitted: the default profile `bge-small-en-v1.5`.
+- A built-in profile name: `bge-small-en-v1.5`, `snowflake-arctic-embed-s`,
+  `snowflake-arctic-embed-xs`.
+- `"none"`: embeddings off. Semantic search is disabled; keyword and anchor
+  search still work.
+- An object for a custom model (`id` of a Hugging Face repo, or `path` of a
+  local folder -- exactly one of the two -- plus optional `pooling`,
+  `normalize`, `query_prefix`, `doc_prefix`, `dtype`, `token_limit`).
+
+An invalid value logs a warning and uses the default. The model is never
+shipped with fleet: it is downloaded lazily on first use, off the request
+path, into `<FLEET_DIR>/models/<repo id>@<revision>/` (a local model id is
+resolved relative to `<FLEET_DIR>/models`). `HF_ENDPOINT` overrides the
+download host. The environment variable `APRA_FLEET_KB_EMBED=off` turns
+background embedding off for the process (used by sandboxes and the test
+suite) without writing a config file. Changing the model re-embeds every entry
+in the background; queries only ever compare vectors of the active model.
+
 ### Future: Postgres
 
 To add a Postgres backend, implement `MemoryProvider` in a new class and update

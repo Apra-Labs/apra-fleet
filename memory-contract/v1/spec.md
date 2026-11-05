@@ -1198,8 +1198,9 @@ proceeds.
 response shapes, selected by the request: when `flagged_only: true`, the
 response MUST be `{flagged_entries, total, note}`; otherwise it MUST be
 `{l1_results, l2_expanded, related_claims?}`. At least one of `query`, `tag`,
-or `flagged_only` MUST be supplied; a provider MUST refuse a request carrying
-none of the three. A consumer MUST treat this section's response shapes, and
+`flagged_only`, `files`, `symbols` or `error_text` MUST be supplied; a provider
+MUST refuse a request carrying none of them (the refusal text names the
+original three selectors and is unchanged). A consumer MUST treat this section's response shapes, and
 every other `kb_*` response shape, as a DIFFERENT KIND of claim than the
 request shapes documented elsewhere in this spec: they are OBSERVED, not
 derived from an enforced schema, because no tool in this surface declares
@@ -1279,6 +1280,32 @@ store that cannot filter MUST filter the merged result itself before
 responding (`src/tools/kb-query.ts` `passesTrustFilter` does this on top of
 the sqlite provider's SQL filter). Test hook: the `kb_query`
 `happy-confirmed-only` fixture and `tests/knowledge/kb-query-trust-filter.test.ts`.
+
+**HYBRID INPUTS.** The default branch accepts three OPTIONAL inputs, all
+additive: `files` (string array), `symbols` (string array) and `error_text`
+(string). A request without them MUST return exactly the keys it returned
+before they existed, and none of them adds a response field. An
+implementation that supports them (the SQLite provider) ranks by reciprocal
+rank fusion (k = 60) of up to four ranked lists: keyword (the free-text
+`query` against the normalized keyword index), error (`error_text` against
+the entries' `error_signatures`, normalized the same way), semantic (`query`
+plus `error_text` embedded with the active model's query prefix and scored by
+each entry's best-matching vector of that model only) and anchor (entries
+whose `source_files`/`symbols` contain the given files/symbols, or whose
+code-index links touch them, one code-graph hop for symbols). Trust priors
+then multiply the fused score: CONFIRMED up, the existing `use_count` a small
+capped lift, stale down. Every filter (`confidence`, `exclude_disputed`,
+`tag`, `type`, `include_stale`, the MEMBER owner tag) applies to every list.
+FALLBACK: when no embedding model is loaded (embedding set to `none`, the
+model not yet downloaded, or a failed load) the semantic list is absent and
+the fusion uses keyword + error + anchor only -- never an error, and a read
+never waits for a model download. With no hybrid input and no loaded model
+the order is the plain keyword order. An implementation that does not
+support them (the HTTP provider, a placeholder for third-party KB backends)
+MUST accept and ignore them. In a MEMBER mixed-tier read both halves receive
+the inputs and the fixed bible-then-own merge order is unchanged. Test hook:
+the `kb_query` `happy-hybrid` fixture and
+`tests/knowledge/kb-query-hybrid.test.ts`.
 
 **THE TEST HOOK.** The selector guard and both response shapes are checked
 by the round-trip harness at the request/happy-path level

@@ -44,6 +44,7 @@ const memberCallCountsSrc = readFileSync(path.join(repoRoot, 'src', 'services', 
 const kbExportSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-export.ts'), 'utf8');
 const typesSrc = readFileSync(path.join(repoRoot, 'src', 'types.ts'), 'utf8');
 const kbBibleCommitSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-bible-commit.ts'), 'utf8');
+const kbQuerySrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-query.ts'), 'utf8');
 
 /** Extract the text between a start marker (exclusive) and the next occurrence of an end marker. */
 function extractBlock(source, startMarker, endMarker) {
@@ -186,6 +187,11 @@ function kbBibleCommitSchemaFields() {
     return extractTopLevelKeys(block, 2);
 }
 
+function kbQuerySchemaFields() {
+    const block = extractBlock(kbQuerySrc, 'export const kbQuerySchema = z.object({', '\n});');
+    return extractTopLevelKeys(block, 2);
+}
+
 describe('apra-fleet-client typedef vs server zod schema parity', () => {
     test('RegisterMemberOptions matches registerMemberSchema field-for-field', () => {
         const schemaFields = registerMemberSchemaFields();
@@ -230,6 +236,15 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         assert.strictEqual(schemaFields.size, 5, `expected 5 kbBibleCommitSchema fields, parsed ${schemaFields.size}`);
         assert.ok(schemaFields.has('demoted_ids'), 'sanity: kbBibleCommitSchema should declare demoted_ids');
         assertFieldParity('KbBibleCommitOptions vs kbBibleCommitSchema', schemaFields, typedefFields);
+    });
+
+    test('KbQueryOptions matches kbQuerySchema field-for-field (hybrid inputs included)', () => {
+        const schemaFields = kbQuerySchemaFields();
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbQueryOptions');
+        for (const f of ['query', 'files', 'symbols', 'error_text']) {
+            assert.ok(schemaFields.has(f), `sanity: kbQuerySchema should declare ${f}`);
+        }
+        assertFieldParity('KbQueryOptions vs kbQuerySchema', schemaFields, typedefFields);
     });
 
     test('MemberDetailResult matches the json-format result object member-detail.ts builds', () => {
