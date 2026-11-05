@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "6ecdfda08a76fc206721e855d72cf94b16f5f011",
+    "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 129
+    "entry_count": 130
   },
   "entries": [
     {
@@ -193,6 +193,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.978Z"
+    },
+    {
+      "id": "176d4504-d6d0-43a4-b77d-453ac54dc154",
+      "type": "learning",
+      "title": "fleet_status returns before the KB section when no members are registered",
+      "summary": "fleetStatus() in check-status.ts returns 'No members registered...' early when the registry is empty, so the kbHealth section (credential, embedding lines) is never rendered on a fresh install; tests must call kbHealthSummary directly or register a member.",
+      "symbols": [
+        "fleetStatus",
+        "kbHealthSummary",
+        "kbHealthCompactLines"
+      ],
+      "source_files": [
+        "src/tools/check-status.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T11:07:20.222Z",
+      "source_file_hashes": {
+        "src/tools/check-status.ts": "f0484bc82df24739ac505dc114054ba75bfd3f3d"
+      }
     },
     {
       "id": "17b581e1-3760-4947-b4fa-b7793874384a",
