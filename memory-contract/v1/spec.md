@@ -187,7 +187,8 @@ the entries (sets `superseded_at`, never deletes) and returns
 kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the
 response then also carries `refused`; the same holds for `kb_capture` with
 `supersedes`. `kb_feedback` is refused with
-`E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
+`E-MEMBER-VIEW-READ-ONLY` only in a member session WITHOUT the kb_maintainer
+grant; with the grant it runs against the per-repo DB like a FULL session. A FULL session reads and writes the per-repo DB
 unchanged.
 
 A row imported from the bible (`kb_import`) carries NO `member:<uuid>` tag at

@@ -444,8 +444,9 @@ export const SCENARIO = [
     assertParsed: assertCarriedBasisStaled,
   },
   { tool: 'kb_freshness_sweep', case: 'happy' },
-  // A MEMBER session's kb_feedback is the typed E-MEMBER-VIEW-READ-ONLY
-  // refusal (the member's bible view is read-only); the same request from a
+  // A member session WITHOUT the kb_maintainer grant (PLAIN_A) gets the typed
+  // E-MEMBER-VIEW-READ-ONLY refusal from kb_feedback (its bible view is
+  // read-only); with the grant it writes like FULL. The same request from a
   // FULL (non-member) session succeeds against the live KB.
   { tool: 'kb_feedback', case: 'refusal-member-view-read-only', derive: { id: 'FOO' } },
   { tool: 'kb_feedback', case: 'happy', derive: { id: 'FOO' } },

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
-import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import { KbMemberViewError } from '../services/knowledge/member-bible-view.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import type { Author } from '../services/knowledge/types.js';
@@ -39,9 +40,11 @@ export type KbFeedbackInput = z.infer<typeof kbFeedbackSchema>;
 // review only (never staled) because directives outrank agent experience and
 // the human decides -- see SqliteProvider.feedback() for the exact guard.
 export async function kbFeedback(input: KbFeedbackInput, anchor?: KbAnchor): Promise<string> {
-  // A MEMBER session reads its checkout bible view, which is read-only: a
-  // typed no-op that touches no store (checked before any provider is opened).
-  if (memberOwnerTag(anchor) !== undefined) {
+  // A MEMBER session WITHOUT the kb_maintainer grant reads its checkout bible
+  // view, which is read-only: a typed no-op that touches no store (checked
+  // before any provider is opened). The engine's kb_maintainer member session
+  // writes the per-repo DB like a FULL session (getSelfKbProviders resolves it).
+  if (memberLacksKbMaintainer(anchor)) {
     throw new KbMemberViewError(
       'E-MEMBER-VIEW-READ-ONLY',
       '',
