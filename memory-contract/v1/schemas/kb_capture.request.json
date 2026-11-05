@@ -38,7 +38,7 @@
         "content": {
           "type": "string",
           "minLength": 1,
-          "description": "Full detail (will be truncated at 4000 chars)"
+          "description": "Full detail (will be truncated at 4000 chars). Optional: when omitted the stored content equals summary."
         },
         "source_files": {
           "type": "array",
@@ -90,6 +90,32 @@
           ],
           "description": "Scope: project (default) or global for team-wide conventions"
         },
+        "trigger": {
+          "type": "string",
+          "enum": [
+            "failed-attempt",
+            "review-finding",
+            "test-failure",
+            "env-quirk",
+            "hidden-invariant",
+            "design-rationale"
+          ],
+          "description": "What kind of event produced this lesson: failed-attempt, review-finding, test-failure, env-quirk, hidden-invariant or design-rationale. Stored for audit; optional here."
+        },
+        "recall_cues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Phrasings someone would search with when they need this entry. Stored and returned on reads."
+        },
+        "error_signatures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Verbatim error strings this entry explains. Stored and returned on reads."
+        },
         "supersedes": {
           "type": "string",
           "description": "Id of an entry this capture REPLACES. Only honored when AUDN independently matches that same entry as a same-topic candidate (same type, overlapping symbols and source_files), so it cannot retire an arbitrary entry. Omit it unless you mean to retire something -- an ordinary refinement links to its predecessor and both stay live. The KB Agent sets this when resolving a flagged pair; doer/reviewer captures should not. In a MEMBER session without the kb_maintainer grant a CONFIRMED target is never retired: the capture links to it (refines, both stay live) and the response lists it in refused."
@@ -107,8 +133,7 @@
       "required": [
         "type",
         "title",
-        "summary",
-        "content"
+        "summary"
       ],
       "additionalProperties": false
     }

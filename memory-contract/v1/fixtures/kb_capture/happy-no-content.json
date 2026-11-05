@@ -1,0 +1,24 @@
+{
+  "tool": "kb_capture",
+  "case": "happy-no-content",
+  "kind": "happy",
+  "request": {
+    "type": "knowledge",
+    "title": "Capture with a summary and no content",
+    "summary": "The summary stands alone here, so the stored content equals it.",
+    "source_files": [
+      "src/rich-fields.ts"
+    ],
+    "symbols": [
+      "noContentFixture"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"06796e5c-5241-43ab-af3b-a47cc52c615c\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

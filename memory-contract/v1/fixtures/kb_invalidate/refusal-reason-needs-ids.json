@@ -1,0 +1,16 @@
+{
+  "tool": "kb_invalidate",
+  "case": "refusal-reason-needs-ids",
+  "kind": "refusal",
+  "request": {
+    "files": [
+      "src/rich-fields.ts"
+    ],
+    "reason": "A file-based invalidation names no entry to attach this to."
+  },
+  "error": {
+    "message": "E-INVALIDATE-REASON-NEEDS-IDS: reason is accepted only together with ids",
+    "thrown": true
+  },
+  "expected_error_code": "E-INVALIDATE-REASON-NEEDS-IDS"
+}

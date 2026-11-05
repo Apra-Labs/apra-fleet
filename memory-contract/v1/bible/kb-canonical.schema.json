@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bible/kb-canonical.schema.json#",
   "title": "Knowledge bible file (.fleet/kb-canonical.json)",
-  "description": "The bible file written by kb_export and kb_bible_commit and read by kb_import and the member bible view. Writers emit format v3. Readers accept v1 (a bare array of entries), v2 (the envelope, no per-entry hashes) and v3 (the envelope; entries may carry source_file_hashes). See spec.md section 2.8. Hand-authored: the bible is a file format, not a tool request/response, so it is not generated from a Zod schema and does not live under schemas/.",
+  "description": "The bible file written by kb_export and kb_bible_commit and read by kb_import and the member bible view. Writers emit format v3. Readers accept v1 (a bare array of entries), v2 (the envelope, no per-entry hashes) and v3 (the envelope; entries may carry source_file_hashes). Any entry may carry the optional content, recall_cues and error_signatures fields. See spec.md section 2.8. Hand-authored: the bible is a file format, not a tool request/response, so it is not generated from a Zod schema and does not live under schemas/.",
   "anyOf": [
     {
       "title": "v1 (legacy): a bare array of entries",
@@ -74,6 +74,22 @@
         "source_files": { "type": "array", "items": { "type": "string" } },
         "confidence": { "enum": ["CONFIRMED", "INFERRED", "UNVERIFIED"] },
         "updated_at": { "type": "string" },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "Optional (no version bump). The entry's lesson body. Writers emit it only when it is non-empty and differs from summary (the KB's own audit notes -- promotion, demotion, clamp, feedback, reconcile -- are cut first) and truncate it to 2000 characters ending in '...[truncated]'. Absent: a reader stores content = summary. A reader drops a malformed or over-length value (the entry still imports, as if it were absent)."
+        },
+        "recall_cues": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional (no version bump). Phrasings someone would search with when they need this entry. Written only when non-empty; a reader stores the string elements of an array and ignores any other value."
+        },
+        "error_signatures": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional (no version bump). Verbatim error strings the entry explains. Written only when non-empty; a reader stores the string elements of an array and ignores any other value."
+        },
         "source_file_hashes": {
           "type": "object",
           "description": "v3 only: the per-file hash basis (repo-relative path -> hash) the entry was admitted against, copied verbatim (keys sorted) from the exporting KB's stored basis. Absent on an entry carried over from a v1/v2 bible. A reader stores a valid map (non-empty, covering every source_files entry) as the entry's basis exactly; anything else gets only a local freshness-only basis hashed from the reader's files, which is never exported and never admits the entry to a bible.",

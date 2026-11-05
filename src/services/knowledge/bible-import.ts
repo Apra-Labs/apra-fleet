@@ -221,7 +221,15 @@ interface BibleEntry {
   confidence: Confidence;
   updated_at?: string;
   source_file_hashes?: unknown;
+  // Design D9, optional. Validated field by field at import (see
+  // bibleContentFor / bibleStringArray), never as part of isValidBibleEntry.
+  content?: unknown;
+  recall_cues?: unknown;
+  error_signatures?: unknown;
 }
+
+/** Mirrors kb-export.ts BIBLE_CONTENT_MAX_LENGTH (the schema maxLength). */
+const BIBLE_CONTENT_MAX_LENGTH = 2000;
 
 /**
  * The basis a v3 bible entry carries, or null when it carries none or an
@@ -252,9 +260,12 @@ export function carriedBasisOf(entry: { source_files?: unknown; source_file_hash
 }
 
 // Validate a single parsed bible entry against the exported CanonicalEntry field
-// set {id, type, title, summary, symbols, source_files, confidence, updated_at}
-// (KB b9df569a -- NOTE: no content field). Malformed entries are tolerated and
-// skipped individually rather than aborting the whole import.
+// set {id, type, title, summary, symbols, source_files, confidence, updated_at}.
+// Malformed entries are tolerated and skipped individually rather than aborting
+// the whole import. The optional D9 fields (content, recall_cues,
+// error_signatures) are deliberately NOT checked here: a malformed one drops
+// that FIELD only (the entry still imports, as if the field were absent), so
+// a bad optional field can never cost a reviewed entry.
 function isValidBibleEntry(e: unknown): e is BibleEntry {
   if (!e || typeof e !== 'object') return false;
   const r = e as Record<string, unknown>;
@@ -268,13 +279,30 @@ function isValidBibleEntry(e: unknown): e is BibleEntry {
   return true;
 }
 
-// LOW-2: bible entries carry no content field, so synthesize content
-// DETERMINISTICALLY from the summary. Determinism matters twice: (1) a re-import
+// LOW-2: a bible entry without a valid content field gets content synthesized
+// DETERMINISTICALLY from the summary (a valid content field is used instead --
+// bibleContentFor). Determinism matters twice: (1) a re-import
 // of the same bible produces byte-identical content so AUDN's content-equality
 // 'none' path can dedupe an id-collision-with-identical-content case; (2) it
 // keeps import a pure function of the bible file.
 function synthesizeContent(entry: BibleEntry): string {
   return entry.summary;
+}
+
+// The stored content for a bible entry: its `content` when that is a
+// non-empty string within BIBLE_CONTENT_MAX_LENGTH, else the synthesized
+// summary exactly as for an entry without the field (a malformed or
+// over-cap content is dropped, the entry still imports).
+function bibleContentFor(entry: BibleEntry): string {
+  const c = entry.content;
+  if (typeof c === 'string' && c.length > 0 && c.length <= BIBLE_CONTENT_MAX_LENGTH) return c;
+  return synthesizeContent(entry);
+}
+
+// A bible string-array field: absent or not an array -> [] (field dropped);
+// an array keeps its string elements only.
+function bibleStringArray(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 }
 
 export interface BibleImportCounts {
@@ -367,9 +395,11 @@ export async function importBibleEntries(
       type: entry.type,
       title: entry.title,
       summary: entry.summary,
-      content: synthesizeContent(entry),
+      content: bibleContentFor(entry),
       source_files: entry.source_files ?? [],
       symbols: entry.symbols ?? [],
+      recall_cues: bibleStringArray(entry.recall_cues),
+      error_signatures: bibleStringArray(entry.error_signatures),
       tags: [],
       content_hash: '',
       content_hash_type: 'sha256',

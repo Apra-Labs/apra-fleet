@@ -227,7 +227,7 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
     test('KbBibleCommitOptions matches kbBibleCommitSchema field-for-field', () => {
         const schemaFields = kbBibleCommitSchemaFields();
         const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbBibleCommitOptions');
-        assert.strictEqual(schemaFields.size, 4, `expected 4 kbBibleCommitSchema fields, parsed ${schemaFields.size}`);
+        assert.strictEqual(schemaFields.size, 5, `expected 5 kbBibleCommitSchema fields, parsed ${schemaFields.size}`);
         assert.ok(schemaFields.has('demoted_ids'), 'sanity: kbBibleCommitSchema should declare demoted_ids');
         assertFieldParity('KbBibleCommitOptions vs kbBibleCommitSchema', schemaFields, typedefFields);
     });

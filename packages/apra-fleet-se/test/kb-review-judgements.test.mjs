@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createKbWorkClient, vetKbWork, kbPromotionBlock, KB_MAX_PROMOTION_CANDIDATES, KB_MIN_PROMOTE_REASON } from '../fleet-sprint/kb.mjs';
-import { reviewerVerdict, finalVerdict } from '../fleet-sprint/contracts.mjs';
+import { createKbWorkClient, vetKbWork, kbPromotionBlock, kbKnowledgeBlock, KB_MAX_PROMOTION_CANDIDATES, KB_MIN_PROMOTE_REASON } from '../fleet-sprint/kb.mjs';
+import { reviewerVerdict, finalVerdict, validateVerdict } from '../fleet-sprint/contracts.mjs';
 import { fakeMaintainerSelector } from './helpers/kb-maintainer-fakes.mjs';
 
 // =============================================================================
@@ -101,7 +101,7 @@ describe('promotion candidates: the maintainer read and the sprint window', () =
         const h = harness();
         const capture = {
             type: 'knowledge', title: 'queued claim', summary: 'a claim captured this round',
-            content: 'the content of the claim captured this round', source_files: ['src/a.ts'],
+            content: 'the content of the claim captured this round', trigger: 'hidden-invariant', source_files: ['src/a.ts'],
         };
         // Queue a capture behind a busy maintainer.
         await h.client.dispatchStarted('maint');
@@ -134,7 +134,7 @@ describe('promotion candidates: the maintainer read and the sprint window', () =
         });
         await client.apply('doer', 'doer', { kb_captures: [{
             type: 'knowledge', title: 'queued claim', summary: 'a claim captured this round',
-            content: 'the content of the claim captured this round', source_files: ['src/a.ts'],
+            content: 'the content of the claim captured this round', trigger: 'hidden-invariant', source_files: ['src/a.ts'],
         }] });
         assert.equal(client.pendingCount(), 1);
         down = false;
@@ -157,7 +157,7 @@ describe('CONFIRM and DISCARD on the maintainer', () => {
             kb_promotions: [{ id: 'kb-good', reason: REASON }],
             kb_discards: [{ id: 'kb-wrong', reason: WRONG }],
         });
-        assert.deepEqual(out, { captured: 0, promoted: 1, discarded: 1, refused: 0 });
+        assert.deepEqual(out, { captured: 0, promoted: 1, discarded: 1, rejected: 0, refused: 0 });
         assert.deepEqual(h.shape(), ['gpull:maint', 'kb_promote@maint', 'kb_invalidate@maint']);
         assert.deepEqual(h.events[1].args, { id: 'kb-good', reason: REASON });
         assert.deepEqual(h.events[2].args, { ids: ['kb-wrong'] });
@@ -220,11 +220,121 @@ describe('vetting kb_discards', () => {
             kb_promotions: [{ id: 'kb-both', reason: REASON }, { id: 'kb-ok', reason: REASON }],
             kb_discards: [{ id: 'kb-both', reason: WRONG }],
         });
-        assert.deepEqual(out, { captured: 0, promoted: 1, discarded: 0, refused: 2 });
+        assert.deepEqual(out, { captured: 0, promoted: 1, discarded: 0, rejected: 0, refused: 2 });
         assert.ok(h.logs.includes(`[kb-work] refused -- reviewer: promotion kb-both refused -- the same output also discards it (promote reason: ${REASON})`), JSON.stringify(h.logs));
         assert.ok(h.logs.includes(`[kb-work] refused -- reviewer: discard kb-both refused -- the same output also promotes it (discard reason: ${WRONG})`), JSON.stringify(h.logs));
         assert.deepEqual(h.shape(), ['gpull:maint', 'kb_promote@maint']);
         assert.deepEqual(h.events[1].args, { id: 'kb-ok', reason: REASON });
+    });
+});
+
+const RUBRIC = 'True, but it only restates the diff: fails the capture rubric (what the change does).';
+
+describe('REJECT on the maintainer: kb_rejects retires the entry with its reason', () => {
+    test('kb_rejects -> kb_invalidate {ids: [id], reason} in the maintainer session; counted as rejected', async () => {
+        const h = harness();
+        await h.offer(['kb-diffy']);
+        const out = await h.client.apply('reviewer', 'reviewer', { kb_rejects: [{ id: 'kb-diffy', reason: RUBRIC }] });
+        assert.deepEqual(out, { captured: 0, promoted: 0, discarded: 0, rejected: 1, refused: 0 });
+        assert.deepEqual(h.shape(), ['gpull:maint', 'kb_invalidate@maint']);
+        assert.deepEqual(h.events[1].args, { ids: ['kb-diffy'], reason: RUBRIC });
+        assert.ok(h.logs.includes(`[kb-work] reject kb-diffy (reviewer): ${RUBRIC}`), JSON.stringify(h.logs));
+        assert.ok(h.logs.some((l) => l.includes('rejected 1')), JSON.stringify(h.logs));
+    });
+
+    test('a not-found reject is non-fatal and not counted', async () => {
+        const h = harness({ invalidateResult: (args) => ({ discarded: [], not_found: args.ids, already_discarded: [] }) });
+        await h.offer(['kb-gone']);
+        const out = await h.client.apply('reviewer', 'reviewer', { kb_rejects: [{ id: 'kb-gone', reason: RUBRIC }] });
+        assert.equal(out.rejected, 0);
+        assert.ok(h.logs.includes('[kb-work] kb_invalidate: entry kb-gone not found on the maintainer -- already gone (non-fatal)'), JSON.stringify(h.logs));
+    });
+
+    test('a retire the maintainer session refuses is not counted, for a reject and for a discard', async () => {
+        const refusing = (args) => ({ discarded: [], not_found: [], already_discarded: [], refused: args.ids });
+        const h = harness({ invalidateResult: refusing });
+        await h.offer(['kb-kept', 'kb-kept-too']);
+        const out = await h.client.apply('reviewer', 'reviewer', {
+            kb_rejects: [{ id: 'kb-kept', reason: RUBRIC }],
+            kb_discards: [{ id: 'kb-kept-too', reason: WRONG }],
+        });
+        assert.equal(out.rejected, 0);
+        assert.equal(out.discarded, 0);
+        for (const id of ['kb-kept', 'kb-kept-too']) {
+            assert.ok(h.logs.some((l) => l.includes('WARN') && l.includes(`refused ${id}`)), JSON.stringify(h.logs));
+        }
+        assert.ok(!h.logs.some((l) => l.startsWith('[kb-work] rejected ')), JSON.stringify(h.logs));
+    });
+
+    test('a final-review kb_rejects entry validates and retires the entry with its reason', async () => {
+        const report = { verdict: 'PASS', notes: 'final', kb_rejects: [{ id: 'kb-final', reason: RUBRIC }] };
+        assert.equal(validateVerdict('finalVerdict', report).valid, true);
+        assert.equal(validateVerdict('finalVerdict', { ...report, kb_rejects: [{ id: 'kb-final', reason: 'short' }] }).valid, false);
+        const r = finalVerdict.properties.kb_rejects;
+        assert.deepEqual(r.items.required, ['id', 'reason']);
+        assert.equal(r.items.properties.reason.minLength, KB_MIN_PROMOTE_REASON);
+        assert.ok(!finalVerdict.required.includes('kb_rejects'), 'optional');
+        const h = harness();
+        await h.offer(['kb-final']);
+        const out = await h.client.apply('reviewer', 'reviewer', report);
+        assert.equal(out.rejected, 1);
+        const call = h.events.find((e) => e.tool === 'kb_invalidate');
+        assert.deepEqual(call.args, { ids: ['kb-final'], reason: RUBRIC });
+    });
+
+    test('kb_rejects from a doer is refused and nothing is called', async () => {
+        assert.deepEqual(vetKbWork('doer', { kb_rejects: [{ id: 'kb-1', reason: RUBRIC }] }).rejects, []);
+        const h = harness();
+        const out = await h.client.apply('doer', 'doer', { kb_rejects: [{ id: 'kb-1', reason: RUBRIC }] });
+        assert.equal(out.rejected, 0);
+        assert.equal(out.refused, 1);
+        assert.ok(h.logs.includes('[kb-work] refused -- doer: kb_rejects refused -- reject is reviewer-only'), JSON.stringify(h.logs));
+        assert.deepEqual(h.events, []);
+    });
+
+    test('a reject with a short reason is refused and nothing is called', async () => {
+        const h = harness();
+        await h.offer(['kb-1']);
+        const out = await h.client.apply('reviewer', 'reviewer', { kb_rejects: [{ id: 'kb-1', reason: 'x'.repeat(KB_MIN_PROMOTE_REASON - 1) }] });
+        assert.equal(out.refused, 1);
+        assert.equal(out.rejected, 0);
+        assert.ok(h.logs.includes('[kb-work] refused -- reviewer: reject kb-1 has no recorded evidence'), JSON.stringify(h.logs));
+        assert.deepEqual(h.events, []);
+    });
+
+    test('promote + reject of the same id refuses both; reject + discard of the same id refuses both', async () => {
+        const h = harness();
+        await h.offer(['kb-both', 'kb-two']);
+        const out = await h.client.apply('reviewer', 'reviewer', {
+            kb_promotions: [{ id: 'kb-both', reason: REASON }],
+            kb_rejects: [{ id: 'kb-both', reason: RUBRIC }, { id: 'kb-two', reason: RUBRIC }],
+            kb_discards: [{ id: 'kb-two', reason: WRONG }],
+        });
+        assert.deepEqual(out, { captured: 0, promoted: 0, discarded: 0, rejected: 0, refused: 4 });
+        assert.ok(h.logs.includes(`[kb-work] refused -- reviewer: promotion kb-both refused -- the same output also rejects it (promote reason: ${REASON})`), JSON.stringify(h.logs));
+        assert.ok(h.logs.includes(`[kb-work] refused -- reviewer: reject kb-both refused -- the same output also promotes it (reject reason: ${RUBRIC})`), JSON.stringify(h.logs));
+        assert.ok(h.logs.includes(`[kb-work] refused -- reviewer: reject kb-two refused -- the same output also discards it (reject reason: ${RUBRIC})`), JSON.stringify(h.logs));
+        assert.ok(h.logs.includes(`[kb-work] refused -- reviewer: discard kb-two refused -- the same output also rejects it (discard reason: ${WRONG})`), JSON.stringify(h.logs));
+        assert.deepEqual(h.events, []);
+    });
+
+    test('a reject outside the dispatch candidate block is refused', async () => {
+        const h = harness();
+        await h.offer(['kb-offered']);
+        const out = await h.client.apply('reviewer', 'reviewer', { kb_rejects: [{ id: 'kb-other', reason: RUBRIC }] });
+        assert.equal(out.rejected, 0);
+        assert.equal(out.refused, 1);
+        assert.ok(h.logs.includes("[kb-work] refused -- reviewer: reject kb-other not in this dispatch's candidate block"), JSON.stringify(h.logs));
+    });
+
+    test('the reviewer block names kb_rejects and the truth AND rubric bar; the capture line names the trigger', () => {
+        const [block] = kbPromotionBlock([entry('kb-1', '2026-10-01T11:00:00.000Z')]);
+        assert.match(block, /`kb_rejects`/);
+        assert.match(block, /truth AND rubric value/);
+        assert.match(block, /diff, test run or repro/);
+        const [kb] = kbKnowledgeBlock([], { reportEmpty: true });
+        assert.match(kb, /`trigger`/);
+        assert.match(kb, /capture rubric/);
     });
 });
 

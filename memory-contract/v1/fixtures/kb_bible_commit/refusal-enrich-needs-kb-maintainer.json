@@ -1,0 +1,25 @@
+{
+  "tool": "kb_bible_commit",
+  "case": "refusal-enrich-needs-kb-maintainer",
+  "kind": "refusal",
+  "request": {
+    "ids": [],
+    "enrich": [
+      {
+        "id": "aa8a2ea2-2058-400f-8bcd-fdeb9c86a55c",
+        "content": "Context: exampleFn is the increment every fixture builds on. Rule/Fix: never change its arity.",
+        "recall_cues": [
+          "fixture increment helper"
+        ]
+      }
+    ],
+    "baseBranch": "main",
+    "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "error": {
+    "message": "E-KB-MAINTAINER-REQUIRED: kb_bible_commit enrich rewrites entries of the committed bible, which a member session without the kb_maintainer grant may not do. Remediation: Run the enrich from the kb_maintainer session or a FULL session.",
+    "thrown": true
+  },
+  "expected_error_code": "E-KB-MAINTAINER-REQUIRED",
+  "session": "PLAIN_A"
+}

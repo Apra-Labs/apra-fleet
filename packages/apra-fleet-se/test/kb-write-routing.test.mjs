@@ -22,6 +22,7 @@ const CAPTURE = Object.freeze({
     title: 'The widget cache is keyed per tenant',
     summary: 'WidgetCache.get keys every entry by tenant id, so tenants never share a hit.',
     content: 'src/widget-cache.ts builds its key as `${tenant}:${id}`; a cross-tenant read always misses.',
+    trigger: 'hidden-invariant',
     source_files: ['src/widget-cache.ts'],
 });
 const capture = (title) => ({ ...CAPTURE, title });
@@ -173,17 +174,17 @@ describe('KB write routing: busy maintainer', () => {
         h = harness({
             memberCall: async (m, tool, args) => {
                 // The maintainer's next dispatch opens while the first write is in flight.
-                if (args.title === 'first') await h.client.dispatchStarted('maint-a');
+                if (args.title === 'first claim') await h.client.dispatchStarted('maint-a');
                 return {};
             },
         });
-        const out = await h.client.apply('doer', 'doer-a', { kb_captures: [capture('first'), capture('second')] });
+        const out = await h.client.apply('doer', 'doer-a', { kb_captures: [capture('first claim'), capture('second claim')] });
         assert.equal(out.captured, 1);
         assert.deepEqual(h.shape(), ['gpull:maint-a', 'kb_capture@maint-a']);
         assert.equal(h.client.pendingCount(REPO_A), 1);
         await h.client.dispatchEnded('maint-a');
         assert.deepEqual(h.shape(), ['gpull:maint-a', 'kb_capture@maint-a', 'gpull:maint-a', 'kb_capture@maint-a']);
-        assert.equal(h.calls()[1].args.title, 'second');
+        assert.equal(h.calls()[1].args.title, 'second claim');
     });
 
     test('dispatchStarted waits out a write already in flight to the maintainer', async () => {
@@ -241,7 +242,7 @@ describe('KB write routing: unreachable maintainer', () => {
         let tripped = false;
         const h = harness({
             memberCall: async (m, tool, args) => {
-                if (!tripped && args.title === 'second') { tripped = true; down = true; }
+                if (!tripped && args.title === 'second claim') { tripped = true; down = true; }
                 if (down) {
                     const err = new Error(`member ${m.name} unreachable`);
                     err.code = 'E-CONNECT';
@@ -250,10 +251,10 @@ describe('KB write routing: unreachable maintainer', () => {
                 return {};
             },
         });
-        const out = await h.client.apply('doer', 'doer-a', { kb_captures: [capture('first'), capture('second'), capture('third')] });
+        const out = await h.client.apply('doer', 'doer-a', { kb_captures: [capture('first claim'), capture('second claim'), capture('third claim')] });
         assert.equal(out.captured, 1);
         assert.equal(h.client.pendingCount(REPO_A), 2, 'nothing is lost');
-        assert.ok(h.logs.some((l) => l.startsWith("[kb-work] WARN: maintainer 'maint-a' unreachable during kb_capture for \"second\"") && l.endsWith('2 KB write(s) for github.com/org/repo-a stay queued')), JSON.stringify(h.logs));
+        assert.ok(h.logs.some((l) => l.startsWith("[kb-work] WARN: maintainer 'maint-a' unreachable during kb_capture for \"second claim\"") && l.endsWith('2 KB write(s) for github.com/org/repo-a stay queued')), JSON.stringify(h.logs));
 
         h.client.warnPending();
         assert.ok(h.logs.includes('[kb-work] WARN: 2 KB write(s) for github.com/org/repo-a are still queued (maintainer busy or unreachable) -- not applied'));
@@ -262,6 +263,6 @@ describe('KB write routing: unreachable maintainer', () => {
         const before = h.calls().length;
         const later = await h.client.flushAll();
         assert.equal(later.captured, 2);
-        assert.deepEqual(h.calls().slice(before).map((c) => c.args.title), ['second', 'third']);
+        assert.deepEqual(h.calls().slice(before).map((c) => c.args.title), ['second claim', 'third claim']);
     });
 });

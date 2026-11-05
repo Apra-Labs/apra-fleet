@@ -29,11 +29,13 @@ function validator() {
 describe('bible schema and examples', () => {
   const validate = validator();
 
-  it('ships one example per accepted shape (v1, v2, v3)', () => {
-    expect(fs.readdirSync(EXAMPLES_DIR).sort()).toEqual(['v1-bare-array.json', 'v2-envelope.json', 'v3-envelope.json']);
+  const EXAMPLES = ['v1-bare-array.json', 'v2-envelope.json', 'v3-envelope.json', 'v3-rich-content.json'];
+
+  it('ships one example per accepted shape (v1, v2, v3, v3 with rich content)', () => {
+    expect(fs.readdirSync(EXAMPLES_DIR).sort()).toEqual(EXAMPLES);
   });
 
-  for (const name of ['v1-bare-array.json', 'v2-envelope.json', 'v3-envelope.json']) {
+  for (const name of EXAMPLES) {
     it(name + ' validates against the schema and parses with the reader', () => {
       const raw = fs.readFileSync(path.join(EXAMPLES_DIR, name), 'utf-8');
       const ok = validate(JSON.parse(raw));
@@ -50,6 +52,24 @@ describe('bible schema and examples', () => {
     expect(withHashes.length).toBeGreaterThan(0);
     expect(without.length).toBeGreaterThan(0);
     for (const e of withHashes) expect(carriedBasisOf(e)).toEqual(e.source_file_hashes);
+  });
+
+  it('the rich-content example carries content, recall_cues and error_signatures; the schema caps content at 2000', () => {
+    const bible = JSON.parse(fs.readFileSync(path.join(EXAMPLES_DIR, 'v3-rich-content.json'), 'utf-8'));
+    const e = bible.entries[0];
+    expect(typeof e.content).toBe('string');
+    expect(e.content).not.toBe(e.summary);
+    expect(e.recall_cues.length).toBeGreaterThan(0);
+    expect(e.error_signatures.length).toBeGreaterThan(0);
+    const atCap = structuredClone(bible);
+    atCap.entries[0].content = 'x'.repeat(2000);
+    expect(validate(atCap)).toBe(true);
+    const overCap = structuredClone(bible);
+    overCap.entries[0].content = 'x'.repeat(2001);
+    expect(validate(overCap)).toBe(false);
+    const badCues = structuredClone(bible);
+    badCues.entries[0].recall_cues = 'not an array';
+    expect(validate(badCues)).toBe(false);
   });
 
   it('rejects a malformed v3 basis (absolute key, empty map) and hashes on a v2 entry', () => {
@@ -121,5 +141,25 @@ describe('live writer output validates against the bible schema', () => {
     expect(validate.errors ?? []).toEqual([]);
     expect(ok).toBe(true);
     for (const e of written.entries) expect(Object.keys(e.source_file_hashes)).toEqual(['src/example.ts']);
+  });
+
+  it('a live export carrying content, recall_cues and error_signatures validates', async () => {
+    const validate = validator();
+    const { id } = await provider.capture({
+      type: 'learning', title: 'Rich exported claim', summary: 'Rich summary.', content: 'Rich content body that differs from the summary.',
+      source_files: ['src/example.ts'], symbols: [], tags: [], content_hash: '', content_hash_type: 'sha256',
+      flagged_for_review: false, author: 'test', source: 'doer', confidence: 'INFERRED',
+      recall_cues: ['rich cue'], error_signatures: ['Error: rich'],
+    });
+    await provider.promote(id, 'contract test: basis verified');
+    await kbExport({ scope: 'project', baseBranch: 'main', baseCommit: 'abc' }, { folder: root });
+    const written = JSON.parse(fs.readFileSync(path.join(root, '.fleet', 'kb-canonical.json'), 'utf-8'));
+    const ok = validate(written);
+    expect(validate.errors ?? []).toEqual([]);
+    expect(ok).toBe(true);
+    const e = written.entries.find((x: { id: string }) => x.id === id);
+    expect(e.content).toBe('Rich content body that differs from the summary.');
+    expect(e.recall_cues).toEqual(['rich cue']);
+    expect(e.error_signatures).toEqual(['Error: rich']);
   });
 });

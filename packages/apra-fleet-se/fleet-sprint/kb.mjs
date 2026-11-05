@@ -94,7 +94,8 @@ export function isInjectableKbEntry(e) {
  *
  * Validation mirrors lib/vet-kb-work.mjs in apra-pm and the provider invariants
  * it reflects: a capture must cite at least one source file (SqliteProvider
- * rejects an entry the freshness sweep can never stale), a promotion needs a
+ * rejects an entry the freshness sweep can never stale) and carry one of
+ * KB_CAPTURE_TRIGGERS and pass lintKbCapture (content itself is optional), a promotion needs a
  * recorded evidence string, and kb_promotions is refused from any role other
  * than reviewer -- widening capture to four roles must not widen promotion.
  *
@@ -104,6 +105,105 @@ export function isInjectableKbEntry(e) {
 export const KB_PROMOTER_ROLES = Object.freeze(new Set([ROLE_REVIEWER]));
 export const KB_MIN_PROMOTE_REASON = 20;
 export const KB_CAPTURE_TYPES = Object.freeze(['knowledge', 'learning', 'runbook']);
+
+// What kind of event produced a captured lesson. Mirrors CAPTURE_TRIGGERS in
+// the server's knowledge types: the server accepts a trigger-less capture for
+// backward compatibility, so refusing one is this engine's job.
+export const KB_CAPTURE_TRIGGERS = Object.freeze(['failed-attempt', 'review-finding', 'test-failure', 'env-quirk', 'hidden-invariant', 'design-rationale']);
+
+// Capture lint length bounds (characters): title 8-160, summary 20-500, content
+// 40-2000. Measured on real entries: at these caps 2 of 609 titles and 1 of 609
+// summaries are over. The role schemas state the same numbers in description text.
+export const KB_MIN_CAPTURE_TITLE = 8;
+export const KB_MAX_CAPTURE_TITLE = 160;
+export const KB_MIN_CAPTURE_SUMMARY = 20;
+export const KB_MAX_CAPTURE_SUMMARY = 500;
+export const KB_MIN_CAPTURE_CONTENT = 40;
+export const KB_MAX_CAPTURE_CONTENT = 2000;
+// Content must add at least this many normalised characters beyond the
+// summary, or it only repeats the summary.
+export const KB_MIN_CONTENT_EXTRA = 40;
+// Near-duplicate content: at least this share of its distinct words is in the
+// summary AND it brings fewer than this many new words. Real entries with added
+// content stay under 0.4 overlap, so the gap is wide.
+export const KB_REPEAT_MIN_OVERLAP = 0.7;
+export const KB_REPEAT_MAX_NEW_WORDS = 12;
+
+// A double-brace placeholder token ({{<word>.<KEY>}}), built generically so no
+// particular placeholder prefix is spelled out here.
+const KB_PLACEHOLDER_RE = new RegExp('\\{\\{\\s*[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+\\s*\\}\\}');
+// A raw credential: a provider token shape, or a long Bearer/Basic value. Mirrors
+// BIBLE_SECRET_SHAPES in the server's bible export.
+const KB_SECRET_RE = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abeoprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,})|\b(?:[Bb]earer|Basic)\s+[A-Za-z0-9._~+\/=-]{20,}/;
+// First-person narrative words as whole words, lowercase or Title case only: an
+// all-caps US, ME or WE is a name. A path, flag or dotted name (us-east-1, my.cnf,
+// C:\Users\me) is not a word here, and neither is a unit after a number (50 us).
+const KB_FIRST_PERSON_RE = /(?<![\w/\\.-])(?<!\d\s)(?:[Mm]e|[Mm]y|[Ww]e|[Oo]ur|[Uu]s)(?![\w/\\-]|\.\w)/;
+// The pronoun I, except as a numeral after a noun that takes one (Phase I).
+const KB_FIRST_PERSON_I_RE = /(?<![\w/\\.-])(?<!\b(?:Phase|Type|Tier|Part|Stage|Class|Level|Step|Section|Chapter|Volume|Gen|Rev|Series|Group|Category|Mark)\s)I(?![\w/\\-]|\.\w)/;
+// A line-number reference: a path:digits token or the phrase "line N". A
+// path:digits token names a source-like extension, with a separator (src/a.ts:42,
+// C:\src\a.cs:7) or as a bare file name (kb.mjs:130, a.test.ts:12). A hostname:port
+// (registry.npmjs.org:443) or a URL authority (https://host.dev:8080) is not one.
+// Extensions that are also country TLDs (.pl, .sh, .md ...) count only as
+// name.ext, so api.example.pl:443 is a host, and never on a well-known port.
+const KB_LINE_REF_RE = /(?<![\w.\/\\:-])(?:[A-Za-z]:)?(?:[\w.-]*[\/\\])+[\w.-]*\.(?:[cmt]?[jt]sx?|rb|go|java|kts?|scala|c|h|cpp|cxx|hpp|hh|cs|fs|swift|m|php|lua|bash|zsh|ps1|psm1|bat|cmd|sql|vue|svelte|html?|s?css|less|jsonc?|ya?ml|toml|ini|xml|txt|gradle|cmake|proto|graphql|dart|exs?|erl|hs|clj|r|jl|zig|cc|md|mk|ml|mm|pl|py|rs|sh|tf):\d+|(?<![\w.\/\\:-])[\w-]+(?:\.[\w-]+)*\.(?:[cmt]?[jt]sx?|rb|go|java|kts?|scala|c|h|cpp|cxx|hpp|hh|cs|fs|swift|m|php|lua|bash|zsh|ps1|psm1|bat|cmd|sql|vue|svelte|html?|s?css|less|jsonc?|ya?ml|toml|ini|xml|txt|gradle|cmake|proto|graphql|dart|exs?|erl|hs|clj|r|jl|zig):\d+|(?<![\w.\/\\:-])[\w-]+\.(?:cc|md|mk|ml|mm|pl|py|rs|sh|tf):(?!(?:22|80|443|8080|8443)\b)\d+|\bline\s+\d+\b/i;
+// The labelled sections a failed-attempt capture's content must carry. CRLF is
+// normalised before these run.
+const KB_CAUSE_SECTION_RE = /(?:^|\n)[ \t>*#-]*(?:Root[ \t]+)?Cause[ \t*]*(?::|\n|$)/i;
+const KB_RULE_FIX_SECTION_RE = /(?:^|\n)[ \t>*#-]*(?:Rule\/Fix|Rule|Fix)[ \t*]*(?::|\n|$)/i;
+
+function kbNormText(s) {
+    return String(s).toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+// Text with double-quoted and backticked spans removed: a quoted error message
+// is not the writer's own voice. Single quotes are left alone (apostrophes).
+function kbWithoutQuoted(s) {
+    return String(s).replace(/```[\s\S]*?```/g, ' ').replace(/"[^"\n]*"/g, ' ').replace(/`[^`\n]*`/g, ' ');
+}
+
+// True when content only repeats the summary: equal, the summary plus a few
+// characters, or nearly the same words (edited, reordered, or a prefix).
+function kbRepeatsSummary(summary, content) {
+    const ns = kbNormText(summary);
+    const nc = kbNormText(content);
+    if (nc === ns || (nc.includes(ns) && nc.length - ns.length < KB_MIN_CONTENT_EXTRA)) return true;
+    const summaryWords = new Set(ns.split(' '));
+    const contentWords = new Set(nc.split(' '));
+    const newWords = [...contentWords].filter((w) => !summaryWords.has(w)).length;
+    return newWords < KB_REPEAT_MAX_NEW_WORDS && (contentWords.size - newWords) / contentWords.size >= KB_REPEAT_MIN_OVERLAP;
+}
+
+// Lint one capture. Returns null when it passes, or "rule <name>: <detail>"
+// naming the first rule it fails. `content` is the trimmed content ('' when
+// absent).
+function lintKbCapture(c, content) {
+    const cues = Array.isArray(c.recall_cues) ? c.recall_cues : [];
+    const sigs = Array.isArray(c.error_signatures) ? c.error_signatures : [];
+    const all = [c.title, c.summary, content, ...cues, ...sigs];
+    if (all.some((s) => /[^\x00-\x7F]/.test(s))) return 'rule ascii-only: non-ASCII character';
+    if (c.title.length < KB_MIN_CAPTURE_TITLE) return `rule length: title under ${KB_MIN_CAPTURE_TITLE} chars`;
+    if (c.title.length > KB_MAX_CAPTURE_TITLE) return `rule length: title over ${KB_MAX_CAPTURE_TITLE} chars`;
+    if (c.summary.length < KB_MIN_CAPTURE_SUMMARY) return `rule length: summary under ${KB_MIN_CAPTURE_SUMMARY} chars`;
+    if (c.summary.length > KB_MAX_CAPTURE_SUMMARY) return `rule length: summary over ${KB_MAX_CAPTURE_SUMMARY} chars`;
+    if (content.length > 0 && content.length < KB_MIN_CAPTURE_CONTENT) return `rule length: content under ${KB_MIN_CAPTURE_CONTENT} chars`;
+    if (content.length > KB_MAX_CAPTURE_CONTENT) return `rule length: content over ${KB_MAX_CAPTURE_CONTENT} chars`;
+    if (all.some((s) => KB_PLACEHOLDER_RE.test(s))) return 'rule placeholder: double-brace placeholder token';
+    if (all.some((s) => KB_SECRET_RE.test(s))) return 'rule secret: token-shaped credential';
+    const prose = [c.title, c.summary, content, ...cues].map(kbWithoutQuoted);
+    if (prose.some((s) => KB_FIRST_PERSON_RE.test(s) || KB_FIRST_PERSON_I_RE.test(s))) return 'rule first-person: narrative first-person word';
+    const named = Array.isArray(c.symbols) && c.symbols.some((s) => typeof s === 'string' && s.trim().length > 0);
+    if (!named && [c.title, c.summary, content].some((s) => KB_LINE_REF_RE.test(s))) return 'rule line-number-only: line reference with no symbol named';
+    if (content.length > 0 && kbRepeatsSummary(c.summary, content)) return 'rule content-repeats-summary: content repeats the summary';
+    const sections = content.replace(/\r\n?/g, '\n');
+    if (c.trigger === 'failed-attempt' && !(KB_CAUSE_SECTION_RE.test(sections) && KB_RULE_FIX_SECTION_RE.test(sections))) {
+        return 'rule failed-attempt-sections: content needs a Cause and a Rule/Fix section';
+    }
+    return null;
+}
+
+const isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string');
 
 /**
  * True when an MCP tool result represents a tool-level failure. The MCP client
@@ -134,20 +234,37 @@ export function vetKbWork(role, result) {
             refused.push(`${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
             continue;
         }
-        // apra-fleet-23c: kbCaptureSchema requires content (z.string().min(1)).
-        // Omitting it here meant every kb_capture the engine sent failed zod
-        // validation at the MCP boundary and persisted nothing.
-        if (typeof c.content !== 'string' || c.content.trim().length === 0) {
-            refused.push(`${role}: capture "${c.title}" has no content`);
+        if (!KB_CAPTURE_TRIGGERS.includes(c.trigger)) {
+            refused.push(`${role}: capture "${c.title}" refused -- rule trigger: missing or unknown trigger ${String(c.trigger)}`);
+            continue;
+        }
+        // content is optional: absent or empty forwards no content key and the
+        // server stores the summary as the content.
+        if (c.content !== undefined && c.content !== null && typeof c.content !== 'string') {
+            refused.push(`${role}: capture "${c.title}" refused -- rule content: content is not a string`);
+            continue;
+        }
+        if ((c.recall_cues !== undefined && !isStringArray(c.recall_cues))
+            || (c.error_signatures !== undefined && !isStringArray(c.error_signatures))) {
+            refused.push(`${role}: capture "${c.title}" refused -- rule cues: recall_cues/error_signatures must be arrays of strings`);
+            continue;
+        }
+        const content = typeof c.content === 'string' ? c.content.trim() : '';
+        const lint = lintKbCapture(c, content);
+        if (lint) {
+            refused.push(`${role}: capture "${c.title}" refused -- ${lint}`);
             continue;
         }
         captures.push({
             type: c.type,
             title: c.title,
             summary: c.summary,
-            content: c.content,
+            ...(content.length > 0 ? { content: c.content } : {}),
+            trigger: c.trigger,
             source_files: c.source_files,
             symbols: Array.isArray(c.symbols) ? c.symbols : [],
+            ...(Array.isArray(c.recall_cues) && c.recall_cues.length > 0 ? { recall_cues: c.recall_cues } : {}),
+            ...(Array.isArray(c.error_signatures) && c.error_signatures.length > 0 ? { error_signatures: c.error_signatures } : {}),
         });
     }
 
@@ -189,22 +306,55 @@ export function vetKbWork(role, result) {
         }
     }
 
-    // One output may not both CONFIRM and DISCARD the same entry: the two
-    // judgements contradict each other, so neither is executed and both sides
-    // are logged.
-    const discardIds = new Set(discards.map((d) => d.id));
-    const conflicted = new Set(promotions.filter((p) => discardIds.has(p.id)).map((p) => p.id));
-    for (const p of promotions) {
-        if (conflicted.has(p.id)) refused.push(`${role}: promotion ${p.id} refused -- the same output also discards it (promote reason: ${p.reason})`);
+    // kb_rejects: the reviewer's REJECT judgement -- a candidate that is true
+    // but fails the capture rubric (or is garbled, self-contradicting or mixes
+    // claims). Same role gate and evidence bar; executed as a retirement that
+    // carries the reason.
+    const rejects = [];
+    const rawRejects = (result && Array.isArray(result.kb_rejects)) ? result.kb_rejects : [];
+    if (rawRejects.length > 0 && !KB_PROMOTER_ROLES.has(role)) {
+        refused.push(`${role}: kb_rejects refused -- reject is reviewer-only`);
+    } else {
+        for (const r of rawRejects) {
+            if (!r || typeof r.id !== 'string' || r.id.length === 0) {
+                refused.push(`${role}: reject missing id`);
+                continue;
+            }
+            if (typeof r.reason !== 'string' || r.reason.trim().length < KB_MIN_PROMOTE_REASON) {
+                refused.push(`${role}: reject ${r.id} has no recorded evidence`);
+                continue;
+            }
+            rejects.push({ id: r.id, reason: r.reason.trim() });
+        }
     }
-    for (const d of discards) {
-        if (conflicted.has(d.id)) refused.push(`${role}: discard ${d.id} refused -- the same output also promotes it (discard reason: ${d.reason})`);
+
+    // One output may judge an entry only once: CONFIRM, DISCARD and REJECT
+    // contradict each other, so an id in more than one of them is executed
+    // nowhere and every side is logged.
+    const judged = [
+        { kind: 'promotion', short: 'promote', verb: 'promotes', items: promotions },
+        { kind: 'discard', short: 'discard', verb: 'discards', items: discards },
+        { kind: 'reject', short: 'reject', verb: 'rejects', items: rejects },
+    ];
+    const conflicted = new Set();
+    for (const j of judged) {
+        for (const x of j.items) {
+            if (judged.some((o) => o !== j && o.items.some((y) => y.id === x.id))) conflicted.add(x.id);
+        }
+    }
+    for (const j of judged) {
+        for (const x of j.items) {
+            if (!conflicted.has(x.id)) continue;
+            const also = judged.filter((o) => o !== j && o.items.some((y) => y.id === x.id)).map((o) => o.verb).join(' and ');
+            refused.push(`${role}: ${j.kind} ${x.id} refused -- the same output also ${also} it (${j.short} reason: ${x.reason})`);
+        }
     }
 
     return {
         captures,
         promotions: promotions.filter((p) => !conflicted.has(p.id)),
         discards: discards.filter((d) => !conflicted.has(d.id)),
+        rejects: rejects.filter((r) => !conflicted.has(r.id)),
         refused,
     };
 }
@@ -483,7 +633,29 @@ export function createKbWorkClient(opts = {}) {
         }
     }
 
-    const zeroCounts = () => ({ captured: 0, promoted: 0, discarded: 0 });
+    const zeroCounts = () => ({ captured: 0, promoted: 0, discarded: 0, rejected: 0 });
+
+    // kb_invalidate {ids} answers {discarded, not_found, already_discarded, and
+    // refused for a session without the kb_maintainer grant}. Every candidate
+    // is maintainer-tagged by construction, so a not-found means the entry is
+    // gone: logged, non-fatal, and not counted. A refused id stays live, so
+    // that is a WARN and is not counted either.
+    function invalidateLanded(p, res) {
+        const parsed = parseResult(res);
+        if (parsed && Array.isArray(parsed.refused) && parsed.refused.includes(p.id)) {
+            log(`[kb-work] WARN: kb_invalidate refused ${p.id} on the maintainer -- the session lacks the kb_maintainer grant, the entry stays live (non-fatal)`);
+            return false;
+        }
+        if (parsed && Array.isArray(parsed.not_found) && parsed.not_found.includes(p.id)) {
+            log(`[kb-work] kb_invalidate: entry ${p.id} not found on the maintainer -- already gone (non-fatal)`);
+            return false;
+        }
+        if (parsed && Array.isArray(parsed.already_discarded) && parsed.already_discarded.includes(p.id)) {
+            log(`[kb-work] kb_invalidate: entry ${p.id} was already discarded (non-fatal)`);
+            return false;
+        }
+        return true;
+    }
 
     const OPS = {
         capture: {
@@ -503,28 +675,23 @@ export function createKbWorkClient(opts = {}) {
             args: (p) => ({ ids: [p.id] }),
             subject: (p) => p.id,
             counter: 'discarded',
-            // kb_invalidate {ids} answers {discarded, not_found,
-            // already_discarded}. Every candidate is maintainer-tagged by
-            // construction, so a not-found means the entry is gone: logged,
-            // non-fatal, and not counted as a discard.
-            accept: (p, res) => {
-                const parsed = parseResult(res);
-                if (parsed && Array.isArray(parsed.not_found) && parsed.not_found.includes(p.id)) {
-                    log(`[kb-work] kb_invalidate: entry ${p.id} not found on the maintainer -- already gone (non-fatal)`);
-                    return false;
-                }
-                if (parsed && Array.isArray(parsed.already_discarded) && parsed.already_discarded.includes(p.id)) {
-                    log(`[kb-work] kb_invalidate: entry ${p.id} was already discarded (non-fatal)`);
-                    return false;
-                }
-                return true;
-            },
+            accept: (p, res) => invalidateLanded(p, res),
+        },
+        // A reviewer REJECT retires the entry exactly like a discard (same
+        // maintainer grant, same non-fatal not-found handling), but the
+        // reviewer's reason is stored with the retirement.
+        reject: {
+            tool: 'kb_invalidate',
+            args: (p) => ({ ids: [p.id], reason: p.reason }),
+            subject: (p) => p.id,
+            counter: 'rejected',
+            accept: (p, res) => invalidateLanded(p, res),
         },
     };
 
     /**
      * Apply one repository's queue in the maintainer's session. Never throws.
-     * @returns {Promise<{captured: number, promoted: number, discarded: number}>}
+     * @returns {Promise<{captured: number, promoted: number, discarded: number, rejected: number}>}
      */
     async function flushRepo(repo) {
         const counts = zeroCounts();
@@ -606,14 +773,15 @@ export function createKbWorkClient(opts = {}) {
             }
             if (typeof spec.accept === 'function' && !spec.accept(op.payload, res)) continue;
             counts[spec.counter]++;
-            if (op.kind === 'discard') retirements.add(repo);
+            if (op.kind === 'discard' || op.kind === 'reject') retirements.add(repo);
+            if (op.kind === 'reject') log(`[kb-work] rejected ${op.payload.id} on maintainer '${maintainer}' (${repo}): ${op.payload.reason}`);
             if (op.kind === 'promote') {
                 if (!confirmations.has(repo)) confirmations.set(repo, new Set());
                 confirmations.get(repo).add(op.payload.id);
             }
         }
-        if (counts.captured || counts.promoted || counts.discarded) {
-            log(`[kb-work] maintainer '${maintainer}' (${repo}): captured ${counts.captured}, promoted ${counts.promoted}, discarded ${counts.discarded}`);
+        if (counts.captured || counts.promoted || counts.discarded || counts.rejected) {
+            log(`[kb-work] maintainer '${maintainer}' (${repo}): captured ${counts.captured}, promoted ${counts.promoted}, discarded ${counts.discarded}, rejected ${counts.rejected}`);
         }
         return counts;
     }
@@ -1183,23 +1351,24 @@ export function createKbWorkClient(opts = {}) {
          * record or a bare name); it decides WHICH repository, never which
          * session -- no write is ever sent to it unless it is the maintainer.
          *
-         * @returns {Promise<{captured: number, promoted: number, discarded: number, refused: number}>}
+         * @returns {Promise<{captured: number, promoted: number, discarded: number, rejected: number, refused: number}>}
          *   counts of the writes applied by this call's flush (writes left
          *   queued for a busy or unreachable maintainer are not counted).
          */
         async apply(role, member, result) {
-            const { captures, promotions, discards, refused } = vetKbWork(role, result);
+            const { captures, promotions, discards, rejects, refused } = vetKbWork(role, result);
 
             for (const r of refused) log(`[kb-work] refused -- ${r}`);
             // Log every promotion with its stated evidence BEFORE attempting it.
             // This log is the audit trail the bible never had.
             for (const p of promotions) log(`[kb-work] promote ${p.id} (${role}): ${p.reason}`);
             for (const d of discards) log(`[kb-work] discard ${d.id} (${role}): ${d.reason}`);
+            for (const r of rejects) log(`[kb-work] reject ${r.id} (${role}): ${r.reason}`);
 
             let extraRefused = 0;
             const done = (counts) => ({ ...counts, refused: refused.length + extraRefused });
-            if (captures.length === 0 && promotions.length === 0 && discards.length === 0) return done(zeroCounts());
-            const dropped = `${captures.length} capture(s), ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`;
+            if (captures.length === 0 && promotions.length === 0 && discards.length === 0 && rejects.length === 0) return done(zeroCounts());
+            const dropped = `${captures.length} capture(s), ${promotions.length} promotion(s), ${discards.length} discard(s) and ${rejects.length} reject(s) dropped`;
 
             const producer = memberNameOf(member);
             // Without a resolved member there is no repository the writes
@@ -1229,7 +1398,7 @@ export function createKbWorkClient(opts = {}) {
                 }
             }
             const repos = new Set(target ? [target.repo] : []);
-            if (promotions.length > 0 || discards.length > 0) {
+            if (promotions.length > 0 || discards.length > 0 || rejects.length > 0) {
                 const review = reviewMaintainerFor(producer);
                 if (review) {
                     // Only ids offered in this dispatch's candidate block may be
@@ -1243,9 +1412,10 @@ export function createKbWorkClient(opts = {}) {
                     };
                     for (const p of promotions) if (inBlock('promotion', p)) enqueue(review.repo, 'promote', role, p);
                     for (const d of discards) if (inBlock('discard', d)) enqueue(review.repo, 'discard', role, d);
+                    for (const r of rejects) if (inBlock('reject', r)) enqueue(review.repo, 'reject', role, r);
                     repos.add(review.repo);
                 } else {
-                    log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`);
+                    log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${promotions.length} promotion(s), ${discards.length} discard(s) and ${rejects.length} reject(s) dropped`);
                 }
             }
             const counts = zeroCounts();
@@ -1610,7 +1780,11 @@ export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'pri
     const label = source === 'query' ? 'kb_query --top_entries' : 'kb_session_prime --top_entries';
     const captureLine = captureChannel
         ? 'If you discover something non-obvious and durable while working, report it in the '
-            + '`kb_captures` field of your structured output and the orchestrator will record it.\n'
+            + '`kb_captures` field of your structured output and the orchestrator will record it. '
+            + 'Each capture needs a `trigger` (failed-attempt, review-finding, test-failure, '
+            + 'env-quirk, hidden-invariant or design-rationale) and must pass the capture rubric: '
+            + 'a lesson the next developer would miss, not a description of the change. A capture '
+            + 'without a valid trigger, or failing the capture lint, is refused.\n'
         : 'If you discover something non-obvious and durable while working, note it in your '
             + 'own report.\n';
     if (injectable.length === 0) {
@@ -1653,14 +1827,17 @@ export function kbPromotionBlock(kbCandidates) {
     return [
         'KNOWLEDGE BANK -- promotion candidates. These entries were captured during this '
         + 'sprint and sit at INFERRED. You are the only role that can promote them to '
-        + 'CONFIRMED, or discard them. Do NOT call any kb_* tool yourself: return your '
+        + 'CONFIRMED, discard them, or reject them. Do NOT call any kb_* tool yourself: return your '
         + 'decisions in your structured output and the orchestrator executes them -- '
         + '`kb_promotions` as [{id, reason}] for entries to CONFIRM, `kb_discards` as '
-        + '[{id, reason}] for entries to DISCARD.\n'
-        + 'Promote ONLY entries whose claim you independently verified during THIS review '
-        + '-- by reading the diff, running the tests, or checking the cited files yourself. '
-        + 'The `reason` must state that evidence (at least 20 characters, e.g. "verified '
-        + 'against server/transit.js:88 and the reopen test"). Evidence, not plausibility: '
+        + '[{id, reason}] for entries to DISCARD, `kb_rejects` as [{id, reason}] for entries '
+        + 'to REJECT.\n'
+        + 'Promotion needs truth AND rubric value. Promote ONLY entries whose claim you independently '
+        + 'verified during THIS review -- by reading the diff, running the tests, or checking the '
+        + 'cited files yourself -- AND that pass the capture rubric (a lesson the next developer '
+        + 'would miss, not a restatement of the diff). '
+        + 'The `reason` must state that evidence and name its kind (diff, test run or repro; at '
+        + 'least 20 characters, e.g. "verified against server/transit.js:88 and the reopen test"). Evidence, not plausibility: '
         + 'if an entry merely looks correct, leave it INFERRED -- that is a perfectly good '
         + 'resting state, and a wrong CONFIRMED entry is worse than no entry. Never '
         + 'blanket-promote, and never promote by module, tag or timestamp. Promoting '
@@ -1668,8 +1845,13 @@ export function kbPromotionBlock(kbCandidates) {
         + 'Discard ONLY entries you showed to be WRONG during this review, with the same '
         + 'evidence bar: the `reason` states what you checked that contradicts the claim. '
         + 'A discarded entry drops out of every later read. An entry you cannot confirm '
-        + 'is not thereby wrong -- leave it INFERRED. Never list the same id in both '
-        + 'fields; the orchestrator refuses both.\n'
+        + 'is not thereby wrong -- leave it INFERRED.\n'
+        + 'Reject an entry that is TRUE but fails the capture rubric (a restatement of the diff, '
+        + 'a fact readable in the cited lines, status), or that is garbled, self-contradicting or '
+        + 'mixes several claims. The `reason` (at least 20 characters) names the rubric rule it '
+        + 'fails; the orchestrator retires the entry and stores that reason.\n'
+        + 'Never list the same id in more than one of the three fields; '
+        + 'the orchestrator refuses every side.\n'
         + wrapUntrustedBlock('kb_query --tag member:<maintainer> --confidence INFERRED', JSON.stringify(
             kbCandidates.map((e) => ({
                 id: e.id,

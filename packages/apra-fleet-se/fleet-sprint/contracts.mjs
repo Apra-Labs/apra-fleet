@@ -789,6 +789,28 @@ export const finalVerdict = {
                 required: ['id', 'reason'],
             },
         },
+        // The Final Review's REJECT judgement, mirroring reviewer-output.json's
+        // kb_rejects: kbPromotionBlock asks for it, kbWork.apply executes it.
+        kb_rejects: {
+            type: 'array',
+            description: 'Promotion candidates that are true but fail the capture rubric (they restate the diff, are garbled, self-contradicting or mix several claims). The engine retires each with your reason. An id may be judged only once across kb_promotions, kb_discards and kb_rejects.',
+            items: {
+                type: 'object',
+                properties: {
+                    id: {
+                        type: 'string',
+                        description: "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- promotion candidates' block in your dispatch prompt. Never invent one.",
+                        minLength: 1,
+                    },
+                    reason: {
+                        type: 'string',
+                        description: 'Which rubric rule the entry fails and why -- stored with the retirement.',
+                        minLength: 20,
+                    },
+                },
+                required: ['id', 'reason'],
+            },
+        },
     },
     required: ['verdict', 'notes'],
 };

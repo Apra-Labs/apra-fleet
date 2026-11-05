@@ -623,7 +623,23 @@ are written to the bible's `provenance.branch` / `provenance.commit`; when
 omitted they default to the export folder's HEAD branch and commit. Result
 JSON (via `parseToolJson`): `{exported, path, scope, committed}`.
 
+Each bible entry (`KbBibleEntry`) may also carry the optional `content`,
+`recall_cues` and `error_signatures` fields (no format version bump): `content`
+is written only when it is non-empty and differs from `summary` (the KB's own
+promotion/demotion/clamp/feedback/reconcile notes are cut first) and is
+truncated to 2000 characters; the arrays are written only when non-empty. An
+entry without them is written exactly as before. `kbImport` stores them when
+present (content defaults to the summary) and drops a malformed value without
+skipping the entry.
+
 #### `kbBibleCommit(options: KbBibleCommitOptions)`
+
+`enrich: [{id, content?, recall_cues?, error_signatures?}]` is the maintainer's
+backfill: it sets those fields on a CONFIRMED entry in the bible and its KB row and
+lists the id in `enriched` (present only when `enrich` was sent). An item breaking the
+capture rules is skipped with `enrich_invalid` and the rest are applied. A re-merged id
+otherwise keeps the rich fields the bible holds. Parallel calls are serialized per bible. A member session without the kb_maintainer grant gets
+`E-KB-MAINTAINER-REQUIRED`. Secret-shaped text is written as `[REDACTED]`.
 
 Calls `kb_bible_commit` -- merges exactly `ids` into the bible at entry level
 (only the given ids are added or replaced; every existing entry is kept unless

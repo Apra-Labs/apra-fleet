@@ -206,7 +206,9 @@ function sanitizeValue(value) {
     for (const [search, replacement] of PATH_REPLACEMENTS) {
       out = out.split(search).join(replacement);
     }
-    return out;
+    // A path inside a JSON-text response is recorded with forward slashes, so a
+    // fixture does not depend on the recording host.
+    return out.replace(/(<SCRATCH_[A-Z_]+>)((?:\\\\[\w.-]+)+)/g, (_m, root, tail) => root + tail.split('\\\\').join('/'));
   }
   if (Array.isArray(value)) return value.map(sanitizeValue);
   if (value && typeof value === 'object') {
@@ -1063,6 +1065,64 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
       ids: [idGate],
     }, 'E-RETIRE-NEEDS-KB-MAINTAINER', refusedGate));
   }
+}
+
+// -- kb_capture: content is optional, and the retrieval aids are stored ------
+{
+  fs.writeFileSync(path.join(repoA, 'src', 'rich-fields.ts'), 'export const richFields = 1;\n');
+  await recordHappy('kb_capture', 'happy-no-content', {
+    type: 'knowledge',
+    title: 'Capture with a summary and no content',
+    summary: 'The summary stands alone here, so the stored content equals it.',
+    source_files: ['src/rich-fields.ts'],
+    symbols: ['noContentFixture'],
+  });
+  const captureRich = await recordHappy('kb_capture', 'happy-trigger-and-cues', {
+    type: 'learning',
+    title: 'Capture carrying a trigger, recall cues and error signatures',
+    summary: 'A capture records why it was made and how a reader will look for it.',
+    content: 'Symptom: the reader searches for the error text, not for the fix. Rule/Fix: store both.',
+    source_files: ['src/rich-fields.ts'],
+    symbols: ['richFieldsFixture'],
+    trigger: 'test-failure',
+    recall_cues: ['reader cannot find the lesson'],
+    error_signatures: ['E-FIXTURE-SIGNATURE: lookup failed'],
+  });
+  const idRich = parseEnvelopeText(captureRich)?.id;
+  // -- kb_invalidate: reason goes with ids, and is refused with files ---------
+  if (idRich) {
+    await recordHappy('kb_invalidate', 'happy-ids-with-reason', {
+      ids: [idRich],
+      reason: 'True but it restates the cited file: fails the capture rubric.',
+    });
+  }
+  await recordRefusal('kb_invalidate', 'refusal-reason-needs-ids', {
+    files: ['src/rich-fields.ts'],
+    reason: 'A file-based invalidation names no entry to attach this to.',
+  }, 'E-INVALIDATE-REASON-NEEDS-IDS');
+}
+
+// -- kb_bible_commit enrich: the maintainer's backfill of rich fields --------
+// idFoo is in repo A's bible and CONFIRMED by now. A session without the grant
+// is refused; the maintainer session sets the fields and commits.
+if (idFoo) {
+  const enrich = [{
+    id: idFoo,
+    content: 'Context: exampleFn is the increment every fixture builds on. Rule/Fix: never change its arity.',
+    recall_cues: ['fixture increment helper'],
+  }];
+  await withSession('PLAIN_A', () => recordRefusal('kb_bible_commit', 'refusal-enrich-needs-kb-maintainer', {
+    ids: [],
+    enrich,
+    baseBranch: 'main',
+    baseCommit: '0123456789abcdef0123456789abcdef01234567',
+  }, 'E-KB-MAINTAINER-REQUIRED'));
+  await recordHappy('kb_bible_commit', 'happy-enrich', {
+    ids: [],
+    enrich,
+    baseBranch: 'main',
+    baseCommit: '0123456789abcdef0123456789abcdef01234567',
+  });
 }
 
 // ===========================================================================

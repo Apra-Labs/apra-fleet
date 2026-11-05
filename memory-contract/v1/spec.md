@@ -356,6 +356,31 @@ either timestamp failing to parse decides nothing. Bible writers record that
 same trust time as the entry's `updated_at`, so every clone compares the same
 value.
 
+- A merged id keeps the `content`, `recall_cues` and `error_signatures` the
+  bible already holds for it, field by field; a field the bible lacks is filled
+  from the KB row. A clone holding an older row therefore cannot overwrite a
+  rewritten entry by re-promoting it.
+- `kb_bible_commit` takes an optional `enrich`: `[{id, content?, recall_cues?,
+  error_signatures?}]`, the one way to change those fields on an existing entry.
+  A named field replaces the old value in the bible entry and, when this KB holds
+  the row, in the row (content keeps the row's audit notes). Nothing else moves:
+  the claim, its basis, confidence and `updated_at` stay, and there is no basis
+  re-admission. It runs after the merge, so it may name an id merged by the same
+  call. Each applied id, also one whose values were already there, is listed in
+  `enriched`, which is present only when the call sent `enrich`. Skips:
+  `enrich_invalid` (no field named, an id named twice, or a capture rule broken:
+  blank content or content outside 40 to 2000 characters, content repeating the
+  summary, more than 20 cues or signatures, one blank or over 500 characters,
+  non-ASCII, secret-shaped, first-person or line-number text), `not_in_bible`,
+  `not_confirmed_or_unknown` (the row is below CONFIRMED). A bad item never fails
+  the call: the others are applied. Calls are serialized per bible file within the
+  server, so parallel calls all land. In a MEMBER session without the kb_maintainer grant the call fails
+  with `E-KB-MAINTAINER-REQUIRED` before any KB is opened, and nothing changes.
+- Secrets never reach a bible through `kb_export` or `kb_bible_commit`: a token
+  shape, a long Bearer/Basic value or a double-brace placeholder in a title,
+  summary, content, cue or signature is written as `[REDACTED]` when an entry is
+  merged, and a warning naming the entry is logged. Entries already in the file
+  are carried as they are.
 - `kb_bible_commit` takes an optional `demoted_ids`. An id is admitted only when
   the LOCAL row exists, carries a `demoted_at` and is now below CONFIRMED;
   anything else is skipped with reason `not_demoted_or_unknown` and the file is
@@ -479,9 +504,64 @@ for every accepted shape live in `bible/examples/`.
   resolves a pair on it. The entry is therefore not re-exported until it is
   recaptured (kb_promote and kb_resolve_contradiction do not give it a
   verified basis).
+- Optional entry fields `content`, `recall_cues` and `error_signatures`
+  (design D9) need no version bump: they are optional and every reader that
+  predates them ignores unknown entry properties (the entry schema allows
+  extra properties). A writer adds `content` only when the stored content,
+  with the KB's own audit notes cut (the `[Promoted`, `[Demoted:`,
+  `[confidence clamped:`, `[feedback <time>]` and `[reconciled <time>]`
+  notes, and trailing newlines), is non-empty and differs from `summary`; it
+  never writes more than 2000 characters -- longer content is TRUNCATED to
+  exactly 2000, ending in `...[truncated]`. `recall_cues` and
+  `error_signatures` are written only when non-empty. An entry with none of
+  them therefore serializes byte-identically to the pre-D9 writer. A reader
+  stores `content` when it is a non-empty string of at most 2000 characters,
+  else (absent, wrong type, empty, over the cap) content = summary exactly as
+  before; it stores the string elements of a `recall_cues` /
+  `error_signatures` array and treats any other value as absent. A malformed
+  new field is dropped FIELD-level: the entry still imports and is not
+  counted as skipped. `merge-kb-canonical` treats all three as content fields.
 - No tool request shape changes with v3. The only response change is
   `kb_bible_commit`'s `backfilled` count (above); otherwise the format change is
   confined to the bible file.
+
+### 2.9 Capture retrieval aids, trigger and retirement notes
+
+Additive request fields (no field was removed or made required):
+
+- `kb_capture.content` is OPTIONAL (still `minLength: 1` when present). When
+  it is absent the stored `content` equals the `summary` -- the same
+  deterministic rule bible import uses for an entry without content -- so
+  AUDN's content-equality dedupe treats both paths alike. The confidence-clamp
+  note (section 4.2) is appended to that stored content as usual.
+- `kb_capture.recall_cues` and `kb_capture.error_signatures` (string arrays)
+  are stored per entry (JSON string arrays, default empty). Every entry read
+  (`kb_query`, `kb_list`, `kb_session_prime`, ...) returns both as arrays,
+  empty when none was captured. A non-string element arriving over the HTTP
+  capture route is dropped before storage.
+- `kb_capture.trigger` (enum `failed-attempt | review-finding | test-failure |
+  env-quirk | hidden-invariant | design-rationale`) is stored in its own
+  `trigger` column (not a tag) for audit, and returned on reads when set.
+  The server does NOT require it: a sprint engine may refuse a trigger-less
+  capture before calling the tool, but the tool accepts one. An out-of-enum
+  value reaching the provider through the HTTP capture route is stored as
+  absent.
+- These fields apply only to the entry a capture INSERTS; an AUDN `none`
+  decision leaves the matched entry unchanged.
+- `kb_invalidate.reason` (string) is accepted only together with `ids`
+  (`files` plus `reason` is refused with an error before any write). It is
+  stored as the free-text retirement note (`retired_note`) of every entry the
+  call retires, and returned on reads of that entry (reads that include
+  retired rows: `kb_query` with `include_stale`, or a provider read by id). It
+  is separate from the internal superseded/invalidated retirement reason that
+  `kb_bible_commit` reports. Together with `files`, `reason` is refused with `E-INVALIDATE-REASON-NEEDS-IDS`. Without `reason` the note stays empty and the
+  response shape is unchanged (`{discarded, not_found, already_discarded}`,
+  plus `refused` where section 2.5a applies).
+- The HTTP KB provider forwards a capture payload verbatim and gains no new
+  behaviour for these fields; id-level `kb_invalidate` remains unsupported
+  there.
+- Existing databases gain the columns through additive migrations on open;
+  existing rows read empty arrays, no trigger and no note.
 
 ## 3. Error model
 

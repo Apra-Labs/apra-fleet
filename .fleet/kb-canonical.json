@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "0e4b793e5dd16c8d60fda5c58c7db4e8143006b0",
-    "branch": "main",
-    "entry_count": 121
+    "commit": "6ecdfda08a76fc206721e855d72cf94b16f5f011",
+    "branch": "feat/kb-0.4.5",
+    "entry_count": 123
   },
   "entries": [
     {
@@ -75,6 +75,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T03:49:24.870Z"
+    },
+    {
+      "id": "0cd76690-8f11-4441-8604-d722134a879d",
+      "type": "knowledge",
+      "title": "Promoted KB entries always carry an audit note in content, so bible export must cut it",
+      "summary": "SqliteProvider.promote appends a [Promoted ...] note to content, and demote, feedback, reconcile and the confidence clamp append notes too. Any logic comparing stored content to summary must cut these notes first.",
+      "symbols": [
+        "bibleContentOf",
+        "toCanonicalEntry",
+        "promote"
+      ],
+      "source_files": [
+        "src/tools/kb-export.ts",
+        "src/services/knowledge/sqlite-provider.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T03:58:55.572Z",
+      "source_file_hashes": {
+        "src/services/knowledge/sqlite-provider.ts": "be02241973f3d1e354942d16bf189966221407c2",
+        "src/tools/kb-export.ts": "216aeabdcbd26c4a30b2bdbb9264575e0c58a05b"
+      }
     },
     {
       "id": "0dd36c44-87bd-4743-952c-ba90f5c85c3c",
@@ -933,6 +954,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.498Z"
+    },
+    {
+      "id": "698deaad-20a7-468e-9ed6-e696dd03bd0c",
+      "type": "learning",
+      "title": "kb_import gives a bible entry a fresh id when AUDN links it to an earlier one",
+      "summary": "importBibleEntries keeps the bible id only on the AUDN 'add' path. A second entry of the same type that shares a symbol and a source file with an already-imported entry is linked (update) under a fresh random id.",
+      "symbols": [
+        "evaluateAudn",
+        "importBibleEntries",
+        "capture"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/bible-import.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T03:58:57.928Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "8f931c26af66c0531ac4fcf209ea42cd6d11628d",
+        "src/services/knowledge/sqlite-provider.ts": "be02241973f3d1e354942d16bf189966221407c2"
+      }
     },
     {
       "id": "6b538682-67b1-4cf2-ab81-ae27d8d2bf8e",

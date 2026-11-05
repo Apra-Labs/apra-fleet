@@ -47,7 +47,8 @@ your tool-loading tool first, before concluding they are unavailable.
 1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
    relevant to the modules touched during the sprint.
 2. When you extract durable knowledge during harvest -- anything non-obvious that future
-   sprints should know -- add it to the `kb_captures` array of your structured output
+   sprints should know -- judged by `_shared/KB-CAPTURE-RUBRIC.md` (the sibling file
+   installed alongside this one), which also defines the required `trigger` -- add it to the `kb_captures` array of your structured output
    (type "knowledge" or "learning"; dedupe against the KB first, with `kb_query` when
    present, otherwise the block). The engine records it from that field; do not write to
    the KB yourself.

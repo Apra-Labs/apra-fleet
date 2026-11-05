@@ -1,0 +1,47 @@
+{
+  "version": 3,
+  "provenance": {
+    "commit": "1111111111111111111111111111111111111111",
+    "branch": "main",
+    "entry_count": 2
+  },
+  "entries": [
+    {
+      "id": "7a1e0c00-0000-4000-8000-000000000001",
+      "type": "knowledge",
+      "title": "alpha is the constant one",
+      "summary": "src/alpha.ts exports alpha = 1; nothing reassigns it.",
+      "symbols": [
+        "alpha"
+      ],
+      "source_files": [
+        "src/alpha.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-05-01T00:00:00.000Z",
+      "source_file_hashes": {
+        "src/alpha.ts": "eb2d7c53d6782eca3a0f2c08d77f5f2eb1513edc"
+      }
+    },
+    {
+      "id": "7a1e0c00-0000-4000-8000-000000000002",
+      "type": "learning",
+      "title": "beta and alpha are read together",
+      "summary": "src/beta.ts exports beta = 2 and is always imported next to alpha.",
+      "symbols": [
+        "alpha",
+        "beta"
+      ],
+      "source_files": [
+        "src/alpha.ts",
+        "src/beta.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-05-02T00:00:00.000Z",
+      "source_file_hashes": {
+        "src/alpha.ts": "eb2d7c53d6782eca3a0f2c08d77f5f2eb1513edc",
+        "src/beta.ts": "585142547c69ca61309977d48fde4d8326ade5c7"
+      }
+    }
+  ]
+}

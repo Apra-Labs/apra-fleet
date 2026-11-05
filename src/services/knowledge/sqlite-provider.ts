@@ -24,7 +24,7 @@ import {
 import { computeFileHashBatch } from './file-hash.js';
 import { validateFilePaths } from './path-validation.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
-import { KbCaptureRejected, type DiscardResult, type RetireOptions } from './types.js';
+import { CAPTURE_TRIGGERS, KB_AUDIT_NOTE_START, KbCaptureRejected, type CaptureTrigger, type DiscardResult, type RetireOptions } from './types.js';
 import type {
   MemoryProvider,
   KBEntry,
@@ -43,6 +43,25 @@ import type {
   CodeIntelCall,
   ProviderStats,
 } from './types.js';
+
+function isCaptureTrigger(v: unknown): v is CaptureTrigger {
+  return typeof v === 'string' && (CAPTURE_TRIGGERS as readonly string[]).includes(v);
+}
+
+// Keep only string elements; anything that is not an array becomes [].
+function toStringArray(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+}
+
+// Tolerant read of a JSON string-array column: NULL/''/malformed -> [].
+function parseStringArray(v: unknown): string[] {
+  if (typeof v !== 'string' || v === '') return [];
+  try {
+    return toStringArray(JSON.parse(v));
+  } catch {
+    return [];
+  }
+}
 
 const CONTENT_CAP = 4000;
 const TRUNCATION_SUFFIX = '...[truncated]';
@@ -317,6 +336,27 @@ export class SqliteProvider implements MemoryProvider {
       this.db.exec('ALTER TABLE entries ADD COLUMN bible_updated_at TEXT');
     } catch {}
 
+    // Design D9 retrieval aids and capture provenance. recall_cues and
+    // error_signatures are JSON string arrays (default empty), trigger is the
+    // kb_capture trigger enum value (NULL when none was given) and
+    // retired_note is the free-text reason a kb_invalidate {ids, reason}
+    // recorded. retired_note is deliberately NOT retired_reason: that column's
+    // superseded | invalidated values drive getRetirementReasons and
+    // bible-commit reporting. Same guarded-ALTER pattern as above: existing
+    // rows read the defaults, nothing is rewritten.
+    try {
+      this.db.exec("ALTER TABLE entries ADD COLUMN recall_cues TEXT NOT NULL DEFAULT '[]'");
+    } catch {}
+    try {
+      this.db.exec("ALTER TABLE entries ADD COLUMN error_signatures TEXT NOT NULL DEFAULT '[]'");
+    } catch {}
+    try {
+      this.db.exec('ALTER TABLE entries ADD COLUMN trigger TEXT');
+    } catch {}
+    try {
+      this.db.exec('ALTER TABLE entries ADD COLUMN retired_note TEXT');
+    } catch {}
+
     // kb_import trust anchor: git blob ids of bibles the maintainer side wrote
     // or imported (kb_bible_commit and FULL / kb_maintainer kb_import). A
     // member session without the kb_maintainer grant imports its committed
@@ -385,6 +425,10 @@ export class SqliteProvider implements MemoryProvider {
       // (undefined) and of a legacy NULL/'' in demoted_basis_hashes.
       demoted_at: (row.demoted_at as string | null | undefined) ?? undefined,
       demoted_basis_hashes: JSON.parse((row.demoted_basis_hashes as string) || '{}'),
+      recall_cues: parseStringArray(row.recall_cues),
+      error_signatures: parseStringArray(row.error_signatures),
+      ...(isCaptureTrigger(row.trigger) ? { trigger: row.trigger } : {}),
+      ...(typeof row.retired_note === 'string' && row.retired_note !== '' ? { retired_note: row.retired_note } : {}),
       use_count: row.use_count as number,
       last_accessed: row.last_accessed as string | undefined,
     };
@@ -407,6 +451,7 @@ export class SqliteProvider implements MemoryProvider {
         flagged_for_review, contradiction_of,
         author, source, confidence, scope, created_at,
         source_file_hashes, local_basis_only,
+        recall_cues, error_signatures, trigger,
         superseded_at, promoted_at, use_count
       ) VALUES (
         ?, ?, ?, ?, ?,
@@ -415,6 +460,7 @@ export class SqliteProvider implements MemoryProvider {
         ?, ?,
         ?, ?, ?, ?, ?,
         ?, ?,
+        ?, ?, ?,
         NULL, NULL, 0
       )
     `).run(
@@ -438,7 +484,14 @@ export class SqliteProvider implements MemoryProvider {
       input.scope ?? 'project',
       now,
       JSON.stringify(sourceFileHashes),
-      localBasisOnly ? 1 : 0
+      localBasisOnly ? 1 : 0,
+      // Sanitized, not trusted: the HTTP /api/kb/capture route passes a
+      // deserialized body straight to capture(), so a non-array or a
+      // non-string element must not reach the column, and an out-of-enum
+      // trigger is dropped rather than stored.
+      JSON.stringify(toStringArray(input.recall_cues)),
+      JSON.stringify(toStringArray(input.error_signatures)),
+      isCaptureTrigger(input.trigger) ? input.trigger : null
     );
   }
 
@@ -1489,10 +1542,34 @@ export class SqliteProvider implements MemoryProvider {
         result.refused!.push(id);
         continue;
       }
-      db.prepare("UPDATE entries SET superseded_at = ?, stale = 1, retired_reason = 'invalidated' WHERE id = ?").run(now, id);
+      db.prepare("UPDATE entries SET superseded_at = ?, stale = 1, retired_reason = 'invalidated', retired_note = ? WHERE id = ?")
+        .run(now, opts?.reason !== undefined && opts.reason !== '' ? opts.reason : null, id);
       result.discarded.push(id);
     }
     return result;
+  }
+
+  /**
+   * Set an existing entry's content, recall_cues and/or error_signatures in
+   * place: the maintainer's backfill path (kb_bible_commit enrich). A field that
+   * is undefined stays as it is. New content keeps the entry's audit notes, so
+   * its promotion history survives. Nothing else moves: confidence, promoted_at,
+   * basis and id are untouched. False when the id is unknown.
+   */
+  setEntryRichFields(id: string, fields: { content?: string; recall_cues?: string[]; error_signatures?: string[] }): boolean {
+    const db = this.getDb();
+    const row = db.prepare('SELECT content FROM entries WHERE id = ?').get(id) as { content: string } | undefined;
+    if (!row) return false;
+    const note = KB_AUDIT_NOTE_START.exec(row.content);
+    const content = fields.content === undefined ? row.content : fields.content + (note ? row.content.slice(note.index) : '');
+    db.prepare('UPDATE entries SET content = ?, recall_cues = COALESCE(?, recall_cues), error_signatures = COALESCE(?, error_signatures) WHERE id = ?')
+      .run(
+        content,
+        fields.recall_cues === undefined ? null : JSON.stringify(fields.recall_cues),
+        fields.error_signatures === undefined ? null : JSON.stringify(fields.error_signatures),
+        id,
+      );
+    return true;
   }
 
   /**

@@ -225,11 +225,11 @@ MCP tools that ship with the KB:
 | Tool | What it does |
 |------|--------------|
 | `kb_session_prime` | Prime a session: stale files, fresh summaries, GitNexus call list |
-| `kb_capture` | Store a learning, context-cache, runbook, or knowledge entry |
+| `kb_capture` | Store a learning, context-cache, runbook, or knowledge entry (`content` optional; sprint captures need a `trigger` - see [KB capture gate](docs/kb-capture-gate.md)) |
 | `kb_query` | Two-level FTS retrieval (L1: title+summary, L2: full content) |
 | `kb_list` | Audit-list entries by confidence/type/module/symbol (read-only, no use_count bump) |
 | `kb_context` | Batch file freshness check (single git call for N files) |
-| `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` |
+| `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` (optional `reason` is stored as the retirement note) |
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED (FULL session, or the sprint's kb_maintainer member session only) |
 | `kb_demote` | Withdraw trust: lower a CONFIRMED entry back to INFERRED (the one reversible rung; never a ladder in its own direction) |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |

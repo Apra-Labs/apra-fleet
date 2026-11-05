@@ -5,7 +5,7 @@ import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/k
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
-import type { Author, CaptureSource } from '../services/knowledge/types.js';
+import { CAPTURE_TRIGGERS, type Author, type CaptureSource } from '../services/knowledge/types.js';
 
 // D5 (T2.3): the full Author enum. Kept as a plain array (not a zod enum on
 // the schema itself) so an invalid role hint degrades to 'unknown' at the
@@ -27,7 +27,7 @@ export const kbCaptureSchema = z.object({
     .describe('Content type: context-cache for file summaries, learning for session insights, knowledge for facts, runbook for procedures, user-directive for a standing user instruction/correction. NOTE (F1/D1): a user-directive captured here is stored as a PENDING PROPOSAL (UNVERIFIED, flagged for review, scope forced to project) -- it is NOT an active directive and does NOT gain any trust semantics until a human approves it in their own terminal via "apra-fleet kb approve-directive <id>". MCP cannot mint an active directive.'),
   title: z.string().min(1).describe('Short description (max ~80 chars)'),
   summary: z.string().min(1).describe('2-4 sentence overview'),
-  content: z.string().min(1).describe('Full detail (will be truncated at 4000 chars)'),
+  content: z.string().min(1).optional().describe('Full detail (will be truncated at 4000 chars). Optional: when omitted the stored content equals summary.'),
   source_files: z.array(z.string()).optional().describe('Related file paths'),
   symbols: z.array(z.string()).optional().describe('Function/class names this entry covers'),
   module: z.string().optional().describe('Module name'),
@@ -39,6 +39,12 @@ export const kbCaptureSchema = z.object({
     .describe('Confidence level (default: INFERRED)'),
   scope: z.enum(['project', 'global']).optional()
     .describe('Scope: project (default) or global for team-wide conventions'),
+  trigger: z.enum(CAPTURE_TRIGGERS).optional()
+    .describe('What kind of event produced this lesson: failed-attempt, review-finding, test-failure, env-quirk, hidden-invariant or design-rationale. Stored for audit; optional here.'),
+  recall_cues: z.array(z.string()).optional()
+    .describe('Phrasings someone would search with when they need this entry. Stored and returned on reads.'),
+  error_signatures: z.array(z.string()).optional()
+    .describe('Verbatim error strings this entry explains. Stored and returned on reads.'),
   supersedes: z.string().optional()
     .describe('Id of an entry this capture REPLACES. Only honored when AUDN independently matches that same entry as a same-topic candidate (same type, overlapping symbols and source_files), so it cannot retire an arbitrary entry. Omit it unless you mean to retire something -- an ordinary refinement links to its predecessor and both stay live. The KB Agent sets this when resolving a flagged pair; doer/reviewer captures should not. In a MEMBER session without the kb_maintainer grant a CONFIRMED target is never retired: the capture links to it (refines, both stay live) and the response lists it in refused.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
@@ -100,7 +106,10 @@ export async function kbCapture(input: KbCaptureInput, anchor?: KbAnchor): Promi
   // type, user-directive included.
   const requestedConfidence = input.confidence ?? 'INFERRED';
   let confidence = requestedConfidence;
-  let content = input.content;
+  // Content is optional: absent, the stored content is the summary -- the
+  // same deterministic rule bible import uses (synthesizeContent), so AUDN's
+  // content-equality dedupe treats the two paths alike.
+  let content = input.content ?? input.summary;
   if (requestedConfidence === 'CONFIRMED' && input.type !== 'user-directive') {
     confidence = 'INFERRED';
     content = content + '\n\n[confidence clamped: CONFIRMED requires kb_promote]';
@@ -186,6 +195,9 @@ export async function kbCapture(input: KbCaptureInput, anchor?: KbAnchor): Promi
     confidence,
     scope,
     supersedes: remoteRefused ? undefined : input.supersedes,
+    ...(input.recall_cues !== undefined ? { recall_cues: input.recall_cues } : {}),
+    ...(input.error_signatures !== undefined ? { error_signatures: input.error_signatures } : {}),
+    ...(input.trigger !== undefined ? { trigger: input.trigger } : {}),
   };
   const result = keepConfirmed && isSqliteProject(target)
     ? await target.capture(entryInput, { keepConfirmed: true })

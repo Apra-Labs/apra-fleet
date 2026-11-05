@@ -1,0 +1,27 @@
+{
+  "tool": "kb_bible_commit",
+  "case": "happy-enrich",
+  "kind": "happy",
+  "request": {
+    "ids": [],
+    "enrich": [
+      {
+        "id": "aa8a2ea2-2058-400f-8bcd-fdeb9c86a55c",
+        "content": "Context: exampleFn is the increment every fixture builds on. Rule/Fix: never change its arity.",
+        "recall_cues": [
+          "fixture increment helper"
+        ]
+      }
+    ],
+    "baseBranch": "main",
+    "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[],\"demoted\":[],\"skipped\":[],\"removed\":[],\"entry_count\":1,\"backfilled\":0,\"committed\":true,\"enriched\":[\"aa8a2ea2-2058-400f-8bcd-fdeb9c86a55c\"]}"
+      }
+    ]
+  }
+}

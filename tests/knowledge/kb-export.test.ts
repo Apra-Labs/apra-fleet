@@ -117,11 +117,24 @@ describe('kb_export (T3.4, F8b, D8)', () => {
   });
 
   it('field set is exact: id, type, title, summary, symbols, source_files, confidence, updated_at, source_file_hashes (v3)', async () => {
-    const { id } = await provider.capture(makeInput({ title: 'Field set entry' }));
+    // content equal to the summary (and no recall_cues/error_signatures): the
+    // optional D9 fields are not written, so the field set is the stable one.
+    const { id } = await provider.capture(makeInput({ title: 'Field set entry', content: 'Default summary' }));
     await provider.promote(id, 'confirmed for test: basis checked in fixture');
+    // Rich content adds exactly the optional content field.
+    const { id: richId } = await provider.capture(makeInput({
+      title: 'Rich field set entry', symbols: ['richSym'], source_files: ['src/a.ts'],
+    }));
+    await provider.promote(richId, 'confirmed for test: basis checked in fixture');
 
     await kbExport({}, { folder: tmpDir });
-    const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8')).entries;
+    const all = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8')).entries;
+    const written = all.filter((e: { id: string }) => e.id === id);
+    const rich = all.find((e: { id: string }) => e.id === richId);
+    expect(Object.keys(rich).sort()).toEqual(
+      ['confidence', 'content', 'id', 'source_file_hashes', 'source_files', 'summary', 'symbols', 'title', 'type', 'updated_at'].sort()
+    );
+    expect(rich.content).toBe('Default content body.');
 
     expect(written).toHaveLength(1);
     expect(Object.keys(written[0]).sort()).toEqual(
@@ -274,6 +287,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       await provider.promote(projectId, 'confirmed for test: basis checked in fixture');
       const { id: globalId } = await globalProvider.capture(makeInput({
         title: 'Global bible entry',
+        content: 'Default summary',
         symbols: ['globalSym'],
         source_files: ['src/global.ts'],
       }));

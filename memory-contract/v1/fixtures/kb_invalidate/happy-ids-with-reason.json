@@ -1,0 +1,19 @@
+{
+  "tool": "kb_invalidate",
+  "case": "happy-ids-with-reason",
+  "kind": "happy",
+  "request": {
+    "ids": [
+      "463fa975-f5c1-4e77-a6da-ae8f11c5d72d"
+    ],
+    "reason": "True but it restates the cited file: fails the capture rubric."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"discarded\":[\"463fa975-f5c1-4e77-a6da-ae8f11c5d72d\"],\"not_found\":[],\"already_discarded\":[]}"
+      }
+    ]
+  }
+}

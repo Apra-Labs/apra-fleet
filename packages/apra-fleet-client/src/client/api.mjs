@@ -759,6 +759,13 @@
  * @property {string} baseBranch - The target base branch, written to provenance.branch.
  * @property {string} baseCommit - The base commit the entries were verified against,
  *   written to provenance.commit.
+ * @property {Array<{id: string, content?: string, recall_cues?: string[], error_signatures?: string[]}>} [enrich] -
+ *   Maintainer backfill: sets those fields on a CONFIRMED entry in the bible (or merged by
+ *   this call) and in the KB row; nothing else in the entry moves. Listed in the result's
+ *   enriched, present only when enrich was sent. A bad item is skipped, never failing the
+ *   call: reason enrich_invalid (the capture rules, content 40 to 2000 chars, at most 20
+ *   cues or signatures of at most 500 chars), not_in_bible or not_confirmed_or_unknown.
+ *   A member session without the kb_maintainer grant is refused (E-KB-MAINTAINER-REQUIRED).
  * @property {string[]} [demoted_ids] - Ids demoted this round (kb_demote). An id whose
  *   local row carries a demoted_at and is now below CONFIRMED is REMOVED from entries and
  *   recorded as an explicit tombstone {id, at, reason} in the bible's optional top-level
@@ -796,6 +803,13 @@
  * @property {string[]} source_files - Repo-relative files the entry cites.
  * @property {string} confidence - CONFIRMED, INFERRED or UNVERIFIED.
  * @property {string} updated_at - Promotion (or creation) timestamp.
+ * @property {string} [content] - Optional lesson body, written only when non-empty and
+ *   different from summary (the KB's own audit notes cut first), at most 2000
+ *   characters (longer content is truncated, ending in '...[truncated]'). Absent:
+ *   kb_import stores content = summary; a malformed or over-length value is dropped.
+ * @property {string[]} [recall_cues] - Optional search phrasings for the entry; written only when non-empty.
+ * @property {string[]} [error_signatures] - Optional verbatim error strings the entry
+ *   explains; written only when non-empty.
  * @property {Object<string, string>} [source_file_hashes] - v3: the per-file hash basis
  *   (repo-relative path -> hash) the entry was admitted against, copied from the
  *   exporting KB's stored basis. kb_import stores it as the entry's basis exactly
