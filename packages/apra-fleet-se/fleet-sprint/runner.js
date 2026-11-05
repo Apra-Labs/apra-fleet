@@ -233,7 +233,7 @@ import {
     createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
     kbKnowledgeBlock, kbPromotionBlock,
 } from './kb.mjs';
-import { createKbInjection } from './kb-injection.mjs';
+import { createKbInjection, withWrapperKbBlock } from './kb-injection.mjs';
 import { pathsFromText, isPriorityTierToken } from './kb-hints.mjs';
 // Beads scope discovery + the shared full-DB snapshot: the single in-memory
 // BFS scope rule (now shared by bdListScoped and classifyVerifySet instead of
@@ -1008,28 +1008,24 @@ async function runSprintCycle(context) {
     let kbBeadIndex = new Map();
     const kbBeadTitles = (ids) => (Array.isArray(ids) ? ids : []).map((id) => kbBeadIndex.get(id)?.title).filter((t) => typeof t === 'string' && t);
     const agent = async (prompt, opts = {}) => {
-        let finalPrompt = prompt;
-        if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
-            // Only promise the kb_captures channel to a persona whose returned
-            // captures the engine actually applies (e.g. harvester); planner,
-            // plan-reviewer, deployer and the test runners have none.
-            // The block is pushed to EVERY member, verified at sprint init or
-            // not (a verified member may still query the KB on top of it),
-            // fetched from the repository's kb_maintainer (kb-injection.mjs).
-            // doer and reviewer (KB_SELF_INJECTING_ROLES) are skipped here
-            // because their prompt builders place the block themselves, so
-            // every role carries it exactly once.
-            const captureChannel = agentTypeAppliesKbCaptures(opts.agentType);
-            const [block] = kbInjection
-                ? await kbInjection.blockFor({
-                    role: opts.agentType,
-                    member: opts.member_name,
-                    context: { ...kbSprintContext, ...(opts.kbContext || {}) },
-                    captureChannel,
-                })
-                : kbKnowledgeBlock(kbPriming.knowledgeOf(opts.member_name), { captureChannel });
-            if (block) finalPrompt = prompt + '\n\n' + block;
-        }
+        // Only promise the kb_captures channel to a persona whose returned
+        // captures the engine actually applies (e.g. harvester); planner,
+        // plan-reviewer, deployer and the test runners have none.
+        // The block is pushed to EVERY member, verified at sprint init or
+        // not (a verified member may still query the KB on top of it),
+        // fetched from the repository's kb_maintainer (kb-injection.mjs).
+        // doer and reviewer (KB_SELF_INJECTING_ROLES) are skipped by
+        // withWrapperKbBlock because their prompt builders place the block
+        // themselves, so every role carries it exactly once.
+        const captureChannel = agentTypeAppliesKbCaptures(opts.agentType);
+        const finalPrompt = await withWrapperKbBlock(prompt, {
+            kbInjection,
+            agentType: opts.agentType,
+            member: opts.member_name,
+            context: { ...kbSprintContext, ...(opts.kbContext || {}) },
+            captureChannel,
+            fallbackBlock: () => kbKnowledgeBlock(kbPriming.knowledgeOf(opts.member_name), { captureChannel }),
+        });
         return withKbDispatchLifecycle(opts.member_name, async () => {
             try {
                 // Per-dispatch kb_* and code_* counts: session_stats snapshots of the

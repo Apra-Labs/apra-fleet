@@ -17,7 +17,7 @@
 // the sprint context (context.isMemberVerified); this module never re-probes.
 // =============================================================================
 
-import { kbKnowledgeBlock } from './kb.mjs';
+import { kbKnowledgeBlock, KB_SELF_INJECTING_ROLES } from './kb.mjs';
 import { roleHints } from './kb-hints.mjs';
 
 /**
@@ -70,4 +70,30 @@ export function createKbInjection(opts = {}) {
             return kbKnowledgeBlock(entries, { captureChannel, source, reportEmpty: true });
         },
     };
+}
+
+/**
+ * The dispatch wrapper's KNOWLEDGE BANK step (runner.js agent()): appends the
+ * block to `prompt` for every role outside KB_SELF_INJECTING_ROLES (doer and
+ * reviewer place it through their own prompt builders, so skipping them here
+ * keeps the block to exactly one copy per dispatched prompt). Every member
+ * gets the block, verified at sprint init or not.
+ *
+ * @param {string} prompt
+ * @param {{
+ *   kbInjection: { blockFor: Function } | null,
+ *   agentType?: string,
+ *   member?: string,
+ *   context?: object,
+ *   captureChannel?: boolean,
+ *   fallbackBlock?: () => string[],
+ * }} opts  fallbackBlock supplies the block when kbInjection is not bound yet.
+ * @returns {Promise<string>}
+ */
+export async function withWrapperKbBlock(prompt, { kbInjection, agentType, member, context = {}, captureChannel = true, fallbackBlock } = {}) {
+    if (!agentType || KB_SELF_INJECTING_ROLES.has(agentType) || !member) return prompt;
+    const [block] = kbInjection
+        ? await kbInjection.blockFor({ role: agentType, member, context, captureChannel })
+        : (typeof fallbackBlock === 'function' ? fallbackBlock() : []);
+    return block ? prompt + '\n\n' + block : prompt;
 }
