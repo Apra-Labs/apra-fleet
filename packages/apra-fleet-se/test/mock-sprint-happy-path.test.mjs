@@ -203,7 +203,8 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // Exclude the safe, ff-only self-sync explicitly rather than
         // widening the check to miss a genuine violation.
         check(
-            !run1.commandLog.some((c) => (/^git\s+merge/.test(c) && !/^git\s+merge\s+--ff-only\b/.test(c)) || /gh\s+pr\s+merge/.test(c)),
+            // `git merge-base` (the read-only review diff base) is not a merge.
+            !run1.commandLog.some((c) => (/^git\s+merge(?:\s|$)/.test(c) && !/^git\s+merge\s+--ff-only\b/.test(c)) || /gh\s+pr\s+merge/.test(c)),
             `Runner must never auto-merge (pm skill R12); found a merge command in the log: ${JSON.stringify(run1.commandLog)}`
         );
 

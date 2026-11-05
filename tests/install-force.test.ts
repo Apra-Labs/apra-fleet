@@ -6,9 +6,12 @@ import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } fr
 import fs from 'node:fs';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
-import { runInstall, isApraFleetRunning, killApraFleet, _setSeaOverride, _setManifestOverride, _setInstallForceTimingOverride } from '../src/cli/install.js';
+import net from 'node:net';
+import { runInstall, isApraFleetRunning, killApraFleet, _setSeaOverride, _setManifestOverride, _setInstallForceTimingOverride, _setServiceHealthWaitOverride, ACCESS_RESTART_NOTE } from '../src/cli/install.js';
+import { SERVICE_NOTICE_PATH, showPendingServiceNotice } from '../src/services/service-notice.js';
+import { _setPortHolderProbeOverride } from '../src/services/port-holder.js';
 import { getServiceManager } from '../src/services/service-manager/index.js';
-import { legacyTaskGuidance } from '../src/services/service-manager/windows.js';
+import { legacyTaskGuidance, WindowsServiceManager } from '../src/services/service-manager/windows.js';
 import type { ServiceManager } from '../src/services/service-manager/types.js';
 
 vi.mock('node:os', () => ({
@@ -21,6 +24,7 @@ vi.mock('node:fs');
 vi.mock('node:child_process');
 vi.mock('../src/services/service-manager/index.js', () => ({
   getServiceManager: vi.fn(),
+  gracefulStopByServerJson: vi.fn().mockResolvedValue(true),
 }));
 
 const mockHome = '/mock/home';
@@ -1087,10 +1091,283 @@ describe('install --force over a reused elevated task that refuses run', () => {
     expect(out).not.toContain('Start it with:\n    apra-fleet start');
   });
 
+  it('guidance printed by register() on reuse is not printed a second time when /run is then refused', async () => {
+    const warn = (...a: unknown[]) => console.warn(...a);
+    const out = await installAndCapture(fakeMgr({
+      register: vi.fn().mockImplementation(async () => { warn(GUIDANCE); return 'reused'; }),
+      legacyGuidance: vi.fn().mockReturnValue(GUIDANCE),
+      legacyGuidanceShown: vi.fn().mockReturnValue(true),
+    }));
+    expect(out.split(GUIDANCE).length - 1).toBe(1);
+    expect(out).toContain('follow the steps printed above');
+    expect(out).not.toContain('Start it with:\n    apra-fleet start');
+  });
+
+  // End to end with the REAL WindowsServiceManager (only schtasks is faked):
+  // stop (disable refused) -> register (create refused, task reused) -> start
+  // (/run refused). The legacy guidance must appear exactly once in the whole
+  // install output and the sticky-stop sentence never.
+  describe('real WindowsServiceManager over an elevated legacy task', () => {
+    const LEGACY_XML = [
+      '<?xml version="1.0" encoding="UTF-16"?>',
+      '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
+      '  <Principals><Principal id="Author"><UserId>S-1-5-21-1-2-3-1001</UserId>',
+      '    <LogonType>InteractiveToken</LogonType></Principal></Principals>',
+      '  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy></Settings>',
+      '  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>',
+      '  <Actions Context="Author"><Exec><Command>C:\\x\\apra-fleet-service.bat</Command></Exec></Actions>',
+      '</Task>',
+    ].join('\r\n');
+    const STICKY = "A stop made with 'apra-fleet stop' still holds";
+    const count = (hay: string, needle: string) => hay.split(needle).length - 1;
+
+    function realMgr(): WindowsServiceManager {
+      const schtasks = (args: string[]): string => {
+        if (args[0] === '/query') return args.includes('/xml') ? LEGACY_XML : 'ApraFleet';
+        throw new Error(`Command failed: schtasks ${args[0]}\r\nERROR: Access is denied.`);
+      };
+      const mgr = new WindowsServiceManager(schtasks, 'C:\\x\\apra-fleet-service.bat', {
+        runReg: () => '', env: { USERDOMAIN: 'H', USERNAME: 'u' }, probeWsh: () => true,
+        stoppedByUser: () => false, noticePath: '/mock/notice.json', interactive: () => true,
+      });
+      const realStop = mgr.stop.bind(mgr);
+      mgr.stop = async (o) => { serviceStopped = true; return realStop(o); };
+      return mgr;
+    }
+
+    it('install --force prints the guidance exactly once and no sticky-stop text', async () => {
+      const out = await installAndCapture(realMgr());
+      expect(count(out, 'schtasks /delete /tn ApraFleet /f')).toBe(1);
+      expect(count(out, "'apra-fleet stop' cannot disable the task")).toBe(1);
+      expect(out).not.toContain(STICKY);
+    });
+  });
+
   it('other start failures (no legacy problem) keep the plain restart hint', async () => {
     const out = await installAndCapture(fakeMgr({ legacyGuidance: vi.fn().mockReturnValue(null) }));
     expect(out).toContain('Start it with:');
     expect(out).not.toContain('scheduled task was registered by an older apra-fleet');
+  });
+});
+
+describe('install --force stop and restart messages match the real outcome (apra-fleet-wg3h)', () => {
+  let serviceStopped = false;
+  function mgrWith(stop: ServiceManager['stop']): ServiceManager {
+    return {
+      register: vi.fn().mockResolvedValue('created'),
+      unregister: vi.fn().mockResolvedValue(undefined),
+      start: vi.fn().mockResolvedValue(undefined),
+      stop,
+      query: vi.fn().mockResolvedValue({ installed: true, running: false }),
+      isInstalled: vi.fn().mockResolvedValue(true),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    _setSeaOverride(true);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    serviceStopped = false;
+    vi.mocked(execSync).mockImplementation(((cmd: any) => {
+      const c = cmd.toString();
+      if (c === 'pgrep -x apra-fleet') {
+        if (serviceStopped) throw Object.assign(new Error('no match'), { status: 1 });
+        return '5678\n' as any;
+      }
+      const exe = exeLookupResult(c);
+      if (exe !== null) return exe as any;
+      return '' as any;
+    }) as any);
+  });
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+    if (realPlatform) Object.defineProperty(process, 'platform', realPlatform);
+    vi.restoreAllMocks();
+  });
+
+  async function installAndCapture(mgr: ServiceManager): Promise<string> {
+    vi.mocked(getServiceManager).mockResolvedValue(mgr);
+    const lines: string[] = [];
+    const grab = (...a: unknown[]) => { lines.push(a.join(' ')); };
+    vi.spyOn(console, 'log').mockImplementation(grab);
+    vi.spyOn(console, 'warn').mockImplementation(grab);
+    vi.spyOn(console, 'error').mockImplementation(grab);
+    vi.spyOn(process, 'exit').mockImplementation((() => { throw new Error('exit'); }) as any);
+    await runInstall(['--skill', 'none', '--force']).catch(() => {});
+    return lines.join('\n');
+  }
+
+  it('unverified pid that did not exit: no "Stopped running server.", names the pid, and stop is told it is install', async () => {
+    alivePids.add(5678);
+    const stop = vi.fn().mockImplementation(async () => { serviceStopped = true; return false; });
+    const out = await installAndCapture(mgrWith(stop));
+    expect(stop).toHaveBeenCalledWith({ reason: 'install' });
+    expect(out).not.toContain('Stopped running server.');
+    expect(out).toMatch(/pid 5678 is still running/);
+    expect(out).toContain('not force-killed');
+  });
+
+  it('unverified pid that has since exited: does not claim it is still running', async () => {
+    // alivePids stays empty: pid 5678 is gone by the time install looks.
+    const stop = vi.fn().mockImplementation(async () => { serviceStopped = true; return false; });
+    const out = await installAndCapture(mgrWith(stop));
+    expect(out).not.toMatch(/is still running/);
+    expect(out).toContain('Stopped running server.');
+  });
+
+  it('genuine clean stop still prints "Stopped running server."', async () => {
+    const stop = vi.fn().mockImplementation(async () => { serviceStopped = true; return true; });
+    const out = await installAndCapture(mgrWith(stop));
+    expect(out).toContain('Stopped running server.');
+    expect(out).not.toMatch(/is still running/);
+  });
+
+  it('service the final step restarts: no unconditional restart-command line, fallback framing, summary says running', async () => {
+    _setServiceHealthWaitOverride(async () => true);
+    const stop = vi.fn().mockImplementation(async () => { serviceStopped = true; return true; });
+    const out = await installAndCapture(mgrWith(stop));
+    expect(out).not.toContain('stopped by --force. Restart command:');
+    expect(out).toContain('the final install step re-registers and starts it');
+    expect(out).toContain('Only if a later step fails');
+    expect(out).toMatch(/Service:\s+registered and running/);
+  });
+});
+
+// An update-driven install --force that rewrote the MCP registrations but then
+// exits early must still leave the restart-sessions notice pending, so the next
+// status/start/update (which all call showPendingServiceNotice) prints it once.
+describe('access restart notice survives the early install exits', () => {
+  let serviceStopped = false;
+  let lines: string[] = [];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    _setSeaOverride(true);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    serviceStopped = false;
+    lines = [];
+  });
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+    _setPortHolderProbeOverride(null);
+    if (realPlatform) Object.defineProperty(process, 'platform', realPlatform);
+    vi.restoreAllMocks();
+  });
+
+  async function install(mgr: ServiceManager, args: string[]): Promise<void> {
+    vi.mocked(getServiceManager).mockResolvedValue(mgr);
+    const grab = (...a: unknown[]) => { lines.push(a.join(' ')); };
+    vi.spyOn(console, 'log').mockImplementation(grab);
+    vi.spyOn(console, 'warn').mockImplementation(grab);
+    vi.spyOn(console, 'error').mockImplementation(grab);
+    vi.spyOn(process, 'exit').mockImplementation((() => { throw new Error('exit'); }) as any);
+    await runInstall(args).catch(() => {});
+  }
+
+  function pendingNotice(): { text: string; shownAt?: string } {
+    return JSON.parse(String(fs.readFileSync(SERVICE_NOTICE_PATH, 'utf8')));
+  }
+
+  function printedByNextVerbs(): number {
+    lines = [];
+    showPendingServiceNotice();
+    showPendingServiceNotice();
+    return lines.filter(l => l.includes(ACCESS_RESTART_NOTE)).length;
+  }
+
+  for (const tty of [false, true]) {
+    it(`successful install (stdout ${tty ? 'a console' : 'detached'}): notice ${tty ? 'recorded as shown' : 'pending, printed once'}`, async () => {
+      mockServerNotRunning();
+      _setServiceHealthWaitOverride(async () => true);
+      const prevTty = process.stdout.isTTY;
+      Object.defineProperty(process.stdout, 'isTTY', { value: tty, configurable: true, writable: true });
+      try {
+        await install({
+          register: vi.fn().mockResolvedValue('created'),
+          unregister: vi.fn().mockResolvedValue(undefined),
+          start: vi.fn().mockResolvedValue(undefined),
+          stop: vi.fn().mockResolvedValue(undefined),
+          query: vi.fn().mockResolvedValue({ installed: false, running: false }),
+          isInstalled: vi.fn().mockResolvedValue(false),
+        }, ['--skill', 'none']);
+      } finally {
+        Object.defineProperty(process.stdout, 'isTTY', { value: prevTty, configurable: true, writable: true });
+        _setServiceHealthWaitOverride(null);
+      }
+      expect(process.exit).not.toHaveBeenCalled();
+      const n = pendingNotice();
+      expect(n.text).toContain(ACCESS_RESTART_NOTE);
+      expect(Boolean(n.shownAt)).toBe(tty);
+      expect(printedByNextVerbs()).toBe(tty ? 0 : 1);
+    });
+  }
+
+  it('service start refused under --force (exit 1): the notice is pending and printed once', async () => {
+    vi.mocked(execSync).mockImplementation(((cmd: any) => {
+      const c = cmd.toString();
+      if (c === 'pgrep -x apra-fleet') {
+        if (serviceStopped) throw Object.assign(new Error('no match'), { status: 1 });
+        return '5678\n' as any;
+      }
+      const exe = exeLookupResult(c);
+      if (exe !== null) return exe as any;
+      return '' as any;
+    }) as any);
+    await install({
+      register: vi.fn().mockResolvedValue('reused'),
+      unregister: vi.fn().mockResolvedValue(undefined),
+      start: vi.fn().mockRejectedValue(new Error('schtasks /run /tn ApraFleet failed: ERROR: Access is denied.')),
+      stop: vi.fn().mockImplementation(async () => { serviceStopped = true; }),
+      query: vi.fn().mockResolvedValue({ installed: true, running: false }),
+      isInstalled: vi.fn().mockResolvedValue(true),
+    }, ['--skill', 'none', '--force']);
+    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(lines.join('\n')).toContain('the server is NOT running');
+    const n = pendingNotice();
+    expect(n.text).toContain(ACCESS_RESTART_NOTE);
+    expect(n.shownAt).toBeUndefined();
+    expect(printedByNextVerbs()).toBe(1);
+  });
+
+  it('port held by another user (early return): the notice is pending and printed once', async () => {
+    mockServerNotRunning();
+    // Hold a real port and point this install at it, held by "another user".
+    const holder = net.createServer();
+    await new Promise<void>((resolve) => holder.listen(0, '127.0.0.1', () => resolve()));
+    const port = (holder.address() as net.AddressInfo).port;
+    const prevPort = process.env.APRA_FLEET_PORT;
+    process.env.APRA_FLEET_PORT = String(port);
+    _setPortHolderProbeOverride(async () => ({ otherUser: true }));
+    const register = vi.fn().mockResolvedValue('created');
+    try {
+      await install({
+        register,
+        unregister: vi.fn().mockResolvedValue(undefined),
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn().mockResolvedValue(undefined),
+        query: vi.fn().mockResolvedValue({ installed: false, running: false }),
+        isInstalled: vi.fn().mockResolvedValue(false),
+      }, ['--skill', 'none']);
+    } finally {
+      if (prevPort === undefined) delete process.env.APRA_FLEET_PORT; else process.env.APRA_FLEET_PORT = prevPort;
+      await new Promise<void>((resolve) => holder.close(() => resolve()));
+    }
+    const exitCode = process.exitCode;
+    process.exitCode = 0;
+    expect(register).not.toHaveBeenCalled();
+    expect(exitCode).toBe(1);
+    const n = pendingNotice();
+    expect(n.text).toContain(ACCESS_RESTART_NOTE);
+    expect(n.shownAt).toBeUndefined();
+    expect(printedByNextVerbs()).toBe(1);
   });
 });
 

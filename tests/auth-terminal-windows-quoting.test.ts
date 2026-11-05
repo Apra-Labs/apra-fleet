@@ -20,6 +20,11 @@ vi.mock('node:child_process', async (importOriginal) => {
   };
 });
 
+const FAKE_POWERSHELL = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+vi.mock('../src/os/windows-executable.js', () => ({
+  windowsExecutable: (name: string) => (name === 'powershell.exe' ? FAKE_POWERSHELL : name),
+}));
+
 const HOSTILE_PROMPT = 'Enter SSH password for u"&calc&"@h ^ %PATH% | whoami > x <y \\" end\\';
 const HOSTILE_MEMBER = 'mem&ber%OS%';
 
@@ -48,7 +53,8 @@ describe('launchAuthTerminal -- Windows console launch quoting', () => {
   it('never puts caller-influenced text on a cmd.exe or PowerShell command line', async () => {
     const call = await launch();
     expect(call.file).not.toMatch(/^cmd(\.exe)?$/i);
-    expect(call.file).toBe('powershell');
+    // Absolute path (not a bare name): a bare name is searched in the server cwd first.
+    expect(call.file).toBe(FAKE_POWERSHELL);
     expect(call.opts.windowsHide).toBe(true);
 
     // The launcher argv is fixed flags + base64; none of the hostile text.

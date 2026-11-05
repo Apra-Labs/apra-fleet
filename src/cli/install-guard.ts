@@ -39,6 +39,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
+import { FULL_INSTALL_PORT_FILE, validPort } from '../paths.js';
 import { isPidAlive, isApraFleetProcess } from '../utils/process-utils.js';
 
 export interface RunningApraFleetProcess {
@@ -247,6 +248,26 @@ export function writeMemberInstallMarker(version: string, port?: number): void {
     fs.writeFileSync(memberInstallMarkerPath(), JSON.stringify(marker) + '\n');
   } catch {
     // Best effort: a missing marker only makes the next forced member install refuse loudly.
+  }
+}
+
+/**
+ * Records the port a FULL install was run with so `apra-fleet start`, the
+ * service launch and logon autostart (none of which carry APRA_FLEET_PORT)
+ * bind the port the MCP registration points at. A full install run without a
+ * valid APRA_FLEET_PORT removes the record: install is declarative, and a
+ * surviving record would keep serving a stale port while the registration it
+ * just wrote points at the default.
+ */
+export function recordFullInstallPort(version: string, env: string | undefined = process.env.APRA_FLEET_PORT): void {
+  const file = path.join(getInstallDataDir(), FULL_INSTALL_PORT_FILE);
+  const port = validPort(env ?? '');
+  try {
+    if (port === undefined) { fs.rmSync(file, { force: true }); return; }
+    fs.mkdirSync(getInstallDataDir(), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ version, installedAt: new Date().toISOString(), port }) + '\n');
+  } catch {
+    // Best effort: without the record start falls back to the default port.
   }
 }
 

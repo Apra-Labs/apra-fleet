@@ -163,6 +163,15 @@ export async function detectRunningFleetSe(probes: FleetSeProbes = realFleetSePr
   return { supervisor, sprints: [...sprints.values()], warnings };
 }
 
+/**
+ * The args of the step-3 rerun line. When a live apra-fleet server is recorded
+ * the rerun must carry --force (once), or the running-server check refuses the
+ * copied command again; with no live server the args are unchanged.
+ */
+export function fleetSeRerunArgs(args: string[], liveServer: boolean): string[] {
+  return liveServer && !args.includes('--force') ? [...args, '--force'] : args;
+}
+
 /** The refusal printed when fleet-se work is running. */
 export function fleetSeRefusalText(found: RunningFleetSe, opts: {
   platform: NodeJS.Platform; rerunLines: string[]; ignoreLines: string[];
@@ -190,6 +199,9 @@ export function fleetSeRefusalText(found: RunningFleetSe, opts: {
       steps.push('     console, or by ending its pid shown above. If that pid is not a fleet-sprint (a stale');
       steps.push('     lock whose pid was reused), delete the lock file instead.');
     }
+    steps.push('     A sprint stopped by an older fleet (0.4.3 and earlier) keeps its dashboard child alive for');
+    steps.push('     up to 300 seconds and holds its lock meanwhile, so this check keeps refusing until that');
+    steps.push('     child exits: wait up to 5 minutes and re-run, or end the pid shown above.');
   } else {
     steps.push('  1. No sprint is running.');
   }

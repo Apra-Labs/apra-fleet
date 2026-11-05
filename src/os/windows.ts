@@ -7,6 +7,7 @@ import { escapeBatchMetachars, escapePowerShellArgInner } from '../utils/shell-e
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { withGoMaxProcsDefault, GO_MAXPROCS_DEFAULT_PWSH } from './go-concurrency.js';
+import { windowsExecutable } from './windows-executable.js';
 
 /**
  * Wrap a PowerShell script as a base64 `-EncodedCommand` invocation.
@@ -97,10 +98,13 @@ export class WindowsCommands implements OsCommands {
     // script is ~2300. A blocking execSync with no timeout then freezes the
     // whole fleet server. -NoProfile keeps profile output out of the JSON.
     const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    // Absolute path, resolved outside the try so a missing PowerShell surfaces
+    // its own E-WINDOWS-EXECUTABLE-NOT-FOUND error (see windows-executable.ts).
+    const powershell = windowsExecutable('powershell.exe');
     let result: string;
     try {
       result = execFileSync(
-        'powershell.exe',
+        powershell,
         ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
         { encoding: 'utf-8', windowsHide: true, timeout: CLEAN_ENV_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
       );
@@ -429,7 +433,9 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   // --- Local exec ---
 
   cleanExec(command: string): { command: string; env?: Record<string, string>; shell?: string } {
-    return { command, env: this.getCleanEnv(), shell: 'powershell.exe' };
+    // An ABSOLUTE shell path: LocalStrategy spawns this with cwd = the member
+    // work folder, where a bare 'powershell.exe' would be searched first.
+    return { command, env: this.getCleanEnv(), shell: windowsExecutable('powershell.exe') };
   }
 
   // --- Shell ---

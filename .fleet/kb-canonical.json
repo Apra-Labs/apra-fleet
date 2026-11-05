@@ -776,6 +776,30 @@
       "updated_at": "2026-09-29T06:13:13.727Z"
     },
     {
+      "id": "4bbf15d9-821e-460f-aea3-10d749f9320b",
+      "type": "knowledge",
+      "title": "The pending service notice is a single slot: a later writeServiceNotice replaces an earlier one",
+      "summary": "src/services/service-notice.ts stores one notice per file and writeServiceNotice overwrites it, so two writers in one install (legacy-task guidance from WindowsServiceManager.register and the access restart note from install.ts) cannot both survive.",
+      "symbols": [
+        "writeServiceNotice",
+        "takePendingServiceNotice",
+        "recordAccessRestartNotice",
+        "reportLegacy"
+      ],
+      "source_files": [
+        "src/services/service-notice.ts",
+        "src/cli/install.ts",
+        "src/services/service-manager/windows.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T07:44:46.404Z",
+      "source_file_hashes": {
+        "src/cli/install.ts": "f2318e7720dda708523636118beb3efc6827a703",
+        "src/services/service-manager/windows.ts": "73148adab209e6031f0e0c050fb1f9e45bd3e219",
+        "src/services/service-notice.ts": "50ca5f5a7c11291cb3d047f8135abe8fc15a0778"
+      }
+    },
+    {
       "id": "4e315af5-d8ab-460e-850a-36d1d38ce19a",
       "type": "knowledge",
       "title": "runner.js's re-export of fatal-diagnostics.mjs is load-bearing for abort.mjs, not just compatibility sugar",
@@ -1092,6 +1116,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.250Z"
+    },
+    {
+      "id": "780724c4-bbfa-458d-94fc-ebb733800a55",
+      "type": "knowledge",
+      "title": "install-force tests can drive a real WindowsServiceManager through runInstall",
+      "summary": "tests/install-force.test.ts runs runInstall --force against a real WindowsServiceManager by injecting a fake schtasks runner; the service-manager/index.js mock must also export gracefulStopByServerJson.",
+      "symbols": [
+        "WindowsServiceManager",
+        "gracefulStopByServerJson"
+      ],
+      "source_files": [
+        "tests/install-force.test.ts",
+        "src/services/service-manager/windows.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T06:12:58.075Z",
+      "source_file_hashes": {
+        "src/services/service-manager/windows.ts": "73148adab209e6031f0e0c050fb1f9e45bd3e219",
+        "tests/install-force.test.ts": "ec37a86296ae36a9f4277879ee4b4859ed644071"
+      }
     },
     {
       "id": "78f14fd2-717c-4201-9897-fb638379f393",
@@ -2265,6 +2309,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:08:07.865Z"
+    },
+    {
+      "id": "f2c0c490-c149-488d-939c-beb60734c8bc",
+      "type": "learning",
+      "title": "service-notice is single-slot; use appendServiceNotice to keep pending guidance",
+      "summary": "writeServiceNotice overwrites the whole file; install writers that may follow register-time legacy guidance must use appendServiceNotice.",
+      "symbols": [],
+      "source_files": [
+        "src/services/service-notice.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T08:03:57.008Z",
+      "source_file_hashes": {
+        "src/services/service-notice.ts": "b80d4b6dc105ee1e0ff1b483bf09cbe6b7f79620"
+      }
     },
     {
       "id": "f33011e2-8ae6-4388-95d4-5e21f1716d0f",

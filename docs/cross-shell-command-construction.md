@@ -215,3 +215,25 @@ or via a tool handler) is a potential instance of this bug class if it:
 New command-construction call sites should resolve the OS-appropriate
 command explicitly (via the OS-command abstraction or an explicit `agent.os`
 branch) rather than writing one string and hoping it works on every shell.
+
+## Windows system executables resolve to absolute paths, never the cwd
+
+On Windows, spawning a bare `powershell` / `cmd` / `bash` / `git` lets the OS
+search the process cwd first, so a planted `powershell.exe` in a repo or work
+folder would run in place of the system one. Fleet-server code therefore never
+spawns these by bare name. `src/os/windows-executable.ts` is the single resolver:
+
+- `powershell` and `cmd` resolve from `SystemRoot` / `ComSpec` first, then only
+  from absolute PATH entries; the cwd and relative PATH entries are never searched.
+- PATH lookups accept only `.EXE` / `.COM`; only successful lookups are cached.
+- `git-executable.ts` delegates to it; `WindowsCommands.cleanExec`, `getCleanEnv`,
+  the auth socket, `cli/auth`, process utilities and supervisor service cleanup
+  all use it.
+- `resolveGitBashPath` accepts an absolute PATH `bash` only after a `uname` check
+  confirms it is a real Git Bash, not WSL's launcher.
+
+When testing this, the planted-exe test must delete `NoDefaultCurrentDirectoryInExePath`
+from the environment, otherwise the OS ignores the cwd and the test proves nothing.
+Known remaining class members (CLI-side spawns that still use bare `cmd.exe`):
+`run()` in `src/cli/install.ts` / `uninstall.ts`, the `WindowsServiceManager.start`
+detached fallback, and the claude-mod ComSpec fallback.

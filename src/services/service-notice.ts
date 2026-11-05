@@ -27,6 +27,21 @@ export function writeServiceNotice(text: string, file = SERVICE_NOTICE_PATH, now
   } catch { /* best-effort: never fail registration on the notice */ }
 }
 
+/**
+ * Like writeServiceNotice, but never discards guidance that is still pending:
+ * when an unshown notice exists, `text` is appended to it (so the next verb
+ * prints both once). A `shown` text (already printed inline) is not added to a
+ * pending notice, since the user has seen it; a duplicate text is not repeated.
+ */
+export function appendServiceNotice(text: string, file = SERVICE_NOTICE_PATH, now = new Date(), shown = false): void {
+  const existing = readNotice(file);
+  if (!existing || existing.shownAt) { writeServiceNotice(text, file, now, shown); return; }
+  if (shown || existing.text.includes(text)) return;
+  try {
+    fs.writeFileSync(file, JSON.stringify({ ...existing, text: `${existing.text}\n${text}` }, null, 2));
+  } catch { /* best-effort */ }
+}
+
 export function clearServiceNotice(file = SERVICE_NOTICE_PATH): void {
   try { fs.unlinkSync(file); } catch { /* absent */ }
 }
