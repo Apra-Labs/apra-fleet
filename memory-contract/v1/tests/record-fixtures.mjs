@@ -556,6 +556,23 @@ if (idFoo) {
     exclude_disputed: true,
     expand_related: true,
   });
+
+  // --- kb_query own_scope ---------------------------------------------------
+  // The same member session reads back its OWN CONFIRMED row. Without
+  // own_scope a member's CONFIRMED read is answered from the checkout bible
+  // view, whose rows are untagged (happy-confirmed-only above); own_scope asks
+  // the per-repo DB for the member's own captures instead, so idFoo comes back
+  // carrying its member:<uuid> owner tag.
+  const ownScope = await recordHappy('kb_query', 'happy-own-scope', {
+    query: 'exampleFn',
+    confidence: ['CONFIRMED'],
+    own_scope: true,
+  });
+  const ownRow = (parseEnvelopeText(ownScope)?.l1_results ?? []).find((e) => e?.id === idFoo);
+  if (!ownRow || ownRow.confidence !== 'CONFIRMED' || !(ownRow.tags ?? []).some((t) => t.startsWith('member:'))) {
+    failures++;
+    console.log(`  [FAIL] kb_query/happy-own-scope did not return the member's own CONFIRMED row ${idFoo} with its member: tag`);
+  }
 }
 
 // --- kb_stats -------------------------------------------------------------

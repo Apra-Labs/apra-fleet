@@ -30,7 +30,9 @@
 //     member, which connects through the plain per-folder ?member= entry --
 //     does not see them.
 //   - kb_demote lowers CONFIRMED to INFERRED. It is served on the same terms
-//     as kb_promote (kb_maintainer session only).
+//     as kb_promote (kb_maintainer session only): the engine applies every
+//     reviewer demotion through the maintainer session, and no role agent
+//     needs to call it directly.
 //   - kb_import is served to every member session, but an explicit `path`
 //     (a caller-named bible, equivalent in power to kb_promote) is refused in
 //     a member session without the grant (src/tools/kb-import.ts); the

@@ -98,6 +98,10 @@ const KNOWN_ARG_KEYS = new Set([
     // Never silent: the engine logs it and the sprint report and PR body say
     // "skipped by launch option". The integration-test phase is unaffected.
     'skip_regression',
+    // Reviewer KB demotion loop switch: 'on' (default when absent) or 'off'.
+    // Off: the reviewer is offered no demotion candidates and no kb_demote is
+    // issued. Any other value is rejected loudly (never a silent fallback).
+    'kb_demotion_loop',
     // Multi-streak worklist dispatch mode when a develop round has more ready
     // streaks than doers. 'resume' (default): per-streak dispatches that resume
     // the SAME doer session by explicit session id (warm-context carryover,
@@ -502,6 +506,12 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid doer_worklist_mode "${doerWorklistMode}": must be 'resume' (default) or 'batch'.`);
     }
 
+    // --- kb_demotion_loop (optional, default 'on') ---------------------------
+    const kbDemotionLoop = args.kb_demotion_loop === undefined ? 'on' : args.kb_demotion_loop;
+    if (kbDemotionLoop !== 'on' && kbDemotionLoop !== 'off') {
+        throw new Error(`[Arg Contract] Invalid kb_demotion_loop ${JSON.stringify(kbDemotionLoop)}: must be 'on' (default) or 'off'.`);
+    }
+
     // --- skip_regression (optional, default false) -------------------------
     const skipRegression = args.skip_regression === undefined ? false : args.skip_regression;
     if (typeof skipRegression !== 'boolean') {
@@ -581,6 +591,7 @@ export function validateArgs(args) {
         doerWorklistMode,
         resumeModelSwitch,
         skipRegression,
+        kbDemotionLoop,
         worklistEffortBudget: args.worklist_effort_budget,
         usageLimitMaxWaitS: args.usage_limit_max_wait_s,
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,

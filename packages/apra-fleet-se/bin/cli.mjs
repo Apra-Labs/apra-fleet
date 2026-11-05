@@ -181,6 +181,9 @@ export function buildOptionsSpec() {
         // body's phases.regression:"skip"). Never silent: logged, and reported in
         // the sprint analysis and the PR body.
         'skip-regression': { type: 'boolean' },
+        // Reviewer KB demotion loop switch: on (default) or off. Forwarded as the
+        // runner's kb_demotion_loop arg, which rejects any other value loudly.
+        'kb-demotion-loop': { type: 'string' },
         // --ci-gate is DELIBERATELY NOT WIRED (2026-10-01): the runner's
         // ci_gate arg is disabled until the CI-as-quality-resource epic
         // (apra-fleet-dv8i) designs the flow -- see fleet-sprint/sprint-args.mjs.
@@ -237,6 +240,10 @@ Options:
                                 uses legacy shared-workspace mode (all members on the same HEAD).
       --skip-regression        Skip the once-per-sprint regression pass. Logged, and stated in the
                                 sprint analysis and the PR body. Integration tests still run.
+      --kb-demotion-loop <on|off>
+                               Reviewer KB demotion loop (default: on). 'off' offers the reviewer no
+                               demotion candidates and issues no kb_demote; the log says so. Any
+                               other value is rejected.
   -h, --help                   Show this help message.
 `.trim();
 
@@ -353,7 +360,7 @@ export async function resolveRoleMapWithWarnings(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, ciGate }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, kbDemotionLoop, ciGate }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -385,6 +392,8 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     if (runId !== undefined) args.run_id = runId;
     // Only forwarded when set, so a default launch's runner args are unchanged.
     if (skipRegression === true) args.skip_regression = true;
+    // Forwarded verbatim when set; validateArgs rejects anything but on/off.
+    if (kbDemotionLoop !== undefined) args.kb_demotion_loop = kbDemotionLoop;
     // The raw --expect-beads JSON, forwarded verbatim; runner.js's
     // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
     if (expectBeads !== undefined) args.expect_beads = expectBeads;
@@ -1159,6 +1168,7 @@ async function main() {
                 runId: effectiveRunId,
                 expectBeads,
                 skipRegression: Boolean(values['skip-regression']),
+                kbDemotionLoop: values['kb-demotion-loop'],
                 // ciGate: values['ci-gate'],  -- not wired (apra-fleet-dv8i)
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient

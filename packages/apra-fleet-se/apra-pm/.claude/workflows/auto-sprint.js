@@ -1553,6 +1553,39 @@ const REVIEW_SCHEMA = {
         }
       }
     },
+    "kb_demotions": {
+      "type": "array",
+      "description": "CONFIRMED entries a re-check during this review shows do not hold -- whether you are now less certain of the claim or have shown it wrong -- demoted back to INFERRED for a fresh look. Not for a drifted or removed basis. Reviewer-only, with the same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in all lists it appears in. The engine makes the demotion calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason",
+          "evidence_files"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. That block is the ONLY source of demotable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "What you re-checked this review that the claim does not hold up against.",
+            "minLength": 20
+          },
+          "evidence_files": {
+            "type": "array",
+            "description": "The repo-relative files you re-checked -- at least one, each a real file in the repo.",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
     "kb_captures": {
       "type": "array",
       "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",

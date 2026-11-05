@@ -332,6 +332,25 @@ function assertConfirmedOnly(parsed, ctx) {
     : `the promoted entry ${fooId} is missing from the CONFIRMED-only l1_results`;
 }
 
+// kb_query own_scope (spec section 2.5): a member session reads back its OWN
+// CONFIRMED row from the per-repo DB. The member's checkout bible view, which
+// answers the same CONFIRMED read without own_scope, holds that row untagged,
+// so the member:<uuid> owner tag is what proves the own half answered. Every
+// row must be CONFIRMED and owned (own_scope returns no bible rows).
+function assertOwnConfirmedRow(parsed, ctx) {
+  const rows = parsed?.l1_results ?? [];
+  for (const e of rows) {
+    if (e?.confidence !== 'CONFIRMED') return `entry ${e?.id} has confidence ${JSON.stringify(e?.confidence)}, expected CONFIRMED only`;
+    if (!(e?.tags ?? []).some((t) => typeof t === 'string' && t.startsWith('member:'))) {
+      return `entry ${e?.id} carries no member: owner tag -- own_scope returned a bible-view row`;
+    }
+  }
+  const fooId = ctx.ids.get('FOO')?.live;
+  return rows.some((e) => e?.id === fooId)
+    ? null
+    : `the member's own CONFIRMED entry ${fooId} is missing from the own_scope l1_results`;
+}
+
 function assertDirectiveQuarantined(parsed, ctx) {
   const liveId = ctx.ids.get('DIRECTIVE')?.live;
   const entry = (parsed?.results ?? []).find((r) => r?.id === liveId);
@@ -415,6 +434,7 @@ export const SCENARIO = [
   // with not_demoted_or_unknown. ids is empty, so this round only tombstones.
   { tool: 'kb_bible_commit', case: 'tombstone', derive: { demoted_ids: ['DEMOTED', 'FOO'] } },
   { tool: 'kb_query', case: 'happy-confirmed-only', assertParsed: assertConfirmedOnly },
+  { tool: 'kb_query', case: 'happy-own-scope', assertParsed: assertOwnConfirmedRow },
   { tool: 'kb_stats', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },
   // Bible v3 round trip: the basis carried in A's exported bible travels to B.
