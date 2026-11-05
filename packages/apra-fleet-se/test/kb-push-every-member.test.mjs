@@ -13,7 +13,7 @@ import { agentTypeAppliesKbCaptures } from '../fleet-sprint/role-policies.mjs';
 // Two members, one verified by the init probe (createMemberVerifiedLookup over
 // init records, the same lookup runner.js stores on context.isMemberVerified)
 // and one not. Each is dispatched the doer and the reviewer (whose prompt
-// builders place the block from kbInjection.blockFor) and four wrapper roles
+// builders place the block from kbInjection.blockFor) and six wrapper roles
 // (whose block is appended by withWrapperKbBlock, the exact step runner.js's
 // agent() wrapper runs). The final prompt of every dispatch is then checked.
 //
@@ -68,7 +68,10 @@ async function dispatchPrompt(kbInjection, role, member) {
 }
 
 describe('KB block reaches verified and unverified members exactly once per role (D1)', () => {
-    const roles = ['doer', 'reviewer', 'planner', 'plan-reviewer', 'harvester', 'deployer'];
+    const roles = [
+        'doer', 'reviewer', 'planner', 'plan-reviewer', 'harvester', 'deployer',
+        'integ-test-runner', 'regression-test-runner',
+    ];
     const members = ['verified-1', 'unverified-1'];
 
     test('every dispatch carries the block once, and knowledgeFor runs once per dispatch', async () => {
