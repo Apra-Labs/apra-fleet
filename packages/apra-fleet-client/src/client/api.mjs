@@ -1349,7 +1349,11 @@ export class ApraFleet {
      * lists each removal. Never pushes; re-running with the
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
      * be retried. Result JSON: {path, merged, demoted, skipped, removed,
-     * entry_count, backfilled, committed}; extract with parseToolJson(). backfilled counts the
+     * entry_count, backfilled, committed, not_committed_reason?}; extract with
+     * parseToolJson(). not_committed_reason is present only when the call
+     * committed but the bible read back at HEAD does not hold its merge (another
+     * writer replaced it); committed is then false. Writers of one bible are
+     * serialized across processes by a lock file next to it. backfilled counts the
      * existing bible entries with no source_file_hashes (carried over from a
      * v1/v2 bible) that gained this KB's stored basis for the same id, because
      * it passes the same basis rule at HEAD and cites the same files (legacy

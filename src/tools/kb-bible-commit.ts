@@ -13,6 +13,7 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 import { TOMBSTONE_DEMOTED, standingAgainstTombstone, type BibleTombstone } from '../services/knowledge/bible-import.js';
 import { bibleBytesBlobId } from '../services/knowledge/bible-blob-id.js';
 import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
+import { withBibleFileLock } from '../services/knowledge/bible-file-lock.js';
 import {
   asciiSafeStringify,
   assertNoDuplicateBibleIds,
@@ -151,6 +152,12 @@ export interface KbBibleCommitResult {
   /** Ids this call's enrich applied, also when the values were already there. Present only when enrich was sent. */
   enriched?: string[];
   committed: boolean;
+  /**
+   * Present only when this call wrote and committed the bible but the committed
+   * file does not hold what it merged (another writer replaced it): committed
+   * is then false and this says what is missing. Absent otherwise.
+   */
+  not_committed_reason?: string;
 }
 
 type KbBibleEnrichItem = NonNullable<KbBibleCommitInput['enrich']>[number];
@@ -319,7 +326,10 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   const resolved = resolveKbAnchor(anchor);
   const repoPath = requireLocalFolder(resolved.folder, 'kb_bible_commit');
   const outPath = path.join(repoPath, '.fleet', 'kb-canonical.json');
-  return serializeBibleWrite(outPath, () => commitToBible(input, enrichItems, anchor, resolved.remoteUrl, repoPath, outPath));
+  // One writer per bible: in this process (serializeBibleWrite) and across
+  // processes on this checkout (withBibleFileLock).
+  return serializeBibleWrite(outPath, () => withBibleFileLock(outPath,
+    () => commitToBible(input, enrichItems, anchor, resolved.remoteUrl, repoPath, outPath)));
 }
 
 async function commitToBible(
@@ -339,7 +349,7 @@ async function commitToBible(
   const enriched: string[] = [];
   // enriched is present only when the call sent enrich, so a call without it
   // answers exactly as before and a consumer pinned to an older schema still validates.
-  const done = (r: Omit<KbBibleCommitResult, 'path' | 'enriched'>): string =>
+  const done = (r: Omit<KbBibleCommitResult, 'path' | 'enriched' | 'not_committed_reason'> & { not_committed_reason?: string }): string =>
     JSON.stringify({ path: outPath, ...r, ...(input.enrich !== undefined ? { enriched } : {}) });
 
   // No ids, no demotions and no bible entry that could be removed or enriched:
@@ -602,7 +612,48 @@ async function commitToBible(
     committed = true;
   }
 
+  // A commit is reported only once the COMMITTED file is seen to hold this
+  // call's merge: every merged id present, every removed or demoted id absent.
+  // Another writer (a process the lock did not cover, a hand edit) replacing
+  // the file between write and commit makes this call report committed: false
+  // with the reason, never committed: true for a lost write.
+  if (committed) {
+    const missing = unlandedChanges(repoPath, outPath, merged, [...removed.map(r => r.id), ...demoted]);
+    if (missing !== null) {
+      logWarn('kb_bible_commit', missing);
+      return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed: false, not_committed_reason: missing });
+    }
+  }
+
   return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed });
+}
+
+/**
+ * Why the bible committed at HEAD does not hold this call's changes, or null
+ * when it does: each id in `present` is an entry, each id in `absent` is not.
+ */
+function unlandedChanges(repoPath: string, outPath: string, present: string[], absent: string[]): string | null {
+  const rel = './' + path.relative(repoPath, outPath).split(path.sep).join('/');
+  let ids: Set<string>;
+  try {
+    const text = execFileSync(gitExecutable(), ['show', 'HEAD:' + rel], {
+      cwd: repoPath, encoding: 'utf-8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true, maxBuffer: 256 * 1024 * 1024,
+    });
+    const parsed = JSON.parse(text) as unknown;
+    const entries = Array.isArray(parsed) ? parsed : (parsed as { entries?: unknown[] } | null)?.entries;
+    if (!Array.isArray(entries)) return 'the committed bible could not be read back as a bible file';
+    ids = new Set(entries.map(e => (e && typeof e === 'object' ? String((e as { id?: unknown }).id) : '')));
+  } catch (err) {
+    return 'the committed bible could not be read back: ' + (err instanceof Error ? err.message : String(err));
+  }
+  const lost = present.filter(id => !ids.has(id));
+  const back = absent.filter(id => ids.has(id));
+  if (lost.length === 0 && back.length === 0) return null;
+  const parts: string[] = [];
+  if (lost.length > 0) parts.push('missing merged ' + lost.join(', '));
+  if (back.length > 0) parts.push('still holding removed or demoted ' + back.join(', '));
+  return 'another writer replaced the bible before this call\'s commit landed: the committed bible is ' + parts.join('; ');
 }
 
 /**

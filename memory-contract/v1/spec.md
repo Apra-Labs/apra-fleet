@@ -407,7 +407,15 @@ value.
   non-ASCII, secret-shaped, first-person or line-number text), `not_in_bible`,
   `not_confirmed_or_unknown` (the row is below CONFIRMED). A bad item never fails
   the call: the others are applied. Calls are serialized per bible file within the
-  server, so parallel calls all land. In a MEMBER session without the kb_maintainer grant the call fails
+  server, so parallel calls all land, and across processes on one checkout by an
+  exclusive lock file next to the bible (`<bible>.lock`, holding pid, host and
+  time; a lock whose holder pid is gone on this host, or older than 10 minutes,
+  is stale and recovered; a call that cannot take it within 60 s throws). After
+  committing, the call reads the bible back at HEAD: when it does not hold every
+  merged id, or still holds a removed or demoted id (another writer replaced
+  the file), the call returns `committed: false` with an additive
+  `not_committed_reason` naming what is missing, never `committed: true` for a
+  lost write. In a MEMBER session without the kb_maintainer grant the call fails
   with `E-KB-MAINTAINER-REQUIRED` before any KB is opened, and nothing changes.
 - Secrets never reach a bible through `kb_export` or `kb_bible_commit`: a
   provider token shape (GitHub, Slack, AWS, GitLab, `sk-ant-`, `sk-proj-`,

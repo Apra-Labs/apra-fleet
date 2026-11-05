@@ -273,6 +273,10 @@ const KB_RESPONSE_BODIES = {
     backfilled: z.number(),
     enriched: z.array(z.string()).optional(),
     committed: z.boolean(),
+    // Present only when the call wrote and committed but the committed bible
+    // does not hold its merge (another writer replaced it): committed is then
+    // false and this names what is missing. Additive; absent otherwise.
+    not_committed_reason: z.string().optional(),
   }),
   // F-9: kb_stats spreads ProviderStats (whose supported/reason/coverage are
   // only present for a provider that cannot compute stats at all) and adds

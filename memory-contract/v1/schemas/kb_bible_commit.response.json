@@ -136,6 +136,9 @@
             },
             "committed": {
               "type": "boolean"
+            },
+            "not_committed_reason": {
+              "type": "string"
             }
           },
           "required": [
