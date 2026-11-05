@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 134
+    "entry_count": 136
   },
   "entries": [
     {
@@ -948,6 +948,29 @@
       "updated_at": "2026-09-29T06:13:14.812Z"
     },
     {
+      "id": "5793efdd-bbd2-4446-b8ac-86e4dc581b9c",
+      "type": "learning",
+      "title": "kb_bible_commit commits a bible that differs from HEAD at call start",
+      "summary": "A readable bible that differs from HEAD when kb_bible_commit starts is treated as a pending write and committed even when the call has nothing new. Tests that copy a bible into a clone without committing it now see committed: true.",
+      "symbols": [
+        "commitToBible",
+        "pendingBibleCommitMessage",
+        "bibleContentChanged"
+      ],
+      "source_files": [
+        "src/tools/kb-bible-commit.ts",
+        "tests/knowledge/kb-tombstone-import.test.ts",
+        "tests/knowledge/kb-bible-pending-commit.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T12:30:35.292Z",
+      "source_file_hashes": {
+        "src/tools/kb-bible-commit.ts": "ab6406dfb1bc48a4a717d41396b158b0d511df55",
+        "tests/knowledge/kb-bible-pending-commit.test.ts": "a875b2bd47c46f729a803ebd959c24ec6a6ef26f",
+        "tests/knowledge/kb-tombstone-import.test.ts": "e9b8776cc4e12da7af0aab4c0cf7e1ba1bd8bb33"
+      }
+    },
+    {
       "id": "5ac4f227-83d0-47b2-9c23-806a34b530e9",
       "type": "learning",
       "title": "kb_feedback refuses the engine kb_maintainer member session",
@@ -1276,6 +1299,36 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T22:08:20.217Z"
+    },
+    {
+      "id": "793a12a1-d5cc-4822-8c9e-fc44d80f0ffc",
+      "type": "knowledge",
+      "title": "Engine KB secret regex has three drift-pinned copies plus the server shape",
+      "summary": "KB_SECRET_RE and KB_PLACEHOLDER_RE are declared identically in fleet-sprint kb.mjs, apra-pm lib/vet-kb-work.mjs and apra-pm .claude/workflows/auto-sprint.js (pinned by vet-kb-work-drift.test.mjs) and mirror BIBLE_SECRET_SHAPES in src/tools/kb-export.ts.",
+      "symbols": [
+        "BIBLE_SECRET_SHAPES",
+        "KB_SECRET_RE",
+        "KB_PLACEHOLDER_RE",
+        "scrubBibleSecrets"
+      ],
+      "source_files": [
+        "src/tools/kb-export.ts",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/apra-pm/lib/vet-kb-work.mjs",
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
+        "packages/apra-fleet-se/test/vet-kb-work-drift.test.mjs",
+        "tests/knowledge/kb-secret-shapes.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T12:30:37.569Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js": "b4294017baf82f502c6c3f464996360e127929b1",
+        "packages/apra-fleet-se/apra-pm/lib/vet-kb-work.mjs": "770a0827f49fe0f27b06e6729a6fbad4687798ab",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "7c04c598b9ed1cbbd501f4f6d245b3677a8a8c5a",
+        "packages/apra-fleet-se/test/vet-kb-work-drift.test.mjs": "b0efd552698538514ceaf04433415245a4594afe",
+        "src/tools/kb-export.ts": "526b086961706caa67ac7d4e53cd3ebb5f1f5d0a",
+        "tests/knowledge/kb-secret-shapes.test.ts": "2734f4d092603ad4e470b469b9c55c769ae7d223"
+      }
     },
     {
       "id": "7a7649d6-fd51-4e47-b898-384499d53c54",
