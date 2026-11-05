@@ -91,11 +91,16 @@ export interface CanonicalEntry {
 export const BIBLE_CONTENT_MAX_LENGTH = 2000;
 const BIBLE_CONTENT_TRUNCATION_SUFFIX = '...[truncated]';
 
-// What must never reach the committed bible: a provider token shape, a long
-// Bearer/Basic value, or a double-brace placeholder token. Mirrors KB_SECRET_RE
-// and KB_PLACEHOLDER_RE in the engine's capture lint (fleet-sprint kb.mjs); this
-// is the second gate, for captures the lint never saw (direct kb_capture callers).
-const BIBLE_SECRET_SHAPES = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abeoprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,})|\b(?:[Bb]earer|Basic)\s+[A-Za-z0-9._~+/=-]{20,}|\{\{\s*[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z0-9_]+\s*\}\}/g;
+// What must never reach the committed bible: a provider token shape (GitHub,
+// Slack, AWS, GitLab, Anthropic sk-ant-, OpenAI sk-proj-, npm_), a JWT (three
+// base64url segments, the first starting eyJ), a PEM private-key header, a
+// long Bearer value or base64 Basic value that looks random (holds a digit or
+// mixed case: "Bearer some-long-hyphenated-words" and "Basic src/long/path.ts"
+// are prose), or a double-brace placeholder token (not a GitHub Actions
+// expression, which starts with a dollar sign). Mirrors KB_SECRET_RE and
+// KB_PLACEHOLDER_RE in the engine's capture lint (fleet-sprint kb.mjs); this is
+// the second gate, for captures the lint never saw (direct kb_capture callers).
+const BIBLE_SECRET_SHAPES = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abeoprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{20,}|sk-(?:ant|proj)-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{30,}|eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,})|\b[Bb]earer\s+(?=[A-Za-z0-9._~+\/=-]*(?:[0-9]|[A-Z][A-Za-z0-9._~+\/=-]*[a-z]|[a-z][A-Za-z0-9._~+\/=-]*[A-Z]))[A-Za-z0-9._~+\/=-]{20,}|\bBasic\s+(?=[A-Za-z0-9+\/]*(?:[0-9]|[A-Z][A-Za-z0-9+\/]*[a-z]|[a-z][A-Za-z0-9+\/]*[A-Z]))[A-Za-z0-9+\/]{20,}={0,2}(?![A-Za-z0-9._~+\/=-])|-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----|(?<!\$)\{\{\s*[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z0-9_]+\s*\}\}/g;
 
 /** Text with every secret-shaped run replaced by [REDACTED]. */
 export function scrubBibleSecrets(text: string): string {

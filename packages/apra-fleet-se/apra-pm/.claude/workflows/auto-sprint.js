@@ -3109,10 +3109,11 @@ const KB_REPEAT_MAX_NEW_WORDS = 12;
 
 // A double-brace placeholder token ({{<word>.<KEY>}}), built generically so no
 // particular placeholder prefix is spelled out here.
-const KB_PLACEHOLDER_RE = new RegExp('\\{\\{\\s*[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+\\s*\\}\\}');
-// A raw credential: a provider token shape, or a long Bearer/Basic value. Mirrors
+const KB_PLACEHOLDER_RE = new RegExp('(?<!\\$)\\{\\{\\s*[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+\\s*\\}\\}');
+// A raw credential: a provider token shape, a JWT, a PEM private-key header, or a
+// random-looking (digit or mixed case) Bearer/Basic value. Mirrors
 // BIBLE_SECRET_SHAPES in the server's bible export.
-const KB_SECRET_RE = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abeoprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,})|\b(?:[Bb]earer|Basic)\s+[A-Za-z0-9._~+\/=-]{20,}/;
+const KB_SECRET_RE = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abeoprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{20,}|sk-(?:ant|proj)-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{30,}|eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,})|\b[Bb]earer\s+(?=[A-Za-z0-9._~+\/=-]*(?:[0-9]|[A-Z][A-Za-z0-9._~+\/=-]*[a-z]|[a-z][A-Za-z0-9._~+\/=-]*[A-Z]))[A-Za-z0-9._~+\/=-]{20,}|\bBasic\s+(?=[A-Za-z0-9+\/]*(?:[0-9]|[A-Z][A-Za-z0-9+\/]*[a-z]|[a-z][A-Za-z0-9+\/]*[A-Z]))[A-Za-z0-9+\/]{20,}={0,2}(?![A-Za-z0-9._~+\/=-])|-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/;
 // First-person narrative words as whole words, lowercase or Title case only: an
 // all-caps US, ME or WE is a name. A path, flag or dotted name (us-east-1, my.cnf,
 // C:\Users\me) is not a word here, and neither is a unit after a number (50 us).

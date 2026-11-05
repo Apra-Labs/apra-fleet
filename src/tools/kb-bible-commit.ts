@@ -25,6 +25,7 @@ import {
   isGitRepo,
   readBibleDocument,
   requireLocalFolder,
+  scrubBibleSecrets,
   serializeBibleWrite,
   toCanonicalEntry,
   withBibleRichFields,
@@ -223,13 +224,25 @@ function enrichRefusal(item: KbBibleEnrichItem, entry: CanonicalEntry): string |
  */
 function keepBibleRichFields(fresh: CanonicalEntry, prior: CanonicalEntry | undefined): CanonicalEntry {
   if (!prior) return fresh;
+  // A prior value is re-scrubbed: it may predate a secret shape the writer now
+  // knows, and a re-merge rewrites the entry, so it must leave clean.
+  let scrubbed = false;
+  const scrub = (s: string): string => {
+    const out = scrubBibleSecrets(s);
+    if (out !== s) scrubbed = true;
+    return out;
+  };
   const keptList = (held: unknown, own: string[] | undefined): string[] | undefined =>
-    (Array.isArray(held) && held.length > 0 ? held as string[] : own);
-  return withBibleRichFields(fresh, {
-    content: typeof prior.content === 'string' && prior.content.length > 0 ? prior.content : fresh.content,
+    (Array.isArray(held) && held.length > 0 ? (held as string[]).map(s => (typeof s === 'string' ? scrub(s) : s)) : own);
+  const result = withBibleRichFields(fresh, {
+    content: typeof prior.content === 'string' && prior.content.length > 0 ? scrub(prior.content) : fresh.content,
     recall_cues: keptList(prior.recall_cues, fresh.recall_cues),
     error_signatures: keptList(prior.error_signatures, fresh.error_signatures),
   });
+  if (scrubbed) {
+    logWarn('kb_bible_commit', 'entry ' + fresh.id + ' held secret-shaped text in the bible; it is redacted on re-merge. Rewrite the entry.');
+  }
+  return result;
 }
 
 /** How many past commits of the bible file a re-promotion looks back through. */

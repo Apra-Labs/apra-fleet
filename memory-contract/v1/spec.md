@@ -404,11 +404,18 @@ value.
   the call: the others are applied. Calls are serialized per bible file within the
   server, so parallel calls all land. In a MEMBER session without the kb_maintainer grant the call fails
   with `E-KB-MAINTAINER-REQUIRED` before any KB is opened, and nothing changes.
-- Secrets never reach a bible through `kb_export` or `kb_bible_commit`: a token
-  shape, a long Bearer/Basic value or a double-brace placeholder in a title,
-  summary, content, cue or signature is written as `[REDACTED]` when an entry is
-  merged, and a warning naming the entry is logged. Entries already in the file
-  are carried as they are.
+- Secrets never reach a bible through `kb_export` or `kb_bible_commit`: a
+  provider token shape (GitHub, Slack, AWS, GitLab, `sk-ant-`, `sk-proj-`,
+  `npm_`), a JWT (three base64url segments, the first starting `eyJ`), a PEM
+  private-key header, a Bearer value or base64 Basic value of 20+ characters that
+  holds a digit or mixed case, or a double-brace placeholder not preceded by `$`
+  (a GitHub Actions expression is not one) in a title, summary, content, cue or
+  signature is written as `[REDACTED]` when an entry is merged, and a warning
+  naming the entry is logged. A merged id's content, cues and signatures kept
+  from the bible (or its git history) are scrubbed the same way on that re-merge.
+  Entries the call does not merge are carried as they are. The engine capture
+  lint (`KB_SECRET_RE` plus `KB_PLACEHOLDER_RE` in fleet-sprint `kb.mjs`) flags
+  exactly the same shapes.
 - `kb_bible_commit` takes an optional `demoted_ids`. An id is admitted only when
   the LOCAL row exists, carries a `demoted_at` and is now below CONFIRMED;
   anything else is skipped with reason `not_demoted_or_unknown` and the file is
