@@ -29,6 +29,9 @@ vi.mock('../src/services/service-manager/index.js', () => ({
 
 const mockHome = '/mock/home';
 
+// Capture the real process.platform descriptor at file load to restore in afterEach blocks
+const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+
 // install --force stops servers by PID (process.kill on POSIX, taskkill /PID on
 // Windows), never by process name. process.kill is ALWAYS stubbed here so no
 // test can signal a real process on the host (the mocked pids are made up).
@@ -157,7 +160,7 @@ describe('install --force (#96)', () => {
   afterEach(() => {
     _setSeaOverride(null);
     _setManifestOverride(null);
-    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+    if (realPlatform) Object.defineProperty(process, 'platform', realPlatform);
   });
 
   it('no server running — installs without prompt', async () => {
@@ -331,7 +334,7 @@ describe('install --force still-running after kill (apra-fleet-l7n.3.2)', () => 
   afterEach(() => {
     _setSeaOverride(null);
     _setManifestOverride(null);
-    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+    if (realPlatform) Object.defineProperty(process, 'platform', realPlatform);
   });
 
   it('does NOT print "Stopped running server." and surfaces a clear error when the process is still running after kill', async () => {
@@ -409,7 +412,7 @@ describe('install --force ETXTBSY regression: survives first SIGTERM (apra-fleet
     _setSeaOverride(null);
     _setManifestOverride(null);
     _setInstallForceTimingOverride(null);
-    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+    if (realPlatform) Object.defineProperty(process, 'platform', realPlatform);
   });
 
   it('does not copy the binary until the process is confirmed gone, and escalates to SIGKILL after the grace window', async () => {
@@ -470,7 +473,7 @@ describe('isApraFleetRunning / killApraFleet helpers (#96)', () => {
   });
 
   afterEach(() => {
-    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+    if (realPlatform) Object.defineProperty(process, 'platform', realPlatform);
   });
 
   it('isApraFleetRunning returns true when pgrep finds a different PID (Linux)', () => {
@@ -558,7 +561,7 @@ describe('install running-server guard is scoped to the install target (apra-fle
     _setManifestOverride(null);
     if (originalDataDir === undefined) delete process.env.APRA_FLEET_DATA_DIR;
     else process.env.APRA_FLEET_DATA_DIR = originalDataDir;
-    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+    if (realPlatform) Object.defineProperty(process, 'platform', realPlatform);
   });
 
   /** Running server whose executable lives at `exePath` (Linux shape). */
@@ -722,7 +725,7 @@ describe('install --force service-aware stop (apra-fleet-3swo.22)', () => {
   afterEach(() => {
     _setSeaOverride(null);
     _setManifestOverride(null);
-    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+    if (realPlatform) Object.defineProperty(process, 'platform', realPlatform);
   });
 
   it('(a) service registered and running -- stop() is invoked before any pkill/taskkill, and install completes', async () => {
@@ -920,7 +923,7 @@ describe('install --force stops only the relevant pids, never itself or unrelate
     _setManifestOverride(null);
     if (originalDataDir === undefined) delete process.env.APRA_FLEET_DATA_DIR;
     else process.env.APRA_FLEET_DATA_DIR = originalDataDir;
-    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+    if (realPlatform) Object.defineProperty(process, 'platform', realPlatform);
   });
 
   it('Linux: the installer named apra-fleet survives, the unrelated server is not signalled, the relevant pid is stopped', async () => {
@@ -1059,7 +1062,7 @@ describe('install --force over a reused elevated task that refuses run', () => {
   afterEach(() => {
     _setSeaOverride(null);
     _setManifestOverride(null);
-    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+    if (realPlatform) Object.defineProperty(process, 'platform', realPlatform);
     vi.restoreAllMocks();
   });
 
@@ -1182,7 +1185,7 @@ describe('install --force stop and restart messages match the real outcome (apra
   afterEach(() => {
     _setSeaOverride(null);
     _setManifestOverride(null);
-    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+    if (realPlatform) Object.defineProperty(process, 'platform', realPlatform);
     vi.restoreAllMocks();
   });
 
@@ -1255,7 +1258,7 @@ describe('access restart notice survives the early install exits', () => {
     _setSeaOverride(null);
     _setManifestOverride(null);
     _setPortHolderProbeOverride(null);
-    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+    if (realPlatform) Object.defineProperty(process, 'platform', realPlatform);
     vi.restoreAllMocks();
   });
 
@@ -1365,5 +1368,33 @@ describe('access restart notice survives the early install exits', () => {
     expect(n.text).toContain(ACCESS_RESTART_NOTE);
     expect(n.shownAt).toBeUndefined();
     expect(printedByNextVerbs()).toBe(1);
+  });
+});
+
+// Regression test for process.platform restoration (apra-fleet-0nd3.2)
+describe('process.platform is properly restored after test override (apra-fleet-0nd3.2)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    mockNoServiceRegistered();
+  });
+
+  afterEach(() => {
+    if (realPlatform) Object.defineProperty(process, 'platform', realPlatform);
+  });
+
+  it('A: overrides process.platform to a value different from the real one', () => {
+    // Choose an override platform different from the real one
+    const overridePlatform = process.platform !== 'win32' ? 'win32' : 'linux';
+    Object.defineProperty(process, 'platform', { value: overridePlatform, configurable: true });
+    expect(process.platform).toBe(overridePlatform);
+  });
+
+  it('B: verifies process.platform is restored to the real value', () => {
+    // This test runs after A and should see the real platform restored
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    expect(descriptor).toEqual(realPlatform);
+    expect(process.platform).toBe(realPlatform?.value);
   });
 });

@@ -354,6 +354,29 @@
       "updated_at": "2026-09-29T06:13:13.625Z"
     },
     {
+      "id": "266d51a9-b30a-4d52-bf4c-97f26de518d7",
+      "type": "knowledge",
+      "title": "Thrown tool errors lose all fields except message at the MCP boundary",
+      "summary": "McpServer turns a thrown handler error into {content:[{text: error.message}], isError:true} only; to send machine-readable error detail, wrapTool maps an Error carrying a structuredContent object to an isError result with that structuredContent.",
+      "symbols": [
+        "CodeIntelError",
+        "indexNotReadyError",
+        "registerAllTools"
+      ],
+      "source_files": [
+        "src/services/tool-registry.ts",
+        "src/tools/code-intelligence-readiness.ts",
+        "memory-contract/v1/tests/roundtrip-harness.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T06:17:05.154Z",
+      "source_file_hashes": {
+        "memory-contract/v1/tests/roundtrip-harness.mjs": "38c6431dd4cc3c66aea3ffcbce0058fd04920823",
+        "src/services/tool-registry.ts": "eb1b91bac7395927dd12548734bccb86e7ae1de3",
+        "src/tools/code-intelligence-readiness.ts": "1b423119c81b31be620ddeaa4fe22c498b7ef19a"
+      }
+    },
+    {
       "id": "26b8c94b-20c8-4d6e-8862-8e65bc512ba6",
       "type": "knowledge",
       "title": "Streak id survives on the beads even though the lane grouping drops it from its return contract",
@@ -1615,6 +1638,27 @@
       "updated_at": "2026-09-29T06:13:15.733Z"
     },
     {
+      "id": "a888b84b-d7a0-47ad-9318-2f062770cf2f",
+      "type": "learning",
+      "title": "ASCII-only gate scans test fixtures too; write emoji markers as escapes",
+      "summary": "scripts/check-ascii-only.mjs fails npm test on any non-ASCII char in a file not in its baseline, including test files that reproduce emoji-prefixed tool text such as the compose_permissions refusal.",
+      "symbols": [
+        "composeFailureText"
+      ],
+      "source_files": [
+        "scripts/check-ascii-only.mjs",
+        "tests/ascii-only-gate.test.ts",
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T07:14:29.307Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "0dffb028188c744e0bcc172691eb9fc79bfb354b",
+        "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56",
+        "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
+    },
+    {
       "id": "b03effcd-0488-452b-9b49-ab21049c0ece",
       "type": "knowledge",
       "title": "runDoltStep classifies on raw dolt output but surfaces surfaceDoltFailureText(raw)",
@@ -2302,6 +2346,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T17:05:07.548Z"
+    },
+    {
+      "id": "f40ed9c2-9dd5-4b32-a216-db902c79ddb2",
+      "type": "knowledge",
+      "title": "Server-to-client MCP requests should ride the tool call's own request context",
+      "summary": "To ask the client something during a tool call (e.g. roots/list), use the handler's extra.sendRequest so the request rides that call's POST SSE stream; a server-level request with no related request can be silently dropped over Streamable HTTP when no standalone GET stream is open.",
+      "symbols": [
+        "SessionRootsCache",
+        "createRootsCache",
+        "registerAllTools"
+      ],
+      "source_files": [
+        "src/services/session-roots.ts",
+        "src/services/tool-registry.ts",
+        "tests/kb-code-scope-roots.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T06:17:05.558Z",
+      "source_file_hashes": {
+        "src/services/session-roots.ts": "b27a9b1df28aad228dbec60ab57984f142eb024e",
+        "src/services/tool-registry.ts": "eb1b91bac7395927dd12548734bccb86e7ae1de3",
+        "tests/kb-code-scope-roots.test.ts": "494812934178a85b8196995e32a3df9991af9253"
+      }
     },
     {
       "id": "f503ec1b-2ff6-488f-9f2c-583adaeec7e9",
