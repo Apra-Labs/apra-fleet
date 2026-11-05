@@ -386,9 +386,43 @@ export function readSide(arg, { forceRefs = false, repo = process.cwd(), relPath
     return readDocumentFromRef(arg, { repo, relPath });
 }
 
-/** Serialize a merged document the way the exporter writes it. */
+/** Id order the exporter uses (compareById in src/tools/kb-export.ts). */
+function compareById(a, b) {
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/**
+ * JSON.stringify(value, null, 2) with every UTF-16 code unit above 127
+ * re-escaped as a four-hex-digit unicode escape. Mirrors asciiSafeStringify
+ * in src/tools/kb-export.ts.
+ */
+function asciiSafeStringify(value) {
+    const json = JSON.stringify(value, null, 2);
+    let out = '';
+    for (let i = 0; i < json.length; i += 1) {
+        const code = json.charCodeAt(i);
+        out += code > 127 ? `\\u${code.toString(16).padStart(4, '0')}` : json.charAt(i);
+    }
+    return out;
+}
+
+/**
+ * Serialize a merged document byte-for-byte the way kb_export writes it:
+ * entries (and demotions) sorted by id, top-level keys in exporter order
+ * (version, provenance, entries, demotions, then anything else), non-ASCII
+ * escaped, two-space indent, trailing newline. Mirrors exportProjectBible in
+ * src/tools/kb-export.ts; tests/merge-kb-canonical-format.test.ts pins the
+ * two together.
+ */
 export function serializeDocument(doc) {
-    return `${JSON.stringify(doc, null, 2)}\n`;
+    const { version, provenance, entries, demotions, ...rest } = doc;
+    const ordered = { version, provenance };
+    ordered.entries = [...(entries ?? [])].sort(compareById);
+    if (Array.isArray(demotions) && demotions.length > 0) {
+        ordered.demotions = [...demotions].sort(compareById);
+    }
+    Object.assign(ordered, rest);
+    return `${asciiSafeStringify(ordered)}\n`;
 }
 
 export function parseArgs(argv) {
