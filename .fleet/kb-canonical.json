@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 134
+    "entry_count": 135
   },
   "entries": [
     {
@@ -1813,6 +1813,30 @@
         "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "0dffb028188c744e0bcc172691eb9fc79bfb354b",
         "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56",
         "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
+    },
+    {
+      "id": "af351ced-8562-477e-8122-1baddba46817",
+      "type": "knowledge",
+      "title": "kb_query hybrid ranking only runs when there is something to fuse beyond keyword",
+      "summary": "SqliteProvider.hybridRows returns null (plain keyword path, unchanged order) unless error_text, files/symbols anchors, or an already-loaded query embedder with embedQuery is present; QueryOptions.disable_lists is an internal switch used by the eval and falsifiability tests.",
+      "symbols": [
+        "SqliteProvider.hybridRows",
+        "SqliteProvider.queryEmbedder",
+        "reciprocalRankFusion",
+        "trustPrior"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/hybrid-rank.ts",
+        "src/services/knowledge/types.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T16:17:31.026Z",
+      "source_file_hashes": {
+        "src/services/knowledge/hybrid-rank.ts": "31e0d6893e87cf4344baf26c89a77f25947b86db",
+        "src/services/knowledge/sqlite-provider.ts": "1df93b09d7eed6873399f072259f672f4a42954f",
+        "src/services/knowledge/types.ts": "74b69e36b091e7eae8cd72068b5ef3cbb80d9892"
       }
     },
     {
