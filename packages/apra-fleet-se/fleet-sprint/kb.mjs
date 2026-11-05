@@ -53,7 +53,49 @@ const ROLE_DOER = kbRoleConst('doer');
  * that much budget on context the role may not need, and the entries are
  * already returned in relevance order.
  */
-export const KB_MAX_KNOWLEDGE_ENTRIES = 12;
+export const KB_MAX_KNOWLEDGE_ENTRIES = 8;
+
+/**
+ * Most kb_query calls one dispatch's knowledgeFor issues (one per bead / file
+ * situation, bead situations first). Bounds per-dispatch KB load; extra
+ * situations are dropped, not batched.
+ */
+export const KB_MAX_SITUATION_QUERIES = 6;
+
+/**
+ * Merge several ranked entry lists into one: round-robin across the lists
+ * (lists whose query carried an error_text first), de-duplicated by id, direct
+ * hits before `via: 'kb-graph'` related claims, capped at `cap`.
+ *
+ * @param {Array<{ withError?: boolean, entries: object[] }>} lists
+ * @param {number} cap
+ * @returns {object[]}
+ */
+export function mergeRankedLists(lists, cap) {
+    const ordered = [
+        ...lists.filter((l) => l.withError),
+        ...lists.filter((l) => !l.withError),
+    ];
+    const out = [];
+    const seen = new Set();
+    for (const pass of ['direct', 'related']) {
+        const queues = ordered.map((l) => l.entries.filter((e) => (e.via === 'kb-graph') === (pass === 'related')));
+        for (let rank = 0; out.length < cap; rank++) {
+            let any = false;
+            for (const q of queues) {
+                if (rank >= q.length) continue;
+                any = true;
+                const e = q[rank];
+                if (seen.has(e.id)) continue;
+                seen.add(e.id);
+                out.push(e);
+                if (out.length >= cap) break;
+            }
+            if (!any) break;
+        }
+    }
+    return out;
+}
 
 /**
  * The injection rule for every engine-built knowledge block: only CONFIRMED
@@ -573,10 +615,13 @@ export function createKbWorkClient(opts = {}) {
     }
 
     /** kb_query on the target: CONFIRMED, undisputed entries (direct hits, then graph-related). */
-    async function queryEntries(record, query) {
+    async function queryEntries(record, query, extra = {}) {
         try {
             const res = await memberCall(record, 'kb_query', {
                 query,
+                ...(Array.isArray(extra.files) && extra.files.length > 0 ? { files: extra.files } : {}),
+                ...(Array.isArray(extra.symbols) && extra.symbols.length > 0 ? { symbols: extra.symbols } : {}),
+                ...(typeof extra.error_text === 'string' && extra.error_text ? { error_text: extra.error_text } : {}),
                 limit: KB_MAX_KNOWLEDGE_ENTRIES,
                 expand_related: true,
                 confidence: ['CONFIRMED'],
@@ -1333,7 +1378,24 @@ export function createKbWorkClient(opts = {}) {
                 log(`[kb-work] no kb_maintainer to read knowledge from for ${memberLabel(member)} -- no knowledge this dispatch`);
                 return nothing;
             }
-            if (terms.length > 0) {
+            const situations = (Array.isArray(h.situations) ? h.situations : [])
+                .filter((x) => x && typeof x.situation === 'string' && x.situation.trim());
+            if (situations.length > 0) {
+                // One kb_query per situation (beads first, then files), bounded.
+                // A failed query yields [] and never drops another's results.
+                const picked = [
+                    ...situations.filter((x) => x.kind !== 'file'),
+                    ...situations.filter((x) => x.kind === 'file'),
+                ].slice(0, KB_MAX_SITUATION_QUERIES);
+                const lists = await Promise.all(picked.map(async (x) => ({
+                    withError: typeof x.errorText === 'string' && x.errorText.length > 0,
+                    entries: await queryEntries(target, x.situation, {
+                        files: strs(x.files), symbols: strs(x.symbols), error_text: x.errorText,
+                    }),
+                })));
+                const merged = mergeRankedLists(lists, KB_MAX_KNOWLEDGE_ENTRIES);
+                if (merged.length > 0) return { entries: merged, source: 'query' };
+            } else if (terms.length > 0) {
                 const queried = await queryEntries(target, terms.join(' '));
                 if (queried.length > 0) return { entries: queried, source: 'query' };
             }
