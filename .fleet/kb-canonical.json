@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 132
+    "entry_count": 134
   },
   "entries": [
     {
@@ -27,6 +27,28 @@
         "packages/apra-fleet-se/src/supervisor/fleet-members.mjs": "186eaa038d775ac2912e80b9b2214da2ae00bf3a",
         "src/services/onboarding.ts": "20513f4211fed7b80c6d86d321a1fcf3afb01382",
         "src/services/tool-registry.ts": "9b38a4b703924d141c74ccc300f92f8a7bb3315e"
+      }
+    },
+    {
+      "id": "067aa0bb-2aa5-4ff9-9abc-367e839c7b2c",
+      "type": "knowledge",
+      "title": "The planner dispatch value is free text; its JSON report is inside it",
+      "summary": "The planner row in role-policies.mjs has schema null, so the postResult steps receive the planner's final response text, not a parsed object. kb.mjs reportKbUse parses the JSON report out of text (whole text, a fenced json block, or the outermost braces).",
+      "symbols": [
+        "reportKbUse",
+        "reportObjectFromText"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/apra-pm/agents/planner.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T11:25:33.503Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/agents/planner.md": "e650023f0292fd8f4fb7a8e7fd27d777e5396258",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "ae7fc8c0afd76d4a51b854c0bdf82e7e05ae444c",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs": "827b9627060b50e44e9078bcdd9f938a1230a0bb"
       }
     },
     {
@@ -924,6 +946,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.812Z"
+    },
+    {
+      "id": "5ac4f227-83d0-47b2-9c23-806a34b530e9",
+      "type": "learning",
+      "title": "kb_feedback refuses the engine kb_maintainer member session",
+      "summary": "src/tools/kb-feedback.ts throws E-MEMBER-VIEW-READ-ONLY whenever memberOwnerTag(anchor) is set, which is true for every member session including the engine kb_maintainer grant. Engine-forwarded kb_wrong feedback is therefore refused on a real fleet.",
+      "symbols": [
+        "kbFeedback",
+        "memberOwnerTag",
+        "getSessionMemberId"
+      ],
+      "source_files": [
+        "src/tools/kb-feedback.ts",
+        "src/services/knowledge/kb-self.ts",
+        "src/services/tool-scope.ts",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T11:25:31.137Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "ae7fc8c0afd76d4a51b854c0bdf82e7e05ae444c",
+        "src/services/knowledge/kb-self.ts": "09af7b1503ebe308930a648fda8cbbf8cc819473",
+        "src/services/tool-scope.ts": "7952136d28cbb1a94fcdd8587b52fc53417c65b8",
+        "src/tools/kb-feedback.ts": "5302ea86ab5356f5196bf4cab79dfc8cb2b24943"
+      }
     },
     {
       "id": "5b0c0a37-6e58-4854-b1f4-b672ca0a6080",
