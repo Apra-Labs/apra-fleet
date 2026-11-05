@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 139
+    "entry_count": 140
   },
   "entries": [
     {
@@ -859,6 +859,28 @@
         "src/services/knowledge/kb-self.ts": "47c30cd5feb3273b3d80cd35c2e9092472b4d469",
         "src/tools/kb-context.ts": "99cd6c2e3bea877ec4476bc70b32788a36dcbc8e",
         "src/tools/kb-session-prime.ts": "ae39c9f992dd1392c08ff83c286d7b3af4ea1776"
+      }
+    },
+    {
+      "id": "4994ca25-7872-40b3-8832-d10ef89b55a7",
+      "type": "knowledge",
+      "title": "Member bible view import never applies tombstone retirement or enrichment",
+      "summary": "member-bible-view.ts calls importBibleEntries with verbatim true and no demotions option, so enrichFromBible and applyBibleRetirement run only on the kb_import path, never when the member view is built.",
+      "symbols": [
+        "importBibleEntries",
+        "enrichFromBible",
+        "applyBibleRetirement",
+        "buildView"
+      ],
+      "source_files": [
+        "src/services/knowledge/bible-import.ts",
+        "src/services/knowledge/member-bible-view.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T14:51:55.043Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "0d41536af4a0af94b1f74092e9b120e2f0a26088",
+        "src/services/knowledge/member-bible-view.ts": "dcc07c3ed11bccf65f2472d7a3e913fe879f51a6"
       }
     },
     {
