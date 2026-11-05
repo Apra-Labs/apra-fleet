@@ -261,6 +261,18 @@ async function recordRefusal(tool, caseName, request, expectedErrorCode) {
   }
   try {
     const response = await handler(request);
+    // A refusal with machine-readable detail comes back as an isError
+    // envelope (the wrapper's form of a thrown error plus structuredContent).
+    if (response && response.isError === true) {
+      const message = (response.content ?? []).map((c) => c?.text ?? '').join('\n');
+      const error = { message, thrown: true };
+      if (response.structuredContent) {
+        const { progress: _volatile, ...structured } = response.structuredContent;
+        error.structured = structured;
+      }
+      writeFixture(tool, caseName, { tool, case: caseName, kind: 'refusal', request, error, expected_error_code: expectedErrorCode });
+      return;
+    }
     failures++;
     console.log(`  [FAIL] ${tool}/${caseName} expected a throw for ${expectedErrorCode} but got a response`);
     void response;

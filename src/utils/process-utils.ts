@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
+import { windowsExecutable } from '../os/windows-executable.js';
 
 export function isPidAlive(pid: number): boolean {
   try {
@@ -20,9 +21,12 @@ export function isApraFleetCommandLine(cmd: string): boolean {
 export function processCommandLine(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   const opts = { encoding: 'utf8' as const, stdio: 'pipe' as const, windowsHide: true, timeout: 10_000 };
+  // powershell.exe is resolved to an absolute path (never the cwd). A missing
+  // PowerShell lands in the catch like any other unreadable command line:
+  // callers (isApraFleetProcess) then fall back to the tasklist image name.
   try {
     const out = process.platform === 'win32'
-      ? execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      ? execFileSync(windowsExecutable('powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command',
         `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`], opts)
       : execFileSync('ps', ['-p', String(pid), '-o', 'command='], opts);
     const trimmed = String(out).trim();

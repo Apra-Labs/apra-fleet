@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6ecdfda08a76fc206721e855d72cf94b16f5f011",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 123
+    "entry_count": 129
   },
   "entries": [
     {
@@ -373,6 +373,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.625Z"
+    },
+    {
+      "id": "266d51a9-b30a-4d52-bf4c-97f26de518d7",
+      "type": "knowledge",
+      "title": "Thrown tool errors lose all fields except message at the MCP boundary",
+      "summary": "McpServer turns a thrown handler error into {content:[{text: error.message}], isError:true} only; to send machine-readable error detail, wrapTool maps an Error carrying a structuredContent object to an isError result with that structuredContent.",
+      "symbols": [
+        "CodeIntelError",
+        "indexNotReadyError",
+        "registerAllTools"
+      ],
+      "source_files": [
+        "src/services/tool-registry.ts",
+        "src/tools/code-intelligence-readiness.ts",
+        "memory-contract/v1/tests/roundtrip-harness.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T06:17:05.154Z",
+      "source_file_hashes": {
+        "memory-contract/v1/tests/roundtrip-harness.mjs": "38c6431dd4cc3c66aea3ffcbce0058fd04920823",
+        "src/services/tool-registry.ts": "eb1b91bac7395927dd12548734bccb86e7ae1de3",
+        "src/tools/code-intelligence-readiness.ts": "1b423119c81b31be620ddeaa4fe22c498b7ef19a"
+      }
     },
     {
       "id": "26b8c94b-20c8-4d6e-8862-8e65bc512ba6",
@@ -774,6 +797,30 @@
       "updated_at": "2026-09-29T06:13:13.727Z"
     },
     {
+      "id": "4bbf15d9-821e-460f-aea3-10d749f9320b",
+      "type": "knowledge",
+      "title": "The pending service notice is a single slot: a later writeServiceNotice replaces an earlier one",
+      "summary": "src/services/service-notice.ts stores one notice per file and writeServiceNotice overwrites it, so two writers in one install (legacy-task guidance from WindowsServiceManager.register and the access restart note from install.ts) cannot both survive.",
+      "symbols": [
+        "writeServiceNotice",
+        "takePendingServiceNotice",
+        "recordAccessRestartNotice",
+        "reportLegacy"
+      ],
+      "source_files": [
+        "src/services/service-notice.ts",
+        "src/cli/install.ts",
+        "src/services/service-manager/windows.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T07:44:46.404Z",
+      "source_file_hashes": {
+        "src/cli/install.ts": "f2318e7720dda708523636118beb3efc6827a703",
+        "src/services/service-manager/windows.ts": "73148adab209e6031f0e0c050fb1f9e45bd3e219",
+        "src/services/service-notice.ts": "50ca5f5a7c11291cb3d047f8135abe8fc15a0778"
+      }
+    },
+    {
       "id": "4e315af5-d8ab-460e-850a-36d1d38ce19a",
       "type": "knowledge",
       "title": "runner.js's re-export of fatal-diagnostics.mjs is load-bearing for abort.mjs, not just compatibility sugar",
@@ -1111,6 +1158,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.250Z"
+    },
+    {
+      "id": "780724c4-bbfa-458d-94fc-ebb733800a55",
+      "type": "knowledge",
+      "title": "install-force tests can drive a real WindowsServiceManager through runInstall",
+      "summary": "tests/install-force.test.ts runs runInstall --force against a real WindowsServiceManager by injecting a fake schtasks runner; the service-manager/index.js mock must also export gracefulStopByServerJson.",
+      "symbols": [
+        "WindowsServiceManager",
+        "gracefulStopByServerJson"
+      ],
+      "source_files": [
+        "tests/install-force.test.ts",
+        "src/services/service-manager/windows.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T06:12:58.075Z",
+      "source_file_hashes": {
+        "src/services/service-manager/windows.ts": "73148adab209e6031f0e0c050fb1f9e45bd3e219",
+        "tests/install-force.test.ts": "ec37a86296ae36a9f4277879ee4b4859ed644071"
+      }
     },
     {
       "id": "78f14fd2-717c-4201-9897-fb638379f393",
@@ -1611,6 +1678,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.733Z"
+    },
+    {
+      "id": "a888b84b-d7a0-47ad-9318-2f062770cf2f",
+      "type": "learning",
+      "title": "ASCII-only gate scans test fixtures too; write emoji markers as escapes",
+      "summary": "scripts/check-ascii-only.mjs fails npm test on any non-ASCII char in a file not in its baseline, including test files that reproduce emoji-prefixed tool text such as the compose_permissions refusal.",
+      "symbols": [
+        "composeFailureText"
+      ],
+      "source_files": [
+        "scripts/check-ascii-only.mjs",
+        "tests/ascii-only-gate.test.ts",
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T07:14:29.307Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "0dffb028188c744e0bcc172691eb9fc79bfb354b",
+        "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56",
+        "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
     },
     {
       "id": "b03effcd-0488-452b-9b49-ab21049c0ece",
@@ -2265,6 +2353,21 @@
       "updated_at": "2026-09-29T06:08:07.865Z"
     },
     {
+      "id": "f2c0c490-c149-488d-939c-beb60734c8bc",
+      "type": "learning",
+      "title": "service-notice is single-slot; use appendServiceNotice to keep pending guidance",
+      "summary": "writeServiceNotice overwrites the whole file; install writers that may follow register-time legacy guidance must use appendServiceNotice.",
+      "symbols": [],
+      "source_files": [
+        "src/services/service-notice.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T08:03:57.008Z",
+      "source_file_hashes": {
+        "src/services/service-notice.ts": "b80d4b6dc105ee1e0ff1b483bf09cbe6b7f79620"
+      }
+    },
+    {
       "id": "f33011e2-8ae6-4388-95d4-5e21f1716d0f",
       "type": "knowledge",
       "title": "fleet_install replace-full is decided in ensureOnce before the up-to-date gates",
@@ -2285,6 +2388,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T17:05:07.548Z"
+    },
+    {
+      "id": "f40ed9c2-9dd5-4b32-a216-db902c79ddb2",
+      "type": "knowledge",
+      "title": "Server-to-client MCP requests should ride the tool call's own request context",
+      "summary": "To ask the client something during a tool call (e.g. roots/list), use the handler's extra.sendRequest so the request rides that call's POST SSE stream; a server-level request with no related request can be silently dropped over Streamable HTTP when no standalone GET stream is open.",
+      "symbols": [
+        "SessionRootsCache",
+        "createRootsCache",
+        "registerAllTools"
+      ],
+      "source_files": [
+        "src/services/session-roots.ts",
+        "src/services/tool-registry.ts",
+        "tests/kb-code-scope-roots.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-04T06:17:05.558Z",
+      "source_file_hashes": {
+        "src/services/session-roots.ts": "b27a9b1df28aad228dbec60ab57984f142eb024e",
+        "src/services/tool-registry.ts": "eb1b91bac7395927dd12548734bccb86e7ae1de3",
+        "tests/kb-code-scope-roots.test.ts": "494812934178a85b8196995e32a3df9991af9253"
+      }
     },
     {
       "id": "f503ec1b-2ff6-488f-9f2c-583adaeec7e9",

@@ -266,6 +266,9 @@ function mockRes() {
         headersSent: false,
         writableEnded: false,
         writeHead(status, headers) { this.statusCode = status; this.headers = headers; this.headersSent = true; },
+        flushHeaders() {},
+        write() { return true; },
+        on() { return this; },
         end(body) { this.body = body; this.writableEnded = true; },
     };
 }
@@ -297,7 +300,7 @@ describe('dolt-mutex -- supervisor-owned HTTP surface (not per-child)', () => {
         ).then(() => { bDone = true; });
         await new Promise((r) => setImmediate(r));
         assert.equal(bDone, false, 'B is blocked while A holds the supervisor mutex');
-        assert.equal(bRes.statusCode, undefined);
+        assert.equal(bRes.body, undefined, 'headers may be out, but no grant yet');
 
         // Status shows A holding and B waiting -- one shared mutex, two clients.
         const statusRes = mockRes();

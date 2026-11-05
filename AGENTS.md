@@ -158,7 +158,7 @@ Readers: `bd prime --no-memories` injects no memories. Dispatched roles run `bd 
 
 This project is indexed by GitNexus as **apra-fleet** (12888 symbols, 30673 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root -- it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash -> `npm i -g gitnexus`; #1939).
+> Index stale? Run `node .gitnexus/run.cjs analyze --index-only --force` from the project root -- it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze --index-only --force` (npm 11 crash -> `npm i -g gitnexus`; #1939). Always pass both flags: a plain incremental analyze can corrupt the index, so symbols that exist answer "not found" (`--force`, a full rebuild of 2-4 minutes on this repo), and without `--index-only` analyze rewrites this block and the gitnexus skills.
 
 ## Always Do
 
@@ -167,7 +167,7 @@ This project is indexed by GitNexus as **apra-fleet** (12888 symbols, 30673 rela
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
 - When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol -- callers, callees, which execution flows it participates in -- use `context({name: "symbolName"})`.
-- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source->sink flows; needs `analyze --pdg`).
+- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source->sink flows; needs `analyze --index-only --force --pdg`).
 
 ## Never Do
 

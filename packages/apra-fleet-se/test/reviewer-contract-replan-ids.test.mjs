@@ -69,7 +69,7 @@ test('buildReviewerPrompt: output mentions replanIds and states its semantics', 
     const prompt = buildReviewerPrompt({
         beadIds: ['apra-fleet-x.1'],
         acceptanceCriteriaJson: '{}',
-        baseBranch: 'main',
+        baseBranch: 'main', mergeBaseSha: 'abcdef0123456789abcdef0123456789abcdef01',
         branch: 'feat/x',
     });
     check(prompt.includes('replanIds'), `Expected buildReviewerPrompt output to mention replanIds, got: ${prompt}`);

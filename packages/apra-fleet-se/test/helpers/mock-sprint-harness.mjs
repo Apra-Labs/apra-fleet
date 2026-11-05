@@ -33,6 +33,9 @@ export const DELAY_MS = Number(process.env.MOCK_SPRINT_DELAY_MS || 0);
 // genuine `sessionId: null`.
 export const NO_SESSION_ID_MARKER = null;
 
+/** The commit SHA the mock answers `git merge-base origin/<base> <branch>` with (the review diff base). */
+export const MOCK_REVIEW_MERGE_BASE_SHA = 'c0ffee0000000000000000000000000000c0ffee';
+
 // apra-fleet-1cb.1 AUDIT NOTE: grepped runner.js for every read of
 // `result.isError` / `.isError` on an execute_command (bd/git/node shell)
 // response. The ONLY hit is createMemberReservationClient()'s `callFor()`
@@ -1453,6 +1456,13 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     // isError), matching src/tools/execute-command.ts. Simulate
                     // that as a nonzero exit carrying the failure text, not isError.
                     return mockCmdResult(1, '', gitGhFailureMessage || `mock git/gh failure (injected) for: ${opts.command}`);
+                }
+
+                // Review diff base: before each reviewer / Final Review dispatch
+                // the engine runs `git merge-base origin/<base> <branch>` and
+                // requires a commit SHA back. Answer with a fixed one.
+                if (/^git merge-base origin\/\S+ \S+\s*$/.test(opts.command)) {
+                    return mockCmdResult(0, MOCK_REVIEW_MERGE_BASE_SHA, '');
                 }
 
                 // apra-fleet-eft.64.1: answer the Publish PR step's remote-

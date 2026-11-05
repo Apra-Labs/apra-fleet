@@ -661,7 +661,9 @@
  *   configured app) or pat (personal access token)
  * @property {string} [token] - Personal access token (GitHub PAT or Azure DevOps PAT).
  *   Supports {{secret.NAME}} token -- resolved from the credential store server-side before use.
- * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [git_access] - GitHub App access
+ * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [git_access] - GitHub App mode
+ *   only: what the token may do. Use "push+pr" to create pull requests and dispatch workflows (see
+ *   docs/api-reference.md for every level). GitHub App access
  *   level override
  * @property {string[]} [repos] - GitHub App repository list override
  * @property {string} [email] - OPTIONAL Bitbucket account email. Ignored for authentication
@@ -957,7 +959,7 @@ export function assertNoRemovedKbScopeKeys(tool, options) {
     const err = new Error(
         `E-SCOPE-KEY-REMOVED: ${tool} no longer accepts ${present.map((k) => `'${k}'`).join(', ')} ` +
         '(removed in the KB redesign); the call was not sent. Remediation: drop it -- every kb_* call acts on the ' +
-        "calling session's own KB (a member session's registered work folder; a FULL session's fleet server working folder).",
+        "calling session's own KB (a member session's registered work folder; a FULL session's first MCP client root inside a git repository with an origin remote, or the fleet server working folder when the client offers no roots).",
     );
     err.code = 'E-SCOPE-KEY-REMOVED';
     throw err;
@@ -1413,8 +1415,11 @@ export class ApraFleet {
 
     /**
      * code_reindex -- rebuild the code index of the calling session's own repo
-     * (a member session's work folder, otherwise the fleet server's folder;
-     * there is no repo argument). Starts gitnexus analyze detached with its
+     * (a member session's work folder, otherwise
+     * the first MCP client root (roots/list) inside a git repository with an origin remote, or the server working folder when the client offers no roots;
+     * there is no repo argument). Starts gitnexus analyze detached, always as
+     * a full rebuild (--force; an incremental analyze can corrupt unchanged
+     * symbol rows), with its
      * output captured to <data>/code-index/<slug>/analyze.log and returns
      * after the first tick. Extract the JSON with parseToolJson(): `outcome`
      * is 'started' | 'up-to-date' | 'starting' | 'already-running' |

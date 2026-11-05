@@ -21,7 +21,7 @@ import { parseArgs } from 'node:util';
 import path from 'node:path';
 import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { createSupervisor, DEFAULT_SERVICE_PORT, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
+import { createSupervisor, DEFAULT_SERVICE_PORT, DEFAULT_SERVICE_HOST, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
@@ -68,6 +68,10 @@ termination signal (Ctrl-C / SIGTERM).
 
 Options:
       --port <port>         HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
+      --host <addr>         Interface the supervisor API binds. Default: ${DEFAULT_SERVICE_HOST}
+                            (loopback only). Pass 0.0.0.0 to expose it off-box;
+                            the API has no authentication, so that is an explicit
+                            opt-in.
       --beads-dir <path>    Project folder (or its .beads dir) whose beads tracker
                             this supervisor runs against. Default: discovered by
                             walking up from the current directory, exactly like
@@ -179,6 +183,7 @@ export function parseServeArgs(argv) {
             args: argv,
             options: {
                 port: { type: 'string' },
+                host: { type: 'string' },
                 'beads-dir': { type: 'string' },
                 help: { type: 'boolean', short: 'h' },
             },
@@ -231,6 +236,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     process.once('exit', () => selfLog.stop());
 
     let port = DEFAULT_SERVICE_PORT;
+    const host = values.host !== undefined && values.host !== '' ? values.host : DEFAULT_SERVICE_HOST;
     if (values.port !== undefined) {
         port = Number(values.port);
         if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -372,7 +378,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // see createSprintController's launch()), but history's own copy stays
     // discoverable even after the reservation is eventually released.
     const spawner = createSpawner({
-        serviceUrl: `http://localhost:${port}`,
+        serviceUrl: `http://${host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host}:${port}`,
         // Sprint children run from the project root (the folder holding the
         // discovered .beads, not whatever subfolder the operator started in)
         // and carry the resolved identity so the engine can verify every
@@ -513,7 +519,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
         console.warn(`[supervisor] TEST HOOK: seam '${hangSeam}' stop() will never settle`);
     }
     const supervisor = createSupervisor({
-        port, ledger, spawner, watchdog: hangable.watchdog, dashboard: hangable.dashboard, idAllocator, doltMutex,
+        port, host, ledger, spawner, watchdog: hangable.watchdog, dashboard: hangable.dashboard, idAllocator, doltMutex,
         doltOrphanSweep: hangable.doltOrphanSweep, beadsIdentity, backlogMember,
         seamStopTimeoutMs: envMs('FLEET_SE_SHUTDOWN_SEAM_TIMEOUT_MS', 3000),
         forcedExitMs: envMs('FLEET_SE_SHUTDOWN_FORCE_EXIT_MS', 10_000),

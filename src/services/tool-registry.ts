@@ -1,7 +1,9 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { RootsListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { FULL_TOOL_SCOPE, isToolInScope, runWithSessionMember, scopeHasKbMaintainer, scopeIsEngineOrigin, scopeMemberId, type ToolScope } from './tool-scope.js';
 import { recordMemberToolCall } from './member-call-counts.js';
 import { assertNoRemovedKbScopeKeys } from './knowledge/kb-removed-scope-keys.js';
+import { SessionRootsCache } from './session-roots.js';
 
 export type { ToolScope } from './tool-scope.js';
 
@@ -33,6 +35,29 @@ function scopeGatedServer(base: McpServer, scope: ToolScope): McpServer {
 }
 
 /**
+ * The per-session client-roots cache for a FULL session: asks for roots only
+ * when the client declared the roots capability, and drops the cache on
+ * notifications/roots/list_changed. Minimal test doubles without an
+ * underlying Server get a cache that never reports roots.
+ */
+function createRootsCache(baseServer: McpServer): SessionRootsCache {
+  const inner = (baseServer as { server?: McpServer['server'] }).server;
+  const cache = new SessionRootsCache(() => {
+    try {
+      return !!inner?.getClientCapabilities?.()?.roots;
+    } catch {
+      return false;
+    }
+  });
+  try {
+    inner?.setNotificationHandler?.(RootsListChangedNotificationSchema, async () => { cache.invalidate(); });
+  } catch {
+    // a double without notification support: roots are fetched once per session
+  }
+  return cache;
+}
+
+/**
  * Register the fleet tool surface on ONE session's McpServer. `scope` is
  * derived from the session's identity by the HTTP transport; it defaults to
  * FULL (every tool), which is also what the stdio path uses.
@@ -44,6 +69,10 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   // Whether this member session carries the engine's kb_maintainer grant;
   // handlers read it via getSessionKbMaintainer() (src/services/tool-scope.ts).
   const kbMaintainer = scopeHasKbMaintainer(scope);
+  // FULL session: kb_*/code_* scope comes from the client's MCP roots
+  // (src/services/session-roots.ts, src/services/knowledge/kb-self.ts). A
+  // MEMBER session never reads roots -- its scope is its registered work folder.
+  const rootsCache = sessionMemberId === undefined ? createRootsCache(baseServer) : undefined;
   // Load onboarding functions
   const { getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingNudge, getWelcomeBackPreamble } = await import('./onboarding.js');
 
@@ -159,7 +188,26 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
       const scopedExtra = extra === undefined && sessionMemberId === undefined
         ? undefined
         : { ...(extra ?? {}), sessionMemberId };
-      const raw = await runWithSessionMember(sessionMemberId, () => handler(input, scopedExtra), { kbMaintainer });
+      const roots = rootsCache && (toolName.startsWith('kb_') || toolName.startsWith('code_'))
+        ? await rootsCache.get(extra?.sendRequest?.bind(extra))
+        : undefined;
+      let raw: Awaited<ReturnType<typeof handler>>;
+      try {
+        raw = await runWithSessionMember(sessionMemberId, () => handler(input, scopedExtra), { kbMaintainer, roots });
+      } catch (err) {
+        // A thrown error carrying machine-readable detail (structuredContent,
+        // e.g. E-CODE-INDEX-NOT-READY's retry_after_ms and build progress)
+        // becomes a one-line isError text that repeats it (toolText: a client
+        // may pass its model only the text of an error result), plus that
+        // detail as the result's structuredContent. Any other error is left to
+        // the SDK unchanged.
+        const sc = err instanceof Error ? (err as { structuredContent?: unknown }).structuredContent : undefined;
+        if (err instanceof Error && sc && typeof sc === 'object' && !Array.isArray(sc)) {
+          const toolText = (err as { toolText?: unknown }).toolText;
+          return { content: [{ type: 'text' as const, text: typeof toolText === 'string' ? toolText : err.message }], isError: true, structuredContent: sc as Record<string, unknown> };
+        }
+        throw err;
+      }
       const result = typeof raw === 'string' ? raw : raw.text;
       const structuredContent = typeof raw === 'string' ? undefined : raw.structuredContent;
       const isJson = isJsonResponse(result);
@@ -217,7 +265,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   server.tool('provision_llm_auth', "Authenticate a fleet member so it can run prompts. With api_key, deploys that API key or Claude Code OAuth token (routed by prefix). Without api_key, re-deploys a credential already stored for the member, else copies your current login session; force_oauth_copy: true copies your login anyway and clears the stored credential. Run this before execute_prompt if the member reports no authentication. Note: a copied OAuth session is shared and its refresh token is rotated across every holder, so a refresh on one machine can invalidate the copies elsewhere; prefer an API key for unattended members.", provisionAuthSchema.shape, wrapTool('provision_llm_auth', (input) => provisionAuth(input as any)));
   server.tool('setup_ssh_key', 'Generate an SSH key pair and migrate a member from password to key-based authentication.', setupSSHKeySchema.shape, wrapTool('setup_ssh_key', (input) => setupSSHKey(input as any)));
   server.tool('setup_git_app', "One-time setup: register a GitHub App for git token minting. Requires a GitHub App ID, private key (.pem) file path, and installation ID. The app must already be created and installed, with the repository permissions each git_access level needs (see docs/github-app-setup.md; push+pr needs Metadata, Contents, Workflows, Pull requests, Actions) -- a mint requesting a permission the App lacks fails.", setupGitAppSchema.shape, wrapTool('setup_git_app', (input) => setupGitApp(input as any)));
-  server.tool('provision_vcs_auth', 'Set up git access credentials on a member. Supports GitHub, Bitbucket, and Azure DevOps. Tests connectivity after setup.', provisionVcsAuthSchema.shape, wrapTool('provision_vcs_auth', (input) => provisionVcsAuth(input as any)));
+  server.tool('provision_vcs_auth', 'Set up git access credentials on a member so it can clone, push, create pull requests, dispatch workflows and re-run CI jobs. Supports GitHub, Bitbucket, and Azure DevOps. On GitHub with a GitHub App, git_access decides which of these the member may do: push+pr covers create pull requests and dispatch workflows. Tests connectivity after setup.', provisionVcsAuthSchema.shape, wrapTool('provision_vcs_auth', (input) => provisionVcsAuth(input as any)));
   server.tool('revoke_vcs_auth', 'Remove VCS credentials from a member. Specify the provider (github, bitbucket, or azure-devops) to revoke.', revokeVcsAuthSchema.shape, wrapTool('revoke_vcs_auth', (input) => revokeVcsAuth(input as any)));
   server.tool('vcs_credential_exec', 'Run a credential-requiring git/VCS command on a member WITHOUT ever learning the credential. Put one of two literal placeholders where the token belongs: {{vcs_token}}, referenced BARE (never inside your own quotes) -- the server substitutes it already escaped AND quoted for that member\'s shell; or {{vcs_token_inline}}, referenced INSIDE your own single quotes (e.g. an Authorization header value) -- the server substitutes it escaped for the interior of a single-quoted string, with no quotes of its own. Using {{vcs_token}} inside your own quotes double-escapes it; use {{vcs_token_inline}} there instead. Both may appear in the same command. Bitbucket REST uses the token as a Bearer value (-H \'Authorization: Bearer {{vcs_token_inline}}\'), with no username and no email. The optional {{vcs_username}} and {{vcs_username_inline}} placeholders substitute the credential helper\'s git username under the same two dialects (for Bitbucket always x-bitbucket-api-token-auth, a git-only username, never a REST login) -- never on their own: a token placeholder is still required. The server dispatches the command and redacts both values from the returned stdout/stderr. Use this instead of reading a token back out of a credential helper.', vcsCredentialExecSchema.shape, wrapTool('vcs_credential_exec', (input) => vcsCredentialExec(input as any)));
 

@@ -105,6 +105,12 @@ code_impact({ target: "<symbol>", direction: "upstream" | "downstream" })
 code_query({ query: "<concept or pattern>" })
 ```
 
+If a `code_*` call fails with `E-CODE-INDEX-NOT-READY`, wait ONCE for the
+`retry_after_ms` its error result carries (skip the wait when it is 0: retrying will
+not help), retry that call ONCE, and if it still fails fall back to reading the cited
+files directly and say so in the evidence note. Never poll `code_status` in a loop
+waiting for the index.
+
 Decide which entry's claim the CURRENT merged code actually supports. Note the exact
 file + symbol you read that settled it.
 

@@ -116,7 +116,7 @@ export const MEMBER_INIT_FIXES = Object.freeze({
     'code-index-timeout': 'the first code-index tick did not arrive within the bound; check code_status on the member (the index keeps building)',
     'code-intel-npx-missing': "npx or node is not on the apra-fleet service PATH, so code intelligence is unavailable: reinstall the service so it records node/npx (re-run the fleet installer on the host), or add node and npx to the service PATH and restart the server, then rerun code_reindex",
     'code-index-failed': 'code_reindex failed on the member: read its analyze log (code_status logPath) and rerun code_reindex',
-    'code-index-gitnexus-too-old': "the member's gitnexus is too old to support --index-only: upgrade gitnexus (npx -y gitnexus@latest analyze --index-only) or clear the npx cache (npm cache clean --force) on the member, then rerun code_reindex",
+    'code-index-gitnexus-too-old': "the member's gitnexus is too old to support --index-only: upgrade gitnexus (npx -y gitnexus@latest analyze --index-only --force) or clear the npx cache (npm cache clean --force) on the member, then rerun code_reindex",
     'code-index-unrecognized': 'code_reindex returned an unrecognized answer: run update_member with fleet_install "auto" for the member so its fleet install is current',
 });
 

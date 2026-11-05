@@ -52,6 +52,10 @@ export const DEFAULT_LEASE_MS = 60_000;
 /** Default background sweep interval for reclaiming expired/dead holders. */
 export const DEFAULT_SWEEP_MS = 5_000;
 
+/** How often a queued acquire writes a heartbeat byte. Well under the 300s body
+ *  timeout of the client's fetch, which resets on every chunk. */
+export const DEFAULT_ACQUIRE_HEARTBEAT_MS = 30_000;
+
 let tokenSeq = 0;
 /** Monotonic, collision-free grant token. */
 function nextToken(sprintId) {
@@ -265,9 +269,10 @@ export function createDoltMutex(deps = {}) {
  * Detached sprint children coordinate through these:
  *
  *   POST /api/dolt-push-mutex/:sprintId/acquire   body { pid? }
- *       Long-polls: the response is deferred until this sprint genuinely owns
- *       the mutex, then returns 200 { token, expiresAt }. If the client aborts
- *       the request, its queued waiter is dropped.
+ *       Long-polls: 200 headers go out at once, a space every heartbeatMs while
+ *       queued, and the body ends with { status, token, sprintId, expiresAt }
+ *       when this sprint genuinely owns the mutex, or { error } if the wait
+ *       failed. If the client aborts the request, its queued waiter is dropped.
  *   POST /api/dolt-push-mutex/:sprintId/release   body { token }
  *       Releases; 200 { released: boolean }.
  *   POST /api/dolt-push-mutex/:sprintId/renew     body { token }
@@ -276,29 +281,44 @@ export function createDoltMutex(deps = {}) {
  *
  * @param {{ route: Function }} supervisor
  * @param {ReturnType<typeof createDoltMutex>} mutex
- * @param {{ readJsonBody: Function, sendJson: Function }} http
+ * @param {{ readJsonBody: Function, sendJson: Function, heartbeatMs?: number }} http
  */
 export function registerDoltMutexRoutes(supervisor, mutex, http) {
     const { readJsonBody, sendJson } = http;
+    const heartbeatMs = http.heartbeatMs > 0 ? http.heartbeatMs : DEFAULT_ACQUIRE_HEARTBEAT_MS;
 
     supervisor.route('POST', '/api/dolt-push-mutex/:sprintId/acquire', async (req, res, ctx) => {
         const sprintId = ctx?.params?.sprintId;
         if (!sprintId) { sendJson(res, 400, { error: 'missing sprintId in path' }); return; }
         const body = (await readJsonBody(req)) ?? {};
+        // Headers now, whitespace while queued, the JSON when the wait ends: the
+        // client's fetch times out after 300s without headers or a body chunk,
+        // and re-POSTing would lose this sprint's FIFO place. JSON.parse ignores
+        // the leading whitespace.
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.flushHeaders();
+        const heartbeat = setInterval(() => { if (!res.destroyed) res.write(' '); }, heartbeatMs);
+        heartbeat.unref?.();
         // If the client hangs up before it is granted, drop its queued waiter so
-        // it can never later be handed a mutex nobody is waiting on.
-        req.on('close', () => {
+        // it can never later be handed a mutex nobody is waiting on. This has to
+        // watch res: req has already closed once its body was read.
+        res.on('close', () => {
+            clearInterval(heartbeat);
             if (!res.writableEnded) {
                 mutex.cancelWaiter(sprintId, new Error('acquire request aborted by client'));
             }
         });
         try {
             const grant = await mutex.acquire(sprintId, { pid: body.pid });
-            if (res.writableEnded) return; // client already gone
-            sendJson(res, 200, { status: 'acquired', ...grant });
+            // Client already gone: nobody would ever release this grant.
+            if (res.destroyed) { mutex.release(grant.token); return; }
+            res.end(JSON.stringify({ status: 'acquired', ...grant }));
         } catch (err) {
-            if (res.writableEnded) return;
-            sendJson(res, 503, { error: `acquire failed: ${err.message}` });
+            if (res.destroyed) return;
+            // The status line is long gone, so the failure travels in the body.
+            res.end(JSON.stringify({ error: `acquire failed: ${err.message}` }));
+        } finally {
+            clearInterval(heartbeat);
         }
     });
 

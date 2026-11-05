@@ -110,7 +110,7 @@ describe('only CONFIRMED, undisputed KB entries reach a role prompt', () => {
         const kbKnowledge = await client.relevantKnowledge(ALPHA_MEMBER, ['anything']);
 
         assertOnlyConfirmed(buildReviewerPrompt({
-            beadIds: ['x-1'], acceptanceCriteriaJson: '{}', baseBranch: 'main', branch: 'feat/x', kbKnowledge,
+            beadIds: ['x-1'], acceptanceCriteriaJson: '{}', baseBranch: 'main', mergeBaseSha: 'abcdef0123456789abcdef0123456789abcdef01', branch: 'feat/x', kbKnowledge,
         }), 'reviewer');
     });
 
@@ -143,7 +143,7 @@ describe('only CONFIRMED, undisputed KB entries reach a role prompt', () => {
         await priming.primeAll();
 
         assertOnlyConfirmed(buildFinalVerdictPrompt({
-            targetIssues: ['x-1'], branch: 'feat/x', baseBranch: 'main', goal: 'g', cyclesRun: 1,
+            targetIssues: ['x-1'], branch: 'feat/x', baseBranch: 'main', mergeBaseSha: 'abcdef0123456789abcdef0123456789abcdef01', goal: 'g', cyclesRun: 1,
             closedCount: 1, openAtGoalCount: 0, deployFailures: [], integFailures: [],
             kbCandidates: [], kbKnowledge: priming.knowledgeOf('alpha'),
         }), 'final review');
