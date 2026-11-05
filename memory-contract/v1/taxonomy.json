@@ -87,7 +87,8 @@
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "pre-provider" },
             { "method_id": "X-5", "member": "reconcilePrefilter", "tool": "kb_reconcile_prefilter", "position": "pre-provider" },
-            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "pre-provider" }
+            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "X-12", "member": "recordUsage", "tool": "kb_usage", "position": "pre-provider" }
           ],
           "source": "src/services/knowledge/kb-removed-scope-keys.ts (assertNoRemovedKbScopeKeys), called by the kb_* tool wrapper in src/services/tool-registry.ts",
           "surfaced": "thrown",
@@ -489,7 +490,8 @@
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" },
             { "method_id": "X-5", "member": "reconcilePrefilter", "tool": "kb_reconcile_prefilter", "position": "provider" },
             { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "provider" },
-            { "method_id": "X-8", "member": "getSourceFileBases", "tool": "kb_export", "position": "provider" }
+            { "method_id": "X-8", "member": "getSourceFileBases", "tool": "kb_export", "position": "provider" },
+            { "method_id": "X-12", "member": "recordUsage", "tool": "kb_usage", "position": "provider" }
           ],
           "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.getDb)",
           "surfaced": "thrown",
@@ -589,7 +591,8 @@
             { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "pre-provider" },
             { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "pre-provider" },
             { "method_id": "C-8", "member": "reindex", "tool": "code_reindex", "position": "pre-provider" },
-            { "method_id": "C-9", "member": "status", "tool": "code_status", "position": "pre-provider" }
+            { "method_id": "C-9", "member": "status", "tool": "code_status", "position": "pre-provider" },
+            { "method_id": "X-12", "member": "recordUsage", "tool": "kb_usage", "position": "pre-provider" }
           ],
           "source": "src/services/knowledge/kb-self.ts (resolveSelfSession, validateSelfRepoFolder; kb_* via resolveSelfAnchor/validateSelfFolder, code_* via resolveCodeSelf in src/tools/code-intelligence.ts)",
           "surfaced": "thrown",
@@ -632,7 +635,8 @@
             { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "pre-provider" },
             { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "pre-provider" },
             { "method_id": "C-8", "member": "reindex", "tool": "code_reindex", "position": "pre-provider" },
-            { "method_id": "C-9", "member": "status", "tool": "code_status", "position": "pre-provider" }
+            { "method_id": "C-9", "member": "status", "tool": "code_status", "position": "pre-provider" },
+            { "method_id": "X-12", "member": "recordUsage", "tool": "kb_usage", "position": "pre-provider" }
           ],
           "source": "src/services/knowledge/kb-self.ts (resolveSelfSession, validateSelfRepoFolder; kb_* via resolveSelfAnchor/validateSelfFolder, code_* via resolveCodeSelf in src/tools/code-intelligence.ts)",
           "surfaced": "thrown",
@@ -666,7 +670,8 @@
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "pre-provider" },
             { "method_id": "X-5", "member": "reconcilePrefilter", "tool": "kb_reconcile_prefilter", "position": "pre-provider" },
-            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "pre-provider" }
+            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "X-12", "member": "recordUsage", "tool": "kb_usage", "position": "pre-provider" }
           ],
           "source": "src/services/knowledge/kb-self.ts (resolveSelfAnchor, validateSelfFolder)",
           "surfaced": "thrown",
@@ -780,6 +785,12 @@
       "outcome": "A provider that cannot compute stats returns {supported: false, reason} instead of throwing.",
       "where": "src/services/knowledge/http-provider.ts:284-287 (design D4)",
       "reason_no_code": "A documented not-supported result is part of the response schema. Note HttpKbProvider is dead code in this tree (INVENTORY.md 4.4 F-10), so no tool call reaches this branch today."
+    },
+    {
+      "name": "E-USAGE-UNSUPPORTED",
+      "outcome": "kb_usage over a project provider that is not SqliteProvider records nothing and returns {supported: false, reason, recorded: {returned: 0, cited: 0}} instead of throwing.",
+      "where": "src/tools/kb-usage.ts (kbUsage, isSqliteProject guard)",
+      "reason_no_code": "A documented not-supported result is part of the response schema, the same shape as E-STATS-UNSUPPORTED. Usage telemetry is a SqliteProvider-only capability; HttpKbProvider has no route for it."
     },
     {
       "name": "E-BIBLE-READ-DEGRADED",

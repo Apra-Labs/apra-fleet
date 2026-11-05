@@ -579,7 +579,7 @@ repository with an origin remote, or the fleet server working folder when the
 client offers no roots). The
 pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are removed:
 the server refuses a call carrying any of them with `E-SCOPE-KEY-REMOVED`,
-and `kbExport` / `kbBibleCommit` / `kbDemote` refuse them client-side with the same code
+and `kbExport` / `kbBibleCommit` / `kbDemote` / `kbUsage` refuse them client-side with the same code
 before sending (`assertNoRemovedKbScopeKeys`, `KB_REMOVED_SCOPE_KEYS` are
 exported). For direct `callTool` users: `kb_list` accepts `confidence` as a
 list or as one tier string, and `kb_context` defaults to
@@ -707,6 +707,23 @@ Called from the kb_maintainer session or a FULL session, it also records the
 git blob id of the bible it wrote as trusted in the hub-side KB, which is what
 lets a member session without the grant `kb_import` that bible once it is
 committed in its checkout (a call from such a member session records nothing).
+
+#### `kbUsage(options: KbUsageOptions)`
+
+Calls `kb_usage` -- records KB usage telemetry for the cited-based hit rate.
+Options: `pushed?` (ids of entries the engine delivered to a dispatch; each is
+recorded as one returned event) and `cited?` (ids of entries a role reported it
+actually used; each is recorded as one cited event). Duplicates within a list
+count once; an id with no local entry still counts. Append-only: no entry,
+use_count or trust field changes. `kb_stats` reads the events back as `usage`
+(`{window_days, returned, cited, cited_rate}` over the last 30 days,
+`cited_rate` null when nothing was returned). A member session is served
+`kb_usage` only with the engine's kb_maintainer grant. Over a remote HTTP KB
+provider nothing is recorded and the result carries `supported: false` and a
+`reason`. Like `kbDemote`, the removed scope keys are refused client-side with
+`E-SCOPE-KEY-REMOVED` before anything is sent.
+
+Result JSON: `{recorded: {returned, cited}}`.
 
 #### `composePermissions(options: ComposePermissionsOptions)`
 

@@ -777,6 +777,16 @@
  */
 
 /**
+ * @typedef {Object} KbUsageOptions
+ * @property {string[]} [pushed] - Ids of KB entries the engine delivered to a
+ *   dispatch; each is recorded as one returned usage event (duplicates in the
+ *   list count once).
+ * @property {string[]} [cited] - Ids of KB entries a role reported it actually
+ *   used (kb_used); each is recorded as one cited usage event (duplicates in
+ *   the list count once).
+ */
+
+/**
  * @typedef {Object} KbDemoteOptions
  * @property {string} id - ID of the KB entry to demote.
  * @property {string} reason - Why trust is being withdrawn -- at least 20 characters
@@ -1382,6 +1392,23 @@ export class ApraFleet {
     async kbDemote(options) {
         assertNoRemovedKbScopeKeys('kb_demote', options);
         return this.mcpClient.callTool('kb_demote', options);
+    }
+
+    /**
+     * Record KB usage telemetry behind kb_stats.usage (the cited-based hit
+     * rate): pushed ids become returned events, cited ids cited events.
+     * Append-only; never changes an entry. A member session is served kb_usage
+     * only with the engine's kb_maintainer grant. Result JSON:
+     * {recorded: {returned, cited}} (plus supported false and a reason over a
+     * remote HTTP KB provider, which records nothing); extract with
+     * parseToolJson(). The removed scope keys (repo_path, repo,
+     * repo_remote_url) are refused with E-SCOPE-KEY-REMOVED before anything is
+     * sent.
+     * @param {KbUsageOptions} options
+     */
+    async kbUsage(options) {
+        assertNoRemovedKbScopeKeys('kb_usage', options);
+        return this.mcpClient.callTool('kb_usage', options);
     }
 
     /**

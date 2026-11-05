@@ -19,6 +19,7 @@ const providerState = vi.hoisted(() => ({ p: undefined as unknown }));
 vi.mock('../../src/services/tool-scope.js', () => ({
   getSessionMemberId: () => undefined,
   getSessionKbMaintainer: () => false,
+  getSessionEngineOrigin: () => false,
 }));
 vi.mock('../../src/services/knowledge/kb-self.js', () => ({
   getSelfKbProviders: async () => ({ project: providerState.p, global: providerState.p, projectSlug: 'slug' }),

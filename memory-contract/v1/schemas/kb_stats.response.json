@@ -72,7 +72,34 @@
               "type": "number"
             },
             "coverage": {},
-            "bible": {}
+            "bible": {},
+            "usage": {
+              "type": "object",
+              "properties": {
+                "window_days": {
+                  "type": "number"
+                },
+                "returned": {
+                  "type": "number"
+                },
+                "cited": {
+                  "type": "number"
+                },
+                "cited_rate": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "window_days",
+                "returned",
+                "cited",
+                "cited_rate"
+              ],
+              "additionalProperties": false
+            }
           },
           "required": [
             "promote_ratio"

@@ -85,10 +85,11 @@ method in this surface is classified `consent-gated` on its own (the
 consent-gated CLI-only surface -- `approveDirective`, `rejectDirective`,
 `addDirective` -- is not tool-reachable; see `methods.json`'s `not_in_scope`).
 
-### 2.2 Undeclared members reached by tools but absent from `MemoryProvider` (`methods.json` ids X-1..X-6 and X-8, plus the X-7 property)
+### 2.2 Undeclared members reached by tools but absent from `MemoryProvider` (`methods.json` ids X-1..X-6, X-8, X-9 and X-12, plus the X-7 property)
 
 `list`, `feedback`, `freshnessSweep`, `resolveContradiction`,
-`reconcilePrefilter`, `hasEntry` (methods), and `repoPath` (property, not a
+`reconcilePrefilter`, `hasEntry`, `getSourceFileBases`, `getDemotionState`,
+`recordUsage` (methods), and `repoPath` (property, not a
 method -- listed in `methods.json`'s `properties` array, not its `methods`
 array, and not counted against "every method has an entry").
 
@@ -222,6 +223,10 @@ A MEMBER session is served an explicit tool list
 - `kb_demote` withdraws CONFIRMED (CONFIRMED -> INFERRED) and is served on the
   same terms as `kb_promote`: only to a member session carrying the
   kb_maintainer grant.
+- `kb_usage` records usage telemetry (section 2.10) and is served on the same
+  terms as `kb_promote`: only to a member session carrying the kb_maintainer
+  grant. The engine reports what it pushed and what roles cited; an agent
+  session cannot inflate the numbers.
 - Every other `kb_*` tool (including `kb_bible_commit` and `kb_import`) and
   every `code_*` tool is served to every member session.
 - `kb_import` with an explicit `path` keeps the named bible's confidence (and a
@@ -620,6 +625,40 @@ Additive request fields (no field was removed or made required):
 - Existing databases gain the columns through additive migrations on open;
   existing rows read empty arrays, no trigger and no note.
 
+### 2.10 Usage telemetry and the cited-based hit rate
+
+The KB keeps a timestamped usage event per delivery and per citation of an
+entry (`SqliteProvider` only; `methods.json` X-12 `recordUsage`):
+
+- **returned** -- an entry was delivered. Recorded by `query` (P-3) for every
+  entry it returns and by `touch` (P-11) for every id it is given, alongside
+  the existing use_count/last_accessed bump, and by `kb_usage` for every
+  `pushed` id (an entry the engine delivered to a dispatch).
+- **cited** -- a role reported it actually used the entry (`kb_used`),
+  recorded by `kb_usage` for every `cited` id.
+
+`kb_usage {pushed?, cited?}` de-duplicates ids within each list, counts an id
+with no local entry (a bible id exported elsewhere), and changes no entry,
+use_count or trust field. It returns `{recorded: {returned, cited}}`; over a
+provider that is not `SqliteProvider` it records nothing and returns
+`supported: false` with a reason (`E-USAGE-UNSUPPORTED`, a non-error outcome).
+
+A read made by an ENGINE-ORIGIN session (`origin=engine` on the member URL --
+the engine's own reads, such as the one that builds the pushed KNOWLEDGE BANK
+block) is not a delivery: `query` and `touch` then bump no use_count and record
+no returned event. The engine reports what it actually pushed through
+`kb_usage` instead. Agent-side `kb_query`/`kb_session_prime` calls keep
+counting as returned.
+
+`kb_stats` adds `usage: {window_days, returned, cited, cited_rate}` over the
+last 30 days (events older than that are excluded); `cited_rate` is
+`cited / returned`, and `null` when no returned event falls in the window --
+never 0, never a division error. It counts events, not distinct entries, and
+is always read from the per-repo DB, also in a MEMBER session (whose other
+`kb_stats` counts describe its checkout bible). Every pre-existing `kb_stats`
+field keeps its meaning; `retrieval.hit_rate` is still entries-retrieved over
+live entries.
+
 ## 3. Error model
 
 `taxonomy.json` in this directory is the source of truth: a CLOSED set of
@@ -662,8 +701,8 @@ deliberately get NO code, each with its reason. They fall into three kinds:
   that branch is the one with a code.
 - **A failure was degraded into an answer** -- the `code_*` adapters' offline
   result, the swallowed bible read, the emptied
-  `related_claims`, the unknown author role, and a provider reporting stats as
-  unsupported.
+  `related_claims`, the unknown author role, and a provider reporting stats
+  (or recording usage, `E-USAGE-UNSUPPORTED`) as unsupported.
 
 ### 3.3 No code in v1 is retryable
 

@@ -621,6 +621,14 @@ if (idFoo) {
   await withSession('FULL_A', () => recordHappy('kb_feedback', 'happy', feedbackRequest));
 }
 
+// --- kb_usage ---------------------------------------------------------
+// The engine's usage report, from the default session A (a member session
+// carrying the kb_maintainer grant, the only member session kb_usage is
+// served to): FOO was pushed to a dispatch and the role cited it.
+if (idFoo) {
+  await recordHappy('kb_usage', 'happy', { pushed: [idFoo], cited: [idFoo] });
+}
+
 // --- kb_harvest -------------------------------------------------------
 await recordHappy('kb_harvest', 'happy', {
   session_transcript:

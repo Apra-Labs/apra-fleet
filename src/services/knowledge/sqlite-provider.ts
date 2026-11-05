@@ -22,6 +22,7 @@ import {
   orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
+import { getSessionEngineOrigin } from '../tool-scope.js';
 import { validateFilePaths } from './path-validation.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
 import { CAPTURE_TRIGGERS, KB_AUDIT_NOTE_START, KbCaptureRejected, type CaptureTrigger, type DiscardResult, type RetireOptions } from './types.js';
@@ -42,6 +43,7 @@ import type {
   Confidence,
   CodeIntelCall,
   ProviderStats,
+  KbUsageStats,
 } from './types.js';
 
 function isCaptureTrigger(v: unknown): v is CaptureTrigger {
@@ -64,6 +66,8 @@ function parseStringArray(v: unknown): string[] {
 }
 
 const CONTENT_CAP = 4000;
+// Trailing window kb_stats.usage reports over (cited / returned events).
+export const USAGE_WINDOW_DAYS = 30;
 const TRUNCATION_SUFFIX = '...[truncated]';
 
 function truncateContent(content: string): string {
@@ -364,6 +368,23 @@ export class SqliteProvider implements MemoryProvider {
     // database is the one place the member's own checkout cannot write. See
     // services/knowledge/bible-blob-id.ts. Created idempotently; existing DBs
     // start with no rows (a fresh hub is seeded by the maintainer side).
+    // Usage telemetry (kb_stats.usage): one timestamped row per delivery of an
+    // entry (kind 'returned': an agent-side query()/touch() return, or an
+    // engine push reported through kb_usage) or per citation (kind 'cited': a
+    // role reported it used the entry, through kb_usage). entry_id is NOT a
+    // foreign key: a pushed bible id may have no local row (the bible is
+    // exported elsewhere), and the event still counts. Created idempotently;
+    // existing DBs start with no events.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS usage_events (
+        entry_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        source TEXT NOT NULL,
+        at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_usage_events_at ON usage_events(at);
+    `);
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS trusted_bible_blobs (
         blob_id TEXT PRIMARY KEY,
@@ -1335,16 +1356,60 @@ export class SqliteProvider implements MemoryProvider {
   // machine and read on another, so an id with no local row is the normal case,
   // not an error. Returns how many rows were actually bumped -- the caller can
   // tell "delivered from our own KB" from "delivered from someone else's".
+  //
+  // An engine-origin session (getSessionEngineOrigin) bumps nothing: the
+  // engine's own reads are not deliveries; it reports what it pushed through
+  // kb_usage (recordUsage) instead.
   async touch(ids: string[]): Promise<number> {
     if (ids.length === 0) return 0;
+    if (getSessionEngineOrigin()) return 0;
     const db = this.getDb();
     const placeholders = ids.map(() => '?').join(',');
+    const now = new Date().toISOString();
     const res = db.prepare(`
       UPDATE entries SET use_count = use_count + 1, last_accessed = ?
       WHERE id IN (${placeholders})
-    `).run(new Date().toISOString(), ...ids);
+    `).run(now, ...ids);
+    this.insertUsageEvents(db, ids, 'returned', 'touch', now);
     // node:sqlite types changes as number|bigint (bigint only past 2^53 rows).
     return Number(res.changes);
+  }
+
+  // The bump every query() return path shares: use_count/last_accessed plus
+  // one 'returned' usage event per entry. Skipped entirely for an
+  // engine-origin session (see touch()).
+  private bumpReturned(db: DatabaseSync, ids: string[]): void {
+    if (ids.length === 0 || getSessionEngineOrigin()) return;
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE entries SET use_count = use_count + 1, last_accessed = ?
+      WHERE id IN (${ids.map(() => '?').join(',')})
+    `).run(now, ...ids);
+    this.insertUsageEvents(db, ids, 'returned', 'query', now);
+  }
+
+  private insertUsageEvents(db: DatabaseSync, ids: string[], kind: 'returned' | 'cited', source: string, at: string): number {
+    const unique = [...new Set(ids.filter(id => typeof id === 'string' && id.length > 0))];
+    if (unique.length === 0) return 0;
+    const stmt = db.prepare('INSERT INTO usage_events (entry_id, kind, source, at) VALUES (?, ?, ?, ?)');
+    for (const id of unique) stmt.run(id, kind, source, at);
+    return unique.length;
+  }
+
+  /**
+   * kb_usage: record that the engine pushed these entries to a dispatch
+   * (returned, source 'pushed') and that a role cited these (cited). Ids are
+   * de-duplicated per list; an id with no local row still counts (a bible id
+   * from another clone). Touches no entry row: use_count is query/touch
+   * telemetry, and trust fields are never changed. `at` exists for tests
+   * (back-dating an event); the tool never passes it.
+   */
+  recordUsage(input: { pushed?: string[]; cited?: string[] }, at?: string): { returned: number; cited: number } {
+    const db = this.getDb();
+    const when = at ?? new Date().toISOString();
+    const returned = this.insertUsageEvents(db, input.pushed ?? [], 'returned', 'pushed', when);
+    const cited = this.insertUsageEvents(db, input.cited ?? [], 'cited', 'kb_used', when);
+    return { returned, cited };
   }
 
   async query(opts: QueryOptions): Promise<KBResult> {
@@ -1360,12 +1425,7 @@ export class SqliteProvider implements MemoryProvider {
       ).all(...opts.ids) as Record<string, unknown>[];
 
       const results = rows.map(r => this.rowToEntry(r));
-      if (results.length > 0) {
-        db.prepare(`
-          UPDATE entries SET use_count = use_count + 1, last_accessed = ?
-          WHERE id IN (${results.map(() => '?').join(',')})
-        `).run(new Date().toISOString(), ...results.map(r => r.id));
-      }
+      this.bumpReturned(db, results.map(r => r.id));
       return { results, total: results.length, l1_only: false };
     }
 
@@ -1446,12 +1506,7 @@ export class SqliteProvider implements MemoryProvider {
       return entry;
     });
 
-    if (results.length > 0) {
-      db.prepare(`
-        UPDATE entries SET use_count = use_count + 1, last_accessed = ?
-        WHERE id IN (${results.map(() => '?').join(',')})
-      `).run(new Date().toISOString(), ...results.map(r => r.id));
-    }
+    this.bumpReturned(db, results.map(r => r.id));
 
     return { results, total: results.length, l1_only: opts.l1_only ?? false };
   }
@@ -2661,6 +2716,7 @@ export class SqliteProvider implements MemoryProvider {
       superseded: supersededRow.c,
       retrieval: { entries_retrieved: retrievedRow.c, total_uses: totalUsesRow.s, hit_rate },
       promote_ratio,
+      usage: this.usageStats(),
     };
 
     if (opts?.symbols?.length) {
@@ -2684,6 +2740,25 @@ export class SqliteProvider implements MemoryProvider {
     }
 
     return result;
+  }
+
+  /**
+   * kb_stats.usage: returned and cited usage events in the trailing window
+   * (default USAGE_WINDOW_DAYS), and cited / returned (null with no returned
+   * events). Plain SELECTs: bumps nothing. `now` exists for tests.
+   */
+  usageStats(windowDays = USAGE_WINDOW_DAYS, now: Date = new Date()): KbUsageStats {
+    const since = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+    const rows = this.getDb().prepare(
+      'SELECT kind, COUNT(*) as c FROM usage_events WHERE at >= ? GROUP BY kind'
+    ).all(since) as { kind: string; c: number }[];
+    let returned = 0;
+    let cited = 0;
+    for (const row of rows) {
+      if (row.kind === 'returned') returned = row.c;
+      else if (row.kind === 'cited') cited = row.c;
+    }
+    return { window_days: windowDays, returned, cited, cited_rate: returned > 0 ? cited / returned : null };
   }
 
   close(): void {

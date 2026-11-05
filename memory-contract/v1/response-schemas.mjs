@@ -289,12 +289,33 @@ const KB_RESPONSE_BODIES = {
     promote_ratio: z.number(),
     coverage: z.unknown().optional(),
     bible: z.unknown(),
+    // Additive (cited-based hit rate): returned and cited usage events over
+    // the trailing window_days, and cited_rate = cited / returned, null when
+    // nothing was returned. Optional: absent over a provider that cannot
+    // compute it, and in fixtures recorded before it existed.
+    usage: z.object({
+      window_days: z.number(),
+      returned: z.number(),
+      cited: z.number(),
+      cited_rate: z.number().nullable(),
+    }).optional(),
   }),
   kb_feedback: z.object({
     id: z.string(),
     stale: z.boolean(),
     flagged_for_review: z.boolean(),
     confidence: z.string(),
+  }),
+  // kb_usage: how many returned (pushed) and cited events were recorded
+  // (per-list de-duplicated). supported false + reason only over a remote
+  // HTTP provider, which records nothing.
+  kb_usage: z.object({
+    supported: z.boolean().optional(),
+    reason: z.string().optional(),
+    recorded: z.object({
+      returned: z.number(),
+      cited: z.number(),
+    }),
   }),
 };
 

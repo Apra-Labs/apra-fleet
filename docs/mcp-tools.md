@@ -50,7 +50,8 @@ this pair as "member identifier" rather than repeating it.
 **Knowledge bank:** `kb_capture`, `kb_query`, `kb_list`, `kb_context`,
 `kb_session_prime`, `kb_invalidate`, `kb_harvest`, `kb_promote`, `kb_feedback`,
 `kb_freshness_sweep`, `kb_import`, `kb_export`, `kb_setup`, `kb_stats`,
-`kb_reconcile_prefilter`, `kb_resolve_contradiction`.
+`kb_reconcile_prefilter`, `kb_resolve_contradiction`, `kb_usage` (usage
+telemetry the engine reports; `kb_stats.usage` reads it back).
 
 The knowledge-bank family is described in
 [knowledge-layer.md](knowledge-layer.md).
