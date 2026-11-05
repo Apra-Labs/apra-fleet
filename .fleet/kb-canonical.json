@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 132
+    "entry_count": 134
   },
   "entries": [
     {
@@ -321,6 +321,34 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:27.578Z"
+    },
+    {
+      "id": "1c6f3afa-f936-4ca5-a1df-e00dc51f24a4",
+      "type": "knowledge",
+      "title": "KB vectors and the embed queue are driven by SQL triggers on entries, like the keyword index",
+      "summary": "VectorStore.init creates entry_vectors, kb_embed_pending and triggers: insert or update of embeddable columns queues the entry id; retiring (superseded_at set or content_hash 'invalidated') or deleting it removes its vectors. EmbedQueue drains kb_embed_pending off the request path; scoring reads only the active model id+revision+dims.",
+      "symbols": [
+        "VectorStore",
+        "EmbedQueue",
+        "SqliteProvider.capture",
+        "SqliteProvider.scoreVectors",
+        "kbEmbedderSource",
+        "KB_VECTOR_INDEX_VERSION"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/vector-store.ts",
+        "src/services/knowledge/embedding/embed-queue.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/kb-providers.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T13:58:31.768Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/embed-queue.ts": "3980a8aa1c42a34542b94986a0254d62c1bdf55f",
+        "src/services/knowledge/embedding/vector-store.ts": "214d29c806d75c579ff5d170c2b8d5bdabc0a1c2",
+        "src/services/knowledge/kb-providers.ts": "12ae0b8b5bb627dd83235d1aa881b5b838f297ff",
+        "src/services/knowledge/sqlite-provider.ts": "7807802179eb29b818bc240920b423e31989c695"
+      }
     },
     {
       "id": "20a4a71f-bf80-4dab-b90c-d167eb1bd7e2",
@@ -1420,6 +1448,28 @@
         "memory-contract/v1/generate-contract.mjs": "dcd3ef9234288e2558712b6bc0c3f4bb4c42d4b6",
         "src/services/tool-registry.ts": "099aa042a6602d90c9401a8fd399cf1bda1f568f",
         "tests/knowledge/kb-member-read-scope-wording.test.ts": "cbd0387bc3c84e6a808d00b76bc625ceba574bc2"
+      }
+    },
+    {
+      "id": "87f501b6-48cb-462b-b112-1ca0a294dca0",
+      "type": "knowledge",
+      "title": "kb_query caps the merged project+global L1 at the effective limit",
+      "summary": "Since the keyword-index sprint, kbQuery and splitQuery slice the merged L1 (project first, then title-deduped global) to the effective limit through capMerged, so l1_results never exceeds limit even though each provider side is limited separately.",
+      "symbols": [
+        "capMerged",
+        "splitQuery",
+        "kbQuery",
+        "readDefaults"
+      ],
+      "source_files": [
+        "src/tools/kb-query.ts",
+        "tests/knowledge/kb-member-query-defaults.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T13:58:32.687Z",
+      "source_file_hashes": {
+        "src/tools/kb-query.ts": "18fce224bba6e9a4eb46bbee8863e2353d78f5a8",
+        "tests/knowledge/kb-member-query-defaults.test.ts": "2279d4299fe75dd998c843b59f7248066f82d88b"
       }
     },
     {
