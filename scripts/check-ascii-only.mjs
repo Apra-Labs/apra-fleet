@@ -36,7 +36,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, '..');
@@ -118,13 +118,23 @@ export function scanFiles(relFiles, repoRoot = REPO_ROOT) {
 }
 
 /**
+ * The import() specifier for a baseline path: a file:// URL (a raw Windows
+ * drive path makes import() throw ERR_UNSUPPORTED_ESM_URL_SCHEME) with a
+ * cache-busting query appended to the href. `options` is passed through to
+ * pathToFileURL (tests use { windows: true } to exercise drive paths on POSIX).
+ */
+export function baselineImportSpecifier(baselinePath, options, stamp = Date.now()) {
+    return `${pathToFileURL(baselinePath, options).href}?t=${stamp}`;
+}
+
+/**
  * Loads the baseline module (default export: { [relPath]: violationCount }).
  * A missing file behaves like an empty baseline (used by tests that pass
  * their own baseline object directly to evaluate() instead).
  */
 export async function loadBaseline(baselinePath = BASELINE_PATH) {
     if (!fs.existsSync(baselinePath)) return {};
-    const mod = await import(`${baselinePath}?t=${Date.now()}`);
+    const mod = await import(baselineImportSpecifier(baselinePath));
     return mod.default ?? {};
 }
 
