@@ -25,6 +25,7 @@ import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../
 const RUN = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const WORD = 'quorumwidget';
 const BIBLE_COUNT = 24;
+const GLOBAL_COUNT = 10;
 const SLIM_KEYS = ['confidence', 'id', 'source_files', 'summary', 'title'];
 
 let scratch: string;
@@ -63,6 +64,17 @@ beforeAll(async () => {
   const db = requireSqliteProject((await getKbProviders(repo)).project, 'test');
   await importBibleEntries(db, entries, { verbatim: true });
 
+  // CONFIRMED entries in the GLOBAL KB that also match: the default cap must
+  // bound the MERGED project + global result, not each side separately.
+  const globalDb = requireSqliteProject((await getKbProviders(repo)).global, 'test');
+  const globalEntries = Array.from({ length: GLOBAL_COUNT }, (_, i) => ({
+    id: `qd-glob-${i}`, type: 'knowledge', title: `Globalquorum shared lesson number ${i}`,
+    summary: `Lesson ${i}: the ${WORD} stage is shared across repos.`,
+    symbols: [`globSym${i}`], source_files: ['src/q.ts'],
+    confidence: 'CONFIRMED', updated_at: '2026-09-01T00:00:00.000Z',
+  }));
+  await importBibleEntries(globalDb, globalEntries, { verbatim: true });
+
   // The member's own INFERRED captures, for the mixed-tier read.
   for (let i = 0; i < 4; i++) {
     await as(() => kbCapture({
@@ -81,8 +93,14 @@ afterAll(() => {
 });
 
 describe('kb_query defaults by session kind', () => {
+  it('global matches are reachable by a member (precondition for the cap tests)', async () => {
+    const out = JSON.parse(await as(() => kbQuery({ query: WORD, limit: 100 })));
+    expect(out.l1_results.some((r: { id: string }) => r.id.startsWith('qd-glob-'))).toBe(true);
+  });
+
   it('MEMBER, no limit: 6 slim rows and 3 expanded entries', async () => {
     const out = JSON.parse(await as(() => kbQuery({ query: WORD })));
+    // Project (24) and global (10) both match: the cap still bounds the merged list.
     expect(out.l1_results).toHaveLength(6);
     for (const row of out.l1_results) expect(Object.keys(row).sort()).toEqual(SLIM_KEYS);
     expect(out.l2_expanded).toHaveLength(3);
@@ -100,7 +118,7 @@ describe('kb_query defaults by session kind', () => {
 
   it('MEMBER mixed-tier read (CONFIRMED + INFERRED): the defaults apply to the merged result', async () => {
     const out = JSON.parse(await as(() => kbQuery({ query: WORD, confidence: ['CONFIRMED', 'INFERRED'] })));
-    // Per side the limit is 6; the project side merges the bible view and the own half.
+    // Global CONFIRMED matches exist too; the default bounds the merged result.
     expect(out.l1_results.length).toBeLessThanOrEqual(6);
     expect(out.l1_results.length).toBeGreaterThan(0);
     for (const row of out.l1_results) expect(Object.keys(row).sort()).toEqual(SLIM_KEYS);

@@ -23,6 +23,12 @@ function readDefaults(input: KbQueryInput, anchor: unknown): ReadDefaults {
   return isMember && input.limit === undefined ? MEMBER_DEFAULTS : FULL_DEFAULTS;
 }
 
+// `limit` bounds the MERGED L1 result. The per-provider limits are per side, so
+// project + global could otherwise return up to 2x the limit.
+function capMerged(rows: Entry[], limit: number): Entry[] {
+  return rows.slice(0, limit);
+}
+
 // The slim L1 row of a member read: just enough to decide what to open.
 function slimRow(e: Entry): Pick<Entry, 'id' | 'title' | 'summary' | 'confidence' | 'source_files'> {
   return { id: e.id, title: e.title, summary: e.summary, confidence: e.confidence, source_files: e.source_files };
@@ -146,7 +152,7 @@ async function splitQuery(split: MemberSplitRead, raw: KbQueryInput, defaults: R
   const repoIds = new Set(repoL1.map(e => e.id));
 
   const seenTitles = new Set(projectL1.map(e => e.title));
-  const mergedL1 = [...projectL1, ...globalL1.filter(e => !seenTitles.has(e.title))];
+  const mergedL1 = capMerged([...projectL1, ...globalL1.filter(e => !seenTitles.has(e.title))], limit);
 
   const top5Ids = mergedL1.slice(0, 5).map(e => e.id);
   const l2Ids = mergedL1.slice(0, defaults.l2Top).map(e => e.id);
@@ -273,10 +279,10 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
 
   // Merge project first, deduplicate global entries by title
   const seen = new Set(projectL1.map(e => e.title));
-  const mergedL1 = [
+  const mergedL1 = capMerged([
     ...projectL1,
     ...globalL1.filter(e => !seen.has(e.title)),
-  ];
+  ], queryOpts.limit);
 
   const top5Ids = mergedL1.slice(0, 5).map(e => e.id);
   const l2Ids = mergedL1.slice(0, defaults.l2Top).map(e => e.id);
