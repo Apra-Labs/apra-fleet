@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 131
+    "entry_count": 132
   },
   "entries": [
     {
@@ -267,6 +267,35 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:39.994Z"
+    },
+    {
+      "id": "19c7ea84-f508-4259-9c05-d1044b0dac79",
+      "type": "knowledge",
+      "title": "Engine-origin sessions skip use_count bumps and returned usage events in SqliteProvider",
+      "summary": "SqliteProvider.query() and touch() bump use_count and append a 'returned' usage event, but skip both when getSessionEngineOrigin() is true (origin=engine session). The engine reports deliveries through kb_usage, which kb_stats.usage reads back over 30 days.",
+      "symbols": [
+        "getSessionEngineOrigin",
+        "bumpReturned",
+        "recordUsage",
+        "usageStats",
+        "kbUsage"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/tool-scope.ts",
+        "src/services/tool-registry.ts",
+        "src/tools/kb-usage.ts",
+        "tests/knowledge/kb-usage-telemetry.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T10:51:19.602Z",
+      "source_file_hashes": {
+        "src/services/knowledge/sqlite-provider.ts": "0ce34018687689e54b10645cf16361f9c5bcfdb7",
+        "src/services/tool-registry.ts": "e94a8bc3bf44319a29d61cdbfdf14f7bc3fda02a",
+        "src/services/tool-scope.ts": "7952136d28cbb1a94fcdd8587b52fc53417c65b8",
+        "src/tools/kb-usage.ts": "3e26b8a67dd0931cf3e81dc83fba1d54a00720f6",
+        "tests/knowledge/kb-usage-telemetry.test.ts": "6d971a857db19d51effea35b3283f71918341c42"
+      }
     },
     {
       "id": "1b2df6eb-33c9-4deb-8253-2a553183fcfe",
