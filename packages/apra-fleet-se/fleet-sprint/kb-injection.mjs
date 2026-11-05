@@ -1,12 +1,15 @@
 // =============================================================================
-// Engine-side KNOWLEDGE BANK injection (parent bug apra-fleet-b4g.18).
+// Engine-side KNOWLEDGE BANK injection (parent bug apra-fleet-b4g.18; push to
+// every dispatch: apra-fleet-6agk.3.1).
 //
-// The block is injected into a role's dispatch prompt UNLESS that member's own
-// fleet MCP was verified at sprint init (its MEMBER session lists the kb tools;
-// see member-init-probe.mjs): a verified member reads the KB itself. Every
-// other member -- install failed, server down, a provider without per-tool deny
-// (opencode) or per-project MCP (agy), any failed check, or a member with no
-// init record at all -- always gets the block.
+// The block is PUSHED into every role's dispatch prompt, for every member --
+// whether or not that member's own fleet MCP was verified at sprint init (its
+// MEMBER session lists the kb tools; see member-init-probe.mjs). A verified
+// member can still query the KB on top of the pushed block; an unverified one
+// (install failed, server down, a provider without per-tool deny (opencode) or
+// per-project MCP (agy), any failed check, or no init record at all) relies on
+// the block alone. The verified lookup is kept only for logging and never
+// suppresses the block.
 //
 // The block's content is fetched from the repository's kb_maintainer through
 // memberCall (kbWork.knowledgeFor), CONFIRMED and undisputed only, ranked by the
@@ -33,9 +36,16 @@ export function createKbInjection(opts = {}) {
         try { return !!(fn && fn(name)); } catch { return false; }
     };
     return {
-        /** True when the KNOWLEDGE BANK block must be injected for `memberName`. */
-        shouldInject(memberName) {
-            return !verified(memberName);
+        /**
+         * True when the KNOWLEDGE BANK block must be injected for `memberName`:
+         * always -- the block is pushed to every member, verified or not.
+         */
+        shouldInject(_memberName) {
+            return true;
+        },
+        /** Whether `memberName` passed the init probe (logging only; never gates the block). */
+        isVerified(memberName) {
+            return verified(memberName);
         },
         /**
          * The KNOWLEDGE BANK block (a 0/1-element array) for one dispatch.
@@ -43,7 +53,6 @@ export function createKbInjection(opts = {}) {
          */
         async blockFor({ role, member, context = {}, captureChannel = true }) {
             if (!member || !kbWork || typeof kbWork.knowledgeFor !== 'function') return [];
-            if (verified(member)) return [];
             const ctx = { ...context };
             if (!ctx.diffFiles && typeof opts.diffFiles === 'function' && /^(reviewer|harvester)$/.test(role)) {
                 try { ctx.diffFiles = await opts.diffFiles(member); } catch (err) {

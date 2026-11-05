@@ -140,7 +140,7 @@ describe('KNOWLEDGE BANK block shape (b4g.19.2)', () => {
     });
 });
 
-describe('verified-member injection gating (b4g.18.3)', () => {
+describe('push to every member, verified or not (b4g.18.3, 6agk.3.1)', () => {
     const ctx = { beadTitles: [{ title: 'gating topic' }] };
     const records = [
         { member: 'doer-1', verified: true },
@@ -148,11 +148,16 @@ describe('verified-member injection gating (b4g.18.3)', () => {
     ];
     const lookup = createMemberVerifiedLookup(() => records);
 
-    test('a verified member gets no block; an unverified member and one with no init record do', async () => {
+    test('a verified member, an unverified member and one with no init record all get the block', async () => {
         const kb = fakeKb({ query: [entry('c1', 'known thing')] });
         const inj = injection({ kb, verified: lookup });
-        assert.deepEqual(await inj.blockFor({ role: 'doer', member: 'doer-1', context: ctx }), []);
-        assert.equal(kb.calls.length, 0, 'a verified member costs no kb read');
+        assert.equal(inj.shouldInject('doer-1'), true);
+        assert.equal(inj.shouldInject('rev-1'), true);
+        assert.equal(inj.isVerified('doer-1'), true, 'the verified lookup is still readable (logging only)');
+        const verified = await inj.blockFor({ role: 'doer', member: 'doer-1', context: ctx });
+        assert.equal(verified.length, 1);
+        assert.match(verified[0], /KNOWLEDGE BANK/);
+        assert.ok(verified[0].includes('known thing'));
         const unverified = await inj.blockFor({ role: 'reviewer', member: 'rev-1', context: ctx });
         assert.match(unverified[0], /KNOWLEDGE BANK/);
         const noRecord = await inj.blockFor({ role: 'doer', member: 'agy-1', context: ctx });
@@ -161,18 +166,22 @@ describe('verified-member injection gating (b4g.18.3)', () => {
 
     test('block content arrives via memberCall on the repository kb_maintainer, never the dispatched member', async () => {
         const kb = fakeKb({ query: [entry('c1', 'known thing')] });
-        await injection({ kb, verified: lookup }).blockFor({ role: 'reviewer', member: 'rev-1', context: ctx });
+        const inj = injection({ kb, verified: lookup });
+        await inj.blockFor({ role: 'reviewer', member: 'rev-1', context: ctx });
+        await inj.blockFor({ role: 'doer', member: 'doer-1', context: ctx });
         assert.ok(kb.calls.length > 0);
         for (const c of kb.calls) assert.equal(c.member, 'maint', `${c.name} must run on the kb_maintainer`);
     });
 
-    test('a doer prompt carries the gated block: absent when verified, present when not', async () => {
+    test('a doer prompt carries the block exactly once for a verified and an unverified member', async () => {
         const kb = fakeKb({ query: [entry('c1', 'known thing')] });
         const inj = injection({ kb, verified: lookup });
         const verifiedPrompt = buildDoerPrompt({ beadIds: ['x-1'], branch: 'b', feedback: null, kbBlock: await inj.blockFor({ role: 'doer', member: 'doer-1', context: ctx }) });
         const unverifiedPrompt = buildDoerPrompt({ beadIds: ['x-1'], branch: 'b', feedback: null, kbBlock: await inj.blockFor({ role: 'doer', member: 'rev-1', context: ctx }) });
-        assert.ok(!verifiedPrompt.includes('KNOWLEDGE BANK'));
-        assert.ok(unverifiedPrompt.includes('KNOWLEDGE BANK') && unverifiedPrompt.includes('known thing'));
+        for (const p of [verifiedPrompt, unverifiedPrompt]) {
+            assert.equal(p.split('KNOWLEDGE BANK -- what this repo already knows').length - 1, 1, 'block header appears exactly once');
+            assert.ok(p.includes('known thing'));
+        }
     });
 
     // The REAL init probe decides verified-ness: opencode / agy are unverified
@@ -205,21 +214,14 @@ describe('verified-member injection gating (b4g.18.3)', () => {
         });
     }
 
-    test('revert check: an always-inject or never-inject gate fails the gating assertions', async () => {
-        const run = async (verifiedFn) => {
+    test('revert check: the verified lookup never suppresses the block', async () => {
+        // A gate that skips verified members (the pre-push rule) would make
+        // verifiedBlock empty here.
+        for (const verifiedFn of [lookup, () => true, () => false]) {
             const inj = injection({ kb: fakeKb({ query: [entry('c1', 'known thing')] }), verified: verifiedFn });
-            return {
-                verifiedBlock: await inj.blockFor({ role: 'doer', member: 'doer-1', context: ctx }),
-                unverifiedBlock: await inj.blockFor({ role: 'doer', member: 'rev-1', context: ctx }),
-            };
-        };
-        const real = await run(lookup);
-        assert.equal(real.verifiedBlock.length, 0);
-        assert.equal(real.unverifiedBlock.length, 1);
-        const always = await run(() => false);   // gate removed: always inject
-        const never = await run(() => true);     // gate removed: never inject
-        assert.notEqual(always.verifiedBlock.length, 0, 'always-inject injects for a verified member');
-        assert.equal(never.unverifiedBlock.length, 0, 'never-inject skips an unverified member');
+            assert.equal((await inj.blockFor({ role: 'doer', member: 'doer-1', context: ctx })).length, 1);
+            assert.equal((await inj.blockFor({ role: 'doer', member: 'rev-1', context: ctx })).length, 1);
+        }
     });
 });
 

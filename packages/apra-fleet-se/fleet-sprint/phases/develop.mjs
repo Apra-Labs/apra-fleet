@@ -690,11 +690,12 @@ export async function runDevelopPhase({
                     );
                 }
 
-                // KNOWLEDGE BANK: injected unless this doer member's own fleet
-                // MCP was verified at sprint init (it then reads the KB
-                // itself); otherwise fetched from the repository's
-                // kb_maintainer, ranked by the bead titles and the files the
-                // lane touches (kb-injection.mjs).
+                // KNOWLEDGE BANK: always pushed, whether or not this doer
+                // member's own fleet MCP was verified at sprint init (a
+                // verified member may still query on top of it); fetched from
+                // the repository's kb_maintainer, ranked by the bead titles
+                // and the files the lane touches (kb-injection.mjs). The
+                // builder gets exactly one copy: kbBlock, never kbKnowledge too.
                 const laneBeads = Array.isArray(streak) ? streak : [];
                 const doerKbBlock = kbInjection
                     ? await kbInjection.blockFor({

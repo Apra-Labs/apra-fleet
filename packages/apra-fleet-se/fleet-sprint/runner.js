@@ -1013,9 +1013,12 @@ async function runSprintCycle(context) {
             // Only promise the kb_captures channel to a persona whose returned
             // captures the engine actually applies (e.g. harvester); planner,
             // plan-reviewer, deployer and the test runners have none.
-            // A member whose own fleet MCP was verified at sprint init reads
-            // the KB itself and gets no block; every other member gets one,
+            // The block is pushed to EVERY member, verified at sprint init or
+            // not (a verified member may still query the KB on top of it),
             // fetched from the repository's kb_maintainer (kb-injection.mjs).
+            // doer and reviewer (KB_SELF_INJECTING_ROLES) are skipped here
+            // because their prompt builders place the block themselves, so
+            // every role carries it exactly once.
             const captureChannel = agentTypeAppliesKbCaptures(opts.agentType);
             const [block] = kbInjection
                 ? await kbInjection.blockFor({
@@ -1563,9 +1566,9 @@ async function runSprintCycle(context) {
     // handler can seal the bible commit: an aborted sprint commits nothing
     // further to the bible.
     context.kbWork = kbWork;
-    // Engine-side KNOWLEDGE BANK injection: skipped for a member whose own
-    // fleet MCP was verified at sprint init (context.isMemberVerified, set by
-    // the init probe above), applied to every other member.
+    // Engine-side KNOWLEDGE BANK injection: pushed to every member's dispatch.
+    // context.isMemberVerified (set by the init probe above) is passed for
+    // logging only and never suppresses the block.
     if (typeof validated.goal === 'string' && validated.goal.trim() && !isPriorityTierToken(validated.goal.trim())) {
         kbSprintContext.goals = [validated.goal.trim()];
     }
