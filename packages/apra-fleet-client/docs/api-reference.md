@@ -382,15 +382,32 @@ value cannot be decrypted -- the line is still shown, with `lastWritten` kept
 if only the decrypt failed), `lastWritten` (the secret's `created_at`), `tokenExpiry` (the
 `exp` of a JWT value decoded locally, else `null`), and `lastSuccessfulCall` /
 `lastRejectedCall` (this server process; `null`, shown as `never`, until the
-first call). For a credential helper (`kind: "helper"`): `helperName`,
-`program` (absolute path, args not shown), `resolves` (`not run` / `refreshing`
-/ `ok` / `failed` / `expired`, this server process), `lastRefresh`,
-`tokenExpiry` (JWT `exp` decoded locally), `lastFailure` (the runner's reason,
-never the helper's output), `retryAfter` (inside the retry backoff) and the
-call times. A literal-token config (`kind: "literal"`) carries the call times
+first call). For a live secret (`kind: "live"`): `secretName`, `resolves`
+(`not run` / `refreshing` / `ok` / `failed` / `expired`, this server process),
+`lastMinted`, `tokenExpiry` (JWT `exp` decoded locally), `lastFailure` (the
+runner's reason, never the script's output), `retryAfter` (inside the retry
+backoff) and the call times. A literal-token config (`kind: "literal"`) carries the call times
 and a `hint` that the token cannot be refreshed and how to switch to
 `{{secret.NAME}}`. A sqlite config has no `credential`. The token value and
 any JWT claim other than `exp` never appear.
+
+`liveSecrets` in JSON (`FleetStatusLiveSecret[]`; compact: one `live secret NAME`
+line each; absent when there are none) lists every live secret on this host,
+whether or not the KB uses it: `name`, `script` or `path` plus `args`, `bindings`
+(`ENV_VAR={{secret.NAME}}`, placeholders only), `state` (`not run` / `refreshing`
+/ `ok` / `failed` / `expired`, this server process), `lastMinted`, `expiresAt`,
+`lastFailure` and `retryAfter`. No token or bound value ever appears. It is shown
+with no members registered too.
+
+A live secret is registered from the CLI only (`apra-fleet secret --live`).
+`executeCommand` resolves `{{secret.NAME}}` for one, minting if needed; a failed
+mint is a failed call whose text carries `E-LIVE-SECRET`, the name and the reason.
+Other `{{secret.NAME}}` fields refuse a live secret. `credentialStoreSet`,
+`credentialStoreUpdate` and `credentialStoreDelete` refuse its name, and
+`credentialStoreDelete` also refuses a secret bound to one
+(`secret is in use by: <live secrets>`). `credentialStoreList` marks one with
+`kind: "live"`. A persistent secret that has expired now stays listed until the
+next server start, or for as long as a live secret is bound to it.
 
 #### `memberDetail(options)`
 
@@ -593,12 +610,11 @@ retry. The message names the secret and the reason, never the value. A capture
 or invalidate is queued offline first and sent once the secret is accepted; a
 member session's CONFIRMED read comes from its checkout bible and is unaffected.
 Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
-restart. When NAME is a credential helper (`apra-fleet secret --helper NAME --
-<program> [args...]`), the code is also raised (reason `helper-failed`) when the
-helper fails or is inside its retry backoff, and (reason `rejected`) when the
-server still answers 401 after one fresh helper run; fix the helper's
-environment on the server host (e.g. `az login`), or re-register the helper,
-which also clears the backoff.
+restart. When NAME is a live secret (`apra-fleet secret --live NAME ...`), the
+code is also raised (reason `live-secret-failed`) when its script fails or is
+inside its retry backoff, and (reason `rejected`) when the server still answers
+401 after one fresh mint; fix the script's environment on the server host (e.g.
+`az login`), or register it again, which also clears the backoff.
 
 `kb_import` in a member session without the kb_maintainer grant fails with
 `E-KB-MAINTAINER-REQUIRED` and imports nothing when: it names an explicit

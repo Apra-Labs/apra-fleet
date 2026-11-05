@@ -7,7 +7,7 @@ import { KB_CONFIG_PATH, MIN_REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS } from '
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { findSecretTokens, hasSecretToken, formatSecretToken, legacyTokenWarning } from '../services/secret-token.js';
-import { lookupServerSecretMeta, lookupCredentialHelper } from '../services/credential-store.js';
+import { lookupServerSecretMeta, lookupLiveSecret } from '../services/credential-store.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { resolveKbAnchor, KbSelfError, type KbAnchor } from '../services/knowledge/kb-self.js';
 
@@ -17,7 +17,7 @@ export const kbSetupSchema = z.object({
   remote: z.string().optional()
     .describe('Remote KB server URL, http(s) only (required when provider=http). Use https for any non-loopback host: plain http sends the token in cleartext.'),
   token: z.string().optional()
-    .describe('Authentication token for remote KB server. Either a literal token (stored encrypted, never logged) or exactly one named fleet secret placeholder of the form {{secret.NAME}} with nothing around it: then only the placeholder is stored and the server looks the secret up on each request, so rotating the secret needs no kb_setup re-run. For provider http the secret must already exist (apra-fleet secret --set NAME --persist -y), or NAME must be a registered credential helper (apra-fleet secret --helper NAME -- <program> [args...]) that the server runs to mint the token.'),
+    .describe('Authentication token for remote KB server. Either a literal token (stored encrypted, never logged) or exactly one named fleet secret placeholder of the form {{secret.NAME}} with nothing around it: then only the placeholder is stored and the server looks the secret up on each request, so rotating the secret needs no kb_setup re-run. For provider http the secret must already exist (apra-fleet secret --set NAME --persist -y), or NAME must be a registered live secret (apra-fleet secret --live NAME ...) whose script the server runs to mint the token.'),
   request_timeout_ms: z.number().int().min(MIN_REQUEST_TIMEOUT_MS).max(MAX_REQUEST_TIMEOUT_MS).optional()
     .describe('Socket idle timeout in milliseconds for each request to the remote KB server, 1000-120000 (default 5000). Not a per-request deadline: a call can wait up to about twice this while queued offline writes flush first.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
@@ -113,8 +113,8 @@ function checkTokenRef(input: KbSetupInput, provider: 'sqlite' | 'http'): TokenR
   if (provider === 'http') {
     let found: ReturnType<typeof lookupServerSecretMeta>;
     try {
-      // A registered credential helper is a valid token source: it mints the token per audience.
-      if (lookupCredentialHelper(name)) return { name, legacy };
+      // A registered live secret is a valid token source: it mints the token on demand.
+      if (lookupLiveSecret(name)) return { name, legacy };
       found = lookupServerSecretMeta(name);
     } catch {
       // The parser's message can quote part of credentials.json, so it is not repeated.

@@ -2,29 +2,29 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
-  CREDENTIAL_HELPER_FAILED,
-  CredentialHelperError,
-  buildHelperInvocation,
-  runCredentialHelper,
-} from '../../src/services/credential-helper-runner.js';
+  E_LIVE_SECRET,
+  LiveSecretError,
+  buildProgramInvocation,
+} from '../../src/services/live-secret-runner.js';
 import { getActiveLogFile } from '../../src/utils/log-helpers.js';
 import {
   afterStdinJs,
   isPidAlive,
   makeTempDir,
   rejection,
+  runLaunch,
   waitForPidGone,
   writeNodeHelper,
 } from './token-command-helpers.js';
 
 // End to end from the public runner entry point, no mocks. The helper is an
 // az-shaped wrapper script: invoked like `az account get-access-token
-// --resource <url> ...`, it reads the protocol JSON from stdin, records what
-// it saw, and prints {token, expires_at} built from its own arguments. A
+// --resource <url> ...`, it records FLEET_CREDENTIAL and its argv, and prints
+// {token, expires_at} built from its own arguments. A
 // trailing `--simulate <failure>` makes it break the protocol one way at a time.
 
 const CREDENTIAL = 'kb-e2e-az-cred';
-const AUDIENCE = 'https://kb.example.test/api';
+
 const TOKEN_CANARY = 'tok-E2E-CANARY-0c4b7d19';
 const STDERR_CANARY = 'stderr-E2E-CANARY-6e2a90f3';
 const AZ_ARGS = [
@@ -65,7 +65,7 @@ afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-/** The az-shaped wrapper. Records {stdin, argv, ppid, parentExe} to `recordPath`. */
+/** The az-shaped wrapper. Records {stdin, credential, argv, ppid, parentExe} to `recordPath`. */
 function azWrapperJs(recordPath: string, grandchildPidPath: string): string {
   const simulate = `
     const argv = process.argv.slice(2);
@@ -73,7 +73,7 @@ function azWrapperJs(recordPath: string, grandchildPidPath: string): string {
     const mode = at >= 0 ? argv[at + 1] : "none";
     let parentExe = null;
     try { parentExe = fs.readlinkSync("/proc/" + process.ppid + "/exe"); } catch (e) { parentExe = null; }
-    fs.writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ stdin: input, argv: argv, ppid: process.ppid, parentExe: parentExe }));
+    fs.writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ stdin: input, credential: process.env.FLEET_CREDENTIAL, argv: argv, ppid: process.ppid, parentExe: parentExe }));
     process.stderr.write(${JSON.stringify(STDERR_CANARY)} + "\\n");
     const future = new Date(Date.now() + 3600000).toISOString();
     const own = "aztok-" + Buffer.from(JSON.stringify(argv)).toString("base64url");
@@ -95,7 +95,7 @@ function azWrapperJs(recordPath: string, grandchildPidPath: string): string {
   return afterStdinJs(simulate);
 }
 
-interface Recorded { stdin: string; argv: string[]; ppid: number; parentExe: string | null }
+interface Recorded { stdin: string; credential: string; argv: string[]; ppid: number; parentExe: string | null }
 
 function setUpWrapper(extraArgs: string[]) {
   const record = path.join(tmp, 'record.json');
@@ -110,15 +110,16 @@ function fleetLogText(): string {
   return logFile && fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
 }
 
-describe('credential helper runner end to end (az-shaped wrapper)', () => {
-  it('success: returns the token and expires_at, sends exactly {credential, audience}, passes argv untouched', async () => {
+describe('live secret runner end to end (az-shaped wrapper)', () => {
+  it('success: returns the token and expires_at, sets FLEET_CREDENTIAL, closes stdin, passes argv untouched', async () => {
     const { launch, readRecord } = setUpWrapper(AZ_ARGS);
     const before = Date.now();
 
-    const result = await runCredentialHelper({ credential: CREDENTIAL, audience: AUDIENCE, ...launch });
+    const result = await runLaunch(CREDENTIAL, launch);
 
     const seen = readRecord();
-    expect(seen.stdin).toBe(JSON.stringify({ credential: CREDENTIAL, audience: AUDIENCE }));
+    expect(seen.stdin).toBe('');
+    expect(seen.credential).toBe(CREDENTIAL);
     expect(seen.argv).toEqual(AZ_ARGS);
     expect(result.token).toBe(`aztok-${Buffer.from(JSON.stringify(AZ_ARGS)).toString('base64url')}`);
     expect(Date.parse(result.expiresAt)).toBeGreaterThan(before);
@@ -128,12 +129,12 @@ describe('credential helper runner end to end (az-shaped wrapper)', () => {
     'Linux: a POSIX script is spawned directly -- no shell and no cmd.exe between the runner and the helper (Linux only: reads /proc)',
     async () => {
       const { launch, readRecord } = setUpWrapper(AZ_ARGS);
-      const invocation = buildHelperInvocation(launch.program, launch.args, process.platform);
+      const invocation = buildProgramInvocation(launch.program, launch.args, process.platform);
       expect(invocation.file).toBe(launch.program);
       expect(invocation.args).toEqual(launch.args);
       expect(invocation.windowsVerbatimArguments).toBe(false);
 
-      await runCredentialHelper({ credential: CREDENTIAL, audience: AUDIENCE, ...launch });
+      await runLaunch(CREDENTIAL, launch);
 
       const seen = readRecord();
       expect(seen.ppid).toBe(process.pid);
@@ -157,11 +158,11 @@ describe('credential helper runner end to end (az-shaped wrapper)', () => {
       const stderrMark = stderrChunks.length;
       const logBefore = fleetLogText().length;
 
-      const err = await rejection(runCredentialHelper({ credential: CREDENTIAL, audience: AUDIENCE, ...launch, ...extra }));
+      const err = await rejection(runLaunch(CREDENTIAL, launch, extra));
 
       expect(readRecord().argv).toContain(mode); // the wrapper really ran this mode
-      expect(err).toBeInstanceOf(CredentialHelperError);
-      expect(err.code).toBe(CREDENTIAL_HELPER_FAILED);
+      expect(err).toBeInstanceOf(LiveSecretError);
+      expect(err.code).toBe(E_LIVE_SECRET);
       expect(err.message).toContain(`'${CREDENTIAL}'`);
       expect(err.message).toMatch(reason);
       const surfaces = [

@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { buildProgramInvocation, runLiveSecret, type LiveToken } from '../../src/services/live-secret-runner.js';
 
-// Shared by the credential helper runner tests: write real node helper
-// scripts (no mocks), launch them as program + argv, and watch the processes
-// they leave behind. Carried over from the TokenSource tests (commit
-// 0f7e129a) and adapted from shell command lines to program + argv.
+// Shared by the live secret runner tests: write real node scripts (no mocks),
+// launch them as program + argv, and watch the processes they leave behind.
+// Carried over from the TokenSource tests (commit 0f7e129a) and adapted from
+// shell command lines to program + argv.
 
 export function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -14,6 +15,15 @@ export function makeTempDir(prefix: string): string {
 export interface HelperLaunch {
   program: string;
   args: string[];
+}
+
+/** Run a written script through the real runner. */
+export function runLaunch(
+  credential: string,
+  launch: HelperLaunch,
+  extra: { timeoutMs?: number; maxOutputBytes?: number; env?: Record<string, string> } = {},
+): Promise<LiveToken> {
+  return runLiveSecret({ credential, invocation: buildProgramInvocation(launch.program, launch.args, process.platform), ...extra });
 }
 
 /**

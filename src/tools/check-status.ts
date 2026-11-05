@@ -26,10 +26,10 @@ import { listKbScopes, knowledgeRootDir, GLOBAL_KB_SCOPE, type KbScopeLocation }
 import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
 import { readKbConfigFromDisk, type KbConfigResult } from '../services/knowledge/kb-config.js';
 import { getKbHttpAuthState } from '../services/knowledge/kb-http-auth-state.js';
-import { kbHelperAudience } from '../services/knowledge/http-provider.js';
-import { lookupServerSecret, lookupServerSecretMeta, lookupCredentialHelper } from '../services/credential-store.js';
+import { listLiveSecrets, lookupServerSecret, lookupServerSecretMeta, lookupLiveSecret } from '../services/credential-store.js';
 import { jwtExpiry } from '../utils/jwt-expiry.js';
-import { getHelperTokenStatus, type HelperTokenState } from '../services/credential-helper-cache.js';
+import { getLiveTokenStatus, type LiveTokenState } from '../services/live-secret-cache.js';
+import { formatSecretToken } from '../services/secret-token.js';
 import { gitExecutable } from '../os/git-executable.js';
 
 export const fleetStatusSchema = z.object({
@@ -503,21 +503,19 @@ export type KbHttpCredentialHealth =
     lastRejectedCall: string | null;
   }
   | {
-    kind: 'helper';
+    kind: 'live';
     url: string;
-    /** The credential helper's name (the token_ref's NAME). */
-    helperName: string;
-    /** Absolute path of the registered helper program. Its args are not shown. */
-    program: string;
-    /** This process's helper state for this KB URL (credential-helper-cache.ts HelperTokenState). */
-    resolves: HelperTokenState;
-    /** When the helper last returned a token in this process; null when never. */
-    lastRefresh: string | null;
+    /** The live secret's name (the token_ref's NAME). Its script is in the liveSecrets list. */
+    secretName: string;
+    /** This process's state for the live secret (live-secret-cache.ts LiveTokenState). */
+    resolves: LiveTokenState;
+    /** When the script last returned a token in this process; null when never. */
+    lastMinted: string | null;
     /** exp of the cached token when it is a JWT, decoded locally; null otherwise. */
     tokenExpiry: string | null;
     /** resolves failed: the runner's leak-free reason; null otherwise. */
     lastFailure: string | null;
-    /** Inside the retry backoff: when the helper may run again; null otherwise. */
+    /** Inside the retry backoff: when the script may run again; null otherwise. */
     retryAfter: string | null;
     lastSuccessfulCall: string | null;
     lastRejectedCall: string | null;
@@ -588,7 +586,7 @@ function readKbConfigOrSqlite(): KbConfigResult {
   }
 }
 
-// Shared with the credential helper cache, which decodes exp when it stores a token.
+// Shared with the live secret cache, which decodes exp when it stores a token.
 export { jwtExpiry };
 
 /** The credential block for an http KB config; undefined for any other provider. */
@@ -606,12 +604,12 @@ export function kbHttpCredentialHealth(config: KbConfigResult): KbHttpCredential
   // hidden; the error text is dropped because it can quote ciphertext.
   let meta: ReturnType<typeof lookupServerSecretMeta>;
   try {
-    const helper = lookupCredentialHelper(secretName);
-    if (helper) {
-      const status = getHelperTokenStatus(secretName, kbHelperAudience(config.url), helper);
+    const live = lookupLiveSecret(secretName);
+    if (live) {
+      const status = getLiveTokenStatus(secretName, live);
       return {
-        kind: 'helper', url: config.url, helperName: secretName, program: helper.program,
-        resolves: status.state, lastRefresh: status.lastRefreshAt, tokenExpiry: status.tokenExpiry,
+        kind: 'live', url: config.url, secretName,
+        resolves: status.state, lastMinted: status.lastMintedAt, tokenExpiry: status.tokenExpiry,
         lastFailure: status.lastFailureReason, retryAfter: status.retryAfter,
         lastSuccessfulCall, lastRejectedCall,
       };
@@ -734,14 +732,72 @@ export function kbHealthCompactLine(health: KbScopeStats, label?: string): strin
 export function kbCredentialCompactLine(c: KbHttpCredentialHealth): string {
   const calls = `last ok call: ${c.lastSuccessfulCall ?? 'never'} | last rejected call: ${c.lastRejectedCall ?? 'never'}`;
   if (c.kind === 'literal') return `kb credential: ${c.hint} | ${calls}`;
-  if (c.kind === 'helper') {
+  if (c.kind === 'live') {
     const failure = c.lastFailure ? ` | last failure: ${c.lastFailure}` : '';
-    const retry = c.retryAfter ? ` | next helper run after: ${c.retryAfter}` : '';
-    return `kb credential: helper ${c.helperName} | program: ${c.program} | resolves: ${c.resolves} ` +
-      `| last refresh: ${c.lastRefresh ?? 'never'} | token expiry: ${c.tokenExpiry ?? 'none'}${failure}${retry} | ${calls}`;
+    const retry = c.retryAfter ? ` | next run after: ${c.retryAfter}` : '';
+    return `kb credential: live secret ${c.secretName} | resolves: ${c.resolves} ` +
+      `| last minted: ${c.lastMinted ?? 'never'} | token expiry: ${c.tokenExpiry ?? 'none'}${failure}${retry} | ${calls}`;
   }
   return `kb credential: secret ${c.secretName} | resolves: ${c.resolves} | last written: ${c.lastWritten ?? 'never'} ` +
     `| token expiry: ${c.tokenExpiry ?? 'none'} | ${calls}`;
+}
+
+/**
+ * One registered live secret as fleet_status shows it. Never a token or a bound
+ * value: script text keeps its placeholders and bindings name the secrets only.
+ */
+export interface LiveSecretHealth {
+  name: string;
+  /** The inline script, with placeholders; absent for a script file. */
+  script?: string;
+  /** The script file's absolute path; absent for an inline script. */
+  path?: string;
+  args?: string[];
+  /** Each binding as ENV_VAR={{secret.NAME}}. */
+  bindings: string[];
+  state: LiveTokenState;
+  lastMinted: string | null;
+  /** The cached token's expires_at; null when none is cached. */
+  expiresAt: string | null;
+  /** Why the last mint failed (fixed text, never output); null unless state is failed. */
+  lastFailure: string | null;
+  /** Inside the retry backoff: when the script may run again; null otherwise. */
+  retryAfter: string | null;
+}
+
+/** Every live secret on this host. Never throws: an unreadable store gives an empty list. */
+export function liveSecretsHealth(): LiveSecretHealth[] {
+  try {
+    return listLiveSecrets().map((rec) => {
+      const status = getLiveTokenStatus(rec.name, rec);
+      return {
+        name: rec.name,
+        ...(rec.inline !== undefined ? { script: rec.inline } : { path: rec.program, args: rec.args ?? [] }),
+        bindings: rec.bindings.map((b) => `${b.env}=${formatSecretToken(b.secret)}`),
+        state: status.state,
+        lastMinted: status.lastMintedAt,
+        expiresAt: status.expiresAt,
+        lastFailure: status.lastFailureReason,
+        retryAfter: status.retryAfter,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** Render one compact line per live secret; empty when there are none. */
+export function liveSecretsCompactLines(list: LiveSecretHealth[]): string {
+  return list.map((s) => {
+    const source = s.script !== undefined
+      ? `script: ${s.script.replace(/\s*[\r\n]+\s*/g, ' ')}`
+      : `path: ${[s.path, ...(s.args ?? [])].join(' ')}`;
+    const bindings = s.bindings.length > 0 ? ` | bindings: ${s.bindings.join(' ')}` : '';
+    const failure = s.lastFailure ? ` | last failure: ${s.lastFailure}` : '';
+    const retry = s.retryAfter ? ` | next run after: ${s.retryAfter}` : '';
+    return `live secret ${s.name} | ${source}${bindings} | state: ${s.state} ` +
+      `| last minted: ${s.lastMinted ?? 'never'} | expires: ${s.expiresAt ?? 'none'}${failure}${retry}\n`;
+  }).join('');
 }
 
 export function kbHealthCompactLines(health: KbHealth): string {
@@ -782,11 +838,17 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   const format = input?.format ?? 'compact';
   const agents = getAllAgents();
 
+  const liveSecrets = liveSecretsHealth();
+
   if (agents.length === 0) {
     if (format === 'json') {
-      return JSON.stringify({ version: serverVersion, summary: { total: 0, online: 0, offline: 0 }, members: [] });
+      return JSON.stringify({
+        version: serverVersion, summary: { total: 0, online: 0, offline: 0 }, members: [],
+        ...(liveSecrets.length > 0 ? { liveSecrets } : {}),
+      });
     }
-    return 'No members registered. Use register_member to add one.';
+    return 'No members registered. Use register_member to add one.' +
+      (liveSecrets.length > 0 ? `\n${liveSecretsCompactLines(liveSecrets)}` : '');
   }
 
   // Query all members in parallel
@@ -903,6 +965,7 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
       codeIntelligence,
     };
     if (kbHealth) payload.kbHealth = kbHealth;
+    if (liveSecrets.length > 0) payload.liveSecrets = liveSecrets;
     if (versionMismatch) payload.versionMismatch = versionMismatch;
     if (logFile) payload.logFile = logFile;
     if (updateNotice) {
@@ -959,6 +1022,7 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   }
   t += codeIntelligenceCompactLine(codeIntelligence) + '\n';
   if (kbHealth) t += kbHealthCompactLines(kbHealth) + '\n';
+  t += liveSecretsCompactLines(liveSecrets);
   if (versionMismatch) t += versionMismatchCompactLine(versionMismatch) + '\n';
   return t;
 }

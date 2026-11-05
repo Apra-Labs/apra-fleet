@@ -30,14 +30,18 @@
  * providers) run on the member through its own shell and are not spawns by
  * the fleet server's own process.
  */
-import fs from 'node:fs';
-import path from 'node:path';
+import {
+  DEFAULT_PATHEXT,
+  absoluteWindowsPathEntries,
+  defaultIsFile,
+  envValue,
+  findOnAbsoluteWindowsPath,
+} from './windows-executable.js';
 
 export const GIT_NOT_FOUND_CODE = 'E-GIT-NOT-FOUND';
 
 /** Extensions a shell-less CreateProcess spawn can execute directly. */
 const SPAWNABLE_EXTS = new Set(['.EXE', '.COM']);
-const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD';
 
 export class GitNotFoundError extends Error {
   readonly code = GIT_NOT_FOUND_CODE;
@@ -61,22 +65,6 @@ export interface GitResolveDeps {
   isFile: (p: string) => boolean;
 }
 
-/** Look up an env var case-insensitively (Windows env keys are case-insensitive). */
-function envValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
-  if (env[name] !== undefined) return env[name];
-  const upper = name.toUpperCase();
-  const key = Object.keys(env).find((k) => k.toUpperCase() === upper);
-  return key === undefined ? undefined : env[key];
-}
-
-function defaultIsFile(p: string): boolean {
-  try {
-    return fs.statSync(p).isFile();
-  } catch {
-    return false;
-  }
-}
-
 export function defaultGitResolveDeps(): GitResolveDeps {
   return {
     platform: process.platform,
@@ -84,11 +72,6 @@ export function defaultGitResolveDeps(): GitResolveDeps {
     pathext: envValue(process.env, 'PATHEXT'),
     isFile: defaultIsFile,
   };
-}
-
-/** An absolute Windows directory: drive-letter rooted (C:\...) or UNC (\\server\share). */
-function isAbsoluteWindowsDir(dir: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(dir) || /^[\\/]{2}[^\\/]/.test(dir);
 }
 
 /**
@@ -102,17 +85,9 @@ export function resolveGitExecutable(deps: GitResolveDeps): string {
     .map((e) => e.trim().toUpperCase())
     .filter((e) => SPAWNABLE_EXTS.has(e));
   const extOrder = exts.length > 0 ? [...new Set(exts)] : ['.EXE'];
-  const searched: string[] = [];
-  for (const raw of (deps.pathValue ?? '').split(';')) {
-    const dir = raw.trim().replace(/^"(.*)"$/, '$1').trim();
-    if (!dir || !isAbsoluteWindowsDir(dir)) continue;
-    searched.push(dir);
-    for (const ext of extOrder) {
-      const candidate = path.win32.join(dir, 'git' + ext.toLowerCase());
-      if (deps.isFile(candidate)) return candidate;
-    }
-  }
-  throw new GitNotFoundError(searched);
+  const found = findOnAbsoluteWindowsPath('git', extOrder.map((e) => e.toLowerCase()), deps);
+  if (found) return found;
+  throw new GitNotFoundError(absoluteWindowsPathEntries(deps.pathValue));
 }
 
 let cached: string | undefined;

@@ -9,7 +9,7 @@ import { getOsCommands } from '../os/index.js';
 import { shouldProbeShell, probeWindowsShell } from '../services/shell-probe.js';
 import { getProvider } from '../providers/index.js';
 import { addAgent, getAgent, getAllAgents, hasDuplicateFolder, updateAgent } from '../services/registry.js';
-import { credentialResolve, credentialSet, isCredentialHelper } from '../services/credential-store.js';
+import { credentialResolve, credentialSet, isLiveSecret } from '../services/credential-store.js';
 import { getStrategy } from '../services/strategy.js';
 import { assignIcon } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
@@ -196,8 +196,8 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
     const tokenNames = new Set(tokens.map((t) => t.name));
     passwordLegacyNames = tokens.filter((t) => t.legacy).map((t) => t.name);
     for (const name of tokenNames) {
-      if (isCredentialHelper(name)) {
-        return `[x] '${name}' is a credential helper, not a static secret, and cannot be used in the password field. Member was NOT registered.`;
+      if (isLiveSecret(name)) {
+        return `[x] '${name}' is a live secret, not a static secret, and cannot be used in the password field. Member was NOT registered.`;
       }
       const entry = credentialResolve(name, input.friendly_name);
       if (entry && 'denied' in entry) return `❌ ${entry.denied} Member was NOT registered.`;

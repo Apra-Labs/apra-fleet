@@ -80,3 +80,25 @@ export function redactKnownSecrets(
   out = out.replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, MASK);
   return out;
 }
+
+/** Text shapes of well-known token formats; deliberately specific, so ordinary script text does not match. */
+const KNOWN_TOKEN_FORMATS: ReadonlyArray<{ label: string; re: RegExp }> = [
+  { label: 'GitHub token', re: /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/ },
+  { label: 'GitLab token', re: /\bglpat-[A-Za-z0-9_-]{16,}/ },
+  { label: 'API key (sk-)', re: /\bsk-[A-Za-z0-9_-]{20,}/ },
+  { label: 'AWS access key', re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
+  { label: 'Slack token', re: /\bxox[abeoprs]-[A-Za-z0-9-]{10,}/ },
+  { label: 'Atlassian token', re: /\bATATT[A-Za-z0-9_=-]{20,}/ },
+  { label: 'JWT', re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/ },
+  { label: 'private key', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
+  { label: 'bearer token', re: /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/ },
+];
+
+/**
+ * The label of the first known token format found in `text`, or null. Best
+ * effort only: a value of no recognisable shape is not caught. Returns the
+ * label, never the match, so a caller can report it without echoing the value.
+ */
+export function knownTokenFormat(text: string): string | null {
+  return KNOWN_TOKEN_FORMATS.find(({ re }) => re.test(text))?.label ?? null;
+}

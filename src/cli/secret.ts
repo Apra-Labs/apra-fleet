@@ -2,9 +2,26 @@ import net from 'node:net';
 import readline from 'node:readline';
 import { getSocketPath } from '../services/auth-socket.js';
 import { collectSecret } from '../utils/collect-secret.js';
-import { credentialSet, credentialList, credentialDelete, credentialUpdate, credentialHelperSet, type CredentialUpdatePatch } from '../services/credential-store.js';
+import {
+  credentialSet,
+  credentialList,
+  credentialDelete,
+  credentialUpdate,
+  isLiveSecret,
+  LiveRegistrationError,
+  prepareLiveSecret,
+  saveLiveSecret,
+  SecretInUseError,
+  type CredentialUpdatePatch,
+  type LiveSecretSpec,
+} from '../services/credential-store.js';
+import { mintLiveSecret } from '../services/live-secret-cache.js';
+import { LiveSecretError } from '../services/live-secret-runner.js';
 
 const NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
+
+const LIVE_USAGE_INLINE = "  apra-fleet secret --live <name> --inline '<script with {{secret.R}}>'";
+const LIVE_USAGE_FILE = '  apra-fleet secret --live <name> [--env VAR={{secret.R}}]... -- <script file> [args]';
 
 export async function runSecret(args: string[]): Promise<void> {
   // Title the OOB credential-entry console the server opened on Windows
@@ -17,7 +34,8 @@ export async function runSecret(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h') || args.length === 0) {
     console.error('Usage:');
     console.error('  apra-fleet secret --set <name> [--persist] [-y]');
-    console.error('  apra-fleet secret --helper <name> -- <program> [args...]');
+    console.error(LIVE_USAGE_INLINE);
+    console.error(LIVE_USAGE_FILE);
     console.error('  apra-fleet secret --list');
     console.error('  apra-fleet secret --update <name> [--members <list>] [--ttl <seconds>] [--allow|--deny]');
     console.error('  apra-fleet secret --delete <name>');
@@ -28,8 +46,8 @@ export async function runSecret(args: string[]): Promise<void> {
 
   if (args[0] === '--set') {
     await handleSet(args.slice(1));
-  } else if (args[0] === '--helper') {
-    handleHelper(args.slice(1));
+  } else if (args[0] === '--live') {
+    await handleLive(args.slice(1));
   } else if (args[0] === '--list') {
     await handleList();
   } else if (args[0] === '--update') {
@@ -44,10 +62,35 @@ export async function runSecret(args: string[]): Promise<void> {
   }
 }
 
-function handleHelper(args: string[]): void {
+/** The script form of `--live`, or null when the args do not match either form. */
+function parseLiveArgs(args: string[]): LiveSecretSpec | null {
+  if (args[0] === '--inline') {
+    return args.length === 2 && args[1] ? { inline: args[1] } : null;
+  }
+  const env: Array<{ env: string; value: string }> = [];
+  let i = 0;
+  for (; args[i] === '--env'; i += 2) {
+    const pair = args[i + 1];
+    const eq = pair?.indexOf('=') ?? -1;
+    if (eq <= 0) return null;
+    env.push({ env: pair.slice(0, eq), value: pair.slice(eq + 1) });
+  }
+  if (args[i] !== '--' || !args[i + 1]) return null;
+  return { program: args[i + 1], args: args.slice(i + 2), env };
+}
+
+/**
+ * Register a live secret: check the bindings, run the script once in this
+ * process, and save it only if that worked. The token is discarded and the
+ * script's output is never shown. No failure path echoes the script text.
+ */
+async function handleLive(args: string[]): Promise<void> {
   const name = args[0];
-  if (!name || args[1] !== '--' || args.length < 3) {
-    console.error('Usage: apra-fleet secret --helper <name> -- <program> [args...]');
+  const spec = parseLiveArgs(args.slice(1));
+  if (!name || name.startsWith('-') || !spec) {
+    console.error('Usage:');
+    console.error(LIVE_USAGE_INLINE);
+    console.error(LIVE_USAGE_FILE);
     process.exit(1);
   }
   if (!NAME_REGEX.test(name)) {
@@ -55,12 +98,20 @@ function handleHelper(args: string[]): void {
     console.error('  Name must match [a-zA-Z0-9_-]{1,64}');
     process.exit(1);
   }
-  const [program, ...programArgs] = args.slice(2);
   try {
-    const rec = credentialHelperSet(name, program, programArgs);
-    console.error(`[OK] Credential helper registered for ${name}: ${rec.program}`);
-  } catch (err: any) {
-    console.error(`x Failed to register helper: ${err.message}`);
+    const record = prepareLiveSecret(name, spec);
+    const minted = await mintLiveSecret(record);
+    saveLiveSecret(record);
+    console.log(`OK: expires ${minted.expiresAt}`);
+  } catch (err) {
+    if (err instanceof LiveRegistrationError) {
+      console.error(`FAILED: ${err.reasonCode}: ${err.message}`);
+    } else if (err instanceof LiveSecretError) {
+      const exit = err.exitCode === null ? '' : ` exit=${err.exitCode}`;
+      console.error(`FAILED: ${err.reasonCode}${exit}`);
+    } else {
+      console.error('FAILED: unexpected');
+    }
     process.exit(1);
   }
 }
@@ -169,7 +220,7 @@ async function handleList(): Promise<void> {
   for (const cred of credentials) {
     const membersStr = Array.isArray(cred.allowedMembers) ? cred.allowedMembers.join(',') : cred.allowedMembers;
     const expiresStr = cred.expiresAt ? new Date(cred.expiresAt).toLocaleString() : '—';
-    rows.push([cred.name, cred.scope, cred.network_policy, membersStr, expiresStr]);
+    rows.push([cred.name, cred.kind ?? cred.scope, cred.network_policy, membersStr, expiresStr]);
   }
 
   // Calculate column widths
@@ -229,6 +280,11 @@ async function handleUpdate(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  if (patch.expiresAt !== undefined && isLiveSecret(name)) {
+    console.error(`x --ttl does not apply to live secret ${name}: its expiry comes from its token`);
+    process.exit(1);
+  }
+
   const result = credentialUpdate(name, patch);
   if (!result) {
     console.error(`✗ Credential not found: ${name}`);
@@ -261,10 +317,11 @@ async function handleDelete(args: string[]): Promise<void> {
       return;
     }
 
-    // Delete all
+    // Live secrets first: they hold the bindings that keep the other secrets from being deleted.
     const allCreds = credentialList();
+    const liveFirst = [...allCreds.filter((c) => c.kind === 'live'), ...allCreds.filter((c) => c.kind !== 'live')];
     let deletedCount = 0;
-    for (const cred of allCreds) {
+    for (const cred of liveFirst) {
       if (credentialDelete(cred.name)) {
         deletedCount++;
       }
@@ -282,7 +339,17 @@ async function handleDelete(args: string[]): Promise<void> {
       process.exit(1);
     }
 
-    if (!credentialDelete(name)) {
+    let deleted: boolean;
+    try {
+      deleted = credentialDelete(name);
+    } catch (err) {
+      if (!(err instanceof SecretInUseError)) throw err;
+      console.error(`x ${err.message}`);
+      console.error('  Delete the live secret that uses it first: apra-fleet secret --delete <live secret>');
+      process.exit(1);
+      return;
+    }
+    if (!deleted) {
       console.error(`✗ Credential not found: ${name}`);
       process.exit(1);
     }

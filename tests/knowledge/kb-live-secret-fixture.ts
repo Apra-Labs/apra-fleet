@@ -4,7 +4,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterStdinJs, writeNodeHelper, type HelperLaunch } from './token-command-helpers.js';
 
-// Shared by the HTTP KB credential helper suites: a real node helper script
+// Shared by the HTTP KB live secret suites: a real node helper script
 // that counts its runs, and a real local KB HTTP server that records which
 // token each request carried. No mocks.
 //
@@ -24,13 +24,12 @@ export interface HelperControl {
 
 export interface HelperRun {
   credential: string;
-  audience: string;
 }
 
 export interface CountingHelper {
   launch: HelperLaunch;
   setControl(patch: Partial<HelperControl>): void;
-  /** One entry per helper run, in order: what the helper read on stdin. */
+  /** One entry per helper run, in order: the FLEET_CREDENTIAL it saw. */
   runs(): HelperRun[];
   /** expires_at (ms) of the token minted by run n. */
   expiresAtOf(n: number): number;
@@ -55,9 +54,8 @@ export function writeCountingHelper(dir: string, tokenPrefix: string): CountingH
   fs.writeFileSync(controlPath, JSON.stringify(DEFAULT_CONTROL));
   const js = afterStdinJs(`
     const argv = process.argv.slice(2);
-    const req = JSON.parse(input);
     const ctl = JSON.parse(fs.readFileSync(argv[0], "utf8"));
-    fs.appendFileSync(argv[1], JSON.stringify({ credential: req.credential, audience: req.audience }) + "\\n");
+    fs.appendFileSync(argv[1], JSON.stringify({ credential: process.env.FLEET_CREDENTIAL }) + "\\n");
     const n = fs.readFileSync(argv[1], "utf8").split("\\n").filter(Boolean).length;
     process.stderr.write(${JSON.stringify(tokenPrefix)} + "-stderr-" + n + "\\n");
     setTimeout(function () {

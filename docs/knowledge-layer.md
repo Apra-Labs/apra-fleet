@@ -640,166 +640,249 @@ could not be decrypted.
 For a literal token the line says it cannot be refreshed without re-running
 `kb_setup`, and gives the commands to switch to a named secret.
 
-#### Credential helpers
+#### Live secrets
 
 Instead of a static secret kept fresh by a scheduled refresher, the named
-credential can be a **credential helper**: a program the fleet server runs
-itself to mint the token when it needs one. Static secrets (above) keep working
-unchanged; a name is either a static secret or a helper, never both.
+credential can be a **live secret**: a static secret that knows its expiry and
+is generated on demand. A script you register mints the token, and the
+orchestrator's fleet server caches it in memory, never in a file. Static secrets
+(above) keep working unchanged; a name is either a static secret or a live
+secret, never both.
 
-**Register** the helper from the CLI on the host that runs the fleet server.
-The program and its arguments are stored as an argv list, never as a shell
-command line:
+**Register** it from the CLI on the orchestrator, in one of two forms:
 
 ```bash
-apra-fleet secret --helper KB_TOKEN -- <program> [args...]
+apra-fleet secret --live KB_TOKEN --inline '<script with {{secret.R}}>'
+apra-fleet secret --live KB_TOKEN [--env VAR={{secret.R}}]... -- <script file> [args]
 kb_setup with provider=http, remote=https://<host>, token={{secret.KB_TOKEN}}
 ```
 
-- The name must match `[a-zA-Z0-9_-]{1,64}`. A program without a path
-  separator is looked up on PATH; a program with one is resolved as a file.
-  Either way the absolute path is stored. A program that cannot be resolved is
-  refused and nothing is written.
-- Registering again under the same name replaces the helper (and starts a
-  fresh cache entry, see below). `apra-fleet secret --set KB_TOKEN --persist -y`
-  replaces it with a static secret, `apra-fleet secret --delete KB_TOKEN` removes it, and
-  `apra-fleet secret --list` lists it.
-- Helpers are CLI-only and server-only. The MCP tools `credential_store_set`,
-  `credential_store_update` and `credential_store_delete` refuse a helper name,
-  `register_member` refuses one in its password field, and a member command
-  never receives a helper or its token.
-- `kb_setup` accepts `{{secret.NAME}}` for provider http when NAME is a
-  registered helper or an existing static secret.
-- On Windows, a bare program name is resolved by trying each `PATHEXT`
-  extension (so an npm shim resolves to `foo.cmd`, not the extensionless
-  script file that cannot be executed directly). A name that already ends in a
-  `PATHEXT` extension, in any case, is tried as given. An extensionless file
-  alone is not a match. POSIX resolution is unchanged.
-- If a member command uses `{{secret.NAME}}` where NAME is a helper, the error
-  says the name is a server-side credential helper that member commands cannot
-  use. It deliberately does not suggest `credential_store_set` (which refuses
-  helper names) and does not reveal the helper program or its path. An
-  unregistered name still gets the ordinary not-found message.
+- **Inline:** the script runs in the orchestrator's shell: bash, or PowerShell
+  on Windows. A `{{secret.R}}` behaves like text replacement, but it is really
+  rewritten to an env var reference (`"$FLEET_SECRET_R"` in bash,
+  `$env:FLEET_SECRET_R` in PowerShell), so the value is never on a command line
+  and needs no escaping. Use it bare, as in execute_command, never inside your
+  own quotes. A `-` in the name becomes `_` in the env var, and two names that
+  then collide (they also collide when they differ only by case) are refused.
+- **Script file:** a program plus arguments, stored as a list. A name without a
+  path separator is looked up on absolute PATH entries only (on Windows, with
+  each `PATHEXT` extension); a name with one is resolved as a file. Either way
+  the absolute path is stored. Bound secrets arrive as the env vars you name
+  with `--env`, never as arguments, and a placeholder in the arguments is
+  refused. On Windows a `.cmd`/`.bat` starts through `cmd.exe /d /v:off /s /c`
+  with every piece quoted, and a `.ps1` through `powershell.exe -File`; anything
+  else starts directly with no shell. `cmd`, `taskkill` and `powershell` come
+  from `%SystemRoot%\System32` or an absolute PATH entry, never from the current
+  folder or a relative PATH entry.
+- The script's working folder is the fleet data folder, so give any file it
+  needs as an absolute path.
 
-**Where to register it.** On every host whose fleet server talks to the KB
-server. The KB config is per fleet install, and the helper runs inside that
-host's fleet server process, as the OS user the server runs as. Members do not
-need it: their KB calls go through the fleet server.
-
-**Protocol.** The fleet server starts the program with its stored arguments,
-writes one JSON object to its stdin and closes stdin:
-
-```json
-{"credential":"KB_TOKEN","audience":"https://<host>"}
-```
-
-`audience` is the KB server URL from the KB config, without a trailing slash.
-The helper prints one JSON object to stdout and exits 0:
+**Contract.** The script gets `FLEET_CREDENTIAL` (its own name) plus its bound
+secrets in env, and nothing on stdin. It prints one JSON object on stdout and
+exits 0:
 
 ```json
 {"token":"<token>","expires_at":"2026-01-01T12:00:00Z"}
 ```
 
 - `token`: non-empty, no whitespace.
-- `expires_at`: ISO 8601 date-time with an explicit zone (`Z` or `+hh:mm`),
-  in the future.
-- Limits: stdout up to 64 KiB; the run is killed (whole process tree) after
-  30 seconds. A non-zero exit, a timeout, too much output, invalid JSON or a
+- `expires_at`: ISO 8601 date-time with an explicit zone (`Z` or `+hh:mm`), in
+  the future.
+- Limits: stdout up to 64 KiB; the run is killed (whole process tree) after 30
+  seconds. A non-zero exit, a timeout, too much output, invalid JSON or a
   missing/invalid field is a failed run.
-- The helper's stderr is read and discarded. Neither the token, stdout nor
-  stderr ever reaches an error, a log line or `fleet_status`.
-- On Windows a `.cmd`/`.bat` program is started through `cmd.exe /d /v:off /s /c`
-  with every piece quoted; any other program (`.exe`, POSIX programs and
-  scripts with a shebang) is started directly, with no shell.
+- stderr is read and discarded. Neither the token, stdout nor stderr ever
+  reaches an error, a log line or `fleet_status`.
 
-**Caching.** Tokens are cached in the fleet server's memory per
-{credential, audience}. A cached token is reused until its refresh point,
-`expires_at` minus the smaller of 5 minutes and 10% of the token's lifetime;
-the next KB call after that runs the helper before it sends the request. The
-helper is never run per request: concurrent KB calls share one in-flight run.
-A fleet server restart starts with an empty cache, so the first KB call after
-it runs the helper.
+**The test on registration** runs in the CLI process:
+
+1. Every bound secret must exist, be readable, and be persistent and static.
+   Any other is named in the error. Session-tier secrets disappear on restart,
+   so store them with `--persist`. Live secrets cannot be bound.
+2. The script runs once, and the live secret is saved only if that worked.
+   Otherwise nothing is written and any existing record is unchanged.
+3. It prints only `OK: expires <time>`, or `FAILED: <reason code>` with the exit
+   code when there is one. The token is discarded and script output is never
+   shown.
+
+Known limit: the service's PATH or `az login` state can differ from your
+terminal's. `fleet_status` shows `not run` until the first real mint, then the
+real state.
+
+There is no approval step: any process running as the orchestrator's OS user can
+register a live secret, and a badly written script can expose its own secrets,
+as any execute_command can. Secrets enter only by reference. Text that looks like
+a known token format is refused, as a best-effort check: a value typed into a
+script cannot always be caught.
+
+**Using it.** `{{secret.NAME}}` works in execute_command on a remote or local
+member, and as the KB `token_ref`. A live record carries `allowedMembers` and a
+network policy with the defaults of `secret --set --persist` (allow, all members),
+`apra-fleet secret --update` changes them (`--ttl` does not apply: the expiry
+comes from the token), and output redaction applies as for a static secret.
+Every other place that takes `{{secret.NAME}}` refuses a live secret, because it
+would keep the value in a file or use it where a short-lived token cannot work.
+The value of a long-running execute_command is fixed at launch, so it keeps a
+dead token until restarted.
+
+`apra-fleet secret --set NAME --persist -y` replaces a live secret with a static
+one, `--delete` removes it, and `--list` marks it `live`. Registering again under
+the same name replaces the script and starts a fresh cache entry, and keeps the
+policy fields of the record it replaces. The MCP tools `credential_store_set`,
+`credential_store_update` and `credential_store_delete` refuse a live name,
+and `register_member` refuses one in its password field. No command or tool
+returns a value.
+
+**Bindings are permanent.** A secret bound to a live secret cannot be deleted
+while that live secret exists.
+
+- The delete fails with `secret is in use by: <live secrets>`, from
+  `secret --delete` and `credential_store_delete` alike. Delete the consuming
+  live secret first. Registering a live secret over a bound name is refused the
+  same way. `secret --delete --all` removes live secrets first, then secrets.
+- Updating a bound secret's value is allowed, for rotation. It does not re-run
+  the test, and a token minted with the old value stays cached until it is
+  replaced.
+- An expired bound secret is kept: the binding is to the name, not the value.
+  Member commands get `expired` for it, and the startup purge skips it. A run
+  that uses it writes a warning to the fleet log. Update the value with
+  `apra-fleet secret --set R --persist`.
+
+**Refresh.** On access, while the remaining lifetime is at least T the current
+token is handed off; below T, or once expired, a new one is minted first and
+replaces it. T is `min(refreshFraction x lifetime, refreshMaxSeconds)`, from
+`liveSecrets` in the fleet `config.json`:
+
+```json
+{ "liveSecrets": { "refreshFraction": 0.1, "refreshMaxSeconds": 600 } }
+```
+
+Those are the defaults. `refreshFraction` must be between 0 and 1 (both
+exclusive) and `refreshMaxSeconds` above 0; an invalid value is reported on the
+server's stderr and the default is used. Concurrent callers share one mint. A
+restart starts with an empty cache, so the first use after it mints.
 
 **Failure behaviour.**
 
-- A failed run raises `E-KB-HTTP-AUTH` (reason `helper-failed`) naming the
-  credential, the program path and the cause (for example `exit code 1` or
-  `timed out after 30000ms`); no request is sent. Captures and invalidates are
-  queued offline exactly as for a static secret.
-- After a failed run the helper is not run again until a backoff has passed:
-  10 seconds, doubling with each consecutive failure, up to 5 minutes. KB
-  calls inside the window fail with the same code at once and say when the
-  helper will next run. If the failed run was a refresh and the previous token
-  has not yet expired, that token keeps being used meanwhile. Registering the
-  helper again clears the backoff.
-- On HTTP 401 the rejected token is dropped from the cache, the helper runs
-  once more and the request is retried once. A second 401 raises
+- A failed run gives the typed error `E-LIVE-SECRET` naming the secret and the
+  cause (for example `exit code 1` or `timed out after 30000ms`), never a value
+  or stderr. The KB wraps it in `E-KB-HTTP-AUTH` (reason `live-secret-failed`);
+  no request is sent, and captures and invalidates are queued offline exactly as
+  for a static secret.
+- After a failed run the script is not run again until a backoff has passed: 10
+  seconds, doubling with each consecutive failure, up to 5 minutes. Calls inside
+  the window fail at once and say when it will next run. If the failed run was a
+  refresh and the previous token has not yet expired, that token keeps being used
+  meanwhile. Registering again clears the backoff.
+- On HTTP 401 from the KB server the rejected token is dropped from the cache, a
+  new one is minted and the request is retried once. A second 401 raises
   `E-KB-HTTP-AUTH` (reason `rejected`).
 
-**fleet_status.** For a helper the `kb credential:` line reads
-`helper NAME | program: <path> | resolves: not run|refreshing|ok|failed|expired
-| last refresh | token expiry (JWT exp, or none)`, then, after a failure,
-`| last failure: <cause> | next helper run after: <time>`, then the
-`last ok call` / `last rejected call` times. The state is this fleet server
-process's: `not run` until the first KB call after a start or a
-re-registration. The program path is shown in plain text; its arguments and
-the token are not.
+**fleet_status** lists every live secret on one `live secret NAME` line each (the
+`liveSecrets` array in JSON): the script or path, args and bindings with
+placeholders only, state (`not run`, `refreshing`, `ok`, `failed`, `expired`),
+last minted, expiry, and any last failure with the next run time. The state is
+this fleet server process's. When the KB config names it, the `kb credential:`
+line reads `live secret NAME | resolves: <state> | last minted | token expiry`,
+then any failure, then the `last ok call` / `last rejected call` times.
 
-**Entra ID with az: one wrapper per OS.** The wrapper reads fleet's request
-from stdin, asks `az account get-access-token` for a token for the KB
-server's Entra app (`<app-id-uri>`, passed as the wrapper's argument) and
-prints the protocol JSON. az's `expires_on` (Unix seconds) becomes
-`expires_at`. Run each wrapper by hand once, as the fleet server's user, to
-check it before registering it.
+**Sample: Entra ID through az, bash.** az's `expires_on` (Unix seconds) becomes
+`expires_at`. `jq` must be on the service's PATH.
 
-Linux (`/opt/kb/kb-az-token.sh`, `chmod 755`):
+<!-- live-secret-sample:az-bash -->
+```bash
+apra-fleet secret --live KB_TOKEN --inline 'az account get-access-token --resource api://kb-app --query "{t:accessToken,e:expires_on}" -o json | jq -c "{token:.t, expires_at:(.e|todate)}"'
+```
 
-```sh
-#!/bin/sh
-# Usage: kb-az-token.sh <app-id-uri>. Fleet's request on stdin is not needed.
-cat > /dev/null
-out=$(az account get-access-token --resource "$1" --query "[accessToken, expires_on]" -o tsv) || exit 1
-set -- $out
-[ -n "$1" ] && [ -n "$2" ] || exit 1
-printf '{"token":"%s","expires_at":"%s"}\n' "$1" "$(date -u -d "@$2" +%Y-%m-%dT%H:%M:%SZ)"
+**Sample: Entra ID through az, PowerShell.**
+
+<!-- live-secret-sample:az-powershell -->
+```powershell
+apra-fleet secret --live KB_TOKEN --inline '$t = (az account get-access-token --resource api://kb-app --query "{t:accessToken,e:expires_on}" -o json | Out-String) | ConvertFrom-Json; @{ token = $t.t; expires_at = [DateTimeOffset]::FromUnixTimeSeconds([long]$t.e).ToString("o") } | ConvertTo-Json -Compress'
+```
+
+**Sample: Entra ID service principal, bash.** Save it as `/opt/kb/mint-sp.sh` and
+`chmod 755` it. The client secret goes to curl on stdin (`client_secret@-`), so
+it stays off curl's own command line too.
+
+<!-- live-secret-sample:sp-bash -->
+```bash
+#!/usr/bin/env bash
+# Usage: mint-sp.sh <tenant> <client-id> <scope>. The secret arrives in CLIENT_SECRET.
+set -euo pipefail
+printf '%s' "$CLIENT_SECRET" | curl -fsS "https://login.microsoftonline.com/$1/oauth2/v2.0/token" \
+  --data-urlencode 'grant_type=client_credentials' \
+  --data-urlencode "client_id=$2" \
+  --data-urlencode "scope=$3" \
+  --data-urlencode 'client_secret@-' \
+  | jq -c '{token:.access_token, expires_at:((now|floor) + .expires_in | todate)}'
 ```
 
 ```bash
-apra-fleet secret --helper KB_TOKEN -- /opt/kb/kb-az-token.sh <app-id-uri>
+apra-fleet secret --set sp_secret --persist
+apra-fleet secret --live KB_TOKEN --env CLIENT_SECRET={{secret.sp_secret}} -- /opt/kb/mint-sp.sh <tenant> <client-id> <app-id-uri>/.default
 ```
 
-macOS: the same script with the BSD `date` form,
-`date -u -r "$2" +%Y-%m-%dT%H:%M:%SZ`, in place of `date -u -d "@$2" ...`.
+**Sample: generic OAuth client credentials, bash.** The same script for any token
+endpoint, taking its URL as the first argument.
 
-Windows (`C:\kb\kb-az-token.ps1`):
+<!-- live-secret-sample:oauth-bash -->
+```bash
+#!/usr/bin/env bash
+# Usage: mint-oauth.sh <token-url> <client-id> <scope>. The secret arrives in CLIENT_SECRET.
+set -euo pipefail
+printf '%s' "$CLIENT_SECRET" | curl -fsS "$1" \
+  --data-urlencode 'grant_type=client_credentials' \
+  --data-urlencode "client_id=$2" \
+  --data-urlencode "scope=$3" \
+  --data-urlencode 'client_secret@-' \
+  | jq -c '{token:.access_token, expires_at:((now|floor) + .expires_in | todate)}'
+```
+
+**Sample: generic OAuth client credentials, PowerShell** (also the Entra ID
+service principal, with `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token`
+as the URL). The secret goes in the request body, never on a command line. Save
+it as `C:\kb\mint-oauth.ps1`.
+
+<!-- live-secret-sample:oauth-powershell -->
+```powershell
+param([string]$TokenUrl, [string]$ClientId, [string]$Scope)
+$body = @{ grant_type = 'client_credentials'; client_id = $ClientId; scope = $Scope; client_secret = $env:CLIENT_SECRET }
+$r = Invoke-RestMethod -UseBasicParsing -Method Post -Uri $TokenUrl -Body $body
+@{ token = $r.access_token; expires_at = [DateTimeOffset]::UtcNow.AddSeconds([long]$r.expires_in).ToString('o') } | ConvertTo-Json -Compress
+```
 
 ```powershell
-param([Parameter(Mandatory = $true)][string]$Resource)
-$null = [Console]::In.ReadToEnd()   # fleet's request; not needed here
-$json = az account get-access-token --resource $Resource -o json
-if ($LASTEXITCODE -ne 0) { exit 1 }
-$t = ($json -join "`n") | ConvertFrom-Json   # az prints several lines
-$exp = [DateTimeOffset]::FromUnixTimeSeconds([long]$t.expires_on).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
-@{ token = $t.accessToken; expires_at = $exp } | ConvertTo-Json -Compress
+apra-fleet secret --live KB_TOKEN --env CLIENT_SECRET={{secret.sp_secret}} -- C:\kb\mint-oauth.ps1 <token-url> <client-id> <scope>
 ```
 
-```powershell
-apra-fleet secret --helper KB_TOKEN -- powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\kb\kb-az-token.ps1 <app-id-uri>
-```
+**Walkthrough.** On the orchestrator, with az logged in as the fleet server's OS
+user:
 
-**Headless and SSH failure modes.** The helper runs non-interactively, in the
-fleet server's environment. Fleet does not fix that environment; every
-problem below surfaces as `E-KB-HTTP-AUTH` reason `helper-failed` (usually
+1. Register it. The test runs once: `apra-fleet secret --live KB_TOKEN --inline '...'`
+   (the az sample above) prints `OK: expires <time>`.
+2. Point the orchestrator's KB at it: `kb_setup provider=http
+   remote=https://<host> token={{secret.KB_TOKEN}}`.
+3. Check it: `fleet_status` shows `live secret KB_TOKEN | script: ... | state: not run`.
+   After the first KB call it shows `state: ok` with the last minted time and the
+   expiry.
+
+Local members share the orchestrator's fleet server, so their KB calls use this
+live secret with nothing more to do. A remote member runs its own fleet server,
+and needs its KB config and token set up on its own install.
+
+**Headless and SSH failure modes.** The script runs non-interactively, in the
+fleet server's environment. Fleet does not fix that environment; every problem
+below surfaces as `E-KB-HTTP-AUTH` reason `live-secret-failed` (usually
 `exit code 1`, since az's own message goes to the discarded stderr), and as
-`resolves: failed` with the cause on the `fleet_status` line. Run the wrapper
-by hand, as the same user and in the same kind of session, to see az's
-message.
+`state: failed` with the cause in `fleet_status`. Run the script by hand, as the
+same user and in the same kind of session, to see az's message.
 
 - **No az login state.** az keeps its login per OS user. If the user the
   fleet server runs as never ran `az login` (or the refresh token expired or
   was revoked), az fails. Log in as that user, or use a non-interactive login
   such as a service principal or a managed identity (`az login --identity`). A
-  helper that waits for an interactive login is killed after 30 seconds.
+  script that waits for an interactive login is killed after 30 seconds.
 - **Windows: DPAPI "Encryption failed" under key-based SSH logon.** On
   Windows az encrypts its token cache with DPAPI. In a session started by SSH
   public-key authentication the user's DPAPI keys are not available, so az
@@ -1008,7 +1091,7 @@ With a named secret the config holds a reference instead of a ciphertext:
 
 Write it with `kb_setup ... token={{secret.KB_TOKEN}}`; see
 [Named credentials and refreshers](#named-credentials-and-refreshers). The
-same `token_ref` can name a [credential helper](#credential-helpers).
+same `token_ref` can name a [live secret](#live-secrets).
 
 `HttpKbProvider` proxy behavior:
 - **Reads** (query, context, prime): if server unreachable, fall back to local
@@ -1175,12 +1258,11 @@ the secret exists but the server no longer accepts its value, so the refresher
 is stale or the server token was rotated. `resolves: unreadable` means the
 credential store itself could not be read or decrypted. See [Named credentials](#named-credentials-and-refreshers).
 
-**Credential helper** (NAME registered with `apra-fleet secret --helper`): the
-error names the helper and its program. Reason `helper-failed` means the
-helper run failed or is inside its retry backoff; `fleet_status` shows the
-cause and the next run time. Run the helper by hand as the fleet server's
-user, fix what it reports (for az, see
-[Headless and SSH failure modes](#credential-helpers)), then wait for the
-backoff or register the helper again to retry at once. Reason `rejected`
-means a freshly minted token was still refused with 401: the helper is
-minting for the wrong resource or tenant, or the server's expectations changed.
+**Live secret** (NAME registered with `apra-fleet secret --live`): the error
+names it. Reason `live-secret-failed` means the script failed or is inside its
+retry backoff; `fleet_status` shows the cause and the next run time. Run the
+script by hand as the fleet server's user, fix what it reports (for az, see
+[Headless and SSH failure modes](#live-secrets)), then wait for the backoff or
+register it again to retry at once. Reason `rejected` means a freshly minted
+token was still refused with 401: the script is minting for the wrong resource
+or tenant, or the server's expectations changed.

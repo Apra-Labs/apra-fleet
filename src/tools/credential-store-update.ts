@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { credentialResolve, credentialUpdate, isCredentialHelper } from '../services/credential-store.js';
+import { credentialResolve, credentialUpdate, isLiveSecret } from '../services/credential-store.js';
 import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreUpdateSchema = z.object({
@@ -16,8 +16,8 @@ export async function credentialStoreUpdate(input: CredentialStoreUpdateInput): 
     return '❌ No fields to update — specify at least one of: members, ttl_seconds, network_policy.';
   }
 
-  if (isCredentialHelper(input.name)) {
-    return `[x] '${input.name}' is a credential helper and cannot be updated through this tool. Use the CLI: apra-fleet secret --helper / --delete ${input.name}.`;
+  if (isLiveSecret(input.name)) {
+    return `[x] '${input.name}' is a live secret and cannot be updated through this tool. Use the CLI: apra-fleet secret --update ${input.name}.`;
   }
 
   const existing = credentialResolve(input.name);

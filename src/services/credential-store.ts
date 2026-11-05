@@ -5,6 +5,15 @@ import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { enforceOwnerOnly } from '../utils/file-permissions.js';
 import { FLEET_DIR } from '../paths.js';
 import { findExecutableOnPath } from '../utils/find-on-path.js';
+import { knownTokenFormat } from '../utils/redact-known-secrets.js';
+import {
+  DEFAULT_PATHEXT,
+  defaultIsFile,
+  envValue,
+  findOnAbsoluteWindowsPath,
+} from '../os/windows-executable.js';
+import { findSecretTokens, formatSecretToken, hasSecretToken } from './secret-token.js';
+import { envVarForSecret, type LiveSecretBinding } from './live-secret-runner.js';
 
 // ---------------------------------------------------------------------------
 // Session-tier encryption (AES-256-GCM, key lives only in this process)
@@ -43,6 +52,8 @@ export interface CredentialMeta {
   created_at: string;
   allowedMembers: string[] | '*';
   expiresAt?: string;
+  /** Present on a live secret: its value is minted on demand, so scope and expiresAt do not describe a stored value. */
+  kind?: 'live';
 }
 
 interface SessionEntry extends CredentialMeta {
@@ -60,22 +71,29 @@ interface PersistentRecord {
 }
 
 /**
- * A credential helper: a program plus argv (never a shell string) that the
- * server runs to mint a token. Registered from the CLI only; it shares the
- * name space with static secrets (a name is one or the other).
+ * A live secret: a script the orchestrator runs to mint a token on demand.
+ * Registered from the CLI only; it shares the name space with static secrets (a
+ * name is one or the other), and carries the same policy fields. The record
+ * holds no value: inline script text keeps its {{secret.R}} placeholders, and
+ * `bindings` names the bound secrets only.
  */
-export interface HelperRecord {
-  kind: 'helper';
+export interface LiveSecretRecord {
+  kind: 'live';
   name: string;
-  program: string;
-  args: string[];
+  /** An inline script, with {{secret.R}} placeholders. Otherwise program + args. */
+  inline?: string;
+  program?: string;
+  args?: string[];
+  bindings: LiveSecretBinding[];
+  network_policy: 'allow' | 'confirm' | 'deny';
+  allowedMembers: string[] | '*';
   created_at: string;
 }
 
-type StoredRecord = PersistentRecord | HelperRecord;
+type StoredRecord = PersistentRecord | LiveSecretRecord;
 
-function isHelperRecord(rec: StoredRecord | undefined): rec is HelperRecord {
-  return !!rec && (rec as HelperRecord).kind === 'helper';
+function isLiveRecord(rec: StoredRecord | undefined): rec is LiveSecretRecord {
+  return !!rec && (rec as LiveSecretRecord).kind === 'live';
 }
 
 interface CredentialFile {
@@ -91,9 +109,13 @@ const sessionStore = new Map<string, SessionEntry>();
 // ---------------------------------------------------------------------------
 // Persistent store (credentials.json)
 // ---------------------------------------------------------------------------
+/** The folder that holds credentials.json. */
+export function credentialDataDir(): string {
+  return process.env.APRA_FLEET_DATA_DIR ?? FLEET_DIR;
+}
+
 function getCredentialsPath(): string {
-  const dataDir = process.env.APRA_FLEET_DATA_DIR ?? FLEET_DIR;
-  return path.join(dataDir, 'credentials.json');
+  return path.join(credentialDataDir(), 'credentials.json');
 }
 
 function loadCredentialFile(): CredentialFile {
@@ -185,43 +207,233 @@ export function credentialSet(
   return { name, scope: 'session', network_policy, created_at, allowedMembers, expiresAt };
 }
 
-/** True when `name` is a registered credential helper (not a static secret). */
-export function isCredentialHelper(name: string): boolean {
-  return isHelperRecord(loadCredentialFile().credentials[name]);
+/** True when `name` is a registered live secret (not a static secret). */
+export function isLiveSecret(name: string): boolean {
+  return isLiveRecord(loadCredentialFile().credentials[name]);
 }
 
-/** The helper registered under `name`, or null (static secrets and unknown names give null). */
-export function lookupCredentialHelper(name: string): HelperRecord | null {
+/** The live secret registered under `name`, or null (static secrets and unknown names give null). */
+export function lookupLiveSecret(name: string): LiveSecretRecord | null {
   const rec = loadCredentialFile().credentials[name];
-  return isHelperRecord(rec) ? rec : null;
+  return isLiveRecord(rec) ? rec : null;
+}
+
+/** Every registered live secret, sorted by name. */
+export function listLiveSecrets(): LiveSecretRecord[] {
+  return Object.values(loadCredentialFile().credentials)
+    .filter(isLiveRecord)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** The live secrets bound to `name`, from an already loaded file. */
+function consumersOf(file: CredentialFile, name: string): string[] {
+  return Object.values(file.credentials)
+    .filter(isLiveRecord)
+    .filter((rec) => rec.bindings.some((b) => b.secret === name))
+    .map((rec) => rec.name)
+    .sort();
+}
+
+/** The named secret is bound to a live secret: it stays until the consuming live secret is deleted. */
+export class SecretInUseError extends Error {
+  readonly code = 'E-SECRET-IN-USE';
+  constructor(readonly secret: string, readonly consumers: string[]) {
+    super(`secret is in use by: ${consumers.join(', ')}`);
+    this.name = 'SecretInUseError';
+  }
+}
+
+export type LiveRegistrationReason =
+  | 'name-in-use'
+  | 'program-not-found'
+  | 'placeholder-in-args'
+  | 'cleartext-token'
+  | 'bad-env'
+  | 'binding-collision'
+  | 'binding-self'
+  | 'binding-missing'
+  | 'binding-unreadable'
+  | 'binding-session'
+  | 'binding-live';
+
+/** A live secret cannot be registered as given. The message carries names only, never script text or a value. */
+export class LiveRegistrationError extends Error {
+  constructor(readonly reasonCode: LiveRegistrationReason, message: string) {
+    super(message);
+    this.name = 'LiveRegistrationError';
+  }
+}
+
+export type LiveSecretSpec =
+  | { inline: string }
+  | { program: string; args: string[]; env: Array<{ env: string; value: string }> };
+
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const RESERVED_ENV = 'FLEET_CREDENTIAL';
+
+function rejectCleartext(text: string): void {
+  const format = knownTokenFormat(text);
+  if (format) {
+    throw new LiveRegistrationError(
+      'cleartext-token',
+      `the script looks like it holds a ${format} in cleartext. Store it (apra-fleet secret --set NAME --persist) and reference it as a secret placeholder.`,
+    );
+  }
+}
+
+/** Bound env var names, refused when two differ only by case or by the - to _ mapping. */
+function checkBindings(name: string, bindings: LiveSecretBinding[], file: CredentialFile): void {
+  const seen = new Map<string, string>();
+  for (const { env, secret } of bindings) {
+    const folded = env.toUpperCase();
+    const other = seen.get(folded);
+    if (other !== undefined) {
+      throw new LiveRegistrationError('binding-collision', `bound secrets "${other}" and "${secret}" map to the same env var ${env}: rename one`);
+    }
+    seen.set(folded, secret);
+  }
+  const persist = `store it with: apra-fleet secret --set`;
+  for (const { secret } of bindings) {
+    if (secret === name) {
+      throw new LiveRegistrationError('binding-self', `live secret "${name}" cannot be bound to itself`);
+    }
+    const rec = file.credentials[secret];
+    if (isLiveRecord(rec)) {
+      throw new LiveRegistrationError('binding-live', `bound secret "${secret}" is a live secret: live secrets cannot be bound to another live secret`);
+    }
+    if (!rec) {
+      if (sessionStore.has(secret)) {
+        throw new LiveRegistrationError('binding-session', `bound secret "${secret}" is session-tier and disappears on restart: ${persist} ${secret} --persist`);
+      }
+      throw new LiveRegistrationError('binding-missing', `bound secret "${secret}" does not exist as a persistent secret: ${persist} ${secret} --persist`);
+    }
+    try {
+      decryptPassword(rec.encryptedValue);
+    } catch {
+      throw new LiveRegistrationError('binding-unreadable', `bound secret "${secret}" could not be read: ${persist} ${secret} --persist`);
+    }
+  }
+}
+
+function checkNameFree(name: string, file: CredentialFile): void {
+  const consumers = consumersOf(file, name);
+  if (consumers.length > 0) throw new LiveRegistrationError('name-in-use', new SecretInUseError(name, consumers).message);
 }
 
 /**
- * Register a credential helper under `name`, replacing any static secret or
- * helper of that name. The program is resolved on PATH (or, when it carries a
- * path separator, as a file) and stored as an absolute path; an unresolvable
- * program throws and nothing is written.
+ * Validate a live secret and build its record, without writing anything. Secrets
+ * enter only by reference, and every bound secret must be persistent and static.
+ * A name already in use keeps its policy fields; a new one gets the defaults of
+ * `secret --set --persist`.
  */
-export function credentialHelperSet(name: string, program: string, args: string[]): HelperRecord {
-  const resolved = resolveHelperProgram(program);
-  if (!resolved) {
-    throw new Error(`credential helper program '${program}' could not be resolved on PATH`);
-  }
-  const record: HelperRecord = { kind: 'helper', name, program: resolved, args: [...args], created_at: new Date().toISOString() };
+export function prepareLiveSecret(name: string, spec: LiveSecretSpec): LiveSecretRecord {
   const file = loadCredentialFile();
-  file.credentials[name] = record;
-  saveCredentialFile(file);
-  sessionStore.delete(name);
-  return record;
+  checkNameFree(name, file);
+  const fields: Pick<LiveSecretRecord, 'inline' | 'program' | 'args' | 'bindings'> = 'inline' in spec
+    ? inlineFields(spec.inline)
+    : programFields(spec);
+  checkBindings(name, fields.bindings, file);
+  const previous = file.credentials[name];
+  return {
+    kind: 'live',
+    name,
+    ...fields,
+    network_policy: previous?.network_policy ?? 'allow',
+    allowedMembers: previous?.allowedMembers ?? '*',
+    created_at: new Date().toISOString(),
+  };
 }
 
-function resolveHelperProgram(program: string): string | null {
+function inlineFields(script: string): Pick<LiveSecretRecord, 'inline' | 'bindings'> {
+  rejectCleartext(script);
+  // The legacy spelling is stored canonically, so a later rewrite has one form to match.
+  let inline = script;
+  const names = new Set<string>();
+  for (const token of findSecretTokens(script)) {
+    inline = inline.replaceAll(token.raw, formatSecretToken(token.name));
+    names.add(token.name);
+  }
+  return { inline, bindings: [...names].map((secret) => ({ env: envVarForSecret(secret), secret })) };
+}
+
+function programFields(spec: Extract<LiveSecretSpec, { program: string }>): Pick<LiveSecretRecord, 'program' | 'args' | 'bindings'> {
+  for (const text of [spec.program, ...spec.args]) {
+    if (hasSecretToken(text)) {
+      throw new LiveRegistrationError('placeholder-in-args', 'a secret placeholder is not allowed in the script path or its args: pass it with --env VAR={{secret.NAME}}');
+    }
+    rejectCleartext(text);
+  }
+  const bindings = spec.env.map(({ env, value }): LiveSecretBinding => {
+    if (!ENV_NAME_RE.test(env)) {
+      throw new LiveRegistrationError('bad-env', 'an --env name must match [A-Za-z_][A-Za-z0-9_]*');
+    }
+    if (env.toUpperCase() === RESERVED_ENV) {
+      throw new LiveRegistrationError('bad-env', `--env ${env} is reserved: fleet sets it to the live secret's name`);
+    }
+    const tokens = findSecretTokens(value);
+    if (tokens.length !== 1 || tokens[0].raw !== value) {
+      throw new LiveRegistrationError('bad-env', `--env ${env} must be exactly one secret placeholder: secrets enter only by reference`);
+    }
+    return { env, secret: tokens[0].name };
+  });
+  const program = resolveLiveProgram(spec.program);
+  if (!program) {
+    throw new LiveRegistrationError('program-not-found', `script '${spec.program}' could not be resolved as a file or on an absolute PATH entry`);
+  }
+  return { program, args: [...spec.args], bindings };
+}
+
+/**
+ * Store a prepared live secret, replacing any unbound record of that name. The
+ * checks run again on the current file, because the registration test ran in
+ * between.
+ */
+export function saveLiveSecret(record: LiveSecretRecord): void {
+  // A live secret holds no ciphertext, so the store may have no key yet. Create
+  // it now: the first key creation renames an existing credentials.json aside
+  // (crypto.ts), which later on would take this record with it.
+  encryptPassword('');
+  const file = loadCredentialFile();
+  checkNameFree(record.name, file);
+  checkBindings(record.name, record.bindings, file);
+  file.credentials[record.name] = record;
+  saveCredentialFile(file);
+  sessionStore.delete(record.name);
+}
+
+/**
+ * The absolute path of a script file. A name with a path separator is taken as
+ * a file; a bare name is looked up on absolute PATH entries only, so neither the
+ * cwd nor a relative PATH entry can supply it.
+ */
+function resolveLiveProgram(program: string): string | null {
   if (program.includes('/') || program.includes('\\')) {
     const abs = path.resolve(program);
     try { return fs.statSync(abs).isFile() ? abs : null; } catch { return null; }
   }
-  const found = findExecutableOnPath(program);
-  return found ? path.resolve(found) : null;
+  if (process.platform === 'win32') {
+    const pathExts = (envValue(process.env, 'PATHEXT') || DEFAULT_PATHEXT).split(';').map((e) => e.trim().toLowerCase()).filter(Boolean);
+    const lower = program.toLowerCase();
+    const exts = lower.endsWith('.ps1') || pathExts.some((ext) => lower.endsWith(ext)) ? [''] : pathExts;
+    return findOnAbsoluteWindowsPath(program, exts, { pathValue: envValue(process.env, 'PATH'), isFile: defaultIsFile });
+  }
+  const absoluteEntries = (process.env.PATH ?? '').split(':').filter((d) => path.isAbsolute(d)).join(':');
+  return findExecutableOnPath(program, { envPath: absoluteEntries });
+}
+
+export type BoundSecretRead =
+  | { status: 'ok'; value: string; expiresAt?: string }
+  | { status: 'missing' };
+
+/**
+ * A bound secret's value for a live secret run. Ignores allowedMembers, never
+ * deletes, and still returns the value of an expired record: the binding is to
+ * the name, and the caller warns. Only a persistent static record qualifies.
+ */
+export function readBoundSecret(name: string): BoundSecretRead {
+  const rec = loadCredentialFile().credentials[name];
+  if (!rec || isLiveRecord(rec)) return { status: 'missing' };
+  return { status: 'ok', value: decryptPassword(rec.encryptedValue), expiresAt: rec.expiresAt };
 }
 
 export function credentialList(): CredentialMeta[] {
@@ -234,12 +446,13 @@ export function credentialList(): CredentialMeta[] {
   const file = loadCredentialFile();
   for (const record of Object.values(file.credentials)) {
     const existing = results.findIndex(r => r.name === record.name);
-    const meta: CredentialMeta = isHelperRecord(record) ? {
+    const meta: CredentialMeta = isLiveRecord(record) ? {
       name: record.name,
       scope: 'persistent',
-      network_policy: 'deny',
+      kind: 'live',
+      network_policy: record.network_policy,
       created_at: record.created_at,
-      allowedMembers: [],
+      allowedMembers: record.allowedMembers,
     } : {
       name: record.name,
       scope: 'persistent',
@@ -258,14 +471,19 @@ export function credentialList(): CredentialMeta[] {
   return results;
 }
 
+/**
+ * Delete a credential from both tiers. Throws SecretInUseError, deleting
+ * nothing, while a live secret is bound to it.
+ */
 export function credentialDelete(name: string): boolean {
-  // Remove from both tiers unconditionally (M1)
+  const file = loadCredentialFile();
+  const consumers = consumersOf(file, name);
+  if (consumers.length > 0) throw new SecretInUseError(name, consumers);
   let found = false;
   if (sessionStore.has(name)) {
     sessionStore.delete(name);
     found = true;
   }
-  const file = loadCredentialFile();
   if (name in file.credentials) {
     delete file.credentials[name];
     saveCredentialFile(file);
@@ -296,8 +514,13 @@ export function getTaskCredentials(taskId: string): TaskCredential[] {
  *
  * Returns:
  *   - { plaintext, meta } on success
- *   - { denied } if callingMember is not in allowedMembers
- *   - { expired } if the credential has passed its TTL (entry is also deleted)
+ *   - { denied } if callingMember is not in allowedMembers, or the name is a
+ *     live secret (only execute_command and the KB provider consume those:
+ *     every other caller would keep the value in a file or use it where a
+ *     short-lived token cannot work)
+ *   - { expired } if the credential has passed its TTL. A persistent record is
+ *     kept: a live secret may be bound to it by name, and the startup purge
+ *     removes the unbound ones. A session entry is deleted.
  *   - null if the credential does not exist
  */
 export function credentialResolve(
@@ -307,17 +530,15 @@ export function credentialResolve(
   // Persistent wins
   const file = loadCredentialFile();
   const stored = file.credentials[name];
-  // A helper is never handed to a member: treat it as not found.
-  if (isHelperRecord(stored)) return null;
+  if (isLiveRecord(stored)) {
+    return { denied: `Credential '${name}' is a live secret: only execute_command and the KB provider can use it, because its value must never be kept in a file.` };
+  }
   const persistent = stored;
   if (persistent) {
     const allowedMembers = persistent.allowedMembers ?? '*';
 
     // TTL check
     if (persistent.expiresAt && Date.now() > new Date(persistent.expiresAt).getTime()) {
-      delete file.credentials[name];
-      saveCredentialFile(file);
-      sessionStore.delete(name);
       return { expired: `Credential '${name}' has expired. Re-set with credential_store_set.` };
     }
 
@@ -393,8 +614,8 @@ function isExpired(expiresAt: string | undefined): expiresAt is string {
  */
 export function lookupServerSecretMeta(name: string): ServerSecretStatus {
   const stored = loadCredentialFile().credentials[name];
-  // Helpers are not static secrets; lookupCredentialHelper reads them.
-  if (isHelperRecord(stored)) return { status: 'missing' };
+  // Live secrets are not static secrets; lookupLiveSecret reads them.
+  if (isLiveRecord(stored)) return { status: 'missing' };
   const persistent = stored;
   const rec = persistent ?? sessionStore.get(name);
   if (!rec) return { status: 'missing' };
@@ -416,7 +637,7 @@ export function lookupServerSecret(name: string): ServerSecretLookup {
   const found = lookupServerSecretMeta(name);
   if (found.status !== 'ok') return found;
   const stored = loadCredentialFile().credentials[name];
-  const persistent = isHelperRecord(stored) ? undefined : stored;
+  const persistent = isLiveRecord(stored) ? undefined : stored;
   let value: string;
   if (persistent) {
     value = decryptPassword(persistent.encryptedValue);
@@ -451,7 +672,13 @@ function allowedToMembers(allowed: string[] | '*'): string {
 export function credentialUpdate(name: string, patch: CredentialUpdatePatch): CredentialUpdateResult | null {
   const file = loadCredentialFile();
   const stored = file.credentials[name];
-  if (isHelperRecord(stored)) return null;
+  if (isLiveRecord(stored)) {
+    // A live secret's expiry comes from its token, so patch.expiresAt does not apply.
+    if (patch.members !== undefined) stored.allowedMembers = membersToAllowed(patch.members);
+    if (patch.network_policy !== undefined) stored.network_policy = patch.network_policy;
+    saveCredentialFile(file);
+    return { members: allowedToMembers(stored.allowedMembers), network_policy: stored.network_policy };
+  }
   const persistent = stored;
   if (persistent) {
     if (patch.members !== undefined) {
@@ -495,8 +722,8 @@ export function credentialUpdate(name: string, patch: CredentialUpdatePatch): Cr
 }
 
 /**
- * Purge expired credentials from the persistent store.
- * Called at server startup to clean up stale entries.
+ * Purge expired credentials from the persistent store, except those bound to a
+ * live secret. Called at server startup to clean up stale entries.
  */
 export function purgeExpiredCredentials(): void {
   let file: CredentialFile;
@@ -509,7 +736,8 @@ export function purgeExpiredCredentials(): void {
   const now = Date.now();
   let changed = false;
   for (const [name, record] of Object.entries(file.credentials)) {
-    if (!isHelperRecord(record) && record.expiresAt && now > new Date(record.expiresAt).getTime()) {
+    if (isLiveRecord(record) || consumersOf(file, name).length > 0) continue;
+    if (record.expiresAt && now > new Date(record.expiresAt).getTime()) {
       delete file.credentials[name];
       sessionStore.delete(name);
       changed = true;

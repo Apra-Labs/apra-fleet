@@ -292,20 +292,36 @@
  * when the KB config selects the http provider; this host only. Never carries
  * the token value, nor any JWT claim other than exp.
  * @typedef {Object} FleetStatusKbCredential
- * @property {"secret" | "helper" | "literal"} kind - "secret": token_ref names a fleet secret looked up per request; "helper": token_ref names a credential helper the server runs to mint the token (cached); "literal": a stored literal token
+ * @property {"secret" | "live" | "literal"} kind - "secret": token_ref names a fleet secret looked up per request; "live": token_ref names a live secret whose script the server runs to mint the token (cached); "literal": a stored literal token
  * @property {string} url - Remote KB URL
- * @property {string} [secretName] - kind "secret": the fleet secret's name
- * @property {"ok" | "missing" | "expired" | "unreadable" | "not run" | "refreshing" | "failed"} [resolves] - kind "secret": metadata lookup result (an expired record is kept); "unreadable" when the credential store cannot be read or the value cannot be decrypted. kind "helper": "not run" (no run yet in this server process), "refreshing", "ok", "failed" (the last run failed), "expired" (the cached token has expired)
+ * @property {string} [secretName] - kind "secret" / "live": the secret's name
+ * @property {"ok" | "missing" | "expired" | "unreadable" | "not run" | "refreshing" | "failed"} [resolves] - kind "secret": metadata lookup result (an expired record is kept); "unreadable" when the credential store cannot be read or the value cannot be decrypted. kind "live": "not run" (no mint yet in this server process), "refreshing", "ok", "failed" (the last mint failed), "expired" (the cached token has expired)
  * @property {string | null} [lastWritten] - kind "secret": the secret record's created_at; null when missing or the store is unreadable
- * @property {string | null} [tokenExpiry] - kind "secret" / "helper": JWT exp decoded locally (ISO time); null for a non-JWT or unresolved value
- * @property {string} [helperName] - kind "helper": the credential helper's name
- * @property {string} [program] - kind "helper": absolute path of the helper program (its args are not shown)
- * @property {string | null} [lastRefresh] - kind "helper": when the helper last returned a token in this server process; null when never
- * @property {string | null} [lastFailure] - kind "helper": why the last helper run failed (never the token or the helper's output); null unless resolves is "failed"
- * @property {string | null} [retryAfter] - kind "helper": inside the retry backoff, when the helper may run again; null otherwise
+ * @property {string | null} [tokenExpiry] - kind "secret" / "live": JWT exp decoded locally (ISO time); null for a non-JWT or unresolved value
+ * @property {string | null} [lastMinted] - kind "live": when the script last returned a token in this server process; null when never
+ * @property {string | null} [lastFailure] - kind "live": why the last mint failed (never the token or the script's output); null unless resolves is "failed"
+ * @property {string | null} [retryAfter] - kind "live": inside the retry backoff, when the script may run again; null otherwise
  * @property {string | null} lastSuccessfulCall - Last KB call accepted by the remote server in this server process; null when none yet
  * @property {string | null} lastRejectedCall - Last KB call rejected with HTTP 401 in this server process; null when none yet
  * @property {string} [hint] - kind "literal": the token cannot be refreshed; how to switch to {{secret.NAME}}
+ */
+
+/**
+ * One live secret, an entry of `liveSecrets` in fleet_status json output (one
+ * compact `live secret NAME` line in compact output; the key is absent when
+ * there are none). This host only. Never carries a token or a bound value:
+ * script text keeps its placeholders.
+ * @typedef {Object} FleetStatusLiveSecret
+ * @property {string} name - The live secret's name
+ * @property {string} [script] - An inline script, with {{secret.NAME}} placeholders
+ * @property {string} [path] - A script file's absolute path
+ * @property {string[]} [args] - A script file's arguments
+ * @property {string[]} bindings - Each binding as ENV_VAR={{secret.NAME}}
+ * @property {"not run" | "refreshing" | "ok" | "failed" | "expired"} state - This server process's state: "not run" until the first mint
+ * @property {string | null} lastMinted - When the script last returned a token in this server process; null when never
+ * @property {string | null} expiresAt - The cached token's expires_at; null when none is cached
+ * @property {string | null} lastFailure - Why the last mint failed (never the token or the script's output); null unless state is "failed"
+ * @property {string | null} retryAfter - Inside the retry backoff, when the script may run again; null otherwise
  */
 
 /**

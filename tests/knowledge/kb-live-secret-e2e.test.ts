@@ -4,9 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-// End to end through the real KB tool path with a credential-helper-backed
+// End to end through the real KB tool path with a live-secret-backed
 // named credential: the helper is registered through the registration API
-// (credentialHelperSet, what `apra-fleet secret --helper` calls), kb_setup
+// (prepareLiveSecret + saveLiveSecret, what `apra-fleet secret --live` calls), kb_setup
 // stores token_ref {{secret.NAME}}, and kb_query / kb_capture / fleet_status
 // run as the tool handlers. The KB server is a real local HTTP server that
 // accepts only the tokens a test allows and answers 401 otherwise; the helper
@@ -21,8 +21,8 @@ import { KbHttpAuthError } from '../../src/services/knowledge/http-provider.js';
 import { resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { KB_CONFIG_PATH } from '../../src/services/knowledge/kb-config.js';
 import { resetKbHttpAuthState } from '../../src/services/knowledge/kb-http-auth-state.js';
-import { resetHelperTokenCache } from '../../src/services/credential-helper-cache.js';
-import { credentialHelperSet, credentialSet, credentialDelete } from '../../src/services/credential-store.js';
+import { resetLiveTokenCache } from '../../src/services/live-secret-cache.js';
+import { prepareLiveSecret, saveLiveSecret, credentialSet, credentialDelete } from '../../src/services/credential-store.js';
 import { addAgent } from '../../src/services/registry.js';
 import { getActiveLogFile } from '../../src/utils/log-helpers.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
@@ -34,12 +34,12 @@ import {
   helperRunOf,
   type CountingHelper,
   type StubKbServer,
-} from './kb-credential-helper-fixture.js';
+} from './kb-live-secret-fixture.js';
 
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-const NAME = `KB_HELPER_E2E_${RUN}`;
+const NAME = `KB_LIVE_E2E_${RUN}`;
 const STATIC_NAME = `KB_STATIC_E2E_${RUN}`;
-const PREFIX = `zqcanary-kbhelper-e2e-${RUN}`;
+const PREFIX = `zqcanary-kblive-e2e-${RUN}`;
 const STATIC_TOKEN = `${PREFIX}-static`;
 const ORIGIN = `https://example.test/kb-helper-e2e-${RUN}.git`;
 
@@ -82,7 +82,7 @@ async function expectAuthError(p: Promise<unknown>, reason: string): Promise<KbH
   errorTexts.push(err.message, err.stack ?? '');
   expect(err.code).toBe('E-KB-HTTP-AUTH');
   expect(err.reason).toBe(reason);
-  expect(err.message).toContain(`credential helper "${NAME}"`);
+  expect(err.message).toContain(`live secret "${NAME}"`);
   return err;
 }
 
@@ -121,9 +121,9 @@ beforeAll(async () => {
 beforeEach(async () => {
   helperDir = makeTempDir('kb-helper-e2e-run-');
   helper = writeCountingHelper(helperDir, PREFIX);
-  credentialHelperSet(NAME, helper.launch.program, helper.launch.args);
+  saveLiveSecret(prepareLiveSecret(NAME, { program: helper.launch.program, args: helper.launch.args, env: [] }));
   resetKbProviders();
-  resetHelperTokenCache();
+  resetLiveTokenCache();
   resetKbHttpAuthState();
   stub.requests.length = 0;
   stub.accept = (token) => token.startsWith('ey') && token.includes(PREFIX);
@@ -153,7 +153,7 @@ describe('KB tools with a credential-helper-backed named credential', () => {
     await query();
     await capture('Sequential gear');
     await query();
-    expect(helper.runs()).toEqual([{ credential: NAME, audience: stub.url }]);
+    expect(helper.runs()).toEqual([{ credential: NAME }]);
     expect(stub.requests.length).toBeGreaterThanOrEqual(3);
     expect(stub.requests.every(r => r.authorized && helperRunOf(r.token, PREFIX) === 1)).toBe(true);
   });
@@ -183,10 +183,10 @@ describe('KB tools with a credential-helper-backed named credential', () => {
 
   it('a failing helper raises E-KB-HTTP-AUTH naming the credential; a second call inside the backoff window does not run it', async () => {
     helper.setControl({ mode: 'fail' });
-    const first = await expectAuthError(query(), 'helper-failed');
+    const first = await expectAuthError(query(), 'live-secret-failed');
     expect(first.secretName).toBe(NAME);
     expect(helper.runs()).toHaveLength(1);
-    await expectAuthError(query(), 'helper-failed');
+    await expectAuthError(query(), 'live-secret-failed');
     expect(helper.runs()).toHaveLength(1);
     expect(stub.requests).toHaveLength(0);
   });
@@ -206,13 +206,13 @@ describe('KB tools with a credential-helper-backed named credential', () => {
     expect(stub.requests).toHaveLength(2);
   });
 
-  it('fleet_status shows the helper name, program path and last refresh time', async () => {
+  it('fleet_status shows the live secret name and last minted time', async () => {
     await query();
     const { line, credential } = await status();
-    expect(credential).toMatchObject({ kind: 'helper', helperName: NAME, program: helper.launch.program, resolves: 'ok' });
-    expect(typeof credential.lastRefresh).toBe('string');
-    expect(line).toContain(`kb credential: helper ${NAME} | program: ${helper.launch.program} | resolves: ok`);
-    expect(line).toContain(`last refresh: ${credential.lastRefresh as string}`);
+    expect(credential).toMatchObject({ kind: 'live', secretName: NAME, resolves: 'ok' });
+    expect(typeof credential.lastMinted).toBe('string');
+    expect(line).toContain(`kb credential: live secret ${NAME} | resolves: ok`);
+    expect(line).toContain(`last minted: ${credential.lastMinted as string}`);
   });
 
   it('a static named secret in the same setup behaves as before; the helper never runs', async () => {

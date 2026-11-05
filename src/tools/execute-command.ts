@@ -10,7 +10,8 @@ import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper, generateTaskWrapperWindows } from '../services/cloud/task-wrapper.js';
 import { escapeShellArg, escapePowerShellArg, escapeWindowsArg } from '../utils/shell-escape.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
-import { credentialResolve, isCredentialHelper, registerTaskCredentials } from '../services/credential-store.js';
+import { registerTaskCredentials } from '../services/credential-store.js';
+import { resolveCommandSecret } from '../services/live-secret-cache.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
 import { LogScope, maskSecrets, truncateForLog, logLine, logWarn } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
@@ -88,15 +89,13 @@ async function resolveSecretTokens(
   const legacyNames = tokens.filter((t) => t.legacy).map((t) => t.name);
 
   for (const name of tokenNames) {
-    const entry = credentialResolve(name, callingMember);
+    const entry = await resolveCommandSecret(name, callingMember);
     if (!entry) {
-      if (isCredentialHelper(name)) {
-        return { error: `"${name}" is a server-side credential helper, used only by the KB provider; it is never handed to members, so it cannot be used as a secret token in a command.` };
-      }
       return { error: `Credential "${name}" not found. Run credential_store_set first.` };
     }
     if ('denied' in entry) return { error: entry.denied };
     if ('expired' in entry) return { error: entry.expired };
+    if ('failed' in entry) return { error: entry.failed };
     credentials.push({ name, plaintext: entry.plaintext, network_policy: entry.meta.network_policy });
   }
 
