@@ -2,7 +2,7 @@ import net from 'node:net';
 import readline from 'node:readline';
 import { getSocketPath } from '../services/auth-socket.js';
 import { collectSecret } from '../utils/collect-secret.js';
-import { credentialSet, credentialList, credentialDelete, credentialUpdate, type CredentialUpdatePatch } from '../services/credential-store.js';
+import { credentialSet, credentialList, credentialDelete, credentialUpdate, credentialHelperSet, type CredentialUpdatePatch } from '../services/credential-store.js';
 
 const NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -17,6 +17,7 @@ export async function runSecret(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h') || args.length === 0) {
     console.error('Usage:');
     console.error('  apra-fleet secret --set <name> [--persist] [-y]');
+    console.error('  apra-fleet secret --helper <name> -- <program> [args...]');
     console.error('  apra-fleet secret --list');
     console.error('  apra-fleet secret --update <name> [--members <list>] [--ttl <seconds>] [--allow|--deny]');
     console.error('  apra-fleet secret --delete <name>');
@@ -27,6 +28,8 @@ export async function runSecret(args: string[]): Promise<void> {
 
   if (args[0] === '--set') {
     await handleSet(args.slice(1));
+  } else if (args[0] === '--helper') {
+    handleHelper(args.slice(1));
   } else if (args[0] === '--list') {
     await handleList();
   } else if (args[0] === '--update') {
@@ -37,6 +40,27 @@ export async function runSecret(args: string[]): Promise<void> {
     await handleConfirm(args.slice(1));
   } else {
     console.error('Usage: apra-fleet secret --set <name> [--persist]');
+    process.exit(1);
+  }
+}
+
+function handleHelper(args: string[]): void {
+  const name = args[0];
+  if (!name || args[1] !== '--' || args.length < 3) {
+    console.error('Usage: apra-fleet secret --helper <name> -- <program> [args...]');
+    process.exit(1);
+  }
+  if (!NAME_REGEX.test(name)) {
+    console.error(`x Invalid credential name: ${name}`);
+    console.error('  Name must match [a-zA-Z0-9_-]{1,64}');
+    process.exit(1);
+  }
+  const [program, ...programArgs] = args.slice(2);
+  try {
+    const rec = credentialHelperSet(name, program, programArgs);
+    console.error(`[OK] Credential helper registered for ${name}: ${rec.program}`);
+  } catch (err: any) {
+    console.error(`x Failed to register helper: ${err.message}`);
     process.exit(1);
   }
 }

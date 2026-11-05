@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "0e4b793e5dd16c8d60fda5c58c7db4e8143006b0",
-    "branch": "main",
-    "entry_count": 121
+    "commit": "a56ec06fc713341573201bc9b7f0a7694c0e33ea",
+    "branch": "u1_upstream_main_a56ec06",
+    "entry_count": 126
   },
   "entries": [
     {
@@ -351,7 +351,12 @@
         "tests/stall-no-signal-false-kill.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:13.625Z"
+      "updated_at": "2026-09-29T06:13:13.625Z",
+      "source_file_hashes": {
+        "src/services/stall/stall-detector.ts": "b472e11eb27b688faaa8c62bce24880a14197023",
+        "tests/stall-detector.test.ts": "6291164e7ba7d5824752d6fc02e12ab1466e2f9b",
+        "tests/stall-no-signal-false-kill.test.ts": "be75e7a5fe8c34ed7ef883ec59848ee98fefa0e6"
+      }
     },
     {
       "id": "26b8c94b-20c8-4d6e-8862-8e65bc512ba6",
@@ -514,7 +519,11 @@
         "tests/sftp-subsystem-refusal.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T06:25:49.718Z"
+      "updated_at": "2026-10-06T06:25:49.718Z",
+      "source_file_hashes": {
+        "src/services/sftp.ts": "e7737cf000b78c0e5c2688189ce53f6e0ce41e85",
+        "tests/sftp-subsystem-refusal.test.ts": "37e60bde41af90e4a5b9697c1395dc64057afe52"
+      }
     },
     {
       "id": "33c1189c-bf95-4cf3-b875-4b93620bea0f",
@@ -570,7 +579,12 @@
         "tests/ssh-host-key-reaccept.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T10:58:58.488Z"
+      "updated_at": "2026-10-06T10:58:58.488Z",
+      "source_file_hashes": {
+        "src/services/known-hosts.ts": "9216adcb9ad5b4ac684255463abd13a9d7601299",
+        "src/services/ssh.ts": "5ee3f5d839cce14c31a5295a0a150e7f4677d7ae",
+        "tests/ssh-host-key-reaccept.test.ts": "7ba9218eb306508c120a582bf2370d97535676d0"
+      }
     },
     {
       "id": "416532bd-32a5-4056-8cb5-03f2219c2870",
@@ -612,7 +626,15 @@
         "skills/fleet/profiles/node.json"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:14.033Z"
+      "updated_at": "2026-09-29T06:13:14.033Z",
+      "source_file_hashes": {
+        "integ-test-playbook.md": "f464532544db7015dfc4658a9e30923b9286a011",
+        "regression-test-playbook.md": "d61fa4222c592c2bab61d1c0231ab30209a0f2eb",
+        "skills/fleet/profiles/base-dev.json": "f5ebfe785c69b411c4b2eb5cc1500b116abee7fb",
+        "skills/fleet/profiles/base-reviewer.json": "db55cb01779c8f8854a4aa749740092ad4f29cfc",
+        "skills/fleet/profiles/node.json": "6b1f54548d4c09bb8f2bad195a5831709c34a0b4",
+        "tests/integ-playbook-permission-profiles.test.ts": "de0b9b8e267097e3b8757c054b462dfe15ec244e"
+      }
     },
     {
       "id": "44cfb13c-397c-4b93-88b3-5731cb417c65",
@@ -829,6 +851,34 @@
       "updated_at": "2026-09-29T06:13:14.812Z"
     },
     {
+      "id": "59f7a9d4-464a-4ab5-8b6c-ecdb8a4dc6ec",
+      "type": "knowledge",
+      "title": "Helper-record immutability is enforced per MCP handler, not inside credentialSet",
+      "summary": "credentialSet overwrites any record of the same name, a credential helper included. Each MCP handler that can write a credential has to call isCredentialHelper first, so any new MCP caller of credentialSet needs the same guard.",
+      "symbols": [
+        "credentialSet",
+        "isCredentialHelper",
+        "credentialStoreDelete",
+        "credentialStoreSet"
+      ],
+      "source_files": [
+        "src/services/credential-store.ts",
+        "src/tools/register-member.ts",
+        "src/tools/credential-store-set.ts",
+        "src/tools/credential-store-delete.ts",
+        "tests/secret-helper-cli-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-02T14:17:28.271Z",
+      "source_file_hashes": {
+        "src/services/credential-store.ts": "2a245ad4f4f683df54ac13da318d12205f35bdc3",
+        "src/tools/credential-store-delete.ts": "58ca70cdb3aed9dd60c33b1491169f5a4e805474",
+        "src/tools/credential-store-set.ts": "9f5b121d75b91cefeeff937146b80e891bd18ebf",
+        "src/tools/register-member.ts": "b1f6289567112746f372a646336ce845b7aaacde",
+        "tests/secret-helper-cli-e2e.test.ts": "92bc59a8b2d8cc8ebd164149ede15643a277e0ff"
+      }
+    },
+    {
       "id": "5b0c0a37-6e58-4854-b1f4-b672ca0a6080",
       "type": "knowledge",
       "title": "A crossing sync-bracket close can never be the last open bracket, so the pause-guard poke is unreachable there",
@@ -951,7 +1001,12 @@
         "regression-test-playbook.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:31.774Z"
+      "updated_at": "2026-09-25T22:26:31.774Z",
+      "source_file_hashes": {
+        "regression-test-playbook.md": "d61fa4222c592c2bab61d1c0231ab30209a0f2eb",
+        "scripts/kill-port.mjs": "b057c3b29d130c137c768372cdf2d2ca94e63c8c",
+        "tests/kill-port.test.ts": "f4236a03a10574fbb47bb892989fa45da987cacf"
+      }
     },
     {
       "id": "70f0e881-49d9-40eb-85ab-ff9c8868f49b",
@@ -993,7 +1048,12 @@
         "packages/apra-fleet-se/docs/kb-canonical-merge.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T06:57:40.812Z"
+      "updated_at": "2026-10-06T06:57:40.812Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/docs/kb-canonical-merge.md": "35a27aa90d25d77134d5efb4af38df75920847e7",
+        "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs": "ec75236af4fb108aa1a91d4e9f9433f030f7db29",
+        "packages/apra-fleet-se/test/merge-kb-canonical.test.mjs": "de4c76a854fa892dcb6d6cbb8851a1aee34a7481"
+      }
     },
     {
       "id": "71323701-67db-4aa8-b7ce-858fb5e2aea7",
@@ -1036,7 +1096,11 @@
         "src/utils/log-helpers.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:41.271Z"
+      "updated_at": "2026-09-25T22:26:41.271Z",
+      "source_file_hashes": {
+        "src/services/stall/stall-detector.ts": "b472e11eb27b688faaa8c62bce24880a14197023",
+        "src/utils/log-helpers.ts": "27f4f02a8004ceae5d1b8883ada455890a6d6997"
+      }
     },
     {
       "id": "76754ef3-5ff3-4fb4-a7cf-d74504f5013b",
@@ -1069,6 +1133,34 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.250Z"
+    },
+    {
+      "id": "7854a8e8-228a-49e0-b435-bad737d06410",
+      "type": "knowledge",
+      "title": "HTTP KB helper tokens are cached per credential and audience with one in-flight run",
+      "summary": "credential-helper-cache.ts caches helper tokens per {credential, KB URL}. It refreshes at expires_at minus min(5 min, 10% of lifetime), shares one run across concurrent callers, and backs off 10 s doubling to 5 min. Re-registering the helper resets the entry.",
+      "symbols": [
+        "getHelperToken",
+        "dropHelperToken",
+        "getHelperTokenStatus",
+        "helperRefreshAt",
+        "helperBackoffMs",
+        "kbHelperAudience"
+      ],
+      "source_files": [
+        "src/services/credential-helper-cache.ts",
+        "src/services/knowledge/http-provider.ts",
+        "src/tools/check-status.ts",
+        "tests/knowledge/kb-http-credential-helper.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-02T14:10:59.891Z",
+      "source_file_hashes": {
+        "src/services/credential-helper-cache.ts": "6e546a5d23b2d238659b5fbb7599401e8b5d3ff5",
+        "src/services/knowledge/http-provider.ts": "3cf9f9eedcca9d0f48b08a1fe4df4ad88edccfef",
+        "src/tools/check-status.ts": "118e888853dfa5d2ab4c1078397e1ca82ebd56ee",
+        "tests/knowledge/kb-http-credential-helper.test.ts": "d55160a122f0a9f5957eacb809c30b0b941f8ac4"
+      }
     },
     {
       "id": "78f14fd2-717c-4201-9897-fb638379f393",
@@ -1185,7 +1277,12 @@
         "regression-test-playbook.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:32.922Z"
+      "updated_at": "2026-09-25T22:26:32.922Z",
+      "source_file_hashes": {
+        "regression-test-playbook.md": "d61fa4222c592c2bab61d1c0231ab30209a0f2eb",
+        "scripts/sandbox-lock.mjs": "7d0b717cb8dddea16592fe17154f5f02a2f25974",
+        "tests/sandbox-lock.test.ts": "2628030b1896c96dd2ef3f3161fa14be789eb646"
+      }
     },
     {
       "id": "81df596b-4490-4862-8cef-3ad5ee7c0785",
@@ -1330,7 +1427,12 @@
         "src/os/windows-gitbash.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T10:58:50.816Z"
+      "updated_at": "2026-10-06T10:58:50.816Z",
+      "source_file_hashes": {
+        "src/os/child-env-bound.ts": "dc0e2561d9c10db9f421d5a4c814e83c3f772c4f",
+        "src/os/windows-gitbash.ts": "100e34be26880d84796eab62ef830781f19a9cba",
+        "src/os/windows.ts": "80d3c913f94d8846dccfb753f7ab786372fd487e"
+      }
     },
     {
       "id": "962688bf-cee4-4461-bc3b-10b87eaf56c4",
@@ -1427,6 +1529,30 @@
         "src/services/knowledge/bible-import.ts": "9a75635a8ccb17c83c0aef0cc1806386ec3c8cd5",
         "src/services/knowledge/sqlite-provider.ts": "3b70b8d2bfe7a3e3b4c1c522400841d0b5282d6f",
         "tests/knowledge/kb-member-mixed-tier-reads.test.ts": "f452ea5700809ded25e518a2743994214a4bc750"
+      }
+    },
+    {
+      "id": "9bf4de36-f0c9-41e9-b05a-795ba5d40fa6",
+      "type": "learning",
+      "title": "lookupServerSecretMeta reports a credential helper as missing",
+      "summary": "lookupServerSecretMeta/lookupServerSecret return status missing for a helper record, so any caller that validates a token_ref (kb_setup checkTokenRef, fleet_status) must call lookupCredentialHelper first.",
+      "symbols": [
+        "lookupServerSecretMeta",
+        "lookupCredentialHelper",
+        "checkTokenRef",
+        "kbHttpCredentialHealth"
+      ],
+      "source_files": [
+        "src/services/credential-store.ts",
+        "src/tools/kb-setup.ts",
+        "src/tools/check-status.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-02T14:10:59.834Z",
+      "source_file_hashes": {
+        "src/services/credential-store.ts": "2a245ad4f4f683df54ac13da318d12205f35bdc3",
+        "src/tools/check-status.ts": "118e888853dfa5d2ab4c1078397e1ca82ebd56ee",
+        "src/tools/kb-setup.ts": "098b2f04a6d36da2dfb7425c2a6c38a1c6a9d897"
       }
     },
     {
@@ -1571,6 +1697,26 @@
       "updated_at": "2026-09-29T06:13:15.733Z"
     },
     {
+      "id": "ac928e04-8ad2-42e2-be8f-aa88db2e20cb",
+      "type": "learning",
+      "title": "cmd.exe quoting for .cmd/.bat helpers that forward %* to a native program",
+      "summary": "Quote every piece in double quotes, encode an embedded quote as \"\" (not \\\") and % as %%cd:~,%, launch with cmd.exe /d /v:off /s /c; verified to round-trip hostile argv through a forwarding .cmd to node.",
+      "symbols": [
+        "quoteCmdArg",
+        "buildHelperInvocation"
+      ],
+      "source_files": [
+        "src/services/credential-helper-runner.ts",
+        "tests/knowledge/credential-helper-windows-launch.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-02T13:45:32.450Z",
+      "source_file_hashes": {
+        "src/services/credential-helper-runner.ts": "badd27018b60aa8ced2273d70ed25b45b89865f3",
+        "tests/knowledge/credential-helper-windows-launch.test.ts": "1ad54e80666ddd446416c7ffa4c7780673c12d27"
+      }
+    },
+    {
       "id": "b03effcd-0488-452b-9b49-ab21049c0ece",
       "type": "knowledge",
       "title": "runDoltStep classifies on raw dolt output but surfaces surfaceDoltFailureText(raw)",
@@ -1633,7 +1779,11 @@
         "src/providers/provider.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:24:09.365Z"
+      "updated_at": "2026-09-29T06:24:09.365Z",
+      "source_file_hashes": {
+        "src/providers/claude.ts": "97c74b189ab8906e43374e6c1be059665b561b56",
+        "src/providers/provider.ts": "b59c65d65b80b5103f3000de6636562f3b46cb75"
+      }
     },
     {
       "id": "b8d328fa-e22b-498f-98cf-2ff10bd6370a",
@@ -1846,7 +1996,11 @@
         "packages/apra-fleet-se/test/azure-devops-real-e2e.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:37.343Z"
+      "updated_at": "2026-09-25T22:26:37.343Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-client/src/client/transport.mjs": "aa60d3370115785dbdfca7d53b84b54812fcc79e",
+        "packages/apra-fleet-se/test/azure-devops-real-e2e.test.mjs": "60e3d607d5a472c052913327a4ca0fa6e2c7d21c"
+      }
     },
     {
       "id": "d6a925e2-7ffb-409e-9d6d-df112557edda",
@@ -1864,7 +2018,11 @@
         "packages/apra-fleet-se/test/supervisor-dolt-orphan-sweep.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.852Z"
+      "updated_at": "2026-09-29T06:13:53.852Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/src/supervisor/dolt-orphan-sweep.mjs": "98ef4cc14cb0c8c2a127dadedbf0e77f11f9b0e9",
+        "packages/apra-fleet-se/test/supervisor-dolt-orphan-sweep.test.mjs": "257496178c2a8349222954fa634542ee2b576c2f"
+      }
     },
     {
       "id": "d75f28a9-bb69-4fd8-bf81-1ad9bd17d51b",
@@ -1995,7 +2153,11 @@
         "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.820Z"
+      "updated_at": "2026-09-29T06:13:53.820Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs": "1b12436f9c16b9a9985b666d435c3495731ab582",
+        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs": "0216144f04ab23487870012e025de8f5f23b5ff8"
+      }
     },
     {
       "id": "e078ec0e-b747-4274-a82b-4155c342928b",
@@ -2012,7 +2174,11 @@
         "packages/apra-fleet-se/apra-pm/test/install-binary-asset-copy.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:13.312Z"
+      "updated_at": "2026-09-29T06:13:13.312Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/install.mjs": "c6936f9636f88109fb3c49fea77dca27171978a8",
+        "packages/apra-fleet-se/apra-pm/test/install-binary-asset-copy.test.mjs": "857a66897ba3b40b2a126af3b5b4681b2784e084"
+      }
     },
     {
       "id": "e0d3a928-0df8-49c1-bd69-3674ad65310a",
@@ -2027,7 +2193,11 @@
         "src/services/auth-socket.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:15.109Z"
+      "updated_at": "2026-09-29T06:13:15.109Z",
+      "source_file_hashes": {
+        "src/services/auth-socket.ts": "79b95fb076cf884f610a72820824c5798b3a01fa",
+        "src/services/auth-web.ts": "47222316dee7b8c2b2d1072422bbc0fb178dacb7"
+      }
     },
     {
       "id": "e0de87cc-0368-4014-8cfe-e1879bbe57f9",
@@ -2210,6 +2380,29 @@
       "updated_at": "2026-09-29T06:13:16.060Z"
     },
     {
+      "id": "ef75ce51-0d09-493f-99ac-b8fedcc74b41",
+      "type": "knowledge",
+      "title": "win32 findExecutableOnPath never matches an extensionless file for a bare name",
+      "summary": "On win32, findExecutableOnPath tries a bare name only as name+PATHEXT ext. A name already ending in a PATHEXT extension (case-insensitive) is tried as-is. An npm-style extensionless POSIX shim next to foo.cmd is therefore skipped.",
+      "symbols": [
+        "findExecutableOnPath",
+        "candidateExtensions",
+        "resolveHelperProgram"
+      ],
+      "source_files": [
+        "src/utils/find-on-path.ts",
+        "src/services/credential-store.ts",
+        "tests/find-on-path.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-02T19:32:36.007Z",
+      "source_file_hashes": {
+        "src/services/credential-store.ts": "2a245ad4f4f683df54ac13da318d12205f35bdc3",
+        "src/utils/find-on-path.ts": "ca7b5be4f6a9df2fa26dcd082b21603de00a9172",
+        "tests/find-on-path.test.ts": "fb235700a4ba8460b92fbd0e95013cb3a6997140"
+      }
+    },
+    {
       "id": "efc3bf05-c36c-480f-a69e-7ece4b2536bd",
       "type": "learning",
       "title": "member-provisioning.mjs is barred from any includes/match/toLowerCase call",
@@ -2220,7 +2413,11 @@
         "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:08:07.865Z"
+      "updated_at": "2026-09-29T06:08:07.865Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "851e0cf872efb6ce739a214b02bf48deecd85dd1",
+        "packages/apra-fleet-se/test/phase5-consumer-migration-end-state.test.mjs": "37e32a2a5e0928f9c3412bbe99db768b62eb58a6"
+      }
     },
     {
       "id": "f33011e2-8ae6-4388-95d4-5e21f1716d0f",

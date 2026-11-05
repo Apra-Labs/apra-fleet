@@ -10,7 +10,7 @@ import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper, generateTaskWrapperWindows } from '../services/cloud/task-wrapper.js';
 import { escapeShellArg, escapePowerShellArg, escapeWindowsArg } from '../utils/shell-escape.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
-import { credentialResolve, registerTaskCredentials } from '../services/credential-store.js';
+import { credentialResolve, isCredentialHelper, registerTaskCredentials } from '../services/credential-store.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
 import { LogScope, maskSecrets, truncateForLog, logLine, logWarn } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
@@ -90,6 +90,9 @@ async function resolveSecretTokens(
   for (const name of tokenNames) {
     const entry = credentialResolve(name, callingMember);
     if (!entry) {
+      if (isCredentialHelper(name)) {
+        return { error: `"${name}" is a server-side credential helper, used only by the KB provider; it is never handed to members, so it cannot be used as a secret token in a command.` };
+      }
       return { error: `Credential "${name}" not found. Run credential_store_set first.` };
     }
     if ('denied' in entry) return { error: entry.denied };

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { collectOobApiKey } from '../services/auth-socket.js';
 import { decryptPassword } from '../utils/crypto.js';
-import { credentialSet } from '../services/credential-store.js';
+import { credentialSet, isCredentialHelper } from '../services/credential-store.js';
 import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreSetSchema = z.object({
@@ -22,6 +22,9 @@ export const credentialStoreSetSchema = z.object({
 export type CredentialStoreSetInput = z.infer<typeof credentialStoreSetSchema>;
 
 export async function credentialStoreSet(input: CredentialStoreSetInput): Promise<string> {
+  if (isCredentialHelper(input.name)) {
+    return `[x] '${input.name}' is a credential helper and cannot be set through this tool. Replace or remove it from the CLI: apra-fleet secret --set / --delete ${input.name}.`;
+  }
   const result = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt });
 
   if (result.fallback) return result.fallback;

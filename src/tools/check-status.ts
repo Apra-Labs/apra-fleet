@@ -26,7 +26,10 @@ import { listKbScopes, knowledgeRootDir, GLOBAL_KB_SCOPE, type KbScopeLocation }
 import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
 import { readKbConfigFromDisk, type KbConfigResult } from '../services/knowledge/kb-config.js';
 import { getKbHttpAuthState } from '../services/knowledge/kb-http-auth-state.js';
-import { lookupServerSecret, lookupServerSecretMeta } from '../services/credential-store.js';
+import { kbHelperAudience } from '../services/knowledge/http-provider.js';
+import { lookupServerSecret, lookupServerSecretMeta, lookupCredentialHelper } from '../services/credential-store.js';
+import { jwtExpiry } from '../utils/jwt-expiry.js';
+import { getHelperTokenStatus, type HelperTokenState } from '../services/credential-helper-cache.js';
 import { gitExecutable } from '../os/git-executable.js';
 
 export const fleetStatusSchema = z.object({
@@ -500,6 +503,26 @@ export type KbHttpCredentialHealth =
     lastRejectedCall: string | null;
   }
   | {
+    kind: 'helper';
+    url: string;
+    /** The credential helper's name (the token_ref's NAME). */
+    helperName: string;
+    /** Absolute path of the registered helper program. Its args are not shown. */
+    program: string;
+    /** This process's helper state for this KB URL (credential-helper-cache.ts HelperTokenState). */
+    resolves: HelperTokenState;
+    /** When the helper last returned a token in this process; null when never. */
+    lastRefresh: string | null;
+    /** exp of the cached token when it is a JWT, decoded locally; null otherwise. */
+    tokenExpiry: string | null;
+    /** resolves failed: the runner's leak-free reason; null otherwise. */
+    lastFailure: string | null;
+    /** Inside the retry backoff: when the helper may run again; null otherwise. */
+    retryAfter: string | null;
+    lastSuccessfulCall: string | null;
+    lastRejectedCall: string | null;
+  }
+  | {
     kind: 'literal';
     url: string;
     lastSuccessfulCall: string | null;
@@ -565,27 +588,8 @@ function readKbConfigOrSqlite(): KbConfigResult {
   }
 }
 
-const BASE64URL_SEGMENT = /^[A-Za-z0-9_-]+={0,2}$/;
-
-/**
- * exp of a JWT, as an ISO time, decoded locally; null for anything that is not
- * three base64url segments whose middle one is a JSON object with a numeric
- * exp. Nothing else is read from the token.
- */
-export function jwtExpiry(token: string): string | null {
-  const parts = token.split('.');
-  if (parts.length !== 3 || !parts.every(p => BASE64URL_SEGMENT.test(p))) return null;
-  try {
-    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8')) as unknown;
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
-    const exp = (payload as { exp?: unknown }).exp;
-    if (typeof exp !== 'number' || !Number.isFinite(exp)) return null;
-    const at = new Date(exp * 1000);
-    return Number.isNaN(at.getTime()) ? null : at.toISOString();
-  } catch {
-    return null;
-  }
-}
+// Shared with the credential helper cache, which decodes exp when it stores a token.
+export { jwtExpiry };
 
 /** The credential block for an http KB config; undefined for any other provider. */
 export function kbHttpCredentialHealth(config: KbConfigResult): KbHttpCredentialHealth | undefined {
@@ -602,6 +606,16 @@ export function kbHttpCredentialHealth(config: KbConfigResult): KbHttpCredential
   // hidden; the error text is dropped because it can quote ciphertext.
   let meta: ReturnType<typeof lookupServerSecretMeta>;
   try {
+    const helper = lookupCredentialHelper(secretName);
+    if (helper) {
+      const status = getHelperTokenStatus(secretName, kbHelperAudience(config.url), helper);
+      return {
+        kind: 'helper', url: config.url, helperName: secretName, program: helper.program,
+        resolves: status.state, lastRefresh: status.lastRefreshAt, tokenExpiry: status.tokenExpiry,
+        lastFailure: status.lastFailureReason, retryAfter: status.retryAfter,
+        lastSuccessfulCall, lastRejectedCall,
+      };
+    }
     meta = lookupServerSecretMeta(secretName);
   } catch {
     return { ...block, resolves: 'unreadable', lastWritten: null, tokenExpiry: null };
@@ -720,6 +734,12 @@ export function kbHealthCompactLine(health: KbScopeStats, label?: string): strin
 export function kbCredentialCompactLine(c: KbHttpCredentialHealth): string {
   const calls = `last ok call: ${c.lastSuccessfulCall ?? 'never'} | last rejected call: ${c.lastRejectedCall ?? 'never'}`;
   if (c.kind === 'literal') return `kb credential: ${c.hint} | ${calls}`;
+  if (c.kind === 'helper') {
+    const failure = c.lastFailure ? ` | last failure: ${c.lastFailure}` : '';
+    const retry = c.retryAfter ? ` | next helper run after: ${c.retryAfter}` : '';
+    return `kb credential: helper ${c.helperName} | program: ${c.program} | resolves: ${c.resolves} ` +
+      `| last refresh: ${c.lastRefresh ?? 'never'} | token expiry: ${c.tokenExpiry ?? 'none'}${failure}${retry} | ${calls}`;
+  }
   return `kb credential: secret ${c.secretName} | resolves: ${c.resolves} | last written: ${c.lastWritten ?? 'never'} ` +
     `| token expiry: ${c.tokenExpiry ?? 'none'} | ${calls}`;
 }

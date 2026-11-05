@@ -292,12 +292,17 @@
  * when the KB config selects the http provider; this host only. Never carries
  * the token value, nor any JWT claim other than exp.
  * @typedef {Object} FleetStatusKbCredential
- * @property {"secret" | "literal"} kind - "secret": token_ref names a fleet secret looked up per request; "literal": a stored literal token
+ * @property {"secret" | "helper" | "literal"} kind - "secret": token_ref names a fleet secret looked up per request; "helper": token_ref names a credential helper the server runs to mint the token (cached); "literal": a stored literal token
  * @property {string} url - Remote KB URL
  * @property {string} [secretName] - kind "secret": the fleet secret's name
- * @property {"ok" | "missing" | "expired" | "unreadable"} [resolves] - kind "secret": metadata lookup result (an expired record is kept); "unreadable" when the credential store cannot be read or the value cannot be decrypted
+ * @property {"ok" | "missing" | "expired" | "unreadable" | "not run" | "refreshing" | "failed"} [resolves] - kind "secret": metadata lookup result (an expired record is kept); "unreadable" when the credential store cannot be read or the value cannot be decrypted. kind "helper": "not run" (no run yet in this server process), "refreshing", "ok", "failed" (the last run failed), "expired" (the cached token has expired)
  * @property {string | null} [lastWritten] - kind "secret": the secret record's created_at; null when missing or the store is unreadable
- * @property {string | null} [tokenExpiry] - kind "secret": JWT exp decoded locally (ISO time); null for a non-JWT or unresolved value
+ * @property {string | null} [tokenExpiry] - kind "secret" / "helper": JWT exp decoded locally (ISO time); null for a non-JWT or unresolved value
+ * @property {string} [helperName] - kind "helper": the credential helper's name
+ * @property {string} [program] - kind "helper": absolute path of the helper program (its args are not shown)
+ * @property {string | null} [lastRefresh] - kind "helper": when the helper last returned a token in this server process; null when never
+ * @property {string | null} [lastFailure] - kind "helper": why the last helper run failed (never the token or the helper's output); null unless resolves is "failed"
+ * @property {string | null} [retryAfter] - kind "helper": inside the retry backoff, when the helper may run again; null otherwise
  * @property {string | null} lastSuccessfulCall - Last KB call accepted by the remote server in this server process; null when none yet
  * @property {string | null} lastRejectedCall - Last KB call rejected with HTTP 401 in this server process; null when none yet
  * @property {string} [hint] - kind "literal": the token cannot be refreshed; how to switch to {{secret.NAME}}

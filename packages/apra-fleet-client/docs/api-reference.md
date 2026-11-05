@@ -382,7 +382,12 @@ value cannot be decrypted -- the line is still shown, with `lastWritten` kept
 if only the decrypt failed), `lastWritten` (the secret's `created_at`), `tokenExpiry` (the
 `exp` of a JWT value decoded locally, else `null`), and `lastSuccessfulCall` /
 `lastRejectedCall` (this server process; `null`, shown as `never`, until the
-first call). A literal-token config (`kind: "literal"`) carries the call times
+first call). For a credential helper (`kind: "helper"`): `helperName`,
+`program` (absolute path, args not shown), `resolves` (`not run` / `refreshing`
+/ `ok` / `failed` / `expired`, this server process), `lastRefresh`,
+`tokenExpiry` (JWT `exp` decoded locally), `lastFailure` (the runner's reason,
+never the helper's output), `retryAfter` (inside the retry backoff) and the
+call times. A literal-token config (`kind: "literal"`) carries the call times
 and a `hint` that the token cannot be refreshed and how to switch to
 `{{secret.NAME}}`. A sqlite config has no `credential`. The token value and
 any JWT claim other than `exp` never appear.
@@ -588,7 +593,12 @@ retry. The message names the secret and the reason, never the value. A capture
 or invalidate is queued offline first and sent once the secret is accepted; a
 member session's CONFIRMED read comes from its checkout bible and is unaffected.
 Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
-restart.
+restart. When NAME is a credential helper (`apra-fleet secret --helper NAME --
+<program> [args...]`), the code is also raised (reason `helper-failed`) when the
+helper fails or is inside its retry backoff, and (reason `rejected`) when the
+server still answers 401 after one fresh helper run; fix the helper's
+environment on the server host (e.g. `az login`), or re-register the helper,
+which also clears the backoff.
 
 `kb_import` in a member session without the kb_maintainer grant fails with
 `E-KB-MAINTAINER-REQUIRED` and imports nothing when: it names an explicit

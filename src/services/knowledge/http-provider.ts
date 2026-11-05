@@ -22,7 +22,9 @@ import type {
 } from './types.js';
 
 import { DEFAULT_REQUEST_TIMEOUT_MS } from './kb-config.js';
-import { lookupServerSecret } from '../credential-store.js';
+import { lookupServerSecret, lookupCredentialHelper, type HelperRecord } from '../credential-store.js';
+import { getHelperToken, dropHelperToken } from '../credential-helper-cache.js';
+import { CredentialHelperError } from '../credential-helper-runner.js';
 import { recordKbHttpSuccess, recordKbHttpRejected } from './kb-http-auth-state.js';
 import {
   REPOSITORY_HEADER,
@@ -55,12 +57,29 @@ export interface HttpKbProviderOptions {
 /**
  * Where the bearer token comes from. A string is a literal token fixed for the
  * provider's lifetime (the behaviour before named secrets). `{ secretName }`
- * names a fleet secret that is looked up on EVERY request, so a secret updated
- * outside fleet is used by the very next call with no restart.
+ * names a fleet credential that is looked up on EVERY request: a static secret
+ * updated outside fleet is used by the very next call with no restart; a
+ * credential helper (apra-fleet secret --helper) mints the token, cached per
+ * {credential, audience = KB URL} by credential-helper-cache.ts.
  */
 export type KbHttpTokenSource = string | { secretName: string };
 
-export type KbHttpAuthReason = 'missing' | 'expired' | 'rejected' | 'unreadable';
+export type KbHttpAuthReason = 'missing' | 'expired' | 'rejected' | 'unreadable' | 'helper-failed';
+
+/**
+ * The provider's base URL: the configured KB URL without a trailing slash. It
+ * is also the audience a credential helper is asked for, and the helper token
+ * cache key, so fleet_status reads the cache with the same value.
+ */
+export function kbHelperAudience(url: string): string {
+  return url.replace(/\/$/, '');
+}
+
+/** Remediation for a credential helper: fix the helper's environment, or re-register it. */
+export function helperRemediation(name: string): string {
+  return `run the credential helper for ${name} by hand on this host and fix what it reports (for az: az login); ` +
+    `re-registering it (apra-fleet secret --helper ${name} -- <program> [args...]) also clears the retry backoff`;
+}
 
 /**
  * E-KB-HTTP-AUTH: the remote KB's token comes from a named fleet secret and
@@ -78,8 +97,8 @@ export class KbHttpAuthError extends Error {
   readonly queued: boolean;
   /** The problem sentence, without the code prefix and remediation. */
   readonly problem: string;
-  constructor(secretName: string, reason: KbHttpAuthReason, problem: string, queued = false) {
-    const remediation = `apra-fleet secret --set ${secretName} --persist -y (the next KB call uses the new value; no restart needed)`;
+  constructor(secretName: string, reason: KbHttpAuthReason, problem: string, queued = false, remediation?: string) {
+    remediation ??= `apra-fleet secret --set ${secretName} --persist -y (the next KB call uses the new value; no restart needed)`;
     const queuedNote = queued
       ? ' The operation was queued offline and is sent once the secret is accepted.'
       : '';
@@ -95,7 +114,7 @@ export class KbHttpAuthError extends Error {
   /** The same error, marked as having left its operation in the offline queue. */
   asQueued(): KbHttpAuthError {
     if (this.queued) return this;
-    return new KbHttpAuthError(this.secretName, this.reason, this.problem, true);
+    return new KbHttpAuthError(this.secretName, this.reason, this.problem, true, this.remediation);
   }
 }
 
@@ -144,7 +163,7 @@ export class HttpKbProvider implements MemoryProvider {
     this.repository = options.repository && isValidRepositoryValue(options.repository.remote)
       ? options.repository
       : undefined;
-    this.baseUrl = url.replace(/\/$/, '');
+    this.baseUrl = kbHelperAudience(url);
     this.tokenSource = token;
     this.fallback = fallback ?? new SqliteProvider();
 
@@ -187,24 +206,34 @@ export class HttpKbProvider implements MemoryProvider {
   }
 
   /**
-   * The token to send now. A literal is returned as is. A secret name is
-   * looked up (server-side lookup: allowedMembers does not apply, an expired
-   * record is reported and kept) and a missing/expired/unreadable secret
-   * raises E-KB-HTTP-AUTH before any request is sent.
+   * The token to send now, plus the helper that minted it (if any). A literal
+   * is returned as is. A credential name is looked up: a credential helper
+   * gives a cached or freshly minted token (audience = the KB URL); a static
+   * secret is read (server-side lookup: allowedMembers does not apply, an
+   * expired record is reported and kept). A missing/expired/unreadable secret
+   * or a failing helper raises E-KB-HTTP-AUTH before any request is sent.
    */
-  private resolveToken(): string {
+  private async resolveToken(): Promise<{ token: string; helper?: HelperRecord }> {
     const source = this.tokenSource;
-    if (typeof source === 'string') return source;
+    if (typeof source === 'string') return { token: source };
     const name = source.secretName;
+    const unreadable = (): KbHttpAuthError => new KbHttpAuthError(
+      // Fixed text: the underlying parser/decrypt error can quote ciphertext.
+      name, 'unreadable',
+      `the KB server token comes from fleet secret "${name}", which could not be read (credential store unreadable or value could not be decrypted).`,
+    );
+    let helper: HelperRecord | null;
+    try {
+      helper = lookupCredentialHelper(name);
+    } catch {
+      throw unreadable();
+    }
+    if (helper) return { token: await this.helperToken(name, helper), helper };
     let found: ReturnType<typeof lookupServerSecret>;
     try {
       found = lookupServerSecret(name);
     } catch {
-      // Fixed text: the underlying parser/decrypt error can quote ciphertext.
-      throw new KbHttpAuthError(
-        name, 'unreadable',
-        `the KB server token comes from fleet secret "${name}", which could not be read (credential store unreadable or value could not be decrypted).`,
-      );
+      throw unreadable();
     }
     if (found.status === 'missing') {
       throw new KbHttpAuthError(name, 'missing', `the KB server token comes from fleet secret "${name}", which does not exist.`);
@@ -215,7 +244,22 @@ export class HttpKbProvider implements MemoryProvider {
         `the KB server token comes from fleet secret "${name}", which expired at ${found.expiresAt}.`,
       );
     }
-    return found.value;
+    return { token: found.value };
+  }
+
+  /** A helper token for this KB URL; a helper failure or backoff becomes E-KB-HTTP-AUTH naming the credential. */
+  private async helperToken(name: string, helper: HelperRecord): Promise<string> {
+    try {
+      return await getHelperToken(name, this.baseUrl, helper);
+    } catch (err) {
+      // Only the runner's reasons are known leak-free; anything else is not quoted.
+      const reason = err instanceof CredentialHelperError ? err.reason : 'unexpected error while running the helper';
+      throw new KbHttpAuthError(
+        name, 'helper-failed',
+        `the KB server token comes from credential helper "${name}" (${helper.program}), which failed: ${reason}.`,
+        false, helperRemediation(name),
+      );
+    }
   }
 
   /**
@@ -223,6 +267,9 @@ export class HttpKbProvider implements MemoryProvider {
    * 401 is thrown as the plain HTTP_401 error, no retry). Secret name: the
    * secret is looked up for this request; on 401 it is looked up once more
    * and the request retried once; a second 401 raises E-KB-HTTP-AUTH.
+   * Helper: on 401 the rejected token is dropped from the cache, so the
+   * retry's lookup runs the helper once more (shared with any concurrent
+   * caller); a second 401 raises E-KB-HTTP-AUTH.
    * Records the last success / last 401 for fleet_status either way.
    */
   private async request<T>(
@@ -237,7 +284,7 @@ export class HttpKbProvider implements MemoryProvider {
     // fails before the commit is read, and the 401 retry sends the same commit.
     let repoHeaders: Record<string, string> | undefined;
     for (let attempt = 1; ; attempt++) {
-      const token = this.resolveToken();
+      const { token, helper } = await this.resolveToken();
       repoHeaders ??= this.repositoryHeaders();
       try {
         const result = await this.rawRequest<T>(
@@ -249,6 +296,17 @@ export class HttpKbProvider implements MemoryProvider {
         if (!isHttp401(err)) throw err;
         recordKbHttpRejected(this.baseUrl);
         if (secretName === undefined) throw err;
+        if (helper) {
+          dropHelperToken(secretName, this.baseUrl, token);
+          if (attempt >= attempts) {
+            throw new KbHttpAuthError(
+              secretName, 'rejected',
+              `the KB server rejected the token from credential helper "${secretName}" (HTTP 401), also on one retry with a token from a fresh helper run.`,
+              false, helperRemediation(secretName),
+            );
+          }
+          continue;
+        }
         if (attempt >= attempts) {
           throw new KbHttpAuthError(
             secretName, 'rejected',
