@@ -22,6 +22,8 @@ import {
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
 import { KbKeywordIndex, type KeywordIndexStatus } from './kb-index.js';
+import { VectorStore, type VectorModel, type VectorScore } from './embedding/vector-store.js';
+import { buildVectorInputs, type VectorInput } from './embedding/chunker.js';
 import { validateFilePaths } from './path-validation.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
 import { CAPTURE_TRIGGERS, KB_AUDIT_NOTE_START, KbCaptureRejected, type CaptureTrigger, type DiscardResult, type RetireOptions } from './types.js';
@@ -157,6 +159,8 @@ function trustFilterSql(filter: EntryTrustFilter | undefined): { conditions: str
 export class SqliteProvider implements MemoryProvider {
   private db: DatabaseSync | null = null;
   private readonly keywordIndex = new KbKeywordIndex(() => this.db);
+  /** Per-entry multi-vectors (design D2a vector half); see embedding/vector-store.ts. */
+  readonly vectorStore = new VectorStore(() => this.db);
   readonly dbPath: string;
   readonly projectSlug: string;
   /**
@@ -360,6 +364,36 @@ export class SqliteProvider implements MemoryProvider {
     // first query do not wait for it. Must run after the column migrations
     // above (its triggers name recall_cues / error_signatures).
     this.keywordIndex.init();
+
+    // Design D2a vector half: entry_vectors (float16 multi-vectors tagged with
+    // the model that made them) and the kb_embed_pending queue, both kept in
+    // step with entries by pure-SQL triggers. After the column migrations for
+    // the same reason as the keyword index (triggers name recall_cues etc.).
+    this.vectorStore.init();
+  }
+
+  /**
+   * The vector inputs (chunks) of one entry at `tokenLimit`, or null when the
+   * id is unknown. What the embed queue embeds; exposed for tests and tools.
+   */
+  entryVectorInputs(id: string, tokenLimit: number): VectorInput[] | null {
+    const row = this.getDb().prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const e = this.rowToEntry(row);
+    return buildVectorInputs({
+      title: e.title, summary: e.summary, content: e.content, recall_cues: e.recall_cues,
+      error_signatures: e.error_signatures, module: e.module ?? null, source_files: e.source_files,
+      symbols: e.symbols, trigger: e.trigger ?? null, type: e.type,
+    }, tokenLimit);
+  }
+
+  /**
+   * Brute-force semantic scoring: cosine of `query` against every stored
+   * vector of `model` (id + revision + dims; no other model's rows are read),
+   * one score per live entry -- its best-matching vector -- best first.
+   */
+  scoreVectorsForModel(query: Float32Array, model: VectorModel, opts?: { limit?: number; entryIds?: string[] }): VectorScore[] {
+    return this.vectorStore.score(query, model, opts);
   }
 
   /** Keyword-index version and rebuild state (kb_index_meta). */
