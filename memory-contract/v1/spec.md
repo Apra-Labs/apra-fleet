@@ -479,6 +479,19 @@ value.
   outrank every later tombstone. Likewise a tombstone's `at` is clamped to now
   wherever a bible is read, so a future-dated tombstone never becomes a future
   `demoted_at` that every later re-promotion would count as withdrawn against.
+- `kb_import` ENRICHES a poorer local row from the bible entry with the same
+  id. An id the clone already holds is otherwise skipped; but when the row is
+  the SAME claim (same `type`, `title`, `summary` and cited `source_files`, and,
+  when the entry carries `source_file_hashes`, the same stored basis) and lacks
+  a rich field the entry carries -- `content` (the row's lesson body before any
+  audit note is empty or just the summary), `recall_cues` or `error_signatures`
+  (empty) -- that field is filled in, keeping the row's audit notes. Nothing
+  else moves: a differing claim is never overwritten (still `skipped`), a field
+  the row already has is never replaced, confidence never changes and a retired
+  row is left alone. The response counts these rows in `enriched`, instead of
+  `skipped`. UPGRADE ORDER: a 0.4.4 writer drops the rich fields on any id it
+  re-merges, so every host must run this version before rich fields are
+  backfilled into a bible.
 - A re-promotion does NOT reach a clone that already applied the tombstone.
   Import skips an id that already has a local row, so that clone keeps its
   INFERRED row until it is promoted there again; the every-call exception above

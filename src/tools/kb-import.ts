@@ -153,6 +153,15 @@ export interface KbImportReport {
    * tombstones read; the same re-promotion rule as demoted applies.
    */
   retired: number;
+  /**
+   * Rows this clone already held that gained content, recall_cues or
+   * error_signatures from the bible entry with the same id, because the row
+   * holds the same claim (type, title, summary, cited files and, when the
+   * bible carries one, the same basis) but lacked those fields. Counted
+   * instead of skipped. A differing claim is never overwritten (still
+   * skipped), and confidence never moves.
+   */
+  enriched: number;
   sweep: { checked: number; staled: number; unstaled: number };
   /**
    * Present exactly when the bible was read from git rather than the file
@@ -267,7 +276,7 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
   // isolation of capture basis rejections.
   // Tombstones ride along in the same call so entries and demotions can never
   // be applied from two different reads of the file.
-  const { imported, skipped, linked, flagged, rejected, demoted, retired } = await importBibleEntries(
+  const { imported, skipped, linked, flagged, rejected, demoted, retired, enriched } = await importBibleEntries(
     provider,
     bibleDoc.entries,
     { demotions: bibleDoc.demotions },
@@ -311,7 +320,7 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
     : await provider.freshnessSweep(repoAnchor);
 
   const report: KbImportReport = committedSource
-    ? { imported, skipped, linked, flagged, rejected, demoted, retired, sweep, bible_source: committedSource.ref, worktree_ignored: committedSource.worktree_ignored }
-    : { imported, skipped, linked, flagged, rejected, demoted, retired, sweep };
+    ? { imported, skipped, linked, flagged, rejected, demoted, retired, enriched, sweep, bible_source: committedSource.ref, worktree_ignored: committedSource.worktree_ignored }
+    : { imported, skipped, linked, flagged, rejected, demoted, retired, enriched, sweep };
   return JSON.stringify(report);
 }

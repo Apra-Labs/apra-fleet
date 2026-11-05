@@ -1655,6 +1655,55 @@ export class SqliteProvider implements MemoryProvider {
   }
 
   /**
+   * kb_import's upgrade of a POORER local row from the richer bible entry with
+   * the same id (importBibleEntries). The row is filled in only when it holds
+   * the SAME claim as the bible entry -- same type, title, summary and cited
+   * source files, and, when the bible carries a basis (`basis` not null), the
+   * same stored source_file_hashes -- and only for a field the row lacks:
+   * content (the row's lesson body, before any audit note, is empty or just
+   * the summary), recall_cues or error_signatures (empty). A field the row
+   * already has is never overwritten, the row's audit notes are kept, and
+   * nothing else moves (confidence, basis, timestamps). A retired row is left
+   * alone. True when a field was written.
+   */
+  enrichFromBible(
+    id: string,
+    claim: { type: string; title: string; summary: string; source_files: string[]; basis: Record<string, string> | null },
+    rich: { content?: string; recall_cues?: string[]; error_signatures?: string[] },
+  ): boolean {
+    const db = this.getDb();
+    const row = db.prepare(
+      'SELECT type, title, summary, source_files, source_file_hashes, content, recall_cues, error_signatures, superseded_at FROM entries WHERE id = ?'
+    ).get(id) as Record<string, unknown> | undefined;
+    if (!row || row.superseded_at) return false;
+    if (row.type !== claim.type || row.title !== claim.title || row.summary !== claim.summary) return false;
+    const sortedJson = (v: string[]) => JSON.stringify([...v].sort());
+    if (sortedJson(parseStringArray(row.source_files)) !== sortedJson(claim.source_files)) return false;
+    if (claim.basis !== null) {
+      let stored: Record<string, unknown> = {};
+      try { stored = JSON.parse(String(row.source_file_hashes ?? '{}')) as Record<string, unknown>; } catch { stored = {}; }
+      const canon = (m: Record<string, unknown>) => JSON.stringify(Object.keys(m).sort().map(k => [k, m[k]]));
+      if (canon(stored) !== canon(claim.basis)) return false;
+    }
+    const content = String(row.content ?? '');
+    const note = KB_AUDIT_NOTE_START.exec(content);
+    const body = (note ? content.slice(0, note.index) : content).replace(/\n+$/, '').trim();
+    const fields: { content?: string; recall_cues?: string[]; error_signatures?: string[] } = {};
+    if (rich.content !== undefined && rich.content.trim().length > 0 && rich.content !== claim.summary
+      && (body.length === 0 || body === claim.summary.trim())) {
+      fields.content = rich.content;
+    }
+    if (rich.recall_cues && rich.recall_cues.length > 0 && parseStringArray(row.recall_cues).length === 0) {
+      fields.recall_cues = rich.recall_cues;
+    }
+    if (rich.error_signatures && rich.error_signatures.length > 0 && parseStringArray(row.error_signatures).length === 0) {
+      fields.error_signatures = rich.error_signatures;
+    }
+    if (Object.keys(fields).length === 0) return false;
+    return this.setEntryRichFields(id, fields);
+  }
+
+  /**
    * For each id this KB holds as RETIRED (getRetirementReasons), when: its
    * superseded_at, or null for a row retired by kb_invalidate {files}, which
    * records no time. kb_bible_commit stamps a removal tombstone with it.

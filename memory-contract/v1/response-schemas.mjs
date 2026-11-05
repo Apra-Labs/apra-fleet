@@ -202,6 +202,11 @@ const KB_RESPONSE_BODIES = {
     // tombstones read. OPTIONAL so older fixtures still validate; the handler
     // always emits it.
     retired: z.number().optional(),
+    // Rows the clone already held that gained content, recall_cues or
+    // error_signatures from the same-claim bible entry (counted instead of
+    // skipped). OPTIONAL so older fixtures still validate; the handler always
+    // emits it.
+    enriched: z.number().optional(),
     sweep: z.object({
       checked: z.number(),
       staled: z.number(),

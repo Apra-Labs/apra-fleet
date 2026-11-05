@@ -819,6 +819,9 @@
  *   different from summary (the KB's own audit notes cut first), at most 2000
  *   characters (longer content is truncated, ending in '...[truncated]'). Absent:
  *   kb_import stores content = summary; a malformed or over-length value is dropped.
+ *   kb_import also fills content, recall_cues and error_signatures into a local row
+ *   with the same id that lacks them, when the row holds the same claim (reported
+ *   in its response's enriched count); a differing claim is never overwritten.
  * @property {string[]} [recall_cues] - Optional search phrasings for the entry; written only when non-empty.
  * @property {string[]} [error_signatures] - Optional verbatim error strings the entry
  *   explains; written only when non-empty.

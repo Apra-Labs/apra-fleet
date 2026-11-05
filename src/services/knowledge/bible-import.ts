@@ -308,6 +308,15 @@ function bibleContentFor(entry: BibleEntry): string {
   return synthesizeContent(entry);
 }
 
+// The entry's own `content`, when it is a valid one (non-empty, within
+// BIBLE_CONTENT_MAX_LENGTH, not just the summary); undefined otherwise. What
+// enrichment may copy onto a poorer local row -- never the synthesized summary.
+function bibleRichContentOf(entry: BibleEntry): string | undefined {
+  const c = entry.content;
+  if (typeof c === 'string' && c.length > 0 && c.length <= BIBLE_CONTENT_MAX_LENGTH && c !== entry.summary) return c;
+  return undefined;
+}
+
 // A bible string-array field: absent or not an array -> [] (field dropped);
 // an array keeps its string elements only.
 function bibleStringArray(v: unknown): string[] {
@@ -333,14 +342,22 @@ export interface BibleImportCounts {
    * demoted, rows changed, not tombstones read.
    */
   retired: number;
+  /**
+   * Local rows (ids the clone already held) that gained content, recall_cues
+   * or error_signatures from the same-claim bible entry: SqliteProvider.
+   * enrichFromBible. Counted here INSTEAD of skipped; a row with a differing
+   * claim, or nothing to fill, stays counted as skipped.
+   */
+  enriched: number;
 }
 
 /**
  * Import raw bible entries into a SqliteProvider through capture()'s INTERNAL
  * import mode: bible confidence preserved for non-directive types, directives
  * quarantined as pending proposals, source='import'. Malformed entries and
- * entries whose id already exists are skipped; entries failing the capture
- * basis check are counted as rejected. No freshness sweep (callers decide).
+ * entries whose id already exists are skipped (an existing row holding the same
+ * claim but lacking rich fields is enriched instead -- see enriched);
+ * entries failing the capture basis check are counted as rejected. No freshness sweep (callers decide).
  */
 export interface BibleImportOptions {
   /**
@@ -374,6 +391,7 @@ export async function importBibleEntries(
   let rejected = 0;
   let demoted = 0;
   let retired = 0;
+  let enriched = 0;
 
   // A bible that carries BOTH an entry and a tombstone for the same id is
   // self-contradictory, and "the file says both" must resolve to the DEMOTION
@@ -403,6 +421,24 @@ export async function importBibleEntries(
     // This is what makes re-import EXACT even for symbol-less/file-less entries
     // AUDN can never dedupe.
     if (provider.hasEntry(entry.id)) {
+      // ENRICH: the clone already holds this id. When the row is the SAME
+      // claim but lacks rich fields the bible entry carries (a row captured or
+      // imported before content/cues/signatures existed, or re-merged by an
+      // older writer that dropped them), fill those fields in. A differing
+      // claim, or a row that already has the fields, is untouched and skipped.
+      // Never in verbatim mode (the member view starts empty anyway).
+      if (options.verbatim !== true && provider.enrichFromBible(entry.id, {
+        type: entry.type, title: entry.title, summary: entry.summary,
+        source_files: (entry.source_files ?? []).filter((f): f is string => typeof f === 'string'),
+        basis: carriedBasisOf(entry),
+      }, {
+        content: bibleRichContentOf(entry),
+        recall_cues: bibleStringArray(entry.recall_cues),
+        error_signatures: bibleStringArray(entry.error_signatures),
+      })) {
+        enriched++;
+        continue;
+      }
       skipped++;
       continue;
     }
@@ -489,5 +525,5 @@ export async function importBibleEntries(
     }
   }
 
-  return { imported, skipped, linked, flagged, rejected, demoted, retired };
+  return { imported, skipped, linked, flagged, rejected, demoted, retired, enriched };
 }

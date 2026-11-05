@@ -655,7 +655,13 @@ promotion/demotion/clamp/feedback/reconcile notes are cut first) and is
 truncated to 2000 characters; the arrays are written only when non-empty. An
 entry without them is written exactly as before. `kbImport` stores them when
 present (content defaults to the summary) and drops a malformed value without
-skipping the entry.
+skipping the entry. For an id the clone already holds, `kb_import` fills in the
+fields the local row lacks when the row holds the same claim (same type, title,
+summary, cited files and, when the entry carries one, the same basis); a
+differing claim is never overwritten and confidence never moves. Its response
+counts those rows in `enriched` (and rows retired by a superseded or
+invalidated tombstone in `retired`). Run this version on every host before
+backfilling rich fields: a 0.4.4 writer drops them on any id it re-merges.
 
 #### `kbBibleCommit(options: KbBibleCommitOptions)`
 
