@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 140
+    "entry_count": 141
   },
   "entries": [
     {
@@ -675,6 +675,30 @@
         "src/services/knowledge/sqlite-provider.ts": "1ed681d9cbdb65076ed0af9e320e66fa0fac5c0f",
         "src/tools/kb-bible-commit.ts": "baad2cb8e29cdd66210a29ea9cc0af7af003846a",
         "tests/knowledge/kb-bible-removal-tombstones.test.ts": "0838148276608cba549d9553f3153731b7d9d9c3"
+      }
+    },
+    {
+      "id": "3fad8b37-fcf6-46aa-8af9-c1ec8e92fa5c",
+      "type": "learning",
+      "title": "A bible removal tombstone retires a clone row permanently, so a later re-promotion never revives it there",
+      "summary": "applyBibleRetirement sets superseded_at on a clone's CONFIRMED row for a superseded or invalidated tombstone. If the id is later re-promoted, importBibleEntries sees hasEntry and only enriches or skips it, so that clone keeps the row retired.",
+      "symbols": [
+        "applyBibleRetirement",
+        "importBibleEntries",
+        "enrichFromBible",
+        "hasEntry"
+      ],
+      "source_files": [
+        "src/services/knowledge/bible-import.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/tools/kb-bible-commit.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T23:14:33.185Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "0d41536af4a0af94b1f74092e9b120e2f0a26088",
+        "src/services/knowledge/sqlite-provider.ts": "1ed681d9cbdb65076ed0af9e320e66fa0fac5c0f",
+        "src/tools/kb-bible-commit.ts": "baad2cb8e29cdd66210a29ea9cc0af7af003846a"
       }
     },
     {
