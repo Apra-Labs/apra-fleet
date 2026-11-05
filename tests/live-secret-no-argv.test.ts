@@ -37,9 +37,23 @@ describe('inline rewrite', () => {
     expect(rewriteInlineScript(INLINE, BINDINGS, 'darwin')).toBe('curl --token "$FLEET_SECRET_sp_secret" https://x');
   });
 
-  it('PowerShell: $env: reference', () => {
-    expect(rewriteInlineScript(INLINE, BINDINGS, 'win32')).toBe('curl --token $env:FLEET_SECRET_sp_secret https://x');
+  it('PowerShell: braced env reference', () => {
+    expect(rewriteInlineScript(INLINE, BINDINGS, 'win32')).toBe('curl --token ${env:FLEET_SECRET_sp_secret} https://x');
   });
+
+  it('a word character right after the placeholder cannot change which variable is read', () => {
+    expect(rewriteInlineScript('{{secret.sp-secret}}_x', BINDINGS, 'win32')).toBe('${env:FLEET_SECRET_sp_secret}_x');
+    expect(rewriteInlineScript('{{secret.sp-secret}}_x', BINDINGS, 'linux')).toBe('"$FLEET_SECRET_sp_secret"_x');
+  });
+
+  it.skipIf(process.platform !== 'win32')('Windows only: PowerShell reads the right variable with a word character after it', async () => {
+    const invocation = buildLiveInvocation(
+      { inline: `$tok = "{{secret.sp-secret}}_x"; '{"token":"' + $tok + '","expires_at":"2099-01-01T00:00:00Z"}'`, bindings: BINDINGS },
+      'win32',
+    );
+    const out = await runLiveSecret({ credential: 'delim', invocation, env: { FLEET_SECRET_sp_secret: 'value' } });
+    expect(out.token).toBe('value_x');
+  }, 30_000);
 
   it('rewrites every occurrence', () => {
     expect(rewriteInlineScript('{{secret.sp-secret}} {{secret.sp-secret}}', BINDINGS, 'linux'))
@@ -58,7 +72,7 @@ describe('invocations carry references only', () => {
     const inv = buildLiveInvocation({ inline: INLINE, bindings: BINDINGS }, 'win32', tools);
     expect(inv.file).toBe('C:\\Windows\\System32\\powershell.exe');
     expect(inv.args.slice(0, 5)).toEqual(['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand']);
-    expect(decodePowerShell(inv.args[5])).toBe('curl --token $env:FLEET_SECRET_sp_secret https://x');
+    expect(decodePowerShell(inv.args[5])).toBe('curl --token ${env:FLEET_SECRET_sp_secret} https://x');
   });
 
   it('script file on POSIX and Windows: the bound env var is not in argv at all', () => {

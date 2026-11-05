@@ -121,7 +121,9 @@ export function envVarForSecret(name: string): string {
 export function rewriteInlineScript(script: string, bindings: LiveSecretBinding[], platform: NodeJS.Platform): string {
   let out = script;
   for (const { env, secret } of bindings) {
-    const reference = platform === 'win32' ? `$env:${env}` : `"$${env}"`;
+    // Braced on PowerShell: `$env:NAME_x` would read a different variable when a
+    // word character follows the placeholder. The bash form is delimited by its quote.
+    const reference = platform === 'win32' ? `\${env:${env}}` : `"$${env}"`;
     out = out.replaceAll(formatSecretToken(secret), reference);
   }
   return out;

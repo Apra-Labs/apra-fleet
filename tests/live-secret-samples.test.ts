@@ -6,6 +6,7 @@
  * breaks a sample fails here.
  */
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -20,6 +21,7 @@ import {
 } from '../src/services/credential-store.js';
 import { mintLiveSecret } from '../src/services/live-secret-cache.js';
 import { findExecutableOnPath } from '../src/utils/find-on-path.js';
+import { windowsSystemTool } from '../src/os/windows-executable.js';
 
 const DOC = fs.readFileSync(path.resolve(__dirname, '..', 'docs', 'knowledge-layer.md'), 'utf-8').replace(/\r\n/g, '\n');
 const WIN = process.platform === 'win32';
@@ -42,7 +44,7 @@ function sample(name: string): string {
 
 /** The script of a one-line `secret --live NAME --inline '...'` sample. */
 function inlineOf(name: string): string {
-  const m = sample(name).match(/--inline '(.*)'$/);
+  const m = sample(name).split('\n')[0].match(/--inline '(.*)'$/);
   if (!m) throw new Error(`sample ${name} is not an inline registration`);
   return m[1];
 }
@@ -155,11 +157,28 @@ describe.skipIf(!WIN)('PowerShell samples (Windows)', () => {
   });
 
   it('Entra ID through az, inline', async () => {
-    const out = await mint(`az_${RUN}`, { inline: inlineOf('az-powershell') });
+    // A doubled single quote in a PowerShell string is one literal quote.
+    const out = await mint(`az_${RUN}`, { inline: inlineOf('az-powershell').replace(/''/g, "'") });
     expect(out.token).toBe(TOKEN);
     expect(Date.parse(out.expiresAt)).toBe(EXPIRES_ON * 1000);
     expect(fs.readFileSync(log('az.args'), 'utf8')).toContain('account get-access-token --resource api://kb-app');
   }, 60_000);
+
+  it('Entra ID through az, the registration line exactly as typed in Windows PowerShell, through the real CLI', () => {
+    const data = path.join(tmp, 'data');
+    fs.mkdirSync(data);
+    const line = sample('az-powershell').split('\n')[0];
+    expect(line.startsWith('apra-fleet secret ')).toBe(true);
+    const typed = line.replace('apra-fleet', `& "${process.execPath}" "${path.resolve(__dirname, '..', 'dist', 'index.js')}"`);
+    const r = spawnSync(windowsSystemTool('powershell') as string, [
+      '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(typed, 'utf16le').toString('base64'),
+    ], { env: { ...process.env, APRA_FLEET_DATA_DIR: data }, encoding: 'utf-8', timeout: 90_000 });
+    expect(r.stderr).not.toContain('FAILED');
+    expect(r.stdout).toMatch(/^OK: expires 2100-01-01T/);
+    expect(fs.readFileSync(log('az.args'), 'utf8')).toContain('{t:accessToken,e:expires_on}');
+    const stored = JSON.parse(fs.readFileSync(path.join(data, 'credentials.json'), 'utf-8')).credentials.KB_TOKEN;
+    expect(stored.inline).toContain(".ToString('o')");
+  }, 120_000);
 
   it('generic OAuth: the bound secret goes in the request body', async () => {
     const secretName = `sp_oauth_${RUN}`;

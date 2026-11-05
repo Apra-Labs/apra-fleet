@@ -660,7 +660,7 @@ kb_setup with provider=http, remote=https://<host>, token={{secret.KB_TOKEN}}
 - **Inline:** the script runs in the orchestrator's shell: bash, or PowerShell
   on Windows. A `{{secret.R}}` behaves like text replacement, but it is really
   rewritten to an env var reference (`"$FLEET_SECRET_R"` in bash,
-  `$env:FLEET_SECRET_R` in PowerShell), so the value is never on a command line
+  `${env:FLEET_SECRET_R}` in PowerShell), so the value is never on a command line
   and needs no escaping. Use it bare, as in execute_command, never inside your
   own quotes. A `-` in the name becomes `_` in the env var, and two names that
   then collide (they also collide when they differ only by case) are refused.
@@ -798,8 +798,11 @@ apra-fleet secret --live KB_TOKEN --inline 'az account get-access-token --resour
 
 <!-- live-secret-sample:az-powershell -->
 ```powershell
-apra-fleet secret --live KB_TOKEN --inline '$t = (az account get-access-token --resource api://kb-app --query "{t:accessToken,e:expires_on}" -o json | Out-String) | ConvertFrom-Json; @{ token = $t.t; expires_at = [DateTimeOffset]::FromUnixTimeSeconds([long]$t.e).ToString("o") } | ConvertTo-Json -Compress'
+apra-fleet secret --live KB_TOKEN --inline '$t = (az account get-access-token --resource api://kb-app --query ''{t:accessToken,e:expires_on}'' -o json | Out-String) | ConvertFrom-Json; @{ token = $t.t; expires_at = [DateTimeOffset]::FromUnixTimeSeconds([long]$t.e).ToString(''o'') } | ConvertTo-Json -Compress'
 ```
+
+Typed in PowerShell, use doubled single quotes inside the script as shown:
+Windows PowerShell strips double quotes from an argument it hands to a program.
 
 **Sample: Entra ID service principal, bash.** Save it as `/opt/kb/mint-sp.sh` and
 `chmod 755` it. The client secret goes to curl on stdin (`client_secret@-`), so
