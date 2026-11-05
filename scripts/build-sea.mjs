@@ -58,3 +58,29 @@ await build({
 });
 
 console.log(`Bundle written to dist/sea-bundle.cjs`);
+
+// KB embed worker: the model loads and runs in a worker_thread (see
+// src/services/knowledge/embedding/worker-runtime.ts). A SEA has no script
+// file to hand new Worker(), so the worker is bundled on its own into a
+// self-contained CommonJS script that gen-sea-config.mjs embeds as the SEA
+// asset 'kb/embed-worker.cjs' (EMBED_WORKER_SEA_ASSET) and worker-runtime.ts
+// runs with eval. The same file next to sea-bundle.cjs serves a plain-Node run
+// of the bundle. The banner must match EMBED_WORKER_BANNER in worker-runtime.ts.
+await build({
+  entryPoints: [join(root, 'src', 'services', 'knowledge', 'embedding', 'embed-worker.ts')],
+  bundle: true,
+  platform: 'node',
+  target: 'node22',
+  format: 'cjs',
+  outfile: join(root, 'dist', 'kb-embed-worker.cjs'),
+  sourcemap: false,
+  minify: false,
+  define: { 'import.meta.url': 'import_meta_url' },
+  banner: {
+    js: 'var import_meta_url = (typeof __filename === "string" && require("path").isAbsolute(__filename)) '
+      + '? require("url").pathToFileURL(__filename).href : "file:///kb-embed-worker.cjs";',
+  },
+  loader: { '.node': 'empty' },
+});
+
+console.log('KB embed worker written to dist/kb-embed-worker.cjs');

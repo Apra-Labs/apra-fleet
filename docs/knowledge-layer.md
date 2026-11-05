@@ -986,9 +986,18 @@ in the background; queries only ever compare vectors of the active model.
 - **Model source.** Downloads are lazy and verified against a pinned sha256.
   A custom hub model whose revision is left at the default `main` is mutable,
   so pin a revision for reproducibility.
-- **Event loop.** The ONNX runtime runs on the server's main thread. The embed
-  queue yields only between batches, so a batch of entries can stall the event
-  loop for seconds on CPU. Tests with a fake async embedder do not show this.
+- **Event loop.** The ONNX runtime runs in a worker thread
+  (`src/services/knowledge/embedding/worker-runtime.ts` spawns
+  `embed-worker.ts`): model load and every document and query embedding run
+  there, and the main thread only posts texts and receives vectors, so a
+  rebuild never stalls tool calls or `/health`. The worker starts on the first
+  embedding, is terminated on server shutdown, and a worker crash marks the
+  embedder failed (keyword search keeps serving). In the SEA binary the worker
+  script and the onnxruntime-web WASM are embedded assets
+  (`kb/embed-worker.cjs`, built by `scripts/build-sea.mjs`). Check a host or
+  binary with `apra-fleet kb embed-check [--model-dir <folder>] [--text <t>]`,
+  which embeds one text through the worker and prints one JSON line
+  (`ok`, `origin` of the worker script, `dims`).
 - **Member bible view.** The member-side CONFIRMED view does not attach an
   embedder, so member reads of the bible (including engine knowledge
   injection) get keyword, error and anchor lists but no semantic list.

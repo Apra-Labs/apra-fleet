@@ -105,10 +105,10 @@ describe('poolAndNormalize', () => {
 });
 
 describe('embedder import graph', () => {
-  it('reaches no native .node addon (onnxruntime-node, sharp) -- SEA-safe', async () => {
+  it.each(['embedder.ts', 'embed-worker.ts'])('%s reaches no native .node addon (onnxruntime-node, sharp) -- SEA-safe', async (entry) => {
     const root = path.resolve(__dirname, '..', '..');
     const result = await build({
-      entryPoints: [path.join(root, 'src', 'services', 'knowledge', 'embedding', 'embedder.ts')],
+      entryPoints: [path.join(root, 'src', 'services', 'knowledge', 'embedding', entry)],
       bundle: true,
       platform: 'node',
       format: 'cjs',
@@ -119,7 +119,8 @@ describe('embedder import graph', () => {
       define: { 'import.meta.url': 'import_meta_url' },
     });
     const inputs = Object.keys(result.metafile!.inputs);
-    expect(inputs.some((p) => p.includes('onnxruntime-web'))).toBe(true);
+    // The model runtime lives in the worker bundle; the main-thread module only spawns it.
+    if (entry === 'embed-worker.ts') expect(inputs.some((p) => p.includes('onnxruntime-web'))).toBe(true);
     expect(inputs.filter((p) => p.endsWith('.node'))).toEqual([]);
     expect(inputs.filter((p) => /onnxruntime-node|[\\/]sharp[\\/]|@huggingface[\\/]transformers/.test(p))).toEqual([]);
   });

@@ -338,6 +338,17 @@ if (!existsSync(ortWasm)) {
 }
 assets['onnxruntime-web/ort-wasm-simd-threaded.wasm'] = ortWasm;
 
+// KB embed worker script (built by build-sea.mjs). The asset name must equal
+// EMBED_WORKER_SEA_ASSET in src/services/knowledge/embedding/worker-runtime.ts:
+// in the binary the worker is started from this asset's source (eval), since
+// a SEA has no script file on disk.
+const embedWorker = join(distDir, 'kb-embed-worker.cjs');
+if (!existsSync(embedWorker)) {
+  console.error('Error: dist/kb-embed-worker.cjs is missing (KB embed worker). Run: npm run build:sea');
+  process.exit(1);
+}
+assets['kb/embed-worker.cjs'] = embedWorker;
+
 const seaConfig = {
   main: join(distDir, 'sea-bundle.cjs'),
   output: join(distDir, 'sea-prep.blob'),
