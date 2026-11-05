@@ -460,21 +460,28 @@ export class KbKeywordIndex {
    *
    * opts.trigram folds partial-identifier (trigram) hits in below every
    * full-token hit; AUDN candidate discovery leaves it off.
+   *
+   * opts.column restricts the match to one indexed column (e.g.
+   * 'error_signatures' for a kb_query error_text) and turns trigram off.
    */
   search(
     s: KeywordSearch,
     conditions: string[],
     params: SQLInputValue[],
     limit: number,
-    opts: { trigram?: boolean } = {}
+    opts: { trigram?: boolean; column?: (typeof KW_COLUMNS)[number] } = {}
   ): Record<string, unknown>[] {
     const db = this.db();
     const cond = conditions.length ? 'AND ' + conditions.join(' AND ') : '';
+    const column = opts.column && (KW_COLUMNS as readonly string[]).includes(opts.column) ? opts.column : undefined;
 
     if (this.isReady()) {
       this.drain();
-      const kw = keywordMatch(s);
-      const tri = opts.trigram ? trigramMatch(s) : '';
+      const bare = keywordMatch(s);
+      // FTS5 column filter: '<col> : ( ... )'. The column name comes from
+      // KW_COLUMNS only, never from caller text.
+      const kw = bare && column ? `${column} : (${bare})` : bare;
+      const tri = opts.trigram && !column ? trigramMatch(s) : '';
       if (!kw && !tri) return [];
       const ctes: string[] = [];
       const bind: SQLInputValue[] = [];
@@ -504,7 +511,7 @@ export class KbKeywordIndex {
 
     // Not ready (rebuild running): legacy index when present, else LIKE.
     const raw = rawTokens(s);
-    if (this.legacyFtsExists()) {
+    if (!column && this.legacyFtsExists()) {
       const legacy = s.terms?.length ? orJoinFtsTerms(s.terms) : orJoinFtsTerms(raw);
       if (!legacy) return [];
       try {
@@ -522,7 +529,9 @@ export class KbKeywordIndex {
     }
     const words = Array.from(new Set(raw.map(w => w.toLowerCase()))).slice(0, MAX_LIKE_TERMS);
     if (words.length === 0) return [];
-    const likeCols = ['e.title', 'e.summary', 'e.content', 'e.symbols', 'e.source_files', 'e.tags'];
+    const likeCols = column
+      ? [`e.${column}`]
+      : ['e.title', 'e.summary', 'e.content', 'e.symbols', 'e.source_files', 'e.tags'];
     const ors: string[] = [];
     const likeParams: SQLInputValue[] = [];
     for (const w of words) {

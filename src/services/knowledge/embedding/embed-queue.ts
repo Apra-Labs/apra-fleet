@@ -47,6 +47,12 @@ export interface EmbedderLike {
   readonly dims: number | undefined;
   readonly tokenLimit: number | null;
   embedDocuments(texts: string[]): Promise<Float32Array[] | null>;
+  /**
+   * Embed a search query (profile query prefix applied); null when disabled
+   * or failed. Optional: an embedder without it gives hybrid search no
+   * semantic list (keyword + anchor only).
+   */
+  embedQuery?(text: string): Promise<Float32Array | null>;
 }
 
 /** Resolves the active embedder at run time (so a swapped process embedder is seen). */

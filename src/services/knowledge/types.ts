@@ -233,6 +233,17 @@ export interface QueryOptions {
   l1_only?: boolean;
   limit?: number;
   ids?: string[];
+  // Hybrid search inputs (kb_query files / symbols / error_text, design D2b).
+  // Optional and additive: a provider that does not implement hybrid search
+  // (HttpKbProvider) ignores them. anchor_files / anchor_symbols rank entries
+  // whose source_files / symbols (or code-index links) touch them; error_text
+  // is matched against error_signatures and joins the semantic query text.
+  anchor_files?: string[];
+  anchor_symbols?: string[];
+  error_text?: string;
+  // INTERNAL ONLY (eval harness and falsifiability tests): ranked lists to
+  // leave out of the fusion. Not on kbQuerySchema or the HTTP route.
+  disable_lists?: Array<'keyword' | 'error' | 'semantic' | 'anchor'>;
 }
 
 export interface KBResult {

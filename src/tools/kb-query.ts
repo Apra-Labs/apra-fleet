@@ -35,7 +35,7 @@ function slimRow(e: Entry): Pick<Entry, 'id' | 'title' | 'summary' | 'confidence
 }
 
 export const kbQuerySchema = z.object({
-  query: z.string().min(1).optional().describe('Free-text search string. Required unless flagged_only is true or tag is provided.'),
+  query: z.string().min(1).optional().describe('Free-text search string. Required unless flagged_only is true or tag, files, symbols or error_text is provided.'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook']).optional()
     .describe('Filter by content type'),
   tag: z.string().optional().describe('Filter to entries whose tags array contains this value (exact match, ANDed alongside other filters -- not an FTS term). May be used alone (no query) to list all entries carrying the tag.'),
@@ -57,6 +57,15 @@ export const kbQuerySchema = z.object({
     .describe('Only return entries whose confidence tier is in this list (e.g. ["CONFIRMED"]). Applies to l1_results, l2_expanded and related_claims alike. Default when omitted: ["CONFIRMED"] -- INFERRED and UNVERIFIED entries are returned only when listed explicitly. Ignored when flagged_only is true.'),
   exclude_disputed: z.boolean().optional()
     .describe('Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default true when confidence is omitted (CONFIRMED-undisputed default); default false when confidence is given explicitly. Ignored when flagged_only is true.'),
+  // Hybrid search inputs (design D2b). Optional and additive: a call without
+  // them returns exactly the keys it always did. Only the local SQLite KB
+  // uses them; an HTTP KB backend ignores them.
+  files: z.array(z.string().min(1)).optional()
+    .describe('Optional file paths you are working on. Entries whose source_files (or code-index links) touch these files rank higher. Additive: omit it and the result is unchanged.'),
+  symbols: z.array(z.string().min(1)).optional()
+    .describe('Optional symbol names you are working on. Entries naming these symbols, or linked one code-graph hop from them, rank higher.'),
+  error_text: z.string().min(1).optional()
+    .describe('Optional error message you hit. Matched against the error_signatures of entries and added to the semantic search text, so an entry that explains this error is returned.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
   // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
   ...KB_REMOVED_SCOPE_KEYS_SHAPE,
@@ -80,6 +89,19 @@ function passesTrustFilter(
 }
 
 type L1Opts = Parameters<MemoryProvider['query']>[0] & { limit: number };
+
+// The hybrid inputs as provider QueryOptions (absent keys stay absent).
+function hybridOpts(input: KbQueryInput): Pick<L1Opts, 'anchor_files' | 'anchor_symbols' | 'error_text'> {
+  return {
+    ...(input.files?.length ? { anchor_files: input.files } : {}),
+    ...(input.symbols?.length ? { anchor_symbols: input.symbols } : {}),
+    ...(input.error_text ? { error_text: input.error_text } : {}),
+  };
+}
+
+function hasHybridInput(input: KbQueryInput): boolean {
+  return Boolean(input.files?.length || input.symbols?.length || input.error_text);
+}
 type Entry = Awaited<ReturnType<MemoryProvider['query']>>['results'][number];
 
 // One provider's L1 page with the trust filter re-applied (see passesTrustFilter).
@@ -132,6 +154,8 @@ async function splitQuery(split: MemberSplitRead, raw: KbQueryInput, defaults: R
     include_stale: input.include_stale ?? false,
     include_superseded: input.include_stale ?? false,
     exclude_disputed: input.exclude_disputed,
+    // Both halves get the hybrid inputs; the merge order below is unchanged.
+    ...hybridOpts(input),
   };
   const bibleInput: KbQueryInput = { ...input, confidence: split.bible.tiers };
   const ownInput: KbQueryInput = { ...input, confidence: split.own.tiers };
@@ -198,7 +222,9 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // Tag-only calls are valid (HIGH-1 fix): the provider's plain (non-FTS)
   // branch supports a queryless listing, so `kb_query({ tag })` lists all
   // entries carrying the tag -- the KB Agent curator's Step 2 depends on it.
-  if (!input.query && !input.flagged_only && !input.tag) {
+  if (!input.query && !input.flagged_only && !input.tag && !hasHybridInput(input)) {
+    // The refusal text is recorded in the memory contract (E-QUERY-NO-SELECTOR);
+    // files/symbols/error_text are additional selectors that avoid it.
     throw new Error('Provide query (free-text search), tag (exact-match tag listing), or flagged_only: true (list contradictions)');
   }
 
@@ -269,6 +295,7 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
     confidence: input.confidence,
     exclude_disputed: input.exclude_disputed,
     owner_tag: ownerTag,
+    ...hybridOpts(input),
   };
 
   // The trust filter runs PER PROVIDER, before the title de-dup below: filtering

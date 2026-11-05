@@ -24,8 +24,9 @@ import { computeFileHashBatch } from './file-hash.js';
 import { KbKeywordIndex, type KeywordIndexStatus } from './kb-index.js';
 import { VectorStore, type VectorModel, type VectorScore } from './embedding/vector-store.js';
 import { buildVectorInputs, type VectorInput } from './embedding/chunker.js';
-import { EmbedQueue, type EmbedderSource, type EmbedQueueStatus } from './embedding/embed-queue.js';
-import { CodeLinkStore, type CodeLinkResolver, type CodeLinksStatus, type ResolvedCodeLink } from './code-links.js';
+import { EmbedQueue, type EmbedderLike, type EmbedderSource, type EmbedQueueStatus } from './embedding/embed-queue.js';
+import { CodeLinkStore, normalizeFileRef, type CodeLinkResolver, type CodeLinksStatus, type ResolvedCodeLink } from './code-links.js';
+import { hybridOrder, ranksFromOrder, ranksFromScores, reciprocalRankFusion, trustPrior, type RankedList } from './hybrid-rank.js';
 import { validateFilePaths } from './path-validation.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
 import { CAPTURE_TRIGGERS, KB_AUDIT_NOTE_START, KbCaptureRejected, type CaptureTrigger, type DiscardResult, type RetireOptions } from './types.js';
@@ -1559,7 +1560,10 @@ export class SqliteProvider implements MemoryProvider {
 
     let rows: Record<string, unknown>[];
 
-    if (opts.query || opts.fts_terms?.length) {
+    const hybrid = opts.flagged_only ? null : await this.hybridRows(opts, conditions, params, limit);
+    if (hybrid) {
+      rows = hybrid;
+    } else if (opts.query || opts.fts_terms?.length) {
       // ONE sanitization point. Free text is tokenized then OR-joined; internal
       // callers pass discrete terms via fts_terms. Raw MATCH threw on '.', '-',
       // '(', ')', '/' and implicit-AND'd multi-term queries to zero rows.
@@ -1594,6 +1598,144 @@ export class SqliteProvider implements MemoryProvider {
     }
 
     return { results, total: results.length, l1_only: opts.l1_only ?? false };
+  }
+
+  /**
+   * The embedder usable for a query-time semantic list, or null. Only an
+   * already-loaded (state 'ready') embedder with embedQuery qualifies: a read
+   * never waits for a model load or download -- the background embed queue
+   * loads it, and until then the search is keyword + anchor only.
+   */
+  private queryEmbedder(): (EmbedderLike & { embedQuery(text: string): Promise<Float32Array | null> }) | null {
+    const emb = this.embedderSource?.() ?? null;
+    if (!emb || typeof emb.embedQuery !== 'function') return null;
+    if (emb.modelId === null || emb.revision === null || emb.state.state !== 'ready') return null;
+    return emb as EmbedderLike & { embedQuery(text: string): Promise<Float32Array | null> };
+  }
+
+  /**
+   * Hybrid search (design D2b): reciprocal rank fusion of up to four ranked
+   * lists -- keyword (query text), error (error_text against
+   * error_signatures), semantic (query text + error_text, best vector of the
+   * active model) and anchor (entries whose source_files / symbols or
+   * code-index links touch anchor_files / anchor_symbols) -- then trust
+   * priors (hybrid-rank.ts). Every row returned passes `conditions`, the
+   * same filters as the keyword path.
+   *
+   * Returns null when there is nothing to fuse beyond the keyword list (no
+   * anchors, no error_text, no ready embedder): the caller then takes the
+   * plain keyword path, so a legacy query without an embedder ranks exactly
+   * as before. A failed or missing embedder only drops the semantic list.
+   */
+  private async hybridRows(
+    opts: QueryOptions,
+    conditions: string[],
+    params: SQLInputValue[],
+    limit: number,
+  ): Promise<Record<string, unknown>[] | null> {
+    const off = new Set(opts.disable_lists ?? []);
+    const queryText = opts.query?.trim() || (opts.fts_terms?.length ? opts.fts_terms.join(' ') : '');
+    const errorText = opts.error_text?.trim() ?? '';
+    const files = (opts.anchor_files ?? []).map(normalizeFileRef).filter(Boolean);
+    const symbols = (opts.anchor_symbols ?? []).map(x => x.trim()).filter(Boolean);
+    const semanticText = [queryText, errorText].filter(Boolean).join('\n');
+
+    const useError = errorText !== '' && !off.has('error');
+    const useAnchor = (files.length > 0 || symbols.length > 0) && !off.has('anchor');
+    const embedder = semanticText !== '' && !off.has('semantic') ? this.queryEmbedder() : null;
+    if (!useError && !useAnchor && !embedder) return null;
+
+    const db = this.getDb();
+    const depth = Math.max(limit * 3, 50);
+    const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+    const lists: RankedList[] = [];
+    const rowById = new Map<string, Record<string, unknown>>();
+    const keep = (rs: Record<string, unknown>[]): string[] => rs.map(r => {
+      rowById.set(r.id as string, r);
+      return r.id as string;
+    });
+
+    if (queryText && !off.has('keyword')) {
+      const search = opts.fts_terms?.length ? { terms: opts.fts_terms } : { query: queryText };
+      lists.push({ name: 'keyword', ranks: ranksFromOrder(keep(this.keywordIndex.search(search, conditions, params, depth, { trigram: true }))) });
+    }
+    if (useError) {
+      const rs = this.keywordIndex.search({ query: errorText }, conditions, params, depth, { column: 'error_signatures' });
+      lists.push({ name: 'error', ranks: ranksFromOrder(keep(rs)) });
+    }
+
+    // Ids that pass every filter: the semantic and anchor lists are built
+    // outside SQL's WHERE, so they are intersected with this set.
+    let admissible: Set<string> | null = null;
+    const admissibleIds = (): Set<string> => {
+      admissible ??= new Set((db.prepare(`SELECT e.id FROM entries e ${where}`).all(...params) as { id: string }[]).map(r => r.id));
+      return admissible;
+    };
+
+    if (useAnchor) {
+      const hits = new Map<string, number>();
+      if (files.length > 0 || symbols.length > 0) {
+        const parts: string[] = [];
+        const anchorParams: SQLInputValue[] = [];
+        if (files.length > 0) {
+          parts.push(`(SELECT COUNT(*) FROM json_each(e.source_files) WHERE replace(json_each.value, '\\', '/') IN (${files.map(() => '?').join(',')}))`);
+          anchorParams.push(...files);
+        }
+        if (symbols.length > 0) {
+          parts.push(`(SELECT COUNT(*) FROM json_each(e.symbols) WHERE json_each.value IN (${symbols.map(() => '?').join(',')}))`);
+          anchorParams.push(...symbols);
+        }
+        const direct = db.prepare(`
+          SELECT id, hits FROM (SELECT e.id AS id, ${parts.join(' + ')} AS hits FROM entries e ${where})
+          WHERE hits > 0
+        `).all(...anchorParams, ...params) as { id: string; hits: number }[];
+        for (const r of direct) hits.set(r.id, Number(r.hits));
+      }
+      // Code-index links (one graph hop for symbols); unfiltered, so intersect.
+      const linked = this.codeLinks.lookupAnchors(files, symbols);
+      if (linked.length > 0) {
+        const ok = admissibleIds();
+        for (const id of linked) if (ok.has(id)) hits.set(id, (hits.get(id) ?? 0) + 1);
+      }
+      if (hits.size > 0) lists.push({ name: 'anchor', ranks: ranksFromScores(hits) });
+    }
+
+    if (embedder) {
+      try {
+        const vec = await embedder.embedQuery(semanticText);
+        if (vec) {
+          const ok = admissibleIds();
+          const scores = this.vectorStore
+            .score(vec, { modelId: embedder.modelId!, revision: embedder.revision!, dims: vec.length })
+            .filter(sc => ok.has(sc.entry_id))
+            .slice(0, depth);
+          if (scores.length > 0) lists.push({ name: 'semantic', ranks: ranksFromOrder(scores.map(sc => sc.entry_id)) });
+        }
+      } catch {
+        // Semantic is best-effort: an embedder error leaves keyword + anchor.
+      }
+    }
+
+    const fused = reciprocalRankFusion(lists);
+    if (fused.size === 0) return [];
+
+    // Load rows for ids no SQL list returned (semantic / anchor only),
+    // re-applying the filters as a backstop.
+    const missing = [...fused.keys()].filter(id => !rowById.has(id));
+    for (let i = 0; i < missing.length; i += 500) {
+      const chunk = missing.slice(i, i + 500);
+      const idCond = `e.id IN (${chunk.map(() => '?').join(',')})`;
+      const rs = db.prepare(`SELECT e.* FROM entries e WHERE ${[idCond, ...conditions].join(' AND ')}`)
+        .all(...chunk, ...params) as Record<string, unknown>[];
+      for (const r of rs) rowById.set(r.id as string, r);
+    }
+    for (const id of [...fused.keys()]) if (!rowById.has(id)) fused.delete(id);
+
+    const order = hybridOrder(fused, (id) => {
+      const r = rowById.get(id)!;
+      return trustPrior({ confidence: r.confidence as string, use_count: Number(r.use_count ?? 0), stale: Number(r.stale ?? 0) === 1 });
+    }, lists[0] ? [...lists[0].ranks.keys()] : []);
+    return order.slice(0, limit).map(id => rowById.get(id)!);
   }
 
   async context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean, ownerTag?: string): Promise<FileContextResult[]> {

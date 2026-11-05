@@ -61,6 +61,12 @@ export class FakeEmbedder implements EmbedderLike {
     if (this.failure !== null) return null;
     return texts.map(t => this.embed(t));
   }
+
+  /** Query-side embedding (no prefix); null once failed, like the real Embedder. */
+  async embedQuery(text: string): Promise<Float32Array | null> {
+    if (this.failure !== null) return null;
+    return this.embed(text);
+  }
 }
 
 /** Resolve once cond() holds (polls every 2 ms), or throw after timeoutMs. */
