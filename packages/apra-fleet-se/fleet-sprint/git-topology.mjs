@@ -614,7 +614,8 @@ export async function resolveReviewMergeBase({ command, member, baseBranch, bran
 
 /**
  * Final Review's review diff base: `resolve(member)` (resolveReviewMergeBase
- * bound to the sprint), retried ONCE. A second failure throws a GitSyncError
+ * bound to the sprint), retried ONCE on a GitSyncError (any other error,
+ * e.g. a CancelledError, propagates unchanged). A second failure throws a GitSyncError
  * that says the Final Review was not dispatched, that the sprint's pushed
  * work is untouched, and how to relaunch. Never falls back to a local base.
  *
@@ -626,10 +627,15 @@ export async function resolveFinalReviewMergeBase(resolve, { member, branch, bas
     try {
         return await resolve(member);
     } catch (first) {
-        log(`[Review Base] Final Review: could not compute the review diff base on member '${member}' (${first && first.message}) -- retrying once.`);
+        // Only a git-sync failure is retried and re-worded. Anything else --
+        // an operator cancel (CancelledError), a budget stop, a bug --
+        // propagates unchanged and is not retried.
+        if (!(first instanceof GitSyncError)) throw first;
+        log(`[Review Base] Final Review: could not compute the review diff base on member '${member}' (${first.message}) -- retrying once.`);
         try {
             return await resolve(member);
         } catch (second) {
+            if (!(second instanceof GitSyncError)) throw second;
             const message =
                 `[Review Base] Final Review was NOT dispatched: the review diff base (git merge-base origin/${baseBranch} ${branch}) ` +
                 `could not be computed on member '${member}' after one retry, and the review never falls back to the local '${baseBranch}' branch. ` +

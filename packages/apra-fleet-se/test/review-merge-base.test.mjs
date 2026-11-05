@@ -8,7 +8,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { CancelledError } from '@apralabs/apra-fleet-workflow';
 import { resolveReviewMergeBase, resolveFinalReviewMergeBase } from '../fleet-sprint/git-topology.mjs';
+import { GitSyncError } from '../fleet-sprint/errors.mjs';
 import { buildReviewerPrompt, buildFinalVerdictPrompt, reviewDiffRange } from '../fleet-sprint/prompts.mjs';
 import { createGitRepoFixture, probeGitRepoFixtureSupport } from './helpers/git-repo-fixture.mjs';
 import { runOnce, uniqueMockBranch, withScenarioMarkers, MOCK_REVIEW_MERGE_BASE_SHA } from './helpers/mock-sprint-harness.mjs';
@@ -90,7 +92,7 @@ test('a failed or non-SHA merge-base fails loudly', async () => {
 test('Final Review base: a transient failure is retried once and succeeds', async () => {
     let n = 0;
     const logs = [];
-    const resolve = async () => { n += 1; if (n === 1) throw new Error('fetch failed'); return SHA; };
+    const resolve = async () => { n += 1; if (n === 1) throw new GitSyncError('[Review Base] fetch failed'); return SHA; };
     const sha = await resolveFinalReviewMergeBase(resolve, { member: 'm1', branch: 'feat/x', baseBranch: 'main', log: (m) => logs.push(m) });
     assert.equal(sha, SHA);
     assert.equal(n, 2);
@@ -99,7 +101,7 @@ test('Final Review base: a transient failure is retried once and succeeds', asyn
 
 test('Final Review base: a second failure is a loud GitSyncError with a relaunch hint', async () => {
     let n = 0;
-    const resolve = async () => { n += 1; throw new Error(`fetch failed #${n}`); };
+    const resolve = async () => { n += 1; throw new GitSyncError(`fetch failed #${n}`); };
     await assert.rejects(
         resolveFinalReviewMergeBase(resolve, { member: 'm1', branch: 'feat/x', baseBranch: 'main' }),
         (err) => err.name === 'GitSyncError'
@@ -109,6 +111,44 @@ test('Final Review base: a second failure is a loud GitSyncError with a relaunch
             && /relaunch the sprint on the same branch 'feat\/x' with base 'main'/.test(err.message),
     );
     assert.equal(n, 2, 'exactly one retry');
+});
+
+for (const [name, make] of [
+    ['a CancelledError (operator stop)', () => new CancelledError('stopped by operator')],
+    ['a generic Error', () => new Error('unexpected bug')],
+]) {
+    test(`Final Review base: ${name} from the first attempt propagates unchanged, with no retry`, async () => {
+        let n = 0;
+        const logs = [];
+        const thrown = make();
+        const resolve = async () => { n += 1; throw thrown; };
+        await assert.rejects(
+            resolveFinalReviewMergeBase(resolve, { member: 'm1', branch: 'feat/x', baseBranch: 'main', log: (m) => logs.push(m) }),
+            (err) => err === thrown && !(err instanceof GitSyncError),
+        );
+        assert.equal(n, 1, 'no retry');
+        assert.ok(!logs.some((m) => /retrying once/.test(m)), 'no retry log line');
+    });
+}
+
+test('Final Review base: a CancelledError on the retry propagates unchanged, not re-worded', async () => {
+    let n = 0;
+    const cancel = new CancelledError('stopped by operator');
+    const resolve = async () => { n += 1; throw n === 1 ? new GitSyncError('fetch failed') : cancel; };
+    await assert.rejects(
+        resolveFinalReviewMergeBase(resolve, { member: 'm1', branch: 'feat/x', baseBranch: 'main' }),
+        (err) => err === cancel,
+    );
+    assert.equal(n, 2);
+});
+
+test('resolveReviewMergeBase: a CancelledError from command() propagates unchanged', async () => {
+    const cancel = new CancelledError('stopped by operator');
+    const command = async () => { throw cancel; };
+    await assert.rejects(
+        resolveReviewMergeBase({ command, member: 'm1', baseBranch: 'main', branch: 'feat/x' }),
+        (err) => err === cancel,
+    );
 });
 
 test('both prompts print <sha>..<branch>, say to use exactly that range, and never a bare <base>..<branch>', () => {
