@@ -130,6 +130,14 @@
       "source": "authored"
     },
     {
+      "id": "q-1c6f3afa",
+      "query": "semantic search still matches an entry after it was retired, or a fresh capture has no meaning-based coverage yet",
+      "expected": [
+        "1c6f3afa-f936-4ca5-a1df-e00dc51f24a4"
+      ],
+      "source": "authored"
+    },
+    {
       "id": "q-20a4a71f",
       "query": "adding a new inactivity limit changed how long an armed timer waits before killing the dispatch",
       "expected": [
@@ -286,6 +294,14 @@
       "query": "windows reports not enough memory resources during a fetch, yet the failure text I get is cryptic",
       "expected": [
         "44d154ae-2927-443c-bdae-fa7aa15f8f1f"
+      ],
+      "source": "authored"
+    },
+    {
+      "id": "q-45a64b2d",
+      "query": "knowledge search fails with a database busy error while another process is writing",
+      "expected": [
+        "45a64b2d-bf11-4967-8b69-d63e25332825"
       ],
       "source": "authored"
     },
@@ -570,6 +586,14 @@
       "source": "authored"
     },
     {
+      "id": "q-87f501b6",
+      "query": "search handed back more rows than the number I asked for after combining shared and repo knowledge",
+      "expected": [
+        "87f501b6-48cb-462b-b112-1ca0a294dca0"
+      ],
+      "source": "authored"
+    },
+    {
       "id": "q-8fdf21fa",
       "query": "git push from a freshly provisioned machine asks for a password, the stored login script looks wrongly named",
       "expected": [
@@ -630,6 +654,14 @@
       "query": "file context lookup reports curated memory as outdated every time",
       "expected": [
         "9af40daa-2521-430a-a529-7db25d27da87"
+      ],
+      "source": "authored"
+    },
+    {
+      "id": "q-9b49976a",
+      "query": "how the search index stays current no matter which code path edits a stored entry",
+      "expected": [
+        "9b49976a-e24b-45fb-b25c-6a604cb16be7"
       ],
       "source": "authored"
     },
@@ -1044,6 +1076,7 @@
     {
       "id": "real-miss-resource-not-accessible",
       "query": "agent session on a member fails to open a change request after login provisioning: Resource not accessible by integration",
+      "error_text": "Resource not accessible by integration",
       "expected": [
         "eval-fixture-vcs-scope-push-pr"
       ],

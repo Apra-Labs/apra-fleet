@@ -11,6 +11,9 @@
       "source_files": [
         "src/tools/provision-vcs-auth.ts"
       ],
+      "error_signatures": [
+        "Resource not accessible by integration"
+      ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-11-05T00:00:00.000Z"
     }

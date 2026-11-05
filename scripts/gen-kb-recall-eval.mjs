@@ -31,6 +31,8 @@ const MISS_ENTRY_ID = 'eval-fixture-vcs-scope-push-pr';
 queries.push({
   id: 'real-miss-resource-not-accessible',
   query: 'agent session on a member fails to open a change request after login provisioning: Resource not accessible by integration',
+  // An error-text query: the eval passes this as the kb_query error_text input.
+  error_text: 'Resource not accessible by integration',
   expected: [MISS_ENTRY_ID],
   source: 'owner-notes',
 });
@@ -42,6 +44,8 @@ const extraEntries = [{
   summary: 'A GitHub "Resource not accessible by integration" error on gh pr create means the token was minted with push access only; re-mint it with git_access push+pr.',
   symbols: ['provisionVcsAuth'],
   source_files: ['src/tools/provision-vcs-auth.ts'],
+  // The error this entry explains: what kb_query error_text matches against.
+  error_signatures: ['Resource not accessible by integration'],
   confidence: 'CONFIRMED',
   updated_at: '2026-11-05T00:00:00.000Z',
 }];

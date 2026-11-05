@@ -102,6 +102,19 @@ export function encodeFloat16(vec: Float32Array | number[]): Uint8Array {
   return out;
 }
 
+// float16 bits -> float32 value for all 65536 patterns, built on first use
+// (256 KB). Query scoring decodes every stored vector, so a table read per
+// component instead of a function call is what keeps brute-force compare
+// inside the per-query budget (see score() and packRows()).
+let f16Table: Float32Array | null = null;
+function float16Table(): Float32Array {
+  if (!f16Table) {
+    f16Table = new Float32Array(65536);
+    for (let b = 0; b < 65536; b++) f16Table[b] = float16BitsToFloat32(b);
+  }
+  return f16Table;
+}
+
 /** Unpack a little-endian float16 BLOB into a float32 vector. */
 export function decodeFloat16(bytes: Uint8Array): Float32Array {
   const n = Math.floor(bytes.byteLength / 2);
@@ -140,7 +153,57 @@ export const INVALIDATED_HASH = 'invalidated';
 /** SQL predicate over alias e: the entry is live (neither superseded nor invalidated). */
 export const LIVE_ENTRY_SQL = `e.superseded_at IS NULL AND e.content_hash != '${INVALIDATED_HASH}'`;
 
+interface ScoreRow { entry_id: string; kind: VectorKind; ordinal: number; vec: Uint8Array }
+
+/** Cached live vectors of one model, packed: row i is data[i*dims .. (i+1)*dims). */
+interface PackedRows {
+  entryIds: string[];
+  kinds: VectorKind[];
+  ordinals: number[];
+  /** float16 bit patterns, row-major. */
+  data: Uint16Array;
+  /** Squared L2 norm of each row (decoded). */
+  normsSq: Float32Array;
+  dims: number;
+}
+
+function packRows(rows: ScoreRow[], dims: number): PackedRows {
+  const table = float16Table();
+  const data = new Uint16Array(rows.length * dims);
+  const normsSq = new Float32Array(rows.length);
+  const entryIds: string[] = new Array(rows.length);
+  const kinds: VectorKind[] = new Array(rows.length);
+  const ordinals: number[] = new Array(rows.length);
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    entryIds[i] = r.entry_id;
+    kinds[i] = r.kind;
+    ordinals[i] = Number(r.ordinal);
+    const b = r.vec;
+    let nb = 0;
+    const base = i * dims;
+    // A malformed BLOB (wrong length) packs as zeros and scores 0.
+    if (b.byteLength === dims * 2) {
+      for (let k = 0, j = 0; k < dims; k++, j += 2) {
+        const bits = b[j] | (b[j + 1] << 8);
+        data[base + k] = bits;
+        const v = table[bits];
+        nb += v * v;
+      }
+    }
+    normsSq[i] = nb;
+  }
+  return { entryIds, kinds, ordinals, data, normsSq, dims };
+}
+
 export class VectorStore {
+  // Query-time cache of the live vectors of one model (the active one), so a
+  // query does not re-read every BLOB from SQLite. Valid while kb_vec_gen.gen
+  // -- bumped by triggers on every entry_vectors insert/update/delete, from
+  // any connection -- is unchanged. Holds the float16 bytes as stored
+  // (2 bytes per dim per vector).
+  private scoreCache: { key: string; gen: number; packed: PackedRows } | null = null;
+
   constructor(private readonly getDb: () => DatabaseSync | null) {}
 
   private db(): DatabaseSync {
@@ -183,7 +246,45 @@ export class VectorStore {
         DELETE FROM entry_vectors WHERE entry_id = old.id;
         DELETE FROM kb_embed_pending WHERE entry_id = old.id;
       END;
+      CREATE TABLE IF NOT EXISTS kb_vec_gen (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        gen INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO kb_vec_gen (id, gen) VALUES (1, 0);
+      CREATE TRIGGER IF NOT EXISTS entry_vectors_gen_ai AFTER INSERT ON entry_vectors BEGIN
+        UPDATE kb_vec_gen SET gen = gen + 1 WHERE id = 1;
+      END;
+      CREATE TRIGGER IF NOT EXISTS entry_vectors_gen_au AFTER UPDATE ON entry_vectors BEGIN
+        UPDATE kb_vec_gen SET gen = gen + 1 WHERE id = 1;
+      END;
+      CREATE TRIGGER IF NOT EXISTS entry_vectors_gen_ad AFTER DELETE ON entry_vectors BEGIN
+        UPDATE kb_vec_gen SET gen = gen + 1 WHERE id = 1;
+      END;
     `);
+    this.scoreCache = null;
+  }
+
+  /** Vector-table generation (changes on every vector write, from any connection). */
+  generation(): number {
+    const row = this.db().prepare('SELECT gen FROM kb_vec_gen WHERE id = 1').get() as { gen: number } | undefined;
+    return Number(row?.gen ?? 0);
+  }
+
+  /** Live rows of `model`, packed, from the cache while the generation is unchanged. */
+  private liveRows(model: VectorModel): PackedRows {
+    const key = `${model.modelId}\u0000${model.revision}\u0000${model.dims}`;
+    const gen = this.generation();
+    if (this.scoreCache && this.scoreCache.key === key && this.scoreCache.gen === gen) return this.scoreCache.packed;
+    const rows = this.db().prepare(`
+      SELECT v.entry_id, v.kind, v.ordinal, v.vec
+      FROM entry_vectors v
+      JOIN entries e ON e.id = v.entry_id
+      WHERE v.model_id = ? AND v.model_revision = ? AND v.dims = ?
+        AND ${LIVE_ENTRY_SQL}
+    `).all(model.modelId, model.revision, model.dims) as unknown as ScoreRow[];
+    const packed = packRows(rows, model.dims);
+    this.scoreCache = { key, gen, packed };
+    return packed;
   }
 
   /** Replace every vector of `entryId` under `model` with `vectors`. */
@@ -258,27 +359,50 @@ export class VectorStore {
    */
   score(query: Float32Array, model: VectorModel, opts: { limit?: number; entryIds?: string[] } = {}): VectorScore[] {
     if (query.length !== model.dims) return [];
-    const params: SQLInputValue[] = [model.modelId, model.revision, model.dims];
-    let idFilter = '';
+    let packed: PackedRows;
     if (opts.entryIds) {
       if (opts.entryIds.length === 0) return [];
-      idFilter = ` AND v.entry_id IN (${opts.entryIds.map(() => '?').join(',')})`;
-      params.push(...opts.entryIds);
+      const rows = this.db().prepare(`
+        SELECT v.entry_id, v.kind, v.ordinal, v.vec
+        FROM entry_vectors v
+        JOIN entries e ON e.id = v.entry_id
+        WHERE v.model_id = ? AND v.model_revision = ? AND v.dims = ?
+          AND ${LIVE_ENTRY_SQL} AND v.entry_id IN (${opts.entryIds.map(() => '?').join(',')})
+      `).all(model.modelId, model.revision, model.dims, ...opts.entryIds) as unknown as ScoreRow[];
+      packed = packRows(rows, model.dims);
+    } else {
+      packed = this.liveRows(model);
     }
-    const rows = this.db().prepare(`
-      SELECT v.entry_id, v.kind, v.ordinal, v.vec
-      FROM entry_vectors v
-      JOIN entries e ON e.id = v.entry_id
-      WHERE v.model_id = ? AND v.model_revision = ? AND v.dims = ?
-        AND ${LIVE_ENTRY_SQL}${idFilter}
-    `).all(...params) as { entry_id: string; kind: VectorKind; ordinal: number; vec: Uint8Array }[];
-    const best = new Map<string, VectorScore>();
-    for (const r of rows) {
-      const s = cosine(query, decodeFloat16(r.vec));
-      const prev = best.get(r.entry_id);
-      if (!prev || s > prev.score) best.set(r.entry_id, { entry_id: r.entry_id, score: s, kind: r.kind, ordinal: Number(r.ordinal) });
+    const table = float16Table();
+    const { data, normsSq, dims } = packed;
+    let qn = 0;
+    for (let i = 0; i < dims; i++) qn += query[i] * query[i];
+    // Best vector per entry: score and the row index that produced it.
+    const bestScore = new Map<string, number>();
+    const bestRow = new Map<string, number>();
+    const n = packed.entryIds.length;
+    for (let i = 0; i < n; i++) {
+      let s = 0;
+      const nb = normsSq[i];
+      if (qn !== 0 && nb !== 0) {
+        let dot = 0;
+        const base = i * dims;
+        for (let k = 0; k < dims; k++) dot += query[k] * table[data[base + k]];
+        s = dot / Math.sqrt(qn * nb);
+      }
+      const id = packed.entryIds[i];
+      const prev = bestScore.get(id);
+      if (prev === undefined || s > prev) {
+        bestScore.set(id, s);
+        bestRow.set(id, i);
+      }
     }
-    const out = [...best.values()].sort((a, b) => b.score - a.score || a.entry_id.localeCompare(b.entry_id));
+    const out: VectorScore[] = [];
+    for (const [id, sc] of bestScore) {
+      const i = bestRow.get(id)!;
+      out.push({ entry_id: id, score: sc, kind: packed.kinds[i], ordinal: packed.ordinals[i] });
+    }
+    out.sort((a, b) => b.score - a.score || a.entry_id.localeCompare(b.entry_id));
     return opts.limit !== undefined ? out.slice(0, Math.max(0, opts.limit)) : out;
   }
 }

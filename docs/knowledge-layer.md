@@ -924,6 +924,19 @@ down. Every filter (confidence, exclude_disputed, tag, type, include_stale,
 member owner tag) applies to every list. Vector compare is brute force in
 SQLite (no vector database); the budget is under 200 ms per query on CPU.
 
+Measuring it: `node scripts/kb-query-bench.mjs` (after `npm run build`) builds
+a synthetic 5k-entry KB (about 9-10 vectors per entry) in a temp folder and
+prints hybrid query p50/p95 (`--breakdown` times each list alone). Query
+scoring keeps the active model's vectors in memory as float16 (2 bytes per
+dimension per vector, about 36 MB for 5k entries at 384 dims), reloaded only
+when the vector table changes. The recall eval (`tests/knowledge/kb-recall-eval.test.ts`,
+part of `npm test`) reports recall@5 and MRR for keyword-only, hybrid with the
+default model and hybrid with `snowflake-arctic-embed-xs`; the model configs
+print a skip line unless a models folder is given with `APRA_KB_EVAL_MODELS_DIR`
+(or `APRA_KB_EVAL_ALLOW_DOWNLOAD=1` for a manual run). The bench takes
+`APRA_KB_BENCH_MODELS_DIR` / `APRA_KB_BENCH_ALLOW_DOWNLOAD=1` the same way to
+include real query-embedding time.
+
 Fallback: when no model is loaded the semantic list is simply absent and the
 search is keyword + error + anchor, never an error. A read never waits for a
 model load or download: the background embed queue loads the model, and

@@ -2,12 +2,17 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   DEFAULT_CONFIGS, loadQueries, loadEvalEntries, loadEvalProvider, runEval, formatReport,
   recallAtK, meanReciprocalRank, firstHitRank, missingExpectedIds, writeReportFile, type EvalReport,
+  keywordConfig, hybridConfig, MODEL_EMBED_TIMEOUT_MS,
 } from '../helpers/kb-recall-eval.js';
 // @ts-expect-error plain .mjs shared with scripts/gen-kb-recall-eval.mjs
 import { leakage, LEAKAGE_CAP } from '../../scripts/kb-recall-leakage.mjs';
 
 // Recall@5 / MRR over the labelled eval set. The numbers are printed on every
-// run (npm test) so the D2 recall changes can be compared against this baseline.
+// run (npm test) for each config: keyword-only (always), hybrid with the
+// default embedding model and hybrid with an alternative model (each printed
+// as SKIPPED with the reason when the model is not available locally -- npm
+// test never downloads one; point APRA_KB_EVAL_MODELS_DIR at a models folder,
+// or set APRA_KB_EVAL_ALLOW_DOWNLOAD=1 for a manual run, to measure them).
 
 const MISS_QUERY_ID = 'real-miss-resource-not-accessible';
 let ctx: Awaited<ReturnType<typeof loadEvalProvider>>;
@@ -22,7 +27,7 @@ beforeAll(async () => {
     console.log(formatReport(report));
   }
   console.log(`[kb-recall-eval] report file: ${writeReportFile(reports)}`);
-}, 180_000);
+}, 180_000 + 2 * MODEL_EMBED_TIMEOUT_MS);
 afterAll(() => ctx?.cleanup());
 
 describe('recall metrics', () => {
@@ -62,14 +67,69 @@ describe('KB recall eval set', () => {
     expect(r.mrr).toBeGreaterThanOrEqual(FLOOR_MRR);
   });
 
-  it('evaluates and reports the Resource-not-accessible query (top-5 assertion belongs to the hybrid lane)', () => {
-    const miss = reports[0].perQuery.find(p => p.id === MISS_QUERY_ID);
-    expect(miss).toBeDefined();
-    console.log(`[kb-recall-eval] ${MISS_QUERY_ID}: push+pr entry rank=${miss!.rank ?? 'not in top 5'}`);
-    // The labelled entry exists in the eval KB, so a null rank is a true miss
-    // (measured, not an artifact); any rank is acceptable at this stage.
+  // Scope-error case (owner notes): the query carrying 'Resource not
+  // accessible by integration', sent with error_text, MUST return the push+pr
+  // entry within the top 5. Asserted in the keyword-only configuration, which
+  // always runs (error_text is matched against error_signatures through the
+  // normalized FTS index), and in the hybrid configuration when its model is
+  // available. Note: this full query also carries the error in its free text
+  // and the entry's summary quotes it, so on its own this assertion survives
+  // dropping error_text (measured: rank 1 either way); the falsifiable
+  // error_text check is the situation-only test below, where dropping
+  // error_text, or no longer indexing error_signatures, makes it fail.
+  it('scope-error query with error_text returns the push+pr entry in the top 5 (keyword-only and hybrid)', async () => {
     expect(ctx.provider.hasEntry('eval-fixture-vcs-scope-push-pr')).toBe(true);
-    expect(miss!.rank === null || (Number.isInteger(miss!.rank) && miss!.rank >= 1 && miss!.rank <= 5)).toBe(true);
+    const query = loadQueries().find(q => q.id === MISS_QUERY_ID)!;
+    expect(query.error_text).toBe('Resource not accessible by integration');
+
+    const kw = reports.find(r => r.config === keywordConfig.name)!;
+    const kwRank = kw.perQuery.find(p => p.id === MISS_QUERY_ID)!.rank;
+    console.log(`[kb-recall-eval] ${MISS_QUERY_ID}: keyword-only push+pr rank=${kwRank ?? 'not in top 5'}`);
+    expect(kwRank).not.toBeNull();
+    expect(kwRank!).toBeLessThanOrEqual(5);
+
+    const hy = reports.find(r => r.config === hybridConfig.name)!;
+    if (hy.skipped === undefined) {
+      const hyRank = hy.perQuery.find(p => p.id === MISS_QUERY_ID)!.rank;
+      console.log(`[kb-recall-eval] ${MISS_QUERY_ID}: hybrid push+pr rank=${hyRank ?? 'not in top 5'}`);
+      expect(hyRank).not.toBeNull();
+      expect(hyRank!).toBeLessThanOrEqual(5);
+    } else {
+      console.log(`[kb-recall-eval] ${MISS_QUERY_ID}: hybrid not asserted (${hy.skipped})`);
+    }
+  });
+
+  // The error_text path on its own: the same situation with the error moved
+  // OUT of the query text and sent only as error_text. Falsifiability: drop
+  // error_text from this call (the second read below) and the entry falls
+  // from rank 1 to rank 5; stop indexing error_signatures (kb-index.ts
+  // KW_COLUMNS, which the error list's column filter reads) and the
+  // rank-1 assertion fails.
+  it('error_text lifts the scope-error entry to rank 1 over the same situation without it', async () => {
+    const q = loadQueries().find(x => x.id === MISS_QUERY_ID)!;
+    const situation = q.query.replace(q.error_text!, '').replace(/[:\s]+$/, '').trim();
+    expect(situation).not.toMatch(/Resource not accessible/i);
+    const ranked = async (withError: boolean) => (await ctx.provider.query({
+      query: situation,
+      ...(withError ? { error_text: q.error_text } : {}),
+      limit: 20, confidence: ['CONFIRMED'], disable_lists: ['semantic'],
+    })).results.map(e => e.id);
+    const withRank = firstHitRank(await ranked(true), q.expected);
+    const withoutRank = firstHitRank(await ranked(false), q.expected);
+    console.log(`[kb-recall-eval] ${MISS_QUERY_ID} situation-only: with error_text rank=${withRank ?? 'miss'}, without rank=${withoutRank ?? 'miss'}`);
+    // Measured: rank 1 with error_text, rank 5 without it.
+    expect(withRank).toBe(1);
+    expect(withoutRank === null || withoutRank > withRank!).toBe(true);
+  });
+
+  it('reports every config: metrics, or a skip line with the reason', () => {
+    expect(reports.map(r => r.config)).toEqual(DEFAULT_CONFIGS.map(c => c.name));
+    for (const r of reports) {
+      if (r.skipped !== undefined) expect(r.skipped.length).toBeGreaterThan(0);
+      else expect(r.perQuery.length).toBe(r.queries);
+    }
+    // keyword-only never skips.
+    expect(reports[0].skipped).toBeUndefined();
   });
 
   it('imports every eval entry (rejected === 0) and every labelled expected id exists', () => {

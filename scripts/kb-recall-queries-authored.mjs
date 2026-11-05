@@ -134,4 +134,8 @@ export const AUTHORED = {
   'f8b2695a': 'automating secret rotation by piping a token into the command line tool',
   'fbf058a3': 'resume after a failed dispatch started a brand new conversation instead of continuing',
   'ff02b32b': 'orphan sweep killed database servers of a different instance on a shared machine',
+  '1c6f3afa': 'semantic search still matches an entry after it was retired, or a fresh capture has no meaning-based coverage yet',
+  '45a64b2d': 'knowledge search fails with a database busy error while another process is writing',
+  '87f501b6': 'search handed back more rows than the number I asked for after combining shared and repo knowledge',
+  '9b49976a': 'how the search index stays current no matter which code path edits a stored entry',
 };

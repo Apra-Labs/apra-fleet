@@ -1664,37 +1664,46 @@ export class SqliteProvider implements MemoryProvider {
       lists.push({ name: 'error', ranks: ranksFromOrder(keep(rs)) });
     }
 
-    // Ids that pass every filter: the semantic and anchor lists are built
-    // outside SQL's WHERE, so they are intersected with this set.
-    let admissible: Set<string> | null = null;
-    const admissibleIds = (): Set<string> => {
-      admissible ??= new Set((db.prepare(`SELECT e.id FROM entries e ${where}`).all(...params) as { id: string }[]).map(r => r.id));
-      return admissible;
+    // The semantic and code-link lists are built outside SQL's WHERE: keep
+    // only the ids that pass every filter (checked on that bounded id list,
+    // never a scan of the whole table).
+    const admissibleAmong = (ids: string[]): Set<string> => {
+      const ok = new Set<string>();
+      for (let i = 0; i < ids.length; i += 500) {
+        const chunk = ids.slice(i, i + 500);
+        const idCond = `e.id IN (${chunk.map(() => '?').join(',')})`;
+        const rs = db.prepare(`SELECT e.id FROM entries e WHERE ${[idCond, ...conditions].join(' AND ')}`)
+          .all(...chunk, ...params) as { id: string }[];
+        for (const r of rs) ok.add(r.id);
+      }
+      return ok;
     };
 
     if (useAnchor) {
       const hits = new Map<string, number>();
-      if (files.length > 0 || symbols.length > 0) {
-        const parts: string[] = [];
-        const anchorParams: SQLInputValue[] = [];
-        if (files.length > 0) {
-          parts.push(`(SELECT COUNT(*) FROM json_each(e.source_files) WHERE replace(json_each.value, '\\', '/') IN (${files.map(() => '?').join(',')}))`);
-          anchorParams.push(...files);
-        }
-        if (symbols.length > 0) {
-          parts.push(`(SELECT COUNT(*) FROM json_each(e.symbols) WHERE json_each.value IN (${symbols.map(() => '?').join(',')}))`);
-          anchorParams.push(...symbols);
-        }
-        const direct = db.prepare(`
-          SELECT id, hits FROM (SELECT e.id AS id, ${parts.join(' + ')} AS hits FROM entries e ${where})
-          WHERE hits > 0
-        `).all(...anchorParams, ...params) as { id: string; hits: number }[];
-        for (const r of direct) hits.set(r.id, Number(r.hits));
+      // Direct overlap with the entry's own source_files / symbols. instr()
+      // on the stored JSON text (a quoted element) instead of json_each, so
+      // the scan stays cheap on a large KB; stored backslash paths ('\\'
+      // in JSON) are folded to '/' first.
+      const parts: string[] = [];
+      const anchorParams: SQLInputValue[] = [];
+      for (const f of new Set(files)) {
+        parts.push("(instr(replace(e.source_files, '\\\\', '/'), ?) > 0)");
+        anchorParams.push(JSON.stringify(f));
       }
-      // Code-index links (one graph hop for symbols); unfiltered, so intersect.
+      for (const sym of new Set(symbols)) {
+        parts.push('(instr(e.symbols, ?) > 0)');
+        anchorParams.push(JSON.stringify(sym));
+      }
+      const direct = db.prepare(`
+        SELECT id, hits FROM (SELECT e.id AS id, ${parts.join(' + ')} AS hits FROM entries e ${where})
+        WHERE hits > 0
+      `).all(...anchorParams, ...params) as { id: string; hits: number }[];
+      for (const r of direct) hits.set(r.id, Number(r.hits));
+      // Code-index links (one graph hop for symbols); unfiltered, so filter.
       const linked = this.codeLinks.lookupAnchors(files, symbols);
       if (linked.length > 0) {
-        const ok = admissibleIds();
+        const ok = admissibleAmong(linked);
         for (const id of linked) if (ok.has(id)) hits.set(id, (hits.get(id) ?? 0) + 1);
       }
       if (hits.size > 0) lists.push({ name: 'anchor', ranks: ranksFromScores(hits) });
@@ -1704,12 +1713,13 @@ export class SqliteProvider implements MemoryProvider {
       try {
         const vec = await embedder.embedQuery(semanticText);
         if (vec) {
-          const ok = admissibleIds();
-          const scores = this.vectorStore
-            .score(vec, { modelId: embedder.modelId!, revision: embedder.revision!, dims: vec.length })
-            .filter(sc => ok.has(sc.entry_id))
-            .slice(0, depth);
-          if (scores.length > 0) lists.push({ name: 'semantic', ranks: ranksFromOrder(scores.map(sc => sc.entry_id)) });
+          // A wider window than depth, so filtered-out ids do not starve it.
+          const top = this.vectorStore
+            .score(vec, { modelId: embedder.modelId!, revision: embedder.revision!, dims: vec.length }, { limit: depth * 4 })
+            .map(sc => sc.entry_id);
+          const ok = admissibleAmong(top);
+          const ids = top.filter(id => ok.has(id)).slice(0, depth);
+          if (ids.length > 0) lists.push({ name: 'semantic', ranks: ranksFromOrder(ids) });
         }
       } catch {
         // Semantic is best-effort: an embedder error leaves keyword + anchor.
