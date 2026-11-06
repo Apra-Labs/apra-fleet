@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 141
+    "entry_count": 143
   },
   "entries": [
     {
@@ -193,6 +193,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.978Z"
+    },
+    {
+      "id": "10a60056-b879-4e62-b20a-9689e2966c34",
+      "type": "knowledge",
+      "title": "KB keeps the legacy entries_fts for 0.4.4 rollback and repairs it on every init",
+      "summary": "KbKeywordIndex never drops the external-content entries_fts or the entries_ai/ad/au triggers. Every init re-runs 0.4.4's exact statements (LEGACY_FTS_SQL) and runs the FTS5 rebuild when the table was missing, the row count differs, or the integrity check fails.",
+      "symbols": [
+        "KbKeywordIndex.init",
+        "KbKeywordIndex.finish",
+        "LEGACY_FTS_SQL",
+        "buildV044Kb"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-index.ts",
+        "tests/knowledge/kb-keyword-rollback.test.ts",
+        "tests/knowledge/kb-keyword-rollback-044.test.ts",
+        "tests/helpers/v044-kb-build.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T03:59:24.587Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-index.ts": "22aa8ff7dd443cd004d0d3a0895c8656298d4ecd",
+        "tests/helpers/v044-kb-build.ts": "ac326e98195bc3abf684b1f83f85065f954044a0",
+        "tests/knowledge/kb-keyword-rollback-044.test.ts": "3f84f3936adc9da0c004f0d95f7c77e5225da509",
+        "tests/knowledge/kb-keyword-rollback.test.ts": "3c8f3a0b77f32ede4ca7c7c431b70991fe79af45"
+      }
     },
     {
       "id": "1168f68e-99aa-405a-be40-e127e561f1f0",
@@ -1618,6 +1644,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:33.791Z"
+    },
+    {
+      "id": "9345ca85-a2e4-4cac-8556-f43629ab94fc",
+      "type": "learning",
+      "title": "KB FTS term sanitizer ftsSafeTerm must keep Unicode letters or non-ASCII queries are silently dropped",
+      "summary": "ftsSafeTerm (audn.ts) used [A-Za-z0-9_]+, so every normalized query token with a non-ASCII letter vanished before FTS5 MATCH. It now keeps \\p{L}\\p{M}\\p{N}_. Changing normalizer output needs a KB_NORMALIZER_VERSION bump.",
+      "symbols": [
+        "ftsSafeTerm",
+        "orJoinFtsTerms",
+        "splitIdentifier",
+        "KB_NORMALIZER_VERSION"
+      ],
+      "source_files": [
+        "src/services/knowledge/audn.ts",
+        "src/services/knowledge/kb-normalize.ts",
+        "tests/knowledge/kb-normalize.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T03:59:24.023Z",
+      "source_file_hashes": {
+        "src/services/knowledge/audn.ts": "d37001d89bc064cec12c3c1e5911fe47cf3001ab",
+        "src/services/knowledge/kb-normalize.ts": "139b65c2d2dfe80424cc504a2bc5a6985bdddf7c",
+        "tests/knowledge/kb-normalize.test.ts": "625628fdf9784fcddf3f3387fdca4d4b8cb96df4"
+      }
     },
     {
       "id": "93bbfb5a-0681-45d2-9024-ecf14c44a479",
