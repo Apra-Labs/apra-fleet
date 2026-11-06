@@ -244,6 +244,9 @@ export interface QueryOptions {
   // INTERNAL ONLY (eval harness and falsifiability tests): ranked lists to
   // leave out of the fusion. Not on kbQuerySchema or the HTTP route.
   disable_lists?: Array<'keyword' | 'error' | 'semantic' | 'anchor'>;
+  // INTERNAL ONLY (eval floor sweep): override the active model's semantic
+  // similarity floor. Not on kbQuerySchema or the HTTP route.
+  semantic_floor?: number;
 }
 
 export interface KBResult {

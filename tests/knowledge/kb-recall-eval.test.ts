@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import path from 'node:path';
 import {
   DEFAULT_CONFIGS, loadQueries, loadEvalEntries, loadEvalProvider, runEval, formatReport,
   recallAtK, meanReciprocalRank, firstHitRank, missingExpectedIds, writeReportFile, type EvalReport,
   keywordConfig, modelConfigs, MODEL_PROFILES, MODEL_EMBED_TIMEOUT_MS, modelsRequired, formatTable,
+  semanticFloorSweep, formatFloorSweep, NONSENSE_QUERIES,
 } from '../helpers/kb-recall-eval.js';
+import { BUILTIN_EMBEDDING_PROFILES } from '../../src/services/knowledge/embedding/profiles.js';
 // @ts-expect-error plain .mjs shared with scripts/gen-kb-recall-eval.mjs
 import { leakage, LEAKAGE_CAP } from '../../scripts/kb-recall-leakage.mjs';
 
@@ -163,6 +166,37 @@ describe('KB recall eval set', () => {
     expect(withoutRank === null || withoutRank > withRank!).toBe(true);
   });
 
+  // Semantic similarity floor (profiles.ts SEMANTIC_FLOORS): for every model
+  // that loaded, at its configured floor no nonsense query's result differs
+  // from keyword-only, and recall@5 / MRR on the real and authored sets stay
+  // within FLOOR_TOLERANCE of the same model with no floor. Runs in the
+  // nightly real-model lane (models present); a skipped model is reported by
+  // the config test above. Falsifiability: set a model's floor to 0 and the
+  // nonsense assertion fails (26 of 26 nonsense queries change).
+  it('semantic floor: nonsense queries equal keyword-only, recall/MRR within tolerance of no floor (every loaded model)', async () => {
+    const queries = loadQueries();
+    for (const cfg of modelConfigs) {
+      const r = reports.find(x => x.config === cfg.name)!;
+      if (r.skipped !== undefined) continue;
+      const name = MODEL_PROFILES[modelConfigs.indexOf(cfg)];
+      const floor = BUILTIN_EMBEDDING_PROFILES[name].semanticFloor!;
+      const rank = await cfg.setup(ctx.provider);
+      if ('skip' in rank) continue;
+      try {
+        const [none, at] = await semanticFloorSweep(ctx.provider, queries, [null, floor], path.join(ctx.dir, 'kb.sqlite'));
+        console.log(formatFloorSweep(name, [none, at]));
+        expect(at.nonsenseChanged, `${name}: nonsense queries changed at floor ${floor} (of ${NONSENSE_QUERIES.length})`).toBe(0);
+        expect(none.nonsenseChanged, `${name}: the floor is doing nothing`).toBeGreaterThan(0);
+        for (const set of ['real', 'authored'] as const) {
+          expect(at[set].recallAt5, `${name} ${set} recall@5`).toBeGreaterThanOrEqual(none[set].recallAt5 - FLOOR_TOLERANCE);
+          expect(at[set].mrr, `${name} ${set} MRR`).toBeGreaterThanOrEqual(none[set].mrr - FLOOR_TOLERANCE);
+        }
+      } finally {
+        await cfg.teardown?.(ctx.provider);
+      }
+    }
+  }, MODEL_PROFILES.length * MODEL_EMBED_TIMEOUT_MS);
+
   it('reports every config: metrics, or a skip line with the reason', () => {
     expect(reports.map(r => r.config)).toEqual(DEFAULT_CONFIGS.map(c => c.name));
     for (const r of reports) {
@@ -203,3 +237,7 @@ const FLOOR_MRR = 0.75;
 // Real set (42 recorded queries): measured recall@5 1.0000, MRR 0.9083.
 const FLOOR_REAL_RECALL = 0.95;
 const FLOOR_REAL_MRR = 0.85;
+
+// Max recall@5 / MRR loss allowed for the semantic floor against no floor
+// (one query of the 42-query real set is 0.024).
+const FLOOR_TOLERANCE = 0.03;

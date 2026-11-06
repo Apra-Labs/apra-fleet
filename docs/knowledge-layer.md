@@ -936,7 +936,14 @@ keyword (the query text), error (error_text against error_signatures),
 semantic (query text plus error_text, scored by each entry's best vector of
 the active model) and anchor (files/symbols). Trust priors then multiply the
 fused score: CONFIRMED up, the existing `use_count` a small capped lift, stale
-down. Every filter (confidence, exclude_disputed, tag, type, include_stale,
+down. A semantic candidate enters only when its cosine similarity to the
+query is at or above the active model's floor (`SEMANTIC_FLOORS` in
+`src/services/knowledge/embedding/profiles.ts`, derived from the recall eval;
+a custom model has none unless its config sets `semantic_floor`). When no
+semantic candidate clears the floor and the call had no files, symbols or
+error_text, the result is exactly the plain keyword result -- so a nonsense
+query, or kb_session_prime with an unknown symbol, returns what it returned
+before embeddings (nothing). Every filter (confidence, exclude_disputed, tag, type, include_stale,
 member owner tag) applies to every list. Vector compare is brute force in
 SQLite (no vector database); the budget is under 200 ms per query on CPU.
 
@@ -996,7 +1003,9 @@ Set the embedding model in the KB config file (`<FLEET_DIR>/knowledge/config.jso
   search still work.
 - An object for a custom model (`id` of a Hugging Face repo, or `path` of a
   local folder -- exactly one of the two -- plus optional `pooling`,
-  `normalize`, `query_prefix`, `doc_prefix`, `dtype`, `token_limit`).
+  `normalize`, `query_prefix`, `doc_prefix`, `dtype`, `token_limit`,
+  `semantic_floor` -- the minimum cosine similarity, -1 to 1, for a semantic
+  hit; omitted means no floor).
 
 An invalid value logs a warning and uses the default. The model is never
 shipped with fleet: it is downloaded lazily on first use, off the request

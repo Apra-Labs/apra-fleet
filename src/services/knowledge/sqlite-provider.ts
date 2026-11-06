@@ -24,6 +24,7 @@ import { computeFileHashBatch } from './file-hash.js';
 import { KbKeywordIndex, type KeywordIndexStatus } from './kb-index.js';
 import { VectorStore, type VectorModel, type VectorScore } from './embedding/vector-store.js';
 import { buildVectorInputs, type VectorInput } from './embedding/chunker.js';
+import { semanticFloorFor, type EmbeddingProfile } from './embedding/profiles.js';
 import { EmbedQueue, type EmbedderLike, type EmbedderSource, type EmbedQueueStatus } from './embedding/embed-queue.js';
 import { CodeLinkStore, normalizeFileRef, type CodeLinkResolver, type CodeLinksStatus, type ResolvedCodeLink } from './code-links.js';
 import { hybridOrder, ranksFromOrder, ranksFromScores, reciprocalRankFusion, trustPrior, type RankedList } from './hybrid-rank.js';
@@ -1627,6 +1628,12 @@ export class SqliteProvider implements MemoryProvider {
    * anchors, no error_text, no ready embedder): the caller then takes the
    * plain keyword path, so a legacy query without an embedder ranks exactly
    * as before. A failed or missing embedder only drops the semantic list.
+   *
+   * Semantic candidates below the active model's similarity floor
+   * (profiles.ts SEMANTIC_FLOORS) are dropped. When that leaves no semantic
+   * list and there were no anchors or error_text, the result is the plain
+   * keyword result (empty for a nonsense query or an unknown fts_terms
+   * symbol), so loading a model changes nothing for such a caller.
    */
   private async hybridRows(
     opts: QueryOptions,
@@ -1656,9 +1663,11 @@ export class SqliteProvider implements MemoryProvider {
       return r.id as string;
     });
 
+    let keywordRows: Record<string, unknown>[] | null = null;
     if (queryText && !off.has('keyword')) {
       const search = opts.fts_terms?.length ? { terms: opts.fts_terms } : { query: queryText };
-      lists.push({ name: 'keyword', ranks: ranksFromOrder(keep(this.keywordIndex.search(search, conditions, params, depth, { trigram: true }))) });
+      keywordRows = this.keywordIndex.search(search, conditions, params, depth, { trigram: true });
+      lists.push({ name: 'keyword', ranks: ranksFromOrder(keep(keywordRows)) });
     }
     if (useError) {
       const rs = this.keywordIndex.search({ query: errorText }, conditions, params, depth, { column: 'error_signatures' });
@@ -1714,9 +1723,16 @@ export class SqliteProvider implements MemoryProvider {
       try {
         const vec = await embedder.embedQuery(semanticText);
         if (vec) {
+          // Similarity floor (per model, profiles.ts SEMANTIC_FLOORS): a
+          // dense model gives every text some similarity, so without it a
+          // nonsense query would still pull in the least-unrelated entries.
+          const floor = opts.semantic_floor ?? semanticFloorFor(
+            embedder.modelId, embedder.revision, (embedder as { profile?: EmbeddingProfile | null }).profile ?? null,
+          );
           // A wider window than depth, so filtered-out ids do not starve it.
           const top = this.vectorStore
             .score(vec, { modelId: embedder.modelId!, revision: embedder.revision!, dims: vec.length }, { limit: depth * 4 })
+            .filter(sc => sc.score >= floor)
             .map(sc => sc.entry_id);
           const ok = admissibleAmong(top);
           const ids = top.filter(id => ok.has(id)).slice(0, depth);
@@ -1725,6 +1741,14 @@ export class SqliteProvider implements MemoryProvider {
       } catch {
         // Semantic is best-effort: an embedder error leaves keyword + anchor.
       }
+    }
+
+    // Only the semantic list could have made this a hybrid query (no error
+    // text, no anchors) and nothing cleared the floor: answer exactly as the
+    // plain keyword path does (same search, its first `limit` rows), so a
+    // caller who passed nothing new sees no change -- empty for nonsense.
+    if (!useError && !useAnchor && !lists.some(l => l.name === 'semantic')) {
+      return keywordRows ? keywordRows.slice(0, limit) : [];
     }
 
     const fused = reciprocalRankFusion(lists);

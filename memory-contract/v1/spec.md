@@ -1290,7 +1290,9 @@ rank fusion (k = 60) of up to four ranked lists: keyword (the free-text
 `query` against the normalized keyword index), error (`error_text` against
 the entries' `error_signatures`, normalized the same way), semantic (`query`
 plus `error_text` embedded with the active model's query prefix and scored by
-each entry's best-matching vector of that model only) and anchor (entries
+each entry's best-matching vector of that model only; an entry enters it
+only when that cosine similarity is at or above the model's similarity floor,
+so a query with no good match adds nothing) and anchor (entries
 whose `source_files`/`symbols` contain the given files/symbols, or whose
 code-index links touch them, one code-graph hop for symbols). Trust priors
 then multiply the fused score: CONFIRMED up, the existing `use_count` a small
@@ -1300,7 +1302,11 @@ FALLBACK: when no embedding model is loaded (embedding set to `none`, the
 model not yet downloaded, or a failed load) the semantic list is absent and
 the fusion uses keyword + error + anchor only -- never an error, and a read
 never waits for a model download. With no hybrid input and no loaded model
-the order is the plain keyword order. An implementation that does not
+the order is the plain keyword order; likewise with no hybrid input and no
+semantic candidate above the floor the result is exactly the plain keyword
+result (a nonsense query, or `kb_session_prime` with an unknown symbol,
+returns what it returned without a model). Test hook:
+`tests/knowledge/kb-semantic-floor.test.ts`. An implementation that does not
 support them (the HTTP provider, a placeholder for third-party KB backends)
 MUST accept and ignore them. In a MEMBER mixed-tier read both halves receive
 the inputs and the fixed bible-then-own merge order is unchanged. Test hook:

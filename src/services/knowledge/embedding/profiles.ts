@@ -94,6 +94,15 @@ export interface EmbeddingProfile {
   dims?: number;
   /** Maximum tokens per input (inputs are truncated to it; chunking sizes against it). */
   tokenLimit: number;
+  /**
+   * Semantic similarity floor: a semantic-list candidate whose best cosine
+   * similarity to the query is below this never enters hybrid ranking. Every
+   * text gets some similarity under a dense model, so without a floor a
+   * nonsense query still returns the "least unrelated" entries. Built-in
+   * values are derived from the recall eval (see SEMANTIC_FLOORS); a custom
+   * model has none (undefined) unless its config sets semantic_floor.
+   */
+  semanticFloor?: number;
 }
 
 export const DEFAULT_EMBEDDING_PROFILE = 'snowflake-arctic-embed-xs';
@@ -106,7 +115,7 @@ function hubProfile(
   repo: string,
   revision: string,
   hashes: Record<string, string>,
-  rest: Pick<EmbeddingProfile, 'pooling' | 'normalize' | 'queryPrefix' | 'docPrefix' | 'dims' | 'tokenLimit'>,
+  rest: Pick<EmbeddingProfile, 'pooling' | 'normalize' | 'queryPrefix' | 'docPrefix' | 'dims' | 'tokenLimit' | 'semanticFloor'>,
 ): EmbeddingProfile {
   return {
     name,
@@ -122,6 +131,57 @@ function hubProfile(
     dtype: 'q8',
     ...rest,
   };
+}
+
+/**
+ * Per-model semantic similarity floors (EmbeddingProfile.semanticFloor), in
+ * cosine similarity of the query vector to an entry's best vector.
+ *
+ * Chosen on the KB recall eval (tests/helpers/kb-recall-eval.ts, eval KB of
+ * 140 entries; 42 REAL recorded queries, 139 AUTHORED queries) plus its
+ * NONSENSE_QUERIES (26 gibberish / off-topic / unknown-identifier queries,
+ * free text and fts_terms), measured 2026-11-06 with each model loaded.
+ *
+ * Similarity distributions (arctic-xs; the others are shifted up, bge most):
+ *   best score of the labelled entry per query: min 0.537, p10 0.606, p50 0.672
+ *   best score of any unlabelled entry:         p50 0.641, p90 0.694
+ *   best score for a nonsense query:            min 0.447, p50 0.530, max 0.585
+ *   (24 probe queries; two on-topic-ish ones, 'kubernetes helm chart ingress
+ *   nginx' 0.624 and 'SELECT * FROM users' 0.567, are not in NONSENSE_QUERIES)
+ * The two overlap, so no floor separates relevant from irrelevant entries;
+ * the floor only has to stop a query with NO good match from pulling in the
+ * least-unrelated entries, while fused keyword ranking keeps recall.
+ *
+ * Sweep (semanticFloorSweep, floors 0.50-0.70 step 0.01, use_count reset
+ * before each pass): lowest floor at which no nonsense query's result differs
+ * from keyword-only -- arctic-xs 0.59, arctic-s 0.62, bge-small 0.68. The
+ * arctic-xs floor is set one step higher for margin.
+ *   model       floor  real R@5/MRR (no floor)        authored R@5/MRR (no floor)
+ *   arctic-xs   0.60   0.9762/0.9206 (0.9762/0.9246)  0.9281/0.8344 (0.9209/0.8302)
+ *   arctic-s    0.62   0.9762/0.9107 (0.9762/0.9107)  0.9424/0.8506 (0.9424/0.8400)
+ *   bge-small   0.68   0.9524/0.8413 (0.9762/0.8552)  0.9137/0.7687 (0.9065/0.7799)
+ * Nonsense queries changed by the semantic list with no floor: 26 of 26 for
+ * every model. Tolerance (kb-recall-eval.test.ts): recall@5 and MRR within
+ * 0.03 of no-floor on each set -- one query of the 42-query real set is 0.024.
+ */
+export const SEMANTIC_FLOORS: Readonly<Record<string, number>> = Object.freeze({
+  'bge-small-en-v1.5': 0.68,
+  'snowflake-arctic-embed-s': 0.62,
+  'snowflake-arctic-embed-xs': 0.60,
+});
+
+/**
+ * The semantic floor for a model id (+ revision): the matching built-in
+ * profile's, else the given custom profile's, else no floor (-Infinity).
+ */
+export function semanticFloorFor(modelId: string | null, revision: string | null, custom?: EmbeddingProfile | null): number {
+  if (custom && custom.modelId === modelId && custom.revision === revision && custom.semanticFloor !== undefined) {
+    return custom.semanticFloor;
+  }
+  for (const p of Object.values(BUILTIN_EMBEDDING_PROFILES)) {
+    if (p.modelId === modelId && p.revision === revision && p.semanticFloor !== undefined) return p.semanticFloor;
+  }
+  return Number.NEGATIVE_INFINITY;
 }
 
 /** Shared tokenizer files of both arctic models (identical bytes at their pinned revisions). */
@@ -143,7 +203,7 @@ export const BUILTIN_EMBEDDING_PROFILES: Readonly<Record<string, EmbeddingProfil
       'special_tokens_map.json': 'b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3',
       'onnx/model_quantized.onnx': '6c9c6101a956d62dfb5e7190c538226c0c5bb9cb27b651234b6df063ee7dbfe4',
     },
-    { pooling: 'cls', normalize: true, queryPrefix: '', docPrefix: '', dims: 384, tokenLimit: 512 },
+    { pooling: 'cls', normalize: true, queryPrefix: '', docPrefix: '', dims: 384, tokenLimit: 512, semanticFloor: SEMANTIC_FLOORS['bge-small-en-v1.5'] },
   ),
   'snowflake-arctic-embed-s': hubProfile(
     'snowflake-arctic-embed-s',
@@ -154,7 +214,7 @@ export const BUILTIN_EMBEDDING_PROFILES: Readonly<Record<string, EmbeddingProfil
       ...ARCTIC_TOKENIZER,
       'onnx/model_quantized.onnx': 'f93ff225320628d2e88baf2a395cae791b0e3b27edf5c70bf7b312a4d3260c14',
     },
-    { pooling: 'cls', normalize: true, queryPrefix: ARCTIC_QUERY_PREFIX, docPrefix: '', dims: 384, tokenLimit: 512 },
+    { pooling: 'cls', normalize: true, queryPrefix: ARCTIC_QUERY_PREFIX, docPrefix: '', dims: 384, tokenLimit: 512, semanticFloor: SEMANTIC_FLOORS['snowflake-arctic-embed-s'] },
   ),
   'snowflake-arctic-embed-xs': hubProfile(
     'snowflake-arctic-embed-xs',
@@ -165,7 +225,7 @@ export const BUILTIN_EMBEDDING_PROFILES: Readonly<Record<string, EmbeddingProfil
       ...ARCTIC_TOKENIZER,
       'onnx/model_quantized.onnx': 'e6aa5e656466a73d7c3111e9a3378bd13e5b93af30eaac2b3f13fd56692589a1',
     },
-    { pooling: 'cls', normalize: true, queryPrefix: ARCTIC_QUERY_PREFIX, docPrefix: '', dims: 384, tokenLimit: 512 },
+    { pooling: 'cls', normalize: true, queryPrefix: ARCTIC_QUERY_PREFIX, docPrefix: '', dims: 384, tokenLimit: 512, semanticFloor: SEMANTIC_FLOORS['snowflake-arctic-embed-xs'] },
   ),
 });
 
@@ -225,6 +285,10 @@ function parseCustom(obj: Record<string, unknown>): EmbeddingProfile | string {
   if (dims !== undefined && !(Number.isInteger(dims) && (dims as number) > 0)) return '"dims" must be a positive integer';
   const tokenLimit = obj.token_limit ?? DEFAULT_TOKEN_LIMIT;
   if (!(Number.isInteger(tokenLimit) && (tokenLimit as number) > 0)) return '"token_limit" must be a positive integer';
+  const semanticFloor = obj.semantic_floor;
+  if (semanticFloor !== undefined && !(typeof semanticFloor === 'number' && semanticFloor >= -1 && semanticFloor <= 1)) {
+    return '"semantic_floor" must be a number from -1 to 1';
+  }
 
   const common = {
     builtin: false,
@@ -235,6 +299,7 @@ function parseCustom(obj: Record<string, unknown>): EmbeddingProfile | string {
     docPrefix,
     dims: dims as number | undefined,
     tokenLimit: tokenLimit as number,
+    ...(semanticFloor !== undefined ? { semanticFloor: semanticFloor as number } : {}),
   };
 
   if (folder !== undefined) {
@@ -253,7 +318,7 @@ function parseCustom(obj: Record<string, unknown>): EmbeddingProfile | string {
  * - undefined -> the default profile (bge-small-en-v1.5)
  * - 'none' -> disabled (semantic search off; keyword and anchor search remain)
  * - a built-in profile name -> that profile
- * - an object {id | path, pooling, normalize, query_prefix, doc_prefix, ...} -> a custom profile
+ * - an object {id | path, pooling, normalize, query_prefix, doc_prefix, semantic_floor, ...} -> a custom profile
  * - anything else -> warn() with the reason, then the default profile
  */
 export function resolveEmbeddingModel(raw: unknown, warn: EmbeddingWarn): EmbeddingModelChoice {

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { importBibleEntries } from '../../src/services/knowledge/bible-import.js';
 import { Embedder } from '../../src/services/knowledge/embedding/embedder.js';
@@ -269,4 +270,91 @@ export function writeReportFile(reports: EvalReport[]): string {
   const tables = QUERY_SOURCES.filter(s => s !== 'owner-notes').map(s => formatTable(reports, s)).join('\n\n');
   fs.writeFileSync(file.replace(/\.json$/, '') + '.md', tables + '\n');
   return file;
+}
+
+/**
+ * Queries with no answer in the eval KB: gibberish, off-topic text and
+ * unknown identifiers. Sent as free text, and the identifier-like ones also
+ * as fts_terms (the kb_session_prime path). With a correct semantic floor the
+ * hybrid result for each equals the keyword-only result (nothing, or the same
+ * keyword hits): a model must not add rows a caller never asked for.
+ */
+export const NONSENSE_QUERIES: Array<{ query?: string; fts_terms?: string[] }> = [
+  'qwzx plorbt vandersnoot', 'xyzzy frobnicate glorp', 'asdf qwer zxcv', 'lorem ipsum dolor sit amet',
+  'purple elephant banana spaceship', 'recipe for chocolate cake', 'weather forecast tomorrow in paris',
+  'how to bake sourdough bread', 'quantum chromodynamics gluon', 'football world cup results',
+  'tax return deadline', 'guitar chord progression', 'hello world', 'random words here', 'fhqwhgads', 'mxyzptlk',
+].map(query => ({ query })).concat(
+  ['FooBarBazQux.unknownThing', 'ZzTopWidgetFactory', 'NonexistentSymbolName', 'unknownFunctionXyz', 'blargh_whatsit_9000']
+    .flatMap(sym => [{ query: sym }, { fts_terms: [sym] }]),
+);
+
+export interface FloorSweepRow {
+  /** The floor tried; null = no floor. */
+  floor: number | null;
+  real: SetMetrics;
+  authored: SetMetrics;
+  /** NONSENSE_QUERIES whose hybrid result differs from the keyword-only result. */
+  nonsenseChanged: number;
+}
+
+/**
+ * Recall@5 / MRR (real and authored sets) and nonsense-query behaviour at each
+ * semantic floor, with the model already attached to `provider`. Uses the
+ * internal QueryOptions.semantic_floor override; query vectors are cached by
+ * the embedder, so each floor costs only the ranking.
+ */
+export async function semanticFloorSweep(
+  provider: SqliteProvider, queries: EvalQuery[], floors: Array<number | null>, dbFile?: string,
+): Promise<FloorSweepRow[]> {
+  const out: FloorSweepRow[] = [];
+  // Every query bumps use_count, which feeds the trust prior: without a reset
+  // each floor would be measured on a KB the previous floors already changed.
+  // With dbFile, use_count is put back to its starting values before each pass.
+  const db = dbFile ? new DatabaseSync(dbFile) : null;
+  db?.exec('PRAGMA busy_timeout = 5000');
+  const counts = db ? (db.prepare('SELECT id, use_count FROM entries').all() as Array<{ id: string; use_count: number }>) : [];
+  const restore = () => {
+    if (!db) return;
+    const st = db.prepare('UPDATE entries SET use_count = ? WHERE id = ?');
+    db.exec('BEGIN');
+    for (const c of counts) st.run(c.use_count, c.id);
+    db.exec('COMMIT');
+  };
+  const ids = async (o: { query?: string; fts_terms?: string[]; error_text?: string }, floor: number | null | 'keyword') =>
+    (await provider.query({
+      ...o, limit: 20, confidence: ['CONFIRMED'],
+      ...(floor === 'keyword' ? { disable_lists: ['semantic' as const] } : { semantic_floor: floor ?? Number.NEGATIVE_INFINITY }),
+    })).results.map(e => e.id);
+  restore();
+  const keywordOnly: string[][] = [];
+  for (const n of NONSENSE_QUERIES) keywordOnly.push(await ids(n, 'keyword'));
+  for (const floor of floors) {
+    restore();
+    const ranks: Record<string, Array<number | null>> = { real: [], authored: [] };
+    for (const q of queries) {
+      if (!(q.source in ranks)) continue;
+      ranks[q.source].push(firstHitRank(await ids({ query: q.query, ...(q.error_text ? { error_text: q.error_text } : {}) }, floor), q.expected));
+    }
+    let nonsenseChanged = 0;
+    for (const [i, n] of NONSENSE_QUERIES.entries()) {
+      if (JSON.stringify(await ids(n, floor)) !== JSON.stringify(keywordOnly[i])) nonsenseChanged++;
+    }
+    const m = (r: Array<number | null>): SetMetrics => ({ queries: r.length, recallAt5: recallAtK(r), mrr: meanReciprocalRank(r) });
+    out.push({ floor, real: m(ranks.real), authored: m(ranks.authored), nonsenseChanged });
+  }
+  restore();
+  db?.close();
+  return out;
+}
+
+export function formatFloorSweep(model: string, rows: FloorSweepRow[]): string {
+  const lines = [
+    `KB semantic floor sweep -- ${model} (nonsense: ${NONSENSE_QUERIES.length} queries)`,
+    '', '| floor | real recall@5 | real MRR | authored recall@5 | authored MRR | nonsense changed |', '|---|---|---|---|---|---|',
+  ];
+  for (const r of rows) {
+    lines.push(`| ${r.floor === null ? 'none' : r.floor.toFixed(2)} | ${r.real.recallAt5.toFixed(4)} | ${r.real.mrr.toFixed(4)} | ${r.authored.recallAt5.toFixed(4)} | ${r.authored.mrr.toFixed(4)} | ${r.nonsenseChanged} |`);
+  }
+  return lines.join('\n');
 }
