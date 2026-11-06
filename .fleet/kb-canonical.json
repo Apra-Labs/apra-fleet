@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 143
+    "entry_count": 144
   },
   "entries": [
     {
@@ -2689,6 +2689,34 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:08:07.865Z"
+    },
+    {
+      "id": "f2a4c5c1-39c7-43ea-af04-0042ad56a43e",
+      "type": "knowledge",
+      "title": "kb_* and code_* tool calls prewarm the self-scope git cache with async spawns before the handler",
+      "summary": "tool-registry.ts awaits prewarmSelfGitCache() for tools named kb_* or code_*. It replays the self resolution in kb-self.ts with gitOut in dry-run mode, where a cache miss throws GitCacheMiss instead of spawning, and answers each miss with an async git spawn, so the handler's synchronous resolution only hits the cache.",
+      "symbols": [
+        "prewarmSelfGitCache",
+        "gitOut",
+        "GitCacheMiss",
+        "dryResolve",
+        "primeProjectSlug",
+        "registerAllTools"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-self.ts",
+        "src/services/tool-registry.ts",
+        "src/services/knowledge/kb-providers.ts",
+        "tests/knowledge/kb-self-git-cache.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T05:53:44.960Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-providers.ts": "f6540e1ded9174c6ae6766c796c6349e3aaf605a",
+        "src/services/knowledge/kb-self.ts": "df56190b21c61122c66a7c2cdaeb64ac7275c700",
+        "src/services/tool-registry.ts": "259f4cb04f3996dc137d73b4a71bcaca32460061",
+        "tests/knowledge/kb-self-git-cache.test.ts": "e922caca3bcabef81816223e0ba6d6cd5168c43b"
+      }
     },
     {
       "id": "f2c0c490-c149-488d-939c-beb60734c8bc",
