@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 146
+    "entry_count": 148
   },
   "entries": [
     {
@@ -475,6 +475,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.625Z"
+    },
+    {
+      "id": "25856ccf-613d-4ec0-b6b7-8da2d0719a62",
+      "type": "knowledge",
+      "title": "Member bible view reuses per-repo DB vectors by entry id and chunk text hash",
+      "summary": "SqliteProvider.adoptVectorsFrom copies the per-repo DB's vectors into a fresh member view for entries whose id and per-chunk text hashes match under the active model, and records the model identity first so the view's queue does not start a full rebuild.",
+      "symbols": [
+        "adoptVectorsFrom",
+        "attachViewEmbedding",
+        "getProjectSqliteProvider",
+        "ensureModel"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/member-bible-view.ts",
+        "src/services/knowledge/embedding/embed-queue.ts",
+        "src/services/knowledge/kb-providers.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T08:47:25.599Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/embed-queue.ts": "146d93963cc3cdbbf13b3ee493e4e34b9991d39b",
+        "src/services/knowledge/kb-providers.ts": "7639d73fe465d80d3acba1cfc50a3caaa2e3ecbe",
+        "src/services/knowledge/member-bible-view.ts": "402c27b39ba70a090fc7387a954ab08d7a5a7663",
+        "src/services/knowledge/sqlite-provider.ts": "b3d3d48f72dd8002ee3ed6a66d1d4c6233ce711e"
+      }
     },
     {
       "id": "266d51a9-b30a-4d52-bf4c-97f26de518d7",
@@ -1192,6 +1218,26 @@
       "source_file_hashes": {
         "src/services/knowledge/bible-import.ts": "8f931c26af66c0531ac4fcf209ea42cd6d11628d",
         "src/services/knowledge/sqlite-provider.ts": "be02241973f3d1e354942d16bf189966221407c2"
+      }
+    },
+    {
+      "id": "699d8ebd-a323-4e4b-a27d-ca9a5d1677f7",
+      "type": "learning",
+      "title": "fleet-sprint knowledgeFor returns nothing when terms is empty even with situations",
+      "summary": "createKbWorkClient.knowledgeFor returns early when terms, hintSymbols and hintModules are all empty, before the situations path runs, so callers must pass terms alongside situations.",
+      "symbols": [
+        "createKbWorkClient",
+        "knowledgeFor"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "tests/knowledge/kb-member-real-model.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T08:47:26.107Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "39d12a1a50628f2bfad0426c62daf3b00551b79e",
+        "tests/knowledge/kb-member-real-model.test.ts": "877d0ca4c0ce6e060a46e2ed101463334b7c1735"
       }
     },
     {
