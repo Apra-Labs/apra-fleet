@@ -615,7 +615,11 @@ restart. When NAME is a live secret (`apra-fleet secret --live NAME ...`), the
 code is also raised (reason `live-secret-failed`) when its script fails or is
 inside its retry backoff, and (reason `rejected`) when the server still answers
 401 after one fresh mint; fix the script's environment on the server host (e.g.
-`az login`), or register it again, which also clears the backoff.
+`az login`), or register it again, which also clears the backoff. The secret's own
+policy applies on every KB call, before any request or script run: reason
+`policy-deny` when its network policy is deny, reason `member-not-allowed` when
+`allowedMembers` does not name the calling member session. An operator changes it
+with `apra-fleet secret --update NAME --allow` or `--members <list>`.
 
 `kb_import` in a member session without the kb_maintainer grant fails with
 `E-KB-MAINTAINER-REQUIRED` and imports nothing when: it names an explicit

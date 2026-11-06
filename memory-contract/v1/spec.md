@@ -545,6 +545,14 @@ registers it again), and the identical request then succeeds. It is still
 way, and the provider has already done its one retry (re-read the secret, send
 once more) before raising it.
 
+The secret's own policy applies on every provider call, before any request and
+before a live secret's script runs: `network_policy` deny refuses every caller
+(reason `policy-deny`), and `allowedMembers` refuses a member session it does not
+name (reason `member-not-allowed`), matched by the friendly name that fleet server
+has registered for the session's member id. A session with no member identity has
+no member to check. A record with allow and all members behaves as if no policy
+existed.
+
 ### 3.3a Remote KB auth failure is thrown, and writes are queued first
 
 `E-KB-HTTP-AUTH` is `surfaced: thrown` on every tool that reaches the remote

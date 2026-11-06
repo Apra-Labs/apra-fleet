@@ -14,7 +14,13 @@ import {
 } from '../os/windows-executable.js';
 import { appendLogRecord } from '../utils/log-helpers.js';
 import { findSecretTokens, formatSecretToken, hasSecretToken, legacyTokenWarning } from './secret-token.js';
-import { envVarForSecret, type LiveSecretBinding } from './live-secret-runner.js';
+import {
+  buildProgramInvocation,
+  envVarForSecret,
+  LiveLauncherError,
+  type LiveLauncherReason,
+  type LiveSecretBinding,
+} from './live-secret-runner.js';
 
 // ---------------------------------------------------------------------------
 // Session-tier encryption (AES-256-GCM, key lives only in this process)
@@ -276,7 +282,8 @@ export type LiveRegistrationReason =
   | 'binding-missing'
   | 'binding-unreadable'
   | 'binding-session'
-  | 'binding-live';
+  | 'binding-live'
+  | LiveLauncherReason;
 
 /** A live secret cannot be registered as given. The message carries names only, never script text or a value. */
 export class LiveRegistrationError extends Error {
@@ -408,6 +415,12 @@ function programFields(spec: Extract<LiveSecretSpec, { program: string }>): Pick
   if (!program) {
     throw new LiveRegistrationError('program-not-found', `script '${spec.program}' could not be resolved as a file or on an absolute PATH entry`);
   }
+  try {
+    buildProgramInvocation(program, spec.args, process.platform);
+  } catch (err) {
+    // Other launch errors surface from the registration run, as start-failed.
+    if (err instanceof LiveLauncherError) throw new LiveRegistrationError(err.reasonCode, err.message);
+  }
   return { program, args: [...spec.args], bindings };
 }
 
@@ -442,7 +455,7 @@ function resolveLiveProgram(program: string): string | null {
   if (process.platform === 'win32') {
     const pathExts = (envValue(process.env, 'PATHEXT') || DEFAULT_PATHEXT).split(';').map((e) => e.trim().toLowerCase()).filter(Boolean);
     const lower = program.toLowerCase();
-    const exts = lower.endsWith('.ps1') || pathExts.some((ext) => lower.endsWith(ext)) ? [''] : pathExts;
+    const exts = lower.endsWith('.ps1') || lower.endsWith('.sh') || pathExts.some((ext) => lower.endsWith(ext)) ? [''] : pathExts;
     return findOnAbsoluteWindowsPath(program, exts, { pathValue: envValue(process.env, 'PATH'), isFile: defaultIsFile });
   }
   const absoluteEntries = (process.env.PATH ?? '').split(':').filter((d) => path.isAbsolute(d)).join(':');
@@ -625,7 +638,7 @@ export function credentialResolve(
   return null;
 }
 
-export type ServerSecretMeta = Pick<CredentialMeta, 'name' | 'scope' | 'created_at' | 'expiresAt'>;
+export type ServerSecretMeta = Pick<CredentialMeta, 'name' | 'scope' | 'created_at' | 'expiresAt' | 'network_policy' | 'allowedMembers'>;
 
 export type ServerSecretLookup =
   | { status: 'ok'; value: string; meta: ServerSecretMeta }
@@ -644,7 +657,8 @@ function isExpired(expiresAt: string | undefined): expiresAt is string {
 /**
  * Metadata-only server-side lookup (no decryption), for status reporting.
  * Persistent wins over session. allowedMembers is not checked and nothing is
- * deleted, so an expired record stays visible as expired.
+ * deleted, so an expired record stays visible as expired. The policy fields are
+ * returned for a caller that applies them, as the KB provider does.
  */
 export function lookupServerSecretMeta(name: string): ServerSecretStatus {
   const stored = loadCredentialFile().credentials[name];
@@ -658,6 +672,8 @@ export function lookupServerSecretMeta(name: string): ServerSecretStatus {
     scope: persistent ? 'persistent' : 'session',
     created_at: rec.created_at,
     expiresAt: rec.expiresAt,
+    network_policy: rec.network_policy,
+    allowedMembers: rec.allowedMembers ?? '*',
   };
   if (isExpired(rec.expiresAt)) return { status: 'expired', expiresAt: rec.expiresAt, meta };
   return { status: 'ok', meta };
@@ -665,7 +681,8 @@ export function lookupServerSecretMeta(name: string): ServerSecretStatus {
 
 /**
  * Server-side named-secret lookup for fleet-server callers (not a member
- * command): ignores allowedMembers, never deletes a record, never logs the value.
+ * command): ignores allowedMembers and network policy, which the caller applies
+ * from meta. Never deletes a record, never logs the value.
  */
 export function lookupServerSecret(name: string): ServerSecretLookup {
   const found = lookupServerSecretMeta(name);
