@@ -379,11 +379,13 @@ http provider serves. For a named secret (`kind: "secret"`): `secretName`,
 `resolves` (`ok` / `missing` / `expired`, from metadata; an expired record is
 never deleted; `unreadable` when the credential store cannot be read or the
 value cannot be decrypted -- the line is still shown, with `lastWritten` kept
-if only the decrypt failed), `lastWritten` (the secret's `created_at`), `tokenExpiry` (the
+if only the decrypt failed; `denied` when its network policy is deny, and every KB
+call then fails), `lastWritten` (the secret's `created_at`), `tokenExpiry` (the
 `exp` of a JWT value decoded locally, else `null`), and `lastSuccessfulCall` /
 `lastRejectedCall` (this server process; `null`, shown as `never`, until the
 first call). For a live secret (`kind: "live"`): `secretName`, `resolves`
-(`not run` / `refreshing` / `ok` / `failed` / `expired`, this server process),
+(`not run` / `refreshing` / `ok` / `failed` / `expired`, this server process, or
+`denied` when its network policy is deny),
 `lastMinted`, `tokenExpiry` (JWT `exp` decoded locally), `lastFailure` (the
 runner's reason, never the script's output), `retryAfter` (inside the retry
 backoff) and the call times. A literal-token config (`kind: "literal"`) carries the call times
@@ -618,8 +620,10 @@ inside its retry backoff, and (reason `rejected`) when the server still answers
 `az login`), or register it again, which also clears the backoff. The secret's own
 policy applies on every KB call, before any request or script run: reason
 `policy-deny` when its network policy is deny, reason `member-not-allowed` when
-`allowedMembers` does not name the calling member session. An operator changes it
-with `apra-fleet secret --update NAME --allow` or `--members <list>`.
+`allowedMembers` does not name the calling member session. A capture or invalidate
+refused this way is not queued, and the caller retries it. An operator changes the
+policy with `apra-fleet secret --update NAME --allow` or `--members <list>`.
+`kb_setup` refuses a secret whose policy is deny.
 
 `kb_import` in a member session without the kb_maintainer grant fails with
 `E-KB-MAINTAINER-REQUIRED` and imports nothing when: it names an explicit

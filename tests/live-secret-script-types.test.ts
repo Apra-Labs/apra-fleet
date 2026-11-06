@@ -114,7 +114,7 @@ describe('secret --live grammar, through the real CLI', () => {
     expectRegisteredAndReported('withseparator', r, ['--', 'a']);
   });
 
-  it('-- passes a script path that starts with -, which without it is an unknown option', () => {
+  it('a script whose name starts with -: ./ works without --, and -- finds it only on PATH, as the docs say', () => {
     const dashed = path.join(sandbox, '-dashed.js');
     fs.copyFileSync(script, dashed);
     const name = WIN ? '-dashed.cmd' : '-dashed.sh';
@@ -123,14 +123,26 @@ describe('secret --live grammar, through the real CLI', () => {
       : `#!/bin/sh\nexec "${process.execPath}" "${reporter}" "$@"\n`;
     fs.writeFileSync(path.join(sandbox, name), body, { mode: 0o755 });
     const opts = { env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir }, cwd: sandbox, encoding: 'utf-8' as const, input: '', timeout: 90_000 };
-    const without = spawnSync(process.execPath, [CLI, 'secret', '--live', 'dashpath', '--env', 'BOUND={{secret.R}}', name], opts);
-    expect(without.status).toBe(1);
-    expect(without.stderr).toContain('Usage');
+    const live = (...rest: string[]) => spawnSync(process.execPath, [CLI, 'secret', '--live', 'dashpath', '--env', 'BOUND={{secret.R}}', ...rest], opts);
+    // Bare and with no --: an unknown option.
+    const bare = live(name);
+    expect(bare.status).toBe(1);
+    expect(bare.stderr).toContain('Usage');
+    // After --, a bare name is looked up on PATH only, so one in this folder is not found.
+    const notOnPath = live('--', name);
+    expect(notOnPath.status).toBe(1);
+    expect(notOnPath.stderr).toContain('program-not-found');
     expect(records().dashpath).toBeUndefined();
-    const withIt = spawnSync(process.execPath, [CLI, 'secret', '--live', 'dashpath', '--env', 'BOUND={{secret.R}}', '--', `./${name}`], opts);
-    expect(withIt.stderr).toBe('');
-    expect(withIt.status).toBe(0);
-    expect(records().dashpath.kind).toBe('live');
+    const dotSlash = live(`./${name}`);
+    expect(dotSlash.stderr).toBe('');
+    expect(dotSlash.status).toBe(0);
+    expect(records().dashpath.program).toBe(path.join(sandbox, name));
+    const onPath = spawnSync(process.execPath, [CLI, 'secret', '--live', 'dashonpath', '--env', 'BOUND={{secret.R}}', '--', name], {
+      ...opts, cwd: dataDir, env: { ...opts.env, PATH: `${sandbox}${path.delimiter}${process.env.PATH}` },
+    });
+    expect(onPath.stderr).toBe('');
+    expect(onPath.status).toBe(0);
+    expect(records().dashonpath.program).toBe(path.join(sandbox, name));
   });
 
   it('an unknown option before the script path is an error, and saves nothing', () => {
@@ -184,6 +196,19 @@ describe('script types this OS can run, through the real CLI, from a path with s
   const register = (name: string, file: string, args: string[] = ARGS) =>
     cli(['--live', name, '--env', 'BOUND={{secret.R}}', file, ...args]);
 
+  const insidePowerShell = () => {
+    const seen = path.join(sandbox, 'seen-ps.txt');
+    const file = writeScript('inside.ps1', `@($args) + $env:FLEET_CREDENTIAL + $env:BOUND | Set-Content -Path $env:SEEN_FILE -Encoding Ascii\n@{ token = '${TOKEN}'; expires_at = '2100-01-01T00:00:00Z' } | ConvertTo-Json -Compress\n`);
+    const args = [...ARGS, '--', 'after', 'tail\\'];
+    const r = spawnSync(process.execPath, [CLI, 'secret', '--live', 'insideps', '--env', 'BOUND={{secret.R}}', file, ...args], {
+      env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, SEEN_FILE: seen },
+      encoding: 'utf-8', input: '', timeout: 90_000,
+    });
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    expect(fs.readFileSync(seen, 'utf-8').split(/\r?\n/).slice(0, -1)).toEqual([...args, 'insideps', BOUND]);
+  };
+
   describe.skipIf(!WIN)('Windows', () => {
     it('.ps1 through powershell.exe', () => {
       const file = writeScript('mint.ps1', `& "${process.execPath}" "${reporter}" @args\n`);
@@ -192,18 +217,16 @@ describe('script types this OS can run, through the real CLI, from a path with s
       expectRegisteredAndReported('ps', register('ps', file, args), args);
     }, 90_000);
 
-    it('.ps1 sees its args unchanged inside PowerShell itself, including a bare -- and a quote', () => {
-      const seen = path.join(sandbox, 'seen-ps.txt');
-      const file = writeScript('inside.ps1', `$args | Set-Content -Path $env:SEEN_FILE -Encoding Ascii\n@{ token = '${TOKEN}'; expires_at = '2100-01-01T00:00:00Z' } | ConvertTo-Json -Compress\n`);
-      const args = [...ARGS, '--', 'after', 'tail\\'];
-      const r = spawnSync(process.execPath, [CLI, 'secret', '--live', 'insideps', file, ...args], {
-        env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, SEEN_FILE: seen },
-        encoding: 'utf-8', input: '', timeout: 90_000,
+    for (const name of ['mint.py', 'mint.txt', 'mint']) {
+      it(`${name} is refused with the types Windows runs, and saves nothing`, () => {
+        const r = register(name.replace('.', '_'), writeScript(name, 'x\n'));
+        expect(r.status).toBe(1);
+        expect(r.stderr).toMatch(/^FAILED: script-type-unsupported: .*\.ps1, \.sh, \.bat, \.cmd, \.exe or \.com/);
+        expect(records()[name.replace('.', '_')]).toBeUndefined();
       });
-      expect(r.stderr).toBe('');
-      expect(r.status).toBe(0);
-      expect(fs.readFileSync(seen, 'utf-8').split(/\r?\n/).slice(0, -1)).toEqual(args);
-    }, 90_000);
+    }
+
+    it('.ps1 sees its args unchanged inside PowerShell itself, including a bare -- and a quote', () => insidePowerShell(), 90_000);
 
     for (const ext of ['bat', 'cmd']) {
       it(`.${ext} through cmd.exe`, () => {
@@ -236,23 +259,34 @@ printf '{"token":"${TOKEN}","expires_at":"2100-01-01T00:00:00Z"}'
   });
 
   describe.skipIf(WIN)('Linux and macOS', () => {
-    const shBody = `exec "${process.execPath}" "${reporter}" "$@"\n`;
+    // A function: `reporter` is set per test, after this describe body has run.
+    const shBody = () => `exec "${process.execPath}" "${reporter}" "$@"\n`;
 
     it('.sh with the execute bit runs directly, and its shebang decides', () => {
-      const file = writeScript('shebang.sh', `#!${process.execPath}\nrequire(${JSON.stringify(reporter)});\n`, 0o755);
-      const r = register('shebang', file, []);
+      // awk, not node: under the test sandbox's NODE_OPTIONS=--import, node runs its
+      // entry through the ESM loader, which refuses a .sh file. As shell this is a syntax error.
+      const seen = path.join(sandbox, 'seen-awk.txt');
+      const file = writeScript('shebang.sh', `#!/usr/bin/awk -f
+BEGIN {
+  print ENVIRON["FLEET_CREDENTIAL"] > ${JSON.stringify(seen)}
+  print ENVIRON["BOUND"] > ${JSON.stringify(seen)}
+  print ARGV[1] > ${JSON.stringify(seen)}
+  printf "{\\"token\\":\\"${TOKEN}\\",\\"expires_at\\":\\"2100-01-01T00:00:00Z\\"}"
+}
+`, 0o755);
+      const r = register('shebang', file, ['a b']);
+      expect(r.stderr).toBe('');
       expect(r.status).toBe(0);
-      expect(reported().credential).toBe('shebang');
-      expect(reported().bound).toBe(BOUND);
+      expect(fs.readFileSync(seen, 'utf-8').split('\n').slice(0, 3)).toEqual(['shebang', BOUND, 'a b']);
     });
 
     it('.sh without the execute bit runs through /bin/sh', () => {
-      const file = writeScript('noexec.sh', shBody, 0o644);
+      const file = writeScript('noexec.sh', shBody(), 0o644);
       expectRegisteredAndReported('noexec', register('noexec', file), ARGS);
     });
 
     it('a file of no known type without the execute bit is refused with the reason, not EACCES', () => {
-      const file = writeScript('noexec', shBody, 0o644);
+      const file = writeScript('noexec', shBody(), 0o644);
       const r = register('noexecplain', file);
       expect(r.status).toBe(1);
       expect(r.stderr).toMatch(/^FAILED: script-not-executable: .*chmod \+x/);
@@ -270,11 +304,8 @@ printf '{"token":"${TOKEN}","expires_at":"2100-01-01T00:00:00Z"}'
 
     const hasPwsh = !WIN && resolvePosixPwsh() !== null;
 
-    it.skipIf(!hasPwsh)('.ps1 through pwsh', () => {
-      const file = writeScript('mint.ps1', `& "${process.execPath}" "${reporter}" @args\n`);
-      const args = ARGS.filter((a) => !a.includes('"'));
-      expectRegisteredAndReported('pwshrun', register('pwshrun', file, args), args);
-    }, 90_000);
+    // Seen inside pwsh itself: on Linux and macOS pwsh expands a * it passes on to a native program, which is not this launch.
+    it.skipIf(!hasPwsh)('.ps1 through pwsh: args and env reach it unchanged', () => insidePowerShell(), 90_000);
 
     it.skipIf(hasPwsh)('.ps1 with no pwsh is refused, saying pwsh is needed', () => {
       const r = register('nopwsh', writeScript('mint.ps1', 'exit 0\n'));
@@ -313,6 +344,16 @@ describe('launch rules per OS, on any host', () => {
     expect(err).toBeInstanceOf(LiveLauncherError);
     expect(err.reasonCode).toBe('launcher-not-found');
     expect(err.message).toContain('Git for Windows');
+  });
+
+  it('Windows runs .exe and .com directly, and refuses anything else, naming the types', () => {
+    expect(buildProgramInvocation('C:\\m.exe', ['a'], 'win32', tools, launchers())).toMatchObject({ file: 'C:\\m.exe', args: ['a'] });
+    expect(buildProgramInvocation('C:\\m.COM', [], 'win32', tools, launchers()).file).toBe('C:\\m.COM');
+    for (const file of ['C:\\m.py', 'C:\\m.txt', 'C:\\m']) {
+      const err = refusal(() => buildProgramInvocation(file, [], 'win32', tools, launchers()));
+      expect(err.reasonCode).toBe('script-type-unsupported');
+      expect(err.message).toContain('.ps1, .sh, .bat, .cmd, .exe or .com');
+    }
   });
 
   it('Windows .ps1 stays powershell.exe -File, .cmd and .bat stay cmd.exe, and neither looks for Git Bash', () => {

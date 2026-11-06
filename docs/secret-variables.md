@@ -57,7 +57,7 @@ An expired secret that is not bound to a live secret is removed at server start 
 | Policy | What it does |
 |--------|--------------|
 | `allow` | No restriction. |
-| `deny` | A command that uses the secret is blocked and does not run if the text of `command` contains one of the words below. `send_email` refuses the secret. Any other command still runs. |
+| `deny` | A command that uses the secret is blocked and does not run if the text of `command` contains one of the words below. `send_email` refuses the secret. Any other command still runs. The KB refuses every call that would use it: see [Who can use a secret](#who-can-use-a-secret-deny-and-allowedmembers). |
 
 `deny` looks for these whole words, in any case: `curl`, `wget`, `ssh`, `sftp`, `scp`, `rsync`, `nc`, `netcat`, `http`, `fetch`, `Invoke-WebRequest`, `Invoke-RestMethod`.
 
@@ -70,6 +70,19 @@ This is a word check, not a network firewall:
 - Only `command` is checked for these words. A `deny` secret used only in `restart_command` is blocked when `command` has a listed word, but a listed word only in `restart_command` is not noticed.
 
 `confirm` is removed. Passing `network_policy: confirm` is refused with a message saying so, and `secret --confirm` fails the same way. A secret already stored with `confirm` keeps working and reads as `allow`, so it no longer prompts. Each such secret writes one log line naming it. To block its network use, run `apra-fleet secret --update NAME --deny`.
+
+### Who can use a secret: deny and allowedMembers
+
+The rules are the same for a remote and a local member, and for live and static secrets. A secret with allow and all members sees no check at all.
+
+- **`allowedMembers`** names the members that may use the secret, by friendly name.
+  - `execute_command`: another member is refused, before a live secret's helper runs.
+  - The KB: on every KB call, in the fleet server that makes it. That is the orchestrator's for a local member and the member's own for a remote member, whose own store and registered name then apply. A member that server cannot name is refused. A session with no member identity, such as the operator's own, has no member to check.
+- **`deny`** stops the value leaving.
+  - `execute_command`: the word check in [Network policy](#network-policy), before a live secret's helper runs.
+  - The KB: every KB call is refused, for every caller, because every KB call sends the token over the network. Nothing is sent. `kb_setup` refuses a `deny` secret, so a config cannot be set up that fails on every call.
+
+The KB's refusal is `E-KB-HTTP-AUTH`, reason `policy-deny` or `member-not-allowed`. A capture or invalidate refused this way is not queued: the caller gets the error, and retries once the policy allows it. See [Named credentials](knowledge-layer.md#named-credentials-and-refreshers).
 
 ### Session and persistent
 
@@ -176,7 +189,9 @@ Options come first. Parsing stops at the first argument that is not an option: t
 the script path, and everything after it goes to the script untouched, including
 arguments starting with `-`.
 
-- `--` before the script path is optional, and is how to pass a path starting with `-`.
+- `--` before the script path is optional. Write a file whose name starts with `-` as
+  `./-name.sh`. `--` is needed only for a script found on PATH by a bare name starting
+  with `-`.
 - npm's PowerShell shim drops a bare `--`, so to give your script its own `--`, quote
   it: `'--'`.
 - An unknown option before the path is an error, and so is an `--env` value not of the
@@ -196,7 +211,8 @@ cannot run.
 | `.ps1` | `powershell.exe -File` | `pwsh -File`; no pwsh: `launcher-not-found` |
 | `.sh` | Git for Windows' bash, never the WSL launcher in `System32`; no Git Bash: `launcher-not-found` | With the execute bit: run directly, so its shebang decides. Without it: `/bin/sh` |
 | `.bat`, `.cmd` | `cmd.exe /d /v:off /s /c`, every piece quoted | `script-type-unsupported` |
-| Anything else | Run directly (`.exe`, `.com`) | Run directly; no execute bit: `script-not-executable` |
+| `.exe`, `.com` | Run directly | Run directly, like any other file |
+| Anything else | `script-type-unsupported` | Run directly; no execute bit: `script-not-executable` |
 
 `cmd`, `taskkill` and `powershell` come from `%SystemRoot%\System32` or an absolute PATH
 entry, never from the current folder or a relative PATH entry.
@@ -283,29 +299,13 @@ never a value or stderr.
 The value of a long-running `execute_command` is fixed at launch, so it keeps a dead token
 until restarted.
 
-### Who can use a secret: deny and allowedMembers
+### Managing a live secret
 
-A live record has the same fields as a static one, with the defaults of
+A live record has the same policy fields as a static one (see
+[Who can use a secret](#who-can-use-a-secret-deny-and-allowedmembers)), with the defaults of
 `secret --set --persist`: allow, all members. `apra-fleet secret --update NAME` changes them
 (`--ttl` does not apply: the expiry comes from the token). Output redaction also applies as
-for a static secret. The rules are the same for a remote and a local member, and for live
-and static secrets.
-
-- **`allowedMembers`** names the members that may use the secret, by friendly name.
-  - `execute_command`: another member is refused, before any helper runs.
-  - The KB: on every KB call, in the fleet server that makes it. That is the orchestrator's
-    for a local member and the member's own for a remote member, whose own store and
-    registered name then apply. A member that server cannot name is refused. A session with no
-    member identity, such as the operator's own, has no member to check.
-- **`deny`** stops the value leaving.
-  - `execute_command`: refused as [Network policy](#network-policy) says, before any helper runs.
-  - The KB: every KB call is refused, for every caller, because every KB call sends the token
-    over the network. Nothing is sent.
-
-A secret with allow and all members sees no check at all. The KB's refusal is `E-KB-HTTP-AUTH`, reason `policy-deny` or `member-not-allowed`;
-see [Named credentials](knowledge-layer.md#named-credentials-and-refreshers).
-
-### Managing a live secret
+for a static secret.
 
 `apra-fleet secret --set NAME --persist -y` replaces it with a static one that keeps its policy
 fields, `--delete` removes it, and `--list` marks it `live`. Registering again under the same name replaces the script,

@@ -627,10 +627,11 @@ every 30 minutes or less), so one failed run still leaves a valid token.
 **Policy.** The secret's own `deny` and `allowedMembers` apply on every KB call, as
 [Who can use a secret](secret-variables.md#who-can-use-a-secret-deny-and-allowedmembers)
 says. A refusal is `E-KB-HTTP-AUTH`, reason `policy-deny` or `member-not-allowed`,
-and no request is sent.
+and no request is sent. A capture or invalidate refused this way is not queued: the
+caller gets the error, and retries once the policy allows it. `kb_setup` refuses a
+`deny` secret.
 
-**Failure behaviour.** When the secret is missing, expired, unreadable or refused
-by its policy, or
+**Failure behaviour.** When the secret is missing, expired or unreadable, or
 the server answers 401 twice (the request, then one retry after re-reading the
 secret), the KB call fails with `E-KB-HTTP-AUTH` naming the secret and the
 reason. Captures and invalidates are queued offline and sent once the secret

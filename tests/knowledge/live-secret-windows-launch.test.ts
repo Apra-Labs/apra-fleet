@@ -122,11 +122,10 @@ describe('buildProgramInvocation (runs on every OS)', () => {
     expect(inv).toEqual({ file: `C:${BS}tools${BS}helper.exe`, args: ['%PATH%', 'a&b'], windowsVerbatimArguments: false });
   });
 
-  it('spawns POSIX programs directly, even one named like a batch file', () => {
+  it('spawns POSIX programs directly, and refuses one named like a batch file', () => {
     expect(buildProgramInvocation('/usr/bin/az', ['a b'], 'linux')).toEqual(
       { file: '/usr/bin/az', args: ['a b'], windowsVerbatimArguments: false });
-    expect(buildProgramInvocation('/opt/helper.cmd', ['x'], 'darwin')).toEqual(
-      { file: '/opt/helper.cmd', args: ['x'], windowsVerbatimArguments: false });
+    expect(() => buildProgramInvocation('/opt/helper.cmd', ['x'], 'darwin')).toThrow('runs only on Windows');
   });
 
   it('recognises .cmd and .bat case-insensitively, and nothing else', () => {

@@ -24,6 +24,7 @@ import { resetLiveTokenCache } from '../../src/services/live-secret-cache.js';
 import { addAgent } from '../../src/services/registry.js';
 import { runWithSessionMember } from '../../src/services/tool-scope.js';
 import { kbHttpCredentialHealth } from '../../src/tools/check-status.js';
+import { kbSetup } from '../../src/tools/kb-setup.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 import { backupAndResetRegistry, makeTestLocalAgent, restoreRegistry } from '../test-helpers.js';
 import { makeTempDir } from './token-command-helpers.js';
@@ -176,16 +177,53 @@ describe('deny', () => {
     expect(stub.requests).toHaveLength(1);
   });
 
-  it('a capture is queued, kept while refused, and sent once allowed', async () => {
+  it('a refused capture or invalidate is not queued, so it does not go out once allowed', async () => {
     credentialUpdate(STATIC, { network_policy: 'deny' });
-    const err = await authError(provider.capture(entry('queued')), 'policy-deny', STATIC);
-    expect(err.queued).toBe(true);
-    expect(provider.offlineQueue).toHaveLength(1);
-    expect(stub.requests).toEqual([]);
+    const capture = await authError(provider.capture(entry('refused')), 'policy-deny', STATIC);
+    const invalidate = await authError(provider.invalidate(['src/gear.ts']), 'policy-deny', STATIC);
+    expect([capture.queued, invalidate.queued]).toEqual([false, false]);
+    expect(capture.message).not.toContain('queued');
+    expect(provider.offlineQueue).toHaveLength(0);
     credentialUpdate(STATIC, { network_policy: 'allow' });
     await provider.capture(entry('next'));
+    expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/capture']);
+  });
+
+  it('a write queued before the refusal stays queued through it, and goes once allowed', async () => {
+    credentialDelete(STATIC);
+    await authError(provider.capture(entry('from an outage of the secret')), 'missing', STATIC).then((e) => expect(e.queued).toBe(true));
+    credentialSet(STATIC, VALUE, true, 'deny');
+    await authError(provider.capture(entry('refused')), 'policy-deny', STATIC);
+    expect(provider.offlineQueue).toHaveLength(1);
+    credentialUpdate(STATIC, { network_policy: 'allow' });
+    await provider.query({ query: 'gear' });
     expect(provider.offlineQueue).toHaveLength(0);
-    expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/capture', '/api/kb/capture']);
+    expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/capture', '/api/kb/query']);
+  });
+
+  it('kb_setup refuses a deny secret, static and live, and takes it once allowed', async () => {
+    const refused = async (name: string) => {
+      const err = await kbSetup({ provider: 'http', remote: stub.url, token: `{{secret.${name}}}` } as never, { folder: tmp }).then(() => null, (e: Error) => e);
+      expect(err?.message).toContain('network_policy=deny');
+      expect(err?.message).toContain(`apra-fleet secret --update ${name} --allow`);
+    };
+    credentialUpdate(STATIC, { network_policy: 'deny' });
+    credentialUpdate(LIVE, { network_policy: 'deny' });
+    await refused(STATIC);
+    await refused(LIVE);
+    credentialUpdate(STATIC, { network_policy: 'allow' });
+    credentialUpdate(LIVE, { network_policy: 'allow' });
+    await kbSetup({ provider: 'http', remote: stub.url, token: `{{secret.${STATIC}}}` } as never, { folder: tmp });
+    await kbSetup({ provider: 'http', remote: stub.url, token: `{{secret.${LIVE}}}` } as never, { folder: tmp });
+  }, 30_000);
+
+  it('the client wrapper lists denied, in its type and its docs', () => {
+    const root = path.resolve(__dirname, '..', '..', 'packages', 'apra-fleet-client');
+    const type = fs.readFileSync(path.join(root, 'src', 'client', 'api.mjs'), 'utf8').split('\n').find((l) => l.includes('[resolves]'));
+    expect(type).toContain('"denied"');
+    const docs = fs.readFileSync(path.join(root, 'docs', 'api-reference.md'), 'utf8');
+    expect(docs).toContain('`denied` when its network policy is deny, and every KB');
+    expect(docs).toContain('`denied` when its network policy is deny)');
   });
 
   it('fleet_status says denied, static and live', () => {
@@ -232,7 +270,17 @@ describe('allowedMembers', () => {
     expect(stub.requests).toHaveLength(1);
   });
 
-  it('the caller is read per call on a provider two members share', async () => {
+  it('a member refused here has its capture dropped, not sent by the next session on this provider', async () => {
+    credentialUpdate(STATIC, { members: member.friendlyName });
+    const err = await asMember(other.id, () => authError(provider.capture(entry('from outsider')), 'member-not-allowed', STATIC));
+    expect(err.queued).toBe(false);
+    await asMember(other.id, () => authError(provider.invalidate(['src/gear.ts']), 'member-not-allowed', STATIC));
+    expect(provider.offlineQueue).toHaveLength(0);
+    await asMember(member.id, () => provider.capture(entry('from member')));
+    expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/capture']);
+  });
+
+  it('the caller is read per call, not fixed on the provider', async () => {
     credentialUpdate(STATIC, { members: member.friendlyName });
     await asMember(member.id, () => provider.query({ query: 'gear' }));
     await asMember(other.id, () => authError(provider.query({ query: 'gear' }), 'member-not-allowed', STATIC));

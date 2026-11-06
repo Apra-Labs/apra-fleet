@@ -116,6 +116,14 @@ function isAuthError(err: unknown): err is KbHttpAuthError {
   return err instanceof KbHttpAuthError;
 }
 
+/**
+ * The secret's policy refused this call. It is not queued: a queued write goes out
+ * later under whichever session calls next, and the refusal was this caller's.
+ */
+function isPolicyRefusal(err: KbHttpAuthError): boolean {
+  return err.reason === 'policy-deny' || err.reason === 'member-not-allowed';
+}
+
 function isHttp401(err: unknown): boolean {
   return err instanceof Error && (err as NodeJS.ErrnoException).code === 'HTTP_401';
 }
@@ -469,6 +477,7 @@ export class HttpKbProvider implements MemoryProvider {
         return { id: `offline-${randomBytes(8).toString('hex')}`, audn_decision: 'add' };
       }
       if (isAuthError(err)) {
+        if (isPolicyRefusal(err)) throw err;
         // Queued exactly as for server-down, but the call still fails with
         // E-KB-HTTP-AUTH: unlike an outage, this needs the operator to act.
         this.enqueue({ op: 'capture', input });
@@ -534,6 +543,7 @@ export class HttpKbProvider implements MemoryProvider {
         return { invalidated: 0 };
       }
       if (isAuthError(err)) {
+        if (isPolicyRefusal(err)) throw err;
         this.enqueue({ op: 'invalidate', files });
         throw err.asQueued();
       }

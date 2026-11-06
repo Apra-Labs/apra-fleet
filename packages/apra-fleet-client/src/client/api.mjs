@@ -295,7 +295,7 @@
  * @property {"secret" | "live" | "literal"} kind - "secret": token_ref names a fleet secret looked up per request; "live": token_ref names a live secret whose script the server runs to mint the token (cached); "literal": a stored literal token
  * @property {string} url - Remote KB URL
  * @property {string} [secretName] - kind "secret" / "live": the secret's name
- * @property {"ok" | "missing" | "expired" | "unreadable" | "not run" | "refreshing" | "failed"} [resolves] - kind "secret": metadata lookup result (an expired record is kept); "unreadable" when the credential store cannot be read or the value cannot be decrypted. kind "live": "not run" (no mint yet in this server process), "refreshing", "ok", "failed" (the last mint failed), "expired" (the cached token has expired)
+ * @property {"ok" | "missing" | "expired" | "unreadable" | "denied" | "not run" | "refreshing" | "failed"} [resolves] - kind "secret": metadata lookup result (an expired record is kept); "unreadable" when the credential store cannot be read or the value cannot be decrypted. kind "live": "not run" (no mint yet in this server process), "refreshing", "ok", "failed" (the last mint failed), "expired" (the cached token has expired)
  * @property {string | null} [lastWritten] - kind "secret": the secret record's created_at; null when missing or the store is unreadable
  * @property {string | null} [tokenExpiry] - kind "secret" / "live": JWT exp decoded locally (ISO time); null for a non-JWT or unresolved value
  * @property {string | null} [lastMinted] - kind "live": when the script last returned a token in this server process; null when never

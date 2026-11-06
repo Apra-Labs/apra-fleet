@@ -292,8 +292,8 @@ function requireLauncher(found: string | null, message: string): string {
  *   shebang decides.
  * - Any other file without the execute bit: refused, instead of a bare EACCES.
  *
- * Anything else (.exe, POSIX programs and scripts): spawned directly with argv,
- * no shell.
+ * Anything else: spawned directly with argv, no shell, on Windows only as .exe or
+ * .com, because CreateProcess can start nothing else.
  */
 export function buildProgramInvocation(
   program: string,
@@ -331,6 +331,9 @@ export function buildProgramInvocation(
         // quoteMsysArg relies on this parsing mode, which noglob turns off.
         ...(msys ? { env: { MSYS: msys.split(/\s+/).filter((o) => o !== 'noglob').join(' ') } } : {}),
       };
+    }
+    if (!/\.(exe|com)$/i.test(program)) {
+      throw new LiveLauncherError('script-type-unsupported', 'Windows runs a helper file of type .ps1, .sh, .bat, .cmd, .exe or .com: this file is none of them');
     }
     return { file: program, args: [...args], windowsVerbatimArguments: false };
   }

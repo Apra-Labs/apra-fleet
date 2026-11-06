@@ -112,13 +112,23 @@ function checkTokenRef(input: KbSetupInput, provider: 'sqlite' | 'http'): TokenR
   const { name, legacy } = matches[0];
   if (provider === 'http') {
     let found: ReturnType<typeof lookupServerSecretMeta>;
+    const refuseDeny = (policy: string): void => {
+      if (policy === 'deny') {
+        throw new Error(`kb_setup: token refers to secret "${name}", which has network_policy=deny, so every KB call would be refused. Allow it first: apra-fleet secret --update ${name} --allow`);
+      }
+    };
+    let livePolicy: string | undefined;
     try {
       // A registered live secret is a valid token source: it mints the token on demand.
-      if (lookupLiveSecret(name)) return { name, legacy };
+      livePolicy = lookupLiveSecret(name)?.network_policy;
       found = lookupServerSecretMeta(name);
     } catch {
       // The parser's message can quote part of credentials.json, so it is not repeated.
       throw new Error(`kb_setup: token refers to secret "${name}", but the fleet credential store could not be read.`);
+    }
+    if (livePolicy !== undefined) {
+      refuseDeny(livePolicy);
+      return { name, legacy };
     }
     const fix = `Set it with: apra-fleet secret --set ${name} --persist -y`;
     if (found.status === 'missing') {
@@ -127,6 +137,7 @@ function checkTokenRef(input: KbSetupInput, provider: 'sqlite' | 'http'): TokenR
     if (found.status === 'expired') {
       throw new Error(`kb_setup: token refers to secret "${name}", which has expired. Re-set it with: apra-fleet secret --set ${name} --persist -y`);
     }
+    refuseDeny(found.meta.network_policy);
   }
   return { name, legacy };
 }
