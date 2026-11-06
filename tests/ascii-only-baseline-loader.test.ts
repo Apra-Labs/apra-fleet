@@ -30,7 +30,7 @@ describe('check-ascii-only baseline loading', () => {
     // No options: what loadBaseline itself calls, on whatever OS runs this.
     const input = path.resolve('/abs/x.mjs');
     const spec = baselineImportSpecifier(input, undefined, 1);
-    expect(spec).toMatch(/^file:\/\/\/.*\/abs\/x\.mjs\?t=1$/);
+    expect(spec).toMatch(/^file:\/\/.*\/abs\/x\.mjs\?t=1$/);
     expect(fileURLToPath(spec.slice(0, -'?t=1'.length))).toBe(input);
   });
 
