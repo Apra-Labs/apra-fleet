@@ -223,12 +223,23 @@ describe('credentialStoreSet', () => {
       expect(onDisk('promote')).toMatchObject({ network_policy: 'deny', allowedMembers: ['a'] });
     });
 
-    it('explicit persist: false moves a persistent secret to the session, so the new value is the one read', async () => {
+    it('explicit persist: false on a persistent secret is refused before a value is asked for, and changes nothing', async () => {
       stored('demote');
-      expect(await reset({ name: 'demote', persist: false })).toContain('stored [session]');
-      expect(onDisk('demote')).toBeUndefined();
-      expect(credentialResolve('demote', 'a')).toMatchObject({ plaintext: 'new', meta: { scope: 'session', network_policy: 'deny', allowedMembers: ['a'] } });
-      credentialDelete('demote');
+      const before = fs.readFileSync(credsPath());
+      const out = await reset({ name: 'demote', persist: false });
+      expect(out).toContain('[FAIL]');
+      expect(out).toContain("'demote' is persistent");
+      expect(out).toContain('credential_store_delete');
+      expect(authSocket.collectOobApiKey).not.toHaveBeenCalled();
+      expect(fs.readFileSync(credsPath()).equals(before)).toBe(true);
+      expect(credentialResolve('demote', 'a')).toMatchObject({ plaintext: 'old', meta: { scope: 'persistent' } });
+    });
+
+    it('explicit persist: false on a session secret is still allowed', async () => {
+      credentialSet('still_session', 'old', false, 'deny');
+      expect(await reset({ name: 'still_session', persist: false })).toContain('stored [session]');
+      expect(credentialResolve('still_session')).toMatchObject({ plaintext: 'new', meta: { network_policy: 'deny' } });
+      credentialDelete('still_session');
     });
 
     it('an unexpired expiry stays as stored when ttl is omitted', async () => {

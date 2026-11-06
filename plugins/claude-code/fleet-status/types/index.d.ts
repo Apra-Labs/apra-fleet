@@ -51,6 +51,8 @@ export type SecretForm = {
   ttl: 'none' | '1h' | '1d' | '7d'
   /** The name is an existing secret's: the form replaces its value. */
   replacing?: boolean
+  /** The row's expiry as listed, when replacing. */
+  rowExpiry?: string
   link?: string
   linkExpires?: string
   /** Shown beside the link when it is neither https nor loopback. */

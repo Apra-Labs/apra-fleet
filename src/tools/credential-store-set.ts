@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { collectOobApiKey } from '../services/auth-socket.js';
 import { decryptPassword } from '../utils/crypto.js';
-import { credentialSetValue, isLiveSecret, secretBoundBy } from '../services/credential-store.js';
+import { credentialSetValue, hasPersistentRecord, isLiveSecret, secretBoundBy } from '../services/credential-store.js';
 import { logLine } from '../utils/log-helpers.js';
 
 /** A caller still passing the removed `confirm` policy is told so, not given a bare enum error. */
@@ -16,7 +16,7 @@ export const networkPolicySchema = z.enum(['allow', 'deny'], {
 export const credentialStoreSetSchema = z.object({
   name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).describe('Credential name (alphanumeric, underscores, hyphens, max 64 chars)'),
   prompt: z.string().describe('Prompt to display to the user when collecting the secret'),
-  persist: z.boolean().optional().describe('true = encrypt it and keep it across server restarts, false = hold it in memory for this server session only. Omitted: a new name is persistent, an existing secret keeps its tier.'),
+  persist: z.boolean().optional().describe('true = encrypt it and keep it across server restarts, false = hold it in memory for this server session only. Omitted: a new name is persistent, an existing secret keeps its tier. false is refused on a persistent secret.'),
   network_policy: networkPolicySchema.optional().describe(
     'Network egress policy: "allow" = always proceed, "deny" = block network commands. Omitted: a new name gets "allow", an existing secret keeps its policy.'
   ),
@@ -38,6 +38,10 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
   const consumers = input.persist === false ? secretBoundBy(input.name) : [];
   if (consumers.length > 0) {
     return `[FAIL] '${input.name}' is in use by: ${consumers.join(', ')}, so it cannot have a session value. Use persist: true, or apra-fleet secret --set ${input.name} --persist.`;
+  }
+  // A persistent record would shadow the session value, and removing it silently would lose it.
+  if (input.persist === false && hasPersistentRecord(input.name)) {
+    return `[FAIL] '${input.name}' is persistent, so it cannot have a session value. Omit persist to change its value. If you really want a session value, delete it first with credential_store_delete.`;
   }
   const result = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt });
 

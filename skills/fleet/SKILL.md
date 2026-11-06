@@ -88,7 +88,7 @@ network access for commands that use it:
 | Policy | Behaviour |
 |--------|-----------|
 | `'allow'` (default) | No restriction |
-| `'deny'` | Commands invoking network tools (curl, wget, ssh, git push, etc.) are blocked |
+| `'deny'` | A command using the secret is blocked if its text has one of these words: curl, wget, ssh, sftp, scp, rsync, nc, netcat, http, fetch, Invoke-WebRequest, Invoke-RestMethod. `git push` is NOT blocked |
 
 ## Member Identification
 

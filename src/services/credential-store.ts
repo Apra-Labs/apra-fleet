@@ -229,14 +229,13 @@ export interface CredentialSetFields {
  * Only this process's session values are visible: a CLI process sees the file alone.
  */
 export function credentialSetValue(name: string, plaintext: string, given: CredentialSetFields = {}): CredentialMeta {
-  const file = loadCredentialFile();
-  const stored = file.credentials[name];
+  const stored = loadCredentialFile().credentials[name];
   const session = sessionStore.get(name);
   const existing = stored ?? session;
   const persist = given.persist ?? (stored !== undefined || session === undefined);
   const keptExpiry = existing && !isLiveRecord(existing) ? existing.expiresAt : undefined;
 
-  const meta = writeCredential(
+  return writeCredential(
     name,
     plaintext,
     persist,
@@ -244,12 +243,11 @@ export function credentialSetValue(name: string, plaintext: string, given: Crede
     given.allowedMembers ?? existing?.allowedMembers ?? '*',
     given.ttl_seconds !== undefined || isExpired(keptExpiry) ? expiryFromTtl(given.ttl_seconds) : keptExpiry,
   );
-  if (!persist && stored) {
-    // A persistent record would shadow the session value this call was asked to store.
-    delete file.credentials[name];
-    saveCredentialFile(file);
-  }
-  return meta;
+}
+
+/** True when `name` has a record in the file, which a session value would not replace. */
+export function hasPersistentRecord(name: string): boolean {
+  return loadCredentialFile().credentials[name] !== undefined;
 }
 
 function writeCredential(

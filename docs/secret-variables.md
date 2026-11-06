@@ -29,7 +29,7 @@ Example: `credential_store_set name=github_pat` stores a persistent secret, with
 
 Re-setting changes only the value. Anything you leave out stays as stored. An explicit argument changes that field and nothing else.
 
-| Call on a secret stored as `deny`, member `alice` | Value | Policy | Members |
+| Call on a persistent secret stored as `deny`, member `alice` | Value | Policy | Members |
 |---------------------------------------------------|-------|--------|---------|
 | `credential_store_set name=X` | new | `deny` | `alice` |
 | `credential_store_set name=X network_policy=allow` | new | `allow` | `alice` |
@@ -57,9 +57,17 @@ An expired secret that is not bound to a live secret is removed at server start 
 | Policy | What it does |
 |--------|--------------|
 | `allow` | No restriction. |
-| `deny` | A command that uses the secret and contains a network tool (such as `curl`, `wget`, `ssh`, `git push`) is blocked and does not run, and `send_email` refuses the secret. Commands with no network tool still run. |
+| `deny` | A command that uses the secret is blocked and does not run if the text of `command` contains one of the words below. `send_email` refuses the secret. Any other command still runs. |
+
+`deny` looks for these whole words, in any case: `curl`, `wget`, `ssh`, `sftp`, `scp`, `rsync`, `nc`, `netcat`, `http`, `fetch`, `Invoke-WebRequest`, `Invoke-RestMethod`.
 
 Example: with `deny` on `tok`, `curl -H {{secret.tok}} https://example.com` is blocked and `echo {{secret.tok}}` runs.
+
+This is a word check, not a network firewall:
+
+- `git push` and `git clone` are not blocked, because `git` is not on the list. `git fetch` is, because of `fetch`.
+- A script that calls `curl` inside itself is not blocked unless `command` also has a listed word.
+- Only `command` is checked for these words. A `deny` secret used only in `restart_command` is blocked when `command` has a listed word, but a listed word only in `restart_command` is not noticed.
 
 `confirm` is removed. Passing `network_policy: confirm` is refused with a message saying so, and `secret --confirm` fails the same way. A secret already stored with `confirm` keeps working and reads as `allow`, so it no longer prompts. Each such secret writes one log line naming it. To block its network use, run `apra-fleet secret --update NAME --deny`.
 
@@ -70,7 +78,7 @@ Example: with `deny` on `tok`, `curl -H {{secret.tok}} https://example.com` is b
 | Persistent | encrypted in `credentials.json` | kept |
 | Session | in the server's memory only | gone |
 
-`persist: false` keeps the secret in memory only: nothing is written to disk. A session secret stays session when re-set, unless you pass `persist: true`. Passing `persist: false` on a persistent secret moves it to memory and removes it from disk.
+`persist: false` keeps the secret in memory only: nothing is written to disk. A session secret stays session when re-set, unless you pass `persist: true`. `persist: false` on a persistent secret is refused before any value is asked for: delete the secret first if you really want a session value. Deleting also drops its policy and members.
 
 Example: `credential_store_set name=one_off persist=false` stores a value that ends at the next server restart.
 

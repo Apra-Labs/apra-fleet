@@ -6,16 +6,16 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
-const { mockExecCommand, mockCollectApiKey, mockLauncher, mockLogLine } = vi.hoisted(() => ({
+const { mockExecCommand, mockCollectApiKey, mockLogLine } = vi.hoisted(() => ({
   mockExecCommand: vi.fn(),
   mockCollectApiKey: vi.fn(),
-  mockLauncher: vi.fn(),
   mockLogLine: vi.fn(),
 }));
 
@@ -26,7 +26,6 @@ vi.mock('../src/services/strategy.js', () => ({
 vi.mock('../src/services/auth-socket.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/services/auth-socket.js')>()),
   collectOobApiKey: mockCollectApiKey,
-  launchAuthTerminal: mockLauncher,
 }));
 
 vi.mock('../src/utils/log-helpers.js', async (importOriginal) => ({
@@ -34,6 +33,7 @@ vi.mock('../src/utils/log-helpers.js', async (importOriginal) => ({
   logLine: mockLogLine,
 }));
 
+import { cleanupAuthSocket } from '../src/services/auth-socket.js';
 import { credentialList, credentialResolve, credentialUpdate, listLiveSecrets, lookupLiveSecret } from '../src/services/credential-store.js';
 import { resetLiveTokenCache } from '../src/services/live-secret-cache.js';
 import { resolveSecret } from '../src/providers/email/index.js';
@@ -97,7 +97,6 @@ beforeEach(() => {
   mockExecCommand.mockReset();
   mockExecCommand.mockResolvedValue({ stdout: 'ran', stderr: '', code: 0 });
   mockCollectApiKey.mockReset();
-  mockLauncher.mockReset();
   mockLogLine.mockReset();
 });
 
@@ -141,6 +140,14 @@ describe('a stored record with network_policy confirm', () => {
     expect(JSON.parse(fs.readFileSync(credPath, 'utf-8')).credentials[s].network_policy).toBe('allow');
   });
 
+  it('a save for an unrelated secret also stores allow for it', () => {
+    const s = `st_${RUN}_j`;
+    const other = `st_${RUN}_k`;
+    writeOldRecords({ [s]: oldStatic(s), [other]: { ...oldStatic(other), network_policy: 'allow' } });
+    credentialUpdate(other, { members: 'a' });
+    expect(JSON.parse(fs.readFileSync(credPath, 'utf-8')).credentials[s].network_policy).toBe('allow');
+  });
+
   it('a record with deny or allow is left as it is, with no log line', () => {
     const d = `st_${RUN}_d`;
     const a = `st_${RUN}_e`;
@@ -154,26 +161,35 @@ describe('a stored record with network_policy confirm', () => {
 
 describe('using an old confirm record', () => {
   let member: ReturnType<typeof makeTestLocalAgent>;
+  // Every out-of-band request starts by opening the auth socket, on any platform,
+  // whether or not a terminal can be launched.
+  let authSocketOpened: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     member = makeTestLocalAgent({ friendlyName: `confirm-removed-${RUN}`, workFolder: dataDir });
     addAgent(member);
+    authSocketOpened = vi.spyOn(net, 'createServer');
+  });
+
+  afterEach(async () => {
+    authSocketOpened.mockRestore();
+    await cleanupAuthSocket(); // an open socket is reused, which would hide the next test's request
   });
 
   const run = async (command: string): Promise<string> => resultText(await executeCommand({
     member_id: member.id, command, timeout_s: 30, long_running: false, max_retries: 0,
   } as never));
 
-  it('execute_command runs a network command with a static one, and opens no terminal', async () => {
+  it('execute_command runs a network command with a static one, and asks nothing out of band', async () => {
     const s = `st_${RUN}_f`;
     writeOldRecords({ [s]: oldStatic(s) });
     const out = await run(`curl https://example.test -H {{secret.${s}}}`);
     expect(out).toContain('ran');
     expect(mockExecCommand).toHaveBeenCalledTimes(1);
-    expect(mockLauncher).not.toHaveBeenCalled();
+    expect(authSocketOpened).not.toHaveBeenCalled();
   });
 
-  it('execute_command runs a network command with a live one, minting it once, and opens no terminal', async () => {
+  it('execute_command runs a network command with a live one, minting it once, and asks nothing out of band', async () => {
     const l = `li_${RUN}_g`;
     const counter = path.join(dataDir, 'runs');
     const script = path.join(dataDir, 'mint.js');
@@ -183,14 +199,14 @@ describe('using an old confirm record', () => {
     const out = await run(`curl https://example.test -H {{secret.${l}}}`);
     expect(out).toContain('ran');
     expect(fs.readFileSync(counter, 'utf8')).toBe('x');
-    expect(mockLauncher).not.toHaveBeenCalled();
+    expect(authSocketOpened).not.toHaveBeenCalled();
   });
 
   it('send_email gets the value with no prompt', async () => {
     const s = `st_${RUN}_h`;
     writeOldRecords({ [s]: oldStatic(s) });
     await expect(resolveSecret(s, '*')).resolves.toBe('old-value');
-    expect(mockLauncher).not.toHaveBeenCalled();
+    expect(authSocketOpened).not.toHaveBeenCalled();
   });
 });
 
