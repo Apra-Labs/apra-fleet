@@ -1,5 +1,5 @@
 /**
- * The samples shipped in docs/knowledge-layer.md, run as written, with a fake az
+ * The samples shipped in docs/secret-variables.md, run as written, with a fake az
  * and a fake curl first on PATH so no real tool or account is reached. jq is the
  * real one. Bash samples run on POSIX and PowerShell samples on Windows: each is
  * for the shell of the OS it runs on. Text is read from the doc, so a doc edit that
@@ -23,7 +23,7 @@ import { mintLiveSecret } from '../src/services/live-secret-cache.js';
 import { findExecutableOnPath } from '../src/utils/find-on-path.js';
 import { windowsSystemTool } from '../src/os/windows-executable.js';
 
-const DOC = fs.readFileSync(path.resolve(__dirname, '..', 'docs', 'knowledge-layer.md'), 'utf-8').replace(/\r\n/g, '\n');
+const DOC = fs.readFileSync(path.resolve(__dirname, '..', 'docs', 'secret-variables.md'), 'utf-8').replace(/\r\n/g, '\n');
 const WIN = process.platform === 'win32';
 const hasJq = !WIN && findExecutableOnPath('jq') !== null;
 if (!WIN && !hasJq) console.warn('[live-secret-samples] jq not found: the bash samples are SKIPPED');
@@ -37,7 +37,7 @@ const EXPIRES_ON = 4_102_444_800; // 2100-01-01T00:00:00Z
 function sample(name: string): string {
   const marker = `<!-- live-secret-sample:${name} -->`;
   const at = DOC.indexOf(marker);
-  if (at < 0) throw new Error(`docs/knowledge-layer.md has no sample ${name}`);
+  if (at < 0) throw new Error(`docs/secret-variables.md has no sample ${name}`);
   const open = DOC.indexOf('\n', DOC.indexOf('```', at)) + 1;
   return DOC.slice(open, DOC.indexOf('\n```', open));
 }
@@ -225,6 +225,7 @@ describe.skipIf(!WIN)('PowerShell samples (Windows)', () => {
     child.stderr.on('data', (c) => { r.stderr += c; });
     await new Promise((resolve) => child.on('close', resolve));
 
+    expect(typed).not.toContain(' -- ');
     expect(r.stderr).not.toContain('Usage');
     expect(r.stderr).not.toContain('FAILED');
     expect(r.stdout).toMatch(/^OK: expires /);
@@ -234,12 +235,167 @@ describe.skipIf(!WIN)('PowerShell samples (Windows)', () => {
   }, 120_000);
 });
 
+/**
+ * Runs a registration line as typed, through the real CLI in a real shell, with
+ * the CLI standing in for the installed apra-fleet. A child process, not
+ * spawnSync, because a script may call the token server running in this process.
+ */
+async function typedInShell(line: string, data: string): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  const cli = path.resolve(__dirname, '..', 'dist', 'index.js');
+  expect(line.startsWith('apra-fleet secret --live ')).toBe(true);
+  expect(line).not.toContain(' -- ');
+  const env = { ...process.env, APRA_FLEET_DATA_DIR: data };
+  const child = WIN
+    ? spawn(windowsSystemTool('powershell') as string, [
+      '-NoProfile', '-NonInteractive', '-EncodedCommand',
+      Buffer.from(line.replace('apra-fleet', `& "${process.execPath}" "${cli}"`), 'utf16le').toString('base64'),
+    ], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    : spawn('bash', ['-c', line], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const r = { stdout: '', stderr: '', code: null as number | null };
+  child.stdout.on('data', (c) => { r.stdout += c; });
+  child.stderr.on('data', (c) => { r.stderr += c; });
+  r.code = await new Promise((resolve) => child.on('close', resolve));
+  return r;
+}
+
+function dataDirWithBoundSecret(): string {
+  const data = path.join(tmp, 'data');
+  fs.mkdirSync(data, { recursive: true });
+  const cli = path.resolve(__dirname, '..', 'dist', 'index.js');
+  const set = spawnSync(process.execPath, [cli, 'secret', '--set', 'sp_secret', '--persist', '-y'], {
+    env: { ...process.env, APRA_FLEET_DATA_DIR: data }, input: `${SECRET}\n`, encoding: 'utf-8',
+  });
+  expect(set.status).toBe(0);
+  return data;
+}
+
+function storedLive(data: string): Record<string, unknown> {
+  const raw = fs.readFileSync(path.join(data, 'credentials.json'), 'utf-8');
+  expect(raw).not.toContain(SECRET);
+  expect(raw).not.toContain(TOKEN);
+  return JSON.parse(raw).credentials.KB_TOKEN;
+}
+
+function expectRegistered(r: { stdout: string; stderr: string; code: number | null }): void {
+  expect(r.stderr).toBe('');
+  expect(r.stdout).toMatch(/^OK: expires /);
+  expect(r.code).toBe(0);
+}
+
+describe.skipIf(WIN || !hasJq)('bash registration lines as typed, through the real CLI (POSIX, needs jq)', () => {
+  beforeEach(() => {
+    // The stand-in for the installed command the typed line names.
+    fs.writeFileSync(path.join(fakes, 'apra-fleet'), `#!/bin/sh\nexec "${process.execPath}" "${path.resolve(__dirname, '..', 'dist', 'index.js')}" "$@"\n`, { mode: 0o755 });
+  });
+
+  it('inline, Entra ID through az', async () => {
+    const data = path.join(tmp, 'data');
+    fs.mkdirSync(data);
+    expectRegistered(await typedInShell(sample('az-bash').split('\n')[0], data));
+    expect(fs.readFileSync(log('az.args'), 'utf8')).toContain('{t:accessToken,e:expires_on}');
+    expect(storedLive(data).kind).toBe('live');
+  }, 60_000);
+
+  it('inline, OAuth client credentials: the bound secret reaches curl on stdin', async () => {
+    const data = dataDirWithBoundSecret();
+    expectRegistered(await typedInShell(sample('oauth-inline-bash').split('\n')[0], data));
+    expect(fs.readFileSync(log('curl.args'), 'utf8')).toContain('https://idp.example.test/token');
+    expect(fs.readFileSync(log('curl.args'), 'utf8')).not.toContain(SECRET);
+    expect(fs.readFileSync(log('curl.stdin'), 'utf8')).toBe(SECRET);
+    expect(storedLive(data).bindings).toEqual([{ env: 'FLEET_SECRET_sp_secret', secret: 'sp_secret' }]);
+  }, 60_000);
+
+  for (const [script, register, placeholder, values, urlPart] of [
+    ['sp-bash', 'sp-bash-register', '/opt/kb/mint-sp.sh', ['<tenant>', 'my-tenant', '<client-id>', 'my-client', '<app-id-uri>', 'api://kb'], 'https://login.microsoftonline.com/my-tenant/oauth2/v2.0/token'],
+    ['oauth-bash', 'oauth-bash-register', '/opt/kb/mint-oauth.sh', ['<token-url>', 'https://idp.example.test/token', '<client-id>', 'my-client', '<scope>', 'api://kb/.default'], 'https://idp.example.test/token'],
+  ] as const) {
+    it(`script file ${script}: the file as printed, the line as typed`, async () => {
+      const data = dataDirWithBoundSecret();
+      const file = path.join(tmp, `${script}.sh`);
+      fs.writeFileSync(file, `${sample(script)}\n`, { mode: 0o755 });
+      let line = sample(register).split('\n')[0].replace(placeholder, file);
+      for (let i = 0; i < values.length; i += 2) line = line.replace(values[i], values[i + 1]);
+      expectRegistered(await typedInShell(line, data));
+      expect(fs.readFileSync(log('curl.args'), 'utf8')).toContain(urlPart);
+      expect(fs.readFileSync(log('curl.args'), 'utf8')).not.toContain(SECRET);
+      expect(fs.readFileSync(log('curl.stdin'), 'utf8')).toBe(SECRET);
+      expect(storedLive(data).bindings).toEqual([{ env: 'CLIENT_SECRET', secret: 'sp_secret' }]);
+    }, 60_000);
+  }
+});
+
+describe.skipIf(!WIN)('PowerShell registration lines as typed, through the real CLI (Windows)', () => {
+  let server: http.Server;
+  let url: string;
+  let lastBody: URLSearchParams;
+
+  beforeAll(async () => {
+    server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        lastBody = new URLSearchParams(body);
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ access_token: TOKEN, expires_in: 3600 }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/token`;
+  });
+
+  afterAll(async () => {
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  it('inline, OAuth client credentials: the bound secret goes in the request body', async () => {
+    const data = dataDirWithBoundSecret();
+    const line = sample('oauth-inline-powershell').split('\n')[0].replace('https://idp.example.test/token', url);
+    expectRegistered(await typedInShell(line, data));
+    expect(lastBody.get('client_secret')).toBe(SECRET);
+    expect(lastBody.get('grant_type')).toBe('client_credentials');
+    expect(storedLive(data).bindings).toEqual([{ env: 'FLEET_SECRET_sp_secret', secret: 'sp_secret' }]);
+  }, 120_000);
+
+  it('script file .bat: the file as printed, the line as typed', async () => {
+    const data = dataDirWithBoundSecret();
+    const file = path.join(tmp, 'mint-oauth.bat');
+    fs.writeFileSync(file, `${sample('oauth-bat')}\n`);
+    const line = sample('oauth-bat-register').split('\n')[0]
+      .replace('C:\\kb\\mint-oauth.bat', `"${file}"`)
+      .replace('<token-url>', url)
+      .replace('<client-id>', 'my-client')
+      .replace('<scope>', 'api://kb/.default');
+    expectRegistered(await typedInShell(line, data));
+    expect(lastBody.get('client_secret')).toBe(SECRET);
+    expect(lastBody.get('client_id')).toBe('my-client');
+    expect(lastBody.get('scope')).toBe('api://kb/.default');
+    expect(storedLive(data).bindings).toEqual([{ env: 'CLIENT_SECRET', secret: 'sp_secret' }]);
+  }, 120_000);
+});
+
 describe('the samples are present and carry no value', () => {
   it('every sample exists and references secrets only by placeholder or env var', () => {
-    for (const name of ['az-bash', 'az-powershell', 'sp-bash', 'oauth-bash', 'oauth-powershell']) {
+    for (const name of [
+      'az-bash', 'az-powershell', 'oauth-inline-bash', 'oauth-inline-powershell', 'sp-bash', 'sp-bash-register',
+      'oauth-bash', 'oauth-bash-register', 'oauth-powershell', 'oauth-powershell-register', 'oauth-bat', 'oauth-bat-register',
+    ]) {
       expect(sample(name).length).toBeGreaterThan(0);
     }
     expect(sample('sp-bash')).toContain('"$CLIENT_SECRET"');
     expect(sample('oauth-powershell')).toContain('$env:CLIENT_SECRET');
+    expect(sample('oauth-bat')).toContain('$env:CLIENT_SECRET');
+    expect(sample('oauth-bat')).not.toContain('%CLIENT_SECRET%');
+  });
+
+  it('no registration sample needs a bare --, which npm\'s PowerShell shim drops', () => {
+    for (const name of ['sp-bash-register', 'oauth-bash-register', 'oauth-powershell-register', 'oauth-bat-register']) {
+      expect(sample(name)).not.toContain(' -- ');
+    }
+  });
+
+  it('the Windows inline samples hold no double quote, which Windows PowerShell 5.1 strips', () => {
+    for (const name of ['az-powershell', 'oauth-inline-powershell']) {
+      expect(sample(name)).not.toContain('"');
+    }
   });
 });

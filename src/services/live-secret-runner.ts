@@ -1,7 +1,14 @@
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { windowsSystemTool, type WindowsSystemTool } from '../os/windows-executable.js';
+import { gitBashCandidates } from '../os/git-bash-candidates.js';
+import {
+  defaultIsFile,
+  envValue,
+  resolveGitBashExecutable,
+  windowsSystemTool,
+  type WindowsSystemTool,
+} from '../os/windows-executable.js';
 import { formatSecretToken } from './secret-token.js';
 
 /**
@@ -90,6 +97,10 @@ export interface LiveInvocation {
   args: string[];
   /** Windows only: hand args to cmd.exe as-is (the command line is already quoted). */
   windowsVerbatimArguments: boolean;
+  /** With verbatim arguments, the program as it appears first on the command line. */
+  argv0?: string;
+  /** Env vars the launcher itself needs. Never a bound secret. */
+  env?: Record<string, string>;
 }
 
 export interface RunLiveSecretOptions {
@@ -179,6 +190,16 @@ export function quoteCmdArg(arg: string): string {
   return out + '\\'.repeat(backslashes * 2) + '"';
 }
 
+/**
+ * Quote one argument for the command line of an MSYS program started from a
+ * Windows process, as Git for Windows' bash parses it: inside double quotes "" is
+ * a literal " and \\ a literal \, and * and ? stay literal. Node's own quoting
+ * (\") splits an argument there.
+ */
+export function quoteMsysArg(arg: string): string {
+  return `"${arg.replace(/\\/g, '\\\\').replace(/"/g, '""')}"`;
+}
+
 /** The absolute system tools an invocation may need. Injected by tests. */
 export type ToolResolver = (tool: WindowsSystemTool) => string | null;
 
@@ -190,39 +211,145 @@ function requireTool(tool: WindowsSystemTool, resolve: ToolResolver): string {
 
 const POWERSHELL_FLAGS = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass'];
 
+export type LiveLauncherReason = 'script-type-unsupported' | 'launcher-not-found' | 'script-not-executable';
+
+/** A script file this OS cannot start. The message names the requirement, never a value. */
+export class LiveLauncherError extends Error {
+  constructor(readonly reasonCode: LiveLauncherReason, message: string) {
+    super(message);
+    this.name = 'LiveLauncherError';
+  }
+}
+
+/** What starting a script file depends on, beyond the system tools. Injected by tests. */
+export interface ScriptLaunchers {
+  /** Windows: Git for Windows' bash, as an absolute path. */
+  gitBash: () => string | null;
+  /** Linux/macOS: pwsh, as an absolute path. */
+  pwsh: () => string | null;
+  /** Linux/macOS: true for an existing file with no execute permission for this user. */
+  lacksExecuteBit: (p: string) => boolean;
+}
+
+/** An absolute pwsh: the usual install folders, else an absolute PATH entry. */
+export function resolvePosixPwsh(
+  envPath: string | undefined = process.env.PATH,
+  isFile: (p: string) => boolean = fileExists,
+): string | null {
+  const dirs = ['/usr/bin', '/usr/local/bin', '/opt/homebrew/bin', '/opt/microsoft/powershell/7', ...(envPath ?? '').split(':').filter((d) => path.posix.isAbsolute(d))];
+  for (const dir of dirs) {
+    const candidate = path.posix.join(dir, 'pwsh');
+    if (isFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+function lacksExecuteBit(p: string): boolean {
+  if (!fileExists(p)) return false;
+  try {
+    fs.accessSync(p, fs.constants.X_OK);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+const DEFAULT_LAUNCHERS: ScriptLaunchers = {
+  gitBash: () => resolveGitBashExecutable({
+    candidates: gitBashCandidates(envValue(process.env, 'LOCALAPPDATA')),
+    pathValue: envValue(process.env, 'PATH'),
+    isFile: defaultIsFile,
+  }),
+  pwsh: () => resolvePosixPwsh(),
+  lacksExecuteBit,
+};
+
+function requireLauncher(found: string | null, message: string): string {
+  if (!found) throw new LiveLauncherError('launcher-not-found', message);
+  return found;
+}
+
 /**
  * How to start a script file. Platform is a parameter so every branch is
- * unit-testable on any host.
+ * unit-testable on any host. Bound secrets reach every form the same way, in the
+ * child's env; args stay a list, and go through no shell parsing of their text
+ * except where quoteCmdArg says.
  *
- * - A .cmd/.bat program on Windows: cmd.exe /d /v:off /s /c "<quoted line>"
- *   with verbatim arguments. Node will not spawn a batch file without a shell
- *   (CVE-2024-27980), so every piece goes through quoteCmdArg. /d skips
- *   AutoRun, /v:off disables delayed (!) expansion, /s strips exactly the
- *   outer quote pair.
- * - A .ps1 program on Windows: powershell.exe -File.
- * - Anything else (.exe, POSIX programs and scripts): spawned directly with
- *   argv, no shell.
+ * Windows:
+ * - .cmd/.bat: cmd.exe /d /v:off /s /c "<quoted line>" with verbatim arguments.
+ *   Node will not spawn a batch file without a shell (CVE-2024-27980), so every
+ *   piece goes through quoteCmdArg. /d skips AutoRun, /v:off disables delayed (!)
+ *   expansion, /s strips exactly the outer quote pair.
+ * - .ps1: powershell.exe -File.
+ * - .sh: Git for Windows' bash, never the WSL launcher, with a command line from
+ *   quoteMsysArg, because MSYS parses its own command line differently from
+ *   every other Windows program.
+ *
+ * Linux and macOS:
+ * - .cmd/.bat: refused.
+ * - .ps1: pwsh -File.
+ * - .sh without the execute bit: /bin/sh. With it: started directly, so its
+ *   shebang decides.
+ * - Any other file without the execute bit: refused, instead of a bare EACCES.
+ *
+ * Anything else: spawned directly with argv, no shell, on Windows only as .exe or
+ * .com, because CreateProcess can start nothing else.
  */
 export function buildProgramInvocation(
   program: string,
   args: string[],
   platform: NodeJS.Platform,
   resolveTool: ToolResolver = windowsSystemTool,
+  launchers: ScriptLaunchers = DEFAULT_LAUNCHERS,
 ): LiveInvocation {
-  if (platform === 'win32' && isBatchProgram(program)) {
-    const line = [program, ...args].map(quoteCmdArg).join(' ');
-    return {
-      file: requireTool('cmd', resolveTool),
-      args: ['/d', '/v:off', '/s', '/c', `"${line}"`],
-      windowsVerbatimArguments: true,
-    };
+  const isPs1 = /\.ps1$/i.test(program);
+  const isSh = /\.sh$/i.test(program);
+  if (platform === 'win32') {
+    if (isBatchProgram(program)) {
+      const line = [program, ...args].map(quoteCmdArg).join(' ');
+      return {
+        file: requireTool('cmd', resolveTool),
+        args: ['/d', '/v:off', '/s', '/c', `"${line}"`],
+        windowsVerbatimArguments: true,
+      };
+    }
+    if (isPs1) {
+      return {
+        file: requireTool('powershell', resolveTool),
+        args: [...POWERSHELL_FLAGS, '-File', program, ...args],
+        windowsVerbatimArguments: false,
+      };
+    }
+    if (isSh) {
+      const bash = requireLauncher(launchers.gitBash(), 'a .sh script on Windows needs Git for Windows (its bash.exe); the WSL bash is not used. Install it, or use a .ps1, .bat or .cmd script');
+      const msys = envValue(process.env, 'MSYS');
+      return {
+        file: bash,
+        args: [[program, ...args].map(quoteMsysArg).join(' ')],
+        windowsVerbatimArguments: true,
+        argv0: `"${bash}"`,
+        // quoteMsysArg relies on this parsing mode, which noglob turns off.
+        ...(msys ? { env: { MSYS: msys.split(/\s+/).filter((o) => o !== 'noglob').join(' ') } } : {}),
+      };
+    }
+    if (!/\.(exe|com)$/i.test(program)) {
+      throw new LiveLauncherError('script-type-unsupported', 'Windows runs a helper file of type .ps1, .sh, .bat, .cmd, .exe or .com: this file is none of them');
+    }
+    return { file: program, args: [...args], windowsVerbatimArguments: false };
   }
-  if (platform === 'win32' && /\.ps1$/i.test(program)) {
+  if (isBatchProgram(program)) {
+    throw new LiveLauncherError('script-type-unsupported', 'a .bat or .cmd script runs only on Windows: use a .sh script here');
+  }
+  if (isPs1) {
     return {
-      file: requireTool('powershell', resolveTool),
-      args: [...POWERSHELL_FLAGS, '-File', program, ...args],
+      file: requireLauncher(launchers.pwsh(), 'a .ps1 script here needs pwsh (PowerShell 7), which was not found in the usual folders or on an absolute PATH entry. Install it, or use a .sh script'),
+      args: ['-NoProfile', '-NonInteractive', '-File', program, ...args],
       windowsVerbatimArguments: false,
     };
+  }
+  if (launchers.lacksExecuteBit(program)) {
+    if (isSh) return { file: '/bin/sh', args: [program, ...args], windowsVerbatimArguments: false };
+    throw new LiveLauncherError('script-not-executable', 'the script file has no execute permission for this user: chmod +x it');
   }
   return { file: program, args: [...args], windowsVerbatimArguments: false };
 }
@@ -351,10 +478,11 @@ export function runLiveSecret(opts: RunLiveSecretOptions): Promise<LiveToken> {
     try {
       child = spawn(invocation.file, invocation.args, {
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, ...opts.env, FLEET_CREDENTIAL: credential },
+        env: { ...process.env, ...invocation.env, ...opts.env, FLEET_CREDENTIAL: credential },
         cwd: opts.cwd,
         windowsHide: true,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        ...(invocation.argv0 ? { argv0: invocation.argv0 } : {}),
         detached: process.platform !== 'win32',
       });
     } catch (err) {

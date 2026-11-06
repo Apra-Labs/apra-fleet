@@ -490,9 +490,10 @@ export type KbHttpCredentialHealth =
      * Metadata lookup: ok, missing, or expired (an expired record is kept, never
      * deleted here). unreadable: the credential store could not be read, or the
      * secret's value could not be decrypted; every KB call then fails with
-     * E-KB-HTTP-AUTH reason unreadable.
+     * E-KB-HTTP-AUTH reason unreadable. denied: its network_policy is deny; every
+     * KB call then fails with reason policy-deny.
      */
-    resolves: 'ok' | 'missing' | 'expired' | 'unreadable';
+    resolves: 'ok' | 'missing' | 'expired' | 'unreadable' | 'denied';
     /** The secret record's created_at; null when the secret is missing or the store is unreadable. */
     lastWritten: string | null;
     /** exp of a JWT secret value, decoded locally, as ISO time; null for a non-JWT value or an unresolved secret. */
@@ -507,8 +508,8 @@ export type KbHttpCredentialHealth =
     url: string;
     /** The live secret's name (the token_ref's NAME). Its script is in the liveSecrets list. */
     secretName: string;
-    /** This process's state for the live secret (live-secret-cache.ts LiveTokenState). */
-    resolves: LiveTokenState;
+    /** This process's state for the live secret (live-secret-cache.ts LiveTokenState), or denied: its network_policy is deny. */
+    resolves: LiveTokenState | 'denied';
     /** When the script last returned a token in this process; null when never. */
     lastMinted: string | null;
     /** exp of the cached token when it is a JWT, decoded locally; null otherwise. */
@@ -609,7 +610,7 @@ export function kbHttpCredentialHealth(config: KbConfigResult): KbHttpCredential
       const status = getLiveTokenStatus(secretName, live);
       return {
         kind: 'live', url: config.url, secretName,
-        resolves: status.state, lastMinted: status.lastMintedAt, tokenExpiry: status.tokenExpiry,
+        resolves: live.network_policy === 'deny' ? 'denied' : status.state, lastMinted: status.lastMintedAt, tokenExpiry: status.tokenExpiry,
         lastFailure: status.lastFailureReason, retryAfter: status.retryAfter,
         lastSuccessfulCall, lastRejectedCall,
       };
@@ -629,7 +630,8 @@ export function kbHttpCredentialHealth(config: KbConfigResult): KbHttpCredential
     }
     if (found.status === 'ok') tokenExpiry = jwtExpiry(found.value);
   }
-  return { ...block, resolves: meta.status, lastWritten, tokenExpiry };
+  const denied = meta.status === 'ok' && meta.meta.network_policy === 'deny';
+  return { ...block, resolves: denied ? 'denied' : meta.status, lastWritten, tokenExpiry };
 }
 
 function safeCredentialHealth(config: KbConfigResult): KbHttpCredentialHealth | undefined {

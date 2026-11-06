@@ -545,13 +545,23 @@ registers it again), and the identical request then succeeds. It is still
 way, and the provider has already done its one retry (re-read the secret, send
 once more) before raising it.
 
+The secret's own policy applies on every provider call, before any request and
+before a live secret's script runs: `network_policy` deny refuses every caller
+(reason `policy-deny`), and `allowedMembers` refuses a member session it does not
+name (reason `member-not-allowed`), matched by the friendly name that fleet server
+has registered for the session's member id. A session with no member identity has
+no member to check. A record with allow and all members behaves as if no policy
+existed.
+
 ### 3.3a Remote KB auth failure is thrown, and writes are queued first
 
 `E-KB-HTTP-AUTH` is `surfaced: thrown` on every tool that reaches the remote
 provider. A write (`kb_capture`, `kb_harvest`, `kb_invalidate`) is first put
 in the provider's offline queue -- the same queue a server-down write uses --
 and the thrown message says so; the queue is kept (not flushed, not dropped)
-until the secret is accepted. A read (`kb_query`, `kb_context`,
+until the secret is accepted. A write refused by the secret's policy (`policy-deny`,
+`member-not-allowed`) is the exception: it is not queued, so it cannot go out later
+under another session, and the caller retries it. A read (`kb_query`, `kb_context`,
 `kb_session_prime`) is thrown with no local fallback: unlike an outage, this
 needs the operator to act, and a silently degraded answer would hide that. A
 MEMBER session's CONFIRMED read is answered from its checkout bible (2.5) and

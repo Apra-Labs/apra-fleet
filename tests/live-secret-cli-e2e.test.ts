@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { clearMemberInstallMarker, writeMemberInstallMarker } from '../src/cli/install-guard.js';
 import { credentialStoreSet } from '../src/tools/credential-store-set.js';
 import { credentialStoreUpdate } from '../src/tools/credential-store-update.js';
 import { credentialStoreDelete } from '../src/tools/credential-store-delete.js';
@@ -99,6 +100,62 @@ describe('secret --live (real CLI)', () => {
     if (savedDataDir === undefined) delete process.env.APRA_FLEET_DATA_DIR;
     else process.env.APRA_FLEET_DATA_DIR = savedDataDir;
     fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  describe('on a remote member install (temporary limit for 0.4.5)', () => {
+    /** A script that leaves a file when it runs. */
+    function ranScript(): { file: string; ran: () => boolean } {
+      const flag = path.join(sandbox, 'script-ran');
+      return {
+        file: script('ran.js', `fs.writeFileSync(${JSON.stringify(flag)},"x");${printToken}`),
+        ran: () => fs.existsSync(flag),
+      };
+    }
+
+    it('refuses, pointing to the orchestrator, runs no script and saves nothing', () => {
+      writeMemberInstallMarker('test', 7523);
+      const s = ranScript();
+      const r = register('onmember', s.file);
+      expect(r.status).toBe(1);
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toMatch(/^FAILED: member-install: .*orchestrator/);
+      expect(r.stderr).toContain('rerun apra-fleet install');
+      expect(s.ran()).toBe(false);
+      expect(fs.existsSync(credentialsPath())).toBe(false);
+      expectNoCanary(r.stdout, r.stderr);
+    });
+
+    it('refuses the inline form, and args that would be a usage error, the same way', () => {
+      writeMemberInstallMarker('test', 7523);
+      for (const args of [['--live', 'onmember', '--inline', 'echo hi'], ['--live']]) {
+        const r = cli(args);
+        expect(r.status).toBe(1);
+        expect(r.stderr).toMatch(/^FAILED: member-install: /);
+      }
+      expect(fs.existsSync(credentialsPath())).toBe(false);
+    });
+
+    it('still takes a static secret: the orchestrator pushes tokens to a member that way', () => {
+      writeMemberInstallMarker('test', 7523);
+      setStatic('pushed');
+      expect(readRecords().pushed.kind).toBeUndefined();
+    });
+
+    it('registers on an orchestrator install, which has no marker', () => {
+      const s = ranScript();
+      const r = register('onorchestrator', s.file);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toMatch(OK_LINE);
+      expect(s.ran()).toBe(true);
+      expect(readRecords().onorchestrator.kind).toBe('live');
+    });
+
+    it('registers once a full install has cleared the marker', () => {
+      writeMemberInstallMarker('test', 7523);
+      clearMemberInstallMarker();
+      expect(register('aftercleared').status).toBe(0);
+      expect(readRecords().aftercleared.kind).toBe('live');
+    });
   });
 
   describe('registration test', () => {
@@ -304,7 +361,7 @@ describe('secret --live (real CLI)', () => {
     });
 
     it('prints usage for malformed forms', () => {
-      for (const args of [['--live'], ['--live', 'L'], ['--live', 'L', '--inline'], ['--live', 'L', '--inline', 'x', 'y'], ['--live', 'L', '--env', 'NOEQ', '--', 'x'], ['--live', 'L', '--']]) {
+      for (const args of [['--live'], ['--live', 'L'], ['--live', 'L', '--inline'], ['--live', 'L', '--env', 'NOEQ', '--', 'x'], ['--live', 'L', '--']]) {
         const r = cli(args);
         expect(r.status).toBe(1);
         expect(r.stderr).toContain('Usage');

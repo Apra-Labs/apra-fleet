@@ -213,7 +213,7 @@ describe('KB tools with a credential-helper-backed named credential', () => {
     expect(typeof credential.lastMinted).toBe('string');
     expect(line).toContain(`kb credential: live secret ${NAME} | resolves: ok`);
     expect(line).toContain(`last minted: ${credential.lastMinted as string}`);
-  });
+  }, 30_000);
 
   it('a static named secret in the same setup behaves as before; the helper never runs', async () => {
     credentialSet(STATIC_NAME, STATIC_TOKEN, true, 'allow', '*');

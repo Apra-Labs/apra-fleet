@@ -62,7 +62,7 @@ describe('runUpdate (T6)', () => {
     } as any);
 
     // Default fs behavior
-    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.existsSync).mockImplementation((p) => !String(p).includes('member-install.json'));
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ llm: 'gemini', skill: 'pm' }));
     vi.mocked(fs.chmodSync).mockImplementation(() => {});
     vi.mocked(fs.renameSync).mockImplementation(() => undefined as any);
@@ -205,7 +205,7 @@ describe('runUpdate (T6)', () => {
   });
 
   it('invalid install-config.json -- uses defaults with warning', async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.existsSync).mockImplementation((p) => !String(p).includes('member-install.json'));
     vi.mocked(fs.readFileSync).mockReturnValue('invalid json');
 
     vi.mocked(fetch).mockImplementation(async (url: any) => {

@@ -17,7 +17,7 @@ export const kbSetupSchema = z.object({
   remote: z.string().optional()
     .describe('Remote KB server URL, http(s) only (required when provider=http). Use https for any non-loopback host: plain http sends the token in cleartext.'),
   token: z.string().optional()
-    .describe('Authentication token for remote KB server. Either a literal token (stored encrypted, never logged) or exactly one named fleet secret placeholder of the form {{secret.NAME}} with nothing around it: then only the placeholder is stored and the server looks the secret up on each request, so rotating the secret needs no kb_setup re-run. For provider http the secret must already exist (apra-fleet secret --set NAME --persist -y), or NAME must be a registered live secret (apra-fleet secret --live NAME ...) whose script the server runs to mint the token.'),
+    .describe('Authentication token for remote KB server. Either a literal token (stored encrypted, never logged) or exactly one named fleet secret placeholder of the form {{secret.NAME}} with nothing around it: then only the placeholder is stored and the server looks the secret up on each request, so rotating the secret needs no kb_setup re-run. For provider http the secret must already exist (apra-fleet secret --set NAME --persist -y), or NAME must be a registered live secret (apra-fleet secret --live NAME ...) whose script the server runs to mint the token. Either way it must not have network_policy deny, which every KB call would refuse.'),
   request_timeout_ms: z.number().int().min(MIN_REQUEST_TIMEOUT_MS).max(MAX_REQUEST_TIMEOUT_MS).optional()
     .describe('Socket idle timeout in milliseconds for each request to the remote KB server, 1000-120000 (default 5000). Not a per-request deadline: a call can wait up to about twice this while queued offline writes flush first.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
@@ -97,7 +97,8 @@ function effectiveProvider(input: KbSetupInput, existing: KbConfigFile): 'sqlite
  * Classify input.token. A literal returns null. A value containing a secret
  * placeholder must be exactly one placeholder with nothing around it, else it
  * is refused (naming the field, never echoing the value). When the resulting
- * config is http the named secret must exist and be unexpired.
+ * config is http the named secret must exist, be unexpired, and not have
+ * network_policy deny.
  */
 function checkTokenRef(input: KbSetupInput, provider: 'sqlite' | 'http'): TokenRef | null {
   const token = input.token;
@@ -112,13 +113,23 @@ function checkTokenRef(input: KbSetupInput, provider: 'sqlite' | 'http'): TokenR
   const { name, legacy } = matches[0];
   if (provider === 'http') {
     let found: ReturnType<typeof lookupServerSecretMeta>;
+    const refuseDeny = (policy: string): void => {
+      if (policy === 'deny') {
+        throw new Error(`kb_setup: token refers to secret "${name}", which has network_policy=deny, so every KB call would be refused. Allow it first: apra-fleet secret --update ${name} --allow`);
+      }
+    };
+    let livePolicy: string | undefined;
     try {
       // A registered live secret is a valid token source: it mints the token on demand.
-      if (lookupLiveSecret(name)) return { name, legacy };
+      livePolicy = lookupLiveSecret(name)?.network_policy;
       found = lookupServerSecretMeta(name);
     } catch {
       // The parser's message can quote part of credentials.json, so it is not repeated.
       throw new Error(`kb_setup: token refers to secret "${name}", but the fleet credential store could not be read.`);
+    }
+    if (livePolicy !== undefined) {
+      refuseDeny(livePolicy);
+      return { name, legacy };
     }
     const fix = `Set it with: apra-fleet secret --set ${name} --persist -y`;
     if (found.status === 'missing') {
@@ -127,6 +138,7 @@ function checkTokenRef(input: KbSetupInput, provider: 'sqlite' | 'http'): TokenR
     if (found.status === 'expired') {
       throw new Error(`kb_setup: token refers to secret "${name}", which has expired. Re-set it with: apra-fleet secret --set ${name} --persist -y`);
     }
+    refuseDeny(found.meta.network_policy);
   }
   return { name, legacy };
 }

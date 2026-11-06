@@ -7,7 +7,9 @@ import { parseVersion, isNewer } from '../services/update-check.js';
 import { FLEET_DIR } from '../paths.js';
 import { readInstallConfig } from './config.js';
 import { isSea, isNpmGlobalInstall, fleetSeGuardEnabled, currentFleetSeProbes } from './install.js';
-import { selfInvocationLines } from './install-guard.js';
+import { hasMemberInstallMarker, selfInvocationLines } from './install-guard.js';
+import { memberInstallArgs } from '../services/member-fleet-install.js';
+import type { LlmProvider } from '../types.js';
 import { detectRunningFleetSe, fleetSeRefusalText, IGNORE_RUNNING_SPRINTS_FLAG } from './fleet-se-guard.js';
 import { showPendingServiceNotice } from '../services/service-notice.js';
 
@@ -20,7 +22,7 @@ export async function runUpdate(): Promise<void> {
       console.log('  npm update -g @apralabs/apra-fleet');
       console.log('');
       console.log('After updating, re-install skills and hooks:');
-      console.log('  apra-fleet install');
+      console.log(hasMemberInstallMarker() ? '  apra-fleet install --member --force' : '  apra-fleet install');
     } else {
       console.log('apra-fleet is running in dev mode. Pull the latest source and rebuild.');
     }
@@ -119,7 +121,11 @@ export async function runUpdate(): Promise<void> {
     // --workflows threads the persisted workflowsMode back in so a prior
     // `--workflows none` choice survives an update instead of silently
     // reverting to the `all` default on re-install (apra-fleet-7pm.10).
-    const args = ['install', '--force', '--llm', targetLlm, '--skill', targetSkill, '--workflows', targetWorkflowsMode];
+    // A member install stays one: without --member the installer would clear the
+    // member-install marker and turn this machine into a full install.
+    const args = hasMemberInstallMarker()
+      ? memberInstallArgs(targetLlm as LlmProvider)
+      : ['install', '--force', '--llm', targetLlm, '--skill', targetSkill, '--workflows', targetWorkflowsMode];
     // The detached installer refuses while fleet-sprint work is running, but
     // nobody would see it: refuse here, in the console, first.
     if (fleetSeGuardEnabled()) {

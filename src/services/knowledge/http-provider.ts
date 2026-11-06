@@ -22,8 +22,10 @@ import type {
 } from './types.js';
 
 import { DEFAULT_REQUEST_TIMEOUT_MS } from './kb-config.js';
-import { lookupServerSecret, lookupLiveSecret, type LiveSecretRecord } from '../credential-store.js';
+import { lookupServerSecret, lookupLiveSecret, type CredentialMeta, type LiveSecretRecord } from '../credential-store.js';
 import { getLiveToken, dropLiveToken } from '../live-secret-cache.js';
+import { getAgent } from '../registry.js';
+import { getSessionMemberId } from '../tool-scope.js';
 import { LiveSecretError } from '../live-secret-runner.js';
 import { recordKbHttpSuccess, recordKbHttpRejected } from './kb-http-auth-state.js';
 import {
@@ -64,7 +66,7 @@ export interface HttpKbProviderOptions {
  */
 export type KbHttpTokenSource = string | { secretName: string };
 
-export type KbHttpAuthReason = 'missing' | 'expired' | 'rejected' | 'unreadable' | 'live-secret-failed';
+export type KbHttpAuthReason = 'missing' | 'expired' | 'rejected' | 'unreadable' | 'live-secret-failed' | 'policy-deny' | 'member-not-allowed';
 
 /** Remediation for a live secret: fix its script's environment, or re-register it. */
 export function liveSecretRemediation(name: string): string {
@@ -74,7 +76,8 @@ export function liveSecretRemediation(name: string): string {
 
 /**
  * E-KB-HTTP-AUTH: the remote KB's token comes from a named fleet secret and
- * that secret is missing, expired, unreadable, or was rejected by the server
+ * that secret is missing, expired, unreadable, refused by its own policy (deny,
+ * or not shared with the calling member), or was rejected by the server
  * (HTTP 401) on the request and on one retry after re-reading it. The message
  * names the secret and the reason, never the value. `queued` is true when the
  * operation (a capture or invalidate) was kept in the offline queue and will
@@ -113,6 +116,14 @@ function isAuthError(err: unknown): err is KbHttpAuthError {
   return err instanceof KbHttpAuthError;
 }
 
+/**
+ * The secret's policy refused this call. It is not queued: a queued write goes out
+ * later under whichever session calls next, and the refusal was this caller's.
+ */
+function isPolicyRefusal(err: KbHttpAuthError): boolean {
+  return err.reason === 'policy-deny' || err.reason === 'member-not-allowed';
+}
+
 function isHttp401(err: unknown): boolean {
   return err instanceof Error && (err as NodeJS.ErrnoException).code === 'HTTP_401';
 }
@@ -138,6 +149,38 @@ function isConnectionError(err: unknown): boolean {
     err.message.includes('ETIMEDOUT') ||
     err.message.includes('socket hang up')
   );
+}
+
+/**
+ * The secret's own policy, on every KB call and before its script runs. deny
+ * refuses every caller. allowedMembers applies to a member session, by the
+ * friendly name this fleet server has registered for it (a remote member
+ * registers itself on its own server under its orchestrator-side id and name). A
+ * session with no member identity (the operator's) has no member to check, as in
+ * credentialResolve; a member this server cannot name fails a restricted secret.
+ */
+function assertKbSecretPolicy(
+  name: string,
+  policy: Pick<CredentialMeta, 'network_policy' | 'allowedMembers'>,
+): void {
+  if (policy.network_policy === 'deny') {
+    throw new KbHttpAuthError(
+      name, 'policy-deny',
+      `the KB server token comes from fleet secret "${name}", which has network_policy=deny, so it is not sent to the KB server.`,
+      false, `an operator can allow it: apra-fleet secret --update ${name} --allow`,
+    );
+  }
+  if (policy.allowedMembers === '*') return;
+  const memberId = getSessionMemberId();
+  if (memberId === undefined) return;
+  const member = getAgent(memberId)?.friendlyName;
+  if (member === undefined || !policy.allowedMembers.includes(member)) {
+    throw new KbHttpAuthError(
+      name, 'member-not-allowed',
+      `the KB server token comes from fleet secret "${name}", which is not shared with member "${member ?? memberId}".`,
+      false, `an operator can share it: apra-fleet secret --update ${name} --members <list>`,
+    );
+  }
 }
 
 export class HttpKbProvider implements MemoryProvider {
@@ -199,9 +242,9 @@ export class HttpKbProvider implements MemoryProvider {
   /**
    * The token to send now, and whether a live secret minted it. A literal is
    * returned as is. A credential name is looked up: a live secret gives a
-   * cached or freshly minted token; a static secret is read (server-side
-   * lookup: allowedMembers does not apply, an expired record is reported and
-   * kept). A missing/expired/unreadable secret or a failing live secret raises
+   * cached or freshly minted token; a static secret is read (an expired record
+   * is reported and kept). Either way its deny and allowedMembers apply first. A
+   * missing/expired/unreadable/refused secret or a failing live secret raises
    * E-KB-HTTP-AUTH before any request is sent.
    */
   private async resolveToken(): Promise<{ token: string; live?: boolean }> {
@@ -219,7 +262,10 @@ export class HttpKbProvider implements MemoryProvider {
     } catch {
       throw unreadable();
     }
-    if (live) return { token: await this.liveToken(name, live), live: true };
+    if (live) {
+      assertKbSecretPolicy(name, live);
+      return { token: await this.liveToken(name, live), live: true };
+    }
     let found: ReturnType<typeof lookupServerSecret>;
     try {
       found = lookupServerSecret(name);
@@ -235,6 +281,7 @@ export class HttpKbProvider implements MemoryProvider {
         `the KB server token comes from fleet secret "${name}", which expired at ${found.expiresAt}.`,
       );
     }
+    assertKbSecretPolicy(name, found.meta);
     return { token: found.value };
   }
 
@@ -430,6 +477,7 @@ export class HttpKbProvider implements MemoryProvider {
         return { id: `offline-${randomBytes(8).toString('hex')}`, audn_decision: 'add' };
       }
       if (isAuthError(err)) {
+        if (isPolicyRefusal(err)) throw err;
         // Queued exactly as for server-down, but the call still fails with
         // E-KB-HTTP-AUTH: unlike an outage, this needs the operator to act.
         this.enqueue({ op: 'capture', input });
@@ -495,6 +543,7 @@ export class HttpKbProvider implements MemoryProvider {
         return { invalidated: 0 };
       }
       if (isAuthError(err)) {
+        if (isPolicyRefusal(err)) throw err;
         this.enqueue({ op: 'invalidate', files });
         throw err.asQueued();
       }

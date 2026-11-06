@@ -162,7 +162,7 @@ describe('runLiveSecret failures name the credential and leak nothing', () => {
   });
 
   it('a program that does not exist', async () => {
-    const err = await rejection(runLaunch(CREDENTIAL, { program: path.join(tmp, 'no-such-helper'), args: [] }));
+    const err = await rejection(runLaunch(CREDENTIAL, { program: path.join(tmp, 'no-such-helper.exe'), args: [] }));
     expectSafeFailure(err, /could not start the script \(ENOENT\)/);
   });
 });
