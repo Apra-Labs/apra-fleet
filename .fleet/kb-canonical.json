@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 150
+    "entry_count": 151
   },
   "entries": [
     {
@@ -1283,6 +1283,30 @@
         "src/services/knowledge/sqlite-provider.ts": "b3d3d48f72dd8002ee3ed6a66d1d4c6233ce711e",
         "tests/knowledge/kb-embed-worker-responsiveness.test.ts": "4a4fe36c8fc83a0b17feed30dd3a78f0676a993b",
         "tests/knowledge/kb-embedder-startup-load.test.ts": "968dc91b48d53d54b179704e0ea800d75851bc4e"
+      }
+    },
+    {
+      "id": "6f12a796-0a5f-4ff7-b01c-7bc731af8329",
+      "type": "knowledge",
+      "title": "Dropped member bible views must call releaseEmbedQueue, not close()",
+      "summary": "member-bible-view.ts releaseSlot calls SqliteProvider.releaseEmbedQueue on any view leaving the cache (rebuild on bible change, local or remote, and resetMemberBibleViews). It unsubscribes from the shared embedder's onReady but keeps the DB open for in-flight readers.",
+      "symbols": [
+        "releaseSlot",
+        "SqliteProvider.releaseEmbedQueue",
+        "getMemberBibleView",
+        "resetMemberBibleViews"
+      ],
+      "source_files": [
+        "src/services/knowledge/member-bible-view.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "tests/knowledge/kb-member-view-embed-release.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T11:24:51.753Z",
+      "source_file_hashes": {
+        "src/services/knowledge/member-bible-view.ts": "194b5c060008ab62fee6db1376bbff19c6d4f582",
+        "src/services/knowledge/sqlite-provider.ts": "9a53e9be6106ab2df47c69f5cbd991f9cb8d877c",
+        "tests/knowledge/kb-member-view-embed-release.test.ts": "7fe287e4580308b075b11d3303711d710ad500f1"
       }
     },
     {
