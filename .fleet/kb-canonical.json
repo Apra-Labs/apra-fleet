@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "6ecdfda08a76fc206721e855d72cf94b16f5f011",
+    "commit": "c2ccca462fd60b150aa750bed0f410ab5bce1933",
     "branch": "main",
-    "entry_count": 124
+    "entry_count": 128
   },
   "entries": [
     {
@@ -1338,6 +1338,21 @@
         "memory-contract/v1/generate-contract.mjs": "dcd3ef9234288e2558712b6bc0c3f4bb4c42d4b6",
         "src/services/tool-registry.ts": "099aa042a6602d90c9401a8fd399cf1bda1f568f",
         "tests/knowledge/kb-member-read-scope-wording.test.ts": "cbd0387bc3c84e6a808d00b76bc625ceba574bc2"
+      }
+    },
+    {
+      "id": "8be9cb68-4270-4a68-bd98-1f7e6ca74d47",
+      "type": "learning",
+      "title": "Root npm test can be narrowed to specific vitest files via APRA_TEST_SUITES_JSON",
+      "summary": "scripts/run-all-tests.mjs replaces its default suite list with the JSON in APRA_TEST_SUITES_JSON, so a doer can run chosen test files through the bounded npm test runner instead of calling vitest directly.",
+      "symbols": [],
+      "source_files": [
+        "scripts/run-all-tests.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T06:24:10.073Z",
+      "source_file_hashes": {
+        "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637"
       }
     },
     {
