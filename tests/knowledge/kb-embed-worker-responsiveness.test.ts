@@ -13,7 +13,7 @@
  * and a paraphrase query must get semantic results.
  *
  * Needs the real model on disk, so it is OPT-IN, like the recall eval:
- *   APRA_KB_EVAL_MODELS_DIR=<models folder holding Xenova/bge-small-en-v1.5@<rev>>
+ *   APRA_KB_EVAL_MODELS_DIR=<models folder holding the default profile's model, e.g. Snowflake/snowflake-arctic-embed-xs@<rev>>
  *   (or APRA_KB_EVAL_ALLOW_DOWNLOAD=1 to download it into the test sandbox)
  * plus a built dist/index.js (npm run build). Without them every case SKIPS
  * with the reason printed. The SEA case also needs npm run build:binary.

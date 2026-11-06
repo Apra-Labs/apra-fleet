@@ -964,10 +964,16 @@ nothing loads and nothing retries.
 Set the embedding model in the KB config file (`<FLEET_DIR>/knowledge/config.json`):
 
 ```json
-{ "provider": "sqlite", "embedding": { "model": "bge-small-en-v1.5" } }
+{ "provider": "sqlite", "embedding": { "model": "snowflake-arctic-embed-xs" } }
 ```
 
-- Omitted: the default profile `bge-small-en-v1.5`.
+- Omitted: the default profile `snowflake-arctic-embed-xs` (chosen on the
+  recall eval's real query set: the built-in models tie on recall@5 and it has
+  the best MRR and the smallest download; the numbers are in the header of
+  `src/services/knowledge/embedding/profiles.ts`). Vectors are keyed by model
+  id, revision and dims, so a KB embedded under another model (for example the
+  former default `bge-small-en-v1.5`) is re-embedded under the active model in
+  the background and the two are never mixed.
 - A built-in profile name: `bge-small-en-v1.5`, `snowflake-arctic-embed-s`,
   `snowflake-arctic-embed-xs`.
 - `"none"`: embeddings off. Semantic search is disabled; keyword and anchor
@@ -979,7 +985,7 @@ Set the embedding model in the KB config file (`<FLEET_DIR>/knowledge/config.jso
 An invalid value logs a warning and uses the default. The model is never
 shipped with fleet: it is downloaded lazily on first use, off the request
 path, into `<FLEET_DIR>/models/<owner>/<name>@<revision>/` -- for example
-`<FLEET_DIR>/models/Xenova/bge-small-en-v1.5@ea104dacec62c0de699686887e3f920caeb4f3e3/`,
+`<FLEET_DIR>/models/Snowflake/snowflake-arctic-embed-xs@d8c86521100d3556476a063fc2342036d45c106f/`,
 with the hub file layout inside (`tokenizer.json`, `onnx/model_quantized.onnx`).
 This path is the contract: a model already in that folder is used without a
 download. A local model id is resolved relative to `<FLEET_DIR>/models`.

@@ -6,6 +6,7 @@ import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js'
 import { cosine } from '../../src/services/knowledge/embedding/vector-store.js';
 import type { CodeLinkResolver, ResolvedCodeLink } from '../../src/services/knowledge/code-links.js';
 import { FakeEmbedder, until } from '../helpers/fake-embedder.js';
+import { BUILTIN_EMBEDDING_PROFILES, DEFAULT_EMBEDDING_PROFILE } from '../../src/services/knowledge/embedding/profiles.js';
 
 // Integration test for the vector-index half of hybrid search (design D2a):
 // chunking, best-vector scoring, model isolation, non-blocking capture, a
@@ -148,6 +149,41 @@ describe('KB vectors (integration)', () => {
     expect(underB[0].entry_id).toBe(id);
     expect(underB[0].score).toBeGreaterThan(0.99);
     expect(p.vectorStore.count(modelA)).toBe(0);
+  });
+
+  // A KB embedded under the former default model (bge-small-en-v1.5) meets the
+  // current default profile: it re-embeds under the new model identity and the
+  // old rows are never scored, then dropped. Fakes carry the real profiles'
+  // model ids, revisions and dims, so this is the exact identity switch an
+  // upgrade performs.
+  it('a KB embedded under the former default re-embeds under the current default without mixing vectors', async () => {
+    const oldP = BUILTIN_EMBEDDING_PROFILES['bge-small-en-v1.5'];
+    const newP = BUILTIN_EMBEDDING_PROFILES[DEFAULT_EMBEDDING_PROFILE];
+    expect(newP.modelId).not.toBe(oldP.modelId);
+    const oldModel = { modelId: oldP.modelId, revision: oldP.revision, dims: oldP.dims! };
+    const newModel = { modelId: newP.modelId, revision: newP.revision, dims: newP.dims! };
+
+    const a = new FakeEmbedder(oldP.modelId, oldP.revision, oldP.dims);
+    p.attachEmbedder(() => a);
+    const { id } = await capture({ title: 'Upgrade entry', summary: 'embedded under the former default', symbols: ['UpgradeEntry'] });
+    expect(await p.waitForEmbeddings(5000)).toBe(true);
+    expect(p.vectorStore.count(oldModel)).toBeGreaterThan(0);
+    expect(p.vectorStore.count(newModel)).toBe(0);
+    const text = p.entryVectorInputs(id, a.tokenLimit)![0].embedText;
+
+    const b = new FakeEmbedder(newP.modelId, newP.revision, newP.dims);
+    const release = b.hold();
+    p.attachEmbedder(() => b);
+    await until(() => b.calls.length > 0);
+    // Mid-rebuild: the old default's rows are stored but never scored.
+    expect(p.vectorStore.count(oldModel)).toBeGreaterThan(0);
+    expect(p.scoreVectors(a.embed(text))).toEqual([]);
+
+    release();
+    expect(await p.waitForEmbeddings(5000)).toBe(true);
+    expect(p.scoreVectors(b.embed(text))[0].entry_id).toBe(id);
+    expect(p.vectorStore.count(newModel)).toBeGreaterThan(0);
+    expect(p.vectorStore.count(oldModel)).toBe(0);
   });
 
   it('kb_capture resolves before its embedding; the entry is keyword-queryable; vectors appear after release', async () => {

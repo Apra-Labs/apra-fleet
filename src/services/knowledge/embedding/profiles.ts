@@ -26,6 +26,27 @@
  * models' card asks for "Represent this sentence for searching relevant
  * passages: " on queries only, with CLS pooling (1_Pooling/config.json:
  * pooling_mode_cls_token true).
+ *
+ * Default model: snowflake-arctic-embed-xs, chosen on the KB recall eval's
+ * REAL query set (tests/knowledge/kb-recall-eval.test.ts; 42 kb_query calls
+ * agents actually made, labelled against the bible), measured with every
+ * built-in model loaded (hybrid ranking) on 2026-11-06:
+ *
+ *   config                     recall@5   MRR     (real set, 42 queries)
+ *   keyword-only (none)        1.0000     0.9083
+ *   bge-small-en-v1.5          0.9762     0.8591
+ *   snowflake-arctic-embed-s   0.9762     0.9107
+ *   snowflake-arctic-embed-xs  0.9762     0.9246
+ *
+ * The three models tie on recall@5; arctic-xs has the best MRR, is the only
+ * one clearly above keyword-only MRR, and is the smallest download (about
+ * 23 MB against about 33 MB for the other two). The former default,
+ * bge-small-en-v1.5, lowered MRR against keyword-only. On the hand-authored
+ * situation queries (139) the order differs: keyword 0.9137/0.8288, bge
+ * 0.8993/0.7748, arctic-s 0.9424/0.8482, arctic-xs 0.9137/0.8264. Any built-in
+ * profile, or a custom model, stays selectable with embedding.model in the KB
+ * config. Vectors are keyed by model id, revision and dims, so a KB embedded
+ * under another model is re-embedded under the active one and never mixed.
  */
 
 /** How token embeddings are reduced to one vector. */
@@ -75,7 +96,7 @@ export interface EmbeddingProfile {
   tokenLimit: number;
 }
 
-export const DEFAULT_EMBEDDING_PROFILE = 'bge-small-en-v1.5';
+export const DEFAULT_EMBEDDING_PROFILE = 'snowflake-arctic-embed-xs';
 export const DEFAULT_TOKEN_LIMIT = 512;
 
 const ARCTIC_QUERY_PREFIX = 'Represent this sentence for searching relevant passages: ';

@@ -48,9 +48,18 @@ describe('resolveEmbeddingModel', () => {
     const warn = vi.fn();
     const c = resolveEmbeddingModel(undefined, warn);
     expect(c.kind).toBe('enabled');
-    expect(c.kind === 'enabled' && c.profile.name).toBe('bge-small-en-v1.5');
+    expect(c.kind === 'enabled' && c.profile.name).toBe('snowflake-arctic-embed-xs');
     expect(c.kind === 'enabled' && c.profile.dims).toBe(384);
     expect(c.kind === 'enabled' && c.profile.pooling).toBe('cls');
+    expect(c.kind === 'enabled' && c.profile.queryPrefix).toBe('Represent this sentence for searching relevant passages: ');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('the former default bge-small-en-v1.5 is still selectable by name, with no query prefix', () => {
+    const warn = vi.fn();
+    const c = resolveEmbeddingModel('bge-small-en-v1.5', warn);
+    expect(c.kind === 'enabled' && c.profile).toBe(BUILTIN_EMBEDDING_PROFILES['bge-small-en-v1.5']);
+    expect(c.kind === 'enabled' && c.profile.modelId).toBe('Xenova/bge-small-en-v1.5');
     expect(c.kind === 'enabled' && c.profile.queryPrefix).toBe('');
     expect(warn).not.toHaveBeenCalled();
   });
