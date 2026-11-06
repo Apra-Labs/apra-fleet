@@ -3,7 +3,7 @@ import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-sc
 import fs from 'node:fs';
 import path from 'node:path';
 import { installKbPostCommitHook } from './kb-invalidate.js';
-import { KB_CONFIG_PATH, MIN_REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS } from '../services/knowledge/kb-config.js';
+import { KB_CONFIG_PATH, MIN_REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS, readKbConfigForMerge } from '../services/knowledge/kb-config.js';
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { findSecretTokens, hasSecretToken, formatSecretToken, legacyTokenWarning } from '../services/secret-token.js';
@@ -122,15 +122,16 @@ function toolProfileStep(profile: KbToolProfile): string {
 
 /**
  * Set the install-wide KB tool profile in the KB config, leaving every other
- * key as it was (the `apra-fleet kb profile` CLI verb). Returns the steps and
- * any warnings (a malformed existing file is discarded, as kb_setup does).
+ * key as it was (the `apra-fleet kb profile` CLI verb). Returns the steps.
+ * Throws KbConfigUnreadableError, writing nothing, when the existing file
+ * cannot be parsed: unlike kb_setup, this verb has no way to restore the remote
+ * url and token a rewrite would lose.
  */
-export function writeKbToolProfile(profile: KbToolProfile): { steps: string[]; warnings: string[] } {
-  const warnings: string[] = [];
-  const config = readExistingConfig(warnings);
+export function writeKbToolProfile(profile: KbToolProfile): { steps: string[] } {
+  const config = readKbConfigForMerge();
   applyToolProfile(config, profile);
   writeConfig(config);
-  return { steps: [toolProfileStep(profile), 'Wrote KB config to ' + KB_CONFIG_PATH], warnings };
+  return { steps: [toolProfileStep(profile), 'Wrote KB config to ' + KB_CONFIG_PATH] };
 }
 
 interface TokenRef {

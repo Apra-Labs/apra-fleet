@@ -6,7 +6,7 @@
 // The profile applies to FULL (non-member) sessions only and takes effect when
 // a session reconnects. It is a usability control, not a security boundary.
 
-import { readKbToolProfileFromDisk, KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
+import { readKbToolProfileFromDisk, KB_CONFIG_PATH, KB_CONFIG_HAND_FIX, KbConfigUnreadableError } from '../services/knowledge/kb-config.js';
 import { describeKbToolProfile, makeKbToolProfile, registeredKbToolNames, type KbToolProfile } from '../services/kb-tool-profile.js';
 import { writeKbToolProfile } from '../tools/kb-setup.js';
 
@@ -65,12 +65,19 @@ export function runKbProfile(args: string[], io: Io = defaultIo): number {
       return 0;
     } catch (err) {
       io.error(`Error: ${(err as Error).message}`);
-      io.error(`Fix it with: apra-fleet kb profile full`);
+      io.error(err instanceof KbConfigUnreadableError ? KB_CONFIG_HAND_FIX : 'Fix it with: apra-fleet kb profile full');
       return 1;
     }
   }
-  const { steps, warnings } = writeKbToolProfile(profile);
-  for (const w of warnings) io.error(`Warning: ${w}`);
+  let steps: string[];
+  try {
+    ({ steps } = writeKbToolProfile(profile));
+  } catch (err) {
+    if (!(err instanceof KbConfigUnreadableError)) throw err;
+    io.error(`Error: ${err.message}; nothing was written.`);
+    io.error(KB_CONFIG_HAND_FIX);
+    return 1;
+  }
   for (const s of steps) io.log(s);
   io.log(`Config: ${KB_CONFIG_PATH}. Applies to interactive (non-member) sessions only; reconnect to see the change.`);
   return 0;

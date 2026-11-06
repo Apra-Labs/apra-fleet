@@ -1119,7 +1119,8 @@ export class ApraFleet {
     /**
      * Get status of all fleet members. With format "json" the result's
      * kbHealth.credential is a {@link FleetStatusKbCredential} when the KB
-     * config selects the http provider.
+     * config selects the http provider, and kbHealth.toolProfileWarning is a
+     * string when the configured KB tool profile is invalid.
      * @param {FleetStatusOptions} [options]
      */
     async fleetStatus(options = {}) {

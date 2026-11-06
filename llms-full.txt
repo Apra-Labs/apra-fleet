@@ -279,8 +279,9 @@ lists to `kb_session_prime`, `kb_query`, `kb_context`, `kb_capture` and
 (the default) lists them all. The profile is install-wide, applies to FULL
 sessions only (member sessions and sprint roles are unaffected), and takes
 effect when a session reconnects. It is a usability control, not a security
-boundary. `developer` hides `kb_setup`, so get back with
-`apra-fleet kb profile full`. See
+boundary. `developer` hides `kb_setup` and the tools the PM skills `kb-review`,
+`kb-reconcile` and `knowledge-agent` need, so get back with
+`apra-fleet kb profile full` (and reconnect) before running those. See
 [KB tool profiles](docs/knowledge-layer.md#5-kb-tool-profiles-which-kb_-tools-interactive-sessions-see).
 
 Every KB tool call is scoped to the calling session's own repo -- a fleet

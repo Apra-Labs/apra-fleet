@@ -54,8 +54,9 @@ function scopeGatedServer(base: McpServer, scope: ToolScope): McpServer {
  * The KB tool profile a FULL session registers under, read when the session
  * registers its tools (so a change takes effect on reconnect). An unreadable
  * or invalid profile setting falls back to full with a logged warning rather
- * than breaking every session: kb_setup and `apra-fleet kb profile` refuse an
- * invalid profile on write, so only a hand edit can get here.
+ * than breaking every session, and fleet_status names the problem
+ * (kbToolProfileWarning): kb_setup and `apra-fleet kb profile` refuse an invalid
+ * profile on write, so only a hand edit can get here.
  */
 function fullSessionKbToolProfile(): KbToolProfile {
   try {

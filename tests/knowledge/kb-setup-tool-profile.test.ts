@@ -130,6 +130,52 @@ describe('apra-fleet kb profile', () => {
     expect(fs.existsSync(configPath)).toBe(false);
   });
 
+  describe('a config it cannot parse', () => {
+    const TRAILING_COMMA = '{"provider":"http","url":"https://kb.example.test","token_ref":"{{secret.KB}}",}';
+
+    for (const [name, content] of [
+      ['malformed JSON', TRAILING_COMMA],
+      ['an empty file', ''],
+      ['a JSON array', '[]'],
+    ] as const) {
+      it(`${name}: setting a profile exits 1, says to fix it by hand and leaves the file as it was`, () => {
+        fs.mkdirSync(path.dirname(configPath), { recursive: true });
+        fs.writeFileSync(configPath, content);
+        const { io, err } = captureIo();
+        expect(runKbProfile(['full'], io)).toBe(1);
+        expect(fs.readFileSync(configPath, 'utf-8')).toBe(content);
+        const text = err.join('\n');
+        expect(text).toContain(configPath);
+        expect(text).toMatch(/nothing was written/);
+        expect(text).toMatch(/by hand/);
+      });
+    }
+
+    it('printing the profile on malformed JSON advises the hand fix, not a command that rewrites the file', () => {
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, TRAILING_COMMA);
+      const { io, err } = captureIo();
+      expect(runKbProfile([], io)).toBe(1);
+      const text = err.join('\n');
+      expect(text).toContain(configPath);
+      expect(text).toMatch(/by hand/);
+      expect(text).not.toMatch(/apra-fleet kb profile/);
+      // The JSON parser's message can quote the file; it must not reach the user.
+      expect(text).not.toContain('kb.example.test');
+    });
+
+    it('printing a parseable but unknown profile still offers the CLI fix, which keeps the other keys', () => {
+      writeConfig({ provider: 'http', url: 'https://kb.example.test', tool_profile: 'Developer' });
+      const first = captureIo();
+      expect(runKbProfile([], first.io)).toBe(1);
+      expect(first.err.join('\n')).toMatch(/"Developer"/);
+      expect(first.err.join('\n')).toMatch(/apra-fleet kb profile full/);
+      const second = captureIo();
+      expect(runKbProfile(['full'], second.io)).toBe(0);
+      expect(readConfig()).toEqual({ provider: 'http', url: 'https://kb.example.test', tool_profile: 'full' });
+    });
+  });
+
   it('parseKbProfileArgs accepts space- or comma-separated custom lists', () => {
     expect(parseKbProfileArgs(['custom', 'kb_query,', 'kb_capture'])).toEqual({ name: 'custom', tools: ['kb_query', 'kb_capture'] });
     expect(parseKbProfileArgs([])).toBeNull();

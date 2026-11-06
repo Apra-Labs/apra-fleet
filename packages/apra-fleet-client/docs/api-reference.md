@@ -160,7 +160,9 @@ abort support on top of a transport.
   `custom`) and `tool_profile_tools` (the custom `kb_*` names; an unknown
   name is refused with an error naming it, and nothing is written), or with
   `apra-fleet kb profile <full|developer|custom a,b>`. It is a usability
-  control, not a security boundary.
+  control, not a security boundary. `developer` hides tools the PM skills
+  `kb-review`, `kb-reconcile` and `knowledge-agent` need; switch back with
+  `apra-fleet kb profile full` and reconnect before running them.
 
 ### `connectFleetMember(memberId, deps)` (`server-resolution.mjs`)
 
@@ -382,6 +384,11 @@ Calls `fleet_status` -- status of all fleet members.
 | `repo_path` | `string?` | Absolute path to a repo checkout. Adds that repo's code-intelligence index health and its KB scope's bible drift. |
 
 KB health (`kbHealth` in JSON) covers every project KB scope on the server plus the global KB, one entry per scope -- it never depends on the server's working directory.
+
+When the configured KB tool profile is invalid, `kbHealth.toolProfileWarning`
+(a string, absent otherwise; compact: the same text on its own line) names the
+bad value and what to do, also when no member is registered. Sessions then get
+every `kb_*` tool.
 
 When the KB config selects the http provider, `kbHealth.credential`
 (`FleetStatusKbCredential`; compact: one `kb credential:` line) reports the
