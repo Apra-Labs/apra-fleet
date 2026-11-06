@@ -13,7 +13,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // node child (no npx, no gitnexus). Only the command and the SDK timeouts are
 // replaced. No repo is passed, so no index or disk state is involved.
 
-const h = vi.hoisted(() => ({ script: '', connectTimeoutMs: 30_000, callTimeoutMs: 30_000 }));
+const h = vi.hoisted(() => ({ script: '', connectTimeoutMs: 30_000, callTimeoutMs: 30_000, connectError: '' }));
 
 vi.mock('@modelcontextprotocol/sdk/client/stdio.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@modelcontextprotocol/sdk/client/stdio.js')>();
@@ -28,7 +28,8 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@modelcontextprotocol/sdk/client/index.js')>();
   type Base = InstanceType<typeof actual.Client>;
   class ShortTimeoutClient extends actual.Client {
-    connect(...[transport, options]: Parameters<Base['connect']>) {
+    async connect(...[transport, options]: Parameters<Base['connect']>) {
+      if (h.connectError) throw new Error(h.connectError);
       return super.connect(transport, { ...options, timeout: h.connectTimeoutMs });
     }
     callTool(...[params, schema, options]: Parameters<Base['callTool']>) {
@@ -43,6 +44,7 @@ vi.mock('../src/utils/find-on-path.js', async (importOriginal) => {
 });
 
 import { GitNexusProvider } from '../src/tools/code-intelligence-gitnexus.js';
+import { missingOnServerPathMessage } from '../src/utils/find-on-path.js';
 
 const writesStderr = (text: string) => `process.stderr.write(${JSON.stringify(text)});`;
 const staysSilent = 'setInterval(() => {}, 1000);';
@@ -73,6 +75,36 @@ describe('gitnexus offline result carries the real reason', () => {
   beforeEach(() => {
     h.connectTimeoutMs = 30_000;
     h.callTimeoutMs = 30_000;
+    h.connectError = '';
+  });
+
+  describe('the npx-not-on-PATH advice', () => {
+    const pathAdvice = () => missingOnServerPathMessage('npx');
+    const stderrWithEnoent = 'npm error enoent ENOENT: no such file, open C:\\cache\\_npx\\4f55926e\\package.json\n' +
+      'Error: spawn npx ENOENT';
+
+    it('appears when spawning npx itself fails', async () => {
+      h.connectError = 'spawn npx ENOENT';
+      const text = await offlineText();
+      expect(text).toContain('spawn npx ENOENT');
+      expect(text).toContain(pathAdvice());
+    }, 30_000);
+
+    it('does not appear when a child that died during connect wrote ENOENT and an _npx path', async () => {
+      h.script = writesStderr(stderrWithEnoent) + 'process.exitCode = 3;';
+      const text = await offlineText();
+      expect(text).toContain('_npx');
+      expect(text).toContain('spawn npx ENOENT');
+      expect(text).not.toContain(pathAdvice());
+    }, 40_000);
+
+    it('does not appear when a call failed and the child wrote ENOENT and an _npx path', async () => {
+      h.script = writesStderr(stderrWithEnoent) + answersHandshakeOnly;
+      h.callTimeoutMs = 300;
+      const text = await offlineText();
+      expect(text).toContain('_npx');
+      expect(text).not.toContain(pathAdvice());
+    }, 40_000);
   });
 
   it('a child that never answers the handshake reports a connect TIMEOUT and its stderr', async () => {

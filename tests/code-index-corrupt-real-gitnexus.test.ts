@@ -52,7 +52,15 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', async (importOriginal) => {
     async callTool(...[params, schema, options]: Parameters<Base['callTool']>) {
       try {
         const result = await super.callTool(params, schema, { ...options, timeout: child.CHILD_TIMEOUT_MS });
-        if (result.isError) child.failures.push(`${params.name}: ${JSON.stringify(result.content)}`);
+        // gitnexus reports a failed cypher as a normal result holding { error }, with no isError.
+        let cypherError = false;
+        if (params.name === 'cypher') {
+          try {
+            const text = (result.content as Array<{ text: string }>)[0].text.split('\n\n---\n')[0];
+            cypherError = 'error' in (JSON.parse(text) as object);
+          } catch { /* not that shape: the detector's own parsing handles it */ }
+        }
+        if (result.isError || cypherError) child.failures.push(`${params.name}: ${JSON.stringify(result.content)}`);
         return result;
       } catch (err) {
         child.failures.push(`${params.name}: ${String(err)}`);
@@ -83,10 +91,17 @@ function gitnexus(...args: string[]): string {
   // shell only where a .cmd needs it; a cypher query travels through a file-free
   // argument, so quote it for cmd.exe.
   const quoted = process.platform === 'win32' ? args.map((a) => (/\s/.test(a) ? `"${a}"` : a)) : args;
-  return execFileSync(npx, ['-y', ANALYZER, ...quoted], {
-    cwd: repo, encoding: 'utf8', timeout: 480_000, maxBuffer: 256 * 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32', windowsHide: true,
-  });
+  try {
+    return execFileSync(npx, ['-y', ANALYZER, ...quoted], {
+      cwd: repo, encoding: 'utf8', timeout: 480_000, maxBuffer: 256 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32', windowsHide: true,
+    });
+  } catch (err) {
+    const e = err as { code?: string; message?: string; stderr?: string };
+    if (e.code !== 'ETIMEDOUT') throw err;
+    // The first analyze also holds ANALYZER's cold install, inside this budget.
+    throw new Error(`[environment] TIMEOUT after 480 s: ${ANALYZER} ${args.join(' ')}: ${e.message}; stderr: ${e.stderr ?? '(none)'}`);
+  }
 }
 
 // Install the child's package where the child will look for it. Asks npm for the

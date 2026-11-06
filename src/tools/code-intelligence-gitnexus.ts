@@ -331,7 +331,13 @@ async function callGitNexus(name: string, params: Record<string, unknown>): Prom
     let detail = entry
       ? childFailureDetail(err, `call of ${name}`, callStart, entry.stderrTail())
       : err instanceof Error ? err.message : String(err);
-    if (/\bENOENT\b/.test(detail) && /npx/.test(detail)) detail = `${detail}: ${missingOnServerPathMessage('npx')}`;
+    // Only the spawn error itself means npx is missing. The detail also holds child
+    // stderr, where ENOENT next to an _npx cache path says nothing about PATH. Only
+    // a failed connect carries the spawn error, as the cause of its wrapper.
+    const cause = err instanceof Error ? err.cause : undefined;
+    if (!entry && cause instanceof Error && /\bspawn npx ENOENT\b/.test(cause.message)) {
+      detail = `${detail}: ${missingOnServerPathMessage('npx')}`;
+    }
     return offlineResult(detail);
   } finally {
     if (entry) releaseEntry(entry);

@@ -36,7 +36,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', async () => {
     onclose?: () => void;
     onerror?: () => void;
     stderr = new PassThrough();
-    constructor() { this.stderr.write('gitnexus crashed on start'); }
+    constructor() { this.stderr.write('gitnexus crashed on start: spawn npx ENOENT in C:\\cache\\_npx\\4f55926e'); }
   }
   return { StdioClientTransport: MockTransport };
 });
@@ -46,6 +46,7 @@ vi.mock('../src/utils/find-on-path.js', async (importOriginal) => {
 });
 
 import { GitNexusProvider } from '../src/tools/code-intelligence-gitnexus.js';
+import { missingOnServerPathMessage } from '../src/utils/find-on-path.js';
 
 describe('acquireGitNexusEntry is bounded when every child dies on start', () => {
   beforeEach(() => {
@@ -61,6 +62,8 @@ describe('acquireGitNexusEntry is bounded when every child dies on start', () =>
     expect(result.content[0].text).toMatch(/Code intelligence is offline/);
     expect(result.content[0].text).toMatch(/retired 3 times in a row/);
     expect(result.content[0].text).toMatch(/child stderr: gitnexus crashed on start/);
+    // ENOENT and an _npx path in child stderr do not mean npx is missing from PATH.
+    expect(result.content[0].text).not.toContain(missingOnServerPathMessage('npx'));
     expect(h.spawned).toBe(3);
     expect(h.closed).toBe(3);
   });
