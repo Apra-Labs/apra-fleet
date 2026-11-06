@@ -31,6 +31,9 @@ function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
 let mockServer: http.Server;
 const captureRequests: KBEntryInput[] = [];
 const queryUrls: string[] = [];
+const feedbackRequests: Array<{ body: Record<string, unknown>; headers: http.IncomingHttpHeaders }> = [];
+// Ordered "METHOD path" of every authorised write, to check replay order.
+const writeLog: string[] = [];
 
 beforeAll(async () => {
   mockServer = http.createServer((req, res) => {
@@ -47,6 +50,7 @@ beforeAll(async () => {
       const url = req.url ?? '';
       const method = req.method ?? 'GET';
 
+      if (method === 'POST') writeLog.push(`POST ${url}`);
       if (url === '/api/kb/capture' && method === 'POST') {
         const input = JSON.parse(body) as KBEntryInput;
         captureRequests.push(input);
@@ -59,6 +63,11 @@ beforeAll(async () => {
       } else if (url === '/api/kb/invalidate' && method === 'POST') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ invalidated: 1 }));
+      } else if (url === '/api/kb/feedback' && method === 'POST') {
+        const parsed = JSON.parse(body) as Record<string, unknown>;
+        feedbackRequests.push({ body: parsed, headers: req.headers });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: parsed.id, stale: true, flagged_for_review: true, confidence: 'CONFIRMED' }));
       } else {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Not found' }));
@@ -76,6 +85,8 @@ afterAll(async () => {
 beforeEach(() => {
   captureRequests.length = 0;
   queryUrls.length = 0;
+  feedbackRequests.length = 0;
+  writeLog.length = 0;
 });
 
 describe('HttpKbProvider', () => {
@@ -239,7 +250,7 @@ describe('HttpKbProvider', () => {
         process.emit('beforeExit', 0);
 
         const hasWarning = stderrLines.some(
-          l => l.includes('[KB] WARNING: offline queue has') && l.includes('unsaved captures')
+          l => l.includes('[KB] WARNING: offline queue has') && l.includes('unsaved operations')
         );
         expect(hasWarning).toBe(true);
       } finally {
@@ -247,6 +258,49 @@ describe('HttpKbProvider', () => {
       }
     } finally {
       (process.stderr as any).write = origWrite;
+    }
+  });
+  it('feedback: POSTs {id, reason, role} to /api/kb/feedback and returns the server body as is', async () => {
+    const fallback = new SqliteProvider(':memory:');
+    await fallback.init();
+    const provider = new HttpKbProvider(`http://127.0.0.1:${MOCK_PORT}`, MOCK_TOKEN, fallback);
+    await provider.init();
+    try {
+      const result = await provider.feedback('entry-1', 'wrong in practice', 'reviewer');
+      expect(feedbackRequests).toHaveLength(1);
+      expect(feedbackRequests[0].body).toEqual({ id: 'entry-1', reason: 'wrong in practice', role: 'reviewer' });
+      expect(feedbackRequests[0].headers.authorization).toBe(`Bearer ${MOCK_TOKEN}`);
+      // The server's confidence is passed through untouched.
+      expect(result).toEqual({ id: 'entry-1', stale: true, flagged_for_review: true, confidence: 'CONFIRMED' });
+      expect(provider.offlineQueue).toHaveLength(0);
+    } finally {
+      provider.dispose();
+    }
+  });
+
+  it('feedback offline: queued with no invented confidence, then replayed in order with captures and invalidates', async () => {
+    const fallback = new SqliteProvider(':memory:');
+    await fallback.init();
+    const provider = new HttpKbProvider(OFFLINE_URL, MOCK_TOKEN, fallback);
+    await provider.init();
+    try {
+      await provider.capture(makeInput({ title: 'first' }));
+      const queued = await provider.feedback('entry-2', 'stale advice', 'doer');
+      await provider.invalidate(['src/a.ts']);
+      expect(queued).toEqual({ id: 'entry-2', queued: true });
+      expect('confidence' in queued).toBe(false);
+      expect(provider.offlineQueue.map(o => o.op)).toEqual(['capture', 'feedback', 'invalidate']);
+      expect(provider.offlineQueue[1]).toEqual({ op: 'feedback', id: 'entry-2', reason: 'stale advice', role: 'doer' });
+
+      (provider as any).baseUrl = `http://127.0.0.1:${MOCK_PORT}`;
+      await provider.query({});
+
+      expect(provider.offlineQueue).toHaveLength(0);
+      expect(writeLog).toEqual(['POST /api/kb/capture', 'POST /api/kb/feedback', 'POST /api/kb/invalidate']);
+      expect(feedbackRequests).toHaveLength(1);
+      expect(feedbackRequests[0].body).toEqual({ id: 'entry-2', reason: 'stale advice', role: 'doer' });
+    } finally {
+      provider.dispose();
     }
   });
 });

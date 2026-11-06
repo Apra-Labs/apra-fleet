@@ -1006,10 +1006,10 @@ feedback-downvoted, and invalidated entries stay retired by design -- see
 
 **Symptom**: at process exit you see:
 ```
-[KB] WARNING: offline queue has N unsaved captures. Reconnect to the KB server and run kb_harvest to recover from the session transcript.
+[KB] WARNING: offline queue has N unsaved operations (captures, invalidations, feedback). Reconnect to the KB server and run kb_harvest to recover from the session transcript.
 ```
 
-**Cause**: the HTTP KB server was unreachable while captures were made. The
+**Cause**: the HTTP KB server was unreachable while captures, invalidations or feedback were made. The
 queue is in-memory and not persisted.
 
 **Recovery**: start the KB server, then run:

@@ -70,7 +70,7 @@ export type KbHttpAuthReason = 'missing' | 'expired' | 'rejected' | 'unreadable'
  * that secret is missing, expired, unreadable, or was rejected by the server
  * (HTTP 401) on the request and on one retry after re-reading it. The message
  * names the secret and the reason, never the value. `queued` is true when the
- * operation (a capture or invalidate) was kept in the offline queue and will
+ * operation (a capture, invalidate or feedback) was kept in the offline queue and will
  * be sent once the secret is accepted.
  */
 export class KbHttpAuthError extends Error {
@@ -117,7 +117,18 @@ function redactToken(text: string, token: string): string {
 
 type QueuedOperation =
   | { op: 'capture'; input: KBEntryInput }
-  | { op: 'invalidate'; files: string[] };
+  | { op: 'invalidate'; files: string[] }
+  | { op: 'feedback'; id: string; reason: string; role: string };
+
+/**
+ * What HttpKbProvider.feedback returns: the remote server's response body as
+ * is, or -- when the server could not be reached -- a marker that the
+ * feedback was kept in the offline queue. The queued form carries no
+ * confidence/stale fields: the client never invents them.
+ */
+export type HttpKbFeedbackResult =
+  | Record<string, unknown>
+  | { id: string; queued: true };
 
 function isConnectionError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
@@ -154,7 +165,7 @@ export class HttpKbProvider implements MemoryProvider {
     this.beforeExitHandler = () => {
       if (this.offlineQueue.length > 0) {
         process.stderr.write(
-          `[KB] WARNING: offline queue has ${this.offlineQueue.length} unsaved captures. ` +
+          `[KB] WARNING: offline queue has ${this.offlineQueue.length} unsaved operations (captures, invalidations, feedback). ` +
           `Reconnect to the KB server and run kb_harvest to recover from the session transcript.\n`
         );
       }
@@ -366,6 +377,8 @@ export class HttpKbProvider implements MemoryProvider {
           await this.request('POST', '/api/kb/capture', op.input);
         } else if (op.op === 'invalidate') {
           await this.request('POST', '/api/kb/invalidate', { files: op.files });
+        } else if (op.op === 'feedback') {
+          await this.request('POST', '/api/kb/feedback', { id: op.id, reason: op.reason, role: op.role });
         }
         this.offlineQueue.shift();
       } catch (err) {
@@ -459,6 +472,34 @@ export class HttpKbProvider implements MemoryProvider {
       }
       if (isAuthError(err)) {
         this.enqueue({ op: 'invalidate', files });
+        throw err.asQueued();
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * kb_feedback over the remote KB: POST /api/kb/feedback with the
+   * memory-contract v1 kb_feedback request body {id, reason, role} (role
+   * carries the already-validated author). The server owns the entry, so the
+   * server decides stale/flagged; this method returns its response as is and
+   * never writes or invents confidence, and never touches the fallback store.
+   * Server unreachable: the feedback is queued offline (replayed in order with
+   * queued captures/invalidates) and a { id, queued: true } result returned.
+   * E-KB-HTTP-AUTH: queued too, and the error is rethrown as queued.
+   */
+  async feedback(id: string, reason: string, author: string): Promise<HttpKbFeedbackResult> {
+    await this.tryFlushQueue();
+    const body = { id, reason, role: author };
+    try {
+      return await this.request<Record<string, unknown>>('POST', '/api/kb/feedback', body);
+    } catch (err) {
+      if (isConnectionError(err)) {
+        this.enqueue({ op: 'feedback', ...body });
+        return { id, queued: true };
+      }
+      if (isAuthError(err)) {
+        this.enqueue({ op: 'feedback', ...body });
         throw err.asQueued();
       }
       throw err;
