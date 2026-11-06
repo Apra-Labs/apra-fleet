@@ -37,7 +37,6 @@ vi.mock('../src/services/cloud/lifecycle.js', () => ({
 }));
 
 vi.mock('../src/services/auth-socket.js', () => ({
-  collectOobConfirm: vi.fn(),
   collectOobPassword: vi.fn(),
   collectOobApiKey: vi.fn(),
   ensureAuthSocket: vi.fn(),

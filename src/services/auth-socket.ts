@@ -306,7 +306,7 @@ type OobLaunchFn = (
  * Launches a terminal, then races a password waiter against a cancellation signal.
  */
 async function collectOobInput(
-  mode: 'password' | 'api-key' | 'confirm',
+  mode: 'password' | 'api-key',
   memberName: string,
   toolName: string,
   _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; additionalArgs?: string[] },
@@ -314,10 +314,10 @@ async function collectOobInput(
   const launch = _opts?.launchFn ?? launchAuthTerminal;
   const waitTimeoutMs = _opts?.waitTimeoutMs;
 
-  const modeArgs = mode === 'api-key' ? ['--api-key'] : mode === 'confirm' ? ['--confirm'] : [];
+  const modeArgs = mode === 'api-key' ? ['--api-key'] : [];
   const promptArgs = _opts?.prompt ? ['--prompt', _opts.prompt] : [];
   const extraArgs = [...modeArgs, ...promptArgs, ...(_opts?.additionalArgs ?? [])];
-  const inputType = mode === 'api-key' ? 'API key' : mode === 'confirm' ? 'confirmation' : 'Password';
+  const inputType = mode === 'api-key' ? 'API key' : 'Password';
 
   const timeoutMessage = `❌ Password entry timed out for ${memberName}. Call ${toolName} again to retry.`;
   const cancelledMessage = `❌ Password entry cancelled. Call ${toolName} again to retry.`;
@@ -357,10 +357,9 @@ async function collectOobInput(
       });
 
       if (result.startsWith('fallback:')) {
-        // No terminal available. For credential entry, try the local browser UI
-        // before giving up to a manual CLI instruction. Confirm prompts and
-        // test-injected launchers stay on the original path.
-        if (mode !== 'confirm' && !_opts?.launchFn) {
+        // No terminal available. Try the local browser UI before giving up to a
+        // manual CLI instruction. Test-injected launchers stay on the original path.
+        if (!_opts?.launchFn) {
           const webPrompt = _opts?.prompt
             ?? (mode === 'api-key' ? `Enter API key for ${memberName}` : `Enter SSH password for ${memberName}`);
           const web = launchAuthWeb(memberName, mode, webPrompt, (value) => submitPassword(memberName, value));
@@ -373,9 +372,7 @@ async function collectOobInput(
         }
         const manualMsg = result.slice('fallback:'.length);
         resolve({
-          fallback: mode === 'confirm'
-            ? `${manualMsg}\n\nOnce the user has entered the ${inputType}, call ${toolName} again with the same parameters.`
-            : `${manualMsg}\n\nThen call ${toolName} again with {{secret.NAME}} in place of the missing ${inputType}.`,
+          fallback: `${manualMsg}\n\nThen call ${toolName} again with {{secret.NAME}} in place of the missing ${inputType}.`,
         });
       }
     });
@@ -468,52 +465,21 @@ export async function collectOobApiKey(
   return collectOobInput('api-key', memberName, toolName, { ...(_opts ?? {}), additionalArgs });
 }
 
-
-/**
- * Prompt the user out-of-band to confirm a network-egress operation.
- * Returns true if the user confirmed, false if they cancelled or timed out.
- */
-export async function collectOobConfirm(
-  credentialName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; command?: string; memberName?: string },
-): Promise<{ confirmed: boolean; terminalUnavailable: boolean }> {
-  const additionalArgs: string[] = [];
-  if (_opts?.command) {
-    additionalArgs.push('--context', _opts.command.slice(0, 200));
-  }
-  if (_opts?.memberName) {
-    additionalArgs.push('--on', _opts.memberName);
-  }
-  const result = await collectOobInput('confirm', credentialName, 'execute_command', {
-    ..._opts,
-    additionalArgs: additionalArgs.length > 0 ? additionalArgs : undefined,
-  });
-  if (result.fallback) return { confirmed: false, terminalUnavailable: true };
-  return { confirmed: Boolean(result.password), terminalUnavailable: false };
-}
-
 /**
  * Resolve the command to invoke this binary's `secret` subcommand.
- * Confirm mode uses `secret --confirm`; all credential collection uses `secret --set`.
+ * All credential collection (password, API key) routes through `secret --set`.
  * Returns [command, ...args] suitable for spawn().
  */
 function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string; args: string[] } {
   const extra = extraArgs ?? [];
-  const isConfirm = extra.includes('--confirm');
 
-  let cmdArgs: string[];
-  if (isConfirm) {
-    cmdArgs = ['secret', '--confirm', memberName];
-  } else {
-    // All credential collection (password, API key) routes through `secret --set`
-    cmdArgs = ['secret', '--set', memberName];
-    const promptIdx = extra.indexOf('--prompt');
-    if (promptIdx !== -1 && promptIdx + 1 < extra.length) {
-      cmdArgs.push('--prompt', extra[promptIdx + 1]);
-    }
-    if (extra.includes('--ask-persist')) {
-      cmdArgs.push('--ask-persist');
-    }
+  const cmdArgs = ['secret', '--set', memberName];
+  const promptIdx = extra.indexOf('--prompt');
+  if (promptIdx !== -1 && promptIdx + 1 < extra.length) {
+    cmdArgs.push('--prompt', extra[promptIdx + 1]);
+  }
+  if (extra.includes('--ask-persist')) {
+    cmdArgs.push('--ask-persist');
   }
 
   // SEA binary: process.execPath is the binary itself
@@ -533,32 +499,19 @@ function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string
  * The manual-entry instruction shown when no terminal (and no browser UI) can
  * collect a credential. ASCII only.
  *
- * Credential-collection modes name the credential by the caller's prompt
- * label (the `--prompt` value in `extraArgs`, e.g. a provider's
- * missingCredential.promptFor text) and tell the operator to store it under
- * a secret NAME of their choosing, then pass {{secret.NAME}}. The member name
- * is never offered as a secret name: `secret --set <member>` stored the value
- * under the member's name, which no credential field references.
- *
- * Confirm mode keeps `secret --confirm <name>`: there `memberName` IS the
- * credential name being confirmed (see collectOobConfirm).
+ * It names the credential by the caller's prompt label (the `--prompt` value
+ * in `extraArgs`, e.g. a provider's missingCredential.promptFor text) and tells
+ * the operator to store it under a secret NAME of their choosing, then pass
+ * {{secret.NAME}}. The member name is never offered as a secret name:
+ * `secret --set <member>` stored the value under the member's name, which no
+ * credential field references.
  */
-export function buildHeadlessFallback(memberName: string, reason: string, context?: { command?: string; onMember?: string }, extraArgs?: string[]): string {
-  const isConfirm = extraArgs?.includes('--confirm') ?? false;
-  let contextLines = '';
-  if (context?.onMember && context?.command) {
-    contextLines = `\n\n  This command on ${context.onMember} will send credential "${memberName}" over the network:\n  ${context.command}`;
-  } else if (context?.command) {
-    contextLines = `\n\n  Command: ${context.command}`;
-  }
-  if (isConfirm) {
-    return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to confirm:\n  ! apra-fleet secret --confirm ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.`;
-  }
+export function buildHeadlessFallback(memberName: string, reason: string, extraArgs?: string[]): string {
   const promptIdx = extraArgs?.indexOf('--prompt') ?? -1;
   const promptLabel = extraArgs && promptIdx !== -1 && promptIdx + 1 < extraArgs.length
     ? extraArgs[promptIdx + 1]
     : (extraArgs?.includes('--api-key') ? `Enter API key for ${memberName}` : `Enter password for ${memberName}`);
-  return `fallback:${reason}${contextLines}\n\nNo terminal is available to ask for this credential: "${promptLabel}".`
+  return `fallback:${reason}\n\nNo terminal is available to ask for this credential: "${promptLabel}".`
     + `\nStore it as a named fleet secret (choose any NAME, e.g. one per credential) in a separate terminal:`
     + `\n  ! apra-fleet secret --set NAME --persist`
     + `\n(or use credential_store_set), then pass {{secret.NAME}} in the credential field when calling the tool again.`;
@@ -722,27 +675,19 @@ export function launchAuthTerminal(
   const fullArgs = [cmd, ...args];
   let child: ChildProcess;
 
-  // Extract context args for headless fallback messages
-  const ctxIdx = extraArgs?.indexOf('--context') ?? -1;
-  const onIdx = extraArgs?.indexOf('--on') ?? -1;
-  const fallbackContext = {
-    command: ctxIdx !== -1 && extraArgs && ctxIdx + 1 < extraArgs.length ? extraArgs[ctxIdx + 1] : undefined,
-    onMember: onIdx !== -1 && extraArgs && onIdx + 1 < extraArgs.length ? extraArgs[onIdx + 1] : undefined,
-  };
-
   try {
     const platform = process.platform;
 
     if (platform === 'win32' && !hasInteractiveDesktop()) {
-      return buildHeadlessFallback(memberName, 'No interactive desktop session detected (SSH or service context).', fallbackContext, extraArgs);
+      return buildHeadlessFallback(memberName, 'No interactive desktop session detected (SSH or service context).', extraArgs);
     }
 
     if (platform === 'linux' && !hasGraphicalDisplay()) {
-      return buildHeadlessFallback(memberName, 'No graphical display detected (SSH or headless session).', fallbackContext, extraArgs);
+      return buildHeadlessFallback(memberName, 'No graphical display detected (SSH or headless session).', extraArgs);
     }
 
     if (platform === 'darwin' && isSSHSession()) {
-      return buildHeadlessFallback(memberName, 'SSH session detected -- no terminal emulator available (SSH_TTY is set).', fallbackContext, extraArgs);
+      return buildHeadlessFallback(memberName, 'SSH session detected -- no terminal emulator available (SSH_TTY is set).', extraArgs);
     }
 
     if (platform === 'darwin') {

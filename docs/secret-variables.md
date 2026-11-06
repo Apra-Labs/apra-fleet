@@ -34,7 +34,8 @@ reach an LLM prompt. Use `execute_command` instead.
 
 - Delivery vs. persistence: Running `apra-fleet secret --set NAME` without `--persist` delivers to a waiting OOB request but does NOT store in the vault. `{{secret.NAME}}` requires vault storage - use `--persist`.
 - `credential_store_set` **blocks** - when called, the tool opens an OOB terminal and waits synchronously for the user to enter the secret. It does not return a "Waiting..." intermediate status or require a second call. On success it returns `[OK] NAME stored [session/persistent]. Use {{secret.NAME}} in commands.`
-- `credential_store_set` defaults match `apra-fleet secret --set NAME --persist`: `persist: true`, `network_policy: allow`, `members: *`. Pass `persist: false` for a session value (lost at server restart), or `network_policy` / `members` to restrict it. Setting a name again replaces its value and its policy fields; to change only the policy fields use `credential_store_update`.
+- `credential_store_set` defaults match `apra-fleet secret --set NAME --persist`: `persist: true`, `network_policy: allow`, `members: *`. Pass `persist: false` for a session value (lost at server restart), or `network_policy: deny` / `members` to restrict it. Setting a name again replaces its value and its policy fields; to change only the policy fields use `credential_store_update`.
+- `network_policy` is `allow` or `deny`. The former `confirm` policy was removed: passing it is refused, and a record stored with it behaves as `allow` and logs one line naming the secret. Run `apra-fleet secret --update NAME --deny` on any such secret that must not reach the network.
 - Failed resolution is always explicit - the tool returns an error and aborts. No silent pass-through of the token string.
 
 ## CI / Non-Interactive Usage

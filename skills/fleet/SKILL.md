@@ -89,7 +89,6 @@ network access for commands that use it:
 |--------|-----------|
 | `'allow'` (default) | No restriction |
 | `'deny'` | Commands invoking network tools (curl, wget, ssh, git push, etc.) are blocked |
-| `'confirm'` | OOB prompt before the network call is allowed |
 
 ## Member Identification
 

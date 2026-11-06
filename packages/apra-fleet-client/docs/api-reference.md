@@ -779,6 +779,8 @@ out-of-band and stores it -- the value never passes through the caller. By
 default it is stored persistently (`persist: true`) with `network_policy: 'allow'`
 and `members: '*'`, like `apra-fleet secret --set NAME --persist`; pass
 `persist: false` for a value held in memory until the server restarts.
+`network_policy` is `'allow'` or `'deny'`, and both set and update refuse the
+removed `'confirm'`.
 `credentialStoreList()` takes no arguments and returns names and metadata
 only, never values (a JSON array of `{ name, scope, ... }` entries; extract
 it with `parseToolJson()`). `credentialStoreDelete({ name })` removes one.

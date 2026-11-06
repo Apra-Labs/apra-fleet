@@ -1,12 +1,13 @@
 import { z } from 'zod';
-import { BoundSecretError, credentialResolve, credentialUpdate, isLiveSecret } from '../services/credential-store.js';
+import { BoundSecretError, credentialResolve, credentialUpdate, isLiveSecret, type CredentialUpdatePatch } from '../services/credential-store.js';
+import { networkPolicySchema } from './credential-store-set.js';
 import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreUpdateSchema = z.object({
   name: z.string().min(1).describe('Name of the credential to update'),
   members: z.string().optional().describe('New member scope ("*" or comma-separated friendly names)'),
   ttl_seconds: z.number().min(0).optional().describe('New TTL in seconds from now. Pass 0 to remove expiry.'),
-  network_policy: z.enum(['allow', 'deny', 'confirm']).optional().describe('New network egress policy'),
+  network_policy: networkPolicySchema.optional().describe('New network egress policy: "allow" or "deny"'),
 });
 
 export type CredentialStoreUpdateInput = z.infer<typeof credentialStoreUpdateSchema>;
@@ -25,7 +26,7 @@ export async function credentialStoreUpdate(input: CredentialStoreUpdateInput): 
     return `❌ Credential "${input.name}" not found.`;
   }
 
-  const updates: { members?: string; expiresAt?: number | null; network_policy?: 'allow' | 'confirm' | 'deny' } = {};
+  const updates: CredentialUpdatePatch = {};
   if (input.members !== undefined) updates.members = input.members;
   if (input.ttl_seconds !== undefined) {
     updates.expiresAt = input.ttl_seconds === 0 ? null : Date.now() + input.ttl_seconds * 1000;

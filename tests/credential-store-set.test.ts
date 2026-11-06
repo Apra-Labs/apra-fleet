@@ -47,7 +47,7 @@ describe('credentialStoreSet', () => {
       name: 'test_cred',
       prompt: 'Enter key:',
       persist: false,
-      network_policy: 'confirm'
+      network_policy: 'allow'
     });
 
     expect(result).toBe('Waiting for secret...');
@@ -61,7 +61,7 @@ describe('credentialStoreSet', () => {
       name: 'test_cred',
       prompt: 'Enter key:',
       persist: false,
-      network_policy: 'confirm'
+      network_policy: 'allow'
     });
 
     expect(result).toContain('No secret received');
@@ -143,18 +143,19 @@ describe('credentialStoreSet', () => {
       const name = 'explicit_session';
       const input = credentialStoreSetSchema.parse({ name, prompt: 'test', persist: false });
       expect(await credentialStoreSet(input)).toContain(`${name} stored [session]`);
+      expect(credentialResolve(name)).toMatchObject({ meta: { scope: 'session', network_policy: 'allow' } });
       expect(fs.existsSync(path.join(TEST_DATA_DIR, 'credentials.json'))).toBe(false);
       credentialDelete(name);
     });
 
     it('an explicit network_policy is honoured', async () => {
       await credentialStoreSet(credentialStoreSetSchema.parse({ name: 'explicit_deny', prompt: 'test', network_policy: 'deny' }));
-      expect(credentialResolve('explicit_deny')).toMatchObject({ meta: { network_policy: 'deny' } });
+      expect(credentialResolve('explicit_deny')).toMatchObject({ meta: { scope: 'persistent', network_policy: 'deny' } });
     });
 
     it('explicit members are honoured', async () => {
       await credentialStoreSet(credentialStoreSetSchema.parse({ name: 'explicit_members', prompt: 'test', members: 'a,b' }));
-      expect(credentialResolve('explicit_members')).toMatchObject({ meta: { allowedMembers: ['a', 'b'] } });
+      expect(credentialResolve('explicit_members')).toMatchObject({ meta: { scope: 'persistent', network_policy: 'allow', allowedMembers: ['a', 'b'] } });
     });
 
     it('storing a new name leaves a record already on disk untouched', async () => {

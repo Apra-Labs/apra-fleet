@@ -96,7 +96,7 @@ export default {
     "tests/code-intelligence.test.ts": 6,
     "tests/cost.test.ts": 5,
     "tests/credential-scoping-ttl.test.ts": 3,
-    "tests/credential-store-and-execute.test.ts": 13,
+    "tests/credential-store-and-execute.test.ts": 7,
     "tests/credential-store-update.test.ts": 9,
     "tests/credential-validation.test.ts": 1,
     "tests/crypto.test.ts": 8,

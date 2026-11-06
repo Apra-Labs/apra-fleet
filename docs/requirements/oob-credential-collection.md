@@ -47,7 +47,6 @@ A credential can be **session-only** (discarded after delivery) or **persistent*
 | Policy | Effect |
 |--------|--------|
 | `allow` (default) | No restriction - credential can be used in any command |
-| `confirm` | Fleet prompts before allowing a command that uses this credential to make network calls |
 | `deny` | Commands that would make network calls while using this credential are blocked |
 
 The policy can be updated at any time without re-entering the secret:

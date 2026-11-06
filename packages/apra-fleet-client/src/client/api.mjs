@@ -1413,7 +1413,7 @@ export class ApraFleet {
      * credential store. The secret value never passes through the caller.
      * Defaults: persist true, network_policy 'allow', members '*'.
      * @param {{ name: string, prompt: string, persist?: boolean,
-     *           network_policy?: 'allow'|'confirm'|'deny', members?: string,
+     *           network_policy?: 'allow'|'deny', members?: string,
      *           ttl_seconds?: number }} options
      */
     async credentialStoreSet(options) {
@@ -1510,7 +1510,7 @@ export class ApraFleet {
      * Update metadata (members, TTL, network policy) on an existing
      * credential without re-entering the secret.
      * @param {{ name: string, members?: string, ttl_seconds?: number,
-     *           network_policy?: 'allow'|'confirm'|'deny' }} options
+     *           network_policy?: 'allow'|'deny' }} options
      */
     async credentialStoreUpdate(options) {
         return this.mcpClient.callTool('credential_store_update', options);

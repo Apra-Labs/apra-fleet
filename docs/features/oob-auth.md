@@ -6,7 +6,7 @@ Covers the design of the out-of-band credential collection system and its SSH/he
 
 ## Background: Why OOB Auth Exists
 
-Credentials (passwords, API keys, confirmation prompts) must not pass through the LLM -- the model must never see plaintext secrets. The OOB (out-of-band) mechanism collects credentials in a separate UI context, passes them over a local socket, and delivers them to the fleet server without them appearing in the prompt stream.
+Credentials (passwords, API keys) must not pass through the LLM -- the model must never see plaintext secrets. The OOB (out-of-band) mechanism collects credentials in a separate UI context, passes them over a local socket, and delivers them to the fleet server without them appearing in the prompt stream.
 
 ---
 
@@ -90,16 +90,6 @@ fallback:No graphical display detected (SSH or headless session).
 
 Run this in a separate terminal to provide the credential:
   ! apra-fleet secret --set <memberName>
-
-Alternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.
-```
-
-**Full fallback message text (Linux headless, egress-confirm mode):**
-```
-fallback:No graphical display detected (SSH or headless session).
-
-Run this in a separate terminal to confirm:
-  ! apra-fleet secret --confirm <memberName>
 
 Alternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.
 ```

@@ -129,6 +129,21 @@ describe('runSecret: no args', () => {
   it('exits 0 for --help', async () => {
     await expect(runSecret(['--help'])).rejects.toThrow(ExitError);
     expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(errSpy.mock.calls.flat().join('\n')).not.toContain('--confirm');
+  });
+});
+
+// A non-zero exit also lets a still-running older server treat its prompt as cancelled.
+describe('runSecret: the removed --confirm', () => {
+  it.each([
+    [['--confirm', 'tok']],
+    [['--confirm', 'tok', '--context', 'curl x', '--on', 'alice']],
+    [['--update', 'tok', '--confirm']],
+  ])('%j says it was removed and exits 1 without touching the store', async (args) => {
+    await expect(runSecret(args)).rejects.toThrow(ExitError);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errSpy.mock.calls.flat().join('\n')).toContain('--confirm was removed');
+    expect(mockCredentialUpdate).not.toHaveBeenCalled();
   });
 });
 
@@ -213,7 +228,7 @@ describe('runSecret --list', () => {
 
   it('shows "—" for missing expiresAt', async () => {
     mockCredentialList.mockReturnValue([
-      { name: 'tok', scope: 'session', network_policy: 'confirm', created_at: '', allowedMembers: '*' },
+      { name: 'tok', scope: 'session', network_policy: 'allow', created_at: '', allowedMembers: '*' },
     ]);
     await runSecret(['--list']);
     const output = logSpy.mock.calls.map(c => c[0]).join('\n');

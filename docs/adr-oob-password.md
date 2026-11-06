@@ -49,7 +49,7 @@ The key insight: the MCP server itself launches the terminal and blocks until th
 
 ```
 src/services/auth-socket.ts   -- UDS server, pending auth state, terminal launcher
-src/cli/secret.ts              -- CLI subcommand for credential input and egress confirmation
+src/cli/secret.ts              -- CLI subcommand for credential input
 tests/auth-socket.test.ts      -- 18 unit tests
 ```
 

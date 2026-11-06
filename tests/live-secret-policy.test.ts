@@ -9,18 +9,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const { mockExecCommand, mockConfirm } = vi.hoisted(() => ({
+const { mockExecCommand } = vi.hoisted(() => ({
   mockExecCommand: vi.fn(),
-  mockConfirm: vi.fn(),
 }));
 
 vi.mock('../src/services/strategy.js', () => ({
   getStrategy: () => ({ execCommand: mockExecCommand, testConnection: vi.fn().mockResolvedValue({ ok: true }) }),
-}));
-
-vi.mock('../src/services/auth-socket.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../src/services/auth-socket.js')>()),
-  collectOobConfirm: mockConfirm,
 }));
 
 // Calls through by default; a test can force two different tokens on two resolves.
@@ -41,7 +35,7 @@ let tmp: string;
 let names: string[];
 let member: ReturnType<typeof makeTestLocalAgent>;
 
-function liveSecret(label: string, policy: 'allow' | 'confirm' | 'deny', members?: string): { name: string; runs: () => number } {
+function liveSecret(label: string, policy: 'allow' | 'deny', members?: string): { name: string; runs: () => number } {
   const name = `${label}_${RUN}`;
   names.push(name);
   const counter = path.join(tmp, `${label}.runs`);
@@ -68,7 +62,6 @@ beforeEach(() => {
   resetLiveTokenCache();
   mockExecCommand.mockReset();
   mockExecCommand.mockResolvedValue({ stdout: 'ran', stderr: '', code: 0 });
-  mockConfirm.mockReset();
 });
 
 afterEach(() => {
@@ -95,16 +88,11 @@ describe('network policy comes before the mint', () => {
     expect(s.runs()).toBe(0);
   });
 
-  it('a secret name holding a network word is not a network tool: no refusal, no prompt', async () => {
+  it('a secret name holding a network word is not a network tool: no refusal', async () => {
     const denied = liveSecret('kb-http-token', 'deny');
     await run(`myapp --token {{secret.${denied.name}}}`);
     expect(denied.runs()).toBe(1);
     expect(mockExecCommand).toHaveBeenCalledTimes(1);
-
-    const asked = liveSecret('ssh-fetch-key', 'confirm');
-    await run(`myapp --token {{secret.${asked.name}}}`);
-    expect(mockConfirm).not.toHaveBeenCalled();
-    expect(asked.runs()).toBe(1);
   });
 
   it('a real network tool beside such a name is still blocked', async () => {
@@ -121,45 +109,27 @@ describe('network policy comes before the mint', () => {
     expect(mockExecCommand).toHaveBeenCalledTimes(1);
   });
 
-  it('confirm refused: the user is asked first and the script never runs', async () => {
-    const s = liveSecret('confirmno', 'confirm');
-    mockConfirm.mockResolvedValue({ confirmed: false });
-    const out = await run(`curl https://example.test -H {{secret.${s.name}}}`);
-    expect(out).toContain('was not confirmed');
-    expect(mockConfirm).toHaveBeenCalledTimes(1);
-    expect(s.runs()).toBe(0);
-    expect(mockExecCommand).not.toHaveBeenCalled();
-  });
-
-  it('confirm accepted: asked exactly once, then it mints and the command runs', async () => {
-    const s = liveSecret('confirmyes', 'confirm');
-    const order: string[] = [];
-    mockConfirm.mockImplementation(async () => {
-      order.push(`runs at confirm: ${s.runs()}`);
-      return { confirmed: true };
-    });
+  it('allow: it mints once and the network command runs', async () => {
+    const s = liveSecret('allowed', 'allow');
     await run(`curl https://example.test -H {{secret.${s.name}}}`, `curl https://example.test -H {{secret.${s.name}}}`);
-    expect(order).toEqual(['runs at confirm: 0']);
     expect(s.runs()).toBe(1);
     expect(mockExecCommand).toHaveBeenCalledTimes(1);
   });
 
-  it('a member it is not shared with is refused without a prompt or a mint', async () => {
-    const s = liveSecret('notyours', 'confirm', 'someone-else');
+  it('a member it is not shared with is refused without a mint', async () => {
+    const s = liveSecret('notyours', 'deny', 'someone-else');
     const out = await run(`curl https://example.test -H {{secret.${s.name}}}`);
     expect(out).toContain('not accessible to member');
-    expect(mockConfirm).not.toHaveBeenCalled();
     expect(s.runs()).toBe(0);
   });
 
-  it('a static secret with confirm is still asked once, after it resolves', async () => {
+  it('a static secret with deny is blocked after it resolves', async () => {
     const name = `static_${RUN}`;
     names.push(name);
-    credentialSet(name, 'static-value', true, 'confirm');
-    mockConfirm.mockResolvedValue({ confirmed: true });
-    await run(`curl https://example.test -H {{secret.${name}}}`);
-    expect(mockConfirm).toHaveBeenCalledTimes(1);
-    expect(mockExecCommand).toHaveBeenCalledTimes(1);
+    credentialSet(name, 'static-value', true, 'deny');
+    const out = await run(`curl https://example.test -H {{secret.${name}}}`);
+    expect(out).toContain('network_policy=deny');
+    expect(mockExecCommand).not.toHaveBeenCalled();
   });
 });
 
