@@ -223,17 +223,15 @@ export function dropLiveToken(name: string, rejectedToken: string): void {
 }
 
 /**
- * Forget the cached token when it was minted at or before `rejectedAtMs`, for a
- * rejection seen somewhere that cannot name the token (a remote member's own KB
- * call). A token minted later is kept, because the rejection is not about it. A
- * mint already in flight is left to finish: its token is newer, and with the old
- * one gone a failed mint cannot fall back to the token that was rejected. Backoff
- * is untouched. Returns true when a token was dropped.
+ * Forget the cached token whichever it is, for a rejection seen somewhere that
+ * cannot name the token (a remote member's own KB call). A mint already in flight
+ * is left to finish: its token is newer, and with the old one gone a failed mint
+ * cannot fall back to the token that was rejected. Backoff is untouched. Returns
+ * true when a token was dropped.
  */
-export function dropLiveTokenMintedBefore(name: string, rejectedAtMs: number): boolean {
+export function dropCachedLiveToken(name: string): boolean {
   const entry = _entries.get(name);
-  if (!entry || entry.token === undefined || entry.lastMintedAt === undefined) return false;
-  if (Date.parse(entry.lastMintedAt) > rejectedAtMs) return false;
+  if (!entry || entry.token === undefined) return false;
   clearToken(entry);
   return true;
 }
