@@ -14,7 +14,7 @@
  *
  * --kb-maintainer adds the engine's kb_maintainer grant (kb_maintainer=1): the
  * session is also served kb_promote, kb_resolve_contradiction and
- * kb_reconcile_prefilter, and may pass kb_import an explicit path. Remote
+ * kb_reconcile_prefilter (and kb_usage), and may pass kb_import an explicit path. Remote
  * memberCall passes it only when calling as a repository's kb_maintainer.
  */
 import fs from 'node:fs';

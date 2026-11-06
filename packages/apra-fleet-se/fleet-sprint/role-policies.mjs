@@ -186,6 +186,10 @@ export const PRE_DISPATCH_STEPS_IN_BRACKET = Object.freeze(['claim-beads-batched
  *   'reviewer-contract-guard'  -- reject a self-contradictory reviewer verdict
  *   'clear-round-session'      -- do not let a failed round's session be resumed
  *   'select-streaks-validate'  -- validate the returned grouping before trusting it
+ *   'kb-report'                -- read the report's kb_used/kb_wrong, log KB use
+ *                                 (never gate on it) and forward kb_wrong to
+ *                                 kb_feedback. Every row whose dispatch runs a
+ *                                 role persona carries it (see policy()).
  */
 export const POST_RESULT_STEPS = Object.freeze([
     'invalidate-beads-cache',
@@ -194,6 +198,7 @@ export const POST_RESULT_STEPS = Object.freeze([
     'reviewer-contract-guard',
     'clear-round-session',
     'select-streaks-validate',
+    'kb-report',
 ]);
 
 /** Kinds of secondary dispatch a ladder can make. */
@@ -567,7 +572,13 @@ function policy(role, spec) {
         degrade: spec.degrade,
         kbInjection: spec.kbInjection,
         preDispatch: spec.preDispatch ?? [],
-        postResult: spec.postResult ?? [],
+        // D4: every row that dispatches a role persona reports KB use, so the
+        // step is appended here, in ONE place, rather than repeated per row --
+        // a new role row cannot forget it. Last, so a step that rejects the
+        // result (reviewer-contract-guard) runs first and a rejected report is
+        // never read. A row with no persona (streak assignment) has no role
+        // report to read.
+        postResult: [...(spec.postResult ?? []), ...(spec.agentType ? ['kb-report'] : [])],
         secondary: null,
     };
 }

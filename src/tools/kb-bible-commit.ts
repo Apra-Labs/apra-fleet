@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { gitExecutable } from '../os/git-executable.js';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { filterProjectBibleCandidates, hasCarriedBasis, selectLegacyBibleBackfill } from '../services/knowledge/bible-basis-filter.js';
@@ -11,6 +13,7 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 import { TOMBSTONE_DEMOTED, standingAgainstTombstone, type BibleTombstone } from '../services/knowledge/bible-import.js';
 import { bibleBytesBlobId } from '../services/knowledge/bible-blob-id.js';
 import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
+import { withBibleFileLock } from '../services/knowledge/bible-file-lock.js';
 import {
   asciiSafeStringify,
   assertNoDuplicateBibleIds,
@@ -23,6 +26,7 @@ import {
   isGitRepo,
   readBibleDocument,
   requireLocalFolder,
+  scrubBibleSecrets,
   serializeBibleWrite,
   toCanonicalEntry,
   withBibleRichFields,
@@ -35,8 +39,10 @@ import {
 // to the bible, merging at ENTRY level: the given ids are added or replaced,
 // and every entry already in <self>/.fleet/kb-canonical.json is kept UNLESS
 // this (the maintainer's) KB holds it as superseded or invalidated -- those
-// are removed, and each removal (id + reason) is listed in the response and in
-// the commit message. Removal runs at every call, also with no ids. An entry
+// are removed, each removal (id + reason) is listed in the response and in
+// the commit message, and each is recorded as a tombstone {id, at, reason:
+// superseded | invalidated} in the bible's demotions array so other clones
+// retire their own copy of the row on kb_import. Removal runs at every call, also with no ids. An entry
 // in the file but absent from the DB is never dropped, nor is one the DB holds
 // as CONFIRMED and current. That keeps a retry after a rejected push safe: the
 // engine resets to the new remote HEAD (which may carry another clone's
@@ -62,7 +68,10 @@ import {
 // Rich fields. A merged id keeps the content, recall_cues and error_signatures
 // the bible already holds for it: a re-promotion on a clone with an older row
 // must not overwrite a rewritten entry. A field the bible lacks is filled from
-// the row. The one way to CHANGE them is `enrich`: the maintainer sets them on a
+// the row. A re-promoted id (tombstoned, so no longer in the bible) takes them
+// from the newest committed bible version in git history that carried them, so a
+// demote then re-promote on a clone with a poorer row keeps them too. The one
+// way to CHANGE them is `enrich`: the maintainer sets them on a
 // CONFIRMED entry that is in the bible, in the row too, without touching
 // anything else in the entry (no re-admission, the text of the claim and its
 // basis do not move). A FULL or kb_maintainer session only.
@@ -145,6 +154,12 @@ export interface KbBibleCommitResult {
   /** Ids this call's enrich applied, also when the values were already there. Present only when enrich was sent. */
   enriched?: string[];
   committed: boolean;
+  /**
+   * Present only when this call wrote and committed the bible but the committed
+   * file does not hold what it merged (another writer replaced it): committed
+   * is then false and this says what is missing. Absent otherwise.
+   */
+  not_committed_reason?: string;
 }
 
 type KbBibleEnrichItem = NonNullable<KbBibleCommitInput['enrich']>[number];
@@ -218,13 +233,86 @@ function enrichRefusal(item: KbBibleEnrichItem, entry: CanonicalEntry): string |
  */
 function keepBibleRichFields(fresh: CanonicalEntry, prior: CanonicalEntry | undefined): CanonicalEntry {
   if (!prior) return fresh;
+  // A prior value is re-scrubbed: it may predate a secret shape the writer now
+  // knows, and a re-merge rewrites the entry, so it must leave clean.
+  let scrubbed = false;
+  const scrub = (s: string): string => {
+    const out = scrubBibleSecrets(s);
+    if (out !== s) scrubbed = true;
+    return out;
+  };
   const keptList = (held: unknown, own: string[] | undefined): string[] | undefined =>
-    (Array.isArray(held) && held.length > 0 ? held as string[] : own);
-  return withBibleRichFields(fresh, {
-    content: typeof prior.content === 'string' && prior.content.length > 0 ? prior.content : fresh.content,
+    (Array.isArray(held) && held.length > 0 ? (held as string[]).map(s => (typeof s === 'string' ? scrub(s) : s)) : own);
+  const result = withBibleRichFields(fresh, {
+    content: typeof prior.content === 'string' && prior.content.length > 0 ? scrub(prior.content) : fresh.content,
     recall_cues: keptList(prior.recall_cues, fresh.recall_cues),
     error_signatures: keptList(prior.error_signatures, fresh.error_signatures),
   });
+  if (scrubbed) {
+    logWarn('kb_bible_commit', 'entry ' + fresh.id + ' held secret-shaped text in the bible; it is redacted on re-merge. Rewrite the entry.');
+  }
+  return result;
+}
+
+/** How many past commits of the bible file a re-promotion looks back through. */
+const BIBLE_HISTORY_MAX_COMMITS = 100;
+
+/** True when the entry carries any of content, recall_cues or error_signatures. */
+function hasRichFields(e: CanonicalEntry): boolean {
+  return (typeof e.content === 'string' && e.content.length > 0)
+    || (Array.isArray(e.recall_cues) && e.recall_cues.length > 0)
+    || (Array.isArray(e.error_signatures) && e.error_signatures.length > 0);
+}
+
+/**
+ * For each id, the most recent COMMITTED bible entry that carried rich fields,
+ * read from the git history of the bible file (newest first, at most
+ * BIBLE_HISTORY_MAX_COMMITS commits). This is the prior a demoted-then-
+ * re-promoted id is merged against: the demotion removed its entry from the
+ * bible, so the current file no longer holds the content and cues it had, and
+ * the re-promoting clone's row may be poorer. Git history is the source because
+ * it is exactly what other clones already share; no bible format change is
+ * needed. Best effort: a folder with no git, a shallow history that lacks the
+ * entry, or an unreadable past version yields no prior (the fresh row wins).
+ */
+function richFieldsFromBibleHistory(repoPath: string, outPath: string, ids: string[]): Map<string, CanonicalEntry> {
+  const found = new Map<string, CanonicalEntry>();
+  if (ids.length === 0 || !isGitRepo(repoPath)) return found;
+  const wanted = new Set(ids);
+  // './' makes the path relative to cwd for both log and show (cwd = repoPath).
+  const rel = './' + path.relative(repoPath, outPath).split(path.sep).join('/');
+  let shas: string[];
+  try {
+    shas = execFileSync(gitExecutable(), ['log', '--format=%H', '-n', String(BIBLE_HISTORY_MAX_COMMITS), '--', rel], {
+      cwd: repoPath, encoding: 'utf-8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
+    }).split('\n').map(s => s.trim()).filter(s => s.length > 0);
+  } catch {
+    return found;
+  }
+  for (const sha of shas) {
+    if (wanted.size === 0) break;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(execFileSync(gitExecutable(), ['show', sha + ':' + rel], {
+        cwd: repoPath, encoding: 'utf-8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true, maxBuffer: 256 * 1024 * 1024,
+      }));
+    } catch {
+      continue;
+    }
+    const entries = Array.isArray(parsed)
+      ? parsed
+      : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { entries?: unknown }).entries)
+        ? (parsed as { entries: unknown[] }).entries : []);
+    for (const candidate of entries) {
+      if (!candidate || typeof candidate !== 'object') continue;
+      const entry = candidate as CanonicalEntry;
+      if (typeof entry.id !== 'string' || !wanted.has(entry.id) || !hasRichFields(entry)) continue;
+      found.set(entry.id, entry);
+      wanted.delete(entry.id);
+    }
+  }
+  return found;
 }
 
 export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor): Promise<string> {
@@ -240,7 +328,10 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   const resolved = resolveKbAnchor(anchor);
   const repoPath = requireLocalFolder(resolved.folder, 'kb_bible_commit');
   const outPath = path.join(repoPath, '.fleet', 'kb-canonical.json');
-  return serializeBibleWrite(outPath, () => commitToBible(input, enrichItems, anchor, resolved.remoteUrl, repoPath, outPath));
+  // One writer per bible: in this process (serializeBibleWrite) and across
+  // processes on this checkout (withBibleFileLock).
+  return serializeBibleWrite(outPath, () => withBibleFileLock(outPath,
+    () => commitToBible(input, enrichItems, anchor, resolved.remoteUrl, repoPath, outPath)));
 }
 
 async function commitToBible(
@@ -260,19 +351,40 @@ async function commitToBible(
   const enriched: string[] = [];
   // enriched is present only when the call sent enrich, so a call without it
   // answers exactly as before and a consumer pinned to an older schema still validates.
-  const done = (r: Omit<KbBibleCommitResult, 'path' | 'enriched'>): string =>
+  const done = (r: Omit<KbBibleCommitResult, 'path' | 'enriched' | 'not_committed_reason'> & { not_committed_reason?: string }): string =>
     JSON.stringify({ path: outPath, ...r, ...(input.enrich !== undefined ? { enriched } : {}) });
 
   // No ids, no demotions and no bible entry that could be removed or enriched:
   // nothing to do, and the KB is not opened.
   const existingDoc = readBibleDocument(outPath);
   const existingAtStart = existingDoc?.entries ?? null;
+
+  // PENDING WRITE RECOVERY. A readable bible that differs from HEAD at the start
+  // of a call was written by an earlier call whose local commit failed (or left
+  // uncommitted by another writer). Nothing new to merge must not mean "nothing
+  // to commit": a call that would otherwise change nothing commits the pending
+  // file, and a call that does change it says so in its commit message. A failed
+  // retry throws, like any failed commit -- never a silent committed: false over
+  // a dirty tree.
+  const pendingAtStart = existingDoc !== null && isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath);
+  const commitPending = (entryCount: number): boolean => {
+    if (!pendingAtStart || !bibleContentChanged(repoPath, outPath)) return false;
+    try {
+      commitBiblePath(repoPath, outPath, pendingBibleCommitMessage(entryCount));
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error('kb_bible_commit: the bible holds a pending write from an earlier call and committing it failed again: ' + reason);
+    }
+    return true;
+  };
+
   if (requested.length === 0 && requestedDemotions.length === 0
     && (existingAtStart === null || existingAtStart.length === 0)) {
+    const entryCount = existingAtStart?.length ?? 0;
     return done({
       merged: [], demoted: [],
       skipped: enrichItems.map(item => ({ id: item.id, reason: 'not_in_bible' as const })),
-      removed: [], entry_count: existingAtStart?.length ?? 0, backfilled: 0, committed: false,
+      removed: [], entry_count: entryCount, backfilled: 0, committed: commitPending(entryCount),
     });
   }
 
@@ -365,6 +477,14 @@ async function commitToBible(
     .filter(e => retired.has(e.id))
     .map(e => ({ id: e.id, reason: retired.get(e.id)! }))
     .sort(compareById);
+  // Each removal is also a tombstone {id, at, reason: superseded | invalidated}
+  // in the existing demotions array, so a clone that already holds the entry
+  // as CONFIRMED retires it on kb_import instead of serving it forever. at is
+  // the row's superseded_at; a row retired by kb_invalidate {files} records no
+  // time, so it is stamped now.
+  const retiredAt = project.getRetirementTimes(removed.map(r => r.id));
+  const nowIso = new Date().toISOString();
+  const removalTombstones: BibleTombstone[] = removed.map(r => ({ id: r.id, at: retiredAt.get(r.id) ?? nowIso, reason: r.reason }));
 
   // Legacy backfill: existing entries with no carried basis, not merged (a
   // merged id gets its fresh entry and basis anyway) and not removed. The
@@ -393,7 +513,13 @@ async function commitToBible(
     byId.set(e.id, basis ? withSourceFileHashes(e, basis) : e);
   }
   for (const r of removed) byId.delete(r.id);
-  for (const id of merged) byId.set(id, keepBibleRichFields(confirmed.get(id)!, byId.get(id)));
+  // A merged id the bible no longer holds but carries a tombstone for was
+  // demoted and is now re-promoted: its prior rich fields come from the bible's
+  // git history (see richFieldsFromBibleHistory).
+  const priorTombstoned = new Set((existingDoc?.demotions ?? []).map(d => d.id));
+  const fromHistory = richFieldsFromBibleHistory(repoPath, outPath,
+    merged.filter(id => !byId.has(id) && priorTombstoned.has(id)));
+  for (const id of merged) byId.set(id, keepBibleRichFields(confirmed.get(id)!, byId.get(id) ?? fromHistory.get(id)));
   // An admitted demotion REMOVES the entry.
   for (const id of demoted) byId.delete(id);
 
@@ -423,7 +549,8 @@ async function commitToBible(
   }
 
   if (merged.length === 0 && removed.length === 0 && admittedDemotions.length === 0 && backfilled === 0 && enriched.length === 0) {
-    return done({ merged, demoted, skipped, removed, entry_count: existing?.length ?? 0, backfilled, committed: false });
+    const entryCount = existing?.length ?? 0;
+    return done({ merged, demoted, skipped, removed, entry_count: entryCount, backfilled, committed: commitPending(entryCount) });
   }
 
   const entries = Array.from(byId.values()).sort(compareById);
@@ -437,6 +564,7 @@ async function commitToBible(
   const tombstones = new Map<string, BibleTombstone>();
   for (const d of existingDoc?.demotions ?? []) tombstones.set(d.id, d);
   for (const d of admittedDemotions) tombstones.set(d.id, d);
+  for (const d of removalTombstones) tombstones.set(d.id, d);
   for (const id of merged) tombstones.delete(id);
   const demotions = Array.from(tombstones.values()).sort(compareById);
 
@@ -446,7 +574,7 @@ async function commitToBible(
     === asciiSafeStringify(demotions);
   if (existing !== null && demotionsUnchanged
     && asciiSafeStringify(existing) === asciiSafeStringify(entries)) {
-    return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed: false });
+    return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed: commitPending(entries.length) });
   }
 
   const bible: CanonicalBible = {
@@ -466,9 +594,26 @@ async function commitToBible(
   const written = Buffer.from(asciiSafeStringify(bible) + '\n', 'utf-8');
   fs.writeFileSync(outPath, written);
 
+  // kb_import trust anchor: record the blob id of the bible just written, so
+  // a member session without the kb_maintainer grant may import it once it is
+  // committed in (or pulled into) any checkout of this repository. Only the
+  // maintainer side records: kb_bible_commit is served to every member
+  // session, and a session without the grant merges over whatever its own
+  // work-tree bible holds (possibly hand-edited), so its output must not
+  // become trusted. A FULL session and the kb_maintainer session record.
+  // Recorded BEFORE the commit: the trust is in the bytes this call wrote, and
+  // a later call that recovers them after a failed commit commits these bytes.
+  if (!memberLacksKbMaintainer(anchor)) {
+    // The id of the exact bytes written (LF, unfiltered), hashed in-process:
+    // never `git hash-object` on the path, which would re-read the file and
+    // run the checkout's member-configured clean filters.
+    project.recordTrustedBibleBlob(await bibleBytesBlobId(repoPath, written), 'kb_bible_commit');
+  }
+
   let committed = false;
   if (isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath)) {
-    const message = bibleCommitMessage(merged.length, removed, entries.length, backfilled, demoted.length, enriched.length);
+    const message = bibleCommitMessage(merged.length, removed, entries.length, backfilled, demoted.length, enriched.length)
+      + (pendingAtStart ? '\n\n' + PENDING_RECOVERY_NOTE : '');
     try {
       commitBiblePath(repoPath, outPath, message);
     } catch (err) {
@@ -478,21 +623,48 @@ async function commitToBible(
     committed = true;
   }
 
-  // kb_import trust anchor: record the blob id of the bible just written, so
-  // a member session without the kb_maintainer grant may import it once it is
-  // committed in (or pulled into) any checkout of this repository. Only the
-  // maintainer side records: kb_bible_commit is served to every member
-  // session, and a session without the grant merges over whatever its own
-  // work-tree bible holds (possibly hand-edited), so its output must not
-  // become trusted. A FULL session and the kb_maintainer session record.
-  if (!memberLacksKbMaintainer(anchor)) {
-    // The id of the exact bytes written (LF, unfiltered), hashed in-process:
-    // never `git hash-object` on the path, which would re-read the file and
-    // run the checkout's member-configured clean filters.
-    project.recordTrustedBibleBlob(await bibleBytesBlobId(repoPath, written), 'kb_bible_commit');
+  // A commit is reported only once the COMMITTED file is seen to hold this
+  // call's merge: every merged id present, every removed or demoted id absent.
+  // Another writer (a process the lock did not cover, a hand edit) replacing
+  // the file between write and commit makes this call report committed: false
+  // with the reason, never committed: true for a lost write.
+  if (committed) {
+    const missing = unlandedChanges(repoPath, outPath, merged, [...removed.map(r => r.id), ...demoted]);
+    if (missing !== null) {
+      logWarn('kb_bible_commit', missing);
+      return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed: false, not_committed_reason: missing });
+    }
   }
 
   return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed });
+}
+
+/**
+ * Why the bible committed at HEAD does not hold this call's changes, or null
+ * when it does: each id in `present` is an entry, each id in `absent` is not.
+ */
+function unlandedChanges(repoPath: string, outPath: string, present: string[], absent: string[]): string | null {
+  const rel = './' + path.relative(repoPath, outPath).split(path.sep).join('/');
+  let ids: Set<string>;
+  try {
+    const text = execFileSync(gitExecutable(), ['show', 'HEAD:' + rel], {
+      cwd: repoPath, encoding: 'utf-8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true, maxBuffer: 256 * 1024 * 1024,
+    });
+    const parsed = JSON.parse(text) as unknown;
+    const entries = Array.isArray(parsed) ? parsed : (parsed as { entries?: unknown[] } | null)?.entries;
+    if (!Array.isArray(entries)) return 'the committed bible could not be read back as a bible file';
+    ids = new Set(entries.map(e => (e && typeof e === 'object' ? String((e as { id?: unknown }).id) : '')));
+  } catch (err) {
+    return 'the committed bible could not be read back: ' + (err instanceof Error ? err.message : String(err));
+  }
+  const lost = present.filter(id => !ids.has(id));
+  const back = absent.filter(id => ids.has(id));
+  if (lost.length === 0 && back.length === 0) return null;
+  const parts: string[] = [];
+  if (lost.length > 0) parts.push('missing merged ' + lost.join(', '));
+  if (back.length > 0) parts.push('still holding removed or demoted ' + back.join(', '));
+  return 'another writer replaced the bible before this call\'s commit landed: the committed bible is ' + parts.join('; ');
 }
 
 /**
@@ -506,6 +678,17 @@ function repromotedAfter(entry: CanonicalEntry, tombstone: BibleTombstone, now: 
   const updatedAt = Date.parse(entry.updated_at);
   if (Number.isNaN(updatedAt) || updatedAt > now.getTime()) return false;
   return standingAgainstTombstone(entry.updated_at, tombstone.at) === 'repromoted';
+}
+
+/** The commit-message line naming a recovered pending write. */
+const PENDING_RECOVERY_NOTE = 'Recovers a pending bible write left uncommitted by an earlier call.';
+
+/**
+ * The commit message when a call has nothing of its own to write and commits
+ * the pending bible an earlier call wrote but failed to commit.
+ */
+export function pendingBibleCommitMessage(total: number): string {
+  return 'chore(kb): commit a pending knowledge bible write -- ' + total + ' total\n\n' + PENDING_RECOVERY_NOTE;
 }
 
 /**

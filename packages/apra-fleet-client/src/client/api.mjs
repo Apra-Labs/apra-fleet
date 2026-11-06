@@ -777,6 +777,16 @@
  */
 
 /**
+ * @typedef {Object} KbUsageOptions
+ * @property {string[]} [pushed] - Ids of KB entries the engine delivered to a
+ *   dispatch; each is recorded as one returned usage event (duplicates in the
+ *   list count once).
+ * @property {string[]} [cited] - Ids of KB entries a role reported it actually
+ *   used (kb_used); each is recorded as one cited usage event (duplicates in
+ *   the list count once).
+ */
+
+/**
  * @typedef {Object} KbDemoteOptions
  * @property {string} id - ID of the KB entry to demote.
  * @property {string} reason - Why trust is being withdrawn -- at least 20 characters
@@ -809,6 +819,9 @@
  *   different from summary (the KB's own audit notes cut first), at most 2000
  *   characters (longer content is truncated, ending in '...[truncated]'). Absent:
  *   kb_import stores content = summary; a malformed or over-length value is dropped.
+ *   kb_import also fills content, recall_cues and error_signatures into a local row
+ *   with the same id that lacks them, when the row holds the same claim (reported
+ *   in its response's enriched count); a differing claim is never overwritten.
  * @property {string[]} [recall_cues] - Optional search phrasings for the entry; written only when non-empty.
  * @property {string[]} [error_signatures] - Optional verbatim error strings the entry
  *   explains; written only when non-empty.
@@ -1319,6 +1332,8 @@ export class ApraFleet {
      * to record the target base branch and base commit in provenance. Writes
      * bible format v3: each added project entry is a KbBibleEntry carrying its
      * source_file_hashes basis; a bible holding a duplicate id is refused.
+     * Writers of one bible are serialized across processes by a lock file next
+     * to it; a call that cannot take it within 60 s rejects.
      * Result JSON: {exported, path, scope, committed}; extract with parseToolJson().
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
@@ -1339,7 +1354,11 @@ export class ApraFleet {
      * lists each removal. Never pushes; re-running with the
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
      * be retried. Result JSON: {path, merged, demoted, skipped, removed,
-     * entry_count, backfilled, committed}; extract with parseToolJson(). backfilled counts the
+     * entry_count, backfilled, committed, not_committed_reason?}; extract with
+     * parseToolJson(). not_committed_reason is present only when the call
+     * committed but the bible read back at HEAD does not hold its merge (another
+     * writer replaced it); committed is then false. Writers of one bible are
+     * serialized across processes by a lock file next to it. backfilled counts the
      * existing bible entries with no source_file_hashes (carried over from a
      * v1/v2 bible) that gained this KB's stored basis for the same id, because
      * it passes the same basis rule at HEAD and cites the same files (legacy
@@ -1348,7 +1367,9 @@ export class ApraFleet {
      * {id, reason} with reason not_confirmed_or_unknown, no_source_files (a
      * CONFIRMED id citing no source file), basis_mismatch or
      * not_demoted_or_unknown (a demoted_ids id). Each removed item is {id, reason}
-     * with reason superseded or invalidated. A member session without the
+     * with reason superseded or invalidated, and is also tombstoned in the bible's
+     * demotions array as {id, at, reason} with that reason, so kb_import on another
+     * clone retires its own CONFIRMED copy (counted in that import's retired). A member session without the
      * kb_maintainer grant cannot retire a CONFIRMED entry through the kb_* tools:
      * kb_invalidate leaves CONFIRMED entries untouched, and kb_capture with
      * supersedes links to a CONFIRMED target (refines, both live) instead of
@@ -1382,6 +1403,23 @@ export class ApraFleet {
     async kbDemote(options) {
         assertNoRemovedKbScopeKeys('kb_demote', options);
         return this.mcpClient.callTool('kb_demote', options);
+    }
+
+    /**
+     * Record KB usage telemetry behind kb_stats.usage (the cited-based hit
+     * rate): pushed ids become returned events, cited ids cited events.
+     * Append-only; never changes an entry. A member session is served kb_usage
+     * only with the engine's kb_maintainer grant. Result JSON:
+     * {recorded: {returned, cited}} (plus supported false and a reason over a
+     * remote HTTP KB provider, which records nothing); extract with
+     * parseToolJson(). The removed scope keys (repo_path, repo,
+     * repo_remote_url) are refused with E-SCOPE-KEY-REMOVED before anything is
+     * sent.
+     * @param {KbUsageOptions} options
+     */
+    async kbUsage(options) {
+        assertNoRemovedKbScopeKeys('kb_usage', options);
+        return this.mcpClient.callTool('kb_usage', options);
     }
 
     /**

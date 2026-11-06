@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "6ecdfda08a76fc206721e855d72cf94b16f5f011",
+    "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 129
+    "entry_count": 141
   },
   "entries": [
     {
@@ -27,6 +27,28 @@
         "packages/apra-fleet-se/src/supervisor/fleet-members.mjs": "186eaa038d775ac2912e80b9b2214da2ae00bf3a",
         "src/services/onboarding.ts": "20513f4211fed7b80c6d86d321a1fcf3afb01382",
         "src/services/tool-registry.ts": "9b38a4b703924d141c74ccc300f92f8a7bb3315e"
+      }
+    },
+    {
+      "id": "067aa0bb-2aa5-4ff9-9abc-367e839c7b2c",
+      "type": "knowledge",
+      "title": "The planner dispatch value is free text; its JSON report is inside it",
+      "summary": "The planner row in role-policies.mjs has schema null, so the postResult steps receive the planner's final response text, not a parsed object. kb.mjs reportKbUse parses the JSON report out of text (whole text, a fenced json block, or the outermost braces).",
+      "symbols": [
+        "reportKbUse",
+        "reportObjectFromText"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/apra-pm/agents/planner.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T11:25:33.503Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/agents/planner.md": "e650023f0292fd8f4fb7a8e7fd27d777e5396258",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "ae7fc8c0afd76d4a51b854c0bdf82e7e05ae444c",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs": "827b9627060b50e44e9078bcdd9f938a1230a0bb"
       }
     },
     {
@@ -267,6 +289,35 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:39.994Z"
+    },
+    {
+      "id": "19c7ea84-f508-4259-9c05-d1044b0dac79",
+      "type": "knowledge",
+      "title": "Engine-origin sessions skip use_count bumps and returned usage events in SqliteProvider",
+      "summary": "SqliteProvider.query() and touch() bump use_count and append a 'returned' usage event, but skip both when getSessionEngineOrigin() is true (origin=engine session). The engine reports deliveries through kb_usage, which kb_stats.usage reads back over 30 days.",
+      "symbols": [
+        "getSessionEngineOrigin",
+        "bumpReturned",
+        "recordUsage",
+        "usageStats",
+        "kbUsage"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/tool-scope.ts",
+        "src/services/tool-registry.ts",
+        "src/tools/kb-usage.ts",
+        "tests/knowledge/kb-usage-telemetry.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T10:51:19.602Z",
+      "source_file_hashes": {
+        "src/services/knowledge/sqlite-provider.ts": "0ce34018687689e54b10645cf16361f9c5bcfdb7",
+        "src/services/tool-registry.ts": "e94a8bc3bf44319a29d61cdbfdf14f7bc3fda02a",
+        "src/services/tool-scope.ts": "7952136d28cbb1a94fcdd8587b52fc53417c65b8",
+        "src/tools/kb-usage.ts": "3e26b8a67dd0931cf3e81dc83fba1d54a00720f6",
+        "tests/knowledge/kb-usage-telemetry.test.ts": "6d971a857db19d51effea35b3283f71918341c42"
+      }
     },
     {
       "id": "1b2df6eb-33c9-4deb-8253-2a553183fcfe",
@@ -598,6 +649,59 @@
       }
     },
     {
+      "id": "3c18010b-49e1-4e66-8cce-60e9fb7c9227",
+      "type": "knowledge",
+      "title": "kb_bible_commit tombstones superseded/invalidated removals and kb_import retires them",
+      "summary": "kb_bible_commit writes {id, at, reason: superseded|invalidated} into the v3 demotions array for every entry it removes, and importBibleEntries retires the matching local CONFIRMED row via SqliteProvider.applyBibleRetirement (kb_import reports retired).",
+      "symbols": [
+        "commitToBible",
+        "importBibleEntries",
+        "applyBibleRetirement",
+        "getRetirementTimes",
+        "mergeDemotions"
+      ],
+      "source_files": [
+        "src/tools/kb-bible-commit.ts",
+        "src/services/knowledge/bible-import.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs",
+        "tests/knowledge/kb-bible-removal-tombstones.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T13:42:26.190Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs": "8a0eb26c019d0a5d1130b4628e44548c60ad794b",
+        "src/services/knowledge/bible-import.ts": "0d41536af4a0af94b1f74092e9b120e2f0a26088",
+        "src/services/knowledge/sqlite-provider.ts": "1ed681d9cbdb65076ed0af9e320e66fa0fac5c0f",
+        "src/tools/kb-bible-commit.ts": "baad2cb8e29cdd66210a29ea9cc0af7af003846a",
+        "tests/knowledge/kb-bible-removal-tombstones.test.ts": "0838148276608cba549d9553f3153731b7d9d9c3"
+      }
+    },
+    {
+      "id": "3fad8b37-fcf6-46aa-8af9-c1ec8e92fa5c",
+      "type": "learning",
+      "title": "A bible removal tombstone retires a clone row permanently, so a later re-promotion never revives it there",
+      "summary": "applyBibleRetirement sets superseded_at on a clone's CONFIRMED row for a superseded or invalidated tombstone. If the id is later re-promoted, importBibleEntries sees hasEntry and only enriches or skips it, so that clone keeps the row retired.",
+      "symbols": [
+        "applyBibleRetirement",
+        "importBibleEntries",
+        "enrichFromBible",
+        "hasEntry"
+      ],
+      "source_files": [
+        "src/services/knowledge/bible-import.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/tools/kb-bible-commit.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T23:14:33.185Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "0d41536af4a0af94b1f74092e9b120e2f0a26088",
+        "src/services/knowledge/sqlite-provider.ts": "1ed681d9cbdb65076ed0af9e320e66fa0fac5c0f",
+        "src/tools/kb-bible-commit.ts": "baad2cb8e29cdd66210a29ea9cc0af7af003846a"
+      }
+    },
+    {
       "id": "3fe69283-7266-44c7-9f6d-d376847b4873",
       "type": "knowledge",
       "title": "A hostVerifier throw reaches connectWithTOFU as the client 'error' event, so the TOFU heal path is the single host-key re-accept point",
@@ -782,6 +886,28 @@
       }
     },
     {
+      "id": "4994ca25-7872-40b3-8832-d10ef89b55a7",
+      "type": "knowledge",
+      "title": "Member bible view import never applies tombstone retirement or enrichment",
+      "summary": "member-bible-view.ts calls importBibleEntries with verbatim true and no demotions option, so enrichFromBible and applyBibleRetirement run only on the kb_import path, never when the member view is built.",
+      "symbols": [
+        "importBibleEntries",
+        "enrichFromBible",
+        "applyBibleRetirement",
+        "buildView"
+      ],
+      "source_files": [
+        "src/services/knowledge/bible-import.ts",
+        "src/services/knowledge/member-bible-view.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T14:51:55.043Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "0d41536af4a0af94b1f74092e9b120e2f0a26088",
+        "src/services/knowledge/member-bible-view.ts": "dcc07c3ed11bccf65f2472d7a3e913fe879f51a6"
+      }
+    },
+    {
       "id": "4ab868ea-bb49-459a-b21e-f2b906d3cb58",
       "type": "knowledge",
       "title": "An async http.createServer handler that throws kills the apra-fleet server",
@@ -840,6 +966,29 @@
       "updated_at": "2026-09-25T22:26:30.213Z"
     },
     {
+      "id": "4f097156-3ede-4c4f-9f54-4bf08e13c3f1",
+      "type": "learning",
+      "title": "kb tool description edits must be mirrored in three places",
+      "summary": "A kb_* tool description lives in src/services/tool-registry.ts, memory-contract/v1/generate-contract.mjs, and verbatim in INVENTORY.md Appendix A; memory-contract-roster-guard.test.ts fails if Appendix A drifts from the live registration.",
+      "symbols": [
+        "registerAllTools"
+      ],
+      "source_files": [
+        "src/services/tool-registry.ts",
+        "memory-contract/v1/generate-contract.mjs",
+        "memory-contract/v1/INVENTORY.md",
+        "tests/memory-contract-roster-guard.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T13:42:21.558Z",
+      "source_file_hashes": {
+        "memory-contract/v1/INVENTORY.md": "1d15773b761173957ed10d45e41f6477a0928dc0",
+        "memory-contract/v1/generate-contract.mjs": "04db0c5b81da35016a91d744ae0b67eee6314526",
+        "src/services/tool-registry.ts": "ee2ab3e94c516df92e5cf3f0d6bf7fad00caaad4",
+        "tests/memory-contract-roster-guard.test.ts": "4b30b1181945497d4ba3a4123208f4b73de1fae4"
+      }
+    },
+    {
       "id": "4f62e71d-0544-49f1-863f-6bbc503604ac",
       "type": "knowledge",
       "title": "Exec-level rolling timeout is per-provider via ProviderAdapter.execTimeoutSource()",
@@ -895,6 +1044,54 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.812Z"
+    },
+    {
+      "id": "5793efdd-bbd2-4446-b8ac-86e4dc581b9c",
+      "type": "learning",
+      "title": "kb_bible_commit commits a bible that differs from HEAD at call start",
+      "summary": "A readable bible that differs from HEAD when kb_bible_commit starts is treated as a pending write and committed even when the call has nothing new. Tests that copy a bible into a clone without committing it now see committed: true.",
+      "symbols": [
+        "commitToBible",
+        "pendingBibleCommitMessage",
+        "bibleContentChanged"
+      ],
+      "source_files": [
+        "src/tools/kb-bible-commit.ts",
+        "tests/knowledge/kb-tombstone-import.test.ts",
+        "tests/knowledge/kb-bible-pending-commit.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T12:30:35.292Z",
+      "source_file_hashes": {
+        "src/tools/kb-bible-commit.ts": "ab6406dfb1bc48a4a717d41396b158b0d511df55",
+        "tests/knowledge/kb-bible-pending-commit.test.ts": "a875b2bd47c46f729a803ebd959c24ec6a6ef26f",
+        "tests/knowledge/kb-tombstone-import.test.ts": "e9b8776cc4e12da7af0aab4c0cf7e1ba1bd8bb33"
+      }
+    },
+    {
+      "id": "5ac4f227-83d0-47b2-9c23-806a34b530e9",
+      "type": "learning",
+      "title": "kb_feedback refuses the engine kb_maintainer member session",
+      "summary": "src/tools/kb-feedback.ts throws E-MEMBER-VIEW-READ-ONLY whenever memberOwnerTag(anchor) is set, which is true for every member session including the engine kb_maintainer grant. Engine-forwarded kb_wrong feedback is therefore refused on a real fleet.",
+      "symbols": [
+        "kbFeedback",
+        "memberOwnerTag",
+        "getSessionMemberId"
+      ],
+      "source_files": [
+        "src/tools/kb-feedback.ts",
+        "src/services/knowledge/kb-self.ts",
+        "src/services/tool-scope.ts",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T11:25:31.137Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "ae7fc8c0afd76d4a51b854c0bdf82e7e05ae444c",
+        "src/services/knowledge/kb-self.ts": "09af7b1503ebe308930a648fda8cbbf8cc819473",
+        "src/services/tool-scope.ts": "7952136d28cbb1a94fcdd8587b52fc53417c65b8",
+        "src/tools/kb-feedback.ts": "5302ea86ab5356f5196bf4cab79dfc8cb2b24943"
+      }
     },
     {
       "id": "5b0c0a37-6e58-4854-b1f4-b672ca0a6080",
@@ -1200,6 +1397,36 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T22:08:20.217Z"
+    },
+    {
+      "id": "793a12a1-d5cc-4822-8c9e-fc44d80f0ffc",
+      "type": "knowledge",
+      "title": "Engine KB secret regex has three drift-pinned copies plus the server shape",
+      "summary": "KB_SECRET_RE and KB_PLACEHOLDER_RE are declared identically in fleet-sprint kb.mjs, apra-pm lib/vet-kb-work.mjs and apra-pm .claude/workflows/auto-sprint.js (pinned by vet-kb-work-drift.test.mjs) and mirror BIBLE_SECRET_SHAPES in src/tools/kb-export.ts.",
+      "symbols": [
+        "BIBLE_SECRET_SHAPES",
+        "KB_SECRET_RE",
+        "KB_PLACEHOLDER_RE",
+        "scrubBibleSecrets"
+      ],
+      "source_files": [
+        "src/tools/kb-export.ts",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/apra-pm/lib/vet-kb-work.mjs",
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
+        "packages/apra-fleet-se/test/vet-kb-work-drift.test.mjs",
+        "tests/knowledge/kb-secret-shapes.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T12:30:37.569Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js": "b4294017baf82f502c6c3f464996360e127929b1",
+        "packages/apra-fleet-se/apra-pm/lib/vet-kb-work.mjs": "770a0827f49fe0f27b06e6729a6fbad4687798ab",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "7c04c598b9ed1cbbd501f4f6d245b3677a8a8c5a",
+        "packages/apra-fleet-se/test/vet-kb-work-drift.test.mjs": "b0efd552698538514ceaf04433415245a4594afe",
+        "src/tools/kb-export.ts": "526b086961706caa67ac7d4e53cd3ebb5f1f5d0a",
+        "tests/knowledge/kb-secret-shapes.test.ts": "2734f4d092603ad4e470b469b9c55c769ae7d223"
+      }
     },
     {
       "id": "7a7649d6-fd51-4e47-b898-384499d53c54",
@@ -1872,6 +2099,25 @@
       "updated_at": "2026-10-06T10:23:39.272Z"
     },
     {
+      "id": "caac0e77-a378-4f1e-bb9e-141c8e82e19a",
+      "type": "learning",
+      "title": "Typing kb_captures item properties conflicts with the keep-the-report capture tests",
+      "summary": "Adding explicit JSON types to kb_captures item properties makes ajv reject the whole role report for a capture of the wrong type. kb-bad-capture-keeps-report.test.mjs and kb-capture-rubric-contract.test.mjs pin that no capture, however bad, may fail the report schema.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json",
+        "packages/apra-fleet-se/test/kb-bad-capture-keeps-report.test.mjs",
+        "packages/apra-fleet-se/test/kb-capture-rubric-contract.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T09:48:25.015Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json": "897d05e362d03d82f9dad30e40cb1ba35013dbd1",
+        "packages/apra-fleet-se/test/kb-bad-capture-keeps-report.test.mjs": "77789b013bc60276b7cd9c9ec7f1318a5f349810",
+        "packages/apra-fleet-se/test/kb-capture-rubric-contract.test.mjs": "b83aa678b0270146df6bf39fc97275b1f29465b0"
+      }
+    },
+    {
       "id": "cc085797-4b47-455d-9357-fbbb267281ed",
       "type": "knowledge",
       "title": "runSprintCycle now hosts zero inline phase bodies, and that is mechanically pinned rather than described",
@@ -2126,6 +2372,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:53.820Z"
+    },
+    {
+      "id": "dfca1666-f21b-4696-b9b4-470eee7daa16",
+      "type": "learning",
+      "title": "Root npm test fails on any non-ASCII literal in a new test file via the ASCII gate",
+      "summary": "tests/ascii-only-gate.test.ts runs scripts/check-ascii-only.mjs over the whole tree, so a non-ASCII string literal in any new non-baselined file (including test fixtures) fails root vitest; write non-ASCII test data as unicode escapes.",
+      "symbols": [],
+      "source_files": [
+        "scripts/check-ascii-only.mjs",
+        "tests/ascii-only-gate.test.ts",
+        "tests/ascii-only-gate-behaviour.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T10:03:45.256Z",
+      "source_file_hashes": {
+        "scripts/check-ascii-only.mjs": "5c2a3676c29b4081bf37c1c1380d6d31cc59774e",
+        "tests/ascii-only-gate-behaviour.test.ts": "b0520b84d8890177e859ffd7425f7485ed570a18",
+        "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
     },
     {
       "id": "e078ec0e-b747-4274-a82b-4155c342928b",
@@ -2449,6 +2714,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T06:57:41.197Z"
+    },
+    {
+      "id": "f5d9b1b1-eeea-4209-b0a1-36abae8fa457",
+      "type": "knowledge",
+      "title": "kb_import enriches a same-claim local row instead of skipping its id",
+      "summary": "importBibleEntries no longer always skips an existing id: SqliteProvider.enrichFromBible fills content, recall_cues and error_signatures into a row with the same type, title, summary, source_files and carried basis that lacks them; counted in enriched, not skipped.",
+      "symbols": [
+        "enrichFromBible",
+        "importBibleEntries",
+        "bibleRichContentOf",
+        "kbImport"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/bible-import.ts",
+        "src/tools/kb-import.ts",
+        "tests/knowledge/kb-import-enrich.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T13:42:23.903Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "0d41536af4a0af94b1f74092e9b120e2f0a26088",
+        "src/services/knowledge/sqlite-provider.ts": "1ed681d9cbdb65076ed0af9e320e66fa0fac5c0f",
+        "src/tools/kb-import.ts": "b27b8d6a2585ab698923f08947d1ca249f47e18c",
+        "tests/knowledge/kb-import-enrich.test.ts": "b07095720b3ce08bfc87b942a9b6c8353bcba950"
+      }
     },
     {
       "id": "f60d53f5-f72a-439f-82c9-03b7deaefc9a",

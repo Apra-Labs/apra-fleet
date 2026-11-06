@@ -446,10 +446,12 @@ export function isTypedAbortError(err) {
  *   log?: (msg: string) => void,
  *   onAuthFailure?: (info: { member: string, label: string, cmd?: string, error: string, source: 'git'|'dolt', failureKind: string }) => Promise<void>,
  *   callTool?: (name: string, args: object) => Promise<any>,
- * }} opts
+ *   knowledgeBank?: string[],
+ * }} opts  knowledgeBank is the sprint's "Knowledge bank this sprint" section
+ *   (no harvest runs on this path to carry it), rendered in the [ABORTED] PR body.
  * @returns {Promise<{ prUrl: string|null, reason: string, pushed: boolean, commitCount: number }>}
  */
-export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure, callTool, runId }) {
+export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure, callTool, runId, knowledgeBank = [] }) {
     // Built up-front (not just at the PR-creation step further down) so the
     // SAME ApraFleet client can also resolve `member`'s VCS provider
     // (apra-fleet-417.7) for the runGitStep calls below -- avoids
@@ -589,6 +591,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         // records; rendered as the "Set aside this run" section.
         setAside: error && Array.isArray(error.setAside) ? error.setAside : [],
         waited: error && Array.isArray(error.waited) ? error.waited : [],
+        knowledgeBank,
         previousBody,
     });
     const prBody = buildAbortBody();

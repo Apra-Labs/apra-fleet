@@ -634,7 +634,7 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
             'No usable verdict was ever produced, so no KB work was applied.'
         );
         assert.strictEqual(policyFor('reviewer').retry.retryOnInvalidResult, true);
-        assert.deepStrictEqual(policyFor('reviewer').postResult, ['reviewer-contract-guard', 'kb-apply']);
+        assert.deepStrictEqual(policyFor('reviewer').postResult, ['reviewer-contract-guard', 'kb-apply', 'kb-report']);
     });
 
     test('doer: bounded escalating resume ladder, closed-streak short-circuit, and no re-dispatch after a post-dispatch sync failure', async () => {
@@ -1129,8 +1129,8 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
         const good = await driveEngineDispatch('harvester', 'main');
         assert.deepStrictEqual(
             good.rec.steps.map((e) => e.step),
-            ['kb-apply'],
-            "The harvester report's kb_captures are applied through the policy's 'kb-apply' step -- capture only, since promotions are reviewer-only."
+            ['kb-apply', 'kb-report'],
+            "The harvester report's kb_captures are applied through the policy's 'kb-apply' step -- capture only, since promotions are reviewer-only -- then its kb_used/kb_wrong are read by 'kb-report'."
         );
         assert.strictEqual(good.rec.steps[0].policy.agentType, 'harvester', 'kb-apply is routed by the dispatching persona.');
         assert.strictEqual(good.rec.steps[0].member, good.ctx.getMemberForRole('harvester'), 'kb-apply lands in the dispatched member\'s own work folder.');

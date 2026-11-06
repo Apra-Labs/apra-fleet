@@ -329,8 +329,16 @@ describe('planning-role dispatch: cross-cutting invariants', () => {
     test('the KNOWLEDGE BANK block reaches planning roles from the engine, not from a kb_* tool call', () => {
         const stripped = stripComments(SRC);
         assert.ok(
-            /if\s*\(opts\.agentType\s*&&\s*!KB_SELF_INJECTING_ROLES\.has\(opts\.agentType\)\s*&&\s*opts\.member_name\)/.test(stripped),
-            'agent() must inject the knowledge block for any dispatch carrying an agentType that is not self-injecting.'
+            /const finalPrompt = await withWrapperKbBlock\(prompt, \{[^}]*agentType: opts\.agentType,[^}]*member: opts\.member_name,/.test(stripped)
+                && /agentRaw\(finalPrompt,/.test(stripped),
+            'agent() must run every dispatch prompt through withWrapperKbBlock with its agentType and member.'
+        );
+        // withWrapperKbBlock (kb-injection.mjs) appends the block for any
+        // agentType that is not self-injecting, on any member.
+        const injSrc = stripComments(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'fleet-sprint', 'kb-injection.mjs'), 'utf8'));
+        assert.ok(
+            /if\s*\(!agentType\s*\|\|\s*KB_SELF_INJECTING_ROLES\.has\(agentType\)\s*\|\|\s*!member\)\s*return prompt;/.test(injSrc),
+            'withWrapperKbBlock must inject the knowledge block for any dispatch carrying an agentType that is not self-injecting.'
         );
         // Neither planning role places the block itself, so both depend on the
         // wrapper above; doer/reviewer are the documented self-injecting pair.

@@ -448,7 +448,7 @@ export function withFleetAccessSecret(options = {}, env = process.env) {
  * `kb_maintainer=1`: the engine's kb_maintainer grant. The server then also
  * serves kb_promote, kb_resolve_contradiction and kb_reconcile_prefilter to
  * this member session (they mint CONFIRMED; no other member session sees
- * them), and accepts kb_import with an explicit `path` (refused with
+ * them) and kb_usage (the engine's usage report), and accepts kb_import with an explicit `path` (refused with
  * E-KB-MAINTAINER-REQUIRED in a member session without the grant; kb_import
  * without `path` works in every member session, but without the grant it reads
  * the bible as committed at HEAD only), and lets kb_invalidate and kb_capture

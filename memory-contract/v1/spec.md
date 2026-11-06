@@ -85,10 +85,11 @@ method in this surface is classified `consent-gated` on its own (the
 consent-gated CLI-only surface -- `approveDirective`, `rejectDirective`,
 `addDirective` -- is not tool-reachable; see `methods.json`'s `not_in_scope`).
 
-### 2.2 Undeclared members reached by tools but absent from `MemoryProvider` (`methods.json` ids X-1..X-6 and X-8, plus the X-7 property)
+### 2.2 Undeclared members reached by tools but absent from `MemoryProvider` (`methods.json` ids X-1..X-6, X-8, X-9 and X-12, plus the X-7 property)
 
 `list`, `feedback`, `freshnessSweep`, `resolveContradiction`,
-`reconcilePrefilter`, `hasEntry` (methods), and `repoPath` (property, not a
+`reconcilePrefilter`, `hasEntry`, `getSourceFileBases`, `getDemotionState`,
+`recordUsage` (methods), and `repoPath` (property, not a
 method -- listed in `methods.json`'s `properties` array, not its `methods`
 array, and not counted against "every method has an entry").
 
@@ -186,7 +187,8 @@ the entries (sets `superseded_at`, never deletes) and returns
 kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the
 response then also carries `refused`; the same holds for `kb_capture` with
 `supersedes`. `kb_feedback` is refused with
-`E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
+`E-MEMBER-VIEW-READ-ONLY` only in a member session WITHOUT the kb_maintainer
+grant; with the grant it runs against the per-repo DB like a FULL session. A FULL session reads and writes the per-repo DB
 unchanged.
 
 A row imported from the bible (`kb_import`) carries NO `member:<uuid>` tag at
@@ -222,6 +224,10 @@ A MEMBER session is served an explicit tool list
 - `kb_demote` withdraws CONFIRMED (CONFIRMED -> INFERRED) and is served on the
   same terms as `kb_promote`: only to a member session carrying the
   kb_maintainer grant.
+- `kb_usage` records usage telemetry (section 2.10) and is served on the same
+  terms as `kb_promote`: only to a member session carrying the kb_maintainer
+  grant. The engine reports what it pushed and what roles cited; an agent
+  session cannot inflate the numbers.
 - Every other `kb_*` tool (including `kb_bible_commit` and `kb_import`) and
   every `code_*` tool is served to every member session.
 - `kb_import` with an explicit `path` keeps the named bible's confidence (and a
@@ -346,7 +352,12 @@ working folder, which is typically a feature branch.
   skipped with its own reason `no_source_files` (never `basis_mismatch`),
   likewise leaving any existing bible entry unchanged. It makes a local commit scoped to
   the bible path (identity `pm-kb`) and never pushes. Nothing merged and
-  nothing removed, or an unchanged entry set, makes no write and no commit. Re-running with
+  nothing removed, or an unchanged entry set, makes no write and no commit --
+  unless the bible file already differed from HEAD when the call started (an
+  earlier call wrote it but its local commit failed): then the call commits that
+  pending file (message noting the recovery) and returns `committed: true`, and
+  if that commit fails again the call throws. A call that does write also notes
+  the recovery in its commit message. No response field changes. Re-running with
   the same ids after resetting to a newer HEAD re-merges at entry level, so a
   rejected push can be retried with no manual merge. An existing bible that
   cannot be parsed is refused (thrown), never overwritten.
@@ -356,8 +367,10 @@ The v3 envelope also carries an OPTIONAL top-level `demotions` array of
 `reason`. Only a v3 envelope may carry it; a reader ignores `demotions` on a v2
 envelope or a legacy bare array. It is absent when the bible holds none, so a
 reader that does not know the field -- and every bible written before it
-existed -- keeps working. Readers keep tombstones whose `reason` they do not
-know. `provenance.entry_count` counts ENTRIES only: a tombstone is not an
+existed -- keeps working. `kb_bible_commit` writes three reasons: `demoted`
+(a `kb_demote`), and `superseded` / `invalidated` (an entry it removed because
+the writing KB holds it as superseded or invalidated). Readers keep tombstones
+whose `reason` they do not know, and ignore them on import. `provenance.entry_count` counts ENTRIES only: a tombstone is not an
 entry. Tombstones are never compacted: one stays until a re-promotion clears it.
 
 A demotion is NEVER inferred from an entry being absent from the bible. A clone
@@ -379,7 +392,10 @@ value.
 - A merged id keeps the `content`, `recall_cues` and `error_signatures` the
   bible already holds for it, field by field; a field the bible lacks is filled
   from the KB row. A clone holding an older row therefore cannot overwrite a
-  rewritten entry by re-promoting it.
+  rewritten entry by re-promoting it. For a merged id the bible no longer holds
+  but carries a demotion tombstone for (demoted, now re-promoted), the prior
+  values come from the newest committed version of the bible file in git history
+  (at most 100 commits back) that carried them.
 - `kb_bible_commit` takes an optional `enrich`: `[{id, content?, recall_cues?,
   error_signatures?}]`, the one way to change those fields on an existing entry.
   A named field replaces the old value in the bible entry and, when this KB holds
@@ -394,13 +410,29 @@ value.
   non-ASCII, secret-shaped, first-person or line-number text), `not_in_bible`,
   `not_confirmed_or_unknown` (the row is below CONFIRMED). A bad item never fails
   the call: the others are applied. Calls are serialized per bible file within the
-  server, so parallel calls all land. In a MEMBER session without the kb_maintainer grant the call fails
+  server, so parallel calls all land, and across processes on one checkout by an
+  exclusive lock file next to the bible (`<bible>.lock`, holding pid, host and
+  time; a lock whose holder pid is gone on this host, or older than 10 minutes,
+  is stale and recovered; a call that cannot take it within 60 s throws).
+  `kb_export`, and so `apra-fleet kb commit`, takes the same two gates. After
+  committing, the call reads the bible back at HEAD: when it does not hold every
+  merged id, or still holds a removed or demoted id (another writer replaced
+  the file), the call returns `committed: false` with an additive
+  `not_committed_reason` naming what is missing, never `committed: true` for a
+  lost write. In a MEMBER session without the kb_maintainer grant the call fails
   with `E-KB-MAINTAINER-REQUIRED` before any KB is opened, and nothing changes.
-- Secrets never reach a bible through `kb_export` or `kb_bible_commit`: a token
-  shape, a long Bearer/Basic value or a double-brace placeholder in a title,
-  summary, content, cue or signature is written as `[REDACTED]` when an entry is
-  merged, and a warning naming the entry is logged. Entries already in the file
-  are carried as they are.
+- Secrets never reach a bible through `kb_export` or `kb_bible_commit`: a
+  provider token shape (GitHub, Slack, AWS, GitLab, `sk-ant-`, `sk-proj-`,
+  `npm_`), a JWT (three base64url segments, the first starting `eyJ`), a PEM
+  private-key header, a Bearer value or base64 Basic value of 20+ characters that
+  holds a digit or mixed case, or a double-brace placeholder not preceded by `$`
+  (a GitHub Actions expression is not one) in a title, summary, content, cue or
+  signature is written as `[REDACTED]` when an entry is merged, and a warning
+  naming the entry is logged. A merged id's content, cues and signatures kept
+  from the bible (or its git history) are scrubbed the same way on that re-merge.
+  Entries the call does not merge are carried as they are. The engine capture
+  lint (`KB_SECRET_RE` plus `KB_PLACEHOLDER_RE` in fleet-sprint `kb.mjs`) flags
+  exactly the same shapes.
 - `kb_bible_commit` takes an optional `demoted_ids`. An id is admitted only when
   the LOCAL row exists, carries a `demoted_at` and is now below CONFIRMED;
   anything else is skipped with reason `not_demoted_or_unknown` and the file is
@@ -414,12 +446,27 @@ value.
   `{id, at: <local demoted_at>, reason: "demoted"}`. Tombstones already in the
   file are preserved when a later commit carries unrelated ids, and an id
   re-admitted through `ids` (a re-promotion) has its tombstone CLEARED.
+- Every entry `kb_bible_commit` removes because the writing KB holds it as
+  superseded or invalidated (reported in `removed`) is also upserted as
+  `{id, at, reason: "superseded" | "invalidated"}`, in the same array with the
+  same sort, dedupe, preserve and clear rules as a demotion tombstone. `at` is
+  the row's retirement time (`superseded_at`), or the commit time for a row
+  retired by `kb_invalidate {files}`, which records none. No other top-level
+  field is added and `entry_count` still counts entries only.
 - `kb_export` (scope=project) honours tombstones: it does not re-add a tombstoned
   id unless the local row is RE-PROMOTED under the rule above, in which case it
   re-adds the entry and clears the tombstone in the same write.
 - `kb_import` applies `reason: "demoted"` tombstones on the READ side, to a local
   row -- the counterpart of the write-side rules above, and the only place a
-  bible import can lower an already-CONFIRMED row's own confidence. The local
+  bible import can lower an already-CONFIRMED row's own confidence. It applies
+  `reason: "superseded"` and `"invalidated"` tombstones by RETIRING the local
+  row (the retirement the writing clone applied: `superseded_at` = the clamped
+  `at`, stale, retired with that reason), so it stops serving every read,
+  FULL-session reads included, under exactly the conditions below for a
+  demotion (exists, CONFIRMED, not superseded, not a `user-directive`,
+  WITHDRAWN under the rule above); the response counts these rows in
+  `retired`, as it counts demotions in `demoted`. Any other reason is ignored
+  on import. The local
   row is lowered from CONFIRMED to INFERRED ONLY when it still exists, is
   CONFIRMED, is not superseded, is not a `user-directive`, and is WITHDRAWN under
   the rule above; a RE-PROMOTED row is left untouched (it is newer evidence than
@@ -427,12 +474,25 @@ value.
   row gets the same single-line content note as a local `kb_demote`
   (`BIBLE_DEMOTION_REASON`, "demoted in the project bible", standing in for the
   caller-supplied reason), and `promoted_at`/`source` stay untouched, exactly as
-  a local demotion. A tombstone with any other reason only keeps its entry out
+  a local demotion. Every tombstone, whatever its reason, keeps its entry out
   of the member bible view and the cold seed. A bible-carried `updated_at` is
   clamped to the import time when stored, so a future-dated entry cannot
   outrank every later tombstone. Likewise a tombstone's `at` is clamped to now
   wherever a bible is read, so a future-dated tombstone never becomes a future
   `demoted_at` that every later re-promotion would count as withdrawn against.
+- `kb_import` ENRICHES a poorer local row from the bible entry with the same
+  id. An id the clone already holds is otherwise skipped; but when the row is
+  the SAME claim (same `type`, `title`, `summary` and cited `source_files`, and,
+  when the entry carries `source_file_hashes`, the same stored basis) and lacks
+  a rich field the entry carries -- `content` (the row's lesson body before any
+  audit note is empty or just the summary), `recall_cues` or `error_signatures`
+  (empty) -- that field is filled in, keeping the row's audit notes. Nothing
+  else moves: a differing claim is never overwritten (still `skipped`), a field
+  the row already has is never replaced, confidence never changes and a retired
+  row is left alone. The response counts these rows in `enriched`, instead of
+  `skipped`. UPGRADE ORDER: a 0.4.4 writer drops the rich fields on any id it
+  re-merges, so every host must run this version before rich fields are
+  backfilled into a bible.
 - A re-promotion does NOT reach a clone that already applied the tombstone.
   Import skips an id that already has a local row, so that clone keeps its
   INFERRED row until it is promoted there again; the every-call exception above
@@ -620,6 +680,40 @@ Additive request fields (no field was removed or made required):
 - Existing databases gain the columns through additive migrations on open;
   existing rows read empty arrays, no trigger and no note.
 
+### 2.10 Usage telemetry and the cited-based hit rate
+
+The KB keeps a timestamped usage event per delivery and per citation of an
+entry (`SqliteProvider` only; `methods.json` X-12 `recordUsage`):
+
+- **returned** -- an entry was delivered. Recorded by `query` (P-3) for every
+  entry it returns and by `touch` (P-11) for every id it is given, alongside
+  the existing use_count/last_accessed bump, and by `kb_usage` for every
+  `pushed` id (an entry the engine delivered to a dispatch).
+- **cited** -- a role reported it actually used the entry (`kb_used`),
+  recorded by `kb_usage` for every `cited` id.
+
+`kb_usage {pushed?, cited?}` de-duplicates ids within each list, counts an id
+with no local entry (a bible id exported elsewhere), and changes no entry,
+use_count or trust field. It returns `{recorded: {returned, cited}}`; over a
+provider that is not `SqliteProvider` it records nothing and returns
+`supported: false` with a reason (`E-USAGE-UNSUPPORTED`, a non-error outcome).
+
+A read made by an ENGINE-ORIGIN session (`origin=engine` on the member URL --
+the engine's own reads, such as the one that builds the pushed KNOWLEDGE BANK
+block) is not a delivery: `query` and `touch` then bump no use_count and record
+no returned event. The engine reports what it actually pushed through
+`kb_usage` instead. Agent-side `kb_query`/`kb_session_prime` calls keep
+counting as returned.
+
+`kb_stats` adds `usage: {window_days, returned, cited, cited_rate}` over the
+last 30 days (events older than that are excluded); `cited_rate` is
+`cited / returned`, and `null` when no returned event falls in the window --
+never 0, never a division error. It counts events, not distinct entries, and
+is always read from the per-repo DB, also in a MEMBER session (whose other
+`kb_stats` counts describe its checkout bible). Every pre-existing `kb_stats`
+field keeps its meaning; `retrieval.hit_rate` is still entries-retrieved over
+live entries.
+
 ## 3. Error model
 
 `taxonomy.json` in this directory is the source of truth: a CLOSED set of
@@ -662,8 +756,8 @@ deliberately get NO code, each with its reason. They fall into three kinds:
   that branch is the one with a code.
 - **A failure was degraded into an answer** -- the `code_*` adapters' offline
   result, the swallowed bible read, the emptied
-  `related_claims`, the unknown author role, and a provider reporting stats as
-  unsupported.
+  `related_claims`, the unknown author role, and a provider reporting stats
+  (or recording usage, `E-USAGE-UNSUPPORTED`) as unsupported.
 
 ### 3.3 No code in v1 is retryable
 

@@ -472,3 +472,70 @@ test('CLI --help exits 0', () => {
     assert.strictEqual(res.status, 0);
     assert.match(res.stdout, /Usage: node merge-kb-canonical\.mjs/);
 });
+
+// =============================================================================
+// Tombstones: the v3 top-level demotions array merges by id too, and a merged
+// tombstone drops the entry it names.
+// =============================================================================
+
+function v3(entries, demotions) {
+    return { version: 3, provenance: { commit: 'deadbeef', branch: 'b', entry_count: entries.length }, entries, ...(demotions ? { demotions } : {}) };
+}
+
+test('a tombstone on one side and an unchanged entry on the other resolves to the tombstone', () => {
+    const a = entry('tomb a');
+    const keep = entry('tomb keep');
+    const t = { id: a.id, at: '2026-11-05T10:00:00.000Z', reason: 'superseded' };
+    // ours removed a and tombstoned it; theirs still carries a, unchanged.
+    for (const [o, th] of [[v3([keep], [t]), v3([a, keep])], [v3([a, keep]), v3([keep], [t])]]) {
+        const r = mergeKbCanonical(v3([a, keep]), o, th);
+        assert.deepStrictEqual(r.conflicts, []);
+        assert.deepStrictEqual(r.merged.entries.map((e) => e.id), [keep.id]);
+        assert.deepStrictEqual(r.merged.demotions, [t]);
+        assert.strictEqual(r.merged.provenance.entry_count, 1);
+    }
+});
+
+test('a tombstone keeps its entry out even when the other side changed or added it', () => {
+    const a = entry('tomb changed');
+    const t = { id: a.id, at: '2026-11-05T10:00:00.000Z', reason: 'invalidated' };
+    const r = mergeKbCanonical(v3([]), v3([], [t]), v3([{ ...a, summary: 'added on theirs' }]));
+    assert.deepStrictEqual(r.merged.entries, []);
+    assert.deepStrictEqual(r.merged.demotions, [t]);
+    assert.strictEqual(r.summary.droppedByTombstone, 1);
+});
+
+test('a re-promotion that cleared a tombstone wins over an unchanged tombstone', () => {
+    const a = entry('repromoted');
+    const t = { id: a.id, at: '2026-11-05T10:00:00.000Z', reason: 'demoted' };
+    // base: tombstoned, no entry. ours re-promoted (entry back, tombstone cleared); theirs unchanged.
+    const r = mergeKbCanonical(v3([], [t]), v3([a]), v3([], [t]));
+    assert.deepStrictEqual(r.merged.entries.map((e) => e.id), [a.id]);
+    assert.strictEqual('demotions' in r.merged, false);
+    const r2 = mergeKbCanonical(v3([], [t]), v3([], [t]), v3([a]));
+    assert.deepStrictEqual(r2.merged.entries.map((e) => e.id), [a.id]);
+    assert.strictEqual('demotions' in r2.merged, false);
+});
+
+test('tombstones added on both sides are unioned, sorted by id; the later at wins on one id', () => {
+    const x = { id: 'x-1', at: '2026-11-05T10:00:00.000Z', reason: 'superseded' };
+    const y = { id: 'y-1', at: '2026-11-05T10:00:00.000Z', reason: 'invalidated' };
+    const xLater = { ...x, at: '2026-11-05T11:00:00.000Z', reason: 'invalidated' };
+    const r = mergeKbCanonical(v3([]), v3([], [y, x]), v3([], [xLater]));
+    assert.deepStrictEqual(r.merged.demotions, [xLater, y]);
+    assert.strictEqual(r.summary.mergedTombstones, 2);
+});
+
+test('a tombstone changed on one side wins over the side that cleared it', () => {
+    const t = { id: 'z-1', at: '2026-11-05T10:00:00.000Z', reason: 'demoted' };
+    const newer = { ...t, at: '2026-11-05T12:00:00.000Z', reason: 'superseded' };
+    const r = mergeKbCanonical(v3([], [t]), v3([]), v3([], [newer]));
+    assert.deepStrictEqual(r.merged.demotions, [newer]);
+});
+
+test('a document with no tombstones on any side carries no demotions key', () => {
+    const a = entry('plain');
+    const r = mergeKbCanonical(v3([a]), v3([a]), v3([a]));
+    assert.strictEqual('demotions' in r.merged, false);
+    assert.strictEqual(r.summary.mergedTombstones, 0);
+});

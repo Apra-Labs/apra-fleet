@@ -57,7 +57,12 @@ record the fallback. Never poll `code_status` in a loop waiting for the index.
    (type "knowledge" or "learning"; dedupe against the KB first, with `kb_query` when
    present, otherwise the block). The engine records it from that field; do not write to
    the KB yourself.
-3. If a retrieved KB entry proves wrong in practice, say so in your `notes`, naming the
+3. For EACH feature closed this sprint, either add at least one capture of type "learning"
+   to `kb_captures` (a lesson that feature's work taught, judged by the same rubric), or
+   state in one line in your `notes` why that feature produced none (for example: "<feature
+   title>: no capture -- the change followed an existing documented pattern"). A feature
+   is never silently skipped.
+4. If a retrieved KB entry proves wrong in practice, say so in your `notes`, naming the
    entry and what was wrong.
 
 ### Persistent Memories (operational rules)
@@ -159,6 +164,16 @@ nothing) -- the commits on the branch already carry the harvest.
 Return:
 - `status`: "OK" if all steps completed successfully
 - `status`: "FAILED" with `notes` describing which step failed
+
+## Reporting KB use
+
+Your output schema has two optional fields about knowledge bank (KB) entries, whether
+they were pushed into your prompt or returned by a query you made:
+`kb_used`, a list of `{"id": "<entry id>", "how": "<how it shaped your work>"}` for each
+entry you actually relied on, and `kb_wrong`, a list of
+`{"id": "<entry id>", "reason": "<what was wrong>"}` for each entry that proved wrong in
+practice. Copy each id exactly as you were given it. Omit both, or send `[]`, when there
+is nothing to report. Not querying the KB is allowed: it is only logged, never blocked.
 
 ## Output schema
 

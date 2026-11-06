@@ -1,0 +1,21 @@
+{
+  "tool": "kb_usage",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "pushed": [
+      "f5ad3214-d2a3-4353-be3c-8b498abcafc3"
+    ],
+    "cited": [
+      "f5ad3214-d2a3-4353-be3c-8b498abcafc3"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"recorded\":{\"returned\":1,\"cited\":1}}"
+      }
+    ]
+  }
+}

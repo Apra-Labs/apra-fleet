@@ -121,6 +121,26 @@ otherwise look re-promoted and keep the entry. (Spec: memory-contract
 After that happens, the next `kb_bible_commit` from a clone holding the entry
 as demoted removes it again and restores the tombstone.
 
+**Removals cross clones the same way.** When `kb_bible_commit` removes an entry
+because the maintainer KB holds it as superseded or invalidated, it records a
+tombstone `{id, at, reason: "superseded" | "invalidated"}` in the same
+`demotions` array. `kb_import` on another clone retires its own CONFIRMED row
+for that id (unless the row was promoted there after `at`), so the entry stops
+serving reads there too; the import reports these rows in `retired`.
+
+**Rich fields reach clones that already hold the id.** `kb_import` skips an id
+the clone already holds, except that a row holding the same claim (same type,
+title, summary, cited files and, when the bible carries one, the same basis)
+but lacking `content`, `recall_cues` or `error_signatures` gains them from the
+bible entry; the import reports these rows in `enriched`. A differing claim is
+never overwritten and confidence never moves.
+
+**Upgrade every host before a rich-field backfill.** A 0.4.4 or older writer
+(`kb_export`/`kb_bible_commit`) drops `content`, `recall_cues` and
+`error_signatures` on any id it re-merges, so a backfill (for example through
+`kb_bible_commit` `enrich`) is undone by the next commit from an old host. Run
+this version on every host that writes the bible before backfilling.
+
 ## Forward-only enforcement (no migration)
 
 The gate is forward-looking. The KB may contain historical entries that were written

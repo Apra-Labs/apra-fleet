@@ -131,10 +131,11 @@ export const KB_REPEAT_MAX_NEW_WORDS = 12;
 
 // A double-brace placeholder token ({{<word>.<KEY>}}), built generically so no
 // particular placeholder prefix is spelled out here.
-const KB_PLACEHOLDER_RE = new RegExp('\\{\\{\\s*[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+\\s*\\}\\}');
-// A raw credential: a provider token shape, or a long Bearer/Basic value. Mirrors
+const KB_PLACEHOLDER_RE = new RegExp('(?<!\\$)\\{\\{\\s*[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+\\s*\\}\\}');
+// A raw credential: a provider token shape, a JWT, a PEM private-key header, or a
+// random-looking (digit or mixed case) Bearer/Basic value. Mirrors
 // BIBLE_SECRET_SHAPES in the server's bible export.
-const KB_SECRET_RE = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abeoprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,})|\b(?:[Bb]earer|Basic)\s+[A-Za-z0-9._~+\/=-]{20,}/;
+const KB_SECRET_RE = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abeoprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{20,}|sk-(?:ant|proj)-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{30,}|eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,})|\b[Bb]earer\s+(?=[A-Za-z0-9._~+\/=-]*(?:[0-9]|[A-Z][A-Za-z0-9._~+\/=-]*[a-z]|[a-z][A-Za-z0-9._~+\/=-]*[A-Z]))[A-Za-z0-9._~+\/=-]{20,}|\bBasic\s+(?=[A-Za-z0-9+\/]*(?:[0-9]|[A-Z][A-Za-z0-9+\/]*[a-z]|[a-z][A-Za-z0-9+\/]*[A-Z]))[A-Za-z0-9+\/]{20,}={0,2}(?![A-Za-z0-9._~+\/=-])|-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/;
 // First-person narrative words as whole words, lowercase or Title case only: an
 // all-caps US, ME or WE is a name. A path, flag or dotted name (us-east-1, my.cnf,
 // C:\Users\me) is not a word here, and neither is a unit after a number (50 us).
@@ -219,40 +220,55 @@ export function vetKbWork(role, result) {
     const captures = [];
     const promotions = [];
     const refused = [];
+    // The same capture refusals as `refused`, structured per capture for the
+    // per-dispatch record: { title, rule, reason }.
+    const refusedCaptures = [];
+    const refuseCapture = (title, rule, text) => {
+        refused.push(text);
+        refusedCaptures.push({ title: typeof title === 'string' ? title : null, rule, reason: text });
+    };
 
     const rawCaptures = (result && Array.isArray(result.kb_captures)) ? result.kb_captures : [];
     for (const c of rawCaptures) {
         if (!c || typeof c.title !== 'string' || typeof c.summary !== 'string') {
-            refused.push(`${role}: capture missing title/summary`);
+            refuseCapture(c && c.title, 'shape', `${role}: capture missing title/summary`);
             continue;
         }
         if (!Array.isArray(c.source_files) || c.source_files.length === 0) {
-            refused.push(`${role}: capture "${c.title}" cites no source files`);
+            refuseCapture(c.title, 'source-files', `${role}: capture "${c.title}" cites no source files`);
+            continue;
+        }
+        if (!isStringArray(c.source_files)) {
+            refuseCapture(c.title, 'source-files', `${role}: capture "${c.title}" refused -- rule source-files: source_files must be an array of strings`);
+            continue;
+        }
+        if (c.symbols !== undefined && c.symbols !== null && !isStringArray(c.symbols)) {
+            refuseCapture(c.title, 'symbols', `${role}: capture "${c.title}" refused -- rule symbols: symbols must be an array of strings`);
             continue;
         }
         if (!KB_CAPTURE_TYPES.includes(c.type)) {
-            refused.push(`${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
+            refuseCapture(c.title, 'type', `${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
             continue;
         }
         if (!KB_CAPTURE_TRIGGERS.includes(c.trigger)) {
-            refused.push(`${role}: capture "${c.title}" refused -- rule trigger: missing or unknown trigger ${String(c.trigger)}`);
+            refuseCapture(c.title, 'trigger', `${role}: capture "${c.title}" refused -- rule trigger: missing or unknown trigger ${String(c.trigger)}`);
             continue;
         }
         // content is optional: absent or empty forwards no content key and the
         // server stores the summary as the content.
         if (c.content !== undefined && c.content !== null && typeof c.content !== 'string') {
-            refused.push(`${role}: capture "${c.title}" refused -- rule content: content is not a string`);
+            refuseCapture(c.title, 'content', `${role}: capture "${c.title}" refused -- rule content: content is not a string`);
             continue;
         }
         if ((c.recall_cues !== undefined && !isStringArray(c.recall_cues))
             || (c.error_signatures !== undefined && !isStringArray(c.error_signatures))) {
-            refused.push(`${role}: capture "${c.title}" refused -- rule cues: recall_cues/error_signatures must be arrays of strings`);
+            refuseCapture(c.title, 'cues', `${role}: capture "${c.title}" refused -- rule cues: recall_cues/error_signatures must be arrays of strings`);
             continue;
         }
         const content = typeof c.content === 'string' ? c.content.trim() : '';
         const lint = lintKbCapture(c, content);
         if (lint) {
-            refused.push(`${role}: capture "${c.title}" refused -- ${lint}`);
+            refuseCapture(c.title, (/^rule ([\w-]+):/.exec(lint) || [])[1] || 'lint', `${role}: capture "${c.title}" refused -- ${lint}`);
             continue;
         }
         captures.push({
@@ -356,6 +372,7 @@ export function vetKbWork(role, result) {
         discards: discards.filter((d) => !conflicted.has(d.id)),
         rejects: rejects.filter((r) => !conflicted.has(r.id)),
         refused,
+        refusedCaptures,
     };
 }
 
@@ -403,6 +420,139 @@ function isUnreachableError(err) {
 function memberNameOf(member) {
     if (typeof member === 'string') return member;
     return (member && typeof member.name === 'string') ? member.name : null;
+}
+
+/** A short, log-safe rendering of a malformed report item. */
+function describeItem(item) {
+    let text;
+    try { text = JSON.stringify(item); } catch { text = String(item); }
+    if (text === undefined) text = String(item);
+    return text.length > 80 ? `${text.slice(0, 77)}...` : text;
+}
+
+/**
+ * The KB-use fields every role report may carry (D4): kb_used [{id, how}] --
+ * entries the role relied on -- and kb_wrong [{id, reason}] -- entries that
+ * proved wrong in practice. The report schemas admit malformed items on
+ * purpose (permissive type unions), so this is where a bad item is refused:
+ * it is described in `malformed` for the caller to log and is dropped, and
+ * the well-formed items around it still count. Never throws.
+ *
+ * @param {any} result a role's dispatch result
+ * @returns {{used: {id: string, how: string}[], wrong: {id: string, reason: string}[], malformed: string[]}}
+ */
+export function extractKbUse(result) {
+    const out = { used: [], wrong: [], malformed: [] };
+    if (!result || typeof result !== 'object') return out;
+    const take = (field, key, sink) => {
+        const raw = result[field];
+        if (raw === undefined || raw === null) return;
+        if (!Array.isArray(raw)) {
+            out.malformed.push(`${field} is not an array: ${describeItem(raw)}`);
+            return;
+        }
+        raw.forEach((item, i) => {
+            const ok = !!item && typeof item === 'object' && !Array.isArray(item)
+                && typeof item.id === 'string' && item.id.trim().length > 0
+                && typeof item[key] === 'string' && item[key].trim().length > 0;
+            if (ok) sink.push({ id: item.id.trim(), [key]: item[key].trim() });
+            else out.malformed.push(`${field}[${i}] ${describeItem(item)} -- needs {id, ${key}} as non-empty strings`);
+        });
+    };
+    take('kb_used', 'how', out.used);
+    take('kb_wrong', 'reason', out.wrong);
+    return out;
+}
+
+/**
+ * The JSON report object inside a role's final response text: the whole text,
+ * else a fenced json block, else the span from the first '{' to the last '}'.
+ * Null when none of those parses to a plain object. Never throws.
+ */
+function reportObjectFromText(text) {
+    const candidates = [text.trim()];
+    const fenced = /```(?:json)?\s*\n([\s\S]*?)\n\s*```/.exec(text);
+    if (fenced) candidates.push(fenced[1].trim());
+    const first = text.indexOf('{');
+    const last = text.lastIndexOf('}');
+    if (first >= 0 && last > first) candidates.push(text.slice(first, last + 1));
+    for (const c of candidates) {
+        try {
+            const parsed = JSON.parse(c);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+        } catch { /* try the next shape */ }
+    }
+    return null;
+}
+
+/**
+ * kb_feedback validates its role hint against the KB author enum; the one
+ * role persona whose name differs from its author value is the harvester.
+ */
+function feedbackRoleHint(role) {
+    if (typeof role !== 'string' || role.length === 0) return undefined;
+    return role === 'harvester' ? 'harvest' : role;
+}
+
+/**
+ * The engine half of D4, run once per successful role dispatch (the
+ * 'kb-report' postResult step): read kb_used/kb_wrong off the report, log
+ * what the role relied on, log and drop malformed items, and forward each
+ * well-formed kb_wrong item to kb_feedback through the kb_maintainer queue
+ * (kbWork.feedback). KB use is LOGGED, never gated: a dispatch whose report
+ * shows no KB query gets one log line and nothing else -- no block, no retry.
+ * The engine cannot see a member's tool calls, so "no KB query" is read from
+ * the report itself: toolUse.kb present and not 'used', or (for a role whose
+ * report has no toolUse) no kb_used/kb_wrong item at all.
+ *
+ * Never throws: a feedback failure is logged and the dispatch stands.
+ *
+ * @param {{role: string|null, member: any, value: any, kbWork?: {feedback?: Function}, log?: Function}} args
+ * @returns {Promise<{used: string[], wrong: string[], malformed: number, noKbQuery: boolean}>}
+ *   the ids the role reported, kept per dispatch on the engine's stepResults
+ */
+export async function reportKbUse({ role, member, value: raw, kbWork, log = () => {} }) {
+    const who = `${role || 'role'} on ${memberNameOf(member) || 'unknown member'}`;
+    const empty = { used: [], wrong: [], malformed: 0, noKbQuery: false };
+    // A row with no schema (the planner) hands back its report as the final
+    // response TEXT, not a parsed object; its kb_used/kb_wrong live in that
+    // JSON. Text that holds no JSON object is a report with no KB fields.
+    const value = typeof raw === 'string' ? (reportObjectFromText(raw) || {}) : raw;
+    if (!value || typeof value !== 'object' || value.dispatchFailed === true) return empty;
+    let use;
+    try {
+        use = extractKbUse(value);
+    } catch (err) {
+        log(`[kb-use] ${who}: could not read kb_used/kb_wrong (non-fatal): ${err && err.message ? err.message : String(err)}`);
+        return empty;
+    }
+    for (const m of use.malformed) log(`[kb-use] ${who}: dropped malformed item ${m}`);
+    if (use.used.length > 0) log(`[kb-use] ${who}: used ${use.used.map((u) => u.id).join(', ')}`);
+    const reportedKb = value.toolUse && typeof value.toolUse === 'object' ? value.toolUse.kb : undefined;
+    const noKbQuery = typeof reportedKb === 'string'
+        ? reportedKb !== 'used'
+        : use.used.length === 0 && use.wrong.length === 0;
+    if (noKbQuery) {
+        log(`[kb-use] ${who}: no KB query reported${typeof reportedKb === 'string' ? ` (toolUse.kb=${reportedKb})` : ''} -- logged only, never gated`);
+    }
+    if (use.wrong.length > 0) {
+        for (const w of use.wrong) log(`[kb-use] ${who}: wrong ${w.id}: ${w.reason}`);
+        if (kbWork && typeof kbWork.feedback === 'function') {
+            try {
+                await kbWork.feedback(role, member, use.wrong);
+            } catch (err) {
+                log(`[kb-use] ${who}: kb_feedback forwarding failed (non-fatal): ${err && err.message ? err.message : String(err)}`);
+            }
+        } else {
+            log(`[kb-use] ${who}: no KB work client -- ${use.wrong.length} kb_wrong item(s) not forwarded`);
+        }
+    }
+    return {
+        used: use.used.map((u) => u.id),
+        wrong: use.wrong.map((w) => w.id),
+        malformed: use.malformed.length,
+        noKbQuery,
+    };
 }
 
 /**
@@ -687,6 +837,23 @@ export function createKbWorkClient(opts = {}) {
             counter: 'rejected',
             accept: (p, res) => invalidateLanded(p, res),
         },
+        // D4: a role's kb_wrong item, forwarded as a downvote. Counted apart
+        // from zeroCounts() so apply()'s count shape stays unchanged.
+        feedback: {
+            tool: 'kb_feedback',
+            args: (p) => ({ id: p.id, reason: p.reason, ...(p.role ? { role: p.role } : {}) }),
+            subject: (p) => p.id,
+            counter: 'feedback',
+        },
+        // D5: a dispatch's pushed and cited entry ids, recorded server-side
+        // as returned/cited usage events (kb_usage, maintainer-grant only).
+        // Counted apart from zeroCounts() like feedback.
+        usage: {
+            tool: 'kb_usage',
+            args: (p) => ({ ...(p.pushed.length > 0 ? { pushed: p.pushed } : {}), ...(p.cited.length > 0 ? { cited: p.cited } : {}) }),
+            subject: (p) => `usage report (${p.pushed.length} pushed, ${p.cited.length} cited)`,
+            counter: 'usage',
+        },
     };
 
     /**
@@ -708,9 +875,12 @@ export function createKbWorkClient(opts = {}) {
             log(`[kb-work] maintainer '${maintainer}' is mid-dispatch -- ${queue.length} KB write(s) for ${repo} stay queued until its dispatch ends`);
             return counts;
         }
-        // G-pull BEFORE every batch: the maintainer's checkout must hold the
-        // files the queued captures cite before kb_capture's basis check runs.
-        if (typeof gPull === 'function') {
+        // G-pull BEFORE every batch that touches entries: the maintainer's
+        // checkout must hold the files the queued captures cite before
+        // kb_capture's basis check runs. Usage and feedback read no checkout
+        // file, so a batch of only those skips the pull.
+        const needsCheckout = queue.some((op) => op.kind !== 'usage' && op.kind !== 'feedback');
+        if (needsCheckout && typeof gPull === 'function') {
             // Same sprint-branch guard as the bible commit path: a pull on any
             // other branch would move that branch, so nothing runs there.
             if (!(await onSprintBranch(maintainer, repo, queue.length, 'KB write'))) return counts;
@@ -772,7 +942,9 @@ export function createKbWorkClient(opts = {}) {
                 continue;
             }
             if (typeof spec.accept === 'function' && !spec.accept(op.payload, res)) continue;
-            counts[spec.counter]++;
+            counts[spec.counter] = (counts[spec.counter] || 0) + 1;
+            if (op.kind === 'feedback') log(`[kb-work] feedback ${op.payload.id} sent on maintainer '${maintainer}' (${repo})`);
+            if (op.kind === 'usage') log(`[kb-work] usage report sent on maintainer '${maintainer}' (${repo}): ${op.payload.pushed.length} pushed, ${op.payload.cited.length} cited`);
             if (op.kind === 'discard' || op.kind === 'reject') retirements.add(repo);
             if (op.kind === 'reject') log(`[kb-work] rejected ${op.payload.id} on maintainer '${maintainer}' (${repo}): ${op.payload.reason}`);
             if (op.kind === 'promote') {
@@ -848,6 +1020,13 @@ export function createKbWorkClient(opts = {}) {
         }
         if (isToolError(res)) return { ok: false, stage: 'kb_bible_commit', error: toolErrorText(res) };
         const result = parseResult(res) || {};
+        // The server saw the committed bible does not hold this call's merge
+        // (another writer replaced it). That is a lost write, whatever origin
+        // holds: the ids stay queued. notCommitted takes the same retry as a
+        // rejected push, because a local bible commit is left behind.
+        if (typeof result.not_committed_reason === 'string' && result.not_committed_reason.length > 0) {
+            return { ok: false, stage: 'kb_bible_commit', error: `not committed: ${result.not_committed_reason}`, notCommitted: true };
+        }
         // Nothing committed (every id skipped, or the entry set unchanged).
         // That alone does not mean the entries are published: an earlier
         // round's bible commit may still sit unpushed on the maintainer (its
@@ -973,8 +1152,11 @@ export function createKbWorkClient(opts = {}) {
         inFlight.set(maintainer, new Promise((r) => { release = r; }));
         try {
             let outcome = await bibleAttempt(target, repo, ids);
-            if (!outcome.ok && outcome.stage === 'G-push') {
-                log(`[kb-work] G-push of the bible commit on maintainer '${maintainer}' (${repo}) was rejected (${outcome.error}) -- retrying once: rebase --abort, G-pull, kb_bible_commit, G-push`);
+            if (!outcome.ok && (outcome.stage === 'G-push' || outcome.notCommitted)) {
+                const why = outcome.notCommitted
+                    ? `WARN: kb_bible_commit on maintainer '${maintainer}' (${repo}) did not land (${outcome.error})`
+                    : `G-push of the bible commit on maintainer '${maintainer}' (${repo}) was rejected (${outcome.error})`;
+                log(`[kb-work] ${why} -- retrying once: rebase --abort, G-pull, kb_bible_commit, G-push`);
                 if (typeof abortRebase === 'function' && (await bibleOnSprintBranch(maintainer, repo, ids))) {
                     try { await abortRebase(maintainer); } catch (err) { log(`[kb-work] rebase --abort on maintainer '${maintainer}' failed (non-fatal): ${errText(err)}`); }
                 }
@@ -1425,6 +1607,73 @@ export function createKbWorkClient(opts = {}) {
             }
             return done(counts);
         },
+        /**
+         * D4: forward a role's well-formed kb_wrong items to kb_feedback in
+         * the kb_maintainer's session -- queued per repository and applied by
+         * the same flush as captures and promotions, so a busy or unreachable
+         * maintainer keeps them queued instead of delaying anything. The
+         * repository is the one the producing member READ its KB from
+         * (reviewMaintainerFor), since that is where the wrong entry lives.
+         * Never throws; a refused or failed call is logged by the flush.
+         *
+         * @param {string|null} role the producing role persona
+         * @param {any} member the member whose dispatch reported the items
+         * @param {{id: string, reason: string}[]} items already vetted (extractKbUse)
+         * @returns {Promise<{forwarded: number, dropped: number}>}
+         */
+        async feedback(role, member, items) {
+            const list = Array.isArray(items) ? items : [];
+            if (list.length === 0) return { forwarded: 0, dropped: 0 };
+            const producer = memberNameOf(member);
+            if (!active || !producer) {
+                log(`[kb-work] WARN: no member resolved for ${role} -- ${list.length} kb_feedback item(s) dropped`);
+                return { forwarded: 0, dropped: list.length };
+            }
+            const target = reviewMaintainerFor(producer);
+            if (!target) {
+                log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${list.length} kb_feedback item(s) dropped`);
+                return { forwarded: 0, dropped: list.length };
+            }
+            const hint = feedbackRoleHint(role);
+            for (const w of list) enqueue(target.repo, 'feedback', role, { id: w.id, reason: w.reason, role: hint });
+            try {
+                const c = await flush(target.repo);
+                return { forwarded: (c && c.feedback) || 0, dropped: 0 };
+            } catch (err) {
+                log(`[kb-work] kb_feedback flush failed for ${target.repo} (non-fatal): ${err && err.message ? err.message : String(err)}`);
+                return { forwarded: 0, dropped: 0 };
+            }
+        },
+        /**
+         * D5: report one dispatch's pushed and cited (kb_used) entry ids to
+         * the KB server's kb_usage, queued per repository on the maintainer
+         * the producing member READ its KB from (reviewMaintainerFor) and
+         * applied by the same flush as every other KB write -- so a busy
+         * maintainer keeps it queued instead of delaying the dispatch.
+         * Never throws or rejects.
+         *
+         * @param {any} member the member whose dispatch the ids belong to
+         * @param {{pushed?: string[], cited?: string[]}} ids
+         * @returns {Promise<{queued: boolean}>}
+         */
+        async reportUsage(member, { pushed, cited } = {}) {
+            const clean = (v) => [...new Set((Array.isArray(v) ? v : []).filter((id) => typeof id === 'string' && id.length > 0))];
+            const payload = { pushed: clean(pushed), cited: clean(cited) };
+            if (payload.pushed.length === 0 && payload.cited.length === 0) return { queued: false };
+            const producer = memberNameOf(member);
+            const target = active && producer ? reviewMaintainerFor(producer) : null;
+            if (!target) {
+                log(`[kb-work] no kb_maintainer for member '${producer || 'unknown'}' -- usage report (${payload.pushed.length} pushed, ${payload.cited.length} cited) dropped (non-fatal)`);
+                return { queued: false };
+            }
+            enqueue(target.repo, 'usage', null, payload);
+            try {
+                await flush(target.repo);
+            } catch (err) {
+                log(`[kb-work] usage report flush failed for ${target.repo} (non-fatal): ${err && err.message ? err.message : String(err)}`);
+            }
+            return { queued: true };
+        },
     };
 }
 
@@ -1769,6 +2018,20 @@ export function kbQueryTerms(beads, beadIds) {
 // role-policies.mjs agentTypeAppliesKbCaptures). When it is not, the block
 // must not promise that the orchestrator records a capture: those roles'
 // prompts tell them to note the finding in their own report instead.
+/**
+ * The ids of the entries kbKnowledgeBlock(entries) carries: the same
+ * CONFIRMED-undisputed filter and cap, in the same order. An entry without a
+ * string id is left out. Pure.
+ *
+ * @param {object[]} entries
+ * @returns {string[]}
+ */
+export function kbKnowledgeBlockIds(entries) {
+    if (!Array.isArray(entries)) return [];
+    return entries.filter(isInjectableKbEntry).slice(0, KB_MAX_KNOWLEDGE_ENTRIES)
+        .map((e) => e.id).filter((id) => typeof id === 'string' && id.length > 0);
+}
+
 export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'prime', reportEmpty = false } = {}) {
     if (!Array.isArray(entries)) return [];
     // CONFIRMED-first, capped at KB_MAX_KNOWLEDGE_ENTRIES. The sources
@@ -1808,9 +2071,11 @@ export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'pri
         + 'in your notes rather than bending your work to fit the entry.\n'
         + 'You do not need a kb_* tool to read these entries; they do not replace any kb_* lookup '
         + 'your role instructions call for. '
+        + 'To cite an entry in `kb_used` or `kb_wrong`, copy its `id` exactly as shown, never its title.\n'
         + captureLine
         + wrapUntrustedBlock(label, JSON.stringify(
             injectable.map((e) => ({
+                id: e.id,
                 confidence: e.confidence,
                 title: e.title,
                 summary: e.summary,

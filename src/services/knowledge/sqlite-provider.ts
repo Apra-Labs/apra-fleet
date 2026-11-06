@@ -22,6 +22,7 @@ import {
   orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
+import { getSessionEngineOrigin } from '../tool-scope.js';
 import { validateFilePaths } from './path-validation.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
 import { CAPTURE_TRIGGERS, KB_AUDIT_NOTE_START, KbCaptureRejected, type CaptureTrigger, type DiscardResult, type RetireOptions } from './types.js';
@@ -42,6 +43,7 @@ import type {
   Confidence,
   CodeIntelCall,
   ProviderStats,
+  KbUsageStats,
 } from './types.js';
 
 function isCaptureTrigger(v: unknown): v is CaptureTrigger {
@@ -64,6 +66,8 @@ function parseStringArray(v: unknown): string[] {
 }
 
 const CONTENT_CAP = 4000;
+// Trailing window kb_stats.usage reports over (cited / returned events).
+export const USAGE_WINDOW_DAYS = 30;
 const TRUNCATION_SUFFIX = '...[truncated]';
 
 function truncateContent(content: string): string {
@@ -364,6 +368,23 @@ export class SqliteProvider implements MemoryProvider {
     // database is the one place the member's own checkout cannot write. See
     // services/knowledge/bible-blob-id.ts. Created idempotently; existing DBs
     // start with no rows (a fresh hub is seeded by the maintainer side).
+    // Usage telemetry (kb_stats.usage): one timestamped row per delivery of an
+    // entry (kind 'returned': an agent-side query()/touch() return, or an
+    // engine push reported through kb_usage) or per citation (kind 'cited': a
+    // role reported it used the entry, through kb_usage). entry_id is NOT a
+    // foreign key: a pushed bible id may have no local row (the bible is
+    // exported elsewhere), and the event still counts. Created idempotently;
+    // existing DBs start with no events.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS usage_events (
+        entry_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        source TEXT NOT NULL,
+        at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_usage_events_at ON usage_events(at);
+    `);
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS trusted_bible_blobs (
         blob_id TEXT PRIMARY KEY,
@@ -1335,16 +1356,60 @@ export class SqliteProvider implements MemoryProvider {
   // machine and read on another, so an id with no local row is the normal case,
   // not an error. Returns how many rows were actually bumped -- the caller can
   // tell "delivered from our own KB" from "delivered from someone else's".
+  //
+  // An engine-origin session (getSessionEngineOrigin) bumps nothing: the
+  // engine's own reads are not deliveries; it reports what it pushed through
+  // kb_usage (recordUsage) instead.
   async touch(ids: string[]): Promise<number> {
     if (ids.length === 0) return 0;
+    if (getSessionEngineOrigin()) return 0;
     const db = this.getDb();
     const placeholders = ids.map(() => '?').join(',');
+    const now = new Date().toISOString();
     const res = db.prepare(`
       UPDATE entries SET use_count = use_count + 1, last_accessed = ?
       WHERE id IN (${placeholders})
-    `).run(new Date().toISOString(), ...ids);
+    `).run(now, ...ids);
+    this.insertUsageEvents(db, ids, 'returned', 'touch', now);
     // node:sqlite types changes as number|bigint (bigint only past 2^53 rows).
     return Number(res.changes);
+  }
+
+  // The bump every query() return path shares: use_count/last_accessed plus
+  // one 'returned' usage event per entry. Skipped entirely for an
+  // engine-origin session (see touch()).
+  private bumpReturned(db: DatabaseSync, ids: string[]): void {
+    if (ids.length === 0 || getSessionEngineOrigin()) return;
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE entries SET use_count = use_count + 1, last_accessed = ?
+      WHERE id IN (${ids.map(() => '?').join(',')})
+    `).run(now, ...ids);
+    this.insertUsageEvents(db, ids, 'returned', 'query', now);
+  }
+
+  private insertUsageEvents(db: DatabaseSync, ids: string[], kind: 'returned' | 'cited', source: string, at: string): number {
+    const unique = [...new Set(ids.filter(id => typeof id === 'string' && id.length > 0))];
+    if (unique.length === 0) return 0;
+    const stmt = db.prepare('INSERT INTO usage_events (entry_id, kind, source, at) VALUES (?, ?, ?, ?)');
+    for (const id of unique) stmt.run(id, kind, source, at);
+    return unique.length;
+  }
+
+  /**
+   * kb_usage: record that the engine pushed these entries to a dispatch
+   * (returned, source 'pushed') and that a role cited these (cited). Ids are
+   * de-duplicated per list; an id with no local row still counts (a bible id
+   * from another clone). Touches no entry row: use_count is query/touch
+   * telemetry, and trust fields are never changed. `at` exists for tests
+   * (back-dating an event); the tool never passes it.
+   */
+  recordUsage(input: { pushed?: string[]; cited?: string[] }, at?: string): { returned: number; cited: number } {
+    const db = this.getDb();
+    const when = at ?? new Date().toISOString();
+    const returned = this.insertUsageEvents(db, input.pushed ?? [], 'returned', 'pushed', when);
+    const cited = this.insertUsageEvents(db, input.cited ?? [], 'cited', 'kb_used', when);
+    return { returned, cited };
   }
 
   async query(opts: QueryOptions): Promise<KBResult> {
@@ -1360,12 +1425,7 @@ export class SqliteProvider implements MemoryProvider {
       ).all(...opts.ids) as Record<string, unknown>[];
 
       const results = rows.map(r => this.rowToEntry(r));
-      if (results.length > 0) {
-        db.prepare(`
-          UPDATE entries SET use_count = use_count + 1, last_accessed = ?
-          WHERE id IN (${results.map(() => '?').join(',')})
-        `).run(new Date().toISOString(), ...results.map(r => r.id));
-      }
+      this.bumpReturned(db, results.map(r => r.id));
       return { results, total: results.length, l1_only: false };
     }
 
@@ -1446,12 +1506,7 @@ export class SqliteProvider implements MemoryProvider {
       return entry;
     });
 
-    if (results.length > 0) {
-      db.prepare(`
-        UPDATE entries SET use_count = use_count + 1, last_accessed = ?
-        WHERE id IN (${results.map(() => '?').join(',')})
-      `).run(new Date().toISOString(), ...results.map(r => r.id));
-    }
+    this.bumpReturned(db, results.map(r => r.id));
 
     return { results, total: results.length, l1_only: opts.l1_only ?? false };
   }
@@ -1595,6 +1650,74 @@ export class SqliteProvider implements MemoryProvider {
       if (!row) continue;
       if (row.superseded_at) out.set(id, row.retired_reason === 'invalidated' ? 'invalidated' : 'superseded');
       else if (row.content_hash === 'invalidated') out.set(id, 'invalidated');
+    }
+    return out;
+  }
+
+  /**
+   * kb_import's upgrade of a POORER local row from the richer bible entry with
+   * the same id (importBibleEntries). The row is filled in only when it holds
+   * the SAME claim as the bible entry -- same type, title, summary and cited
+   * source files, and, when the bible carries a basis (`basis` not null), the
+   * same stored source_file_hashes -- and only for a field the row lacks:
+   * content (the row's lesson body, before any audit note, is empty or just
+   * the summary), recall_cues or error_signatures (empty). A field the row
+   * already has is never overwritten, the row's audit notes are kept, and
+   * nothing else moves (confidence, basis, timestamps). A retired row is left
+   * alone. True when a field was written.
+   */
+  enrichFromBible(
+    id: string,
+    claim: { type: string; title: string; summary: string; source_files: string[]; basis: Record<string, string> | null },
+    rich: { content?: string; recall_cues?: string[]; error_signatures?: string[] },
+  ): boolean {
+    const db = this.getDb();
+    const row = db.prepare(
+      'SELECT type, title, summary, source_files, source_file_hashes, content, recall_cues, error_signatures, superseded_at FROM entries WHERE id = ?'
+    ).get(id) as Record<string, unknown> | undefined;
+    if (!row || row.superseded_at) return false;
+    if (row.type !== claim.type || row.title !== claim.title || row.summary !== claim.summary) return false;
+    const sortedJson = (v: string[]) => JSON.stringify([...v].sort());
+    if (sortedJson(parseStringArray(row.source_files)) !== sortedJson(claim.source_files)) return false;
+    if (claim.basis !== null) {
+      let stored: Record<string, unknown> = {};
+      try { stored = JSON.parse(String(row.source_file_hashes ?? '{}')) as Record<string, unknown>; } catch { stored = {}; }
+      const canon = (m: Record<string, unknown>) => JSON.stringify(Object.keys(m).sort().map(k => [k, m[k]]));
+      if (canon(stored) !== canon(claim.basis)) return false;
+    }
+    const content = String(row.content ?? '');
+    const note = KB_AUDIT_NOTE_START.exec(content);
+    const body = (note ? content.slice(0, note.index) : content).replace(/\n+$/, '').trim();
+    const fields: { content?: string; recall_cues?: string[]; error_signatures?: string[] } = {};
+    if (rich.content !== undefined && rich.content.trim().length > 0 && rich.content !== claim.summary
+      && (body.length === 0 || body === claim.summary.trim())) {
+      fields.content = rich.content;
+    }
+    if (rich.recall_cues && rich.recall_cues.length > 0 && parseStringArray(row.recall_cues).length === 0) {
+      fields.recall_cues = rich.recall_cues;
+    }
+    if (rich.error_signatures && rich.error_signatures.length > 0 && parseStringArray(row.error_signatures).length === 0) {
+      fields.error_signatures = rich.error_signatures;
+    }
+    if (Object.keys(fields).length === 0) return false;
+    return this.setEntryRichFields(id, fields);
+  }
+
+  /**
+   * For each id this KB holds as RETIRED (getRetirementReasons), when: its
+   * superseded_at, or null for a row retired by kb_invalidate {files}, which
+   * records no time. kb_bible_commit stamps a removal tombstone with it.
+   * Ids that are unknown, or known and not retired, are absent from the map.
+   */
+  getRetirementTimes(ids: string[]): Map<string, string | null> {
+    const db = this.getDb();
+    const out = new Map<string, string | null>();
+    const stmt = db.prepare('SELECT superseded_at, content_hash FROM entries WHERE id = ?');
+    for (const id of new Set(ids)) {
+      const row = stmt.get(id) as { superseded_at: string | null; content_hash: string | null } | undefined;
+      if (!row) continue;
+      if (row.superseded_at) out.set(id, row.superseded_at);
+      else if (row.content_hash === 'invalidated') out.set(id, null);
     }
     return out;
   }
@@ -2204,6 +2327,40 @@ export class SqliteProvider implements MemoryProvider {
     return true;
   }
 
+  /**
+   * Apply ONE explicit superseded or invalidated tombstone from a committed
+   * project bible to the local row with the same id: the retirement the
+   * writing clone applied (kb_bible_commit removed the entry because its KB
+   * holds it as superseded or invalidated). The row gets superseded_at = the
+   * tombstone's at (clamped to now), stale = 1 and retired_reason = reason,
+   * exactly as a local supersede or kb_invalidate {ids} would leave it, so it
+   * stops serving every read path (FULL-session reads included).
+   *
+   * Same rules as applyBibleDemotion, for the same reasons: never create;
+   * only a CONFIRMED row that is not already retired and is not a
+   * user-directive; and only when standingAgainstTombstone says 'withdrawn'
+   * for the row's bible trust time (a row promoted on this clone after the
+   * tombstone is newer evidence and is kept). A row below CONFIRMED is left
+   * alone: it was never trusted on the bible's word. False when nothing was
+   * written.
+   */
+  applyBibleRetirement(id: string, tombstoneAt: string, reason: 'superseded' | 'invalidated'): boolean {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) return false;
+    const entry = this.rowToEntry(row);
+    if (entry.confidence !== 'CONFIRMED') return false;
+    if (entry.superseded_at) return false;
+    if (entry.type === 'user-directive') return false;
+
+    const retiredAt = clampBibleTimeToNow(tombstoneAt);
+    if (standingAgainstTombstone(this.bibleTrustTimeOf(row), retiredAt) !== 'withdrawn') return false;
+
+    db.prepare('UPDATE entries SET superseded_at = ?, stale = 1, retired_reason = ? WHERE id = ?')
+      .run(retiredAt, reason, id);
+    return true;
+  }
+
   // T3.1 (F8, D7): kb_feedback downvote path -- marks an entry stale=1 +
   // flagged_for_review=1 and appends an ASCII feedback note. NEVER deletes,
   // NEVER touches confidence: a downvoted CONFIRMED entry stays
@@ -2661,6 +2818,7 @@ export class SqliteProvider implements MemoryProvider {
       superseded: supersededRow.c,
       retrieval: { entries_retrieved: retrievedRow.c, total_uses: totalUsesRow.s, hit_rate },
       promote_ratio,
+      usage: this.usageStats(),
     };
 
     if (opts?.symbols?.length) {
@@ -2684,6 +2842,25 @@ export class SqliteProvider implements MemoryProvider {
     }
 
     return result;
+  }
+
+  /**
+   * kb_stats.usage: returned and cited usage events in the trailing window
+   * (default USAGE_WINDOW_DAYS), and cited / returned (null with no returned
+   * events). Plain SELECTs: bumps nothing. `now` exists for tests.
+   */
+  usageStats(windowDays = USAGE_WINDOW_DAYS, now: Date = new Date()): KbUsageStats {
+    const since = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+    const rows = this.getDb().prepare(
+      'SELECT kind, COUNT(*) as c FROM usage_events WHERE at >= ? GROUP BY kind'
+    ).all(since) as { kind: string; c: number }[];
+    let returned = 0;
+    let cited = 0;
+    for (const row of rows) {
+      if (row.kind === 'returned') returned = row.c;
+      else if (row.kind === 'cited') cited = row.c;
+    }
+    return { window_days: windowDays, returned, cited, cited_rate: returned > 0 ? cited / returned : null };
   }
 
   close(): void {

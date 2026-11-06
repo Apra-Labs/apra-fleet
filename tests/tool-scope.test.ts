@@ -9,15 +9,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Isolation: kbQuery, handleCodeGraph, resolveCodeSelf and recordUsage are mocked, so no KB is
 // opened, no code-intel provider resolved and no telemetry written.
 
-const seen = vi.hoisted(() => ({ kb: [] as unknown[], code: [] as unknown[], extras: [] as unknown[] }));
+const seen = vi.hoisted(() => ({ kb: [] as unknown[], code: [] as unknown[], extras: [] as unknown[], engine: [] as boolean[] }));
 
 vi.mock('../src/tools/kb-query.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../src/tools/kb-query.js')>();
-  const { getSessionMemberId } = await import('../src/services/tool-scope.js');
+  const { getSessionMemberId, getSessionEngineOrigin } = await import('../src/services/tool-scope.js');
   return {
     ...actual,
     kbQuery: vi.fn(async () => {
       seen.kb.push(getSessionMemberId());
+      seen.engine.push(getSessionEngineOrigin());
       return '{"results":[]}';
     }),
   };
@@ -44,7 +45,7 @@ vi.mock('../src/tools/report-status.js', async importOriginal => {
 vi.mock('../src/tools/code-intelligence-telemetry.js', () => ({ recordUsage: vi.fn() }));
 
 import { registerAllTools } from '../src/services/tool-registry.js';
-import { FULL_TOOL_SCOPE, memberToolScope, isToolInScope, getSessionMemberId } from '../src/services/tool-scope.js';
+import { FULL_TOOL_SCOPE, memberToolScope, isToolInScope, getSessionMemberId, getSessionEngineOrigin } from '../src/services/tool-scope.js';
 import { MEMBER_ALLOWED_TOOLS, MEMBER_CHANNEL_TOOLS, REGISTERED_TOOL_NAMES } from '../src/services/member-tool-allowlist.js';
 
 type ToolHandler = (input: unknown, extra?: unknown) => Promise<unknown>;
@@ -97,7 +98,7 @@ describe('registerAllTools scope gate', () => {
     const maintainer = memberToolScope('m-1', false, true, true);
     // The grant is engine-only: without origin=engine it is ignored.
     const grantWithoutEngine = memberToolScope('m-1', false, false, true);
-    for (const t of ['kb_promote', 'kb_resolve_contradiction', 'kb_reconcile_prefilter']) {
+    for (const t of ['kb_promote', 'kb_resolve_contradiction', 'kb_reconcile_prefilter', 'kb_usage']) {
       expect(isToolInScope(t, plain)).toBe(false);
       expect(isToolInScope(t, engine)).toBe(false);
       expect(isToolInScope(t, grantWithoutEngine)).toBe(false);
@@ -116,7 +117,17 @@ describe('registerAllTools scope gate', () => {
 });
 
 describe('handlers receive the calling session member id', () => {
-  beforeEach(() => { seen.kb.length = 0; seen.code.length = 0; seen.extras.length = 0; });
+  beforeEach(() => { seen.kb.length = 0; seen.code.length = 0; seen.extras.length = 0; seen.engine.length = 0; });
+
+  it('handlers know whether the session is engine-origin (origin=engine); agent and FULL sessions are not', async () => {
+    await (await register(memberToolScope('member-uuid-42', false, true)))
+      .get('kb_query')!({ query: 'x' }, {});
+    await (await register(memberToolScope('member-uuid-42', false)))
+      .get('kb_query')!({ query: 'x' }, {});
+    await (await register(FULL_TOOL_SCOPE)).get('kb_query')!({ query: 'x' }, {});
+    expect(seen.engine).toEqual([true, false, false]);
+    expect(getSessionEngineOrigin()).toBe(false);
+  });
 
   it('kb_* and code_* handlers on a MEMBER session see the member id', async () => {
     const tools = await register(memberToolScope('member-uuid-42', false));
