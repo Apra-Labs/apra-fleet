@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 138
+    "entry_count": 139
   },
   "entries": [
     {
@@ -193,6 +193,35 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.978Z"
+    },
+    {
+      "id": "1168f68e-99aa-405a-be40-e127e561f1f0",
+      "type": "knowledge",
+      "title": "KB embed worker in the SEA binary runs from an embedded CommonJS asset via eval",
+      "summary": "build-sea.mjs bundles embed-worker.ts into dist/kb-embed-worker.cjs, gen-sea-config.mjs embeds it as SEA asset kb/embed-worker.cjs, and worker-runtime.ts starts it with new Worker(source, {eval:true}); the WASM bytes are passed in workerData.",
+      "symbols": [
+        "resolveEmbedWorkerScript",
+        "createWorkerRuntime",
+        "EMBED_WORKER_SEA_ASSET",
+        "loadOrtWasmBinary",
+        "runKbEmbedCheck"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/worker-runtime.ts",
+        "src/services/knowledge/embedding/embed-worker.ts",
+        "scripts/build-sea.mjs",
+        "scripts/gen-sea-config.mjs",
+        "src/cli/kb-embed-check.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T01:59:51.739Z",
+      "source_file_hashes": {
+        "scripts/build-sea.mjs": "e9f455d48a46de8ab4a38d4f872e0c9a76635ecd",
+        "scripts/gen-sea-config.mjs": "4b0051f12c0aec5a85532c839a05247cb5dbe8e8",
+        "src/cli/kb-embed-check.ts": "03d86e30ddc5735d9afc05df4ccb62036d5532e1",
+        "src/services/knowledge/embedding/embed-worker.ts": "97b2d81b5f93fe0c3f33da266b8c29f4f78bd1d4",
+        "src/services/knowledge/embedding/worker-runtime.ts": "17186e75f7614a0383db0ecda17aeba90fabab31"
+      }
     },
     {
       "id": "176d4504-d6d0-43a4-b77d-453ac54dc154",
