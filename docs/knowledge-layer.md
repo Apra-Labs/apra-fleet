@@ -802,7 +802,7 @@ valid names, and nothing is written.
 - **Not a security boundary.** It is a usability control: a hidden tool is
   just not listed, and any local process can change the profile back.
 - **PM skills need more than `developer` lists.** `kb-review` needs `kb_list`
-  and `kb_promote`, `kb-reconcile` needs `kb_import`, `kb_export`,
+  and `kb_promote`, `kb-reconcile` also needs `kb_import`, `kb_export`,
   `kb_resolve_contradiction`, `kb_reconcile_prefilter` and
   `kb_freshness_sweep`, and `knowledge-agent` needs `kb_harvest`. All of these
   are hidden under `developer` and the skills then fail with "tool not found".

@@ -768,7 +768,7 @@
       "name": "E-STATS-UNSUPPORTED",
       "outcome": "A provider that cannot compute stats returns {supported: false, reason} instead of throwing.",
       "where": "src/services/knowledge/http-provider.ts:284-287 (design D4)",
-      "reason_no_code": "A documented not-supported result is part of the response schema. Note HttpKbProvider is dead code in this tree (INVENTORY.md 4.4 F-10), so no tool call reaches this branch today."
+      "reason_no_code": "A documented not-supported result is part of the response schema. HttpKbProvider.stats answers this way when the KB config selects provider http."
     },
     {
       "name": "E-BIBLE-READ-DEGRADED",
