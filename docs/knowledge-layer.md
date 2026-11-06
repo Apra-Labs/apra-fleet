@@ -183,7 +183,12 @@ the folder's git metadata (`.git` kind and inode, the git dir's `config` and
 the origin remote or `.git` is reported on the next call with the same error.
 After 30 s an answer is re-checked with an asynchronous git spawn while the
 cached one keeps serving, so steady-state calls never block the event loop on
-git. A spawn failure or timeout (no git verdict) is never cached.
+git. A spawn failure or timeout (no git verdict) is never cached. Before a
+kb_* or code_* handler runs, the tool wrapper (`tool-registry.ts`) awaits
+`prewarmSelfGitCache()`, which runs the same resolution in a dry-run mode
+and answers each cache miss with an asynchronous git spawn (and seeds the
+project slug from the cached origin), so even the first call on a folder
+spawns no git on the main thread.
 
 **Remote members.** A remote member's work folder is a path on another host,
 so git cannot be shelled out for it. Its KB identity is the single origin URL

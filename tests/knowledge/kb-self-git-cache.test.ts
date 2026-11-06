@@ -32,8 +32,10 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import {
-  validateSelfFolder, resolveSelfAnchor, KbSelfError, GIT_CACHE_TTL_MS, _resetKbSelfGitCacheForTests,
+  validateSelfFolder, resolveSelfAnchor, KbSelfError, GIT_CACHE_TTL_MS, _resetKbSelfGitCacheForTests, prewarmSelfGitCache,
 } from '../../src/services/knowledge/kb-self.js';
+import { registerAllTools } from '../../src/services/tool-registry.js';
+import { memberToolScope } from '../../src/services/tool-scope.js';
 import { resolveCodeSelf } from '../../src/tools/code-intelligence.js';
 import { runWithSessionMember } from '../../src/services/tool-scope.js';
 import { toSessionRoots } from '../../src/services/session-roots.js';
@@ -204,5 +206,82 @@ describe('kb (self) git cache: a folder that changes is detected on the next cal
     expect(validateSelfFolder(outer)).toEqual({ folder: outer });
     expect(selfError(() => validateSelfFolder(inner)).code).toBe('E-SELF-NOT-A-REPO');
     expect(selfError(() => validateSelfFolder(inner)).code).toBe('E-SELF-NOT-A-REPO');
+  });
+});
+
+describe('kb (self) git cache: the async prewarm leaves no synchronous git spawn for the first call', () => {
+  it('MEMBER session: prewarm answers with async spawns, then kb and code resolution spawn nothing', async () => {
+    const dir = gitRepo('prewarm-member', true);
+    const agent = makeTestLocalAgent({ friendlyName: `git-cache-prewarm-member-${RUN}`, workFolder: dir });
+    addAgent(agent);
+    resetCounts();
+
+    await runWithSessionMember(agent.id, () => prewarmSelfGitCache());
+    const warmed = counted();
+    expect(warmed.sync).toBe(0);
+    expect(warmed.async).toBe(2); // rev-parse --git-dir, remote get-url origin
+
+    expect(runWithSessionMember(agent.id, () => resolveSelfAnchor()).folder).toBe(dir);
+    expect(runWithSessionMember(agent.id, () => resolveCodeSelf()).repo).toBe(dir);
+    expect(counted()).toEqual(warmed);
+  });
+
+  it('FULL session with client roots: prewarm and resolution in ONE call context spawn nothing synchronously', async () => {
+    const plain = path.join(scratch, 'prewarm-plain-root');
+    fs.mkdirSync(plain, { recursive: true });
+    const dir = gitRepo('prewarm-roots', true);
+    const roots = toSessionRoots([{ uri: pathToFileURL(plain).href }, { uri: pathToFileURL(dir).href }]);
+    resetCounts();
+
+    // Same context as a real tool call: the per-call (self) memo must not
+    // remember the prewarm's dry run.
+    const anchor = await runWithSessionMember(undefined, async () => {
+      await prewarmSelfGitCache();
+      return { kb: resolveSelfAnchor(), code: resolveCodeSelf() };
+    }, { roots });
+    expect(anchor.kb.folder).toBe(dir);
+    expect(anchor.code.repo).toBe(dir);
+    const after = counted();
+    expect(after.sync).toBe(0);
+    expect(after.async).toBeGreaterThan(0);
+  });
+
+  it('a folder that is not a repo: prewarm does not throw and the call fails with the cold error, still without a sync spawn', async () => {
+    const dir = path.join(scratch, 'prewarm-not-a-repo');
+    fs.mkdirSync(dir, { recursive: true });
+    const agent = makeTestLocalAgent({ friendlyName: `git-cache-prewarm-nonrepo-${RUN}`, workFolder: dir });
+    addAgent(agent);
+    resetCounts();
+
+    await expect(runWithSessionMember(agent.id, () => prewarmSelfGitCache())).resolves.toBeUndefined();
+    const warm = selfError(() => runWithSessionMember(agent.id, () => resolveSelfAnchor()));
+    expect(counted().sync).toBe(0);
+    expect(warm.code).toBe('E-SELF-NOT-A-REPO');
+    expect(warm.message).toBe(coldError(() => runWithSessionMember(agent.id, () => resolveSelfAnchor())).message);
+  });
+
+  it('through the real tool wrapper: a first kb_list call on a fresh member folder spawns git only asynchronously', async () => {
+    const dir = gitRepo('prewarm-tool', true);
+    const agent = makeTestLocalAgent({ friendlyName: `git-cache-prewarm-tool-${RUN}`, workFolder: dir });
+    addAgent(agent);
+    const handlers = new Map<string, (input: unknown, extra?: unknown) => Promise<{ content: { text: string }[]; isError?: boolean }>>();
+    const fakeServer = {
+      tool: (name: string, ...rest: unknown[]) => {
+        const handler = rest[rest.length - 1];
+        if (typeof handler === 'function') handlers.set(name, handler as never);
+      },
+      server: { sendLoggingMessage: async () => {} },
+    };
+    await registerAllTools(fakeServer as never, memberToolScope(agent.id, false));
+    const kbList = handlers.get('kb_list');
+    expect(kbList).toBeDefined();
+    resetCounts();
+
+    const out = await kbList!({ confidence: ['INFERRED', 'UNVERIFIED'] });
+    expect(out.isError).not.toBe(true);
+    expect(JSON.parse(out.content[out.content.length - 1].text)).toHaveProperty('results');
+    // Session scope AND the KB's project slug: no synchronous git at all.
+    expect(counted().sync).toBe(0);
+    expect(counted().async).toBeGreaterThan(0);
   });
 });

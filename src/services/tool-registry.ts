@@ -135,7 +135,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   const { kbResolveContradictionSchema, kbResolveContradiction } = await import('../tools/kb-resolve-contradiction.js');
   const { kbReconcilePrefilterSchema, kbReconcilePrefilter } = await import('../tools/kb-reconcile-prefilter.js');
   const { kbSetupSchema, kbSetup } = await import('../tools/kb-setup.js');
-  const { KB_SELF_NOTE } = await import('./knowledge/kb-self.js');
+  const { KB_SELF_NOTE, prewarmSelfGitCache } = await import('./knowledge/kb-self.js');
 
   // Onboarding helpers
   async function sendOnboardingNotification(srv: typeof server, text: string): Promise<void> {
@@ -193,7 +193,14 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
         : undefined;
       let raw: Awaited<ReturnType<typeof handler>>;
       try {
-        raw = await runWithSessionMember(sessionMemberId, () => handler(input, scopedExtra), { kbMaintainer, roots });
+        // kb_*/code_* handlers resolve the session's (self) repo synchronously;
+        // answering its git queries first with async spawns keeps even the
+        // first call on a folder from blocking the event loop (kb-self.ts).
+        const selfScoped = toolName.startsWith('kb_') || toolName.startsWith('code_');
+        raw = await runWithSessionMember(sessionMemberId, async () => {
+          if (selfScoped) await prewarmSelfGitCache();
+          return handler(input, scopedExtra);
+        }, { kbMaintainer, roots });
       } catch (err) {
         // A thrown error carrying machine-readable detail (structuredContent,
         // e.g. E-CODE-INDEX-NOT-READY's retry_after_ms and build progress)

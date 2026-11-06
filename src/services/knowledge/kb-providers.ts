@@ -5,7 +5,7 @@ import { SqliteProvider } from './sqlite-provider.js';
 import { HttpKbProvider } from './http-provider.js';
 import { readKbConfigFromDisk, KB_CONFIG_PATH } from './kb-config.js';
 import type { KbConfigResult } from './kb-config.js';
-import { resolveProjectSlug } from './project-slug.js';
+import { resolveProjectSlug, slugFromRemoteUrl } from './project-slug.js';
 import { resolveRepositoryIdentity } from './repository-header.js';
 import type { MemoryProvider } from './types.js';
 import { FLEET_DIR } from '../../paths.js';
@@ -343,6 +343,21 @@ function slugFor(cwd?: string, remoteUrl?: string): string {
     _slugCache.set(key, slug);
   }
   return slug;
+}
+
+/**
+ * Seed the slug cache for a local repo folder (no remoteUrl) from its origin
+ * remote URL, already read by the caller with the same ceiling-scoped
+ * 'git remote get-url origin' query resolveProjectSlug would run -- so the
+ * first getKbProviders(folder) does not spawn git synchronously again
+ * (kb-self.ts prewarmSelfGitCache). A cached slug is never replaced, and a URL
+ * that yields no slug seeds nothing (resolveProjectSlug's fallback applies).
+ */
+export function primeProjectSlug(cwd: string, originUrl: string): void {
+  const key = `${cwd}\0`;
+  if (_slugCache.has(key)) return;
+  const slug = slugFromRemoteUrl(originUrl);
+  if (slug) _slugCache.set(key, slug);
 }
 
 /** The project slug (KB identity) for a repo folder, cached like getKbProviders'. */
