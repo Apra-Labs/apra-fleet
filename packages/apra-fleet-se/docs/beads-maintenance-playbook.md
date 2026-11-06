@@ -41,9 +41,7 @@ choice but to throw away their local `.beads/` and re-clone.
    before the flatten is permanently lost. Push it if the push can finish
    (see "Pushes that never finish"); otherwise save the diff and replay those
    changes by hand after the flatten. Interactive sessions write beads too, so
-   ask every session to stop first, and just before re-bootstrapping each clone
-   run `bd export` on it and compare with the source's pre-flatten export: a
-   clone whose head moved during the run holds changes nobody pushed.
+   ask every session to stop first.
 2. **All members are "in the know."** Notify every operator/member owner
    before starting: after this runs, their next beads operation may fail or
    show stale/wrong data until they re-bootstrap. Do not run this silently
@@ -144,25 +142,31 @@ A push to a git remote can resend the whole data tree for a tiny change: Dolt
 writes a parentless manifest commit when it prunes table files, and after 64
 parented commits. `bd dolt push` shows no output during the upload, and the
 engine kills a silent step after `DOLT_STEP_TIMEOUT_S` (600s), so a tree too
-large to upload in that time retries forever while holding the push mutex.
+large to upload in that time never lands: each retry restarts from zero while
+holding the push mutex, until the sprint gives up.
 Symptom: repeated "timed out ... of inactivity" on D-push, and sprints waiting
 on the mutex. The live tree must fit well inside 600s at the member's upload
 speed; if it no longer does, run this procedure. Measure it from a clone:
 ```bash
-git ls-tree -r -l <refs/dolt/data sha> | awk '{s+=$4} END {print s}'
+git fetch origin refs/dolt/data
+git ls-tree -r -l FETCH_HEAD | awk '{s+=$4} END {print s}'
 ```
 
 ## Recovering every other clone
 
 This is the mandatory follow-up step on **every other fleet member and
 checkout** (dev checkouts, deploy checkouts, the orchestrator folder, any
-local scratch clones) -- there is no automated version of this today. Then
-replay any changes saved in prerequisite 1, and restart the supervisor:
+local scratch clones) -- there is no automated version of this today.
+
+First, in each clone, run `bd export` and compare it with the source's
+pre-flatten export: a write that landed after the prerequisite check is lost
+when `.beads` is replaced. Replay what differs, plus anything saved in
+prerequisite 1, on the new clone. Then:
 
 ```bash
 mv .beads .beads.bak-$(date +%s)
 bd bootstrap --yes
-git checkout -- .beads/issues.jsonl   # moved with .beads; tracked, so restore it
+git checkout -- .beads/issues.jsonl   # if tracked: it moved with .beads
 bd status   # confirm issue counts match the freshly-flattened remote
 ```
 
@@ -174,7 +178,8 @@ git checkout -- .beads/issues.jsonl
 bd status
 ```
 
-Once every clone reports matching counts, delete the `.beads.bak-*`
+Restart the supervisor once the source clone is verified. Once every clone
+reports matching counts, delete the `.beads.bak-*`
 backups.
 
 ## Notes for next time
