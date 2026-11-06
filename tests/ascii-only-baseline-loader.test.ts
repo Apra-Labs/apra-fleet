@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadBaseline, baselineImportSpecifier } from '../scripts/check-ascii-only.mjs';
 
 describe('check-ascii-only baseline loading', () => {
@@ -26,6 +27,14 @@ describe('check-ascii-only baseline loading', () => {
   });
 
   it('never hands import() a raw path', () => {
-    expect(baselineImportSpecifier('/abs/x.mjs', undefined, 1)).toBe('file:///abs/x.mjs?t=1');
+    // No options: what loadBaseline itself calls, on whatever OS runs this.
+    const input = path.resolve('/abs/x.mjs');
+    const spec = baselineImportSpecifier(input, undefined, 1);
+    expect(spec).toMatch(/^file:\/\/\/.*\/abs\/x\.mjs\?t=1$/);
+    expect(fileURLToPath(spec.slice(0, -'?t=1'.length))).toBe(input);
+  });
+
+  it('builds the exact POSIX file URL on any OS', () => {
+    expect(baselineImportSpecifier('/abs/x.mjs', { windows: false }, 1)).toBe('file:///abs/x.mjs?t=1');
   });
 });
