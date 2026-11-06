@@ -105,14 +105,15 @@ describe('semantic similarity floor', () => {
     expect(semanticFloorFor('acme/other', 'r1')).toBe(Number.NEGATIVE_INFINITY);
     expect(semanticFloorFor(PROFILE.modelId, 'other-revision')).toBe(Number.NEGATIVE_INFINITY);
     // A custom model: none unless its config sets semantic_floor.
+    const PINNED = '0123456789abcdef0123456789abcdef01234567';
     const warn = vi.fn();
-    const custom = resolveEmbeddingModel({ id: 'acme/custom', semantic_floor: 0.42 }, warn);
+    const custom = resolveEmbeddingModel({ id: 'acme/custom', revision: PINNED, semantic_floor: 0.42 }, warn);
     expect(custom.kind === 'enabled' && custom.profile.semanticFloor).toBe(0.42);
-    const plain = resolveEmbeddingModel({ id: 'acme/custom' }, warn);
+    const plain = resolveEmbeddingModel({ id: 'acme/custom', revision: PINNED }, warn);
     expect(plain.kind === 'enabled' && plain.profile.semanticFloor).toBeUndefined();
-    if (custom.kind === 'enabled') expect(semanticFloorFor('acme/custom', 'main', custom.profile)).toBe(0.42);
+    if (custom.kind === 'enabled') expect(semanticFloorFor('acme/custom', PINNED, custom.profile)).toBe(0.42);
     expect(warn).not.toHaveBeenCalled();
-    resolveEmbeddingModel({ id: 'acme/custom', semantic_floor: 3 }, warn);
+    resolveEmbeddingModel({ id: 'acme/custom', revision: PINNED, semantic_floor: 3 }, warn);
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/semantic_floor/));
   });
 

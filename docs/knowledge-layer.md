@@ -1015,8 +1015,9 @@ Set the embedding model in the KB config file (`<FLEET_DIR>/knowledge/config.jso
   `snowflake-arctic-embed-xs`.
 - `"none"`: embeddings off. Semantic search is disabled; keyword and anchor
   search still work.
-- An object for a custom model (`id` of a Hugging Face repo, or `path` of a
-  local folder -- exactly one of the two -- plus optional `pooling`,
+- An object for a custom model (`id` of a Hugging Face repo plus its
+  `revision`, the full 40-character commit sha, or `path` of a local folder --
+  exactly one of `id` and `path` -- plus optional `pooling`,
   `normalize`, `query_prefix`, `doc_prefix`, `dtype`, `token_limit`,
   `semantic_floor` -- the minimum cosine similarity, -1 to 1, for a semantic
   hit; omitted means no floor).
@@ -1049,13 +1050,17 @@ in the background; queries only ever compare vectors of the active model.
   split; words are stemmed), scored by column-weighted bm25 plus a trigram
   index for partial identifiers. The index carries a version; a version change
   rebuilds it in the background while queries keep working.
+- **Rollback.** A 0.4.4 build can run on the same `kb.sqlite`: this build keeps
+  the legacy `entries_fts` index and triggers populated and repairs them on
+  open, and re-indexes what the older build wrote on its next read.
 - **Vectors.** Entries are chunked, each chunk stored as a float16 vector
   tagged with the model id; an entry scores by its best chunk. Capture never
   waits for embedding: a background queue embeds, and changing the model or
   index version re-embeds. Vectors of other models are ignored, never mixed.
 - **Model source.** Downloads are lazy and verified against a pinned sha256.
-  A custom hub model whose revision is left at the default `main` is mutable,
-  so pin a revision for reproducibility.
+  A custom hub model must name its commit sha: a branch or tag can move while
+  stored vectors stay keyed by its name, so any other value is reported as
+  malformed and the default model is used.
 - **Event loop.** The ONNX runtime runs in a worker thread
   (`src/services/knowledge/embedding/worker-runtime.ts` spawns
   `embed-worker.ts`): model load and every document and query embedding run

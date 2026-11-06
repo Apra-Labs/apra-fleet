@@ -56,7 +56,7 @@
           "raising_methods": [
             { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" }
           ],
-          "source": "src/tools/kb-query.ts:34",
+          "source": "src/tools/kb-query.ts:230",
           "surfaced": "thrown",
           "retryable": false,
           "note": "kb_session_prime also reaches P-3 but cannot raise this: it builds its own selectors."
@@ -801,7 +801,7 @@
     {
       "name": "E-RELATED-CLAIMS-DEGRADED",
       "outcome": "A relatedClaims throw is caught; related_claims becomes [] and the query result still returns.",
-      "where": "src/tools/kb-query.ts:113-118",
+      "where": "src/tools/kb-query.ts:345-354",
       "reason_no_code": "Related claims are an enrichment of a query result, not the result. Failing the whole query over them would be a worse answer than an empty list."
     },
     {

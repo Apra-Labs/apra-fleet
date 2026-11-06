@@ -257,9 +257,12 @@ function isHubId(v: string): boolean {
   return /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(v) && !v.includes('..');
 }
 
-/** A git revision or branch/tag name usable in a URL and a folder name. */
-function isRevision(v: string): boolean {
-  return /^[A-Za-z0-9][\w.-]*$/.test(v) && !v.includes('..');
+/**
+ * A full git commit sha. Vectors are keyed by this string, so a branch or tag
+ * name would mix old and new weights under one key when the name moves.
+ */
+function isCommitSha(v: unknown): v is string {
+  return typeof v === 'string' && /^[0-9a-f]{40}$/.test(v);
 }
 
 function isAbsolutePath(v: string): boolean {
@@ -316,15 +319,17 @@ function parseCustom(obj: Record<string, unknown>): EmbeddingProfile | string {
     return { ...common, name: folder, modelId: folder, revision: 'local', source: { kind: 'local', path: folder } };
   }
   if (typeof id !== 'string' || !isHubId(id)) return `"id" must be a Hugging Face repo id like owner/name, got ${JSON.stringify(id)}`;
-  const revision = obj.revision ?? 'main';
-  if (typeof revision !== 'string' || !isRevision(revision)) return `"revision" must be a commit sha, branch or tag, got ${JSON.stringify(revision)}`;
+  const revision = obj.revision;
+  if (!isCommitSha(revision)) {
+    return `"revision" must be the model's full 40-character lowercase commit sha (a branch or tag can move while stored vectors stay keyed by its name), got ${JSON.stringify(revision)}`;
+  }
   const files = [...CUSTOM_HUB_BASE_FILES, ONNX_FILE_FOR_DTYPE[dtype as EmbeddingDtype]].map((p) => ({ path: p }));
   return { ...common, name: id, modelId: id, revision, source: { kind: 'hub', repo: id, revision, files } };
 }
 
 /**
  * Resolve the raw embedding.model value from the KB config. Never throws:
- * - undefined -> the default profile (bge-small-en-v1.5)
+ * - undefined -> the default profile (snowflake-arctic-embed-xs)
  * - 'none' -> disabled (semantic search off; keyword and anchor search remain)
  * - a built-in profile name -> that profile
  * - an object {id | path, pooling, normalize, query_prefix, doc_prefix, semantic_floor, ...} -> a custom profile

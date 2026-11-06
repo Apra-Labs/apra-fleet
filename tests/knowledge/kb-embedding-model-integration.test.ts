@@ -100,13 +100,13 @@ describe('embedding.model in the KB config file is configurable', () => {
 
   it('a custom object -> its id, pooling, normalize and prefixes', () => {
     writeKbConfig({
-      embedding: { model: { id: 'acme/encoder', revision: 'v2', pooling: 'mean', normalize: false, query_prefix: 'q: ', doc_prefix: 'd: ' } },
+      embedding: { model: { id: 'acme/encoder', revision: '0123456789abcdef0123456789abcdef01234567', pooling: 'mean', normalize: false, query_prefix: 'q: ', doc_prefix: 'd: ' } },
     });
     const e = getEmbedder();
     expect(e.profile).toMatchObject({
-      builtin: false, modelId: 'acme/encoder', revision: 'v2', pooling: 'mean', normalize: false, queryPrefix: 'q: ', docPrefix: 'd: ',
+      builtin: false, modelId: 'acme/encoder', revision: '0123456789abcdef0123456789abcdef01234567', pooling: 'mean', normalize: false, queryPrefix: 'q: ', docPrefix: 'd: ',
     });
-    expect(e.state).toEqual({ state: 'idle', modelId: 'acme/encoder', revision: 'v2' });
+    expect(e.state).toEqual({ state: 'idle', modelId: 'acme/encoder', revision: '0123456789abcdef0123456789abcdef01234567' });
   });
 
   it("'none' -> disabled", () => {

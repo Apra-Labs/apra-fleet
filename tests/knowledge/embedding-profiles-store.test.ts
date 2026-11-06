@@ -83,7 +83,7 @@ describe('resolveEmbeddingModel', () => {
 
   it('custom object -> its pooling, normalize and prefixes', () => {
     const c = resolveEmbeddingModel(
-      { id: 'someone/my-model', pooling: 'mean', normalize: false, query_prefix: 'query: ', doc_prefix: 'passage: ' },
+      { id: 'someone/my-model', revision: '0123456789abcdef0123456789abcdef01234567', pooling: 'mean', normalize: false, query_prefix: 'query: ', doc_prefix: 'passage: ' },
       vi.fn(),
     );
     expect(c.kind).toBe('enabled');
@@ -93,7 +93,31 @@ describe('resolveEmbeddingModel', () => {
     expect(c.profile.normalize).toBe(false);
     expect(c.profile.queryPrefix).toBe('query: ');
     expect(c.profile.docPrefix).toBe('passage: ');
-    expect(c.profile.source).toMatchObject({ kind: 'hub', repo: 'someone/my-model', revision: 'main' });
+    expect(c.profile.source).toMatchObject({ kind: 'hub', repo: 'someone/my-model', revision: '0123456789abcdef0123456789abcdef01234567' });
+  });
+
+  it('a custom hub model without a commit sha is refused by name, and says what to set', () => {
+    for (const raw of [{ id: 'a/b' }, { id: 'a/b', revision: 'main' }]) {
+      const warn = vi.fn();
+      resolveEmbeddingModel(raw, warn);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/"revision" must be the model's full 40-character lowercase commit sha/));
+    }
+  });
+
+  it('two revisions of a custom model are two vector keys', () => {
+    const other = 'fedcba9876543210fedcba9876543210fedcba98';
+    const one = resolveEmbeddingModel({ id: 'a/b', revision: '0123456789abcdef0123456789abcdef01234567' }, vi.fn());
+    const two = resolveEmbeddingModel({ id: 'a/b', revision: other }, vi.fn());
+    expect(one.kind === 'enabled' && one.profile.revision).toBe('0123456789abcdef0123456789abcdef01234567');
+    expect(two.kind === 'enabled' && two.profile.revision).toBe(other);
+  });
+
+  it('every built-in profile is pinned to a commit sha with a sha256 per file', () => {
+    for (const p of Object.values(BUILTIN_EMBEDDING_PROFILES)) {
+      expect(p.revision).toMatch(/^[0-9a-f]{40}$/);
+      if (p.source.kind !== 'hub') throw new Error('built-in profile is not a hub model');
+      for (const f of p.source.files) expect(f.sha256, f.path).toMatch(/^[0-9a-f]{64}$/);
+    }
   });
 
   it('custom local folder path -> local source', () => {
@@ -106,9 +130,14 @@ describe('resolveEmbeddingModel', () => {
     ['number', 42],
     ['array', ['x']],
     ['object without id or path', { pooling: 'cls' }],
-    ['bad pooling', { id: 'a/b', pooling: 'max' }],
+    ['bad pooling', { id: 'a/b', revision: '0123456789abcdef0123456789abcdef01234567', pooling: 'max' }],
     ['relative path', { path: 'models/x' }],
-    ['traversal id', { id: '../etc' }],
+    ['traversal id', { id: '../etc', revision: '0123456789abcdef0123456789abcdef01234567' }],
+    ['no revision', { id: 'a/b' }],
+    ['branch revision', { id: 'a/b', revision: 'main' }],
+    ['tag revision', { id: 'a/b', revision: 'v2' }],
+    ['short sha', { id: 'a/b', revision: '0123456' }],
+    ['uppercase sha', { id: 'a/b', revision: '0123456789ABCDEF0123456789ABCDEF01234567' }],
   ])('malformed (%s) -> default plus a warning, never a throw', (_label, raw) => {
     const warn = vi.fn();
     const c = resolveEmbeddingModel(raw, warn);

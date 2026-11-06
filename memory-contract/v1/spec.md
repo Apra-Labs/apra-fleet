@@ -1314,16 +1314,18 @@ An explicit `limit` always wins and keeps the full row shape and the top-5
 `l2_expanded`; a non-member (FULL) session keeps the defaults of 20 rows, the
 full row shape and the top-5 `l2_expanded`. `related_claims` is unchanged.
 
-**THE PROOF.** The selector guard is `src/tools/kb-query.ts:33-35`: `if
-(!input.query && !input.flagged_only && !input.tag) throw new Error(...)`.
+**THE PROOF.** The selector guard is `src/tools/kb-query.ts:227-231`: `if
+(!input.query && !input.flagged_only && !input.tag && !hasHybridInput(input))
+throw new Error(...)`, where `hasHybridInput` (`:104-106`) is true when
+`files`, `symbols` or `error_text` is given.
 This is a documented, coded throw, not an undocumented one: `taxonomy.json`
 carries it as `E-QUERY-NO-SELECTOR` (groups.validation, source cited at
-`src/tools/kb-query.ts:34`, `surfaced: "thrown"`, raised pre-provider by
-`kb_query`/P-3). The `flagged_only` branch (`src/tools/kb-query.ts:39-66`)
+`src/tools/kb-query.ts:230`, `surfaced: "thrown"`, raised pre-provider by
+`kb_query`/P-3). The `flagged_only` branch (`src/tools/kb-query.ts:250-277`)
 merges project and global flagged results and returns `{flagged_entries,
-total, note}` (`:59-65`); the default branch (`:68-126`) merges L1/L2
+total, note}` (`:270-276`); the default branch (`:279-362`) merges L1/L2
 project and global results and returns `{l1_results, l2_expanded,
-...(expand_related ? {related_claims} : {})}` (`:122-126`) -- `related_claims`
+...(expand_related ? {related_claims} : {})}` (`:357-361`) -- `related_claims`
 is itself conditional on `expand_related`, so even the non-flagged shape is
 not fixed-key. `schemas/kb_query.response.json` models both branches as an
 `anyOf` of two object schemas under `parsed` (`:58-104`), tagged
@@ -1332,7 +1334,7 @@ both observed shapes, but nothing in `src/tools/kb-query.ts` or
 `src/services/tool-registry.ts` (`wrapTool`, which only ever wraps a bare
 returned `string` into the text envelope) checks the stringified body against
 that schema at runtime. `INVENTORY.md` section 3 states the meta-fact
-directly (`:102`, "NO tool in this surface declares a response zod schema").
+directly (`:147`, "NO tool in this surface declares a response zod schema").
 The discriminator loss is a separate, related finding: `tests/GENERATOR-
 DECISION.md`'s D1 row records that the generator emits `anyOf`, not `oneOf`,
 for a discriminated response union, because "an OpenAPI 3.1 `discriminator`
