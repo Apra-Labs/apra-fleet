@@ -13,6 +13,7 @@ import { ensureOwnerOnlyDir, openOwnerOnlyAppend } from '../utils/owner-only-fs.
 import { BIN_DIR } from './config.js';
 import { serverVersion } from '../version.js';
 import { clearStoppedMarker, readStoppedMarker } from '../services/stopped-marker.js';
+import { showPendingServiceNotice } from '../services/service-notice.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -67,6 +68,8 @@ function directSpawn(): void {
 }
 
 export async function runStart(_args: string[]): Promise<void> {
+  // Guidance a detached install (apra-fleet update) could not show.
+  showPendingServiceNotice();
   // An explicit start ends a user stop: clients may auto-start again. A start
   // launched BY a client auto-start (APRA_FLEET_AUTOSTART=1) must never erase
   // a stop that raced it -- it refuses instead.

@@ -493,7 +493,8 @@ describe('OsCommands via getOsCommands', () => {
     it.skipIf(process.platform !== 'win32')('windows: returns pristine env and powershell shell', () => {
       const { command, env, shell } = windows.cleanExec('echo hello');
       expect(command).toBe('echo hello');
-      expect(shell).toBe('powershell.exe');
+      // Absolute path: LocalStrategy spawns it with cwd = the work folder.
+      expect(shell).toMatch(/^[A-Za-z]:\\.*\\powershell\.exe$/i);
       expect(env).toBeDefined();
       expect(env!['Path'] ?? env!['PATH']).toBeTruthy();
       expect(env!['USERPROFILE']).toBeTruthy();

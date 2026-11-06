@@ -127,6 +127,12 @@ describe('runStart', () => {
     vi.useRealTimers();
   });
 
+  it('prints a pending service notice before doing anything else', async () => {
+    mockCheckRunning.mockResolvedValue(RUNNING);
+    await runStart([]);
+    expect(vi.mocked(showPendingServiceNotice)).toHaveBeenCalledTimes(1);
+  });
+
   // GitHub #584: a live-but-unresponsive server is not "stopped".
   it('refuses with pid/port and a stop hint when the server is unresponsive', async () => {
     mockCheckRunning.mockResolvedValue(UNRESPONSIVE);

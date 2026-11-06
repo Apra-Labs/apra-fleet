@@ -502,6 +502,10 @@ function buildSpyFleetApi(overrides = {}) {
                 const body = JSON.stringify({ number: 101, html_url: 'https://github.com/mock-org/mock-repo/pull/101' });
                 return mockCmdResult(0, `${body}\n201`, '');
             }
+            // Review diff base: the engine needs a commit SHA back.
+            if (/^git merge-base origin\/\S+ \S+\s*$/.test(opts.command)) {
+                return mockCmdResult(0, 'c0ffee0000000000000000000000000000c0ffee', '');
+            }
             return mockCmdResult(0, '');
         },
         executePrompt: async (opts) => {

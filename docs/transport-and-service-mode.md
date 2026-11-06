@@ -304,3 +304,24 @@ implementation detail** -- it is used only by the supervisor process to
 orchestrate agent workflows and does NOT bypass the reservation ledger. Direct
 manual invocation of `cli.mjs` circumvents the reservation system and is
 unsupported; use the service API and dashboard instead.
+
+## Port persistence across installs
+
+A full install records the port it registered in `full-install.json` (in the data
+dir), or removes that file when no valid `APRA_FLEET_PORT` was set. Port
+resolution for CLI commands falls back to it after the member record, so
+`status` / `stop` find a server installed on a custom port even when the shell
+no longer has `APRA_FLEET_PORT`. Known gap: a detached update-driven full install
+does not carry `APRA_FLEET_PORT`, so it clears the file and re-registers on the
+default port.
+
+## Install-time stop and restart notices
+
+`stop({reason:'install'})` suppresses the sticky-stop text and the duplicate legacy
+guidance, and install does not claim a server was stopped while a live but
+unverified pid remains. The "restart your provider CLI to pick up the new access
+token" note is persisted via `appendServiceNotice` (which never overwrites pending
+legacy guidance) and is marked shown only when stdout is a console, so `status`,
+`start`, `stop` and `update` print it exactly once. When re-running the fleet-se
+install after an old server is recorded as live, `--force` is added once; a 0.4.3
+dashboard child can linger for about 300s and the refusal text explains this.

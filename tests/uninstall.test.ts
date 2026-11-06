@@ -16,6 +16,10 @@ import {
 
 vi.mock('node:fs');
 vi.mock('node:child_process');
+const FAKE_POWERSHELL = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+vi.mock('../src/os/windows-executable.js', () => ({
+  windowsExecutable: (name: string) => (name === 'powershell.exe' ? FAKE_POWERSHELL : name),
+}));
 vi.mock('../src/cli/install.js', () => ({
   isApraFleetRunning: vi.fn().mockReturnValue(false),
 }));
@@ -436,7 +440,7 @@ describe('uninstall', () => {
     const wrapperJs = path.join(config.BIN_DIR, 'apra-fleet-supervisor-service.js');
     const installedServeMjs = path.join(config.WORKFLOWS_DIR, 'fleet-sprint', 'bin', 'serve.mjs');
     const devServeMjs = '/path/to/apra-fleet/packages/apra-fleet-se/bin/serve.mjs';
-    const MUTATING = new Set(['systemctl', 'launchctl', 'taskkill', 'powershell']);
+    const MUTATING = new Set(['systemctl', 'launchctl', 'taskkill', FAKE_POWERSHELL]);
 
     function setPlatform(p: NodeJS.Platform) {
       Object.defineProperty(process, 'platform', { value: p, configurable: true });
@@ -601,7 +605,7 @@ describe('uninstall', () => {
         if (cmd === 'schtasks' && args.includes('/Query')) {
           return taskXml('C:\\Windows\\System32\\wscript.exe', `//B //Nologo //E:JScript "${wrapperJs}"`);
         }
-        if (cmd === 'powershell') return '4242\r\n';
+        if (cmd === FAKE_POWERSHELL) return '4242\r\n';
         return undefined;
       });
       const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -731,7 +735,7 @@ describe('uninstall', () => {
       const removed = mockFs({ [wrapperBat]: '@echo off' });
       mockExec((cmd, args) => {
         if (cmd === 'schtasks' && args.includes('/Query')) return taskXml(wrapperBat, '');
-        if (cmd === 'powershell') return '4242\r\n';
+        if (cmd === FAKE_POWERSHELL) return '4242\r\n';
         if (cmd === 'taskkill') {
           throw Object.assign(new Error('ERROR: The process "4242" not found.'), { status: 128 });
         }
@@ -757,7 +761,7 @@ describe('uninstall', () => {
 
       await runUninstall(['--yes']);
 
-      const ps = execCalls().filter(([cmd]) => cmd === 'powershell');
+      const ps = execCalls().filter(([cmd]) => cmd === FAKE_POWERSHELL);
       expect(ps).toHaveLength(1);
       const encoded = ps[0][ps[0].indexOf('-EncodedCommand') + 1];
       const script = Buffer.from(encoded, 'base64').toString('utf16le');

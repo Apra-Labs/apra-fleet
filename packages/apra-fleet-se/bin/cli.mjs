@@ -1044,7 +1044,7 @@ async function main() {
         },
     });
 
-    console.log(`Dashboard live at http://localhost:${viewerPort}`);
+    console.log(`Dashboard live at http://127.0.0.1:${viewerPort}`);
 
     if (viewerFailed) return; // onError releases the reservations, then exits
 
@@ -1194,7 +1194,7 @@ async function main() {
         const graceMs = Number(process.env.AUTO_SPRINT_FAILURE_GRACE_MS ?? 5 * 60 * 1000);
         if (graceMs > 0) {
             console.log(
-                `Sprint FAILED. Dashboard remains live at http://localhost:${viewerPort} for ` +
+                `Sprint FAILED. Dashboard remains live at http://127.0.0.1:${viewerPort} for ` +
                 `${Math.round(graceMs / 1000)}s so you can inspect the final state -- press Ctrl-C to exit sooner.`
             );
             await new Promise((resolve) => {

@@ -7,6 +7,7 @@ import { spawn, execSync, ChildProcess } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { logError } from '../utils/log-helpers.js';
+import { windowsExecutable } from '../os/windows-executable.js';
 import { escapeShellArg, escapeAppleScriptString, quoteWindowsArgv } from '../utils/shell-escape.js';
 import { OOB_TIMEOUT_MS } from '../utils/oob-timeout.js';
 import { launchAuthWeb } from './auth-web.js';
@@ -650,7 +651,7 @@ const WINDOWS_AUTH_LAUNCHER_PS = [
 export function buildWindowsAuthLaunch(fullArgs: string[]): { file: string; args: string[]; env: Record<string, string> } {
   const [exe, ...rest] = fullArgs;
   return {
-    file: 'powershell',
+    file: windowsExecutable('powershell.exe'),
     args: ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(WINDOWS_AUTH_LAUNCHER_PS, 'utf16le').toString('base64')],
     env: {
       APRA_FLEET_OOB_EXE: exe,

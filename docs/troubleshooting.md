@@ -287,6 +287,38 @@ Fix in the product:
     per member shell. So `bd dolt pull/push` run by a dispatched agent, the
     groomer, or `execute_command` inherits it. Linux/macOS members are
     unchanged.
+  The default applies to the WHOLE fleet-started session on a Windows member,
+  not only to the bd/dolt process. Any Go program a dispatched agent runs there
+  (`go build`, `go test`, other Go tools) also runs with `GOMAXPROCS=1`, so it
+  is effectively serialized to one OS thread and can be slower than expected.
+
+  Override it by setting `GOMAXPROCS` yourself; fleet never replaces a value
+  that is already set. Set it as a Windows user environment variable on the
+  member (for example `[Environment]::SetEnvironmentVariable('GOMAXPROCS', '4', 'User')`),
+  then:
+
+  - Remote Windows member (PowerShell or Git Bash shell): the member picks it
+    up on the next SSH connection. The fleet server reuses an open connection
+    until it has been idle for 5 minutes, so wait that long or restart the
+    fleet server.
+  - Local Windows member, PowerShell shell: restart the fleet server
+    (`apra-fleet stop`, then `apra-fleet start`). The server reads the
+    machine and user environment once and caches it for its lifetime.
+  - Local Windows member, Git Bash shell: restart the fleet server too.
+    Commands run as a non-interactive `bash -c` with the server's own process
+    environment, so `~/.bashrc` is not read. The server sees the new user
+    variable only when it starts from a fresh environment (the service, or
+    `apra-fleet start` from a terminal opened after the change).
+
+  For one command only, set it in the command itself; the default is applied
+  before the command runs, so this needs no restart: `$env:GOMAXPROCS = '4';
+  go test ./...` (PowerShell) or `GOMAXPROCS=4 go test ./...` (Git Bash).
+
+  Trade-off: a raised value re-exposes `bd dolt pull/push` to the Windows
+  process-creation limit above, because dolt may start several git processes
+  at once. Keep `1` if sync fails with this error; raise it only when Go build
+  and test speed matters more than sync reliability on that member.
+
   Upstream issue: https://github.com/gastownhall/beads/issues/7082
 
 Your own terminal (not started by fleet): fleet cannot set the env of a shell

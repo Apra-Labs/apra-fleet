@@ -153,7 +153,7 @@ describe('pre-flight self-heal (ensureGitNexusIndexReady)', () => {
     expect(err.code).toBe('E-CODE-INDEX-NOT-READY');
     expect(err.message).toContain('is marked incomplete and no running analyze was found');
     expect(err.message).toContain('An index build was requested automatically.');
-    expect(err.remediation).toMatch(/Retry the same call in a minute/);
+    expect(err.remediation).toMatch(/Retry the same call in a few minutes/);
     expect(err.message).not.toMatch(/npx/);
     expect(err.message.split('Remediation:')).toHaveLength(2);
   });

@@ -10,6 +10,9 @@
  * registry persists it so later sessions use it too.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   backupAndResetRegistry, restoreRegistry, makeTestAgent, decodePowerShellEncodedCommand,
 } from './test-helpers.js';
@@ -209,6 +212,39 @@ describe('local members are unaffected', () => {
   it('follow this process port, not memberMcpPort', () => {
     const local = { id: 'abc', agentType: 'local' as const, memberMcpPort: 7611 };
     expect(memberMcpUrl(local)).not.toContain(':7611/');
+  });
+});
+
+describe('local member on a custom-port full install', () => {
+  const saved = { port: process.env.APRA_FLEET_PORT, dir: process.env.APRA_FLEET_DATA_DIR };
+  let dir = '';
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-member-port-'));
+    delete process.env.APRA_FLEET_PORT;
+    process.env.APRA_FLEET_DATA_DIR = dir;
+  });
+  afterEach(() => {
+    if (saved.port === undefined) delete process.env.APRA_FLEET_PORT; else process.env.APRA_FLEET_PORT = saved.port;
+    if (saved.dir === undefined) delete process.env.APRA_FLEET_DATA_DIR; else process.env.APRA_FLEET_DATA_DIR = saved.dir;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a recorded port with no APRA_FLEET_PORT gives a member URL on the recorded port', () => {
+    fs.writeFileSync(path.join(dir, 'full-install.json'), JSON.stringify({ version: ORCH, port: 7699 }));
+    const local = { id: 'abc', agentType: 'local' as const };
+    // memberMcpUrl is what both the per-folder entry and the per-session
+    // --mcp-config write (compose-permissions, session-mcp-config).
+    expect(memberMcpUrl(local)).toBe('http://localhost:7699/mcp?member=abc');
+  });
+
+  it('an explicit APRA_FLEET_PORT still wins over the record', () => {
+    fs.writeFileSync(path.join(dir, 'full-install.json'), JSON.stringify({ version: ORCH, port: 7699 }));
+    process.env.APRA_FLEET_PORT = '7700';
+    expect(memberMcpUrl({ id: 'abc', agentType: 'local' as const })).toBe('http://localhost:7700/mcp?member=abc');
+  });
+
+  it('no record and no APRA_FLEET_PORT gives the built-in default', () => {
+    expect(memberMcpUrl({ id: 'abc', agentType: 'local' as const })).toBe('http://localhost:7523/mcp?member=abc');
   });
 });
 

@@ -44,6 +44,11 @@ trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
 your tool-loading tool first, before concluding they are unavailable.
 
+If a `code_*` call fails with `E-CODE-INDEX-NOT-READY`, wait ONCE for the
+`retry_after_ms` its error result carries (skip the wait when it is 0: retrying will
+not help), retry that call ONCE, and if it still fails fall back to text search and
+record the fallback. Never poll `code_status` in a loop waiting for the index.
+
 The `code_impact` and `kb_query` calls below are EXPECTED, not optional, whenever the
 tools are present. If a tool is genuinely not present (or the KB or code index is not set
 up for this repo), record that in `toolUse` (Output schema) and continue -- never skip
@@ -58,7 +63,9 @@ silently.
    exempt -- and `code_context`/`code_graph`/`code_query` to trace callers before
    accepting a signature or behaviour change -- prefer them over grep for structural
    questions. If they are absent, fail, or report the repo is not indexed, fall back to
-   reading the diff and grep and record it in `toolUse`; do not build an index.
+   reading the diff and grep and record it in `toolUse`; do not build an index. On
+   `E-CODE-INDEX-NOT-READY`, wait once for its `retry_after_ms`, retry once, then fall
+   back -- never poll `code_status` in a loop.
 3. Call `kb_query` at least once per review, on the changed files' topics, to check the
    doer's claims and the diff against what the KB already records, and to dedupe your
    captures (item 4). This is for verification only; promotion candidates still come
@@ -95,6 +102,10 @@ Each prints a JSON object of key -> full value (plus a `schema_version` entry). 
 search also matches value text, so apply only entries whose KEY contains `+all+` or `+reviewer+`.
 
 ## Step 1 -- Context recovery
+
+If your dispatch prompt gives a diff range (`<commit-sha>..<branch>`), use exactly that
+range wherever `<base-branch>..<branch>` appears below, for every `git diff` and
+`git log`. Never diff against a local base branch in that case: it may be stale.
 
 ```bash
 git log --oneline <base-branch>..<branch>
