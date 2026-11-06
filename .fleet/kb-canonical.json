@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "c2ccca462fd60b150aa750bed0f410ab5bce1933",
     "branch": "main",
-    "entry_count": 130
+    "entry_count": 132
   },
   "entries": [
     {
@@ -1834,6 +1834,23 @@
       "updated_at": "2026-10-06T09:41:38.971Z"
     },
     {
+      "id": "bfcfe1fe-571d-4f3a-a0ce-04fedcd7a088",
+      "type": "learning",
+      "title": "APRA_TEST_SUITES_JSON narrowing leaks into run-all-tests-suite-enumeration test",
+      "summary": "Running the full vitest suite through scripts/run-all-tests.mjs with APRA_TEST_SUITES_JSON set makes tests/run-all-tests-suite-enumeration.test.ts fail, because it imports the real script, which reads the inherited env var.",
+      "symbols": [],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "tests/run-all-tests-suite-enumeration.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T07:14:05.528Z",
+      "source_file_hashes": {
+        "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637",
+        "tests/run-all-tests-suite-enumeration.test.ts": "6b869932251561145575443ff2d70652ba73b787"
+      }
+    },
+    {
       "id": "c2899616-0cb1-41e8-b229-76e291a0cd81",
       "type": "learning",
       "title": "SqliteProvider freshness verdicts must be suppressed, not re-hashed, when the repo anchor is unreachable",
@@ -2433,6 +2450,38 @@
         "src/services/session-roots.ts": "b27a9b1df28aad228dbec60ab57984f142eb024e",
         "src/services/tool-registry.ts": "eb1b91bac7395927dd12548734bccb86e7ae1de3",
         "tests/kb-code-scope-roots.test.ts": "494812934178a85b8196995e32a3df9991af9253"
+      }
+    },
+    {
+      "id": "f43cd51c-c59e-4938-baed-8b6afc2b10f3",
+      "type": "knowledge",
+      "title": "KB tool profile filters kb_* tools only in FULL sessions via scopeGatedServer",
+      "summary": "The install-wide KB tool profile (knowledge/config.json tool_profile/tool_profile_tools) is read in scopeGatedServer when a FULL session registers its tools; member scope never consults it, and an invalid on-disk profile falls back to full with a warning.",
+      "symbols": [
+        "scopeGatedServer",
+        "readKbToolProfileFromDisk",
+        "kbToolAllowedByProfile",
+        "makeKbToolProfile",
+        "writeKbToolProfile",
+        "runKbProfile"
+      ],
+      "source_files": [
+        "src/services/kb-tool-profile.ts",
+        "src/services/knowledge/kb-config.ts",
+        "src/services/tool-registry.ts",
+        "src/tools/kb-setup.ts",
+        "src/cli/kb-profile.ts",
+        "tests/kb-tool-profile-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T07:14:03.165Z",
+      "source_file_hashes": {
+        "src/cli/kb-profile.ts": "2ae2abf6f3c4a62e3ca10f3013fedcd43103bb24",
+        "src/services/kb-tool-profile.ts": "302b2e9ef0633dfd8e2a1c5ffa4ee0d52ab4fb35",
+        "src/services/knowledge/kb-config.ts": "5571d65b6d096d7742527c16649dbfff17faf51c",
+        "src/services/tool-registry.ts": "05e3d5e04b949b3bfefef7693c230e59da947f02",
+        "src/tools/kb-setup.ts": "eaa0fe1fc385cafbf2c3f9b14c9e5b7159dc86fe",
+        "tests/kb-tool-profile-e2e.test.ts": "949f75c916529d89cd7b80d5433042449935d31a"
       }
     },
     {
