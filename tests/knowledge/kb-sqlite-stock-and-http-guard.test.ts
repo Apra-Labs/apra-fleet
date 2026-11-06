@@ -195,7 +195,7 @@ describe('sqlite path stays byte-identical (my-beads-db-0cd.8 criterion 1-2)', (
   });
 });
 
-describe('eight SqliteProvider-only entrypoints fail fast and named under an http config (my-beads-db-0cd.8 criterion 4)', () => {
+describe('seven SqliteProvider-only entrypoints fail fast and named under an http config (my-beads-db-0cd.8 criterion 4)', () => {
   beforeAll(() => {
     token = loadTestToken();
     remote = 'http://127.0.0.1:1'; // never dialed: every entrypoint below must throw before any network call
@@ -209,12 +209,6 @@ describe('eight SqliteProvider-only entrypoints fail fast and named under an htt
 
   it('kb_list', async () => {
     await expect(kbList({} as any, { folder: makeRepoPath() })).rejects.toThrow(`kb_list: ${REFUSAL_SUFFIX}`);
-  });
-
-  it('kb_feedback', async () => {
-    await expect(
-      kbFeedback({ id: 'anything', reason: 'x' } as any, { folder: makeRepoPath() }),
-    ).rejects.toThrow(`kb_feedback: ${REFUSAL_SUFFIX}`);
   });
 
   it('kb_freshness_sweep', async () => {
@@ -248,6 +242,25 @@ describe('eight SqliteProvider-only entrypoints fail fast and named under an htt
 
   it('kb_directives CLI (list subcommand)', async () => {
     await expect(runKbDirectives('directives', [])).rejects.toThrow(`kb_directives: ${REFUSAL_SUFFIX}`);
+  });
+});
+
+// GitHub #761: kb_feedback is no longer SqliteProvider-only -- it is served by
+// HttpKbProvider.feedback (POST /api/kb/feedback). Against the unreachable
+// remote above it must not refuse; it queues the feedback offline instead.
+describe('kb_feedback is served by the HTTP provider, not refused, under an http config', () => {
+  beforeAll(() => {
+    token = loadTestToken();
+    remote = 'http://127.0.0.1:1';
+  });
+
+  beforeEach(() => {
+    writeHttpConfig();
+  });
+
+  it('kb_feedback queues offline instead of throwing the sqlite-only refusal', async () => {
+    const out = JSON.parse(await kbFeedback({ id: 'anything', reason: 'x' } as any, { folder: makeRepoPath() }));
+    expect(out).toEqual({ id: 'anything', queued: true });
   });
 });
 

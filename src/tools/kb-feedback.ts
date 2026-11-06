@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { KbMemberViewError } from '../services/knowledge/member-bible-view.js';
-import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { HttpKbProvider } from '../services/knowledge/http-provider.js';
 import type { Author } from '../services/knowledge/types.js';
 
 // D5 (T2.3) pattern, DUPLICATED here rather than imported: src/tools/kb-capture.ts
@@ -50,9 +51,17 @@ export async function kbFeedback(input: KbFeedbackInput, anchor?: KbAnchor): Pro
     );
   }
   const providers = await getSelfKbProviders(anchor);
-  const sqliteProvider = requireSqliteProject(providers.project, 'kb_feedback');
   const author = validateAuthor(input.role);
-  const entry = await sqliteProvider.feedback(input.id, input.reason, author);
+  // An HTTP-backed KB: the remote server owns the entry and decides its
+  // stale/flagged state; its response (or the offline-queued marker) is
+  // returned as is. Confidence is never written or invented client-side.
+  if (providers.project instanceof HttpKbProvider) {
+    return JSON.stringify(await providers.project.feedback(input.id, input.reason, author));
+  }
+  if (!isSqliteProject(providers.project)) {
+    throw new Error('kb_feedback: this operation is not supported by the configured KB provider');
+  }
+  const entry = await providers.project.feedback(input.id, input.reason, author);
   return JSON.stringify({
     id: entry.id,
     stale: entry.stale,

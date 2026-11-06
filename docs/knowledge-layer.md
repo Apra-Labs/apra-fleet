@@ -658,8 +658,8 @@ every 30 minutes or less), so one failed run still leaves a valid token.
 **Failure behaviour.** When the secret is missing, expired or unreadable, or
 the server answers 401 twice (the request, then one retry after re-reading the
 secret), the KB call fails with `E-KB-HTTP-AUTH` naming the secret and the
-reason. Captures and invalidates are queued offline and sent once the secret
-is accepted; the queue is kept, not dropped. Member reads of CONFIRMED entries
+reason. Captures, invalidates and feedback are queued offline and sent once
+the secret is accepted; the queue is kept, not dropped. Member reads of CONFIRMED entries
 are still served from the checkout bible. After a refresh nothing needs
 restarting.
 
@@ -858,6 +858,14 @@ All data is local. No token. `kb_sync` is a no-op.
 
 Run `kb_setup` with `remote` and `token` to write this. Do not write
 `token_encrypted` by hand.
+
+With the http provider, `kb_feedback` is sent to the server as
+`POST /api/kb/feedback` with body `{id, reason, role}` and returns the
+server's answer unchanged; the client never sets confidence. While the server
+is unreachable the feedback is queued offline with captures and invalidates
+and the tool answers `{id, queued: true}`. The server must implement that
+route: the bundled `kb-server` command does not serve it yet, so against it
+`kb_feedback` fails with the server's HTTP 404.
 
 With a named secret the config holds a reference instead of a ciphertext:
 

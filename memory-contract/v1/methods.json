@@ -258,16 +258,17 @@
       "id": "X-2",
       "member": "feedback",
       "kind": "undeclared-member",
-      "interface": "SqliteProvider (not declared on MemoryProvider)",
+      "interface": "SqliteProvider and HttpKbProvider (not declared on MemoryProvider)",
       "signature": "feedback(id: string, reason: string, author): Promise<KBEntry>",
       "purpose": "Downvote an entry that proved wrong in practice: sets stale + flagged_for_review, appends a note; never deletes, never touches confidence.",
+      "providers_note": "Served by both providers; it is not behind requireSqliteProject. SqliteProvider.feedback writes the local store and returns the KBEntry (the tool answers {id, stale, flagged_for_review, confidence}). HttpKbProvider.feedback(id, reason, author): Promise<server response | {id, queued: true}> POSTs the kb_feedback request body {id, reason, role} (role carries the validated author) to /api/kb/feedback with the same auth and X-Repository* headers as the other routes, and the tool returns the server response as is. When the server is unreachable the feedback is kept in the offline queue, replayed in order with queued captures and invalidates, and the tool answers {id, queued: true}; on E-KB-HTTP-AUTH it is queued too and the error is rethrown. The HTTP client never writes or invents confidence and never writes the local fallback store.",
       "tools": [
         { "name": "kb_feedback", "request_schema_ref": "schemas/kb_feedback.request.json", "response_schema_ref": "schemas/kb_feedback.response.json", "anchor_validation": "self-validated" }
       ],
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "Each call appends another note.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-MEMBER-VIEW-READ-ONLY", "E-ENTRY-NOT-FOUND", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-MEMBER-VIEW-READ-ONLY", "E-ENTRY-NOT-FOUND", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-ROLE-UNKNOWN-DEGRADED"],
       "see_also": []
     },
