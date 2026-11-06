@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 139
+    "entry_count": 141
   },
   "entries": [
     {
@@ -659,6 +659,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T06:25:49.718Z"
+    },
+    {
+      "id": "33a725a7-b4ac-4c81-8499-fcdddd7fd237",
+      "type": "learning",
+      "title": "Tiny test embedding model fails on out-of-vocab text with a BigInt error",
+      "summary": "Words outside the tiny fixture model's vocabulary make embedding fail with 'Cannot convert undefined to a BigInt', on both the dist and SEA paths; use in-vocab words.",
+      "symbols": [
+        "writeTinyModel",
+        "TINY_VOCAB",
+        "runKbEmbedCheck",
+        "createInProcessOrtRuntime"
+      ],
+      "source_files": [
+        "tests/helpers/tiny-embedding-model.ts",
+        "src/services/knowledge/embedding/ort-runtime.ts",
+        "src/cli/kb-embed-check.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T03:17:23.499Z",
+      "source_file_hashes": {
+        "src/cli/kb-embed-check.ts": "03d86e30ddc5735d9afc05df4ccb62036d5532e1",
+        "src/services/knowledge/embedding/ort-runtime.ts": "a155924c5a628cd953663cfe61dfaa6fbadebf8e",
+        "tests/helpers/tiny-embedding-model.ts": "7d8a2dca5c2b34033449e50e540db3ea7fb22e39"
+      }
     },
     {
       "id": "33c1189c-bf95-4cf3-b875-4b93620bea0f",
@@ -1894,6 +1918,26 @@
         "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "0dffb028188c744e0bcc172691eb9fc79bfb354b",
         "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56",
         "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
+    },
+    {
+      "id": "a9cbd0a2-f452-48f4-b53f-63ac97f6e04d",
+      "type": "learning",
+      "title": "KB vector scoring isolates models by id AND revision AND dims together",
+      "summary": "VectorStore scoring filters entry_vectors on model_id, model_revision and dims together, so a test meant to catch a dropped model_id predicate needs two models with the same revision and dims.",
+      "symbols": [
+        "VectorStore",
+        "SqliteProvider.scoreVectors"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/vector-store.ts",
+        "tests/knowledge/kb-vectors-integration.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T03:17:22.861Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/vector-store.ts": "ea32c998f445156d869b412d6a533efbf28530b3",
+        "tests/knowledge/kb-vectors-integration.test.ts": "d9dc75227362f18b80c2e587fc3759d725d85412"
       }
     },
     {
