@@ -5,7 +5,7 @@ import {
     ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, DoltSyncError, PlanReviewDispatchFailedError, PreSprintValidationError, PRE_SPRINT_REFUSAL_REASONS, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, DoltSyncError, GitSyncError,PlanReviewDispatchFailedError, PreSprintValidationError, PRE_SPRINT_REFUSAL_REASONS, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 // The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Every
 // runner.js call site uses the purpose-based entry points on DoltSync
 // (apra-fleet-417.2.2); the named primitives are imported here only to be
@@ -52,6 +52,7 @@ import { buildCreatePrCommand, resolveProvider, parseProviderRepoRef, getVcsProv
 // brackets that were its only caller here.
 import {
     checkMemberTopology, classifyGitFailure, runGitStep, commandResultToSoftGit,
+    resolveReviewMergeBase,
 } from './git-topology.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resultText, toolErrorText } from './mcp-result.mjs';
@@ -112,6 +113,7 @@ import {
     selectStreaks, groupStreaksFromLaneMetadata, SIZE_POINTS, MODEL_WEIGHT, DEFAULT_EFFORT_THRESHOLD,
     computeLaneEffort, streakRequiredTier, streakMinPriority, streakEffortPoints, beadBlocksDependencyIds,
     resolveWorklistTierPolicy, hasContextHeadroomForResume, assignDoerWorklists,
+    holdBackByLaneOrder,
 } from './worklists.mjs';
 import {
     isTypedAbortError, finalizeAbort, persistNewTaskBestEffort, validateNewTask,
@@ -163,7 +165,7 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // stayed here.
 import { runReviewPhase } from './phases/review.mjs';
 import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, formatDeploySetAsideNotes, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
-import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage } from './set-aside.mjs';
+import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries } from './set-aside.mjs';
 // apra-fleet-3swo.6.8: the next two phase() boundaries -- the per-cycle Integ
 // Test and the Re-Review that Cycle Evaluation dispatches when the goal-
 // priority count already reads 0 but no review ran this cycle. Integ Test is
@@ -248,6 +250,8 @@ import {
     // Develop-dispatch goal filter: below-goal ready leaves are excluded
     // unless they block in-goal work or the sprint already worked on them.
     partitionReadyByGoal, formatBelowGoalExclusionLog,
+    // Set-aside v2: a waiting bead is held until its prerequisites close.
+    unmetPrerequisites,
     // apra-fleet-rp7a.1: the deferred split the Cycle Evaluation completion
     // math and phases/final-review.mjs's closing count BOTH apply, so the two
     // cannot drift apart. See its own doc comment for why 'deferred' -- and
@@ -2238,6 +2242,38 @@ async function runSprintCycle(context) {
     }
 
     /**
+     * The review diff base SHA for `member` (see resolveReviewMergeBase in
+     * git-topology.mjs). Shared by the per-round reviewer and Final Review.
+     * @param {string} member
+     * @returns {Promise<string>}
+     */
+    function reviewMergeBaseFor(member) {
+        return resolveReviewMergeBase({
+            command, member, baseBranch: validated.baseBranch, branch: validated.branch,
+            log, onAuthFailure, resolveMemberProvider: resolveMemberVcsProvider,
+        });
+    }
+
+    /**
+     * The degraded verdict for a review round whose diff base could not be
+     * computed: the reviewer policy's own synthesized-verdict degrade (same
+     * shape, note template, dispatchFailed marker and clear-round-session
+     * step), applied without dispatching the reviewer.
+     * @param {Error} err
+     */
+    function degradedReviewForReviewBase(err) {
+        const reviewerPolicy = policyFor('reviewer');
+        const d = reviewerPolicy.degrade;
+        roundSessions.clear(reviewerPolicy.ladder);
+        log(
+            `Reviewer: review diff base failed, degrading (${d.kind}) -- the reviewer was NOT dispatched this round ` +
+            `and no fallback to the local '${validated.baseBranch}' branch was used: ${err.message}`
+        );
+        const note = d.noteTemplates.dispatch.replace(/\{(message|name)\}/g, (_, f) => (f === 'name' ? err.name : err.message));
+        return { ...d.synthesized, [d.notesField]: note, ...(d.marker ? { [d.marker]: true } : {}) };
+    }
+
+    /**
      * Dispatches one reviewer round and returns its schema-validated verdict.
      * Shared by the per-round Develop/Review dispatch and the Cycle Evaluation
      * re-review so both apply the same contract rule: a `CHANGES_NEEDED`
@@ -2251,6 +2287,25 @@ async function runSprintCycle(context) {
      */
     async function dispatchReview({ beadIds, acceptanceCriteriaJson }) {
         const reviewerPool = getMembersForRole(ROLE_REVIEWER);
+        // The diff range the reviewer is told to use: the fork point of the
+        // sprint branch from a freshly fetched origin/<base>, computed on the
+        // reviewer's own member. Throws (fails the review loudly) rather than
+        // ever falling back to the member's possibly stale local base branch.
+        //
+        // A GitSyncError here (fetch/merge-base failed after runGitStep's own
+        // retry and auth self-heal) degrades the ROUND exactly like the
+        // reviewer ladder's own read-side sync failure does: the reviewer is
+        // NOT dispatched (never with a wrong range), the round is recorded as a
+        // synthesized CHANGES_NEEDED marked dispatchFailed (counts toward the
+        // stall budget, not a contract violation), and its session is not
+        // resumed by the next round. Anything else still propagates.
+        let mergeBaseSha;
+        try {
+            mergeBaseSha = await reviewMergeBaseFor(reviewerPool[0]);
+        } catch (err) {
+            if (!(err instanceof GitSyncError)) throw err;
+            return degradedReviewForReviewBase(err);
+        }
         // apra-fleet-0ef: fetch the INFERRED entries this reviewer may promote
         // and hand them to it in the prompt. The reviewer has no MCP kb_* tools
         // of its own, so without this it can never name an entry id and
@@ -2307,6 +2362,7 @@ async function runSprintCycle(context) {
                 acceptanceCriteriaJson,
                 baseBranch: validated.baseBranch,
                 branch: validated.branch,
+                mergeBaseSha,
                 goal: validated.goal,
                 kbCandidates,
                 kbBlock: reviewerKbBlock,
@@ -2322,7 +2378,7 @@ async function runSprintCycle(context) {
                 + (Array.isArray(beadIds) && beadIds.length > 0
                     ? `bead id(s) under review ${beadIds.join(', ')} `
                     : `the entire sprint scope (no individual bead ids -- you are judging whether the sprint as a whole is complete) `)
-                + `on branch ${validated.branch} against base ${validated.baseBranch}. ` +
+                + `on branch ${validated.branch}, diff range ${mergeBaseSha}..${validated.branch} (use exactly this range for git diff and git log). ` +
                 'Finish evaluating the remaining acceptance criteria and return your final verdict now.',
             roleLabel: 'Reviewer',
             resumeLabel: `Review (resume, max_turns=${TURN_BASES.BASE_REVIEWER_MAX_TURNS * 2})`,
@@ -2859,16 +2915,56 @@ async function runSprintCycle(context) {
     // above goal priority, so an excluded bead never holds the sprint open.
     // Pre-sprint validation keeps the unfiltered readyLeafBeads(): its
     // deadlock diagnosis is about the graph, not about goal membership.
+    //
+    // Set-aside v2 (all in-memory over the same scope read, no extra bd call):
+    //   - a bead that WAITS after a BLOCKED report (sprintState.waitingIds)
+    //     is held while any prerequisite of it is still open;
+    //   - lane order is a prerequisite: a laned bead whose lower-order
+    //     lane-mate is open and not itself dispatchable this round is held
+    //     (holdBackByLaneOrder). Set-aside and publish-blocked beads stay in
+    //     the returned list (phases/develop.mjs excludes them and the
+    //     start-of-round check reads them) but never count as "ahead" of a
+    //     lane-mate.
+    // A hold line is logged whenever it changes.
     const loggedBelowGoalExclusions = new Set();
+    let lastDispatchHoldLog = '';
     async function dispatchableReadyLeafBeads() {
         const [ready, scopeAll] = await Promise.all([readyLeafBeads(), bdListScoped('')]);
+        const setAsideMap = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map();
+        const waitingMap = sprintState.waitingIds instanceof Map ? sprintState.waitingIds : new Map();
+        const permissionBlocked = sprintState.permissionScopeBlockedBeads instanceof Map ? sprintState.permissionScopeBlockedBeads : new Map();
+        const holdLines = [];
         const { dispatchable, excluded } = partitionReadyByGoal(ready, scopeAll, validated.goal, { workedOnIds: workedOnBeadIds });
         const fresh = excluded.filter((e) => !loggedBelowGoalExclusions.has(e.id));
         if (fresh.length > 0) {
             for (const e of fresh) loggedBelowGoalExclusions.add(e.id);
             log(formatBelowGoalExclusionLog(fresh, validated.goal));
         }
-        return dispatchable;
+        let candidates = dispatchable;
+        if (waitingMap.size > 0) {
+            const stillWaiting = [];
+            candidates = dispatchable.filter((b) => {
+                if (!waitingMap.has(b.id)) return true;
+                const on = unmetPrerequisites(b, { scopeBeads: scopeAll }).inScope;
+                if (on.length === 0) return true;
+                stillWaiting.push(`${b.id} waiting on ${on.join(', ')}`);
+                return false;
+            });
+            if (stillWaiting.length > 0) holdLines.push(`WAITING ${stillWaiting.join('; ')} (reported BLOCKED while a prerequisite was open)`);
+        }
+        const isAside = (b) => setAsideMap.has(b.id) || permissionBlocked.has(b.id);
+        const { dispatchable: laneOk, held } = holdBackByLaneOrder(candidates.filter((b) => !isAside(b)), scopeAll);
+        if (held.length > 0) {
+            holdLines.push(`HELD by lane order ${held.map((h) => `${h.id} (after ${h.on.join(', ')})`).join('; ')} -- ` +
+                'a lower-order lane-mate is still open and not dispatchable this round');
+        }
+        if (holdLines.length > 0) {
+            const line = `Develop dispatch: ${holdLines.join('. ')}.`;
+            if (line !== lastDispatchHoldLog) { lastDispatchHoldLog = line; log(line); }
+        }
+        if (held.length === 0) return candidates;
+        const keep = new Set([...laneOk, ...candidates.filter(isAside)].map((b) => b.id));
+        return candidates.filter((b) => keep.has(b.id));
     }
 
     // Stall detection: abort with a typed StalledSprintError after two
@@ -2970,8 +3066,22 @@ async function runSprintCycle(context) {
                 integBoundIds = classifyVerifySet(allBeads, targetIssues).verifyIds.filter((id) => !closed.has(id));
             }
         }
+        // Set-aside v2: an open bead that is not set aside but can only run
+        // after a prerequisite that cannot close in this run (set aside,
+        // itself stuck, or -- for a bead waiting after a BLOCKED report --
+        // outside the scope) is stuck too. Computed only when some open bead
+        // is otherwise uncovered, from the same in-memory scope read.
+        let stuckIds = new Map();
+        if (doctorBlockedIds.size > 0 && open.some((b) => !doctorBlockedIds.has(b.id))) {
+            const scopeAll = await bdListScoped('');
+            const allBeads = await fetchAllBeadsShared();
+            stuckIds = stuckBehindSetAside({
+                scopeBeads: scopeAll, allBeads, doctorBlockedIds,
+                waitingIds: sprintState.waitingIds instanceof Map ? sprintState.waitingIds : new Map(),
+            });
+        }
         const stall = evaluateSetAsideStall({
-            openIds: open.map((b) => b.id), integBoundIds, verifyBlockedIds, doctorBlockedIds, deploySetAside,
+            openIds: open.map((b) => b.id), integBoundIds, verifyBlockedIds, doctorBlockedIds, deploySetAside, stuckIds,
         });
         if (!stall) return;
         const message = formatSetAsideStallMessage(stall, { where, scope: sprintFilter });
@@ -2982,6 +3092,7 @@ async function runSprintCycle(context) {
             blockerIds: stall.blockerIds,
             blockerReasons: stall.blockerReasons,
             setAside: stall.entries,
+            waited: collectWaitEntries(sprintState),
             cycle,
             details: { setAsideStall: true, where },
         });
@@ -3376,6 +3487,7 @@ async function runSprintCycle(context) {
                 kbPriming, kbWork, kbInjection, kbSprintContext,
                 devRounds, currentReady, doerPool, perBeadFeedback,
                 bdListScoped,
+                fetchAllBeadsShared,
                 claimBeadsBatched,
                 verifyDoerStreakClosed,
                 normalizeTierToken,
@@ -3704,7 +3816,7 @@ async function runSprintCycle(context) {
                 `[${closedCountHistory.join(', ')}] (high-water mark on progress score: ${highWaterClosedCount}).` +
                 blockerSuffix + deferredStallSuffix + thrashSuffix + verifySuffix +
                 ` Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, deferredIds: deferredStallIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle, setAside: collectSetAsideEntries(sprintState) }
+                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, deferredIds: deferredStallIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle, setAside: collectSetAsideEntries(sprintState), waited: collectWaitEntries(sprintState) }
             );
         }
 
@@ -3939,6 +4051,7 @@ async function runSprintCycle(context) {
         kbPriming, kbWork, kbInjection, kbSprintContext, getMemberForRole,
         childIdAllocator, sprintMutexId, resolveSettleShell,
         computeChildFloor, createChildBeadWithAllocatedId, sanitizePrText,
+        reviewMergeBaseFor,
     });
 
     // =======================
@@ -4018,6 +4131,7 @@ async function runSprintCycle(context) {
         finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds, regressionResult, regressionSkippedBy,
         dispatchToolCalls: sprintState.dispatchToolCalls,
         setAside: collectSetAsideEntries(sprintState),
+        waited: collectWaitEntries(sprintState),
         kbWork,
         command, memberSeCommands,
         computeBranchSlug, buildAnalysisText, buildCostAnalysis,
@@ -4047,6 +4161,7 @@ async function runSprintCycle(context) {
         gitSync, getMemberForRole,
         finalVerdictResult, costAnalysis,
         setAside: collectSetAsideEntries(sprintState),
+        waited: collectWaitEntries(sprintState),
     });
 
     endGroup();

@@ -80,6 +80,11 @@ trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
 your tool-loading tool first, before concluding they are unavailable.
 
+If a `code_*` call fails with `E-CODE-INDEX-NOT-READY`, wait ONCE for the
+`retry_after_ms` its error result carries (skip the wait when it is 0: retrying will
+not help), retry that call ONCE, and if it still fails fall back to text search and
+record the fallback. Never poll `code_status` in a loop waiting for the index.
+
 The `kb_query` and `code_impact` calls below are EXPECTED, not optional, whenever the
 tools are present. If a tool is genuinely not present (or the KB or code index is not set
 up for this repo), record that in `toolUse` (Output schema) and continue -- never skip
@@ -105,7 +110,8 @@ silently.
    fixture-only files are exempt. Prefer these over grep for symbol lookups, call-chain
    tracing, and impact analysis. If they are absent, fail, or report the repo is not
    indexed, fall back to grep and record it in `toolUse`; do not try to build an index
-   yourself.
+   yourself. On `E-CODE-INDEX-NOT-READY`, wait once for its `retry_after_ms`, retry
+   once, then fall back to grep -- never poll `code_status` in a loop.
 5. Report in `toolUse`: `kb` and `code` are each `used`, `unavailable` or `not_needed`;
    `note` says why for anything not `used`. `used` means the expected call was made
    (`kb_query` for kb -- `kb_session_prime` alone is not `used`; `code_impact`/

@@ -32,11 +32,12 @@ import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { installBeads, type BeadsInstallDeps } from './beads-install.js';
 import {
   classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText, selfInvocationLines,
-  writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG,
+  writeMemberInstallMarker, clearMemberInstallMarker, recordFullInstallPort, FORCE_STOP_FULL_INSTALL_FLAG,
 } from './install-guard.js';
-import { detectRunningFleetSe, fleetSeRefusalText, realFleetSeProbes, IGNORE_RUNNING_SPRINTS_FLAG, type FleetSeProbes } from './fleet-se-guard.js';
-import { writeServiceNotice, clearServiceNoticeContaining } from '../services/service-notice.js';
+import { detectRunningFleetSe, fleetSeRefusalText, fleetSeRerunArgs, realFleetSeProbes, IGNORE_RUNNING_SPRINTS_FLAG, type FleetSeProbes } from './fleet-se-guard.js';
+import { writeServiceNotice, appendServiceNotice, clearServiceNoticeContaining, SERVICE_NOTICE_PATH } from '../services/service-notice.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
+import { isPidAlive } from '../utils/process-utils.js';
 import { codeIntelPathWarning } from '../utils/find-on-path.js';
 import { gitBashCandidates } from '../os/git-bash-candidates.js';
 import {
@@ -145,6 +146,23 @@ export function _setFleetSeProbes(overrides: Partial<FleetSeProbes>): void {
 /** Test-only: restore the real running fleet-sprint guard probes. */
 export function _resetFleetSeProbes(): void {
   fleetSeProbes = realFleetSeProbes;
+}
+/**
+ * True when a live apra-fleet server relevant to THIS install is recorded -- the
+ * same classification the running-server guard uses. The fleet-sprint refusal
+ * reads it to put --force on its rerun line. Overridable for tests.
+ */
+function realLiveServerProbe(): boolean {
+  try {
+    return (isSea() || isNpmGlobalInstall()) && isApraFleetRunning() && classifyRunningServer(BIN_DIR)?.relevant === true;
+  } catch {
+    return false;
+  }
+}
+let liveServerProbe: () => boolean = realLiveServerProbe;
+/** Test-only: replace the live-server probe used by the fleet-sprint refusal. */
+export function _setLiveServerProbe(probe: (() => boolean) | null): void {
+  liveServerProbe = probe ?? realLiveServerProbe;
 }
 /** The probes the running fleet-sprint guard uses (shared with update.ts). */
 export function currentFleetSeProbes(): FleetSeProbes { return fleetSeProbes; }
@@ -1281,6 +1299,21 @@ export function resolveMemberInstallPort(
   return { port: env ?? recordedPort ?? BUILTIN_DEFAULT_PORT, explicit: false };
 }
 
+/** Restart-sessions text shown after an install that changed an MCP registration (ASCII only). */
+export const ACCESS_RESTART_NOTE = '[!] Restart every open LLM CLI session (Claude Code, Codex, ...): sessions started before this install keep their old MCP registration without the access secret, and the server refuses them (Claude Code shows "Dynamic Client Registration rejected (HTTP 404)").';
+
+/**
+ * Persist ACCESS_RESTART_NOTE as a pending service notice when an install
+ * changed a (non-member) registration. `shownInline` (stdout is a console)
+ * marks it already shown, so an interactive install does not repeat it on the
+ * next service verb; a detached install (apra-fleet update) leaves it pending.
+ */
+export function recordAccessRestartNotice(changed: boolean, shownInline: boolean, file: string = SERVICE_NOTICE_PATH): void {
+  if (!changed) return;
+  // Append, never overwrite: registration may have left unshown legacy-task guidance.
+  appendServiceNotice(ACCESS_RESTART_NOTE, file, new Date(), shownInline);
+}
+
 export async function runInstall(args: string[]): Promise<void> {
   // --help / -h guard - must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {
@@ -1507,7 +1540,7 @@ Options:
       });
       const text = fleetSeRefusalText(found, {
         platform: process.platform,
-        rerunLines: self(args),
+        rerunLines: self(fleetSeRerunArgs(args, liveServerProbe())),
         ignoreLines: self([...args, IGNORE_RUNNING_SPRINTS_FLAG]),
       });
       console.error(text);
@@ -1565,6 +1598,11 @@ Nothing was installed.
   // binary-copy step can bring it back up instead of leaving it down.
   let guardServiceMgr: ServiceManager | null = null;
   let guardStoppedService = false;
+  // The service manager's stop() resolved false: a server pid was left running
+  // because it could not be verified as apra-fleet (so it was not killed).
+  let guardStopLeftRunning = false;
+  // The guard restarted the service itself (no final service step to do it).
+  let guardRestartedService = false;
   if (runningScope?.relevant) {
     if (!force) {
       const killHint = process.platform === 'win32'
@@ -1610,8 +1648,9 @@ ${killHint}
       // A service is registered: stop the SERVICE, never pkill first.
       console.log('  Registered service detected -- stopping it through the service manager.');
       try {
-        await guardServiceMgr.stop();
+        const stopped = await guardServiceMgr.stop({ reason: 'install' });
         guardStoppedService = true;
+        if (stopped === false) guardStopLeftRunning = true;
       } catch (err) {
         console.warn(`    Service stop failed: ${(err as Error).message}`);
       }
@@ -1651,9 +1690,26 @@ ${manualStopHint(pidsAfterStop)}
 `);
       process.exit(1);
     }
-    console.log(pidsBeforeStop.length > 0 || guardStoppedService
-      ? '  Stopped running server.'
-      : '  No running server process of this install was found to stop.');
+    // The stop reported a pid it would not force-kill: do not claim it stopped --
+    // but only say it is still running if a candidate pid actually is. It may
+    // have exited while waiting for the service stop, in which case the normal
+    // message is the truthful one.
+    let stillRunningWho: string | null = null;
+    if (guardStopLeftRunning) {
+      const { readServerInfoPid } = await import('../services/singleton.js');
+      const leftPid = readServerInfoPid();
+      const candidates = [...(leftPid !== undefined ? [String(leftPid)] : []), ...pidsBeforeStop]
+        .filter((pid, i, all) => all.indexOf(pid) === i)
+        .filter(pid => isPidAlive(Number(pid)));
+      if (candidates.length > 0) stillRunningWho = `pid ${candidates.join(', ')}`;
+    }
+    if (stillRunningWho) {
+      console.warn(`  The server ${stillRunningWho} is still running: it did not exit after the stop request and could not be verified as an apra-fleet process, so it was not force-killed. Install continues without stopping it; check ${stillRunningWho} yourself.`);
+    } else {
+      console.log(pidsBeforeStop.length > 0 || guardStoppedService
+        ? '  Stopped running server.'
+        : '  No running server process of this install was found to stop.');
+    }
   }
 
   console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);
@@ -1689,13 +1745,23 @@ ${manualStopHint(pidsAfterStop)}
   // the exact restart command is printed, so a failure at any later step stays
   // recoverable by hand.
   if (guardStoppedService && guardServiceMgr) {
-    console.log(`  The registered service was stopped by --force. Restart command: ${serviceRestartCommand()}`);
+    if (serviceStep) {
+      console.log(`  The registered service was stopped by --force; the final install step re-registers and starts it. (Only if a later step fails, restart it with: ${serviceRestartCommand()})`);
+    } else {
+      console.log(`  The registered service was stopped by --force; restarting it now. (If that fails -- Restart command: ${serviceRestartCommand()})`);
+    }
     if (!serviceStep) {
       try {
         await guardServiceMgr.start();
+        guardRestartedService = true;
         console.log('  Restarted the registered service.');
       } catch (err) {
         console.warn(`  [WARN] Could not restart the registered service: ${(err as Error).message}`);
+        // No service step ran, so nothing else prints the legacy-task guidance
+        // (the install-reason stop suppressed it): print it once here.
+        let guidance: string | null = null;
+        try { guidance = guardServiceMgr.legacyGuidance?.() ?? null; } catch { /* generic warning stands */ }
+        if (guidance) console.warn(guidance);
       }
     }
   }
@@ -2237,6 +2303,9 @@ ${manualStopHint(pidsAfterStop)}
   // non-zero (E-MEMBER-AUTOSTART) but leaves the marker, so the next fleet_install
   // "auto" recognises its own half-finished install and retries.
   if (memberMode) writeMemberInstallMarker(serverVersion, memberPort);
+  // A full install records its port (or clears the record) the same way, so
+  // start / service launch / logon autostart bind what the MCP registration says.
+  else recordFullInstallPort(serverVersion);
 
   // Every install holds a member access secret (owner-only, in its data dir):
   // its server accepts a ?member= session only with it, so another local
@@ -2289,6 +2358,9 @@ ${manualStopHint(pidsAfterStop)}
           console.error(`
 Error: ${conflict.message}
 `);
+          // The registrations are already rewritten: keep the restart notice
+          // pending (never shown inline on this exit) for the next verb.
+          recordAccessRestartNotice(registrationChanged && !memberMode, false);
           process.exitCode = 1;
           return;
         }
@@ -2338,7 +2410,11 @@ not start automatically.
         // hits the same refusal, so give the upgrade guidance instead.
         let legacyHint: string | null = null;
         if (serviceReused) { try { legacyHint = svcMgr.legacyGuidance?.() ?? null; } catch { /* keep the generic hint */ } }
-        const restartHint = legacyHint ? legacyHint
+        // register() already printed the full guidance for a reused legacy task:
+        // point at it instead of repeating it, so it appears once per install.
+        const alreadyShown = legacyHint !== null && (svcMgr.legacyGuidanceShown?.() ?? false);
+        const restartHint = alreadyShown ? 'The task could not be started; follow the steps printed above for the existing scheduled task, then re-run install --force.'
+          : legacyHint ? legacyHint
           : guardStoppedService
           ? `Start it with:\n    ${serviceRestartCommand()}\nthen run 'apra-fleet status' for how to repair the service (apra-fleet never needs an elevated install).`
           : 'Start it with:\n    apra-fleet start';
@@ -2347,6 +2423,10 @@ Error: install --force stopped the running apra-fleet server, but the service
 could not be registered/started, so the server is NOT running.
 ${restartHint}
 `);
+        // After register() (which may clear a stale notice): the registrations
+        // changed, so the restart notice must survive this exit. Not shown
+        // inline here, so it stays pending for the next status/start/update.
+        recordAccessRestartNotice(registrationChanged && !memberMode, false);
         process.exit(1);
       }
     }
@@ -2365,15 +2445,19 @@ ${restartHint}
     ? MEMBER_INSTALL_NEXT_STEP
     : llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force && !memberMode ? `\nRestart ${clientName} to reload the MCP server.` : '';
-  const accessNote = registrationChanged && !memberMode
-    ? '\n[!] Restart every open LLM CLI session (Claude Code, Codex, ...): sessions started before this install keep their old MCP registration without the access secret, and the server refuses them (Claude Code shows "Dynamic Client Registration rejected (HTTP 404)").'
-    : '';
+  const accessNote = registrationChanged && !memberMode ? `
+${ACCESS_RESTART_NOTE}` : '';
+  // apra-fleet update runs install detached with stdio ignored, so the note above
+  // never reaches that user: persist it for the next status/start/update.
+  recordAccessRestartNotice(registrationChanged && !memberMode, Boolean(process.stdout.isTTY));
   const settingsLine = memberMode ? '' : `\n  Settings:    ${paths.settingsFile}`;
   const serviceState = serviceHealthy === true ? 'registered and running' : serviceHealthy === false ? 'registered, but NOT answering /health (see the warning above)' : 'registered (health not checked)';
   const claudeModLine = claudeModResult
     ? `\n  Claude mod:  fleet-status ${claudeModResult.status === 'installed' ? `installed (${claudeModResult.dir}${claudeModResult.note ? `; ${claudeModResult.note}` : ''})` : `skipped: ${claudeModResult.reason}`}`
     : '';
-  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `${serviceState}${serviceReused ? ' (existing task reused)' : ''}${serviceRunKey ? ' (logon autostart via HKCU Run, no automatic restart)' : ''}` : 'registration skipped'}` : '';
+  const serviceLine = !serviceStep && guardStoppedService
+    ? `\n  Service:     ${guardRestartedService ? 'restarted after --force stop' : 'NOT restarted (see the warning above; start it with ' + serviceRestartCommand() + ')'}`
+    : serviceStep ? `\n  Service:     ${serviceRegistered ? `${serviceState}${serviceReused ? ' (existing task reused)' : ''}${serviceRunKey ? ' (logon autostart via HKCU Run, no automatic restart)' : ''}` : 'registration skipped'}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}

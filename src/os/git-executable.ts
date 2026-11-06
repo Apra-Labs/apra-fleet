@@ -17,8 +17,9 @@
  *     spawn can run directly (.EXE / .COM). A git.cmd / git.bat shim cannot be
  *     spawned without a shell (Node refuses it with EINVAL), so it is never
  *     returned; Git for Windows puts cmd\git.exe on PATH.
- * The result is cached for the process. A missing git throws GitNotFoundError,
- * one clear error naming PATH, instead of a confusing failure in whichever
+ * The PATH-only search itself lives in windows-executable.ts (shared with the
+ * Windows shells the fleet server starts). The result is cached for the
+ * process. A missing git throws GitNotFoundError, one clear error naming PATH, instead of a confusing failure in whichever
  * caller ran first. A failed lookup is not cached, so installing git later
  * starts working without a restart.
  *
@@ -31,17 +32,13 @@
  * the fleet server's own process.
  */
 import {
-  DEFAULT_PATHEXT,
-  absoluteWindowsPathEntries,
   defaultIsFile,
   envValue,
-  findOnAbsoluteWindowsPath,
+  searchWindowsPath,
+  type WindowsExecutableDeps,
 } from './windows-executable.js';
 
 export const GIT_NOT_FOUND_CODE = 'E-GIT-NOT-FOUND';
-
-/** Extensions a shell-less CreateProcess spawn can execute directly. */
-const SPAWNABLE_EXTS = new Set(['.EXE', '.COM']);
 
 export class GitNotFoundError extends Error {
   readonly code = GIT_NOT_FOUND_CODE;
@@ -56,14 +53,8 @@ export class GitNotFoundError extends Error {
   }
 }
 
-export interface GitResolveDeps {
-  platform: NodeJS.Platform;
-  /** The PATH value (on Windows the env key may be spelled Path). */
-  pathValue: string | undefined;
-  pathext: string | undefined;
-  /** True when p is an existing regular file. */
-  isFile: (p: string) => boolean;
-}
+/** git has no preferred location: only the PATH fields of the shared deps apply. */
+export type GitResolveDeps = Pick<WindowsExecutableDeps, 'platform' | 'pathValue' | 'pathext' | 'isFile'>;
 
 export function defaultGitResolveDeps(): GitResolveDeps {
   return {
@@ -80,14 +71,9 @@ export function defaultGitResolveDeps(): GitResolveDeps {
  */
 export function resolveGitExecutable(deps: GitResolveDeps): string {
   if (deps.platform !== 'win32') return 'git';
-  const exts = (deps.pathext && deps.pathext.trim() ? deps.pathext : DEFAULT_PATHEXT)
-    .split(';')
-    .map((e) => e.trim().toUpperCase())
-    .filter((e) => SPAWNABLE_EXTS.has(e));
-  const extOrder = exts.length > 0 ? [...new Set(exts)] : ['.EXE'];
-  const found = findOnAbsoluteWindowsPath('git', extOrder.map((e) => e.toLowerCase()), deps);
-  if (found) return found;
-  throw new GitNotFoundError(absoluteWindowsPathEntries(deps.pathValue));
+  const { found, searched } = searchWindowsPath('git', deps);
+  if (found !== undefined) return found;
+  throw new GitNotFoundError(searched);
 }
 
 let cached: string | undefined;

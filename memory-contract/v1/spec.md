@@ -29,9 +29,14 @@ ToolTextResponse = { content: [ { type: "text", text: string } ] }
 - `content` is always a single-element array; `text` is the JSON-stringified
   handler payload -- so every response is JSON-parseable in practice even
   though no tool declares a response zod schema (`INVENTORY.md` section 3).
-- No tool in this surface returns `structuredContent`; that channel is unused
-  here (`wrapTool` only forwards it when the handler returns
-  `{text, structuredContent}`, and all 23 handlers return a bare `string`).
+- No tool in this surface returns `structuredContent` on a SUCCESS result;
+  that channel is unused there (`wrapTool` only forwards it when the handler
+  returns `{text, structuredContent}`, and all 23 handlers return a bare
+  `string`). The one use is on an ERROR result: an `E-CODE-INDEX-NOT-READY`
+  refusal is returned as `{ content: [ { type: "text", text: <the unchanged
+  one-line message> } ], isError: true, structuredContent: <detail> }` -- see
+  section 2.7. Every other refusal is a thrown error the MCP server turns into
+  an `isError` text result with no `structuredContent`.
 - **The published schemas are deliberately WIDER than the reachable shape, and
   that is not a contradiction of the two statements above.** Every
   `schemas/*.response.json` permits `content` to hold 1-3 items, allows an
@@ -113,8 +118,16 @@ the indexed commit.
 ### 2.4 Every kb_* call is scoped to the calling session (KB constraint)
 
 No `kb_*` tool takes a repo/scope argument. The KB a call reads/writes is the
-calling session's own: a member session resolves its registered work folder,
-any other session the fleet server's working folder. A folder that cannot
+calling session's own: a member session resolves its registered work folder.
+Any other (FULL) session resolves from the MCP client's roots (`roots/list`):
+the first offered root inside a git repository with an origin remote wins, and
+stands for that repository's top level. The fleet server's working folder is
+used only when the client offers no roots (no `roots` capability or an empty
+list). Offered roots that cannot be used, including any that do not name a
+folder on the server's host, and a failed `roots/list`, refuse the call: it
+never falls back to the server's folder. Roots are fetched once per session, on its first
+`kb_*`/`code_*` call, and refetched after `notifications/roots/list_changed`;
+a member session never reads roots. A folder that cannot
 carry a KB identity is refused before the provider is reached
 (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`). A remote
 member's folder lives on another host: the read tools carry it verbatim and
@@ -131,10 +144,17 @@ described as removed) so that an MCP server, which strips undeclared keys,
 cannot silently re-point an old caller at a different KB; a request carrying
 any of them (any value other than absent/undefined) MUST be refused with
 `E-SCOPE-KEY-REMOVED` before any KB is resolved, and the error message names
-every removed key present and what replaces it. A FULL session's self is the
-fleet server's working folder, never the client's directory; its
-self-resolution messages say so and name both fixes (start the server from the
-intended repository, or call from a member session registered on it).
+every removed key present and what replaces it. A FULL session's self is never
+the client's working directory (an HTTP server cannot see it), only an offered
+root or the server's folder. Its self-resolution errors name the missing piece:
+asking for the roots failed or none is a folder on this host
+(`E-SELF-NO-WORKFOLDER`, and a failed fetch is asked again on the next call),
+roots were offered but none is in a git repository (`E-SELF-NOT-A-REPO`), roots
+were offered but none has an origin remote (`E-SELF-NO-REMOTE`), or the client
+offered no roots and the server folder is not a repository / has no origin
+(`E-SELF-NOT-A-REPO` / `E-SELF-NO-REMOTE`, naming that no roots were offered).
+The remediation names every fix: open the client in the intended repository,
+start the server from it, or call from a member session registered on it.
 
 Two read-tool input forms exist for compatibility: `kb_list` accepts
 `confidence` either as a list of tiers or as one tier string (the
@@ -412,7 +432,13 @@ because import never raises confidence on an existing row.
 
 No `code_*` tool takes a repo/scope argument either. The repo a call is about
 is resolved exactly as for `kb_*` (section 2.4): a member session's registered
-work folder, any other session the fleet server's working folder. A local
+work folder; any other session the first MCP client root that is a git
+repository with an origin remote, else the fleet server's working folder when
+the client offers no roots. Explicit extension of that rule for `code_*` only:
+when roots are offered and none has an origin remote, the first offered root
+that is a git repository is used (a code index needs no KB identity). `kb_*`
+calls in that same session fail with `E-SELF-NO-REMOTE`, so `kb_*` and
+`code_*` never resolve to two different repositories. A local
 folder that is missing or is not a git repository is refused before the
 provider is reached (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`); unlike
 `kb_*`, no origin remote is required, because a code index is keyed by folder,
@@ -439,6 +465,37 @@ pin the two (self) refusals; every `code_*` tool has a
 `refusal-index-not-ready` fixture run as the `CODE` member session (provider
 pinned to `gitnexus`, no index), and `code_query/refusal-intel-disabled` runs as
 the `CODE_OFF` member session (provider `none`).
+
+Every `E-CODE-INDEX-NOT-READY` error result carries machine-readable detail
+as the result's `structuredContent` (the error object's `structuredContent`,
+mapped by `wrapTool`; it survives the MCP boundary, where a plain thrown error
+keeps only its message). The same detail is repeated in the result's one-line
+text, after the `CODE: problem Remediation: ...` message, as
+`[retry_after_ms=N retry_will_help=B build=X state=Y ...]`, because an MCP
+client may pass its model only the text of an error result:
+
+- `retry_after_ms` (number, every state): how long to wait before ONE retry --
+  while an analyze is live or was just requested for this call, what should
+  remain of the folder's last build time (15000 to 600000), or 180000 with no
+  earlier build; 60000 after the scheduler's cooldown, 5000 when the index changed under the call,
+  and `0` when no build is running and none could be requested (no automatic
+  build, builds paused or disabled, the server cannot build, a remote
+  member's folder, provider `codebase-memory`).
+- `retry_will_help` (boolean): `false` exactly when `retry_after_ms` is `0` --
+  waiting will not help; follow the remediation or fall back.
+- `code`, `provider`, `state` (`missing` | `building` | `interrupted` |
+  `inconsistent` | `changed`), `build` (`running` | `requested` | `none`), and
+  `heal` (`started` or the not-started reason) when an automatic build was
+  attempted.
+- `progress` (gitnexus, when an analyze is recorded for the folder and not
+  finished): `{ phase, elapsed_ms, last_line, line_count }`, the same data
+  `code_status` reports under `analyze`.
+
+The intended caller behaviour is: wait once for `retry_after_ms`, retry once,
+then fall back (e.g. to text search) -- never poll `code_status` in a loop.
+The `refusal-index-not-ready` fixtures record this detail under
+`error.structured` (minus the time-varying `progress`), and the round-trip
+harness compares it key for key.
 
 ### 2.8 Bible file format (v3) and its hash basis
 

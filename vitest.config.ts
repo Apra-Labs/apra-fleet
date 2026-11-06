@@ -36,9 +36,13 @@ const NODE_SQLITE_DEPENDENT_TESTS = [
 // to stay inside the per-suite wall-clock budget. It runs in the nightly
 // install/upgrade proof workflow (.github/workflows/regression.yml, job
 // undici-pack-install), which sets APRA_RUN_PACK_INSTALL=1 to opt it back in.
-const NIGHTLY_ONLY_TESTS = process.env.APRA_RUN_PACK_INSTALL === '1'
-  ? []
-  : ['tests/undici-pack-install.test.ts'];
+// The corrupt-index proof against a real gitnexus index needs a large repo and
+// takes 6-10 minutes: same workflow, job code-index-real-gitnexus, which
+// sets APRA_RUN_REAL_GITNEXUS=1.
+const NIGHTLY_ONLY_TESTS = [
+  ...(process.env.APRA_RUN_PACK_INSTALL === '1' ? [] : ['tests/undici-pack-install.test.ts']),
+  ...(process.env.APRA_RUN_REAL_GITNEXUS === '1' ? [] : ['tests/code-index-corrupt-real-gitnexus.test.ts']),
+];
 
 const sqliteAvailable = hasNodeSqlite();
 if (!sqliteAvailable) {

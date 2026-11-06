@@ -24,7 +24,7 @@
 import { createHash } from 'crypto';
 import { SAFE_TEXT_RE } from './newtask-text.mjs';
 import { formatDispatchToolCalls } from './dispatch-accounting.mjs';
-import { formatSetAsideItems } from './set-aside.mjs';
+import { formatSetAsideItems, formatWaitedLine } from './set-aside.mjs';
 
 // ---------------------------------------------------------------------------
 // PR body/title text sanitization. The final reviewer's verdict notes are LLM
@@ -157,6 +157,9 @@ export function buildAnalysisText({
     // The run's set-aside records (./set-aside.mjs collectSetAsideEntries):
     // rendered as a "Set aside this run" section, omitted when empty.
     setAside = [],
+    // The run's wait records (./set-aside.mjs collectWaitEntries): one
+    // "Waited this run" line, omitted when nothing waited.
+    waited = [],
 }) {
     // The once-per-sprint Regression Test phase runs after the final verdict
     // and never gates it. Its failures are filed as parent-less carry-over
@@ -201,6 +204,7 @@ export function buildAnalysisText({
             : 'No integration test failures recorded this sprint.',
         '',
         ...setAsideSectionLines(setAside),
+        ...(formatWaitedLine(waited) ? [formatWaitedLine(waited), ''] : []),
         '## Reviewer-proposed newTask rejections',
         '',
         rejectedNewTasks.length > 0

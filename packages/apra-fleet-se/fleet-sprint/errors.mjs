@@ -158,10 +158,10 @@ export class SprintPlanRejectedError extends WorkflowError {
 export class StalledSprintError extends WorkflowError {
     /**
      * @param {string} message
-     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], blockerIds?: string[], blockerReasons?: Record<string, string>, setAside?: object[], cycle?: number, details?: object, cause?: unknown }} [opts]
+     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], blockerIds?: string[], blockerReasons?: Record<string, string>, setAside?: object[], waited?: object[], cycle?: number, details?: object, cause?: unknown }} [opts]
      */
     constructor(message, opts = {}) {
-        const { staleCycles = null, closedCountHistory = [], highWaterClosedCount = null, thrashIds = [], blockerIds = [], blockerReasons = {}, setAside = [], cycle, details, cause } = opts;
+        const { staleCycles = null, closedCountHistory = [], highWaterClosedCount = null, thrashIds = [], blockerIds = [], blockerReasons = {}, setAside = [], waited = [], cycle, details, cause } = opts;
         super(message, {
             code: 'SPRINT_STALLED',
             details: { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, blockerIds, blockerReasons, setAside, cycle, ...details },
@@ -174,6 +174,9 @@ export class StalledSprintError extends WorkflowError {
         this.blockerIds = blockerIds;
         this.blockerReasons = blockerReasons;
         this.setAside = setAside;
+        // The run's wait records (./set-aside.mjs collectWaitEntries): the
+        // "Waited this run" line of an [ABORTED] PR body.
+        this.waited = waited;
     }
 }
 

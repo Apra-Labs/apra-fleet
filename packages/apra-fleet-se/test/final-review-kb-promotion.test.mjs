@@ -13,7 +13,7 @@ const CANDIDATES = [
 const BASE = {
     targetIssues: ['BD-1'],
     branch: 'feat/x',
-    baseBranch: 'main',
+    baseBranch: 'main', mergeBaseSha: 'abcdef0123456789abcdef0123456789abcdef01',
     goal: 'P1/P2',
     cyclesRun: 2,
     closedCount: 5,
@@ -63,7 +63,7 @@ test('both reviewer prompts render the identical promotion block', () => {
     check(buildFinalVerdictPrompt({ ...BASE, kbCandidates: CANDIDATES }).includes(block), 'final prompt must embed the shared block verbatim');
     check(
         buildReviewerPrompt({
-            beadIds: ['BD-1'], acceptanceCriteriaJson: '[]', baseBranch: 'main', branch: 'feat/x', kbCandidates: CANDIDATES,
+            beadIds: ['BD-1'], acceptanceCriteriaJson: '[]', baseBranch: 'main', mergeBaseSha: 'abcdef0123456789abcdef0123456789abcdef01', branch: 'feat/x', kbCandidates: CANDIDATES,
         }).includes(block),
         'per-round reviewer prompt must embed the same shared block verbatim'
     );

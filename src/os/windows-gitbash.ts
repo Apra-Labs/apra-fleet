@@ -6,6 +6,7 @@ import { escapeDoubleQuoted, escapeShellArg, escapeBatchMetachars, escapePowerSh
 import { isWindowsPosixUname } from '../utils/platform.js';
 import { gitBashCandidates } from './git-bash-candidates.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
+import { defaultIsFile, envValue, searchWindowsPath } from './windows-executable.js';
 import { logWarn } from '../utils/log-helpers.js';
 import type { ProviderAdapter, PromptOptions } from './os-commands.js';
 import { withGoMaxProcsDefault, GO_MAXPROCS_DEFAULT_GITBASH } from './go-concurrency.js';
@@ -17,21 +18,26 @@ import { withGoMaxProcsDefault, GO_MAXPROCS_DEFAULT_GITBASH } from './go-concurr
  * child_process when omitted -- production callers pass nothing.
  */
 export interface ResolveGitBashPathDeps {
-  /** Defaults to process.env. */
+  /** Defaults to process.env. Its PATH / PATHEXT drive the PATH fallback. */
   env?: NodeJS.ProcessEnv;
-  /** Defaults to fs.existsSync. */
+  /** Defaults to fs.existsSync. Checks the well-known candidates only. */
   exists?: (candidatePath: string) => boolean;
   /**
-   * Runs `uname -s` through the PATH-resolved bash.exe (if any) and returns
-   * its stdout, or undefined if no bash.exe is on PATH / it could not be
-   * run. Defaults to a real execFileSync('bash.exe', ['-lc', 'uname -s']).
+   * True when p is an existing regular file; used by the PATH-only search of
+   * the fallback. Defaults to an fs.statSync check.
    */
-  probeUname?: () => string | undefined;
+  isFile?: (p: string) => boolean;
+  /**
+   * Runs `uname -s` through the given ABSOLUTE bash.exe path (the first one
+   * the PATH-only search found) and returns its stdout, or undefined if it
+   * could not be run. Defaults to a real execFileSync(bashPath, ['-lc', 'uname -s']).
+   */
+  probeUname?: (bashPath: string) => string | undefined;
 }
 
-function defaultProbeUname(): string | undefined {
+function defaultProbeUname(bashPath: string): string | undefined {
   try {
-    return execFileSync('bash.exe', ['-lc', 'uname -s'], { encoding: 'utf-8', timeout: 5000, windowsHide: true }).toString();
+    return execFileSync(bashPath, ['-lc', 'uname -s'], { encoding: 'utf-8', timeout: 5000, windowsHide: true }).toString();
   } catch {
     return undefined;
   }
@@ -45,13 +51,15 @@ function defaultProbeUname(): string | undefined {
  * install location, so the two can never drift apart.
  *
  * If none of the known-location candidates exist on disk, this does NOT
- * silently trust a bare `bash.exe` resolved off PATH -- Windows also ships
- * the WSL launcher under System32/Sysnative/WindowsApps with the identical
- * binary name (the same ambiguity isWslLauncherPath/isWindowsPosixUname
- * exist to eliminate for the registration probe). Instead it runs `uname -s`
- * through whatever bash.exe PATH resolves and only trusts it if that output
- * proves a real MSYS/MinGW/Cygwin bash; otherwise it throws, naming every
- * candidate path it tried.
+ * silently trust a bash.exe found on PATH -- Windows also ships the WSL
+ * launcher under System32/Sysnative/WindowsApps with the identical binary
+ * name (the same ambiguity isWslLauncherPath/isWindowsPosixUname exist to
+ * eliminate for the registration probe). It searches ONLY absolute PATH
+ * entries (src/os/windows-executable.ts -- never the cwd, which for
+ * LocalStrategy is the member work folder), runs `uname -s` through that
+ * absolute path, and returns the absolute path only if the output proves a
+ * real MSYS/MinGW/Cygwin bash; otherwise it throws, naming every candidate
+ * path it tried. It never returns a bare program name.
  */
 export function resolveGitBashPath(deps: ResolveGitBashPathDeps = {}): string {
   const env = deps.env ?? process.env;
@@ -62,15 +70,22 @@ export function resolveGitBashPath(deps: ResolveGitBashPathDeps = {}): string {
     if (exists(candidate)) return candidate;
   }
 
+  const { found: pathBash } = searchWindowsPath('bash.exe', {
+    pathValue: envValue(env, 'PATH'),
+    pathext: envValue(env, 'PATHEXT'),
+    isFile: deps.isFile ?? defaultIsFile,
+  });
   const probeUname = deps.probeUname ?? defaultProbeUname;
-  const unameOutput = probeUname();
-  if (unameOutput !== undefined && isWindowsPosixUname(unameOutput)) return 'bash.exe';
+  const unameOutput = pathBash === undefined ? undefined : probeUname(pathBash);
+  if (pathBash !== undefined && unameOutput !== undefined && isWindowsPosixUname(unameOutput)) return pathBash;
 
   throw new Error(
     `No Git-for-Windows bash.exe found. Tried: ${candidates.join(', ')}` +
-      (unameOutput === undefined
-        ? ', and no bash.exe on PATH could be run.'
-        : `, and the PATH-resolved bash.exe reported "${unameOutput.trim()}" for uname -s (not MSYS/MinGW/Cygwin).`),
+      (pathBash === undefined
+        ? ', and no bash.exe was found in any absolute PATH entry.'
+        : unameOutput === undefined
+          ? `, and the PATH bash.exe at ${pathBash} could not be run.`
+          : `, and the PATH bash.exe at ${pathBash} reported "${unameOutput.trim()}" for uname -s (not MSYS/MinGW/Cygwin).`),
   );
 }
 

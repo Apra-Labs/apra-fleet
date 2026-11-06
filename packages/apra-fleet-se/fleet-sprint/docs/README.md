@@ -75,7 +75,10 @@ Start-Process -FilePath "apra-fleet" -ArgumentList "workflow","fleet-sprint", `
   -WindowStyle Hidden -PassThru
 ```
 
-On start it prints the dashboard URL (`http://localhost:<viewer-port>`).
+On start it prints the dashboard URL (`http://127.0.0.1:<viewer-port>`). The
+dashboard viewer and the supervisor (`fleet-se serve`) bind loopback only by
+default; `fleet-se serve --host <addr>` (e.g. `0.0.0.0`) is the explicit opt-in
+to expose the unauthenticated supervisor API off-box.
 Watch progress there rather than tailing raw stdout.
 
 ## Arguments

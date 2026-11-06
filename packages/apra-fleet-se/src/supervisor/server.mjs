@@ -45,6 +45,12 @@ import { toBeadsSummary } from './beads-identity.mjs';
 export const DEFAULT_SERVICE_PORT = 8787;
 
 /**
+ * Default bind host: loopback only. Off-box exposure is an explicit opt-in via
+ * the `host` dep (`fleet-se serve --host <addr>`).
+ */
+export const DEFAULT_SERVICE_HOST = '127.0.0.1';
+
+/**
  * An inert seam stub. Later eft tasks pass real implementations; until then the
  * supervisor boots against these no-ops so `fleet-se serve` is independently
  * runnable. Named so logs/introspection make the "not yet wired" state obvious.
@@ -140,6 +146,7 @@ export function sendJson(res, status, payload) {
  */
 export function createSupervisor(deps = {}) {
     let port = Number.isInteger(deps.port) ? deps.port : DEFAULT_SERVICE_PORT;
+    const host = (typeof deps.host === 'string' && deps.host) ? deps.host : DEFAULT_SERVICE_HOST;
     const logger = deps.logger ?? console;
     const log = (...a) => logger.log?.(...a);
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
@@ -412,7 +419,7 @@ export function createSupervisor(deps = {}) {
             };
             server.once('error', onError);
             server.once('listening', onListening);
-            server.listen(port);
+            server.listen(port, host);
         });
 
         // port:0 asks the OS to pick a free port; reflect the port it
@@ -427,7 +434,7 @@ export function createSupervisor(deps = {}) {
         // process; log and keep serving.
         server.on('error', (err) => logError('[supervisor] server error:', err));
 
-        log(`[supervisor] listening on http://localhost:${port} (pid ${process.pid})`);
+        log(`[supervisor] listening on http://${host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host}:${port} (pid ${process.pid})`);
         return { port };
     }
 

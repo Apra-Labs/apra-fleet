@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { escapePowerShellArg } from '../utils/shell-escape.js';
+import { windowsExecutable } from '../os/windows-executable.js';
 
 /** Provider -> auth env var name */
 const PROVIDER_AUTH_ENV: Record<string, string> = {
@@ -404,8 +405,11 @@ function setApiKeyInProfiles(envVarName: string, value: string): void {
     // single-quoted literal.
     const script = `[Environment]::SetEnvironmentVariable(${escapePowerShellArg(envVarName)}, ${escapePowerShellArg(value)}, 'User')`;
     const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    // Resolve outside the try: the resolver error carries no secret and a
+    // missing PowerShell must not be masked by the generic status message.
+    const powershellExe = windowsExecutable('powershell.exe');
     try {
-      execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { stdio: 'pipe', windowsHide: true });
+      execFileSync(powershellExe, ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { stdio: 'pipe', windowsHide: true });
     } catch (err: any) {
       // Node's error message embeds the full command line (and PowerShell's
       // stderr can echo the script), both of which carry the key -- never

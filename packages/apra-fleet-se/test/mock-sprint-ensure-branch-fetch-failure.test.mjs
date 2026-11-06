@@ -77,7 +77,9 @@ test('mock sprint: branch exists on origin, no local branch yet -> creates it fr
         // even reaches a checkout -- it throws first. Zero merge-base calls
         // confirms the tip-comparison path (gated on localBranchExists) was
         // correctly skipped, not just that some checkout happened to occur.
-        const mergeBaseCommands = scenario.commandLog.filter((c) => c.startsWith('git merge-base'));
+        // Only the tip-comparison form: the review diff base (`git merge-base
+        // origin/<base> <branch>`) legitimately runs later in the sprint.
+        const mergeBaseCommands = scenario.commandLog.filter((c) => c.startsWith('git merge-base --is-ancestor'));
         check(mergeBaseCommands.length === 0, `Expected no tip-comparison merge-base calls when no local branch exists, got: ${JSON.stringify(mergeBaseCommands)}`);
     });
 });

@@ -21,6 +21,11 @@ trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
 your tool-loading tool first, before concluding they are unavailable.
 
+If a `code_*` call fails with `E-CODE-INDEX-NOT-READY`, wait ONCE for the
+`retry_after_ms` its error result carries (skip the wait when it is 0: retrying will
+not help), retry that call ONCE, and if it still fails fall back to text search and
+record the fallback. Never poll `code_status` in a loop waiting for the index.
+
 1. When the tools are present, call `kb_session_prime` with `hint_modules` naming the
    subsystems `regression-test-playbook.md` exercises.
 2. Known-flaky tests and known environment setup/teardown gotchas are the point here -- they
