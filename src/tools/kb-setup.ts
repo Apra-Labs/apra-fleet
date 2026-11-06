@@ -17,7 +17,7 @@ export const kbSetupSchema = z.object({
   remote: z.string().optional()
     .describe('Remote KB server URL, http(s) only (required when provider=http). Use https for any non-loopback host: plain http sends the token in cleartext.'),
   token: z.string().optional()
-    .describe('Authentication token for remote KB server. Either a literal token (stored encrypted, never logged) or exactly one named fleet secret placeholder of the form {{secret.NAME}} with nothing around it: then only the placeholder is stored and the server looks the secret up on each request, so rotating the secret needs no kb_setup re-run. For provider http the secret must already exist (apra-fleet secret --set NAME --persist -y), or NAME must be a registered live secret (apra-fleet secret --live NAME ...) whose script the server runs to mint the token.'),
+    .describe('Authentication token for remote KB server. Either a literal token (stored encrypted, never logged) or exactly one named fleet secret placeholder of the form {{secret.NAME}} with nothing around it: then only the placeholder is stored and the server looks the secret up on each request, so rotating the secret needs no kb_setup re-run. For provider http the secret must already exist (apra-fleet secret --set NAME --persist -y), or NAME must be a registered live secret (apra-fleet secret --live NAME ...) whose script the server runs to mint the token. Either way it must not have network_policy deny, which every KB call would refuse.'),
   request_timeout_ms: z.number().int().min(MIN_REQUEST_TIMEOUT_MS).max(MAX_REQUEST_TIMEOUT_MS).optional()
     .describe('Socket idle timeout in milliseconds for each request to the remote KB server, 1000-120000 (default 5000). Not a per-request deadline: a call can wait up to about twice this while queued offline writes flush first.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
@@ -97,7 +97,8 @@ function effectiveProvider(input: KbSetupInput, existing: KbConfigFile): 'sqlite
  * Classify input.token. A literal returns null. A value containing a secret
  * placeholder must be exactly one placeholder with nothing around it, else it
  * is refused (naming the field, never echoing the value). When the resulting
- * config is http the named secret must exist and be unexpired.
+ * config is http the named secret must exist, be unexpired, and not have
+ * network_policy deny.
  */
 function checkTokenRef(input: KbSetupInput, provider: 'sqlite' | 'http'): TokenRef | null {
   const token = input.token;

@@ -24,7 +24,7 @@ import { resetLiveTokenCache } from '../../src/services/live-secret-cache.js';
 import { addAgent } from '../../src/services/registry.js';
 import { runWithSessionMember } from '../../src/services/tool-scope.js';
 import { kbHttpCredentialHealth } from '../../src/tools/check-status.js';
-import { kbSetup } from '../../src/tools/kb-setup.js';
+import { kbSetup, kbSetupSchema } from '../../src/tools/kb-setup.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 import { backupAndResetRegistry, makeTestLocalAgent, restoreRegistry } from '../test-helpers.js';
 import { makeTempDir } from './token-command-helpers.js';
@@ -216,6 +216,12 @@ describe('deny', () => {
     await kbSetup({ provider: 'http', remote: stub.url, token: `{{secret.${STATIC}}}` } as never, { folder: tmp });
     await kbSetup({ provider: 'http', remote: stub.url, token: `{{secret.${LIVE}}}` } as never, { folder: tmp });
   }, 30_000);
+
+  it('the kb_setup contract states the deny refusal, in the tool schema and the generated request schema', () => {
+    expect(kbSetupSchema.shape.token.description).toContain('must not have network_policy deny');
+    const generated = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', '..', 'memory-contract', 'v1', 'schemas', 'kb_setup.request.json'), 'utf8'));
+    expect(JSON.stringify(generated)).toContain('must not have network_policy deny');
+  });
 
   it('the client wrapper lists denied, in its type and its docs', () => {
     const root = path.resolve(__dirname, '..', '..', 'packages', 'apra-fleet-client');
