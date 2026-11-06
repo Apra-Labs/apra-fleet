@@ -73,8 +73,8 @@ export const KW_COLUMNS = [
 export const KW_WEIGHTS: Record<(typeof KW_COLUMNS)[number], number> = {
   title: 5, summary: 3, content: 1, tags: 1, symbols: 4, source_files: 4, recall_cues: 4, error_signatures: 4,
 };
-const KW_BM25 = `bm25(entries_kw, ${KW_COLUMNS.map(c => KW_WEIGHTS[c]).join(', ')})`;
-const TRI_BM25 = 'bm25(entries_tri, 5, 4, 4)';
+export const KW_BM25 = `bm25(entries_kw, ${KW_COLUMNS.map(c => KW_WEIGHTS[c]).join(', ')})`;
+export const TRI_BM25 = 'bm25(entries_tri, 5, 4, 4)';
 
 const REBUILD_CHUNK_ROWS = 200;
 /** A rebuild owner whose heartbeat is older than this is presumed dead. */
@@ -535,6 +535,97 @@ export class KbKeywordIndex {
   }
 
   /**
+   * The ready-index keyword read, in two steps so it never scans `entries`:
+   *
+   * 1. hitsSql: (rowid, kw score, trigram score) for every FTS hit, read
+   *    from entries_kw / entries_tri only, in rank order
+   *    (kw hits first, then by kw bm25, then trigram bm25).
+   * 2. pageSql: for a bounded prefix of that order, fetch those entry rows by
+   *    rowid (INTEGER PRIMARY KEY lookups), apply `conditions`, and order the
+   *    prefix by score group (equal kw and trigram scores) then created_at DESC.
+   *
+   * The prefix grows (limit*4, then doubling) until `limit` rows pass the
+   * conditions or the hits run out. A prefix never ends inside a group of
+   * equal scores, so created_at breaks ties exactly as the single-statement
+   * query (ORDER BY (kw.rid IS NULL), kw.s, tri.s, e.created_at DESC) did:
+   * same ids, same order. The old single statement joined back to entries
+   * for every hit and sorted full rows -- about 1 s on 5k entries with a
+   * common word in the query.
+   */
+  private rankedSearch(kw: string, tri: string, cond: string, params: SQLInputValue[], limit: number): Record<string, unknown>[] {
+    if (limit <= 0) return [];
+    const db = this.db();
+    const { sql: hitsSql, bind } = KbKeywordIndex.hitsSql(kw, tri);
+    const hits = db.prepare(hitsSql).all(...bind) as { rid: number; ks: number | null; ts: number | null }[];
+    if (hits.length === 0) return [];
+    const groups: number[] = [];
+    for (let i = 0, g = 0; i < hits.length; i++) {
+      if (i > 0 && (hits[i].ks !== hits[i - 1].ks || hits[i].ts !== hits[i - 1].ts)) g++;
+      groups.push(g);
+    }
+    const page = db.prepare(KbKeywordIndex.pageSql(cond));
+    const out: Record<string, unknown>[] = [];
+    let start = 0;
+    let size = Math.max(limit * 4, 32);
+    while (start < hits.length && out.length < limit) {
+      let end = Math.min(hits.length, start + size);
+      // Never split a group of equal scores: created_at orders within it.
+      while (end < hits.length && groups[end] === groups[end - 1]) end++;
+      // Each hit carries its score-group number (an integer, so no float
+      // round trip through JSON): equal (ks, ts) -> equal group.
+      const chunk = groups.slice(start, end).map((g, i) => [hits[start + i].rid, g]);
+      const rows = page.all(JSON.stringify(chunk), ...params) as Record<string, unknown>[];
+      for (const r of rows) {
+        if (out.length >= limit) break;
+        out.push(r);
+      }
+      start = end;
+      size *= 2;
+    }
+    return out;
+  }
+
+  /** Step 1 of rankedSearch: FTS-only hit list, no `entries` access. */
+  static hitsSql(kw: string, tri: string): { sql: string; bind: SQLInputValue[] } {
+    // bm25() is only usable in a direct full-text query, so each score is
+    // computed in its own MATERIALIZED CTE before the two are merged.
+    const ctes: string[] = [];
+    const parts: string[] = [];
+    const bind: SQLInputValue[] = [];
+    if (kw) {
+      ctes.push(`kw AS MATERIALIZED (SELECT rowid AS rid, ${KW_BM25} AS s FROM entries_kw WHERE entries_kw MATCH ?)`);
+      parts.push('SELECT rid, s AS ks, NULL AS ts FROM kw');
+      bind.push(kw);
+    }
+    if (tri) {
+      ctes.push(`tri AS MATERIALIZED (SELECT rowid AS rid, ${TRI_BM25} AS s FROM entries_tri WHERE entries_tri MATCH ?)`);
+      parts.push('SELECT rid, NULL AS ks, s AS ts FROM tri');
+      bind.push(tri);
+    }
+    // One row per rowid: MIN() skips NULLs, so ks/ts are the kw/trigram
+    // scores (or NULL when that index did not match).
+    const sql = `
+      WITH ${ctes.join(',\n')}
+      SELECT rid, MIN(ks) AS ks, MIN(ts) AS ts FROM (${parts.join(' UNION ALL ')})
+      GROUP BY rid
+      ORDER BY (MIN(ks) IS NULL), MIN(ks), MIN(ts)
+    `;
+    return { sql, bind };
+  }
+
+  /** Step 2 of rankedSearch: rows for a JSON array of [rid, score group], filtered and ordered. */
+  static pageSql(cond: string): string {
+    return `
+      WITH page AS MATERIALIZED (
+        SELECT json_extract(value, '$[0]') AS rid, json_extract(value, '$[1]') AS g FROM json_each(?)
+      )
+      SELECT e.* FROM page CROSS JOIN entries e ON e.rowid = page.rid
+      WHERE 1 ${cond}
+      ORDER BY page.g, e.created_at DESC
+    `;
+  }
+
+  /**
    * Keyword search over entries. `conditions` are SQL predicates over alias
    * `e` (ANDed), `params` their bind values. Returns entry rows in rank order.
    * Never throws for a malformed query: an unusable query returns [].
@@ -564,30 +655,7 @@ export class KbKeywordIndex {
       const kw = bare && column ? `${column} : (${bare})` : bare;
       const tri = opts.trigram && !column ? trigramMatch(s) : '';
       if (!kw && !tri) return [];
-      const ctes: string[] = [];
-      const bind: SQLInputValue[] = [];
-      if (kw) {
-        ctes.push(`kw AS MATERIALIZED (SELECT rowid AS rid, ${KW_BM25} AS s FROM entries_kw WHERE entries_kw MATCH ?)`);
-        bind.push(kw);
-      } else {
-        ctes.push('kw AS (SELECT NULL AS rid, NULL AS s WHERE 0)');
-      }
-      if (tri) {
-        ctes.push(`tri AS MATERIALIZED (SELECT rowid AS rid, ${TRI_BM25} AS s FROM entries_tri WHERE entries_tri MATCH ?)`);
-        bind.push(tri);
-      } else {
-        ctes.push('tri AS (SELECT NULL AS rid, NULL AS s WHERE 0)');
-      }
-      return db.prepare(`
-        WITH ${ctes.join(',\n')}
-        SELECT e.* FROM entries e
-        LEFT JOIN kw ON kw.rid = e.rowid
-        LEFT JOIN tri ON tri.rid = e.rowid
-        WHERE e.rowid IN (SELECT rid FROM kw UNION SELECT rid FROM tri)
-        ${cond}
-        ORDER BY (kw.rid IS NULL), kw.s, tri.s, e.created_at DESC
-        LIMIT ?
-      `).all(...bind, ...params, limit) as Record<string, unknown>[];
+      return this.rankedSearch(kw, tri, cond, params, limit);
     }
 
     // Not ready (rebuild running): legacy index when present, else LIKE.

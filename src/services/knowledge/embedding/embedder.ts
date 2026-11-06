@@ -102,6 +102,9 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Query vectors kept per embedder (see Embedder.embedQuery); 384 dims -> ~1.5 KB each. */
+export const QUERY_VECTOR_CACHE_SIZE = 256;
+
 export class Embedder {
   private readonly choice: EmbeddingModelChoice;
   private readonly store: ModelStore;
@@ -116,6 +119,8 @@ export class Embedder {
   private failures = 0;
   private retryTimer: NodeJS.Timeout | null = null;
   private readonly readyListeners = new Set<() => void>();
+  /** Query text -> vector (or the in-flight embedding), oldest first. See embedQuery. */
+  private readonly queryCache = new Map<string, Promise<Float32Array | null>>();
 
   constructor(opts: EmbedderOptions) {
     this.choice = opts.choice;
@@ -157,11 +162,37 @@ export class Embedder {
     return () => { this.readyListeners.delete(cb); };
   }
 
-  /** Embed a search query (profile query prefix applied). Null when disabled or failed. */
+  /**
+   * Embed a search query (profile query prefix applied). Null when disabled or failed.
+   *
+   * Query vectors are cached per text (LRU, QUERY_VECTOR_CACHE_SIZE entries)
+   * for the life of this embedder, which is bound to one model id and
+   * revision, so a repeated query -- a session prime re-asking the same
+   * situation, or concurrent identical queries -- never re-runs the model.
+   * Concurrent calls for the same text share one in-flight embedding. A null
+   * (failed) result is not cached. Each caller gets its own copy.
+   */
   async embedQuery(text: string): Promise<Float32Array | null> {
+    const hit = this.queryCache.get(text);
+    if (hit) {
+      // Refresh recency.
+      this.queryCache.delete(text);
+      this.queryCache.set(text, hit);
+      const v = await hit;
+      return v ? v.slice() : null;
+    }
     // High priority: a search query goes ahead of background document batches.
-    const out = await this.embedWith([text], this.profile?.queryPrefix ?? '', 'high');
-    return out ? out[0] : null;
+    const pending = this.embedWith([text], this.profile?.queryPrefix ?? '', 'high').then((out) => (out ? out[0] : null));
+    this.queryCache.set(text, pending);
+    while (this.queryCache.size > QUERY_VECTOR_CACHE_SIZE) {
+      this.queryCache.delete(this.queryCache.keys().next().value as string);
+    }
+    const v = await pending;
+    if (!v) {
+      if (this.queryCache.get(text) === pending) this.queryCache.delete(text);
+      return null;
+    }
+    return v.slice();
   }
 
   /** Embed documents (profile doc prefix applied). Null when disabled or failed. */

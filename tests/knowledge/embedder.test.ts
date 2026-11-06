@@ -96,6 +96,61 @@ describe('Embedder failure handling', () => {
   });
 });
 
+describe('Embedder query-vector cache', () => {
+  function countingFactory() {
+    const embedCalls: Array<{ texts: string[]; priority?: string }> = [];
+    let fail = false;
+    const factory = vi.fn<EmbeddingRuntimeFactory>(async () => ({
+      dims: 4,
+      async embed(texts: string[], opts?: { priority?: 'high' | 'normal' }) {
+        embedCalls.push({ texts, priority: opts?.priority });
+        if (fail) throw new Error('run failed');
+        await new Promise((r) => setTimeout(r, 5));
+        return texts.map((t) => Float32Array.from([t.length, 1, 2, 3]));
+      },
+    }));
+    return { factory, embedCalls, setFail: (v: boolean) => { fail = v; } };
+  }
+
+  it('the same query text is embedded once; concurrent identical queries share one run; callers get copies', async () => {
+    const folder = writeTinyModel(path.join(tmp, 'tiny'));
+    const { factory, embedCalls } = countingFactory();
+    const e = new Embedder({ choice: tinyChoice(folder), runtimeFactory: factory, log: vi.fn() });
+    const [a, b] = await Promise.all([e.embedQuery('where is the cache'), e.embedQuery('where is the cache')]);
+    const c = await e.embedQuery('where is the cache');
+    expect(embedCalls).toHaveLength(1);
+    expect(embedCalls[0].priority).toBe('high');
+    expect(Array.from(a!)).toEqual(Array.from(c!));
+    expect(Array.from(b!)).toEqual(Array.from(c!));
+    a![0] = -1; // a caller mutating its vector does not poison the cache
+    expect((await e.embedQuery('where is the cache'))![0]).not.toBe(-1);
+    expect(embedCalls).toHaveLength(1);
+    await e.embedQuery('another query');
+    expect(embedCalls).toHaveLength(2);
+    // Documents are never served from the query cache.
+    await e.embedDocuments(['where is the cache']);
+    expect(embedCalls).toHaveLength(3);
+  });
+
+  it('a failed query embedding is not cached, and the cache is bounded (LRU)', async () => {
+    const { QUERY_VECTOR_CACHE_SIZE } = await import('../../src/services/knowledge/embedding/embedder.js');
+    const folder = writeTinyModel(path.join(tmp, 'tiny'));
+    const { factory, embedCalls, setFail } = countingFactory();
+    const e = new Embedder({ choice: tinyChoice(folder), runtimeFactory: factory, log: vi.fn() });
+    setFail(true);
+    expect(await e.embedQuery('q')).toBeNull();
+    setFail(false);
+    expect(await e.embedQuery('q')).not.toBeNull();
+    expect(embedCalls).toHaveLength(2);
+    for (let i = 0; i < QUERY_VECTOR_CACHE_SIZE; i++) await e.embedQuery(`fill ${i}`);
+    const before = embedCalls.length;
+    await e.embedQuery(`fill ${QUERY_VECTOR_CACHE_SIZE - 1}`); // most recent: cached
+    expect(embedCalls).toHaveLength(before);
+    await e.embedQuery('q'); // oldest: evicted, recomputed
+    expect(embedCalls).toHaveLength(before + 1);
+  });
+});
+
 describe('poolAndNormalize', () => {
   it('mean pooling averages tokens; normalize gives unit length', () => {
     const hidden = Float32Array.from([1, 0, 3, 0]); // two tokens, dims 2
