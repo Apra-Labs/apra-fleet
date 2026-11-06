@@ -801,9 +801,20 @@ valid names, and nothing is written.
   registers its tools; an open session keeps its list until it reconnects.
 - **Not a security boundary.** It is a usability control: a hidden tool is
   just not listed, and any local process can change the profile back.
+- **PM skills need more than `developer` lists.** `kb-review` needs `kb_list`
+  and `kb_promote`, `kb-reconcile` needs `kb_import`, `kb_export`,
+  `kb_resolve_contradiction`, `kb_reconcile_prefilter` and
+  `kb_freshness_sweep`, and `knowledge-agent` needs `kb_harvest`. All of these
+  are hidden under `developer` and the skills then fail with "tool not found".
+  Before running one, switch back with `apra-fleet kb profile full` and
+  reconnect. An entry flagged with `kb_feedback` stays unresolved until then.
 - **Getting back.** `developer` hides `kb_setup`, so use the CLI:
-  `apra-fleet kb profile full`. A hand-edited invalid profile is ignored with
-  a logged warning (the session gets every `kb_*` tool) until it is fixed.
+  `apra-fleet kb profile full`.
+- **A hand-edited invalid profile.** The session gets every `kb_*` tool, and
+  `fleet_status` shows a line (`kbHealth.toolProfileWarning` in JSON) naming
+  the bad value and the fix; the server log has it too. If `config.json` itself
+  cannot be parsed, fix it by hand: `apra-fleet kb profile` refuses to write
+  over it, because a rewrite would lose the remote url and token.
 
 ---
 
@@ -938,9 +949,10 @@ Write it with `kb_setup ... token={{secret.KB_TOKEN}}`; see
   `dev.azure.com/<org>/<project>/_git/<repo>`) and `X-Repository-Commit` (the
   local folder's HEAD sha, omitted when it cannot be read, e.g. for a remote
   member's folder) and `X-Repository-Branch` (the local folder's checked-out
-  branch from `git symbolic-ref --quiet --short HEAD`, characters outside
-  printable ASCII percent-encoded as UTF-8; omitted on a detached HEAD, for a
-  remote member's folder, when git fails or times out, or when the encoded
+  branch from `git symbolic-ref --quiet HEAD` with `refs/heads/` stripped,
+  characters outside printable ASCII percent-encoded as UTF-8; omitted on a
+  detached HEAD, when HEAD is not under `refs/heads/`, for a remote member's
+  folder, when git fails or times out, or when the encoded
   value is longer than 255 characters). Commit and branch are each cached for
   5 seconds, so a branch switch shows within that time. A shared server can use them to keep repositories apart; a
   server may ignore them. No local path is ever sent, and nothing goes in the
@@ -1056,13 +1068,16 @@ feedback-downvoted, and invalidated entries stay retired by design -- see
 
 **Symptom**: at process exit you see:
 ```
-[KB] WARNING: offline queue has N unsaved operations (captures, invalidations, feedback). Reconnect to the KB server and run kb_harvest to recover from the session transcript.
+[KB] WARNING: offline queue has N unsaved operations (captures, invalidations, feedback). They never reached the KB server and the queue is lost when this process exits. Repeat them once the KB server is reachable.
 ```
 
 **Cause**: the HTTP KB server was unreachable while captures, invalidations or feedback were made. The
 queue is in-memory and not persisted.
 
-**Recovery**: start the KB server, then run:
+**Recovery**: start the KB server and repeat the lost calls. Invalidations and
+feedback can only be repeated: `kb_harvest` extracts learnings from a session
+transcript and cannot restore them. For captures, on an install whose KB tool
+profile lists it, you can also run:
 ```
 kb_harvest with session_output="<paste session transcript>"
 ```
