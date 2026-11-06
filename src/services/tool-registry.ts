@@ -4,6 +4,9 @@ import { FULL_TOOL_SCOPE, isToolInScope, runWithSessionMember, scopeHasKbMaintai
 import { recordMemberToolCall } from './member-call-counts.js';
 import { assertNoRemovedKbScopeKeys } from './knowledge/kb-removed-scope-keys.js';
 import { SessionRootsCache } from './session-roots.js';
+import { readKbToolProfileFromDisk } from './knowledge/kb-config.js';
+import { FULL_KB_TOOL_PROFILE, kbToolAllowedByProfile, type KbToolProfile } from './kb-tool-profile.js';
+import { logWarn } from '../utils/log-helpers.js';
 
 export type { ToolScope } from './tool-scope.js';
 
@@ -12,26 +15,55 @@ export type { ToolScope } from './tool-scope.js';
  * through the scope gate: an out-of-scope tool is simply never registered
  * (deny by omission -- absent from tools/list, unknown when called). Every
  * other property is forwarded to the real server unchanged.
+ *
+ * MEMBER scope: the member allowlists (isToolInScope); the KB tool profile is
+ * never consulted. FULL scope: every tool, except that kb_* tools outside the
+ * install-wide KB tool profile (src/services/kb-tool-profile.ts) are not
+ * registered. With the full profile (the default) the base server is returned
+ * unchanged.
  */
 function scopeGatedServer(base: McpServer, scope: ToolScope): McpServer {
-  if (scope.kind === 'full') return base;
+  let allowed: (name: string) => boolean;
+  if (scope.kind === 'full') {
+    const profile = fullSessionKbToolProfile();
+    if (profile.name === 'full') return base;
+    allowed = (name) => kbToolAllowedByProfile(name, profile);
+  } else {
+    allowed = (name) => isToolInScope(name, scope);
+  }
   return new Proxy(base, {
     get(target, prop, receiver) {
       if (prop === 'tool') {
         return (name: string, ...rest: unknown[]) => {
-          if (!isToolInScope(name, scope)) return undefined;
+          if (!allowed(name)) return undefined;
           return (target.tool as (...args: unknown[]) => unknown).call(target, name, ...rest);
         };
       }
       if (prop === 'registerTool') {
         return (name: string, ...rest: unknown[]) => {
-          if (!isToolInScope(name, scope)) return undefined;
+          if (!allowed(name)) return undefined;
           return (target.registerTool as (...args: unknown[]) => unknown).call(target, name, ...rest);
         };
       }
       return Reflect.get(target, prop, receiver);
     },
   });
+}
+
+/**
+ * The KB tool profile a FULL session registers under, read when the session
+ * registers its tools (so a change takes effect on reconnect). An unreadable
+ * or invalid profile setting falls back to full with a logged warning rather
+ * than breaking every session: kb_setup and `apra-fleet kb profile` refuse an
+ * invalid profile on write, so only a hand edit can get here.
+ */
+function fullSessionKbToolProfile(): KbToolProfile {
+  try {
+    return readKbToolProfileFromDisk();
+  } catch (err) {
+    logWarn('kb_tool_profile', `${(err as Error).message}; serving every kb_* tool (profile full)`);
+    return FULL_KB_TOOL_PROFILE;
+  }
 }
 
 /**

@@ -4,6 +4,7 @@ import { FLEET_DIR } from '../../paths.js';
 import { decryptPassword } from '../../utils/crypto.js';
 import { logWarn } from '../../utils/log-helpers.js';
 import { findSecretTokens } from '../secret-token.js';
+import { FULL_KB_TOOL_PROFILE, makeKbToolProfile, type KbToolProfile } from '../kb-tool-profile.js';
 
 /** Bounds and default for request_timeout_ms, shared by kb_setup (write) and the reader. */
 export const MIN_REQUEST_TIMEOUT_MS = 1000;
@@ -43,10 +44,47 @@ export interface KbConfigFile {
   token_ref?: string;
   request_timeout_ms?: number;
   bible?: { autoCommit?: boolean };
+  /**
+   * Install-wide KB tool profile for FULL sessions (src/services/kb-tool-profile.ts):
+   * "full" (default when absent), "developer", or "custom" with the kb_* names
+   * in tool_profile_tools. Read by readKbToolProfileFromDisk.
+   */
+  tool_profile?: 'full' | 'developer' | 'custom';
+  /** The kb_* tool names a "custom" tool_profile serves; ignored otherwise. */
+  tool_profile_tools?: string[];
   [key: string]: unknown;
 }
 
 export const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
+
+/**
+ * Read the install-wide KB tool profile from the KB config.
+ *
+ * - Absent file, or no tool_profile key -> full, silently (the stock path is
+ *   never broken by this reader; it does not look at provider/token keys).
+ * - A known profile -> that profile; "custom" validates tool_profile_tools
+ *   against the registered kb_* tool names.
+ * - Malformed JSON, an unknown profile name, or an invalid custom list throws
+ *   an Error naming this config path and the problem (for a custom list: the
+ *   unknown names and the valid ones).
+ */
+export function readKbToolProfileFromDisk(): KbToolProfile {
+  if (!fs.existsSync(KB_CONFIG_PATH)) return FULL_KB_TOOL_PROFILE;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(KB_CONFIG_PATH, 'utf-8'));
+  } catch (err) {
+    throw new Error(`Malformed JSON in KB config at ${KB_CONFIG_PATH}: ${(err as Error).message}`);
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return FULL_KB_TOOL_PROFILE;
+  const config = parsed as KbConfigFile;
+  if (config.tool_profile === undefined) return FULL_KB_TOOL_PROFILE;
+  try {
+    return makeKbToolProfile(config.tool_profile, config.tool_profile_tools);
+  } catch (err) {
+    throw new Error(`KB config at ${KB_CONFIG_PATH}: ${(err as Error).message}`);
+  }
+}
 
 /**
  * Read the KB provider config kb_setup wrote (provider/url/token_encrypted). Nothing
