@@ -23,7 +23,7 @@ import { hasMemberInstallMarker } from './install-guard.js';
 const NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
 const LIVE_USAGE_INLINE = "  apra-fleet secret --live <name> --inline '<script with {{secret.R}}>'";
-const LIVE_USAGE_FILE = "  apra-fleet secret --live <name> [--env 'VAR={{secret.R}}']... -- <script file> [args]";
+const LIVE_USAGE_FILE = "  apra-fleet secret --live <name> [--env 'VAR={{secret.R}}']... <script file> [args]";
 
 export async function runSecret(args: string[]): Promise<void> {
   // Title the OOB credential-entry console the server opened on Windows
@@ -66,21 +66,32 @@ export async function runSecret(args: string[]): Promise<void> {
   }
 }
 
-/** The script form of `--live`, or null when the args do not match either form. */
-function parseLiveArgs(args: string[]): LiveSecretSpec | null {
+/** Text for an inline script that arrived as more than one argument. Fixed: the arguments may hold a value. */
+const INLINE_EXTRA_ARGS = 'FAILED: inline-extra-args: --inline takes one script and cannot be combined with a script path. If you did not add more arguments, Windows PowerShell 5.1 stripped the double quotes of your inline script and split it: avoid double quotes in inline scripts there, or use a script file.';
+
+/**
+ * The script form of `--live`, or a usage failure. Options come first; parsing
+ * stops at the first argument that is not one, which is the script path, and the
+ * rest goes to the script untouched. `--` is optional, because npm's PowerShell
+ * shim drops a bare `--`; it is how a script path starting with `-` is passed.
+ */
+function parseLiveArgs(args: string[]): LiveSecretSpec | { failure: string | null } {
   if (args[0] === '--inline') {
-    return args.length === 2 && args[1] ? { inline: args[1] } : null;
+    if (!args[1]) return { failure: null };
+    return args.length === 2 ? { inline: args[1] } : { failure: INLINE_EXTRA_ARGS };
   }
   const env: Array<{ env: string; value: string }> = [];
   let i = 0;
   for (; args[i] === '--env'; i += 2) {
     const pair = args[i + 1];
     const eq = pair?.indexOf('=') ?? -1;
-    if (eq <= 0) return null;
+    if (eq <= 0) return { failure: null };
     env.push({ env: pair.slice(0, eq), value: pair.slice(eq + 1) });
   }
-  if (args[i] !== '--' || !args[i + 1]) return null;
-  return { program: args[i + 1], args: args.slice(i + 2), env };
+  if (args[i] === '--') i++;
+  else if (args[i]?.startsWith('-')) return { failure: null };
+  if (!args[i]) return { failure: null };
+  return { program: args[i], args: args.slice(i + 1), env };
 }
 
 /**
@@ -93,15 +104,20 @@ async function handleLive(args: string[]): Promise<void> {
   // orchestrator, so fleet would not manage a live secret registered on a remote
   // member. The marker is in the data dir this command would write to.
   if (hasMemberInstallMarker()) {
-    console.error("FAILED: member-install: this is a remote member's install, where a live secret cannot be registered. Register it on the orchestrator, which is the only place fleet renews live secrets.");
+    console.error("FAILED: member-install: this is a remote member's install (data/member-install.json), where a live secret cannot be registered. Register it on the orchestrator, which is the only place fleet renews live secrets. If this machine is your orchestrator, rerun apra-fleet install: a full install clears that marker.");
     process.exit(1);
   }
   const name = args[0];
   const spec = parseLiveArgs(args.slice(1));
-  if (!name || name.startsWith('-') || !spec) {
-    console.error('Usage:');
-    console.error(LIVE_USAGE_INLINE);
-    console.error(LIVE_USAGE_FILE);
+  if (!name || name.startsWith('-') || 'failure' in spec) {
+    const failure = name && !name.startsWith('-') && 'failure' in spec ? spec.failure : null;
+    if (failure) {
+      console.error(failure);
+    } else {
+      console.error('Usage:');
+      console.error(LIVE_USAGE_INLINE);
+      console.error(LIVE_USAGE_FILE);
+    }
     process.exit(1);
   }
   if (!NAME_REGEX.test(name)) {

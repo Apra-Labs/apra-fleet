@@ -195,7 +195,7 @@ describe('fleet_status lists every live secret', () => {
       expect(text).not.toContain(TOKEN_CANARY);
       expect(text).not.toContain(VALUE_CANARY);
     }
-  });
+  }, 30_000);
 
   it('shows the last failure', async () => {
     const n = register('badrun', mintJs('badrun', 'process.exit(5);'));

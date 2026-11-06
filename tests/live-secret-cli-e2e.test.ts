@@ -103,7 +103,7 @@ describe('secret --live (real CLI)', () => {
   });
 
   describe('on a remote member install (temporary limit for 0.4.5)', () => {
-    /** Writes the marker through the code `install --member` uses. A script run leaves a file. */
+    /** A script that leaves a file when it runs. */
     function ranScript(): { file: string; ran: () => boolean } {
       const flag = path.join(sandbox, 'script-ran');
       return {
@@ -119,6 +119,7 @@ describe('secret --live (real CLI)', () => {
       expect(r.status).toBe(1);
       expect(r.stdout).toBe('');
       expect(r.stderr).toMatch(/^FAILED: member-install: .*orchestrator/);
+      expect(r.stderr).toContain('rerun apra-fleet install');
       expect(s.ran()).toBe(false);
       expect(fs.existsSync(credentialsPath())).toBe(false);
       expectNoCanary(r.stdout, r.stderr);
@@ -360,7 +361,7 @@ describe('secret --live (real CLI)', () => {
     });
 
     it('prints usage for malformed forms', () => {
-      for (const args of [['--live'], ['--live', 'L'], ['--live', 'L', '--inline'], ['--live', 'L', '--inline', 'x', 'y'], ['--live', 'L', '--env', 'NOEQ', '--', 'x'], ['--live', 'L', '--']]) {
+      for (const args of [['--live'], ['--live', 'L'], ['--live', 'L', '--inline'], ['--live', 'L', '--env', 'NOEQ', '--', 'x'], ['--live', 'L', '--']]) {
         const r = cli(args);
         expect(r.status).toBe(1);
         expect(r.stderr).toContain('Usage');

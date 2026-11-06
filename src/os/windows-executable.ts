@@ -98,6 +98,40 @@ export function resolveWindowsSystemTool(tool: WindowsSystemTool, deps: SystemTo
   return findOnAbsoluteWindowsPath(tool, ['.exe'], deps);
 }
 
+/**
+ * True for the bash.exe Windows ships or installs as an app alias: the WSL
+ * launcher, which runs in a Linux environment with a different filesystem view
+ * and no fleet env vars. Never a bash for a fleet spawn.
+ */
+export function isWslLauncherBash(p: string): boolean {
+  return /[\\/](system32|sysnative|windowsapps)[\\/]bash\.exe$/i.test(p);
+}
+
+export interface GitBashDeps extends WindowsLookupDeps {
+  /** Well-known install locations, tried first (see git-bash-candidates.ts). */
+  candidates: readonly string[];
+}
+
+/**
+ * Absolute path of Git for Windows' bash: a well-known location, else next to
+ * the git on PATH (<Git>\cmd\git.exe -> <Git>\bin\bash.exe), else a bash.exe on
+ * an absolute PATH entry that is not the WSL launcher. Null when there is none.
+ */
+export function resolveGitBashExecutable(deps: GitBashDeps): string | null {
+  const known = deps.candidates.find((c) => deps.isFile(c) && !isWslLauncherBash(c));
+  if (known) return known;
+  const git = findOnAbsoluteWindowsPath('git', ['.exe'], deps);
+  if (git) {
+    const beside = path.win32.join(path.win32.dirname(path.win32.dirname(git)), 'bin', 'bash.exe');
+    if (deps.isFile(beside) && !isWslLauncherBash(beside)) return beside;
+  }
+  for (const dir of absoluteWindowsPathEntries(deps.pathValue)) {
+    const candidate = path.win32.join(dir, 'bash.exe');
+    if (!isWslLauncherBash(candidate) && deps.isFile(candidate)) return candidate;
+  }
+  return null;
+}
+
 /** The system tool for this process's own environment. */
 export function windowsSystemTool(tool: WindowsSystemTool): string | null {
   return resolveWindowsSystemTool(tool, {

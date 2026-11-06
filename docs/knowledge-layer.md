@@ -624,7 +624,13 @@ every 30 minutes or less), so one failed run still leaves a valid token.
 - macOS: a launchd agent with `StartInterval` 1800 running the same command
   through `/bin/sh -c`.
 
-**Failure behaviour.** When the secret is missing, expired or unreadable, or
+**Policy.** The secret's own `deny` and `allowedMembers` apply on every KB call, as
+[Who can use a secret](secret-variables.md#who-can-use-a-secret-deny-and-allowedmembers)
+says. A refusal is `E-KB-HTTP-AUTH`, reason `policy-deny` or `member-not-allowed`,
+and no request is sent.
+
+**Failure behaviour.** When the secret is missing, expired, unreadable or refused
+by its policy, or
 the server answers 401 twice (the request, then one retry after re-reading the
 secret), the KB call fails with `E-KB-HTTP-AUTH` naming the secret and the
 reason. Captures and invalidates are queued offline and sent once the secret
@@ -633,248 +639,43 @@ are still served from the checkout bible. After a refresh nothing needs
 restarting.
 
 **fleet_status.** With the http provider, `fleet_status` shows a
-`kb credential:` line: `secret NAME | resolves: ok|missing|expired|unreadable |
+`kb credential:` line: `secret NAME | resolves: ok|missing|expired|unreadable|denied |
 last written | token expiry (JWT exp, or none) | last ok call | last rejected
 call`. `unreadable` means the credential store could not be read or the value
-could not be decrypted.
+could not be decrypted. `denied` means its network policy is deny.
 For a literal token the line says it cannot be refreshed without re-running
 `kb_setup`, and gives the commands to switch to a named secret.
 
 #### Live secrets
 
 Instead of a static secret kept fresh by a scheduled refresher, the named
-credential can be a **live secret**: a static secret that knows its expiry and
-is generated on demand. A script you register mints the token, and the
-orchestrator's fleet server caches it in memory, never in a file. Static secrets
-(above) keep working unchanged; a name is either a static secret or a live
-secret, never both.
-
-**Register** it from the CLI on the orchestrator, in one of two forms:
+credential can be a **live secret**: a script you register mints the token, and the
+orchestrator's fleet server caches it in memory, never in a file. Everything about
+live secrets themselves (the helper forms, script types, contract, bindings,
+refresh and examples) is in [Live secrets](secret-variables.md#live-secrets). This
+section covers what is particular to the KB.
 
 ```bash
 apra-fleet secret --live KB_TOKEN --inline '<script with {{secret.R}}>'
-apra-fleet secret --live KB_TOKEN [--env 'VAR={{secret.R}}']... -- <script file> [args]
 kb_setup with provider=http, remote=https://<host>, token={{secret.KB_TOKEN}}
 ```
 
-In 0.4.5 `secret --live` is refused on a remote member's install (one with
-`data/member-install.json`), because fleet renews live secrets only on the
-orchestrator.
+**Failure behaviour.** A failed run reaches the KB as `E-KB-HTTP-AUTH` (reason
+`live-secret-failed`). No request is sent, and captures and invalidates are queued
+offline exactly as for a static secret. On HTTP 401 from the KB server the rejected
+token is dropped from the cache, a new one is minted and the request is retried
+once. A second 401 raises `E-KB-HTTP-AUTH` (reason `rejected`).
 
-- **Inline:** the script runs in the orchestrator's shell: bash, or PowerShell
-  on Windows. A `{{secret.R}}` behaves like text replacement, but it is really
-  rewritten to an env var reference (`"$FLEET_SECRET_R"` in bash,
-  `${env:FLEET_SECRET_R}` in PowerShell), so the value is never on a command line
-  and needs no escaping. Use it bare, as in execute_command, never inside your
-  own quotes. A `-` in the name becomes `_` in the env var, and two names that
-  then collide (they also collide when they differ only by case) are refused.
-- **Script file:** a program plus arguments, stored as a list. A name without a
-  path separator is looked up on absolute PATH entries only (on Windows, with
-  each `PATHEXT` extension); a name with one is resolved as a file. Either way
-  the absolute path is stored. Bound secrets arrive as the env vars you name
-  with `--env`, never as arguments, and a placeholder in the arguments is
-  refused. On Windows a `.cmd`/`.bat` starts through `cmd.exe /d /v:off /s /c`
-  with every piece quoted, and a `.ps1` through `powershell.exe -File`; anything
-  else starts directly with no shell. `cmd`, `taskkill` and `powershell` come
-  from `%SystemRoot%\System32` or an absolute PATH entry, never from the current
-  folder or a relative PATH entry.
-- The script's working folder is the fleet data folder, so give any file it
-  needs as an absolute path.
-
-**Contract.** The script gets `FLEET_CREDENTIAL` (its own name) plus its bound
-secrets in env, and nothing on stdin. It prints one JSON object on stdout and
-exits 0:
-
-```json
-{"token":"<token>","expires_at":"2026-01-01T12:00:00Z"}
-```
-
-- `token`: non-empty, no whitespace.
-- `expires_at`: ISO 8601 date-time with an explicit zone (`Z` or `+hh:mm`), in
-  the future.
-- Limits: stdout up to 64 KiB; the run is killed (whole process tree) after 30
-  seconds. A non-zero exit, a timeout, too much output, invalid JSON or a
-  missing/invalid field is a failed run.
-- stderr is read and discarded. Neither the token, stdout nor stderr ever
-  reaches an error, a log line or `fleet_status`.
-
-**The test on registration** runs in the CLI process:
-
-1. Every bound secret must exist, be readable, and be persistent and static.
-   Any other is named in the error. Session-tier secrets disappear on restart,
-   so store them with `--persist`. Live secrets cannot be bound.
-2. The script runs once, and the live secret is saved only if that worked.
-   Otherwise nothing is written and any existing record is unchanged.
-3. It prints only `OK: expires <time>`, or `FAILED: <reason code>` with the exit
-   code when there is one. The token is discarded and script output is never
-   shown.
-
-Known limit: the service's PATH or `az login` state can differ from your
-terminal's. `fleet_status` shows `not run` until the first real mint, then the
-real state.
-
-There is no approval step: any process running as the orchestrator's OS user can
-register a live secret, and a badly written script can expose its own secrets,
-as any execute_command can. Secrets enter only by reference. Text that looks like
-a known token format is refused, as a best-effort check: a value typed into a
-script cannot always be caught.
-
-**Using it.** `{{secret.NAME}}` works in execute_command on a remote or local
-member, and as the KB `token_ref`. A live record carries `allowedMembers` and a
-network policy with the defaults of `secret --set --persist` (allow, all members),
-`apra-fleet secret --update` changes them (`--ttl` does not apply: the expiry
-comes from the token), and output redaction applies as for a static secret.
-Every other place that takes `{{secret.NAME}}` refuses a live secret, because it
-would keep the value in a file or use it where a short-lived token cannot work.
-The value of a long-running execute_command is fixed at launch, so it keeps a
-dead token until restarted.
-
-`apra-fleet secret --set NAME --persist -y` replaces a live secret with a static
-one, `--delete` removes it, and `--list` marks it `live`. Registering again under
-the same name replaces the script and starts a fresh cache entry, and keeps the
-policy fields of the record it replaces. The MCP tools `credential_store_set`,
-`credential_store_update` and `credential_store_delete` refuse a live name,
-and `register_member` refuses one in its password field. No command or tool
-returns a value.
-
-**Bindings are permanent.** A secret bound to a live secret cannot be deleted
-while that live secret exists.
-
-- The delete fails with `secret is in use by: <live secrets>`, from
-  `secret --delete` and `credential_store_delete` alike. Delete the consuming
-  live secret first. Registering a live secret over a bound name is refused the
-  same way. `secret --delete --all` removes live secrets first, then secrets.
-- Updating a bound secret's value is allowed, for rotation. It does not re-run
-  the test, and a token minted with the old value stays cached until it is
-  replaced.
-- An expired bound secret is kept: the binding is to the name, not the value.
-  Member commands get `expired` for it, and the startup purge skips it. A run
-  that uses it writes a warning to the fleet log. Update the value with
-  `apra-fleet secret --set R --persist`. `secret --update` and
-  `credential_store_update` refuse it until then, so neither can bring the old
-  value back.
-- A bound name cannot have a session value: setting one is refused, and so is
-  binding a name that has one here. Use `--persist`.
-
-**Refresh.** On access, while the remaining lifetime is at least T the current
-token is handed off; below T, or once expired, a new one is minted first and
-replaces it. T is `min(refreshFraction x lifetime, refreshMaxSeconds)`, from
-`liveSecrets` in the fleet `config.json`:
-
-```json
-{ "liveSecrets": { "refreshFraction": 0.1, "refreshMaxSeconds": 600 } }
-```
-
-Those are the defaults. `refreshFraction` must be between 0 and 1 (both
-exclusive) and `refreshMaxSeconds` above 0; an invalid value is reported on the
-server's stderr and the default is used. Concurrent callers share one mint. A
-restart starts with an empty cache, so the first use after it mints.
-
-**Failure behaviour.**
-
-- A failed run gives the typed error `E-LIVE-SECRET` naming the secret and the
-  cause (for example `exit code 1` or `timed out after 30000ms`), never a value
-  or stderr. The KB wraps it in `E-KB-HTTP-AUTH` (reason `live-secret-failed`);
-  no request is sent, and captures and invalidates are queued offline exactly as
-  for a static secret.
-- After a failed run the script is not run again until a backoff has passed: 10
-  seconds, doubling with each consecutive failure, up to 5 minutes. Calls inside
-  the window fail at once and say when it will next run. If the failed run was a
-  refresh and the previous token has not yet expired, that token keeps being used
-  meanwhile. Registering again clears the backoff.
-- On HTTP 401 from the KB server the rejected token is dropped from the cache, a
-  new one is minted and the request is retried once. A second 401 raises
-  `E-KB-HTTP-AUTH` (reason `rejected`).
-
-**fleet_status** lists every live secret on one `live secret NAME` line each (the
-`liveSecrets` array in JSON): the script or path, args and bindings with
-placeholders only, state (`not run`, `refreshing`, `ok`, `failed`, `expired`),
-last minted, expiry, and any last failure with the next run time. The state is
-this fleet server process's. When the KB config names it, the `kb credential:`
-line reads `live secret NAME | resolves: <state> | last minted | token expiry`,
-then any failure, then the `last ok call` / `last rejected call` times.
-
-**Sample: Entra ID through az, bash.** az's `expires_on` (Unix seconds) becomes
-`expires_at`. `jq` must be on the service's PATH.
-
-<!-- live-secret-sample:az-bash -->
-```bash
-apra-fleet secret --live KB_TOKEN --inline 'az account get-access-token --resource api://kb-app --query "{t:accessToken,e:expires_on}" -o json | jq -c "{token:.t, expires_at:(.e|todate)}"'
-```
-
-**Sample: Entra ID through az, PowerShell.**
-
-<!-- live-secret-sample:az-powershell -->
-```powershell
-apra-fleet secret --live KB_TOKEN --inline '$t = (az account get-access-token --resource api://kb-app --query ''{t:accessToken,e:expires_on}'' -o json | Out-String) | ConvertFrom-Json; @{ token = $t.t; expires_at = [DateTimeOffset]::FromUnixTimeSeconds([long]$t.e).ToString(''o'') } | ConvertTo-Json -Compress'
-```
-
-Typed in PowerShell, use doubled single quotes inside the script as shown:
-Windows PowerShell strips double quotes from an argument it hands to a program.
-
-**Sample: Entra ID service principal, bash.** Save it as `/opt/kb/mint-sp.sh` and
-`chmod 755` it. The client secret goes to curl on stdin (`client_secret@-`), so
-it stays off curl's own command line too.
-
-<!-- live-secret-sample:sp-bash -->
-```bash
-#!/usr/bin/env bash
-# Usage: mint-sp.sh <tenant> <client-id> <scope>. The secret arrives in CLIENT_SECRET.
-set -euo pipefail
-printf '%s' "$CLIENT_SECRET" | curl -fsS "https://login.microsoftonline.com/$1/oauth2/v2.0/token" \
-  --data-urlencode 'grant_type=client_credentials' \
-  --data-urlencode "client_id=$2" \
-  --data-urlencode "scope=$3" \
-  --data-urlencode 'client_secret@-' \
-  | jq -c '{token:.access_token, expires_at:((now|floor) + .expires_in | todate)}'
-```
-
-```bash
-apra-fleet secret --set sp_secret --persist
-apra-fleet secret --live KB_TOKEN --env 'CLIENT_SECRET={{secret.sp_secret}}' -- /opt/kb/mint-sp.sh <tenant> <client-id> <app-id-uri>/.default
-```
-
-**Sample: generic OAuth client credentials, bash.** The same script for any token
-endpoint, taking its URL as the first argument.
-
-<!-- live-secret-sample:oauth-bash -->
-```bash
-#!/usr/bin/env bash
-# Usage: mint-oauth.sh <token-url> <client-id> <scope>. The secret arrives in CLIENT_SECRET.
-set -euo pipefail
-printf '%s' "$CLIENT_SECRET" | curl -fsS "$1" \
-  --data-urlencode 'grant_type=client_credentials' \
-  --data-urlencode "client_id=$2" \
-  --data-urlencode "scope=$3" \
-  --data-urlencode 'client_secret@-' \
-  | jq -c '{token:.access_token, expires_at:((now|floor) + .expires_in | todate)}'
-```
-
-**Sample: generic OAuth client credentials, PowerShell** (also the Entra ID
-service principal, with `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token`
-as the URL). The secret goes in the request body, never on a command line. Save
-it as `C:\kb\mint-oauth.ps1`.
-
-<!-- live-secret-sample:oauth-powershell -->
-```powershell
-param([string]$TokenUrl, [string]$ClientId, [string]$Scope)
-$body = @{ grant_type = 'client_credentials'; client_id = $ClientId; scope = $Scope; client_secret = $env:CLIENT_SECRET }
-$r = Invoke-RestMethod -UseBasicParsing -Method Post -Uri $TokenUrl -Body $body
-@{ token = $r.access_token; expires_at = [DateTimeOffset]::UtcNow.AddSeconds([long]$r.expires_in).ToString('o') } | ConvertTo-Json -Compress
-```
-
-<!-- live-secret-sample:oauth-powershell-register -->
-```powershell
-apra-fleet secret --live KB_TOKEN --env 'CLIENT_SECRET={{secret.sp_secret}}' -- C:\kb\mint-oauth.ps1 <token-url> <client-id> <scope>
-```
-
-Keep `--env` values in quotes: PowerShell reads unquoted braces as a script block.
+**fleet_status.** When the KB config names a live secret, the `kb credential:` line
+reads `live secret NAME | resolves: <state> | last minted | token expiry`, then any
+failure, then the `last ok call` / `last rejected call` times. `resolves: denied`
+means its network policy is deny.
 
 **Walkthrough.** On the orchestrator, with az logged in as the fleet server's OS
 user:
 
 1. Register it. The test runs once: `apra-fleet secret --live KB_TOKEN --inline '...'`
-   (the az sample above) prints `OK: expires <time>`.
+   (see the [az examples](secret-variables.md#examples-inline-helpers)) prints `OK: expires <time>`.
 2. Point the orchestrator's KB at it: `kb_setup provider=http
    remote=https://<host> token={{secret.KB_TOKEN}}`.
 3. Check it: `fleet_status` shows `live secret KB_TOKEN | script: ... | state: not run`.
@@ -1260,8 +1061,10 @@ node dist/index.js kb-server --generate-token
 Then re-run `kb_setup` on each client with the new token.
 
 **Named secret** (`token={{secret.NAME}}`): the error is `E-KB-HTTP-AUTH` and
-names the secret and the reason (`missing`, `expired`, `unreadable` or
-`rejected`). Refresh the secret on this host; no restart is needed:
+names the secret and the reason (`missing`, `expired`, `unreadable`, `rejected`,
+`policy-deny` or `member-not-allowed`). For the last two an operator changes the
+policy: `apra-fleet secret --update NAME --allow` or `--members <list>`. Otherwise
+refresh the secret on this host; no restart is needed:
 ```bash
 apra-fleet secret --set NAME --persist -y
 ```
