@@ -287,6 +287,24 @@ jobs:
           npx vitest run tests/knowledge/kb-embed-worker-responsiveness.test.ts || rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
 
+      # kb_query latency on 5k entries with the real default model's query
+      # vectors (single query and a 6-query knowledgeFor-style burst), plus
+      # the similarity floor check on real document vectors. A missing model
+      # fails (APRA_KB_BENCH_REQUIRE_MODEL=1); the numbers go to the summary.
+      - name: KB query latency bench with the real model
+        id: bench
+        timeout-minutes: 40
+        continue-on-error: true
+        env:
+          APRA_KB_BENCH_REQUIRE_MODEL: '1'
+        run: |
+          export APRA_KB_BENCH_MODELS_DIR="$HOME/.cache/apra-kb-models"
+          mkdir -p "$RUNNER_TEMP/kb-recall"
+          rc=0
+          node scripts/kb-query-bench.mjs --breakdown > "$RUNNER_TEMP/kb-recall/bench.txt" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/kb-recall/bench.txt"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
       - name: Upload KB recall report
         if: always()
         continue-on-error: true
@@ -304,15 +322,21 @@ jobs:
         env:
           EVAL_RC: ${{ steps.eval.outputs.rc }}
           RESP_RC: ${{ steps.resp.outputs.rc }}
+          BENCH_RC: ${{ steps.bench.outputs.rc }}
           SEA_OUTCOME: ${{ steps.sea.outcome }}
           REPORT_MD: ${{ runner.temp }}/kb-recall/report.md
+          BENCH_TXT: ${{ runner.temp }}/kb-recall/bench.txt
         run: |
-          if [ -z "$EVAL_RC" ] || [ -z "$RESP_RC" ]; then verdict=BROKEN
-          elif [ "$EVAL_RC" = 0 ] && [ "$RESP_RC" = 0 ]; then verdict=PASS
+          if [ -z "$EVAL_RC" ] || [ -z "$RESP_RC" ] || [ -z "$BENCH_RC" ]; then verdict=BROKEN
+          elif [ "$EVAL_RC" = 0 ] && [ "$RESP_RC" = 0 ] && [ "$BENCH_RC" = 0 ]; then verdict=PASS
           else verdict=FAIL; fi
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           {
-            echo "## $verdict -- KB real-model lane (recall eval rc=${EVAL_RC:-none}, responsiveness rc=${RESP_RC:-none}, SEA build ${SEA_OUTCOME})"
+            echo "## $verdict -- KB real-model lane (recall eval rc=${EVAL_RC:-none}, responsiveness rc=${RESP_RC:-none}, query bench rc=${BENCH_RC:-none}, SEA build ${SEA_OUTCOME})"
             echo
             if [ -f "$REPORT_MD" ]; then cat "$REPORT_MD"; else echo "No recall report was written (see the job log)."; fi
+            echo
+            echo '### kb_query latency bench'
+            echo
+            if [ -f "$BENCH_TXT" ]; then echo '```'; grep '^\[kb-query-bench\]' "$BENCH_TXT" || true; echo '```'; else echo "No bench output (see the job log)."; fi
           } >> "$GITHUB_STEP_SUMMARY"

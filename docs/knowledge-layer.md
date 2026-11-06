@@ -948,8 +948,15 @@ member owner tag) applies to every list. Vector compare is brute force in
 SQLite (no vector database); the budget is under 200 ms per query on CPU.
 
 Measuring it: `node scripts/kb-query-bench.mjs` (after `npm run build`) builds
-a synthetic 5k-entry KB (about 9-10 vectors per entry) in a temp folder and
-prints hybrid query p50/p95 (`--breakdown` times each list alone). Query
+a synthetic 5k-entry KB in a temp folder, with entries sized like the real
+bible entries, and prints p50/p95/p99 for single hybrid queries and for
+bursts of 6 concurrent queries (the shape of one fleet-sprint knowledgeFor
+call); `--breakdown` times each list alone. Query vectors come from the real
+default model when it is available locally (document vectors are a fake with
+the real dims; the output says which), and with the real model it also
+embeds the recall eval's entries for real and checks that nonsense queries
+return 0 rows (the similarity floor). The nightly `kb-real-model` job runs it
+with `APRA_KB_BENCH_REQUIRE_MODEL=1` and puts the numbers in its summary. Query
 scoring keeps the active model's vectors in memory as float16 (2 bytes per
 dimension per vector, about 36 MB for 5k entries at 384 dims), reloaded only
 when the vector table changes. The recall eval (`tests/knowledge/kb-recall-eval.test.ts`,

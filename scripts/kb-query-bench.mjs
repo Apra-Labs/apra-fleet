@@ -1,25 +1,37 @@
 #!/usr/bin/env node
-// KB hybrid query latency benchmark (design D2b budget: p95 under 200 ms per
+// KB kb_query latency benchmark (design D2b budget: p95 under 200 ms per
 // query on CPU on a 5k-entry KB).
 //
-// Builds a synthetic KB (deterministic PRNG: realistic title/summary/content
-// lengths, recall cues and error signatures, so each entry carries about 5-10
-// vectors) in a temp folder, embeds it, then runs a few hundred hybrid queries
-// (query text, file/symbol anchors, error_text on a third of them) through
-// SqliteProvider.query and prints p50/p95/p99.
+// Builds a synthetic KB (deterministic PRNG) in a temp folder whose entries
+// are sized like the real bible entries (tests/fixtures/kb-recall-eval:
+// title ~60-130 chars, summary ~140-530, content up to ~1100, 3-8 recall
+// cues, 1-5 source files, 0-6 symbols, error signatures on a few percent),
+// embeds it, then measures through SqliteProvider.query:
+//   - single queries (query text, file/symbol anchors, error_text on a third);
+//   - bursts of 6 concurrent situation queries, the shape of one fleet-sprint
+//     knowledgeFor call (one kb_query per bead/file situation, issued together);
+// and prints p50/p95/p99 for both.
 //
-// Embedder: a hashed-bag-of-words fake with the default model's 384 dims, so
-// the brute-force vector compare does the real amount of work. When the real
-// default model (bge-small-en-v1.5) is available locally -- set
-// APRA_KB_BENCH_MODELS_DIR to a models folder holding it, or
-// APRA_KB_BENCH_ALLOW_DOWNLOAD=1 to fetch it from the Hugging Face hub into
-// that folder (default: a temp folder removed at exit) -- query vectors come
-// from the real model, so its query-embedding time is in the measurement too
-// (document vectors stay fake: embedding 5k entries with the real model on
-// CPU takes many minutes and does not change the per-query cost).
+// Vectors: query vectors come from the REAL default model when it is available
+// locally (APRA_KB_BENCH_MODELS_DIR, a models folder holding it, e.g. the
+// nightly lane's cache; or APRA_KB_BENCH_ALLOW_DOWNLOAD=1 to fetch it from the
+// Hugging Face hub into that folder, default a temp folder removed at exit),
+// else from a hashed-bag-of-words fake. Document vectors are always a fake
+// with the model's real dims (embedding 5k entries with the real model on CPU
+// takes many minutes and does not change the per-query cost: scoring is the
+// same brute-force compare). The output states which.
+// APRA_KB_BENCH_REQUIRE_MODEL=1 (the nightly real-model lane) makes a missing
+// real model a failure (exit 3) instead of a fallback to the fake.
+//
+// Similarity floor check (real model only): loads the recall eval's entries
+// (tests/fixtures/kb-recall-eval) into a second temp KB, embeds them with the
+// real model (real document vectors), and runs nonsense queries: each must
+// return exactly the keyword-only result -- 0 rows when no keyword matches --
+// and the output shows the row count without the floor next to it. Any
+// difference exits 4.
 //
 // Runs against the BUILT server (dist/): run `npm run build` first.
-// Usage: node scripts/kb-query-bench.mjs [--entries 5000] [--queries 300] [--breakdown] [--json]
+// Usage: node scripts/kb-query-bench.mjs [--entries 5000] [--queries 300] [--bursts 60] [--breakdown] [--json]
 // --breakdown also times each ranked list alone (the others switched off).
 // Writes nothing outside its temp folder (removed at exit).
 
@@ -39,6 +51,9 @@ function arg(name, def) {
 }
 const N_ENTRIES = arg('entries', 5000);
 const N_QUERIES = arg('queries', 300);
+const N_BURSTS = arg('bursts', 60);
+const BURST_SIZE = 6; // fleet-sprint KB_MAX_SITUATION_QUERIES
+const REQUIRE_MODEL = process.env.APRA_KB_BENCH_REQUIRE_MODEL === '1';
 const WARMUP = 10;
 const JSON_OUT = process.argv.includes('--json');
 const DIMS = 384;
@@ -61,6 +76,7 @@ const { Embedder } = await import(pathToFileURL(path.join(DIST, 'services', 'kno
 const { ModelStore } = await import(pathToFileURL(path.join(DIST, 'services', 'knowledge', 'embedding', 'model-store.js')).href);
 const { BUILTIN_EMBEDDING_PROFILES, DEFAULT_EMBEDDING_PROFILE } =
   await import(pathToFileURL(path.join(DIST, 'services', 'knowledge', 'embedding', 'profiles.js')).href);
+const { importBibleEntries } = await import(pathToFileURL(path.join(DIST, 'services', 'knowledge', 'bible-import.js')).href);
 
 // -- deterministic PRNG and vocabulary --------------------------------------
 let seed = 0x9e3779b9;
@@ -80,17 +96,18 @@ const FILES = Array.from({ length: 600 }, (_, i) => `src/${pick(VOCAB)}/${pick(V
 const SYMBOLS = Array.from({ length: 1500 }, () => `${pick(VOCAB)[0].toUpperCase()}${pick(VOCAB)}.${pick(VOCAB)}`);
 const ERRORS = Array.from({ length: 300 }, () => `E${between(100, 999)} ${words(between(4, 8))}`);
 
+// Sized like the bible entries (see the header).
 function entry(i) {
-  const paragraphs = Array.from({ length: between(3, 5) }, () => words(between(90, 150)) + '.');
+  const paragraphs = Array.from({ length: between(0, 2) }, () => words(between(40, 120)) + '.');
   return {
     type: pick(['learning', 'knowledge', 'runbook']),
-    title: `${words(between(5, 9))} ${i}`,
-    summary: words(between(25, 45)) + '.',
-    content: paragraphs.join('\n\n'),
-    source_files: Array.from({ length: between(1, 3) }, () => pick(FILES)),
-    symbols: Array.from({ length: between(1, 3) }, () => pick(SYMBOLS)),
-    recall_cues: Array.from({ length: between(1, 3) }, () => words(between(4, 8))),
-    error_signatures: rnd() < 0.5 ? [pick(ERRORS)] : [],
+    title: `${words(between(7, 13))} ${i}`,
+    summary: words(between(20, 60)) + '.',
+    content: paragraphs.length ? paragraphs.join('\n\n') : words(between(10, 25)) + '.',
+    source_files: Array.from({ length: between(1, 5) }, () => pick(FILES)),
+    symbols: Array.from({ length: between(0, 6) }, () => pick(SYMBOLS)),
+    recall_cues: Array.from({ length: between(3, 8) }, () => words(between(2, 5))),
+    error_signatures: rnd() < 0.05 ? [pick(ERRORS)] : [],
     confidence: rnd() < 0.6 ? 'INFERRED' : 'UNVERIFIED',
     source: 'bench',
     author: 'kb-query-bench',
@@ -136,6 +153,50 @@ async function realQueryEmbedder() {
   return { real, profile };
 }
 
+// Queries with no answer in the eval KB (gibberish, off-topic, unknown
+// identifiers): with the similarity floor each returns 0 rows.
+const NONSENSE = [
+  { query: 'qwzx plorbt vandersnoot' }, { query: 'xyzzy frobnicate glorp' }, { query: 'purple elephant banana spaceship' },
+  { query: 'recipe for chocolate cake' }, { query: 'football world cup results' }, { query: 'fhqwhgads' },
+  { query: 'QuxbarFrobnicator.glorpify' }, { fts_terms: ['QuxbarFrobnicator.glorpify'] },
+];
+
+/** Real document AND query vectors on the eval entries: rows returned per nonsense query. */
+async function floorCheck(real) {
+  const dir = path.join(tmp, 'floor');
+  fs.mkdirSync(dir, { recursive: true });
+  const evalDir = path.join(ROOT, 'tests', 'fixtures', 'kb-recall-eval');
+  const read = (f) => JSON.parse(fs.readFileSync(path.join(evalDir, f), 'utf-8'));
+  const enrichment = read('enrichment.json').entries;
+  const entries = [...read('bible-snapshot.json').entries, ...read('extra-entries.json').entries]
+    .map((e) => ({ ...e, ...(enrichment[e.id] ?? {}) }));
+  const p = new SqliteProvider(path.join(dir, 'kb.sqlite'));
+  await p.init();
+  try {
+    await importBibleEntries(p, entries, { verbatim: true });
+    p.attachEmbedder(() => real);
+    if (!(await p.waitForEmbeddings(30 * 60 * 1000))) throw new Error('embedding the eval entries did not finish');
+    const out = [];
+    const ids = async (q, extra) =>
+      (await p.query({ ...q, ...extra, limit: 20, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] })).results.map((e) => e.id);
+    for (const q of NONSENSE) {
+      const hybrid = await ids(q, {});
+      const keyword = await ids(q, { disable_lists: ['semantic'] });
+      const noFloor = await ids(q, { semantic_floor: Number.NEGATIVE_INFINITY });
+      out.push({
+        q: q.query ?? `fts_terms:${q.fts_terms.join(',')}`,
+        rows: hybrid.length,
+        keyword_rows: keyword.length,
+        no_floor_rows: noFloor.length,
+        same_as_keyword: JSON.stringify(hybrid) === JSON.stringify(keyword),
+      });
+    }
+    return { entries: entries.length, vectors: p.vectorStore.count(), results: out };
+  } finally {
+    p.close();
+  }
+}
+
 function pct(sorted, p) {
   return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)];
 }
@@ -149,13 +210,18 @@ try {
   const tCapture = performance.now() - t0;
 
   const realQ = await realQueryEmbedder();
+  if ('skip' in realQ && REQUIRE_MODEL) {
+    console.error(`kb-query-bench: APRA_KB_BENCH_REQUIRE_MODEL=1 but the real ${DEFAULT_EMBEDDING_PROFILE} model is unavailable: ${realQ.skip}`);
+    cleanup();
+    process.exit(3);
+  }
   let mode;
   let emb;
   if ('skip' in realQ) {
-    mode = `fake query embedder (${DIMS} dims; real model unavailable: ${realQ.skip})`;
+    mode = `fake query embedder (${DIMS} dims; real model unavailable: ${realQ.skip}), fake ${DIMS}-dim document vectors`;
     emb = fakeEmbedder('bench/fake-384', 'r1');
   } else {
-    mode = `real ${DEFAULT_EMBEDDING_PROFILE} query embedding, fake ${DIMS}-dim document vectors`;
+    mode = `REAL ${DEFAULT_EMBEDDING_PROFILE} (${realQ.profile.modelId}@${realQ.profile.revision.slice(0, 8)}) query vectors, FAKE ${DIMS}-dim document vectors`;
     emb = fakeEmbedder(realQ.profile.modelId, realQ.profile.revision, (t) => realQ.real.embedQuery(t));
   }
   provider.attachEmbedder(() => emb);
@@ -180,6 +246,22 @@ try {
   }
   times.sort((a, b) => a - b);
 
+  // Bursts of BURST_SIZE concurrent situation queries (one knowledgeFor call):
+  // fresh query texts, so each burst pays its query embeddings.
+  const burstTimes = [];
+  for (let b = 0; b < N_BURSTS + 2; b++) {
+    const burst = Array.from({ length: BURST_SIZE }, (_, k) => ({
+      query: words(between(6, 14)),
+      anchor_files: [pick(FILES)],
+      anchor_symbols: rnd() < 0.5 ? [pick(SYMBOLS)] : [],
+      ...(k === 0 && rnd() < 0.3 ? { error_text: pick(ERRORS) } : {}),
+    }));
+    const s = performance.now();
+    await Promise.all(burst.map((q) => provider.query({ ...q, limit: LIMIT, l1_only: true, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] })));
+    if (b >= 2) burstTimes.push(performance.now() - s);
+  }
+  burstTimes.sort((a, b) => a - b);
+
   // --breakdown: the same queries with all but one list switched off.
   const breakdown = {};
   if (process.argv.includes('--breakdown')) {
@@ -195,8 +277,12 @@ try {
       breakdown[only] = { p50_ms: Number(pct(t, 50).toFixed(1)), p95_ms: Number(pct(t, 95).toFixed(1)) };
     }
   }
+  const floor = 'skip' in realQ ? null : await floorCheck(realQ.real);
   const result = {
     entries: N_ENTRIES,
+    model: 'skip' in realQ ? null : `${realQ.profile.modelId}@${realQ.profile.revision}`,
+    real_query_vectors: !('skip' in realQ),
+    real_document_vectors: false,
     vectors,
     vectors_per_entry: Number((vectors / N_ENTRIES).toFixed(2)),
     queries: times.length,
@@ -206,6 +292,15 @@ try {
     p99_ms: Number(pct(times, 99).toFixed(1)),
     max_ms: Number(times[times.length - 1].toFixed(1)),
     avg_results: Number((returned / times.length).toFixed(1)),
+    burst: {
+      size: BURST_SIZE,
+      bursts: burstTimes.length,
+      p50_ms: Number(pct(burstTimes, 50).toFixed(1)),
+      p95_ms: Number(pct(burstTimes, 95).toFixed(1)),
+      p99_ms: Number(pct(burstTimes, 99).toFixed(1)),
+      max_ms: Number(burstTimes[burstTimes.length - 1].toFixed(1)),
+    },
+    ...(floor ? { floor_check: floor } : {}),
     build_capture_s: Number((tCapture / 1000).toFixed(1)),
     build_embed_s: Number((tEmbed / 1000).toFixed(1)),
     cpu: os.cpus()[0]?.model ?? 'unknown',
@@ -216,10 +311,26 @@ try {
   else {
     console.log(`[kb-query-bench] ${result.entries} entries, ${result.vectors} vectors (${result.vectors_per_entry}/entry), ${result.queries} hybrid queries`);
     console.log(`[kb-query-bench] mode: ${result.mode}`);
-    console.log(`[kb-query-bench] p50=${result.p50_ms} ms p95=${result.p95_ms} ms p99=${result.p99_ms} ms max=${result.max_ms} ms (avg ${result.avg_results} results)`);
+    console.log(`[kb-query-bench] single query: p50=${result.p50_ms} ms p95=${result.p95_ms} ms p99=${result.p99_ms} ms max=${result.max_ms} ms (avg ${result.avg_results} results)`);
+    const bu = result.burst;
+    console.log(`[kb-query-bench] burst of ${bu.size} concurrent queries (${bu.bursts} bursts): p50=${bu.p50_ms} ms p95=${bu.p95_ms} ms p99=${bu.p99_ms} ms max=${bu.max_ms} ms`);
+    if (floor) {
+      const zero = floor.results.filter((r) => r.rows === 0).length;
+      const same = floor.results.filter((r) => r.same_as_keyword).length;
+      console.log(`[kb-query-bench] floor check (eval KB: ${floor.entries} entries, ${floor.vectors} REAL document vectors, real query vectors): ` +
+        `${same}/${floor.results.length} nonsense queries return exactly the keyword-only result, ${zero}/${floor.results.length} return 0 rows`);
+      for (const r of floor.results) {
+        console.log(`[kb-query-bench]   '${r.q}': ${r.rows} rows (keyword-only ${r.keyword_rows}, without the floor ${r.no_floor_rows})${r.same_as_keyword ? '' : ' DIFFERS FROM KEYWORD-ONLY'}`);
+      }
+    } else {
+      console.log('[kb-query-bench] floor check: skipped (needs the real model)');
+    }
     for (const [k, v] of Object.entries(breakdown)) console.log(`[kb-query-bench] only ${k}: p50=${v.p50_ms} ms p95=${v.p95_ms} ms`);
     console.log(`[kb-query-bench] build: capture ${result.build_capture_s}s, embed ${result.build_embed_s}s; cpu: ${result.cpu}`);
   }
+  // Floor failure: the semantic list added rows to a query with no answer
+  // (a row that keyword search finds is the keyword path's, not the floor's).
+  if (floor && floor.results.some((r) => !r.same_as_keyword || (r.keyword_rows === 0 && r.rows > 0))) process.exitCode = 4;
 } finally {
   cleanup();
 }
