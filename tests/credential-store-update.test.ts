@@ -69,12 +69,12 @@ describe('credentialUpdate service', () => {
 
     const updated = credentialUpdate(name, {
       members: '*',
-      network_policy: 'confirm',
+      network_policy: 'deny',
       expiresAt: Date.now() + 7200 * 1000,
     });
     expect(updated).not.toBeNull();
     expect(updated!.members).toBe('*');
-    expect(updated!.network_policy).toBe('confirm');
+    expect(updated!.network_policy).toBe('deny');
     expect(updated!.expiresAt).toBeGreaterThanOrEqual(before + 7200 * 1000 - 10);
   });
 
@@ -119,10 +119,10 @@ describe('credentialStoreUpdate tool', () => {
     const name = `${TEST_PREFIX}multi`;
     credentialSet(name, 'secret', false, 'allow');
 
-    const result = await credentialStoreUpdate({ name, members: '*', network_policy: 'confirm', ttl_seconds: 7200 });
+    const result = await credentialStoreUpdate({ name, members: '*', network_policy: 'deny', ttl_seconds: 7200 });
     expect(result).toContain(`✅ Credential "${name}" updated.`);
     expect(result).toContain('"members":"*"');
-    expect(result).toContain('"network_policy":"confirm"');
+    expect(result).toContain('"network_policy":"deny"');
     expect(result).toContain('"expiresAt"');
   });
 

@@ -698,7 +698,9 @@ exits 0:
 
 1. Every bound secret must exist, be readable, and be persistent and static.
    Any other is named in the error. Session-tier secrets disappear on restart,
-   so store them with `--persist`. Live secrets cannot be bound.
+   so store them with `--persist` (see
+   [Storing and re-setting a secret](secret-variables.md#storing-and-re-setting-a-secret)).
+   Live secrets cannot be bound.
 2. The script runs once, and the live secret is saved only if that worked.
    Otherwise nothing is written and any existing record is unchanged.
 3. It prints only `OK: expires <time>`, or `FAILED: <reason code>` with the exit
@@ -726,7 +728,7 @@ The value of a long-running execute_command is fixed at launch, so it keeps a
 dead token until restarted.
 
 `apra-fleet secret --set NAME --persist -y` replaces a live secret with a static
-one, `--delete` removes it, and `--list` marks it `live`. Registering again under
+one that keeps its policy fields, `--delete` removes it, and `--list` marks it `live`. Registering again under
 the same name replaces the script and starts a fresh cache entry, and keeps the
 policy fields of the record it replaces. The MCP tools `credential_store_set`,
 `credential_store_update` and `credential_store_delete` refuse a live name,
@@ -740,9 +742,9 @@ while that live secret exists.
   `secret --delete` and `credential_store_delete` alike. Delete the consuming
   live secret first. Registering a live secret over a bound name is refused the
   same way. `secret --delete --all` removes live secrets first, then secrets.
-- Updating a bound secret's value is allowed, for rotation. It does not re-run
-  the test, and a token minted with the old value stays cached until it is
-  replaced.
+- Updating a bound secret's value is allowed, for rotation, and keeps its policy
+  and members. It does not re-run the test, and a token minted with the old value
+  stays cached until it is replaced.
 - An expired bound secret is kept: the binding is to the name, not the value.
   Member commands get `expired` for it, and the startup purge skips it. A run
   that uses it writes a warning to the fleet log. Update the value with

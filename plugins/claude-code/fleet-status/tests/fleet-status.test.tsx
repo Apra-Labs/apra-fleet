@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { McpToolResult, On } from 'claude-code'
 
 import {
-  callErrorText, cells, classifyError, clock, entryLinkWarning, expiresSoon, expiryLabel, FOOTER, GUTTER, memberExtras, nameCap,
+  callErrorText, cells, classifyError, clock, entryLinkWarning, expiresSoon, expiryLabel, FOOTER, GUTTER, memberExtras, nameCap, noTtlLabel,
   paneColumns, paneRows, parseEntryLink, parseSecrets, parseSnapshot, DEFAULT_LAYOUT, removeNote, secretToken, secretsStatus, secretsRows, statusLine, summaryText, withSecrets,
 } from '../hooks/register'
 import type { FleetView } from '../types'
@@ -378,6 +378,37 @@ describe('fleet-status secrets pane', () => {
     await ui.press({ key: 'secret-apply' })
     expect(seen.calls.find(c => c.tool === 'credential_store_update')?.args).toEqual({ name: 'aws_key', members: 'alice' })
     expect(await ui.find({ type: 'Text', text: 'Settings applied to aws_key.' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('no TTL on a row being replaced says what the server does', async () => {
+    expect(noTtlLabel(undefined)).toBe('never')
+    expect(noTtlLabel('none')).toBe('never')
+    expect(noTtlLabel('expired')).toBe('never')
+    expect(noTtlLabel('12m 3s remaining')).toBe('keep current (12m left)')
+  })
+
+  test('replace: the form names the kept expiry, sends no TTL, and a persistent row cannot pick session', async ($, on) => {
+    const seen = serveSnapshot(on, OK, {
+      credential_store_list: text(SECRETS),
+      credential_store_set: text('aws_key stored [session]. Use {{secret.aws_key}} in commands.'),
+    })
+    await $.command.run(RUN)
+    const ui = await $.ui.mount(MOUNT)
+    await ui.press({ key: 'fold-secrets' })
+    await ui.press({ key: 'secret-replace:aws_key' })
+    await ui.press({ key: 'secret-options' })
+    const ttl = await ui.find({ type: 'Select', key: 'secret-ttl' }) as { props?: { options?: Array<{ value: string; label: string }> } } | undefined
+    expect(ttl?.props?.options?.[0]).toEqual({ value: 'none', label: 'keep current (12m left)' })
+    expect(await ui.find({ type: 'Select', key: 'secret-keep' })).toBeDefined()
+    await ui.press({ key: 'secret-link' })
+    expect(seen.calls.find(c => c.tool === 'credential_store_set')?.args).toEqual({ name: 'aws_key', prompt: 'Value for aws_key', persist: false, members: 'alice,bob', return_url: true })
+
+    await ui.press({ key: 'secret-replace:GITHUB_TOKEN' })
+    expect(await ui.find({ type: 'Select', key: 'secret-keep' })).toBe(undefined)
+    expect(await ui.find({ type: 'Text', text: 'Keep: persistent' })).toBeDefined()
+    const never = await ui.find({ type: 'Select', key: 'secret-ttl' }) as { props?: { options?: Array<{ label: string }> } } | undefined
+    expect(never?.props?.options?.[0]?.label).toBe('never')
     await ui.unmount()
   })
 

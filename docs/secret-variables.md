@@ -10,6 +10,83 @@
 
 `{{secret.NAME}}` tokens are resolved server-side before execution. The plaintext secret never appears in chat, logs, or LLM context. Only specific tool parameters support resolution - see the supported fields table below.
 
+## Storing and re-setting a secret
+
+The value is always entered out of band. These rules apply to the `credential_store_set` tool and to `apra-fleet secret --set NAME --persist`.
+
+### A new secret
+
+| Field | Default | Change it with |
+|-------|---------|----------------|
+| Tier | persistent | `persist: false` (tool only) |
+| Network policy | `allow` | `network_policy: deny`, or `secret --update NAME --deny` |
+| Members | all (`*`) | `members: alice,bob`, or `secret --update NAME --members alice,bob` |
+| Expiry | none | `ttl_seconds: 3600`, or `secret --update NAME --ttl 3600` |
+
+Example: `credential_store_set name=github_pat` stores a persistent secret, with policy `allow`, for all members.
+
+### Re-setting an existing secret
+
+Re-setting changes only the value. Anything you leave out stays as stored. An explicit argument changes that field and nothing else.
+
+| Call on a persistent secret stored as `deny`, member `alice` | Value | Policy | Members |
+|---------------------------------------------------|-------|--------|---------|
+| `credential_store_set name=X` | new | `deny` | `alice` |
+| `credential_store_set name=X network_policy=allow` | new | `allow` | `alice` |
+| `credential_store_set name=X members=*` | new | `deny` | all |
+| `apra-fleet secret --set X --persist` | new | `deny` | `alice` |
+
+To change the policy or members without entering a new value, use `credential_store_update` or `secret --update`. `secret --set` has no policy flags.
+
+### Expiry on a re-set
+
+| Stored expiry | `ttl_seconds` omitted | `ttl_seconds` given |
+|---------------|-----------------------|---------------------|
+| None | stays none | expires after `ttl_seconds` |
+| Not yet passed | stays as stored | expires after `ttl_seconds` |
+| Already passed | no expiry | expires after `ttl_seconds` |
+
+Example: re-setting a secret that expires tomorrow keeps tomorrow's expiry. Re-setting one that expired yesterday gives a value with no expiry, because keeping the old date would make the new value expired at once.
+
+An expired secret that is not bound to a live secret is removed at server start or when it is next read. After that its name is new, so the new-secret defaults apply.
+
+### Network policy
+
+`network_policy` is `allow` or `deny`.
+
+| Policy | What it does |
+|--------|--------------|
+| `allow` | No restriction. |
+| `deny` | A command that uses the secret is blocked and does not run if the text of `command` contains one of the words below. `send_email` refuses the secret. Any other command still runs. |
+
+`deny` looks for these whole words, in any case: `curl`, `wget`, `ssh`, `sftp`, `scp`, `rsync`, `nc`, `netcat`, `http`, `fetch`, `Invoke-WebRequest`, `Invoke-RestMethod`.
+
+Example: with `deny` on `tok`, `curl -H {{secret.tok}} https://example.com` is blocked and `echo {{secret.tok}}` runs.
+
+This is a word check, not a network firewall:
+
+- `git push` and `git clone` are not blocked, because `git` is not on the list. `git fetch` is, because of `fetch`.
+- A script that calls `curl` inside itself is not blocked unless `command` also has a listed word.
+- Only `command` is checked for these words. A `deny` secret used only in `restart_command` is blocked when `command` has a listed word, but a listed word only in `restart_command` is not noticed.
+
+`confirm` is removed. Passing `network_policy: confirm` is refused with a message saying so, and `secret --confirm` fails the same way. A secret already stored with `confirm` keeps working and reads as `allow`, so it no longer prompts. Each such secret writes one log line naming it. To block its network use, run `apra-fleet secret --update NAME --deny`.
+
+### Session and persistent
+
+| Tier | Where it lives | At server restart |
+|------|----------------|-------------------|
+| Persistent | encrypted in `credentials.json` | kept |
+| Session | in the server's memory only | gone |
+
+`persist: false` keeps the secret in memory only: nothing is written to disk. A session secret stays session when re-set, unless you pass `persist: true`. `persist: false` on a persistent secret is refused before any value is asked for: delete the secret first if you really want a session value. Deleting also drops its policy and members.
+
+Example: `credential_store_set name=one_off persist=false` stores a value that ends at the next server restart.
+
+Two limits:
+
+- A name bound to a live secret must be persistent, so `persist: false` on it is refused before any value is asked for.
+- `--persist` always means persistent, and the CLI reads only `credentials.json`. It cannot see a server's session secrets, so for a name that exists only as a session secret it uses the new-secret defaults. That persistent record then takes over from the session value.
+
 ## Supported Fields
 
 | Tool | Parameter | Notes |

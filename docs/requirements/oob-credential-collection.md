@@ -16,7 +16,7 @@ apra-fleet secret --set MyPass
 **Implicit / on-demand** - a tool call needs a credential it doesn't have:
 - `register_member` with SSH password auth and no password provided -> OOB opens with the SSH context as the prompt
 - Any `{{secret.NAME}}` reference where `NAME` is not yet in the store -> OOB opens, user is asked whether to persist the value after entry
-- `credential_store_set` tool call -> OOB always opens
+- `credential_store_set` tool call -> OOB always opens; see [Storing and re-setting a secret](../secret-variables.md#storing-and-re-setting-a-secret)
 
 In all cases the UX is identical - only the prompt text changes to give the user context about what they're entering.
 
@@ -47,7 +47,6 @@ A credential can be **session-only** (discarded after delivery) or **persistent*
 | Policy | Effect |
 |--------|--------|
 | `allow` (default) | No restriction - credential can be used in any command |
-| `confirm` | Fleet prompts before allowing a command that uses this credential to make network calls |
 | `deny` | Commands that would make network calls while using this credential are blocked |
 
 The policy can be updated at any time without re-entering the secret:

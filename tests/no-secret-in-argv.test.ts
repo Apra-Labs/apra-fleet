@@ -42,7 +42,6 @@ vi.mock('../src/utils/workspace-trust.js', () => ({
 }));
 vi.mock('../src/services/auth-socket.js', () => ({
   collectOobApiKey: vi.fn(),
-  collectOobConfirm: vi.fn(),
 }));
 
 const execCalls: string[] = [];

@@ -10,9 +10,8 @@ import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper, generateTaskWrapperWindows } from '../services/cloud/task-wrapper.js';
 import { escapeShellArg, escapePowerShellArg, escapeWindowsArg } from '../utils/shell-escape.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
-import { lookupLiveSecret, registerTaskCredentials } from '../services/credential-store.js';
+import { lookupLiveSecret, registerTaskCredentials, type NetworkPolicy } from '../services/credential-store.js';
 import { liveSecretAllowsMember, resolveCommandSecret } from '../services/live-secret-cache.js';
-import { collectOobConfirm } from '../services/auth-socket.js';
 import { LogScope, maskSecrets, truncateForLog, logLine, logWarn } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
@@ -58,7 +57,7 @@ function capForLog(text: string, maxLines = 50, maxChars = 4000): string {
 interface ResolvedCredential {
   name: string;
   plaintext: string;
-  network_policy: 'allow' | 'confirm' | 'deny';
+  network_policy: NetworkPolicy;
 }
 
 /**
@@ -131,29 +130,9 @@ export function mergeCredentials(into: ResolvedCredential[], more: ResolvedCrede
   }
 }
 
-/**
- * The refusal text when policy stops `name` going out in a network command; null
- * when it may go. On `confirm` this asks the user out of band.
- */
-async function egressRefusal(
-  name: string,
-  policy: ResolvedCredential['network_policy'],
-  command: string,
-  memberName: string,
-): Promise<string | null> {
-  if (policy === 'deny') {
-    return `[FAIL] Blocked: credential "${name}" has network_policy=deny and the command contains a network tool.`;
-  }
-  if (policy === 'confirm') {
-    const { confirmed, terminalUnavailable } = await collectOobConfirm(name, { command, memberName });
-    if (!confirmed) {
-      const reason = terminalUnavailable
-        ? 'could not be confirmed (terminal unavailable)'
-        : 'was not confirmed';
-      return `[FAIL] Network egress for credential "${name}" ${reason}. Command not executed.`;
-    }
-  }
-  return null;
+/** The refusal when a deny policy stops `name` going out in a network command. */
+function egressDenied(name: string): string {
+  return `[FAIL] Blocked: credential "${name}" has network_policy=deny and the command contains a network tool.`;
 }
 
 /**
@@ -277,17 +256,15 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   }
 
   // -- Live secrets: policy before the mint, so a refused one never runs its script --
-  const egressChecked = new Set<string>();
   // Placeholders are stripped first: a secret's name is not a network tool.
   if (NETWORK_TOOL_RE.test(redactSecretTokens(input.command))) {
     const referenced = findSecretTokens(`${input.command}\n${input.restart_command ?? ''}`).map((t) => t.name);
     for (const name of new Set(referenced)) {
       const live = lookupLiveSecret(name);
-      // A member it is not shared with gets that refusal from the resolve below, unprompted.
-      if (!live || !liveSecretAllowsMember(live, agent.friendlyName)) continue;
-      const refusal = await egressRefusal(name, live.network_policy, input.command, agent.friendlyName);
-      if (refusal) return refusal;
-      egressChecked.add(name);
+      // A member it is not shared with gets that refusal from the resolve below.
+      if (live && liveSecretAllowsMember(live, agent.friendlyName) && live.network_policy === 'deny') {
+        return egressDenied(name);
+      }
     }
   }
 
@@ -313,14 +290,10 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     logWarn('execute_command', legacyWarnings.join('; '), agent);
   }
 
-  // -- Network egress check for credentials with confirm/deny policy --
-  if (credentials.length > 0 && NETWORK_TOOL_RE.test(resolvedCommand)) {
-    for (const cred of credentials) {
-      if (egressChecked.has(cred.name)) continue;
-      const refusal = await egressRefusal(cred.name, cred.network_policy, input.command, agent.friendlyName);
-      if (refusal) return refusal;
-      egressChecked.add(cred.name);
-    }
+  // -- Network egress check for credentials with a deny policy --
+  if (NETWORK_TOOL_RE.test(resolvedCommand)) {
+    const denied = credentials.find((cred) => cred.network_policy === 'deny');
+    if (denied) return egressDenied(denied.name);
   }
 
   const rawFolder = input.run_from ?? agent.workFolder;

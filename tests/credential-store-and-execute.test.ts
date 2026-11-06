@@ -3,7 +3,7 @@
  *  - credential_store_set / credential_store_list / credential_store_delete round-trip
  *  - {{secret.NAME}} token resolution in execute_command
  *  - Output redaction
- *  - Network egress policy (allow / confirm / deny)
+ *  - Network egress policy (allow / deny)
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
@@ -319,15 +319,10 @@ describe('execute_command: output redaction', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Network egress policy (allow / confirm / deny)
+// Network egress policy (allow / deny)
 // ---------------------------------------------------------------------------
 
-const { mockCollectOobConfirm } = vi.hoisted(() => ({
-  mockCollectOobConfirm: vi.fn(),
-}));
-
 vi.mock('../src/services/auth-socket.js', () => ({
-  collectOobConfirm: mockCollectOobConfirm,
   collectOobPassword: vi.fn(),
   collectOobApiKey: vi.fn(),
   ensureAuthSocket: vi.fn(),
@@ -364,7 +359,6 @@ describe('execute_command: network egress policy', () => {
       timeout_s: 5,
     }));
 
-    expect(mockCollectOobConfirm).not.toHaveBeenCalled();
     expect(result).toContain('Exit code: 0');
 
     credentialDelete(name);
@@ -390,66 +384,63 @@ describe('execute_command: network egress policy', () => {
     credentialDelete(name);
   });
 
-  it('confirm policy — confirmed — executes command', async () => {
-    const name = `egressconfirmok${Date.now()}`;
-    credentialSet(name, 'mytoken', false, 'confirm');
-
-    mockCollectOobConfirm.mockResolvedValue({ confirmed: true, terminalUnavailable: false });
+  it('deny policy: a denied secret after an allowed one still blocks', async () => {
+    const allowed = `egressmixallow${Date.now()}`;
+    const denied = `egressmixdeny${Date.now()}`;
+    credentialSet(allowed, 'allowedtoken', false, 'allow');
+    credentialSet(denied, 'deniedtoken', false, 'deny');
 
     const member = makeTestAgent({ os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: 'fetched', stderr: '', code: 0 });
 
     const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `curl https://example.com --header {{secret.${name}}}`,
+      command: `curl https://example.com -H {{secret.${allowed}}} -H {{secret.${denied}}}`,
       timeout_s: 5,
     }));
 
-    expect(mockCollectOobConfirm).toHaveBeenCalledWith(name, expect.objectContaining({ command: expect.any(String), memberName: expect.any(String) }));
+    expect(result).toContain(`credential "${denied}" has network_policy=deny`);
+    expect(mockExecCommand).not.toHaveBeenCalled();
+
+    credentialDelete(allowed);
+    credentialDelete(denied);
+  });
+
+  it('deny policy: used only in restart_command, with a network tool in command, blocks', async () => {
+    const name = `egressdenyrestart${Date.now()}`;
+    credentialSet(name, 'mytoken', false, 'deny');
+
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
+
+    const result = resultText(await executeCommand({
+      member_id: member.id,
+      command: 'curl https://example.com',
+      restart_command: `echo {{secret.${name}}}`,
+      timeout_s: 5,
+    }));
+
+    expect(result).toContain('network_policy=deny');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+
+    credentialDelete(name);
+  });
+
+  it('deny policy: git push is not on the list, as docs/secret-variables.md says', async () => {
+    const name = `egressdenygit${Date.now()}`;
+    credentialSet(name, 'mytoken', false, 'deny');
+
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: 'pushed', stderr: '', code: 0 });
+
+    const result = resultText(await executeCommand({
+      member_id: member.id,
+      command: `git push origin main --token {{secret.${name}}}`,
+      timeout_s: 5,
+    }));
+
     expect(result).toContain('Exit code: 0');
-
-    credentialDelete(name);
-  });
-
-  it('confirm policy — denied — blocks command', async () => {
-    const name = `egressconfirmdeny${Date.now()}`;
-    credentialSet(name, 'mytoken', false, 'confirm');
-
-    mockCollectOobConfirm.mockResolvedValue({ confirmed: false, terminalUnavailable: false });
-
-    const member = makeTestAgent({ os: 'linux' });
-    addAgent(member);
-
-    const result = resultText(await executeCommand({
-      member_id: member.id,
-      command: `wget https://example.com --header {{secret.${name}}}`,
-      timeout_s: 5,
-    }));
-
-    expect(result).toContain('was not confirmed');
-    expect(mockExecCommand).not.toHaveBeenCalled();
-
-    credentialDelete(name);
-  });
-
-  it('confirm policy — terminal unavailable — blocks command', async () => {
-    const name = `egressconfirmunavail${Date.now()}`;
-    credentialSet(name, 'mytoken', false, 'confirm');
-
-    mockCollectOobConfirm.mockResolvedValue({ confirmed: false, terminalUnavailable: true });
-
-    const member = makeTestAgent({ os: 'linux' });
-    addAgent(member);
-
-    const result = resultText(await executeCommand({
-      member_id: member.id,
-      command: `ssh user@host --key {{secret.${name}}}`,
-      timeout_s: 5,
-    }));
-
-    expect(result).toContain('could not be confirmed');
-    expect(mockExecCommand).not.toHaveBeenCalled();
 
     credentialDelete(name);
   });
