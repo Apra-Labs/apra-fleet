@@ -7,9 +7,9 @@ import { logLine } from '../utils/log-helpers.js';
 export const credentialStoreSetSchema = z.object({
   name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).describe('Credential name (alphanumeric, underscores, hyphens, max 64 chars)'),
   prompt: z.string().describe('Prompt to display to the user when collecting the secret'),
-  persist: z.boolean().default(false).describe('If true, encrypt and persist the credential across server restarts'),
-  network_policy: z.enum(['allow', 'confirm', 'deny']).default('confirm').describe(
-    'Network egress policy: "allow" = always proceed, "confirm" = prompt before network commands, "deny" = block network commands'
+  persist: z.boolean().default(true).describe('Encrypt the credential and keep it across server restarts (default: true). Pass false to hold it in memory for this server session only.'),
+  network_policy: z.enum(['allow', 'confirm', 'deny']).default('allow').describe(
+    'Network egress policy (default: "allow"): "allow" = always proceed, "confirm" = prompt before network commands, "deny" = block network commands'
   ),
   members: z.string().default('*').describe(
     'Comma-separated list of member friendly names allowed to use this credential, or "*" for all members (default: "*")'

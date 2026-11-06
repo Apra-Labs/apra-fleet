@@ -1411,6 +1411,7 @@ export class ApraFleet {
     /**
      * Collect a secret from the user out-of-band and store it in the fleet
      * credential store. The secret value never passes through the caller.
+     * Defaults: persist true, network_policy 'allow', members '*'.
      * @param {{ name: string, prompt: string, persist?: boolean,
      *           network_policy?: 'allow'|'confirm'|'deny', members?: string,
      *           ttl_seconds?: number }} options

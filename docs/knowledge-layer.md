@@ -698,7 +698,9 @@ exits 0:
 
 1. Every bound secret must exist, be readable, and be persistent and static.
    Any other is named in the error. Session-tier secrets disappear on restart,
-   so store them with `--persist`. Live secrets cannot be bound.
+   so store them with `--persist` (`credential_store_set` persists by default;
+   only an explicit `persist: false` makes a session value). Live secrets cannot
+   be bound.
 2. The script runs once, and the live secret is saved only if that worked.
    Otherwise nothing is written and any existing record is unchanged.
 3. It prints only `OK: expires <time>`, or `FAILED: <reason code>` with the exit

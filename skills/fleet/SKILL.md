@@ -60,7 +60,7 @@ See `beads.md` for the full command reference and workflow examples.
 The `{{secret.NAME}}` pattern lets you reference stored secrets in any command without ever exposing plaintext to the LLM or logs.
 
 **How it works:**
-1. Store a secret with `credential_store_set`  -  Fleet opens an OOB terminal prompt, so the value never appears in chat
+1. Store a secret with `credential_store_set`  -  Fleet opens an OOB terminal prompt, so the value never appears in chat. It is stored persistently by default; pass `persist=false` for a value that ends at server restart
 2. Reference it as `{{secret.NAME}}` anywhere in a command string passed to `execute_command`, `register_member`, `update_member`, `provision_vcs_auth`, `provision_llm_auth`, or `setup_git_app`
 3. Fleet resolves the token server-side before execution; LLM does not see the secret.
 

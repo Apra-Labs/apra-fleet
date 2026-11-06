@@ -775,7 +775,10 @@ and `attachments` (`{ filename, content, contentType? }[]`, base64 content).
 
 The fleet credential store. `credentialStoreSet({ name, prompt, persist?,
 network_policy?, members?, ttl_seconds? })` collects a secret from the user
-out-of-band and stores it -- the value never passes through the caller.
+out-of-band and stores it -- the value never passes through the caller. By
+default it is stored persistently (`persist: true`) with `network_policy: 'allow'`
+and `members: '*'`, like `apra-fleet secret --set NAME --persist`; pass
+`persist: false` for a value held in memory until the server restarts.
 `credentialStoreList()` takes no arguments and returns names and metadata
 only, never values (a JSON array of `{ name, scope, ... }` entries; extract
 it with `parseToolJson()`). `credentialStoreDelete({ name })` removes one.
