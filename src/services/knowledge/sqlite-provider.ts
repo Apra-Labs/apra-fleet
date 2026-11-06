@@ -21,6 +21,7 @@ import {
   makeAudnDecision,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
+import { logWarn } from '../../utils/log-helpers.js';
 import { KbKeywordIndex, type KeywordIndexStatus } from './kb-index.js';
 import { VectorStore, type VectorModel, type VectorScore } from './embedding/vector-store.js';
 import { buildVectorInputs, type VectorInput } from './embedding/chunker.js';
@@ -165,6 +166,35 @@ function trustFilterSql(filter: EntryTrustFilter | undefined): { conditions: str
     params.push(filter.owner_tag);
   }
   return { conditions, params };
+}
+
+/**
+ * Longest a read waits for its query vector. A query normally embeds in tens of
+ * milliseconds and a burst of 6 takes about 500 ms on a slow host, even during a
+ * rebuild, because the worker serves one text at a time with queries first. A
+ * worker that hangs (one that dies is reported at once) must not hold every
+ * dispatch's KB reads until the caller's own timeout, so the read drops the
+ * semantic list and answers from keyword and anchor matches.
+ */
+export const QUERY_EMBED_DEADLINE_MS = 5_000;
+
+async function withinQueryEmbedDeadline(
+  pending: Promise<Float32Array | null>,
+  modelId: string | null,
+): Promise<Float32Array | null> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      logWarn('kb_query', `query embedding took over ${QUERY_EMBED_DEADLINE_MS} ms on ${modelId ?? 'model'}; answering without the semantic list`);
+      resolve(null);
+    }, QUERY_EMBED_DEADLINE_MS);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([pending, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export class SqliteProvider implements MemoryProvider {
@@ -1853,7 +1883,7 @@ export class SqliteProvider implements MemoryProvider {
 
     if (embedder) {
       try {
-        const vec = await embedder.embedQuery(semanticText);
+        const vec = await withinQueryEmbedDeadline(embedder.embedQuery(semanticText), embedder.modelId);
         if (vec) {
           // Similarity floor (per model, profiles.ts SEMANTIC_FLOORS): a
           // dense model gives every text some similarity, so without it a
