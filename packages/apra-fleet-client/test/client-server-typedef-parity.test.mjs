@@ -1,6 +1,6 @@
 // Parity test: pins apra-fleet-client's hand-maintained JSDoc typedefs in
 // api.mjs against the server-side zod schemas (register_member, update_member,
-// kb_export, kb_bible_commit), the bible entry interface (CanonicalEntry)
+// kb_export, kb_bible_commit, kb_usage), the bible entry interface (CanonicalEntry)
 // and the member_detail result shape they claim to mirror.
 //
 // The typedefs have no compile-time link to the server tools -- see
@@ -45,6 +45,7 @@ const kbExportSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-export.
 const typesSrc = readFileSync(path.join(repoRoot, 'src', 'types.ts'), 'utf8');
 const kbBibleCommitSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-bible-commit.ts'), 'utf8');
 const kbQuerySrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-query.ts'), 'utf8');
+const kbUsageSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-usage.ts'), 'utf8');
 
 /** Extract the text between a start marker (exclusive) and the next occurrence of an end marker. */
 function extractBlock(source, startMarker, endMarker) {
@@ -192,6 +193,11 @@ function kbQuerySchemaFields() {
     return extractTopLevelKeys(block, 2);
 }
 
+function kbUsageSchemaFields() {
+    const block = extractBlock(kbUsageSrc, 'export const kbUsageSchema = z.object({', '\n});');
+    return extractTopLevelKeys(block, 2);
+}
+
 describe('apra-fleet-client typedef vs server zod schema parity', () => {
     test('RegisterMemberOptions matches registerMemberSchema field-for-field', () => {
         const schemaFields = registerMemberSchemaFields();
@@ -245,6 +251,14 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
             assert.ok(schemaFields.has(f), `sanity: kbQuerySchema should declare ${f}`);
         }
         assertFieldParity('KbQueryOptions vs kbQuerySchema', schemaFields, typedefFields);
+    });
+
+    test('KbUsageOptions matches kbUsageSchema field-for-field', () => {
+        const schemaFields = kbUsageSchemaFields();
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbUsageOptions');
+        assert.strictEqual(schemaFields.size, 2, `expected 2 kbUsageSchema fields, parsed ${schemaFields.size}`);
+        assert.ok(schemaFields.has('cited'), 'sanity: kbUsageSchema should declare cited');
+        assertFieldParity('KbUsageOptions vs kbUsageSchema', schemaFields, typedefFields);
     });
 
     test('MemberDetailResult matches the json-format result object member-detail.ts builds', () => {

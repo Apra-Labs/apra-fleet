@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfKbProviders, getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T2.1 (F5, D4): kb_stats -- a read-only aggregation tool, following the
@@ -44,7 +44,7 @@ export async function kbStats(input: KbStatsInput, anchor?: KbAnchor): Promise<s
   // A MEMBER session reports on its checkout bible view (kb-self.ts
   // getSelfReadKb): totals.by_confidence.CONFIRMED is the bible's CONFIRMED
   // count. kb_stats takes no tier filter, so a member always gets the view.
-  const { providers, anchor: resolved } = await getSelfReadKb(anchor);
+  const { providers, anchor: resolved, memberView } = await getSelfReadKb(anchor);
   const providerStats = await providers.project.stats({ symbols: input.symbols });
 
   // D5: bible.drift = count of live CONFIRMED entries whose updated_at
@@ -123,5 +123,19 @@ export async function kbStats(input: KbStatsInput, anchor?: KbAnchor): Promise<s
     }
   }
 
-  return JSON.stringify({ ...providerStats, bible });
+  // usage (additive): a MEMBER session's read view is its in-memory checkout
+  // bible, which never receives usage events -- kb_usage writes to the
+  // per-repo DB -- so the usage block is always read from there.
+  let usage = providerStats.usage;
+  if (memberView) {
+    try {
+      const repoProject = (await getSelfKbProviders(anchor)).project;
+      usage = isSqliteProject(repoProject) ? repoProject.usageStats() : undefined;
+    } catch {
+      // Degraded-safe: keep whatever the read view reported.
+    }
+  }
+  const out: Record<string, unknown> = { ...providerStats, bible };
+  if (usage !== undefined) out.usage = usage;
+  return JSON.stringify(out);
 }

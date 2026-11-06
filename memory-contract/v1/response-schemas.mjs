@@ -197,6 +197,16 @@ const KB_RESPONSE_BODIES = {
     // bible is never demoted. OPTIONAL so fixtures recorded before tombstones
     // existed still validate; the handler always emits it.
     demoted: z.number().optional(),
+    // Local CONFIRMED rows RETIRED by an explicit superseded or invalidated
+    // tombstone (a bible removal on the writing clone). Rows changed, not
+    // tombstones read. OPTIONAL so older fixtures still validate; the handler
+    // always emits it.
+    retired: z.number().optional(),
+    // Rows the clone already held that gained content, recall_cues or
+    // error_signatures from the same-claim bible entry (counted instead of
+    // skipped). OPTIONAL so older fixtures still validate; the handler always
+    // emits it.
+    enriched: z.number().optional(),
     sweep: z.object({
       checked: z.number(),
       staled: z.number(),
@@ -273,6 +283,10 @@ const KB_RESPONSE_BODIES = {
     backfilled: z.number(),
     enriched: z.array(z.string()).optional(),
     committed: z.boolean(),
+    // Present only when the call wrote and committed but the committed bible
+    // does not hold its merge (another writer replaced it): committed is then
+    // false and this names what is missing. Additive; absent otherwise.
+    not_committed_reason: z.string().optional(),
   }),
   // F-9: kb_stats spreads ProviderStats (whose supported/reason/coverage are
   // only present for a provider that cannot compute stats at all) and adds
@@ -289,12 +303,33 @@ const KB_RESPONSE_BODIES = {
     promote_ratio: z.number(),
     coverage: z.unknown().optional(),
     bible: z.unknown(),
+    // Additive (cited-based hit rate): returned and cited usage events over
+    // the trailing window_days, and cited_rate = cited / returned, null when
+    // nothing was returned. Optional: absent over a provider that cannot
+    // compute it, and in fixtures recorded before it existed.
+    usage: z.object({
+      window_days: z.number(),
+      returned: z.number(),
+      cited: z.number(),
+      cited_rate: z.number().nullable(),
+    }).optional(),
   }),
   kb_feedback: z.object({
     id: z.string(),
     stale: z.boolean(),
     flagged_for_review: z.boolean(),
     confidence: z.string(),
+  }),
+  // kb_usage: how many returned (pushed) and cited events were recorded
+  // (per-list de-duplicated). supported false + reason only over a remote
+  // HTTP provider, which records nothing.
+  kb_usage: z.object({
+    supported: z.boolean().optional(),
+    reason: z.string().optional(),
+    recorded: z.object({
+      returned: z.number(),
+      cited: z.number(),
+    }),
   }),
 };
 

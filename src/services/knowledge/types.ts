@@ -312,6 +312,20 @@ export interface KbRetrievalStats {
   hit_rate: number | null;
 }
 
+// Usage telemetry over a trailing window (SqliteProvider usage_events table).
+// returned: entries delivered to a dispatch -- an agent-side kb_query /
+// kb_session_prime return, or an engine push reported through kb_usage.
+// cited: entries a role reported it actually used (kb_used), reported through
+// kb_usage. cited_rate = cited / returned, null when nothing was returned in
+// the window (never 0, never a division error). Counts events, not distinct
+// entries.
+export interface KbUsageStats {
+  window_days: number;
+  returned: number;
+  cited: number;
+  cited_rate: number | null;
+}
+
 export interface KbCoverage {
   fraction: number;
   symbols: Record<string, boolean>;
@@ -330,6 +344,9 @@ export interface ProviderStats {
   retrieval: KbRetrievalStats;
   promote_ratio: number | null;
   coverage?: KbCoverage;
+  // Additive: present on SqliteProvider's real computation, absent on a
+  // provider that cannot compute it.
+  usage?: KbUsageStats;
 }
 
 export interface SyncOptions {

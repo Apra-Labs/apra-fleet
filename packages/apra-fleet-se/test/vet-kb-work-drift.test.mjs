@@ -82,6 +82,15 @@ const CASES = [
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, recall_cues: ['retry budget'], error_signatures: ['E-CODE-404: not found'] }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, recall_cues: 'retry budget' }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, error_signatures: [7] }] }],
+    // wrong JSON types the permissive report schema lets through.
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, source_files: [1] }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, source_files: 'src/real.ts' }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, symbols: 'x' }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, symbols: [1] }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, symbols: null }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, content: null }] }],
+    ['doer', { kb_captures: [{ ...GOOD_CAPTURE, recall_cues: null }] }],
+    ['doer', { kb_captures: [null, 42, 'x', [], GOOD_CAPTURE] }],
     // lint rules, one failing case each.
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, summary: 'A summary with a non-ASCII dash \u2014 in it.' }] }],
     ['doer', { kb_captures: [{ ...GOOD_CAPTURE, recall_cues: ['caf\u00e9'] }] }],

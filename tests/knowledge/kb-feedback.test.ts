@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { kbFeedback } from '../../src/tools/kb-feedback.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
+import * as kbSelfModule from '../../src/services/knowledge/kb-self.js';
+import { runWithSessionMember } from '../../src/services/tool-scope.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
 // T3.1 (F8, D7): kb_feedback downvote tool -- proves the never-deletes/
@@ -161,5 +163,41 @@ describe('kbFeedback tool (role validation)', () => {
 
   it('unknown id surfaces as a rejected promise from the tool layer too', async () => {
     await expect(kbFeedback({ id: 'nope', reason: 'x' })).rejects.toThrow('Entry not found');
+  });
+});
+
+describe('kbFeedback tool (member sessions and the kb_maintainer grant)', () => {
+  beforeEach(() => {
+    // A member session resolves its registered work folder; stand in the per-repo DB.
+    vi.spyOn(kbSelfModule, 'getSelfKbProviders').mockImplementation(async () =>
+      ({ project: provider, global: provider, projectSlug: 'test' }) as any);
+  });
+
+  it('a member session WITH the kb_maintainer grant downvotes against the per-repo DB like a FULL session', async () => {
+    const { id } = await provider.capture(makeInput());
+    await provider.promote(id, 'test fixture: verified against the seeded tree');
+    const out = JSON.parse(await runWithSessionMember('member-uuid-1', () =>
+      kbFeedback({ id, reason: 'proved wrong in practice', role: 'kb-agent' }), { kbMaintainer: true }));
+    expect(out.stale).toBe(true);
+    expect(out.flagged_for_review).toBe(true);
+    expect(out.confidence).toBe('CONFIRMED');
+
+    const entry = await fetchEntry(id);
+    expect(entry.stale).toBe(true);
+    expect(entry.flagged_for_review).toBe(true);
+    expect(entry.confidence).toBe('CONFIRMED');
+    expect(entry.content).toContain('kb-agent: proved wrong in practice');
+  });
+
+  it('a member session WITHOUT the grant is still refused with E-MEMBER-VIEW-READ-ONLY and the row is unchanged', async () => {
+    const { id } = await provider.capture(makeInput());
+    const before = await fetchEntry(id);
+    await expect(runWithSessionMember('member-uuid-1', () =>
+      kbFeedback({ id, reason: 'proved wrong in practice' }))).rejects.toThrow('E-MEMBER-VIEW-READ-ONLY');
+    const after = await fetchEntry(id);
+    expect({ stale: after.stale, flagged: after.flagged_for_review, content: after.content, confidence: after.confidence })
+      .toEqual({ stale: before.stale, flagged: before.flagged_for_review, content: before.content, confidence: before.confidence });
+    expect(after.stale).toBe(false);
+    expect(after.flagged_for_review).toBe(false);
   });
 });

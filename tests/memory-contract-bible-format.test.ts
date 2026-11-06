@@ -14,7 +14,7 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import { SqliteProvider } from '../src/services/knowledge/sqlite-provider.js';
 import { kbExport } from '../src/tools/kb-export.js';
 import { kbBibleCommit } from '../src/tools/kb-bible-commit.js';
-import { parseBibleText, carriedBasisOf } from '../src/services/knowledge/bible-import.js';
+import { parseBibleText, parseBibleDocument, carriedBasisOf } from '../src/services/knowledge/bible-import.js';
 import * as kbProvidersModule from '../src/services/knowledge/kb-providers.js';
 
 const BIBLE_DIR = path.resolve(__dirname, '..', 'memory-contract', 'v1', 'bible');
@@ -141,6 +141,32 @@ describe('live writer output validates against the bible schema', () => {
     expect(validate.errors ?? []).toEqual([]);
     expect(ok).toBe(true);
     for (const e of written.entries) expect(Object.keys(e.source_file_hashes)).toEqual(['src/example.ts']);
+  });
+
+  it('a live kb_bible_commit removal writes superseded and invalidated tombstones that validate and that the reader keeps', async () => {
+    const validate = validator();
+    const biblePath = path.join(root, '.fleet', 'kb-canonical.json');
+    const a = await confirmed('Claim to be superseded');
+    const b = await confirmed('Claim to be invalidated');
+    const keep = await confirmed('Claim that stays');
+    await kbBibleCommit({ ids: [a, b, keep], baseBranch: 'main', baseCommit: 'abc' }, { folder: root });
+    (provider as any).getDb()
+      .prepare("UPDATE entries SET superseded_at = ?, stale = 1, retired_reason = 'superseded' WHERE id = ?")
+      .run('2026-11-05T10:00:00.000Z', a);
+    await provider.discard([b]);
+    await kbBibleCommit({ ids: [], baseBranch: 'main', baseCommit: 'abc' }, { folder: root });
+
+    const raw = fs.readFileSync(biblePath, 'utf-8');
+    const written = JSON.parse(raw);
+    const ok = validate(written);
+    expect(validate.errors ?? []).toEqual([]);
+    expect(ok).toBe(true);
+    expect(Object.keys(written)).toEqual(['version', 'provenance', 'entries', 'demotions']);
+    expect(written.provenance.entry_count).toBe(1);
+    const reasons = Object.fromEntries(written.demotions.map((d: { id: string; reason: string }) => [d.id, d.reason]));
+    expect(reasons).toEqual({ [a]: 'superseded', [b]: 'invalidated' });
+    expect(written.demotions.find((d: { id: string }) => d.id === a).at).toBe('2026-11-05T10:00:00.000Z');
+    expect(parseBibleDocument(raw, biblePath, 'contract').demotions.map(d => d.reason).sort()).toEqual(['invalidated', 'superseded']);
   });
 
   it('a live export carrying content, recall_cues and error_signatures validates', async () => {

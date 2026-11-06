@@ -50,7 +50,8 @@ this pair as "member identifier" rather than repeating it.
 **Knowledge bank:** `kb_capture`, `kb_query`, `kb_list`, `kb_context`,
 `kb_session_prime`, `kb_invalidate`, `kb_harvest`, `kb_promote`, `kb_feedback`,
 `kb_freshness_sweep`, `kb_import`, `kb_export`, `kb_setup`, `kb_stats`,
-`kb_reconcile_prefilter`, `kb_resolve_contradiction`.
+`kb_reconcile_prefilter`, `kb_resolve_contradiction`, `kb_usage` (usage
+telemetry the engine reports; `kb_stats.usage` reads it back).
 
 The knowledge-bank family is described in
 [knowledge-layer.md](knowledge-layer.md). `kb_query` also accepts the optional,
@@ -557,7 +558,7 @@ Provides a quick summary table of all fleet members.
 
 **Fleet-wide sections (independent of the server's working directory):** the fleet server is one long-lived process serving every project, so `fleet_status` never derives a project or repo from its own cwd.
 
-- **KB health** enumerates every KB scope on disk (`<data dir>/knowledge/<project-slug>/kb.sqlite`) and reports one line per non-empty project scope, labeled `kb[<slug>]`, plus `kb[global]`; empty scopes are collapsed into one `kb: empty scope(s): ...` line. JSON: `kbHealth: { projectProvider, scopes: [{ scope, totals, stale, flagged, superseded, retrieval, promote_ratio, bible }], global, errors, totalEntries }`. Bible drift needs a repo checkout, so it is computed only for the scope of `repo_path`; other scopes report `bible: { computable: false, reason }`.
+- **KB health** enumerates every KB scope on disk (`<data dir>/knowledge/<project-slug>/kb.sqlite`) and reports one line per non-empty project scope, labeled `kb[<slug>]`, plus `kb[global]`; empty scopes are collapsed into one `kb: empty scope(s): ...` line. JSON: `kbHealth: { projectProvider, scopes: [{ scope, totals, stale, flagged, superseded, retrieval, promote_ratio, usage, bible }], global, errors, totalEntries, bible }`. Each scope line shows `hit-rate(30d)`, the cited-based hit rate (cited / returned usage events over the last 30 days, n/a with no returned events), plus `retrieved:` (entries retrieved over live entries). The repository bible is its own item, `kbHealth.bible: { repoPath, scope, present, entries, drift }` (compact: a `kb bible[<slug>]:` line), separate from the host database counts; it needs a repo checkout, so without `repo_path` its entries and drift are null with the `pass repo_path` reason. Each half degrades on its own (`entriesError` for an unreadable bible, `driftReason` for a missing or unreadable host database). The per-scope `bible` field is kept: other scopes report `bible: { computable: false, reason }`.
 - **Code intelligence** indexes are per repo (`<repo>/.gitnexus`). Without `repo_path` the line reads `code-intel: per-repo index; ...` (JSON: `{ present: false, computable: false, reason }`); the 30-day top-symbols telemetry is fleet-wide and always shown.
 
 ### `session_stats`

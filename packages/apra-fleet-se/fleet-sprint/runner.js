@@ -203,7 +203,7 @@ import { runRegressionTestPhase } from './phases/regression-test.mjs';
 // docs/README commits must be G-pushed by its own policy
 // bracket before Publish PR pushes the branch and raises the PR a human reads.
 // See each module's header for where its boundary is drawn.
-import { runHarvestPhase } from './phases/harvest.mjs';
+import { runHarvestPhase, runHarvestKbStep, TERMINAL_KB_STEP_TIMEOUT_MS } from './phases/harvest.mjs';
 import { runPublishPrPhase } from './phases/publish-pr.mjs';
 // The dolt-push-mutex/child-id-allocator clients (HTTP + MCP transport) and
 // the fleet server's own per-member reservation-ledger client. Moved
@@ -220,6 +220,7 @@ import {
 import {
     KB_MAX_KNOWLEDGE_ENTRIES, KB_PROMOTER_ROLES, KB_MIN_PROMOTE_REASON,
     KB_CAPTURE_TYPES, KB_MAX_PROMOTION_CANDIDATES, vetKbWork, createKbWorkClient,
+    reportKbUse,
 } from './kb.mjs';
 // The KB priming client (kb_session_prime/kb_import warm-up, once per
 // sprint) and the prompt-construction helpers (the self-injecting-role
@@ -233,7 +234,7 @@ import {
     createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
     kbKnowledgeBlock, kbPromotionBlock,
 } from './kb.mjs';
-import { createKbInjection } from './kb-injection.mjs';
+import { createKbInjection, withWrapperKbBlock } from './kb-injection.mjs';
 import { pathsFromText, isPriorityTierToken, KB_HINT_LIMITS } from './kb-hints.mjs';
 // Beads scope discovery + the shared full-DB snapshot: the single in-memory
 // BFS scope rule (now shared by bdListScoped and classifyVerifySet instead of
@@ -309,6 +310,7 @@ import {
 // rather than from this file.
 import {
     sanitizePrText, buildAnalysisText, buildCostAnalysis, computeBranchSlug,
+    formatKnowledgeBankSection,
 } from './sprint-report.mjs';
 // The per-role, per-cycle round-resume session registry: DEFAULT_CONTEXT_CEILING
 // and createRoundSessionRegistry. Extracted out of runner.js
@@ -999,6 +1001,8 @@ async function runSprintCycle(context) {
     // Assigned once kbPriming exists (below); until then (no dispatch can run
     // before it) a pass-through.
     let dispatchAccounting = { around: (_info, fn) => fn() };
+    // The member NAME a postResult step's `member` (a name or a record) denotes.
+    const dispatchMemberName = (m) => (typeof m === 'string' ? m : (m && typeof m.name === 'string' ? m.name : null));
     // KNOWLEDGE BANK injection (kb-injection.mjs), bound once kbWork exists
     // below; sprint-level hint sources the dispatch wrapper falls back to.
     let kbInjection = null;
@@ -1018,24 +1022,32 @@ async function runSprintCycle(context) {
     };
     const kbBeadTitles = (ids) => (Array.isArray(ids) ? ids : []).map((id) => kbBeadIndex.get(id)?.title).filter((t) => typeof t === 'string' && t);
     const agent = async (prompt, opts = {}) => {
-        let finalPrompt = prompt;
-        if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
-            // Only promise the kb_captures channel to a persona whose returned
-            // captures the engine actually applies (e.g. harvester); planner,
-            // plan-reviewer, deployer and the test runners have none.
-            // A member whose own fleet MCP was verified at sprint init reads
-            // the KB itself and gets no block; every other member gets one,
-            // fetched from the repository's kb_maintainer (kb-injection.mjs).
-            const captureChannel = agentTypeAppliesKbCaptures(opts.agentType);
-            const [block] = kbInjection
-                ? await kbInjection.blockFor({
-                    role: opts.agentType,
-                    member: opts.member_name,
-                    context: { ...kbSprintContext, ...(opts.kbContext || {}) },
-                    captureChannel,
-                })
-                : kbKnowledgeBlock(kbPriming.knowledgeOf(opts.member_name), { captureChannel });
-            if (block) finalPrompt = prompt + '\n\n' + block;
+        // Only promise the kb_captures channel to a persona whose returned
+        // captures the engine actually applies (e.g. harvester); planner,
+        // plan-reviewer, deployer and the test runners have none.
+        // The block is pushed to EVERY member, verified at sprint init or
+        // not (a verified member may still query the KB on top of it),
+        // fetched from the repository's kb_maintainer (kb-injection.mjs).
+        // doer and reviewer (KB_SELF_INJECTING_ROLES) are skipped by
+        // withWrapperKbBlock because their prompt builders place the block
+        // themselves, so every role carries it exactly once.
+        const captureChannel = agentTypeAppliesKbCaptures(opts.agentType);
+        // What the pushed block carried (ids, bytes) for this dispatch's KB
+        // record: the block the wrapper appends, or -- for a prompt-builder
+        // role -- the block its builder placed in the prompt.
+        let pushed = null;
+        const finalPrompt = await withWrapperKbBlock(prompt, {
+            kbInjection,
+            agentType: opts.agentType,
+            member: opts.member_name,
+            context: { ...kbSprintContext, ...(opts.kbContext || {}) },
+            captureChannel,
+            fallbackBlock: () => kbKnowledgeBlock(kbPriming.knowledgeOf(opts.member_name), { captureChannel }),
+            onPushed: (p) => { pushed = p; },
+            log,
+        });
+        if (!pushed && kbInjection && typeof kbInjection.pushedIn === 'function') {
+            pushed = kbInjection.pushedIn(finalPrompt, opts.member_name);
         }
         return withKbDispatchLifecycle(opts.member_name, async () => {
             try {
@@ -1043,7 +1055,7 @@ async function runSprintCycle(context) {
                 // dispatched member immediately before and after (best-effort;
                 // an unreadable count is recorded as unknown, never 0).
                 return await dispatchAccounting.around(
-                    { memberName: opts.member_name, role: opts.agentType, label: opts.label },
+                    { memberName: opts.member_name, role: opts.agentType, label: opts.label, pushed },
                     () => agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts }),
                 );
             } finally {
@@ -1527,6 +1539,15 @@ async function runSprintCycle(context) {
         getMemberInit: (name) => sprintState.memberInit.find((r) => r && r.member === name) || null,
         store: sprintState.dispatchToolCalls,
         publishState,
+        // D5: the dispatch's pushed and cited ids to the KB server's usage
+        // report through the kb_maintainer queue. Not awaited: the queue
+        // applies it between the maintainer's dispatches, and a failure is
+        // logged by kbWork, never surfaced to the dispatch.
+        reportUsage: ({ memberName, pushed, cited }) => {
+            if (typeof kbWork.reportUsage !== 'function') return;
+            Promise.resolve().then(() => kbWork.reportUsage(memberName, { pushed, cited }))
+                .catch((err) => log(`[kb-work] usage report failed (non-fatal): ${err && err.message ? err.message : err}`));
+        },
         log,
     });
 
@@ -1573,9 +1594,12 @@ async function runSprintCycle(context) {
     // handler can seal the bible commit: an aborted sprint commits nothing
     // further to the bible.
     context.kbWork = kbWork;
-    // Engine-side KNOWLEDGE BANK injection: skipped for a member whose own
-    // fleet MCP was verified at sprint init (context.isMemberVerified, set by
-    // the init probe above), applied to every other member.
+    // Likewise for the per-dispatch records: a stalled or aborted sprint has no
+    // harvest, so main() renders the Knowledge bank section from these.
+    context.kbDispatchRecords = sprintState.dispatchToolCalls;
+    // Engine-side KNOWLEDGE BANK injection: pushed to every member's dispatch.
+    // context.isMemberVerified (set by the init probe above) is passed for
+    // logging only and never suppresses the block.
     if (typeof validated.goal === 'string' && validated.goal.trim() && !isPriorityTierToken(validated.goal.trim())) {
         kbSprintContext.goals = [validated.goal.trim()];
     }
@@ -1934,6 +1958,41 @@ async function runSprintCycle(context) {
                 // repository the writes belong to, and kbWork routes them to
                 // that repository's kb_maintainer.
                 await kbWork.apply(policy.agentType, member, value);
+                // D5: the captures this dispatch's report carried, as the
+                // engine judged them, onto the dispatch's KB record.
+                try {
+                    const vetted = vetKbWork(policy.agentType, value);
+                    dispatchAccounting.noteKbCaptures?.(
+                        { memberName: dispatchMemberName(member), role: policy.agentType },
+                        {
+                            captures: vetted.captures,
+                            rejects: vetted.refusedCaptures,
+                            reviewerRejects: vetted.rejects,
+                            promoted: vetted.promotions.map((x) => x.id),
+                        },
+                    );
+                } catch (err) {
+                    log(`[kb-work] could not record the dispatch's captures (non-fatal): ${err && err.message ? err.message : err}`);
+                }
+            },
+            // D4: every role report's kb_used/kb_wrong. KB use is logged and
+            // never gated; each well-formed kb_wrong item is forwarded to
+            // kb_feedback through the kb_maintainer queue. The ids the role
+            // reported come back on the dispatch's stepResults['kb-report'],
+            // so a per-dispatch KB record can store them. Never throws.
+            'kb-report': async ({ policy, value, member }) => {
+                const use = await reportKbUse({ role: policy.agentType, member, value, kbWork, log });
+                // D5: cited/wrong ids onto the dispatch's KB record, and the
+                // cited ids to the KB server's usage report. Never throws.
+                try {
+                    await dispatchAccounting.noteKbReport?.(
+                        { memberName: dispatchMemberName(member), role: policy.agentType },
+                        use,
+                    );
+                } catch (err) {
+                    log(`[kb-use] could not record the dispatch's kb_used/kb_wrong (non-fatal): ${err && err.message ? err.message : err}`);
+                }
+                return use;
             },
             // deploy.md's active-sprints gate stops for a FOREIGN reservation,
             // so a deployer prompt that does not state this sprint's OWN
@@ -4271,6 +4330,36 @@ export async function main(context) {
     try {
         return await runSprintCycle(runContext);
     } catch (err) {
+        // The harvester's KB step also runs when the sprint stalls or aborts
+        // (a terminal failure; never a cooperative /stop or an untyped bug):
+        // queued KB writes are applied and the harvest bible round runs, so
+        // the KB work this sprint gathered is not lost with it. Best-effort
+        // and time-bounded -- it never replaces or delays the error below
+        // beyond its bound. The seal that follows then stops any further
+        // bible commit.
+        if (isTerminalSprintFailure(err) && runContext.kbWork) {
+            const terminalKind = err instanceof StalledSprintError ? 'stalled' : 'aborted';
+            await runHarvestKbStep(runContext.kbWork, {
+                label: `harvest (sprint ${terminalKind})`,
+                log,
+                timeoutMs: Number.isInteger(context.terminalKbStepTimeoutMs) && context.terminalKbStepTimeoutMs > 0
+                    ? context.terminalKbStepTimeoutMs
+                    : TERMINAL_KB_STEP_TIMEOUT_MS,
+            });
+        }
+        // No harvest runs on this path, so the sprint's Knowledge bank section
+        // reaches the run log, the terminal record and the [ABORTED] PR body
+        // from here. The log is the only one of the three every path has.
+        let knowledgeBank = [];
+        if (isTerminalSprintFailure(err)) {
+            try {
+                knowledgeBank = formatKnowledgeBankSection(runContext.kbDispatchRecords);
+                for (const line of knowledgeBank) if (line) log(`[kb-report] ${line}`);
+            } catch (reportErr) {
+                knowledgeBank = [];
+                log(`[kb-report] could not render the Knowledge bank section (non-fatal): ${reportErr && reportErr.message ? reportErr.message : reportErr}`);
+            }
+        }
         // An aborted sprint commits nothing further to the KB bible: its
         // queued confirmations are not flushed.
         if (runContext.kbWork && typeof runContext.kbWork.seal === 'function') {
@@ -4326,6 +4415,7 @@ export async function main(context) {
                     onAuthFailure: abortOnAuthFailure,
                     callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
                     runId: (args && typeof args.run_id === 'string') ? args.run_id : undefined,
+                    knowledgeBank,
                 });
             } catch (finalizeErr) {
                 log(
@@ -4355,6 +4445,7 @@ export async function main(context) {
                 prUrl: abortResult.prUrl,
                 pushed: abortResult.pushed,
                 commitCount: abortResult.commitCount,
+                ...(knowledgeBank.length > 0 ? { knowledgeBank: knowledgeBank.join('\n') } : {}),
                 ...(conflictDump ? { conflictDump } : {}),
             });
         }

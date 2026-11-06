@@ -23,16 +23,45 @@
 // Records are appended to a caller-supplied array (the sprint state's
 // dispatchToolCalls list) and optionally published to the viewer under
 // DISPATCH_TOOL_CALLS_STATE_NAMESPACE.
+//
+// KB fields (D5). Each record also carries what the KNOWLEDGE BANK did for
+// that dispatch:
+//   pushed   {ids, bytes} -- the entries the pushed block carried and its
+//            byte length; {ids: [], bytes: 0} when nothing was pushed.
+//   kb_used  ids the role's report said it relied on (kb_used).
+//   kb_wrong ids the role's report said proved wrong (kb_wrong).
+//   captures [{title, trigger}] the engine accepted from the report.
+//   rejects  [{title, rule, reason}] captures the engine refused, plus
+//            [{id, rule: 'kb_rejects', reason}] candidates the reviewer's report
+//            rejected (kb_rejects) that passed the engine's vetting.
+//   promoted ids the reviewer's report asked to promote (kb_promotions) that
+//            passed the engine's vetting.
+// The report-side fields are filled after the dispatch returns, by the
+// postResult steps (noteKbReport / noteKbCaptures); a dispatch whose result
+// never reached them (a failure) keeps them empty. A record from before
+// these fields existed (a resumed sprint) lacks them and still formats.
+//
+// Usage report. The pushed ids (at the end of the dispatch) and the cited
+// kb_used ids (once the report is read) are handed to deps.reportUsage, which
+// the engine routes to the KB server's kb_usage through the kb_maintainer.
+// Best-effort: a failure is logged and never fails the dispatch.
 // =============================================================================
 
 /** The value recorded for a count the engine could not establish. */
 export const UNKNOWN_COUNT = 'unknown';
+
+/** The rule a record's reject carries when a reviewer's kb_rejects made it. */
+export const KB_REVIEWER_REJECT_RULE = 'kb_rejects';
 
 /** publishState namespace for the per-dispatch records (viewer tab). */
 export const DISPATCH_TOOL_CALLS_STATE_NAMESPACE = 'dispatch-tool-calls';
 
 /** Default bound on one session_stats read. */
 export const SNAPSHOT_READ_TIMEOUT_MS = 60_000;
+
+function safeCall(fn) {
+    try { return fn(); } catch { return null; }
+}
 
 function isCount(n) {
     return typeof n === 'number' && Number.isInteger(n) && n >= 0;
@@ -144,6 +173,10 @@ export function memberTotals(records) {
  * @param {Function} [deps.log]
  * @param {number} [deps.readTimeoutMs]
  * @param {() => string} [deps.now] ISO timestamp source (tests).
+ * @param {(u: {memberName: string, role: string|null, pushed: string[], cited: string[]}) => any} [deps.reportUsage]
+ *        hands a dispatch's pushed / cited ids to the KB server's usage
+ *        report (through the kb_maintainer). Best-effort: a throw or a
+ *        rejection is logged, never propagated.
  */
 export function createDispatchAccounting(deps = {}) {
     const {
@@ -154,6 +187,7 @@ export function createDispatchAccounting(deps = {}) {
         log = () => {},
         readTimeoutMs = SNAPSHOT_READ_TIMEOUT_MS,
         now = () => new Date().toISOString(),
+        reportUsage,
     } = deps;
     const store = Array.isArray(deps.store) ? deps.store : [];
     let seq = 0;
@@ -190,6 +224,43 @@ export function createDispatchAccounting(deps = {}) {
         }
     }
 
+    /** Best-effort usage report; never throws, never rejects. */
+    async function report(memberName, role, pushed, cited) {
+        if (typeof reportUsage !== 'function' || !memberName) return;
+        if (pushed.length === 0 && cited.length === 0) return;
+        try {
+            await reportUsage({ memberName: String(memberName), role: role ? String(role) : null, pushed, cited });
+        } catch (err) {
+            log(`[dispatch-accounting] KB usage report for member '${memberName}' failed (non-fatal): ${err && err.message || err}`);
+        }
+    }
+
+    /**
+     * The latest record of a dispatch to `memberName` (and `role`, when
+     * given). A member runs one dispatch at a time, so the postResult steps
+     * of a dispatch always find its own record here.
+     */
+    function latestFor(memberName, role) {
+        for (let i = store.length - 1; i >= 0; i--) {
+            const r = store[i];
+            if (!r || r.member !== String(memberName)) continue;
+            if (role && r.role && r.role !== String(role)) continue;
+            return r;
+        }
+        return null;
+    }
+
+    function ensureKbFields(r) {
+        const f = kbFieldsOf(r);
+        r.pushed = f.pushed;
+        r.kb_used = f.kb_used;
+        r.kb_wrong = f.kb_wrong;
+        r.captures = f.captures;
+        r.rejects = f.rejects;
+        r.promoted = f.promoted;
+        return r;
+    }
+
     function resolveRecord(memberName) {
         try {
             return typeof memberOf === 'function' ? memberOf(memberName) : null;
@@ -208,7 +279,7 @@ export function createDispatchAccounting(deps = {}) {
          * snapshots and record the per-dispatch counts. `fn`'s result or
          * error passes through unchanged.
          */
-        async around({ memberName, role, label } = {}, fn) {
+        async around({ memberName, role, label, pushed } = {}, fn) {
             const index = ++seq;
             const startedAt = now();
             const record = memberName ? resolveRecord(memberName) : null;
@@ -239,10 +310,85 @@ export function createDispatchAccounting(deps = {}) {
                     kb: delta.kb,
                     code: delta.code,
                     reason: delta.reason,
+                    pushed: normalizePushed(typeof pushed === 'function' ? safeCall(pushed) : pushed),
+                    kb_used: [],
+                    kb_wrong: [],
+                    captures: [],
+                    rejects: [],
+                    promoted: [],
                 });
                 publish();
+                const rec = store[store.length - 1];
+                await report(memberName, role, rec.pushed.ids, []);
             }
         },
+        /**
+         * The role report's kb_used / kb_wrong ids for the latest dispatch of
+         * `memberName` (the 'kb-report' postResult step), plus the usage
+         * report of the cited ids. Never throws.
+         */
+        async noteKbReport({ memberName, role } = {}, { used, wrong } = {}) {
+            const r = memberName ? latestFor(memberName, role) : null;
+            if (!r) return;
+            ensureKbFields(r);
+            r.kb_used = idList([...r.kb_used, ...idList(used)]);
+            r.kb_wrong = idList([...r.kb_wrong, ...idList(wrong)]);
+            publish();
+            await report(memberName, role, [], idList(used));
+        },
+        /**
+         * The captures the engine accepted ({title, trigger}) and refused
+         * ({title, rule, reason}), the reviewer's vetted kb_rejects ({id, reason})
+         * and the promotion ids that passed vetting, from the latest dispatch of
+         * `memberName` (the 'kb-apply' postResult step). Never throws.
+         */
+        noteKbCaptures({ memberName, role } = {}, { captures, rejects, reviewerRejects, promoted } = {}) {
+            const r = memberName ? latestFor(memberName, role) : null;
+            if (!r) return;
+            ensureKbFields(r);
+            for (const c of Array.isArray(captures) ? captures : []) {
+                if (c && typeof c === 'object') r.captures.push({ title: c.title ?? null, trigger: c.trigger ?? null });
+            }
+            for (const c of Array.isArray(rejects) ? rejects : []) {
+                if (c && typeof c === 'object') r.rejects.push({ title: c.title ?? null, rule: c.rule ?? null, reason: c.reason ?? null });
+            }
+            for (const c of Array.isArray(reviewerRejects) ? reviewerRejects : []) {
+                if (c && typeof c === 'object') r.rejects.push({ id: c.id ?? null, rule: KB_REVIEWER_REJECT_RULE, reason: c.reason ?? null });
+            }
+            r.promoted = idList([...r.promoted, ...idList(promoted)]);
+            publish();
+        },
+    };
+}
+
+/** Distinct non-empty string ids, first occurrence order. */
+function idList(v) {
+    const out = [];
+    for (const id of Array.isArray(v) ? v : []) {
+        if (typeof id === 'string' && id.length > 0 && !out.includes(id)) out.push(id);
+    }
+    return out;
+}
+
+/** A well-formed pushed value ({ids, bytes}), or the empty one. */
+export function normalizePushed(p) {
+    if (!p || typeof p !== 'object') return { ids: [], bytes: 0 };
+    return { ids: idList(p.ids), bytes: isCount(p.bytes) ? p.bytes : 0 };
+}
+
+/**
+ * The KB fields of a record with the defaults an older record (no KB
+ * fields) reads as. Pure; never throws.
+ */
+export function kbFieldsOf(r) {
+    const rec = r && typeof r === 'object' ? r : {};
+    return {
+        pushed: normalizePushed(rec.pushed),
+        kb_used: idList(rec.kb_used),
+        kb_wrong: idList(rec.kb_wrong),
+        captures: (Array.isArray(rec.captures) ? rec.captures : []).filter((c) => c && typeof c === 'object'),
+        rejects: (Array.isArray(rec.rejects) ? rec.rejects : []).filter((c) => c && typeof c === 'object'),
+        promoted: idList(rec.promoted),
     };
 }
 
@@ -258,7 +404,8 @@ export function formatDispatchToolCalls(records) {
         const who = r.role ? `${r.role} on member '${r.member}'` : `member '${r.member}'`;
         const label = r.label ? ` [${r.label}]` : '';
         const why = (!isCount(r.kb) || !isCount(r.code)) && r.reason ? ` (unknown: ${r.reason})` : '';
-        lines.push(`- Dispatch ${r.index}: ${who}${label} -- kb_* calls: ${formatCount(r.kb)}, code_* calls: ${formatCount(r.code)}${why}.`);
+        const kbDetail = hasKbFields(r) ? ` KB: ${formatKbFields(r)}.` : '';
+        lines.push(`- Dispatch ${r.index}: ${who}${label} -- kb_* calls: ${formatCount(r.kb)}, code_* calls: ${formatCount(r.code)}${why}.${kbDetail}`);
     }
     lines.push('');
     lines.push('Per-member totals:');
@@ -267,4 +414,17 @@ export function formatDispatchToolCalls(records) {
         lines.push(`- member '${t.member}': ${t.dispatches} dispatch(es), kb_* calls: ${formatCount(t.kb)}, code_* calls: ${formatCount(t.code)}${unknown}.`);
     }
     return lines;
+}
+
+function hasKbFields(r) {
+    return ['pushed', 'kb_used', 'kb_wrong', 'captures', 'rejects', 'promoted'].some((k) => r[k] !== undefined);
+}
+
+/** One-line KB detail of a record ("pushed 3 entr(ies) (1200 bytes), cited 1, ..."). */
+export function formatKbFields(r) {
+    const f = kbFieldsOf(r);
+    const triggers = f.captures.map((c) => (typeof c.trigger === 'string' ? c.trigger : 'unknown')).join(', ');
+    const rules = f.rejects.map((c) => (typeof c.rule === 'string' ? c.rule : 'unknown')).join(', ');
+    return `pushed ${f.pushed.ids.length} entr(ies) (${f.pushed.bytes} bytes), cited ${f.kb_used.length}, wrong ${f.kb_wrong.length}, `
+        + `captures ${f.captures.length}${triggers ? ` (${triggers})` : ''}, rejects ${f.rejects.length}${rules ? ` (${rules})` : ''}`;
 }

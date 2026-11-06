@@ -211,4 +211,39 @@ describe('member-tagged writes and own-scope operations over real HTTP', () => {
     expect(row(bEntry)).toEqual(before);
     expect(await inferredIds(b)).toEqual([bEntry]);
   });
+  it('7. kb_wrong forwarded through a real kb_maintainer session lands as kb_feedback; the same call without the grant is refused', async () => {
+    // Args shaped like the engine's feedback op in fleet-sprint/kb.mjs: {id, reason, role}.
+    const feedbackReason = 'Proved wrong in practice: the widget stage does not batch work per tick.';
+    const maint = await connect(members.a, { kbMaintainer: true });
+    const target = await capture(maint, 'Widget gamma batching fact', 'widgetGamma');
+    await callJson(maint, 'kb_promote', { id: target, reason: REASON });
+    expect(row(target)!.confidence).toBe('CONFIRMED');
+
+    const out = await callJson(maint, 'kb_feedback', { id: target, reason: feedbackReason, role: 'kb-agent' });
+    expect(out).toMatchObject({ id: target, stale: true, flagged_for_review: true, confidence: 'CONFIRMED' });
+    const landed = row(target)!;
+    expect(landed.stale).toBe(1);
+    expect(landed.flagged_for_review).toBe(1);
+    expect(landed.confidence).toBe('CONFIRMED');
+    expect(landed.content).toContain(`kb-agent: ${feedbackReason}`);
+    // A FULL session reads the same per-repo row.
+    vi.spyOn(process, 'cwd').mockReturnValue(folders.a);
+    const full = await connect();
+    const seen = await callJson(full, 'kb_query', { query: 'gamma', confidence: ['CONFIRMED'], include_stale: true });
+    const fullRow = (seen.l2_expanded as Array<{ id: string; confidence: string; content: string }>).find(r => r.id === target);
+    expect(fullRow).toBeDefined();
+    expect(fullRow!.confidence).toBe('CONFIRMED');
+    expect(fullRow!.content).toContain(`kb-agent: ${feedbackReason}`);
+
+    // Without the grant the same call is refused and the entry is untouched.
+    const second = await capture(b, 'Widget delta batching fact', 'widgetDelta');
+    const before = row(second)!;
+    const refused = await callRaw(b, 'kb_feedback', { id: second, reason: feedbackReason, role: 'kb-agent' });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('E-MEMBER-VIEW-READ-ONLY');
+    expect(row(second)).toEqual(before);
+    expect(row(second)!.stale).toBe(0);
+    expect(row(second)!.flagged_for_review).toBe(0);
+    expect(row(second)!.content).not.toContain('Proved wrong in practice');
+  });
 });

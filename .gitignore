@@ -141,6 +141,8 @@ packages/apra-fleet-se/auto-sprint/logs/
 # note above for why a directory-level rule here would shadow it the same
 # way.
 .fleet/planner-output.json
+# A bible writer's lock file, left behind only by a killed process.
+.fleet/*.lock
 
 # Per-bead review scratch dumps (reviewer working files), never commit.
 .review-tmp/

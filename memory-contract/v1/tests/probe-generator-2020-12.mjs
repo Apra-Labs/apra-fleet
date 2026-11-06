@@ -254,6 +254,7 @@ const KB_MODULES = [
   ['kb_stats', 'kb-stats.js', 'kbStatsSchema'],
   ['kb_feedback', 'kb-feedback.js', 'kbFeedbackSchema'],
   ['kb_bible_commit', 'kb-bible-commit.js', 'kbBibleCommitSchema'],
+  ['kb_usage', 'kb-usage.js', 'kbUsageSchema'],
 ];
 const CODE_EXPORTS = [
   ['code_graph', 'codeGraphSchema'],

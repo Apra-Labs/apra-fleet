@@ -145,7 +145,10 @@ export async function resolveSettleShellWith({ fleetApi, member, log = () => {} 
  * `dispatchToolCalls` is the sprint's per-dispatch kb_* and code_* call record
  * list (dispatch-accounting.mjs appends one entry per member dispatch, from
  * session_stats snapshots taken before and after it). The sprint summary and
- * the viewer read it from here.
+ * the viewer read it from here. Each record also carries the dispatch's KB
+ * fields (pushed {ids, bytes}, kb_used, kb_wrong, captures, rejects -- see
+ * dispatch-accounting.mjs); a record without them (an older shape) reads as
+ * empty through kbFieldsOf().
  *
  * `memberInit` holds one record per member from the sprint-init probe
  * (member-init-probe.mjs MemberInitRecord): verified status, fleetMcp, tool

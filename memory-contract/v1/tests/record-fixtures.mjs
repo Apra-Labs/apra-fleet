@@ -619,8 +619,9 @@ await recordHappy('kb_freshness_sweep', 'happy', {
 });
 
 // --- kb_feedback ------------------------------------------------------
-// A MEMBER session's KB reads come from the read-only checkout bible view:
-// kb_feedback refuses with E-MEMBER-VIEW-READ-ONLY before any KB is opened and
+// A MEMBER session WITHOUT the kb_maintainer grant (PLAIN_A; the default
+// session A carries the grant and writes like FULL) reads the read-only
+// checkout bible view: kb_feedback refuses with E-MEMBER-VIEW-READ-ONLY before any KB is opened and
 // changes nothing. The same request from the FULL (non-member) session FULL_A
 // -- whose server working folder is repo A, so it shares A's KB -- succeeds.
 if (idFoo) {
@@ -629,8 +630,16 @@ if (idFoo) {
     reason: 'On re-check, the summary overstated precision -- exampleFn is untyped-input tolerant, unlike the note implies.',
     role: 'reviewer',
   };
-  await recordRefusal('kb_feedback', 'refusal-member-view-read-only', feedbackRequest, 'E-MEMBER-VIEW-READ-ONLY');
+  await withSession('PLAIN_A', () => recordRefusal('kb_feedback', 'refusal-member-view-read-only', feedbackRequest, 'E-MEMBER-VIEW-READ-ONLY'));
   await withSession('FULL_A', () => recordHappy('kb_feedback', 'happy', feedbackRequest));
+}
+
+// --- kb_usage ---------------------------------------------------------
+// The engine's usage report, from the default session A (a member session
+// carrying the kb_maintainer grant, the only member session kb_usage is
+// served to): FOO was pushed to a dispatch and the role cited it.
+if (idFoo) {
+  await recordHappy('kb_usage', 'happy', { pushed: [idFoo], cited: [idFoo] });
 }
 
 // --- kb_harvest -------------------------------------------------------

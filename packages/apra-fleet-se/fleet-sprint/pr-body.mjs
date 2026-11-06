@@ -204,6 +204,9 @@ function inline(text) {
  * @param {object[]} [opts.waited] the run's wait records (./set-aside.mjs
  *   collectWaitEntries), rendered as one "Waited this run" line after the
  *   set-aside section; omitted when empty
+ * @param {string[]} [opts.knowledgeBank] the "Knowledge bank this sprint" section
+ *   (sprint-report.mjs formatKnowledgeBankSection), for a run with no harvest to
+ *   carry it; omitted when empty. Sanitized: it holds ids the role reports wrote.
  * @param {string} [opts.costAnalysis] engine-computed cost block, rendered in a fenced Cost section
  * @param {string} [opts.previousBody] the existing PR's body, for history carry-forward
  * @param {number} [opts.maxLength]
@@ -211,7 +214,7 @@ function inline(text) {
  */
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
-    notes, notesHeading = 'Reviewer notes', details = [], setAside = [], waited = [], costAnalysis = '', previousBody = '',
+    notes, notesHeading = 'Reviewer notes', details = [], setAside = [], waited = [], knowledgeBank = [], costAnalysis = '', previousBody = '',
     maxLength = PR_DESCRIPTION_MAX_LENGTH,
 }) {
     const v = VERDICTS.has(verdict) ? verdict : 'FAIL';
@@ -240,6 +243,9 @@ export function buildSprintPrBody({
     const waitedLine = formatWaitedLine(waited);
     // The cost block replaces the per-sprint CHANGELOG entry the harvester used
     // to write (a shared prepend-only file that conflicted on every merge).
+    // Its own '## ' heading becomes this body's '### ' level.
+    const kbLines = Array.isArray(knowledgeBank) ? knowledgeBank.filter((l) => typeof l === 'string') : [];
+    const kbBody = sanitizePrMarkdown(kbLines.filter((l) => !l.startsWith('## ')).join('\n'));
     const cost = sanitizePrMarkdown(costAnalysis);
     const costFence = '`'.repeat(Math.max(3, ...(cost.match(/`+/g) || []).map((r) => r.length + 1)));
     const tail = [
@@ -251,6 +257,7 @@ export function buildSprintPrBody({
         detailLines.length ? '### Details\n' : null,
         detailLines.length ? detailLines.join('\n') : null,
         detailLines.length ? '' : null,
+        kbBody ? `### Knowledge bank this sprint\n\n${closeOpenFences(kbBody)}\n` : null,
         cost ? `### Cost\n\n${costFence}\n${cost}\n${costFence}\n` : null,
         '---',
         '',

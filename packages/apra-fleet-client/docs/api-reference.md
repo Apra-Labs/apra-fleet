@@ -368,9 +368,21 @@ Calls `fleet_status` -- status of all fleet members.
 | Field | Type | Notes |
 |---|---|---|
 | `format` | `"compact" \| "json"?` | Output format. |
-| `repo_path` | `string?` | Absolute path to a repo checkout. Adds that repo's code-intelligence index health and its KB scope's bible drift. |
+| `repo_path` | `string?` | Absolute path to a repo checkout. Adds that repo's code-intelligence index health and its bible item (`kbHealth.bible`: entries and drift). |
 
 KB health (`kbHealth` in JSON) covers every project KB scope on the server plus the global KB, one entry per scope -- it never depends on the server's working directory.
+
+Each scope (a host database) carries `usage` (`{window_days, returned, cited,
+cited_rate}`, the last 30 days of usage events); the compact line shows it as
+`hit-rate(30d):<cited_rate> (<cited> cited/<returned> returned)`, n/a when
+nothing was returned, and the older entries-retrieved ratio as `retrieved:`.
+`kbHealth.bible` reports the repository bible as its own item, separately from
+the host database counts: `{repoPath, scope, present, entries, drift}` read
+from `<repo_path>/.fleet/kb-canonical.json` (compact: one `kb bible[<scope>]:`
+line). Each half degrades on its own: an unreadable bible nulls `entries`
+(`entriesError`), an unreadable or missing host database nulls `drift`
+(`driftReason`). Without `repo_path` both are null with the
+"pass repo_path" reason and the compact output shows no bible line.
 
 When the KB config selects the http provider, `kbHealth.credential`
 (`FleetStatusKbCredential`; compact: one `kb credential:` line) reports the
@@ -587,7 +599,7 @@ repository with an origin remote, or the fleet server working folder when the
 client offers no roots). The
 pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are removed:
 the server refuses a call carrying any of them with `E-SCOPE-KEY-REMOVED`,
-and `kbExport` / `kbBibleCommit` / `kbDemote` refuse them client-side with the same code
+and `kbExport` / `kbBibleCommit` / `kbDemote` / `kbUsage` refuse them client-side with the same code
 before sending (`assertNoRemovedKbScopeKeys`, `KB_REMOVED_SCOPE_KEYS` are
 exported). For direct `callTool` users: `kb_list` accepts `confidence` as a
 list or as one tier string, and `kb_context` defaults to
@@ -651,7 +663,13 @@ promotion/demotion/clamp/feedback/reconcile notes are cut first) and is
 truncated to 2000 characters; the arrays are written only when non-empty. An
 entry without them is written exactly as before. `kbImport` stores them when
 present (content defaults to the summary) and drops a malformed value without
-skipping the entry.
+skipping the entry. For an id the clone already holds, `kb_import` fills in the
+fields the local row lacks when the row holds the same claim (same type, title,
+summary, cited files and, when the entry carries one, the same basis); a
+differing claim is never overwritten and confidence never moves. Its response
+counts those rows in `enriched` (and rows retired by a superseded or
+invalidated tombstone in `retired`). Run this version on every host before
+backfilling rich fields: a 0.4.4 writer drops them on any id it re-merges.
 
 #### `kbBibleCommit(options: KbBibleCommitOptions)`
 
@@ -692,6 +710,13 @@ Tombstones already in the file survive a later commit carrying unrelated ids, an
 re-committing a tombstoned id through `ids` (a re-promotion) restores its entry
 and clears its tombstone. `provenance.entry_count` counts entries only.
 
+Every entry removed because this KB holds it as superseded or invalidated (each
+listed in `removed`) is tombstoned the same way, as `{id, at, reason}` with
+reason `superseded` or `invalidated` and the row's retirement time as `at`.
+`kb_import` on another clone retires its own CONFIRMED row for such an id (unless
+that row was promoted there after `at`), so the entry stops serving reads there
+too; the import response counts those rows in `retired`.
+
 Result JSON: `{path, merged, demoted, skipped, removed, entry_count, committed}`.
 
 #### `kbDemote(options: KbDemoteOptions)`
@@ -715,6 +740,23 @@ Called from the kb_maintainer session or a FULL session, it also records the
 git blob id of the bible it wrote as trusted in the hub-side KB, which is what
 lets a member session without the grant `kb_import` that bible once it is
 committed in its checkout (a call from such a member session records nothing).
+
+#### `kbUsage(options: KbUsageOptions)`
+
+Calls `kb_usage` -- records KB usage telemetry for the cited-based hit rate.
+Options: `pushed?` (ids of entries the engine delivered to a dispatch; each is
+recorded as one returned event) and `cited?` (ids of entries a role reported it
+actually used; each is recorded as one cited event). Duplicates within a list
+count once; an id with no local entry still counts. Append-only: no entry,
+use_count or trust field changes. `kb_stats` reads the events back as `usage`
+(`{window_days, returned, cited, cited_rate}` over the last 30 days,
+`cited_rate` null when nothing was returned). A member session is served
+`kb_usage` only with the engine's kb_maintainer grant. Over a remote HTTP KB
+provider nothing is recorded and the result carries `supported: false` and a
+`reason`. Like `kbDemote`, the removed scope keys are refused client-side with
+`E-SCOPE-KEY-REMOVED` before anything is sent.
+
+Result JSON: `{recorded: {returned, cited}}`.
 
 #### `composePermissions(options: ComposePermissionsOptions)`
 

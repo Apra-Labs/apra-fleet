@@ -103,14 +103,14 @@ describe('kbHealthCompactLine (single scope)', () => {
   it('renders totals/stale/flagged/hit-rate/promote-ratio without a drift fragment when drift is 0', async () => {
     const { kbHealthCompactLine } = await import('../src/tools/check-status.js');
     const line = kbHealthCompactLine(flatStats() as never);
-    expect(line).toBe('kb: 17 entries (confirmed:10 stale:1 flagged:2) | hit-rate:65% | promote-ratio:80%');
+    expect(line).toBe('kb: 17 entries (confirmed:10 stale:1 flagged:2) | hit-rate(30d):n/a (0 cited/0 returned) | retrieved:65% | promote-ratio:80%');
     expect(line).not.toContain('bible:');
   });
 
   it('labels the line with the scope when given', async () => {
     const { kbHealthCompactLine } = await import('../src/tools/check-status.js');
     expect(kbHealthCompactLine(flatStats() as never, 'githubcom-acme-widgets'))
-      .toBe('kb[githubcom-acme-widgets]: 17 entries (confirmed:10 stale:1 flagged:2) | hit-rate:65% | promote-ratio:80%');
+      .toBe('kb[githubcom-acme-widgets]: 17 entries (confirmed:10 stale:1 flagged:2) | hit-rate(30d):n/a (0 cited/0 returned) | retrieved:65% | promote-ratio:80%');
   });
 
   it('renders the exact D5-amended anomaly wording when drift > 0', async () => {
@@ -125,7 +125,8 @@ describe('kbHealthCompactLine (single scope)', () => {
       retrieval: { entries_retrieved: 0, total_uses: 0, hit_rate: null },
       promote_ratio: null,
     }) as never);
-    expect(line).toContain('hit-rate:n/a');
+    expect(line).toContain('hit-rate(30d):n/a');
+    expect(line).toContain('retrieved:n/a');
     expect(line).toContain('promote-ratio:n/a');
   });
 
@@ -220,9 +221,9 @@ describe('kbHealthSummary (multi-scope, degraded-safe)', () => {
     const text = kbHealthCompactLines(health);
     expect(text.split('\n')).toEqual([
       'kb: 6 entries across 2 project scope(s) + global',
-      '  kb[githubcom-acme-gadgets]: 2 entries (confirmed:0 stale:0 flagged:1) | hit-rate:0% | promote-ratio:n/a',
-      '  kb[githubcom-acme-widgets]: 3 entries (confirmed:2 stale:1 flagged:0) | hit-rate:50% | promote-ratio:50%',
-      '  kb[global]: 1 entries (confirmed:1 stale:0 flagged:0) | hit-rate:0% | promote-ratio:0%',
+      '  kb[githubcom-acme-gadgets]: 2 entries (confirmed:0 stale:0 flagged:1) | hit-rate(30d):n/a (0 cited/0 returned) | retrieved:0% | promote-ratio:n/a',
+      '  kb[githubcom-acme-widgets]: 3 entries (confirmed:2 stale:1 flagged:0) | hit-rate(30d):n/a (0 cited/0 returned) | retrieved:50% | promote-ratio:50%',
+      '  kb[global]: 1 entries (confirmed:1 stale:0 flagged:0) | hit-rate(30d):n/a (0 cited/0 returned) | retrieved:0% | promote-ratio:0%',
       '  kb: empty scope(s): default',
       EMBEDDING_IDLE_LINE,
     ]);
@@ -253,7 +254,11 @@ describe('kbHealthSummary (multi-scope, degraded-safe)', () => {
       expect(mockKbStats).toHaveBeenCalledWith({}, { folder: repo });
       expect(health.scopes.find(s => s.scope === 'default')!.bible).toEqual({ present: true, entries: 1, drift: 4 });
       expect(health.scopes.find(s => s.scope === 'githubcom-acme-widgets')!.bible).toMatchObject({ computable: false });
-      expect(kbHealthCompactLines(health)).toContain('kb[default]: 1 entries (confirmed:1 stale:0 flagged:0) | hit-rate:0% | promote-ratio:0% | bible: 4 promotions behind');
+      const text = kbHealthCompactLines(health);
+      // The bible is its own line; the host-DB line no longer carries it.
+      expect(text).toContain('kb[default]: 1 entries (confirmed:1 stale:0 flagged:0) | hit-rate(30d):n/a (0 cited/0 returned) | retrieved:0% | promote-ratio:0%\n');
+      expect(text).toContain('kb bible[default]: no bible file | drift: 4 promotions behind');
+      expect(health.bible).toMatchObject({ repoPath: repo, scope: 'default', present: false, entries: 0, drift: 4 });
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
@@ -382,11 +387,135 @@ describe('fleetStatus() KB + code-intel sections are independent of process.cwd(
 
       const compact = await fleetStatus({ format: 'compact', repo_path: repo });
       expect(compact).toContain('kb[default]: 1 entries');
-      expect(compact).toContain(`bible: ${reason}`);
+      expect(compact).toContain(`drift: n/a (${reason})`);
       expect(compact).not.toContain('undefined');
       expect(compact).not.toContain('promotions behind');
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
+  });
+});
+
+// D6: the bible is its own item, separate from the host database, and the
+// hit rate shown is cited / returned usage events over the last 30 days.
+describe('fleet_status KB: bible item separate from the host DB, cited-based 30-day hit rate (D6)', () => {
+  let root: string;
+  let repo: string;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    mockKbStats.mockReset();
+    root = mkdtempSync(join(tmpdir(), 'kb-health-d6-'));
+    // A non-git dir resolves to the `default` scope slug.
+    repo = mkdtempSync(join(tmpdir(), 'kb-health-d6-repo-'));
+    kbRoot.dir = root;
+    kbRoot.throwOnList = false;
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    rmSync(root, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  function writeBible(entryCount: number): void {
+    mkdirSync(join(repo, '.fleet'), { recursive: true });
+    const entries = Array.from({ length: entryCount }, (_, i) => ({ id: `b${i}`, updated_at: '2026-01-01T00:00:00.000Z' }));
+    writeFileSync(join(repo, '.fleet', 'kb-canonical.json'), JSON.stringify({ version: 3, provenance: {}, entries }));
+  }
+
+  async function recordUsage(slug: string, pushed: string[], cited: string[], at?: string): Promise<void> {
+    const provider = new SqliteProvider(join(root, slug, 'kb.sqlite'));
+    await provider.init();
+    provider.recordUsage({ pushed, cited }, at);
+    provider.close();
+  }
+
+  it('with repo_path: a bible item (entries, drift) and separate host-DB counts, in compact text and JSON; hit rate = in-window cited/returned', async () => {
+    // Host DB holds a different entry set (5 entries) than the bible (3).
+    await seedScope(root, 'default', [{ confidence: 'CONFIRMED' }, { confidence: 'CONFIRMED' }, {}, {}, {}]);
+    writeBible(3);
+    mockKbStats.mockResolvedValue(JSON.stringify({ ...flatStats(), bible: { present: true, entries: 3, drift: 2 } }));
+    // In window: 4 returned, 1 cited -> 25%. Older than 30 days: must not move it.
+    await recordUsage('default', ['a', 'b', 'c', 'd'], ['a'], new Date(Date.now() - 2 * DAY_MS).toISOString());
+    await recordUsage('default', ['x', 'y'], ['x', 'y'], new Date(Date.now() - 31 * DAY_MS).toISOString());
+
+    const { fleetStatus } = await import('../src/tools/check-status.js');
+    addAgent(makeTestAgent({ friendlyName: 'kb-d6-member' }));
+
+    const json = JSON.parse(await fleetStatus({ format: 'json', repo_path: repo }));
+    expect(json.kbHealth.bible).toEqual({ repoPath: repo, scope: 'default', present: true, entries: 3, drift: 2 });
+    const host = json.kbHealth.scopes.find((s: { scope: string }) => s.scope === 'default');
+    expect(host.totals.total).toBe(5);
+    expect(host.usage).toEqual({ window_days: 30, returned: 4, cited: 1, cited_rate: 0.25 });
+
+    const compact = await fleetStatus({ format: 'compact', repo_path: repo });
+    expect(compact).toContain('kb bible[default]: 3 entries | drift: 2 promotions behind');
+    expect(compact).toContain('kb[default]: 5 entries (confirmed:2 stale:0 flagged:0) | hit-rate(30d):25% (1 cited/4 returned)');
+    // The host-DB line does not repeat the bible.
+    const hostLine = compact.split('\n').find(l => l.includes('kb[default]:'))!;
+    expect(hostLine).not.toContain('bible');
+  });
+
+  it('no returned events in the window: hit rate is n/a, never 0% or a division error', async () => {
+    await seedScope(root, 'default', [{ confidence: 'CONFIRMED' }]);
+    await recordUsage('default', [], ['orphan-cite']);
+    writeBible(1);
+    mockKbStats.mockResolvedValue(JSON.stringify({ ...flatStats(), bible: { present: true, entries: 1, drift: 0 } }));
+    const { fleetStatus } = await import('../src/tools/check-status.js');
+    addAgent(makeTestAgent({ friendlyName: 'kb-d6-empty-member' }));
+
+    const compact = await fleetStatus({ format: 'compact', repo_path: repo });
+    expect(compact).toContain('hit-rate(30d):n/a (1 cited/0 returned)');
+    expect(compact).not.toMatch(/hit-rate\(30d\):(0%|NaN|Infinity)/);
+    expect(compact).toContain('kb bible[default]: 1 entries | drift: 0');
+    const json = JSON.parse(await fleetStatus({ format: 'json', repo_path: repo }));
+    expect(json.kbHealth.scopes[0].usage.cited_rate).toBeNull();
+  });
+
+  it('without repo_path the bible item carries KB_BIBLE_NO_REPO_REASON and the compact output shows no bible line', async () => {
+    await seedScope(root, 'default', [{}]);
+    const { fleetStatus, KB_BIBLE_NO_REPO_REASON } = await import('../src/tools/check-status.js');
+    addAgent(makeTestAgent({ friendlyName: 'kb-d6-norepo-member' }));
+    const json = JSON.parse(await fleetStatus({ format: 'json' }));
+    expect(json.kbHealth.bible).toMatchObject({ repoPath: null, entries: null, drift: null, driftReason: KB_BIBLE_NO_REPO_REASON });
+    expect(await fleetStatus({ format: 'compact' })).not.toContain('kb bible');
+    expect(mockKbStats).not.toHaveBeenCalled();
+  });
+
+  it('degraded per half: a malformed bible file nulls only the bible entries; the host-DB line is still reported', async () => {
+    await seedScope(root, 'default', [{ confidence: 'CONFIRMED' }, {}]);
+    mkdirSync(join(repo, '.fleet'), { recursive: true });
+    writeFileSync(join(repo, '.fleet', 'kb-canonical.json'), '{ not json');
+    mockKbStats.mockResolvedValue(JSON.stringify({ ...flatStats(), bible: { present: false, entries: 0, drift: 1 } }));
+    const { fleetStatus } = await import('../src/tools/check-status.js');
+    addAgent(makeTestAgent({ friendlyName: 'kb-d6-badbible-member' }));
+
+    const json = JSON.parse(await fleetStatus({ format: 'json', repo_path: repo }));
+    expect(json.kbHealth.bible.entries).toBeNull();
+    expect(json.kbHealth.bible.entriesError).toMatch(/^bible unreadable: /);
+    expect(json.kbHealth.scopes.find((s: { scope: string }) => s.scope === 'default').totals.total).toBe(2);
+    const compact = await fleetStatus({ format: 'compact', repo_path: repo });
+    expect(compact).toContain('kb bible[default]: bible unreadable: ');
+    expect(compact).toContain('kb[default]: 2 entries');
+  });
+
+  it('degraded per half: an unreadable host DB nulls only the drift; the bible entries are still reported', async () => {
+    mkdirSync(join(root, 'default'), { recursive: true });
+    writeFileSync(join(root, 'default', 'kb.sqlite'), 'this is not a sqlite database at all, just text padding it out');
+    writeBible(4);
+    const { fleetStatus, KB_BIBLE_DRIFT_UNAVAILABLE_REASON } = await import('../src/tools/check-status.js');
+    addAgent(makeTestAgent({ friendlyName: 'kb-d6-baddb-member' }));
+
+    const json = JSON.parse(await fleetStatus({ format: 'json', repo_path: repo }));
+    expect(json.kbHealth.bible).toMatchObject({ present: true, entries: 4, drift: null, driftReason: KB_BIBLE_DRIFT_UNAVAILABLE_REASON });
+    expect(json.kbHealth.errors.map((e: { scope: string }) => e.scope)).toEqual(['default']);
+    const compact = await fleetStatus({ format: 'compact', repo_path: repo });
+    expect(compact).toContain(`kb bible[default]: 4 entries | drift: n/a (${KB_BIBLE_DRIFT_UNAVAILABLE_REASON})`);
+    expect(compact).toContain('kb[default]: unreadable');
+    expect(mockKbStats).not.toHaveBeenCalled();
   });
 });

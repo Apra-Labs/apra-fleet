@@ -20,12 +20,12 @@
     "kb_self_resolution": {
       "confirmed_by": "src/services/knowledge/kb-self.ts (resolveSelfAnchor, validateSelfFolder), src/tools/kb-*.ts",
       "finding": "No kb_* tool takes a repo/scope argument. Every kb_* call operates on the CALLING SESSION's own KB: a member session resolves the member's registered work folder, any other session the first MCP client root (roots/list) inside a git repository with an origin remote, or the fleet server's working folder when the client offers no roots. A local folder must exist, be a git repository and have an origin remote, else the call throws E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE BEFORE getKbProviders is reached. A remote member's folder lives on another host, so its KB identity is the member's single known origin remote and the folder is carried verbatim (N-ANCHOR-VERBATIM-MISSING for the read tools); the WRITING tools kb_export, kb_bible_commit and kb_import then refuse with E-REPO-PATH-INVALID because they need the folder on this host (kb_export is never served to a member session -- spec.md section 2.5a -- so for it this refusal is defence in depth). Recorded per affected tool below as 'anchor_validation' ('self-validated' | 'self-validated+local-folder-required'). The removed pre-redesign scope keys (repo_path, repo, repo_remote_url) are still declared on every kb_* input schema, described as REMOVED, so they reach the tool wrapper, which refuses them with E-SCOPE-KEY-REMOVED before any self-resolution -- they are never silently stripped. The scope keys are removed from TOOL inputs only: at the provider seam fleet passes the repository it resolved for the session, which the HTTP provider sends on every request as the X-Repository (normalised origin remote, host/path, no credentials) and X-Repository-Commit (HEAD sha, when readable) headers, never a local path; providers may ignore it.",
-      "affected_methods": ["P-2 capture", "P-3 query", "P-7 prime", "P-10 stats", "P-11 touch", "X-1 list", "X-3 freshnessSweep", "X-6 hasEntry", "X-8 getSourceFileBases"]
+      "affected_methods": ["P-2 capture", "P-3 query", "P-7 prime", "P-10 stats", "P-11 touch", "X-1 list", "X-3 freshnessSweep", "X-6 hasEntry", "X-8 getSourceFileBases", "X-12 recordUsage"]
     },
     "not_in_scope": "approveDirective, rejectDirective, addDirective, flaggedPairs (INVENTORY.md section 4.2) are CLI-only and not reachable by any registered MCP tool, so they have no entry here.",
     "kb_setup_absence_note": "kb_setup is intentionally absent from every `tools` array below, and its absence is not a gap. It is a pre-provider configuration tool: it installs the git post-commit hook, writes a single GLOBAL provider config, and stores remote credentials -- it never resolves a project KB and reaches no MemoryProvider member, so there is no P-*/X-* entry it could map to. Like every kb_* tool it takes no scope argument; it installs the hook into the calling session's own folder and, when that folder cannot carry a KB identity, skips the hook with the typed E-SELF-* reason as a step instead of refusing (INVENTORY.md section 2, 'Scope-field note'). It still has a request schema, a response schema, an MCP binding and a fixture, because it is one of the 23 registered tools; only the provider-method mapping is empty, and its binding therefore carries an empty errors[] array.",
     "httpKbProvider_note": "HttpKbProvider is dead code in this tree (INVENTORY.md section 4.4, F-10): every MemoryProvider entry below describes SqliteProvider behavior, which is the only implementation any tool call can reach.",
-    "non_error_outcomes_note": "A method's `error_codes` field cites ONLY names taxonomy.json's groups[].codes disposes as real error codes. A method that can also reach one of taxonomy.json's `non_error_outcomes` (a documented success-path adjustment or degradation that deliberately gets no code, with its own reason_no_code there) cites that name in a separate `non_error_outcomes` field instead, never bare inside `error_codes` -- tests/memory-contract-taxonomy.test.ts enforces this split. Affected methods: P-2 capture (E-CLAMP, E-CONTRADICTION-FLAGGED, E-DEDUP-NONE, E-DIRECTIVE-QUARANTINE), P-10 stats (E-STATS-UNSUPPORTED, E-BIBLE-READ-DEGRADED), P-12 relatedClaims (E-RELATED-CLAIMS-DEGRADED), X-2 feedback (E-ROLE-UNKNOWN-DEGRADED)."
+    "non_error_outcomes_note": "A method's `error_codes` field cites ONLY names taxonomy.json's groups[].codes disposes as real error codes. A method that can also reach one of taxonomy.json's `non_error_outcomes` (a documented success-path adjustment or degradation that deliberately gets no code, with its own reason_no_code there) cites that name in a separate `non_error_outcomes` field instead, never bare inside `error_codes` -- tests/memory-contract-taxonomy.test.ts enforces this split. Affected methods: P-2 capture (E-CLAMP, E-CONTRADICTION-FLAGGED, E-DEDUP-NONE, E-DIRECTIVE-QUARANTINE), P-10 stats (E-STATS-UNSUPPORTED, E-BIBLE-READ-DEGRADED), P-12 relatedClaims (E-RELATED-CLAIMS-DEGRADED), X-2 feedback (E-ROLE-UNKNOWN-DEGRADED), X-12 recordUsage (E-USAGE-UNSUPPORTED)."
   },
   "methods": [
     {
@@ -75,7 +75,7 @@
       ],
       "side_effect_class": "append",
       "idempotent": false,
-      "idempotent_note": "Read result is stable but each call bumps use_count/last_accessed telemetry.",
+      "idempotent_note": "Read result is stable but each call bumps use_count/last_accessed telemetry and appends one returned usage event per returned entry (read back by P-10 stats as usage). Both are skipped in an engine-origin session (origin=engine): the engine reports what it delivered through X-12 recordUsage instead.",
       "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-QUERY-NO-SELECTOR", "E-BIBLE-MALFORMED", "E-MEMBER-VIEW-REMOTE", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Query modes"]
     },
@@ -190,7 +190,7 @@
       "kind": "interface-method",
       "interface": "MemoryProvider",
       "signature": "stats(opts?: {symbols?}): Promise<ProviderStats>",
-      "purpose": "Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, coverage.",
+      "purpose": "Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, coverage, and usage (returned and cited usage events over the last 30 days, cited_rate = cited / returned, null when nothing was returned).",
       "tools": [
         { "name": "kb_stats", "request_schema_ref": "schemas/kb_stats.request.json", "response_schema_ref": "schemas/kb_stats.response.json", "anchor_validation": "self-validated" }
       ],
@@ -213,7 +213,7 @@
       ],
       "side_effect_class": "append",
       "idempotent": false,
-      "idempotent_note": "Existence-tolerant; counter advances on each call.",
+      "idempotent_note": "Existence-tolerant; counter advances on each call, and one returned usage event is appended per id. A no-op (returns 0) in an engine-origin session (origin=engine).",
       "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
       "see_also": []
     },
@@ -372,6 +372,24 @@
       "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-REPO-PATH-INVALID", "E-PROVIDER-UNINITIALIZED"],
       "error_codes_note": "E-REPO-PATH-INVALID (a remote member session, whose folder is not on this host) and the E-SELF-* codes are thrown by kb_bible_commit before this member is reached.",
       "see_also": ["X-1", "P-13"]
+    },
+    {
+      "id": "X-12",
+      "member": "recordUsage",
+      "kind": "undeclared-member",
+      "interface": "SqliteProvider (not declared on MemoryProvider)",
+      "signature": "recordUsage(input: {pushed?: string[], cited?: string[]}): {returned: number, cited: number}",
+      "purpose": "Record usage telemetry: one returned event per pushed id (an entry the engine delivered to a dispatch) and one cited event per cited id (an entry a role reported it used). P-10 stats reads them back as usage over the last 30 days.",
+      "tools": [
+        { "name": "kb_usage", "request_schema_ref": "schemas/kb_usage.request.json", "response_schema_ref": "schemas/kb_usage.response.json", "anchor_validation": "self-validated" }
+      ],
+      "tools_note": "Served to a MEMBER session only with the kb_maintainer grant (the engine reports usage; agent sessions do not).",
+      "side_effect_class": "append",
+      "idempotent": false,
+      "idempotent_note": "Each call appends new events (ids de-duplicated within one list only). Never touches an entry row, use_count or any trust field; an id with no local entry still counts.",
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
+      "non_error_outcomes": ["E-USAGE-UNSUPPORTED"],
+      "see_also": ["P-10", "P-11"]
     }
   ],
   "properties": [

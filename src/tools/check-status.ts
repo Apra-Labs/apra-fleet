@@ -22,6 +22,7 @@ import { codeIndexReadiness } from './code-intelligence-readiness.js';
 import { kbStats } from './kb-stats.js';
 import { checkVersionMismatch, type VersionMismatch } from '../services/version-check.js';
 import { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
+import type { KbUsageStats } from '../services/knowledge/types.js';
 import { listKbScopes, knowledgeRootDir, GLOBAL_KB_SCOPE, type KbScopeLocation } from '../services/knowledge/kb-scopes.js';
 import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
 import { readKbConfigFromDisk, type KbConfigResult } from '../services/knowledge/kb-config.js';
@@ -458,7 +459,33 @@ export interface KbScopeStats {
   superseded: number;
   retrieval: { entries_retrieved: number; total_uses: number; hit_rate: number | null };
   promote_ratio: number | null;
+  /** Usage events over the last 30 days (kb_stats.usage); absent when the DB predates it. */
+  usage?: KbUsageStats;
   bible: KbHealthBible;
+}
+
+/**
+ * The repository's canonical bible (.fleet/kb-canonical.json), reported as its
+ * own item, separately from the host database counts. Each half is read on its
+ * own: `entries` comes from the bible FILE, `drift` from comparing it with the
+ * host DB's live CONFIRMED set. A failure in one half nulls only that half and
+ * names it in `entriesError` / `driftReason`.
+ */
+export interface KbBibleHealth {
+  /** The repo_path the bible was read from; null when fleet_status got no repo_path. */
+  repoPath: string | null;
+  /** Host KB scope (project slug) of that repo; null without repo_path or when unresolvable. */
+  scope: string | null;
+  /** True when the bible file exists and parsed as a bible. */
+  present: boolean;
+  /** Entry count in the bible file; null when it could not be read (see entriesError) or without repo_path. */
+  entries: number | null;
+  /** Live CONFIRMED host-DB entries newer than the bible; null when not computable (see driftReason). */
+  drift: number | null;
+  /** Why entries is null. */
+  entriesError?: string;
+  /** Why drift is null. */
+  driftReason?: string;
 }
 
 export interface KbScopeHealth extends KbScopeStats {
@@ -533,6 +560,8 @@ export interface KbHealth {
   errors: KbScopeError[];
   /** Sum of totals.total over scopes + global. */
   totalEntries: number;
+  /** The repository bible, separately from the host database counts above. */
+  bible: KbBibleHealth;
 }
 
 // Bible drift needs a repo checkout (.fleet/kb-canonical.json). A scope does
@@ -548,8 +577,8 @@ async function readScopeStats(loc: KbScopeLocation): Promise<Omit<KbScopeStats, 
   const provider = new SqliteProvider(loc.dbPath);
   try {
     await provider.init();
-    const { totals, stale, flagged, superseded, retrieval, promote_ratio } = await provider.stats();
-    return { totals, stale, flagged, superseded, retrieval, promote_ratio };
+    const { totals, stale, flagged, superseded, retrieval, promote_ratio, usage } = await provider.stats();
+    return { totals, stale, flagged, superseded, retrieval, promote_ratio, ...(usage ? { usage } : {}) };
   } finally {
     try { provider.close(); } catch { /* best effort */ }
   }
@@ -562,6 +591,54 @@ async function bibleForRepo(repoPath: string): Promise<KbHealthBible | null> {
   } catch {
     return null;
   }
+}
+
+export const KB_BIBLE_NO_HOST_DB_REASON = 'no host KB database for this repo yet';
+export const KB_BIBLE_DRIFT_UNAVAILABLE_REASON = 'drift unavailable: the host KB database could not be read';
+
+/** Entry count of <repoPath>/.fleet/kb-canonical.json (absent -> present false, 0). Throws on an unreadable or malformed file. */
+function readBibleEntryCount(repoPath: string): { present: boolean; entries: number } {
+  const biblePath = join(repoPath, '.fleet', 'kb-canonical.json');
+  if (!existsSync(biblePath)) return { present: false, entries: 0 };
+  const parsed = JSON.parse(readFileSync(biblePath, 'utf-8')) as unknown;
+  const entries = Array.isArray(parsed)
+    ? parsed
+    : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { entries?: unknown }).entries))
+      ? (parsed as { entries: unknown[] }).entries
+      : null;
+  if (entries === null) throw new Error('not a bible shape');
+  return { present: true, entries: entries.length };
+}
+
+/**
+ * The bible item. Degraded-safe per half: a bible file I/O or parse failure
+ * nulls `entries` only; a host DB that is missing or unreadable nulls `drift`
+ * only. Never throws.
+ */
+async function bibleHealth(repoPath: string | undefined, repoSlug: string | null, hostScopeReadable: boolean, hostScopeExists: boolean): Promise<KbBibleHealth> {
+  if (!repoPath) {
+    return { repoPath: null, scope: null, present: false, entries: null, drift: null, entriesError: KB_BIBLE_NO_REPO_REASON, driftReason: KB_BIBLE_NO_REPO_REASON };
+  }
+  const item: KbBibleHealth = { repoPath, scope: repoSlug, present: false, entries: null, drift: null };
+  try {
+    const file = readBibleEntryCount(repoPath);
+    item.present = file.present;
+    item.entries = file.entries;
+  } catch (err) {
+    item.entriesError = `bible unreadable: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (!hostScopeExists) {
+    item.driftReason = KB_BIBLE_NO_HOST_DB_REASON;
+  } else if (!hostScopeReadable) {
+    item.driftReason = KB_BIBLE_DRIFT_UNAVAILABLE_REASON;
+  } else {
+    const fromStats = await bibleForRepo(repoPath);
+    if (fromStats === null) item.driftReason = KB_BIBLE_DRIFT_UNAVAILABLE_REASON;
+    else if (!('drift' in fromStats)) item.driftReason = fromStats.reason;
+    else if (item.entriesError !== undefined) item.driftReason = item.entriesError;
+    else item.drift = fromStats.drift;
+  }
+  return item;
 }
 
 function readKbConfigOrSqlite(): KbConfigResult {
@@ -691,6 +768,8 @@ export async function kbHealthSummary(opts: KbHealthOptions = {}): Promise<KbHea
         global = { scope: loc.slug, ...stats, bible: { computable: false, reason: KB_BIBLE_GLOBAL_REASON } };
         continue;
       }
+      // The per-scope bible field is kept (additive change) but the bible is
+      // reported as its own item (KbHealth.bible, built below).
       let bible: KbHealthBible = { computable: false, reason: KB_BIBLE_NO_REPO_REASON };
       if (opts.repoPath && repoSlug === loc.slug) {
         bible = (await bibleForRepo(opts.repoPath)) ?? bible;
@@ -703,9 +782,17 @@ export async function kbHealthSummary(opts: KbHealthOptions = {}): Promise<KbHea
     const projectProvider = config.provider === 'http' ? 'http' : 'sqlite';
     const credential = safeCredentialHealth(config);
     const embedding = safeEmbeddingState();
+    const hostScopeExists = repoSlug !== null && locations.some(l => l.slug === repoSlug);
+    const hostScopeReadable = hostScopeExists && scopes.some(s => s.scope === repoSlug);
+    let bible: KbBibleHealth;
+    try {
+      bible = await bibleHealth(opts.repoPath, repoSlug, hostScopeReadable, hostScopeExists);
+    } catch (err) {
+      bible = { repoPath: opts.repoPath ?? null, scope: repoSlug, present: false, entries: null, drift: null, entriesError: err instanceof Error ? err.message : String(err), driftReason: KB_BIBLE_DRIFT_UNAVAILABLE_REASON };
+    }
     return {
       projectProvider, ...(credential ? { credential } : {}), ...(embedding ? { embedding } : {}),
-      scopes, global, errors, totalEntries,
+      scopes, global, errors, totalEntries, bible,
     };
   } catch {
     return null;
@@ -722,13 +809,46 @@ function bibleDriftFragment(bible: KbHealthBible): string {
   return ` | bible: ${bible.drift} promotions behind (auto-commit may have failed -- run apra-fleet kb commit)`;
 }
 
-/** Render one compact KB health line for a single scope, labeled `kb[<scope>]` when a label is given. */
-export function kbHealthCompactLine(health: KbScopeStats, label?: string): string {
-  const hitRatePct = health.retrieval.hit_rate === null ? 'n/a' : `${Math.round(health.retrieval.hit_rate * 100)}%`;
+/**
+ * The cited-based hit rate fragment: cited / returned usage events over the
+ * last 30 days. n/a when there were no returned events (or the DB predates
+ * usage telemetry) -- never 0% and never a division error.
+ */
+export function citedHitRateFragment(usage?: KbUsageStats): string {
+  if (!usage || usage.returned <= 0 || usage.cited_rate === null) {
+    return `hit-rate(${usage?.window_days ?? 30}d):n/a (${usage?.cited ?? 0} cited/0 returned)`;
+  }
+  return `hit-rate(${usage.window_days}d):${Math.round(usage.cited_rate * 100)}% (${usage.cited} cited/${usage.returned} returned)`;
+}
+
+/**
+ * Render one compact KB health line for a single scope (a host database),
+ * labeled `kb[<scope>]` when a label is given. hit-rate is the cited-based
+ * rate; retrieved is the older entries-retrieved / live-entries ratio.
+ * `omitBible` drops the per-scope bible fragment (kbHealthCompactLines
+ * renders the bible as its own line).
+ */
+export function kbHealthCompactLine(health: KbScopeStats, label?: string, opts: { omitBible?: boolean } = {}): string {
+  const retrievedPct = health.retrieval.hit_rate === null ? 'n/a' : `${Math.round(health.retrieval.hit_rate * 100)}%`;
   const promotePct = health.promote_ratio === null ? 'n/a' : `${Math.round(health.promote_ratio * 100)}%`;
   const confirmed = health.totals.by_confidence.CONFIRMED ?? 0;
   const prefix = label ? `kb[${label}]` : 'kb';
-  return `${prefix}: ${health.totals.total} entries (confirmed:${confirmed} stale:${health.stale} flagged:${health.flagged}) | hit-rate:${hitRatePct} | promote-ratio:${promotePct}${bibleDriftFragment(health.bible)}`;
+  const bible = opts.omitBible ? '' : bibleDriftFragment(health.bible);
+  return `${prefix}: ${health.totals.total} entries (confirmed:${confirmed} stale:${health.stale} flagged:${health.flagged}) | ${citedHitRateFragment(health.usage)} | retrieved:${retrievedPct} | promote-ratio:${promotePct}${bible}`;
+}
+
+/** Render the bible item line (repo bible, separate from the host database lines). */
+export function kbBibleCompactLine(b: KbBibleHealth): string {
+  if (b.repoPath === null) return `kb bible: ${KB_BIBLE_NO_REPO_REASON}`;
+  const label = b.scope ? `kb bible[${b.scope}]` : 'kb bible';
+  const entries = b.entries === null
+    ? (b.entriesError ?? 'entries unknown')
+    : b.present ? `${b.entries} entries` : 'no bible file';
+  let drift: string;
+  if (b.drift === null) drift = `drift: n/a (${b.driftReason ?? 'not computed'})`;
+  else if (b.drift > 0) drift = `drift: ${b.drift} promotions behind (auto-commit may have failed -- run apra-fleet kb commit)`;
+  else drift = 'drift: 0';
+  return `${label}: ${entries} | ${drift}`;
 }
 
 /**
@@ -764,8 +884,9 @@ export function kbEmbeddingCompactLine(e: EmbedderState): string {
 export function kbHealthCompactLines(health: KbHealth): string {
   const credentialLine = health.credential ? `\n  ${kbCredentialCompactLine(health.credential)}` : '';
   const embeddingLine = health.embedding ? `\n  ${kbEmbeddingCompactLine(health.embedding)}` : '';
+  const bibleLine = health.bible && health.bible.repoPath !== null ? `\n  ${kbBibleCompactLine(health.bible)}` : '';
   if (health.scopes.length === 0 && !health.global && health.errors.length === 0) {
-    return 'kb: no knowledge bases found yet (none captured on this server)' + credentialLine + embeddingLine;
+    return 'kb: no knowledge bases found yet (none captured on this server)' + bibleLine + credentialLine + embeddingLine;
   }
   const nonEmpty = health.scopes.filter(s => s.totals.total > 0);
   const empty = health.scopes.filter(s => s.totals.total === 0).map(s => s.scope);
@@ -775,8 +896,9 @@ export function kbHealthCompactLines(health: KbHealth): string {
   const remoteNote = health.projectProvider === 'http' ? ' | project KBs served by remote http provider; local fallback copies shown' : '';
   const lines: string[] = [];
   lines.push(`kb: ${health.totalEntries} entries across ${nonEmpty.length} project scope(s)${globalNonEmpty ? ' + global' : ''}${remoteNote}`);
-  for (const s of nonEmpty) lines.push(`  ${kbHealthCompactLine(s, s.scope)}`);
-  if (globalNonEmpty) lines.push(`  ${kbHealthCompactLine(globalNonEmpty, globalNonEmpty.scope)}`);
+  if (health.bible && health.bible.repoPath !== null) lines.push(`  ${kbBibleCompactLine(health.bible)}`);
+  for (const s of nonEmpty) lines.push(`  ${kbHealthCompactLine(s, s.scope, { omitBible: true })}`);
+  if (globalNonEmpty) lines.push(`  ${kbHealthCompactLine(globalNonEmpty, globalNonEmpty.scope, { omitBible: true })}`);
   for (const e of health.errors) lines.push(`  kb[${e.scope}]: unreadable (${e.error})`);
   if (empty.length > 0) lines.push(`  kb: empty scope(s): ${empty.join(', ')}`);
   if (health.credential) lines.push(`  ${kbCredentialCompactLine(health.credential)}`);

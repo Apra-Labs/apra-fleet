@@ -34,7 +34,7 @@
   "$defs": {
     "demotions": {
       "type": "array",
-      "description": "v3 only. Optional tombstones written by kb_bible_commit: each names an id removed from entries at `at` for `reason`. reason \"demoted\" (a kb_demote) is the only one kb_import applies to a local row, and only when that row is withdrawn under the one re-promotion rule; readers keep reasons they do not know. Omitted entirely when there are none. Never inferred from an absence. See spec.md section 2.6.",
+      "description": "v3 only. Optional tombstones written by kb_bible_commit: each names an id removed from entries at `at` for `reason`. kb_bible_commit writes reason \"demoted\" (a kb_demote) and reason \"superseded\" or \"invalidated\" (an entry it removed because the writing KB holds it as superseded or invalidated; at is the retirement time). kb_import applies them to a local CONFIRMED row only when that row is withdrawn under the one re-promotion rule: demoted lowers it to INFERRED, superseded and invalidated retire it; readers keep reasons they do not know and ignore them on import. Omitted entirely when there are none. Never inferred from an absence. See spec.md section 2.6.",
       "items": {
         "type": "object",
         "required": ["id", "at", "reason"],

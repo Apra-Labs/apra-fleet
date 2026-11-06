@@ -105,6 +105,14 @@ export interface SessionRoots {
 interface ToolCallContext {
   sessionMemberId: string | undefined;
   kbMaintainer: boolean;
+  /**
+   * True when the session was opened with origin=engine (the engine's own
+   * memberCall reads, e.g. the kb_maintainer knowledgeFor read that builds the
+   * pushed KNOWLEDGE BANK block). SqliteProvider skips its use_count /
+   * last_accessed bump and its returned usage event for such reads: the
+   * engine reports what it actually delivered through kb_usage instead.
+   */
+  engineOrigin?: boolean;
   /** Client roots of a FULL session; undefined when none were offered/fetched. */
   roots?: SessionRoots;
   /**
@@ -126,9 +134,10 @@ const toolCallContext = new AsyncLocalStorage<ToolCallContext>();
 export function runWithSessionMember<T>(
   sessionMemberId: string | undefined,
   fn: () => T,
-  opts: { kbMaintainer?: boolean; roots?: SessionRoots } = {},
+  opts: { kbMaintainer?: boolean; roots?: SessionRoots; engineOrigin?: boolean } = {},
 ): T {
   const ctx: ToolCallContext = { sessionMemberId, kbMaintainer: opts.kbMaintainer === true };
+  if (opts.engineOrigin === true) ctx.engineOrigin = true;
   if (sessionMemberId === undefined && opts.roots !== undefined) ctx.roots = opts.roots;
   return toolCallContext.run(ctx, fn);
 }
@@ -169,4 +178,13 @@ export function getSessionMemberId(): string | undefined {
  */
 export function getSessionKbMaintainer(): boolean {
   return toolCallContext.getStore()?.kbMaintainer === true;
+}
+
+/**
+ * Whether the tool call currently executing belongs to an engine-origin
+ * session (origin=engine). False for agent member sessions, FULL sessions and
+ * outside any tool call.
+ */
+export function getSessionEngineOrigin(): boolean {
+  return toolCallContext.getStore()?.engineOrigin === true;
 }

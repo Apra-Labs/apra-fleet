@@ -999,6 +999,11 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // real runner.js phase probes for that file and skips the dispatch
         // entirely otherwise, same as deploy.md/integ-test-playbook.md.
         regressionHandler = null,
+        // Optional ({ opts, tempDir, runCmd, epicBead }) => result override
+        // for the 'harvester' dispatch, mirroring deployHandler/integHandler.
+        // Runs AFTER the harvester-input contract check below, so that guard
+        // stays in force; without it the default OK report is returned.
+        harvesterHandler = null,
         // Optional (cmd: string) => boolean predicate: when it returns
         // true for a given executeCommand() invocation, the mock returns a
         // nonzero-exit result (apra-fleet-1cb.1: normal data, no isError --
@@ -1897,6 +1902,9 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                         }]
                     };
                 }
+                if (harvesterHandler) {
+                    return harvesterHandler({ opts, tempDir, runCmd, epicBead });
+                }
                 return {
                     content: [{
                         text: JSON.stringify({
@@ -2136,6 +2144,9 @@ export async function runDevelopLoopScenario(tag, {
     // `withRegressionPlaybook` below (writes regression-test-playbook.md so
     // the real probe finds it and the phase actually dispatches).
     regressionHandler,
+    // Optional harvester override -- see buildMockFleetApi's
+    // `harvesterHandler` option comment.
+    harvesterHandler,
     goal = 'P1/P2', maxCycles = 1,
     // Optional hook invoked with {tempDir, runCmd, epicBead, tasks} AFTER
     // setupMinimal() creates the epic/tasks but BEFORE the sprint runs --
@@ -2301,6 +2312,7 @@ export async function runDevelopLoopScenario(tag, {
             integHandler,
             finalReviewHandler,
             regressionHandler,
+            harvesterHandler,
             commandFailurePattern,
             commandLogDetailed,
             memberGitState,

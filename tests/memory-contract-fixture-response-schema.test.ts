@@ -93,10 +93,10 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    // Non-vacuous: 59 of the 105 committed fixtures carry a `response` (the
+    // Non-vacuous: 60 of the 106 committed fixtures carry a `response` (the
     // other 44 record a thrown refusal). Update this count, and the 98 in
     // tests/memory-contract-roundtrip.test.ts, whenever the corpus changes.
-    expect(keys.length).toBe(59); // 59 response fixtures of 105 committed (46 are thrown refusals)
+    expect(keys.length).toBe(60); // 60 response fixtures of 106 committed (46 are thrown refusals)
     expect(failures).toEqual([]);
   });
 
@@ -123,7 +123,7 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    expect(keys.length).toBe(59); // 59 response fixtures of 105 committed (46 are thrown refusals)
+    expect(keys.length).toBe(60); // 60 response fixtures of 106 committed (46 are thrown refusals)
     expect(failures).toEqual([]);
   });
 
@@ -178,5 +178,25 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       expect(validate(withReason(reason)), reason).toBe(true);
     }
     expect(validate(withReason('not_a_documented_reason'))).toBe(false);
+  });
+
+  // not_committed_reason is ADDITIVE: present only when a committed bible did
+  // not hold the merge of the call (committed is then false). It has no recorded
+  // fixture (it needs a concurrent writer to lose a race), so the recorded
+  // envelope is reused with the field added -- a scratch copy, never committed.
+  it('kb_bible_commit: not_committed_reason is an optional string; the envelope without it still validates', () => {
+    const real = loadFixture('kb_bible_commit', 'basis-mismatch');
+    const validate = compileAll(['kb_bible_commit/basis-mismatch'])('kb_bible_commit');
+    const decoded = decodeEnvelope(real.response);
+    expect('not_committed_reason' in decoded.parsed).toBe(false);
+    expect(validate(decoded)).toBe(true);
+    const withReason = (value: unknown) => {
+      const copy = JSON.parse(JSON.stringify(decoded));
+      copy.parsed.committed = false;
+      copy.parsed.not_committed_reason = value;
+      return copy;
+    };
+    expect(validate(withReason('another writer replaced the bible before this call\'s commit landed'))).toBe(true);
+    expect(validate(withReason(42))).toBe(false);
   });
 });

@@ -221,6 +221,16 @@ present, set `passed` = (`verdict` == `"PASS"`), replacing the `passed` rule
 above. `INCONCLUSIVE` means the run proved nothing either way -- report it
 as such, never as a failure.
 
+## Reporting KB use
+
+Your output schema has two optional fields about knowledge bank (KB) entries, whether
+they were pushed into your prompt or returned by a query you made:
+`kb_used`, a list of `{"id": "<entry id>", "how": "<how it shaped your work>"}` for each
+entry you actually relied on, and `kb_wrong`, a list of
+`{"id": "<entry id>", "reason": "<what was wrong>"}` for each entry that proved wrong in
+practice. Copy each id exactly as you were given it. Omit both, or send `[]`, when there
+is nothing to report. Not querying the KB is allowed: it is only logged, never blocked.
+
 ## Output schema
 
 The canonical machine-readable contract for this output lives in the
