@@ -7,7 +7,8 @@
 // already imports the KB service; see the header of
 // code-intelligence-kb-enrich.ts). The kb_capture and kb_freshness_sweep
 // handlers attach the resolver to the project SqliteProvider before they call
-// it.
+// it. Loading this module also registers the factory local MEMBER bible views
+// use (member-bible-view.ts), so member reads get code-link anchors too.
 //
 // Resolution:
 //   file    resolved when it exists under the repo folder (no index lookup
@@ -27,6 +28,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { CodeLinkItem, CodeLinkResolver, ResolvedCodeLink } from '../services/knowledge/code-links.js';
 import { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
+import { setMemberViewCodeResolverFactory } from '../services/knowledge/member-bible-view.js';
 // Type-only at module load: code-intelligence.js (and its registry imports) is
 // loaded lazily on the first resolve, so kb_capture's module graph stays light.
 import type { CodeIntelligenceProvider } from './code-intelligence.js';
@@ -157,3 +159,8 @@ export function ensureKbCodeLinkResolver(provider: unknown, memberId?: string): 
     // Code links are an optional aid; never let them fail the KB call.
   }
 }
+
+// Local member bible views resolve their entries against the member's own
+// checkout (a remote member's view gets none: member-bible-view.ts).
+setMemberViewCodeResolverFactory((folder, memberId) =>
+  fs.existsSync(folder) ? kbCodeLinkResolverFor(folder, memberId) : null);

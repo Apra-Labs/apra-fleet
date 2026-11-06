@@ -1061,9 +1061,16 @@ in the background; queries only ever compare vectors of the active model.
   binary with `apra-fleet kb embed-check [--model-dir <folder>] [--text <t>]`,
   which embeds one text through the worker and prints one JSON line
   (`ok`, `origin` of the worker script, `dims`).
-- **Member bible view.** The member-side CONFIRMED view does not attach an
-  embedder, so member reads of the bible (including engine knowledge
-  injection) get keyword, error and anchor lists but no semantic list.
+- **Member bible view.** The member-side CONFIRMED view
+  (`member-bible-view.ts`) ranks like the per-repo DB: it attaches the
+  process embedder and, for a local member, the code-link resolver. It does
+  not re-embed the bible on each build: entries whose id and chunk text
+  hashes match vectors the per-repo DB holds for the active model are copied
+  from there (`SqliteProvider.adoptVectorsFrom`); only the rest are embedded,
+  in the background, and until then reach readers through keyword, error and
+  anchor lists only. A remote member's view gets no code-link resolver (its
+  checkout and code index are not on this host): anchors there come from the
+  entries' own `source_files`/`symbols` only.
 - **Benchmark scope.** The bench's p95 uses a fake query embedder; a real
   model adds roughly 150 ms for query embedding on a low-end laptop CPU.
 - **Downgrades.** Downgrading leaves an empty legacy FTS table behind;

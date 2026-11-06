@@ -4,6 +4,8 @@ import {
   getSelfReadKb, getMemberSplitRead, mergeSplitById, type KbAnchor, type MemberSplitRead,
 } from '../services/knowledge/kb-self.js';
 import { getSessionMemberId } from '../services/tool-scope.js';
+// Registers the code-link resolver factory member bible views use.
+import './kb-code-link-resolver.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import type { MemoryProvider } from '../services/knowledge/types.js';
 

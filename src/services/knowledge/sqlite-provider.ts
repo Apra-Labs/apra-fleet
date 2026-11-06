@@ -25,7 +25,10 @@ import { KbKeywordIndex, type KeywordIndexStatus } from './kb-index.js';
 import { VectorStore, type VectorModel, type VectorScore } from './embedding/vector-store.js';
 import { buildVectorInputs, type VectorInput } from './embedding/chunker.js';
 import { semanticFloorFor, type EmbeddingProfile } from './embedding/profiles.js';
-import { EmbedQueue, type EmbedderLike, type EmbedderSource, type EmbedQueueStatus } from './embedding/embed-queue.js';
+import {
+  EmbedQueue, DEFAULT_TOKEN_LIMIT, KB_VECTOR_INDEX_VERSION,
+  type EmbedderLike, type EmbedderSource, type EmbedQueueStatus,
+} from './embedding/embed-queue.js';
 import { CodeLinkStore, normalizeFileRef, type CodeLinkResolver, type CodeLinksStatus, type ResolvedCodeLink } from './code-links.js';
 import { hybridOrder, ranksFromOrder, ranksFromScores, reciprocalRankFusion, trustPrior, type RankedList } from './hybrid-rank.js';
 import { validateFilePaths } from './path-validation.js';
@@ -452,6 +455,68 @@ export class SqliteProvider implements MemoryProvider {
   waitForEmbeddings(timeoutMs?: number): Promise<boolean> {
     this.embedQueue.kick();
     return this.embedQueue.whenIdle(timeoutMs);
+  }
+
+  /**
+   * Copy vectors from `from` (another KB holding the same entries, e.g. the
+   * per-repo DB a member bible view is built beside) for entries this KB
+   * still has queued for embedding, instead of embedding them again.
+   *
+   * An entry is adopted only when `from` holds vectors for the SAME entry id
+   * under `emb`'s model (id + revision + dims, recorded at the current
+   * KB_VECTOR_INDEX_VERSION) and every chunk's text hash equals the chunk this
+   * KB would embed now (same kind, ordinal and text); a partial or differing
+   * set is left queued, so the background queue embeds it. Records `emb`'s
+   * model identity here first, so the first background run finds the
+   * identity matching and does not start a full rebuild that would re-queue
+   * the adopted entries. Call BEFORE attachEmbedder (which kicks the queue).
+   * Synchronous and cheap (one indexed read per queued entry); returns the
+   * number of entries adopted. Never throws for a mismatch -- it adopts none.
+   */
+  adoptVectorsFrom(from: SqliteProvider, emb: EmbedderLike | null): number {
+    if (!emb || emb.modelId === null || emb.revision === null || emb.state.state === 'disabled') return 0;
+    const src = from.vectorIndexStatus();
+    if (src.model_id !== emb.modelId || src.model_revision !== emb.revision
+      || src.index_version !== KB_VECTOR_INDEX_VERSION || src.dims === null) return 0;
+    if (emb.dims !== undefined && emb.dims !== src.dims) return 0;
+    const model: VectorModel = { modelId: emb.modelId, revision: emb.revision, dims: src.dims };
+    const tokenLimit = emb.tokenLimit ?? DEFAULT_TOKEN_LIMIT;
+    const db = this.getDb();
+    const setMeta = db.prepare(
+      'INSERT INTO kb_index_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    );
+    const pending = (db.prepare('SELECT entry_id FROM kb_embed_pending ORDER BY entry_id').all() as { entry_id: string }[])
+      .map(r => r.entry_id);
+    let adopted = 0;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      setMeta.run('vec_model_id', model.modelId);
+      setMeta.run('vec_model_revision', model.revision);
+      setMeta.run('vec_dims', String(model.dims));
+      setMeta.run('vec_index_version', KB_VECTOR_INDEX_VERSION);
+      const done = db.prepare('DELETE FROM kb_embed_pending WHERE entry_id = ?');
+      for (const id of pending) {
+        const inputs = this.entryVectorInputs(id, tokenLimit);
+        if (!inputs || inputs.length === 0) continue;
+        const stored = new Map(from.vectorStore.entryVectors(id, model).map(v => [`${v.kind}:${v.ordinal}`, v]));
+        if (stored.size !== inputs.length) continue;
+        const vectors = inputs.map(inp => {
+          const v = stored.get(`${inp.kind}:${inp.ordinal}`);
+          return v && v.textHash === inp.textHash
+            ? { kind: inp.kind, ordinal: inp.ordinal, textHash: inp.textHash, vector: v.vector }
+            : null;
+        });
+        if (vectors.some(v => v === null)) continue;
+        this.vectorStore.replaceEntryVectors(id, model, vectors as NonNullable<(typeof vectors)[number]>[]);
+        done.run(id);
+        adopted++;
+      }
+      db.exec('COMMIT');
+    } catch (err) {
+      try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+      throw err;
+    }
+    return adopted;
   }
 
   /** Recorded vector model identity, queue depth and rebuild state. */

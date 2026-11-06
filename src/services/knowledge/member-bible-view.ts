@@ -28,6 +28,27 @@
 //     (mtime + size), and the bible text is fetched only when that changed.
 //     Cached per (member, folder). If the member cannot be reached the read
 //     fails loudly (E-MEMBER-VIEW-REMOTE); it never falls back to the per-repo DB.
+//
+// Semantic search and code anchors (members are who the KB serves, so a
+// member read must rank like a FULL read):
+//   - Vectors. Design choice: REUSE the per-repo DB's vectors, do not re-embed
+//     the bible on every view build. Right after the import, before any
+//     embedder is attached, the view copies from the per-repo kb.sqlite the
+//     vectors of every entry with the SAME id whose chunks have the same text
+//     hashes under the active model (SqliteProvider.adoptVectorsFrom). Only the
+//     entries left over (new in this checkout's bible, or with different text)
+//     stay queued; attaching the process embedder then embeds them in the
+//     background embed queue (worker thread), never on the read path. Until
+//     they are embedded those entries are reached by keyword/error/anchor
+//     lists only. Reads get the semantic list from the same embedder, with the
+//     same per-model similarity floor as the per-repo DB.
+//   - Code links. A local view gets the tool layer's code-link resolver
+//     (injected through setMemberViewCodeResolverFactory: this module must not
+//     import src/tools) BEFORE the import, so each imported entry's symbols and
+//     files are resolved to code-index nodes in the background and file/symbol
+//     anchors include one code-graph hop. A REMOTE member's checkout and code
+//     index are not on this host, so its view gets no resolver: anchors there
+//     come from the entries' own source_files/symbols only.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -42,6 +63,9 @@ import { getAgent } from '../registry.js';
 import { getStrategy } from '../strategy.js';
 import { getAgentOS, getAgentShell, isPosixShell } from '../../utils/agent-helpers.js';
 import { wrapPowerShellEncoded } from '../../os/windows.js';
+import { getProjectSqliteProvider, kbEmbedderSource } from './kb-providers.js';
+import type { EmbedderSource } from './embedding/embed-queue.js';
+import type { CodeLinkResolver } from './code-links.js';
 import type { Agent } from '../../types.js';
 import type { KbAnchor } from './kb-self.js';
 
@@ -65,6 +89,55 @@ export function memberBiblePath(folder: string): string {
   return path.join(folder, '.fleet', 'kb-canonical.json');
 }
 
+/** Builds the code-link resolver for a LOCAL member checkout (null: none). */
+export type MemberViewCodeResolverFactory = (folder: string, memberId: string | undefined) => CodeLinkResolver | null;
+
+let _codeResolverFactory: MemberViewCodeResolverFactory | null = null;
+// undefined = the production source (kbEmbedderSource(), read per build).
+let _embedderSourceOverride: EmbedderSource | null | undefined;
+
+/**
+ * Set the code-link resolver factory for local member views (the tool layer
+ * registers kbCodeLinkResolverFor). Returns the previous factory. Applies to
+ * views built after the call.
+ */
+export function setMemberViewCodeResolverFactory(factory: MemberViewCodeResolverFactory | null): MemberViewCodeResolverFactory | null {
+  const prev = _codeResolverFactory;
+  _codeResolverFactory = factory;
+  return prev;
+}
+
+/**
+ * Tests only: the embedder source member views attach (undefined restores
+ * the production source). Applies to views built after the call.
+ */
+export function setMemberViewEmbedderSourceForTests(source: EmbedderSource | null | undefined): void {
+  _embedderSourceOverride = source;
+}
+
+function viewEmbedderSource(): EmbedderSource | null {
+  return _embedderSourceOverride === undefined ? kbEmbedderSource() : _embedderSourceOverride;
+}
+
+/**
+ * Give a freshly imported view its vectors and embedder: adopt the per-repo
+ * DB's vectors for unchanged entries, then attach the embedder, which embeds
+ * only what is left, in the background. Never throws and never waits for an
+ * embedding: a per-repo DB that cannot be opened only means more entries are
+ * embedded in the background.
+ */
+async function attachViewEmbedding(provider: SqliteProvider, anchor: KbAnchor): Promise<void> {
+  const source = viewEmbedderSource();
+  if (!source) return;
+  try {
+    const emb = source();
+    if (emb) provider.adoptVectorsFrom(await getProjectSqliteProvider(anchor.folder, anchor.remoteUrl), emb);
+  } catch {
+    // Adoption is an optimisation; the queue embeds whatever stays pending.
+  }
+  provider.attachEmbedder(source);
+}
+
 interface ViewSlot {
   /** -1 / -1 when the bible was missing at load time. */
   mtimeMs: number;
@@ -85,7 +158,8 @@ function statOrMissing(biblePath: string): { mtimeMs: number; size: number } {
   }
 }
 
-async function buildView(biblePath: string, repoRoot: string, missing: boolean): Promise<SqliteProvider> {
+async function buildView(biblePath: string, anchor: KbAnchor, missing: boolean): Promise<SqliteProvider> {
+  const repoRoot = anchor.folder;
   _loadCounts.set(biblePath, (_loadCounts.get(biblePath) ?? 0) + 1);
   // Parse BEFORE opening the database, so a malformed bible costs nothing.
   // DOCUMENT reader: the view must honour the bible's demotion tombstones, and
@@ -101,8 +175,17 @@ async function buildView(biblePath: string, repoRoot: string, missing: boolean):
   // does, so the capture basis check and prime()'s freshness check judge the
   // bible against the member's own checkout.
   const provider = new SqliteProvider(':memory:', repoRoot);
+  // Resolver before the import: each import capture schedules its entry's
+  // code-link resolution (background, never awaited here).
+  try {
+    const resolver = _codeResolverFactory?.(repoRoot, anchor.memberId) ?? null;
+    if (resolver) provider.attachCodeResolver(resolver);
+  } catch {
+    // Code links are an optional aid; never fail the read over them.
+  }
   await provider.init();
   if (entries.length > 0) await importBibleEntries(provider, entries, { verbatim: true });
+  await attachViewEmbedding(provider, anchor);
   return provider;
 }
 
@@ -186,6 +269,8 @@ async function getRemoteMemberBibleView(anchor: KbAnchor): Promise<SqliteProvide
     await provider.init();
     if (entries.length > 0) await importBibleEntries(provider, entries, { verbatim: true });
     provider.bindRepoPath(anchor.folder);
+    // Semantic list as for a local view; NO code-link resolver (see header).
+    await attachViewEmbedding(provider, anchor);
     return provider;
   };
   const slot: ViewSlot = { mtimeMs, size, provider: build() };
@@ -210,7 +295,7 @@ export async function getMemberBibleView(anchor: KbAnchor): Promise<SqliteProvid
   }
   // The replaced view is not closed: a concurrent reader may still hold it
   // mid-call. Dropping the reference lets it be collected.
-  const slot: ViewSlot = { mtimeMs, size, provider: buildView(biblePath, anchor.folder, mtimeMs === -1) };
+  const slot: ViewSlot = { mtimeMs, size, provider: buildView(biblePath, anchor, mtimeMs === -1) };
   _views.set(biblePath, slot);
   // Never cache a failed build (a malformed bible must fail on every read, and
   // a fixed bible must load without a restart).

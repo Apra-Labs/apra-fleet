@@ -95,7 +95,8 @@ export interface EmbedQueueOptions {
 }
 
 const DEFAULT_BATCH = 16;
-const DEFAULT_TOKEN_LIMIT = 512;
+/** Token limit used to chunk entries when the embedder reports none. */
+export const DEFAULT_TOKEN_LIMIT = 512;
 /** A rebuild owner whose heartbeat is older than this is presumed dead. */
 const REBUILD_STALE_MS = 30_000;
 const PROGRESS_EVERY_BATCHES = 10;

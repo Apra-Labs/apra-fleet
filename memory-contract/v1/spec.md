@@ -168,7 +168,14 @@ hash, and captures are stored at most INFERRED.
 In a MEMBER session the default reads (`kb_query`, `kb_session_prime`,
 `kb_list`, `kb_context`, `kb_stats`) are answered from an in-memory view of the
 member's own checkout bible (`.fleet/kb-canonical.json`), rebuilt when the file
-changes. An explicit confidence list is split: CONFIRMED is read from the
+changes. The view ranks as the per-repo DB does (section on `kb_query`
+HYBRID INPUTS): the same semantic list with the same model and similarity
+floor, and, for a member whose checkout is on the serving host, code-index
+anchors; for a member on another host, anchors come from the entries' own
+`source_files`/`symbols` only. Entries not yet embedded on this host are
+reached through the keyword, error and anchor lists until they are. Test
+hook: `tests/knowledge/kb-query-hybrid-member.test.ts`. An explicit
+confidence list is split: CONFIRMED is read from the
 member checkout bible and INFERRED/UNVERIFIED only from the member's own
 captures in the per-repo DB (tagged `member:<caller uuid>`), merged for a
 mixed request. The own half of a mixed request asks for every listed tier, so

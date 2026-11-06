@@ -396,6 +396,17 @@ export async function getKbProviders(cwd?: string, remoteUrl?: string): Promise<
   return selection.providers;
 }
 
+/**
+ * The per-repo SqliteProvider for a repo folder, whatever provider the KB
+ * config selects on top of it (the same cached handle getKbProviders builds
+ * on). The member bible view reads its stored vectors so it does not embed
+ * entries the per-repo DB already embedded (member-bible-view.ts).
+ */
+export async function getProjectSqliteProvider(cwd: string, remoteUrl?: string): Promise<SqliteProvider> {
+  const slug = slugFor(cwd, remoteUrl);
+  return (await getBaseProviders(slug, cwd, providerKey(slug, cwd))).projectSqlite;
+}
+
 export function resetKbProviders(): void {
   // HttpKbProvider registers a process 'beforeExit' listener in its constructor;
   // clearing the maps alone leaks one listener per reset, and a suite that resets
