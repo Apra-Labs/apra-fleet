@@ -7,8 +7,10 @@
 //
 //   X-Repository         the normalised origin remote, `host/path`
 //   X-Repository-Commit  the HEAD sha of the local folder, when readable
+//   X-Repository-Branch  the checked-out branch of the local folder, when on
+//                        one (not detached), percent-encoded
 //
-// Both values come ONLY from fleet's resolved anchor, never from tool input.
+// All values come ONLY from fleet's resolved anchor, never from tool input.
 
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -16,6 +18,10 @@ import { gitExecutable } from '../../os/git-executable.js';
 
 export const REPOSITORY_HEADER = 'X-Repository';
 export const REPOSITORY_COMMIT_HEADER = 'X-Repository-Commit';
+export const REPOSITORY_BRANCH_HEADER = 'X-Repository-Branch';
+
+/** Longest X-Repository-Branch value (after percent-encoding) that is sent. */
+export const MAX_BRANCH_LENGTH = 255;
 
 /** Longest X-Repository value a receiving server accepts. */
 export const MAX_REPOSITORY_LENGTH = 512;
@@ -31,6 +37,11 @@ export interface RepositoryIdentity {
   remote: string;
   /** HEAD sha of the local folder; undefined when unknown. Must not throw. */
   commitOf?: () => string | undefined;
+  /**
+   * Checked-out branch of the local folder, percent-encoded; undefined when
+   * unknown or HEAD is detached. Must not throw.
+   */
+  branchOf?: () => string | undefined;
 }
 
 /**
@@ -188,11 +199,47 @@ export function headCommitReader(folder: string, ttlMs = HEAD_COMMIT_TTL_MS): ()
 }
 
 /**
+ * True when `value` is an X-Repository-Branch value that may be sent: 1-255
+ * printable ASCII characters, no spaces.
+ */
+export function isValidBranchValue(value: string): boolean {
+  return value.length > 0 && value.length <= MAX_BRANCH_LENGTH && /^[!-~]+$/.test(value);
+}
+
+/**
+ * The header value for a branch name: characters outside printable ASCII
+ * (non-ASCII, control, space) percent-encoded as UTF-8. Undefined when the
+ * result is empty or longer than MAX_BRANCH_LENGTH.
+ */
+export function branchHeaderValue(branch: string): string | undefined {
+  const value = percentEncode(branch);
+  return isValidBranchValue(value) ? value : undefined;
+}
+
+/**
+ * A reader for the checked-out branch of a local folder (`git symbolic-ref
+ * --quiet --short HEAD`), cached for `ttlMs` like headCommitReader so a branch
+ * switch shows within one TTL. Returns the header value (see
+ * branchHeaderValue), or undefined (never throws) on a detached HEAD, a folder
+ * that is not a git repository, a git failure or timeout, or an invalid value.
+ */
+export function headBranchReader(folder: string, ttlMs = HEAD_COMMIT_TTL_MS): () => string | undefined {
+  let cached: { value: string | undefined; at: number } | undefined;
+  return () => {
+    const now = Date.now();
+    if (cached && now - cached.at < ttlMs) return cached.value;
+    const branch = gitOut(folder, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+    cached = { value: branch ? branchHeaderValue(branch) : undefined, at: now };
+    return cached.value;
+  };
+}
+
+/**
  * The repository identity for a resolved KB anchor, or undefined when there is
  * none. `remoteUrl` is set only when the folder lives on another host: then
- * the identity is that remote and the commit is unknown (git cannot run
- * there). Otherwise the identity is the local folder's origin remote and the
- * commit is its HEAD.
+ * the identity is that remote and the commit and branch are unknown (git
+ * cannot run there). Otherwise the identity is the local folder's origin
+ * remote, the commit is its HEAD and the branch its checked-out branch.
  */
 export function resolveRepositoryIdentity(folder: string, remoteUrl?: string): RepositoryIdentity | undefined {
   if (remoteUrl && remoteUrl.trim()) {
@@ -201,5 +248,5 @@ export function resolveRepositoryIdentity(folder: string, remoteUrl?: string): R
   }
   const origin = gitOut(folder, ['remote', 'get-url', 'origin']);
   const remote = origin ? normaliseRepositoryRemote(origin) : undefined;
-  return remote ? { remote, commitOf: headCommitReader(folder) } : undefined;
+  return remote ? { remote, commitOf: headCommitReader(folder), branchOf: headBranchReader(folder) } : undefined;
 }

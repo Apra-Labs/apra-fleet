@@ -27,8 +27,10 @@ import { recordKbHttpSuccess, recordKbHttpRejected } from './kb-http-auth-state.
 import {
   REPOSITORY_HEADER,
   REPOSITORY_COMMIT_HEADER,
+  REPOSITORY_BRANCH_HEADER,
   COMMIT_SHA,
   isValidRepositoryValue,
+  isValidBranchValue,
   type RepositoryIdentity,
 } from './repository-header.js';
 
@@ -45,9 +47,10 @@ export interface HttpKbProviderOptions {
   /** Socket idle timeout per request, in ms; absent means DEFAULT_REQUEST_TIMEOUT_MS. */
   requestTimeoutMs?: number;
   /**
-   * The repository every request is about, sent as the X-Repository and
-   * X-Repository-Commit headers. Filled only from fleet's resolved KB anchor
-   * (kb-providers.ts), never from tool input. Absent: neither header is sent.
+   * The repository every request is about, sent as the X-Repository,
+   * X-Repository-Commit and X-Repository-Branch headers. Filled only from
+   * fleet's resolved KB anchor (kb-providers.ts), never from tool input.
+   * Absent: none of these headers is sent.
    */
   repository?: RepositoryIdentity;
 }
@@ -171,8 +174,9 @@ export class HttpKbProvider implements MemoryProvider {
     this.offlineQueue.push(op);
   }
 
-  // The repository headers for one request. The commit is best effort: an
-  // unreadable or malformed sha omits the header, never fails the request.
+  // The repository headers for one request. The commit and branch are best
+  // effort: an unreadable, throwing or malformed value omits that header and
+  // never fails the request.
   private repositoryHeaders(): Record<string, string> {
     if (!this.repository) return {};
     const headers: Record<string, string> = { [REPOSITORY_HEADER]: this.repository.remote };
@@ -183,6 +187,13 @@ export class HttpKbProvider implements MemoryProvider {
       commit = undefined;
     }
     if (commit && COMMIT_SHA.test(commit)) headers[REPOSITORY_COMMIT_HEADER] = commit;
+    let branch: string | undefined;
+    try {
+      branch = this.repository.branchOf?.();
+    } catch {
+      branch = undefined;
+    }
+    if (typeof branch === 'string' && isValidBranchValue(branch)) headers[REPOSITORY_BRANCH_HEADER] = branch;
     return headers;
   }
 
@@ -234,7 +245,8 @@ export class HttpKbProvider implements MemoryProvider {
     const secretName = typeof this.tokenSource === 'string' ? undefined : this.tokenSource.secretName;
     const attempts = secretName === undefined ? 1 : 2;
     // Computed once, after the first secret lookup succeeds: a missing secret
-    // fails before the commit is read, and the 401 retry sends the same commit.
+    // fails before the commit and branch are read, and the 401 retry sends the
+    // same commit and branch.
     let repoHeaders: Record<string, string> | undefined;
     for (let attempt = 1; ; attempt++) {
       const token = this.resolveToken();

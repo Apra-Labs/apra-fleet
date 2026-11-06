@@ -887,13 +887,19 @@ Write it with `kb_setup ... token={{secret.KB_TOKEN}}`; see
   credentials, no trailing `.git`; Azure DevOps remotes folded to
   `dev.azure.com/<org>/<project>/_git/<repo>`) and `X-Repository-Commit` (the
   local folder's HEAD sha, omitted when it cannot be read, e.g. for a remote
-  member's folder). A shared server can use them to keep repositories apart; a
+  member's folder) and `X-Repository-Branch` (the local folder's checked-out
+  branch from `git symbolic-ref --quiet --short HEAD`, characters outside
+  printable ASCII percent-encoded as UTF-8; omitted on a detached HEAD, for a
+  remote member's folder, when git fails or times out, or when the encoded
+  value is longer than 255 characters). Commit and branch are each cached for
+  5 seconds, so a branch switch shows within that time. A shared server can use them to keep repositories apart; a
   server may ignore them. No local path is ever sent, and nothing goes in the
   URL. A remote whose host does not parse as a hostname sends no header at all.
   The commit is best effort: a queued write replayed later carries the HEAD at
   replay time, not at capture time. With a named-secret token the secret is
-  looked up first, so a missing secret fails before the commit is read; the
-  one 401 retry re-reads the secret but resends the same repository headers,
+  looked up first, so a missing secret fails before the commit or branch is
+  read; the one 401 retry re-reads the secret but resends the same repository
+  headers (same commit and branch),
   and a replayed queued write gets both the current secret and its provider's
   repository headers.
 
