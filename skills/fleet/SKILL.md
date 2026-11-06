@@ -60,13 +60,13 @@ See `beads.md` for the full command reference and workflow examples.
 The `{{secret.NAME}}` pattern lets you reference stored secrets in any command without ever exposing plaintext to the LLM or logs.
 
 **How it works:**
-1. Store a secret with `credential_store_set`  -  Fleet opens an OOB terminal prompt, so the value never appears in chat
+1. Store a secret with `credential_store_set`  -  Fleet opens an OOB terminal prompt, so the value never appears in chat. A new name is stored persistently by default; pass `persist=false` for a value that ends at server restart
 2. Reference it as `{{secret.NAME}}` anywhere in a command string passed to `execute_command`, `register_member`, `update_member`, `provision_vcs_auth`, `provision_llm_auth`, or `setup_git_app`
 3. Fleet resolves the token server-side before execution; LLM does not see the secret.
 
 **When to use:**
 - Any API key, token, or password that a member needs in a shell command
-- Rotating credentials: `credential_store_delete` then `credential_store_set`  -  no re-provisioning required
+- Rotating credentials: `credential_store_set` again  -  only the value changes, no re-provisioning required
 - Pre-loading secrets before a dispatch so members can authenticate in commands autonomously
 
 NOTE: **`{{secret.NAME}}` only resolves in specific credential fields** (listed above). Using it in any other parameter (e.g. a prompt, a path field in a non-credential tool, or any other unsupported parameter) will pass the token string through literally  -  the secret will NOT be injected, and the raw handle name will be visible in logs. Only use `{{secret.NAME}}` in the fields documented above.
@@ -88,8 +88,7 @@ network access for commands that use it:
 | Policy | Behaviour |
 |--------|-----------|
 | `'allow'` (default) | No restriction |
-| `'deny'` | Commands invoking network tools (curl, wget, ssh, git push, etc.) are blocked |
-| `'confirm'` | OOB prompt before the network call is allowed |
+| `'deny'` | A command using the secret is blocked if its text has one of these words: curl, wget, ssh, sftp, scp, rsync, nc, netcat, http, fetch, Invoke-WebRequest, Invoke-RestMethod. `git push` is NOT blocked |
 
 ## Member Identification
 

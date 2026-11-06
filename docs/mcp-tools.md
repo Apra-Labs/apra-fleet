@@ -40,7 +40,9 @@ this pair as "member identifier" rather than repeating it.
 `update_llm_cli`, `shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
 
 **Credential store:** `credential_store_set`, `credential_store_list`,
-`credential_store_update`, `credential_store_delete`. A secret generated on
+`credential_store_update`, `credential_store_delete`. For defaults and re-setting, see
+[Storing and re-setting a secret](secret-variables.md#storing-and-re-setting-a-secret).
+A secret generated on
 demand is a [live secret](knowledge-layer.md#live-secrets): CLI-only to register,
 and these tools refuse its name. A secret bound to a live secret cannot be deleted
 until that live secret is (`secret is in use by: <live secrets>`).

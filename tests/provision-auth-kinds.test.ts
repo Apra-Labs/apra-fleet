@@ -9,14 +9,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const { mockConfirm } = vi.hoisted(() => ({ mockConfirm: vi.fn() }));
-
-vi.mock('../src/services/auth-socket.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../src/services/auth-socket.js')>()),
-  collectOobConfirm: mockConfirm,
-}));
-
 import {
+  credentialDataDir,
   credentialDelete,
   credentialSet,
   credentialUpdate,
@@ -62,7 +56,7 @@ interface LiveFixture { name: string; runs: () => number; failFlag: string; hold
  * A live secret whose script counts runs and prints a different token and expiry
  * per run. It fails while failFlag exists, after waiting for holdFlag to go away.
  */
-function live(label: string, opts: { policy?: 'allow' | 'confirm' | 'deny'; members?: string; lifetimeMs?: number } = {}): LiveFixture {
+function live(label: string, opts: { policy?: 'allow' | 'deny'; members?: string; lifetimeMs?: number } = {}): LiveFixture {
   const name = `${label}_${RUN}`;
   names.push(name);
   const counter = path.join(tmp, `${label}.runs`);
@@ -86,11 +80,19 @@ function live(label: string, opts: { policy?: 'allow' | 'confirm' | 'deny'; memb
   return { name, runs: () => (fs.existsSync(counter) ? fs.readFileSync(counter, 'utf8').length : 0), failFlag, holdFlag };
 }
 
-function staticSecret(label: string, opts: { policy?: 'allow' | 'confirm' | 'deny'; members?: string[]; ttl?: number } = {}): string {
+function staticSecret(label: string, opts: { policy?: 'allow' | 'deny'; members?: string[]; ttl?: number } = {}): string {
   const name = `${label}_${RUN}`;
   names.push(name);
   credentialSet(name, STATIC_CANARY, true, opts.policy ?? 'allow', opts.members ?? '*', opts.ttl);
   return name;
+}
+
+/** A record as an older install wrote it: the policy no longer exists, so no API can set it. */
+function storeRemovedConfirm(name: string): void {
+  const file = path.join(credentialDataDir(), 'credentials.json');
+  const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+  stored.credentials[name].network_policy = 'confirm';
+  fs.writeFileSync(file, JSON.stringify(stored));
 }
 
 const tokenOf = (run: number) => `${TOKEN_CANARY}-${run}`;
@@ -136,7 +138,6 @@ beforeEach(() => {
   addAgent(local);
   addAgent(remote);
   resetLiveTokenCache();
-  mockConfirm.mockReset();
   stub = {
     kb: {
       parse: (input) => {
@@ -265,14 +266,15 @@ describe('provisionAuthForKind: policy, the same for a remote and a local member
       expect(delivered[1].value).toBe(STATIC_CANARY);
     }, 30_000);
 
-    it(`${which}: a stored confirm policy acts as allow, with no prompt`, async () => {
-      const s = live(`liveconfirm${which}`, { policy: 'confirm' });
+    it(`${which}: a record stored with the removed confirm policy acts as allow`, async () => {
+      const s = live(`liveconfirm${which}`);
+      storeRemovedConfirm(s.name);
       await provision(s.name, {}, stub, member());
       expect(delivered[0].value).toBe(tokenOf(1));
-      const name = staticSecret(`staticconfirm${which}`, { policy: 'confirm' });
+      const name = staticSecret(`staticconfirm${which}`);
+      storeRemovedConfirm(name);
       await provision(name, {}, stub, member());
       expect(delivered[1].value).toBe(STATIC_CANARY);
-      expect(mockConfirm).not.toHaveBeenCalled();
     }, 30_000);
   }
 });

@@ -267,6 +267,15 @@ export function expiresSoon(row: SecretRow): boolean {
   return row.expiry.endsWith('remaining') && !/\dh\b/.test(row.expiry)
 }
 
+/**
+ * What picking no TTL does to a row being replaced: the server keeps an expiry that
+ * has not passed, and a value replacing an expired one does not expire.
+ */
+export function noTtlLabel(rowExpiry: string | undefined): string {
+  if (!rowExpiry || rowExpiry === 'none' || rowExpiry === 'expired') return 'never'
+  return `keep current (${expiryLabel(rowExpiry)})`
+}
+
 /** credential_store_list's expiry, compact for the pane: "167h 59m remaining" -> "6d left". */
 export function expiryLabel(expiry: string): string {
   if (expiry === 'none') return 'no expiry'
@@ -775,6 +784,7 @@ export const register: Register = on => {
         members: row && row.members !== '*' ? row.members : '',
         keep: row && row.scope !== 'persistent' ? 'session' : 'persistent',
         replacing: row ? true : undefined,
+        rowExpiry: row?.expiry,
       })).then(() => (l.secretsOpen ? openPane($) : setLayout($, { secretsOpen: true }))).catch(() => undefined)
     }
     const closeForm = () => {
@@ -800,16 +810,16 @@ export const register: Register = on => {
                   onInput={(t: string) => setForm(cur => ({ ...cur, members: t }))}
                   onSubmit={(t: string) => setForm(cur => ({ ...cur, members: t }))} />
               : <Text>{`Members: ${f.members.trim() || '* (all)'}`}</Text>}
-            {Select
+            {Select && !(f.replacing && f.keep === 'persistent')
               ? <Select key="secret-keep" label="Keep" value={f.keep}
                   options={[{ value: 'persistent', label: 'persistent (survives restart)' }, { value: 'session', label: 'this server session only' }]}
                   onSelect={(k: string) => setForm(cur => ({ ...cur, keep: k as SecretForm['keep'] }))} />
               : <Text>{`Keep: ${f.keep}`}</Text>}
             {Select
               ? <Select key="secret-ttl" label="Expires" value={f.ttl}
-                  options={[{ value: 'none', label: 'never' }, { value: '1h', label: 'in 1 hour' }, { value: '1d', label: 'in 1 day' }, { value: '7d', label: 'in 7 days' }]}
+                  options={[{ value: 'none', label: noTtlLabel(f.rowExpiry) }, { value: '1h', label: 'in 1 hour' }, { value: '1d', label: 'in 1 day' }, { value: '7d', label: 'in 7 days' }]}
                   onSelect={(t: string) => setForm(cur => ({ ...cur, ttl: t as SecretForm['ttl'] }))} />
-              : <Text>{`Expires: ${f.ttl}`}</Text>}
+              : <Text>{`Expires: ${f.ttl === 'none' ? noTtlLabel(f.rowExpiry) : f.ttl}`}</Text>}
           </Box>
         ) : null}
         <Text dimColor>

@@ -148,6 +148,8 @@ const kbHandler: ProvisionKindHandler<{ remote: string }> = {
   // The delivery comes with provision_kb_auth, which fills in prepare (the install
   // version check) and deliver (local: verify only; remote: push the token, set up
   // the KB, verify). Refusing in prepare means no mint until then.
+  // Policy is enforced here on the orchestrator first: the pushed record is a plain
+  // static secret with allow and all members.
   prepare: async () => { throw new ProvisionHandlerError('not-available'); },
   deliver: async () => { throw new ProvisionHandlerError('not-available'); },
 };

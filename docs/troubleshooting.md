@@ -193,8 +193,9 @@ before the LLM ever sees the output. See
 
 **Rotate a credential without re-provisioning**
 
-Run `credential_store_delete name=<NAME>` then `credential_store_set
-name=<NAME>`. The new value is picked up immediately on the next
+Run `credential_store_set name=<NAME>` again. Only the value changes (see
+[Storing and re-setting a secret](secret-variables.md#storing-and-re-setting-a-secret)).
+The new value is picked up immediately on the next
 `execute_command` that references `{{secret.NAME}}`.
 
 ## Git

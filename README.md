@@ -367,7 +367,7 @@ Secrets are entered out-of-band into a credential store and referenced as
 `{{secret.NAME}}` -- resolved server-side at execution, never visible to
 any LLM or log; see [docs/secret-variables.md](docs/secret-variables.md).
 Credentials scope to members, expire on TTL, and can carry
-a network egress policy (allow / deny / confirm). Every member runs with
+a network egress policy (allow / deny). Every member runs with
 composed, provider-native permission files -- allow-listed tools, not
 god-mode. VCS access is provisioned and revocable per member, across GitHub,
 Bitbucket, and Azure DevOps -- host differences (URL shape, PR REST dialect,

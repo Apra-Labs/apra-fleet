@@ -732,7 +732,6 @@ describe('auth-socket', () => {
       expect(msg).toContain('! apra-fleet secret --set NAME --persist');
       expect(msg).not.toContain('secret --set my-member');
       expect(msg).toContain('{{secret.NAME}}');
-      expect(msg).not.toContain('--confirm');
     });
 
     it('emits a named-secret --set instruction (never the member name) for API-key mode (--api-key flag)', () => {
@@ -740,15 +739,21 @@ describe('auth-socket', () => {
       const msg = launchAuthTerminal('my-member', ['--api-key'], () => {});
       expect(msg).toContain('! apra-fleet secret --set NAME --persist');
       expect(msg).not.toContain('secret --set my-member');
-      expect(msg).not.toContain('--confirm');
     });
+  });
 
-    it('emits --confirm and "to confirm" wording for egress-confirm mode', () => {
-      stubHeadless();
-      const msg = launchAuthTerminal('my-member', ['--confirm'], () => {});
-      expect(msg).toContain('! apra-fleet secret --confirm my-member');
-      expect(msg).toContain('to confirm:');
-      expect(msg).not.toContain('--set');
+  describe('a CLI from before the confirm policy was removed', () => {
+    // What its `secret --confirm NAME` sent. The answer must come back, or it would hang.
+    it('gets an ok:false answer on the socket when no request is pending, so it can exit', async () => {
+      await ensureAuthSocket();
+      const answer = await new Promise<string>((resolve, reject) => {
+        const client = net.connect(getSocketPath(), () => {
+          client.write(JSON.stringify({ type: 'auth', member_name: 'old-cli-cred', password: 'yes' }) + '\n');
+        });
+        client.on('data', (chunk) => { resolve(chunk.toString()); client.end(); });
+        client.on('error', reject);
+      });
+      expect(JSON.parse(answer)).toMatchObject({ type: 'ack', ok: false, error: 'No pending auth for old-cli-cred' });
     });
   });
 });
@@ -756,7 +761,7 @@ describe('auth-socket', () => {
 describe('buildHeadlessFallback -- credential-collection text', () => {
   const PROMPT = 'Enter Bitbucket API token for bb-member';
   afterEach(async () => { await cleanupAuthSocket(); });
-  const msg = buildHeadlessFallback('bb-member', 'No graphical display detected (SSH or headless session).', {}, ['--api-key', '--prompt', PROMPT]);
+  const msg = buildHeadlessFallback('bb-member', 'No graphical display detected (SSH or headless session).', ['--api-key', '--prompt', PROMPT]);
 
   it('is ASCII only (every char code < 128)', () => {
     for (const ch of msg) expect(ch.charCodeAt(0)).toBeLessThan(128);
@@ -778,7 +783,7 @@ describe('buildHeadlessFallback -- credential-collection text', () => {
   it('the composed OOB fallback (collectOobApiKey, headless) is ASCII and names the label', async () => {
     const prompt = 'Enter Azure DevOps personal access token for az-member';
     const launchFn = (member: string, extra: string[] | undefined) =>
-      buildHeadlessFallback(member, 'No graphical display detected (SSH or headless session).', {}, extra);
+      buildHeadlessFallback(member, 'No graphical display detected (SSH or headless session).', extra);
     const res = await collectOobApiKey('az-member', 'provision_vcs_auth', { prompt, launchFn, waitTimeoutMs: 2000 });
     expect(res.fallback).toBeDefined();
     for (const ch of res.fallback!) expect(ch.charCodeAt(0)).toBeLessThan(128);

@@ -779,7 +779,9 @@ and `attachments` (`{ filename, content, contentType? }[]`, base64 content).
 
 The fleet credential store. `credentialStoreSet({ name, prompt, persist?,
 network_policy?, members?, ttl_seconds? })` collects a secret from the user
-out-of-band and stores it -- the value never passes through the caller.
+out-of-band and stores it -- the value never passes through the caller. For
+defaults, re-setting and `network_policy`, see
+[Storing and re-setting a secret](../../../docs/secret-variables.md#storing-and-re-setting-a-secret).
 `credentialStoreList()` takes no arguments and returns names and metadata
 only, never values (a JSON array of `{ name, scope, ... }` entries; extract
 it with `parseToolJson()`). `credentialStoreDelete({ name })` removes one.

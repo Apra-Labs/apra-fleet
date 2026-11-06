@@ -1,5 +1,4 @@
 import { credentialResolve } from '../../services/credential-store.js';
-import { collectOobConfirm } from '../../services/auth-socket.js';
 import { SendGridProvider } from './sendgrid.js';
 import { SmtpProvider } from './smtp.js';
 import type { EmailConfig, EmailProvider } from './provider.js';
@@ -52,18 +51,6 @@ export async function resolveSecret(credentialName: string, callingMember: strin
     throw new Error(
       `Credential '${credentialName}' has network_policy=deny and cannot be used for network egress.`,
     );
-  }
-  if (policy === 'confirm') {
-    const { confirmed, terminalUnavailable } = await collectOobConfirm(credentialName, {
-      command: 'send_email',
-      memberName: callingMember,
-    });
-    if (!confirmed) {
-      const reason = terminalUnavailable
-        ? 'could not be confirmed (terminal unavailable)'
-        : 'was not confirmed';
-      throw new Error(`Network egress for credential '${credentialName}' ${reason}.`);
-    }
   }
 
   return resolved.plaintext;

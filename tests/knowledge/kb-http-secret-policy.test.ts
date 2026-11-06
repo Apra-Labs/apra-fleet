@@ -135,9 +135,12 @@ describe('a store with no restrictions behaves as before', () => {
     }
   });
 
-  it('a stored confirm policy acts as allow', async () => {
-    credentialUpdate(STATIC, { network_policy: 'confirm' });
-    credentialUpdate(LIVE, { network_policy: 'confirm' });
+  it('a record stored with the removed confirm policy acts as allow', async () => {
+    const file = path.join(process.env.APRA_FLEET_DATA_DIR as string, 'credentials.json');
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+    stored.credentials[STATIC].network_policy = 'confirm';
+    stored.credentials[LIVE].network_policy = 'confirm';
+    fs.writeFileSync(file, JSON.stringify(stored));
     await asMember(member.id, () => provider.query({ query: 'gear' }));
     await asMember(member.id, () => liveProvider.query({ query: 'gear' }));
     expect(stub.requests).toHaveLength(2);

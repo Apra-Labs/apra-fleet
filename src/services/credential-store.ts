@@ -12,7 +12,7 @@ import {
   envValue,
   findOnAbsoluteWindowsPath,
 } from '../os/windows-executable.js';
-import { appendLogRecord } from '../utils/log-helpers.js';
+import { appendLogRecord, logLine } from '../utils/log-helpers.js';
 import { findSecretTokens, formatSecretToken, hasSecretToken, legacyTokenWarning } from './secret-token.js';
 import {
   buildProgramInvocation,
@@ -52,10 +52,12 @@ function sessionDecrypt(ciphertext: string): string {
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+export type NetworkPolicy = 'allow' | 'deny';
+
 export interface CredentialMeta {
   name: string;
   scope: 'session' | 'persistent';
-  network_policy: 'allow' | 'confirm' | 'deny';
+  network_policy: NetworkPolicy;
   created_at: string;
   allowedMembers: string[] | '*';
   expiresAt?: string;
@@ -70,7 +72,7 @@ interface SessionEntry extends CredentialMeta {
 
 interface PersistentRecord {
   name: string;
-  network_policy: 'allow' | 'confirm' | 'deny';
+  network_policy: NetworkPolicy;
   created_at: string;
   encryptedValue: string;
   allowedMembers: string[] | '*';
@@ -92,7 +94,7 @@ export interface LiveSecretRecord {
   program?: string;
   args?: string[];
   bindings: LiveSecretBinding[];
-  network_policy: 'allow' | 'confirm' | 'deny';
+  network_policy: NetworkPolicy;
   allowedMembers: string[] | '*';
   created_at: string;
 }
@@ -134,7 +136,26 @@ function loadCredentialFile(): CredentialFile {
   if (!fs.existsSync(credentialsPath)) {
     return { version: '1.0', credentials: {} };
   }
-  return JSON.parse(fs.readFileSync(credentialsPath, 'utf-8')) as CredentialFile;
+  return readRemovedConfirmAsAllow(JSON.parse(fs.readFileSync(credentialsPath, 'utf-8')) as CredentialFile);
+}
+
+const loggedConfirmRecords = new Set<string>();
+
+/**
+ * The `confirm` network policy no longer exists. A record that still holds it
+ * reads as `allow`, every reader comes through here, and the file is not
+ * rewritten for it: the record changes on disk only when a later save happens.
+ */
+function readRemovedConfirmAsAllow(file: CredentialFile): CredentialFile {
+  for (const [name, rec] of Object.entries(file.credentials ?? {})) {
+    if ((rec?.network_policy as string) !== 'confirm') continue;
+    rec.network_policy = 'allow';
+    if (!loggedConfirmRecords.has(name)) {
+      loggedConfirmRecords.add(name);
+      logLine('credential_store', `secret '${name}' has the removed network policy confirm; treating it as allow. Use apra-fleet secret --update ${name} --deny to block network commands.`);
+    }
+  }
+  return file;
 }
 
 function saveCredentialFile(file: CredentialFile): void {
@@ -184,14 +205,66 @@ export function credentialSet(
   name: string,
   plaintext: string,
   persist: boolean,
-  network_policy: 'allow' | 'confirm' | 'deny',
+  network_policy: NetworkPolicy,
   allowedMembers: string[] | '*' = '*',
   ttl_seconds?: number,
 ): CredentialMeta {
-  const created_at = new Date().toISOString();
-  const expiresAt = ttl_seconds !== undefined
+  return writeCredential(name, plaintext, persist, network_policy, allowedMembers, expiryFromTtl(ttl_seconds));
+}
+
+function expiryFromTtl(ttl_seconds: number | undefined): string | undefined {
+  return ttl_seconds !== undefined
     ? new Date(Date.now() + ttl_seconds * 1000).toISOString()
     : undefined;
+}
+
+/** What a caller of credentialSetValue named. Anything left out is decided there. */
+export interface CredentialSetFields {
+  persist?: boolean;
+  network_policy?: NetworkPolicy;
+  allowedMembers?: string[] | '*';
+  ttl_seconds?: number;
+}
+
+/**
+ * Set a secret's value, as credential_store_set and `secret --set --persist` do.
+ * On a name that exists, only the value and the fields named in `given` change; a
+ * new name gets persistent, allow, all members. A stored expiry stays unless it has
+ * passed, because a kept past expiry would make the new value resolve as expired.
+ *
+ * Only this process's session values are visible: a CLI process sees the file alone.
+ */
+export function credentialSetValue(name: string, plaintext: string, given: CredentialSetFields = {}): CredentialMeta {
+  const stored = loadCredentialFile().credentials[name];
+  const session = sessionStore.get(name);
+  const existing = stored ?? session;
+  const persist = given.persist ?? (stored !== undefined || session === undefined);
+  const keptExpiry = existing && !isLiveRecord(existing) ? existing.expiresAt : undefined;
+
+  return writeCredential(
+    name,
+    plaintext,
+    persist,
+    given.network_policy ?? existing?.network_policy ?? 'allow',
+    given.allowedMembers ?? existing?.allowedMembers ?? '*',
+    given.ttl_seconds !== undefined || isExpired(keptExpiry) ? expiryFromTtl(given.ttl_seconds) : keptExpiry,
+  );
+}
+
+/** True when `name` has a record in the file, which a session value would not replace. */
+export function hasPersistentRecord(name: string): boolean {
+  return loadCredentialFile().credentials[name] !== undefined;
+}
+
+function writeCredential(
+  name: string,
+  plaintext: string,
+  persist: boolean,
+  network_policy: NetworkPolicy,
+  allowedMembers: string[] | '*',
+  expiresAt: string | undefined,
+): CredentialMeta {
+  const created_at = new Date().toISOString();
 
   if (persist) {
     const file = loadCredentialFile();
@@ -703,12 +776,12 @@ export function lookupServerSecret(name: string): ServerSecretLookup {
 export interface CredentialUpdatePatch {
   members?: string;
   expiresAt?: number | null;
-  network_policy?: 'allow' | 'confirm' | 'deny';
+  network_policy?: NetworkPolicy;
 }
 
 export interface CredentialUpdateResult {
   members: string;
-  network_policy: 'allow' | 'confirm' | 'deny';
+  network_policy: NetworkPolicy;
   expiresAt?: number;
 }
 

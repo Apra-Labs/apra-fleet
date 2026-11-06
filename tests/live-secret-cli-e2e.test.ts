@@ -465,6 +465,44 @@ describe('secret --live (real CLI)', () => {
     expect(lookupServerSecret('swap').status).toBe('missing');
   });
 
+  it('--set --persist on a deny, member-scoped secret changes only its value', () => {
+    expect(cli(['--set', 'scoped', '--persist', '-y'], 'one\n').status).toBe(0);
+    expect(readRecords().scoped).toMatchObject({ network_policy: 'allow', allowedMembers: '*' });
+    expect(cli(['--update', 'scoped', '--deny', '--members', 'a']).status).toBe(0);
+    const before = readRecords().scoped.encryptedValue;
+
+    const again = cli(['--set', 'scoped', '--persist', '-y'], 'two\n');
+    expect(again.status).toBe(0);
+    expect(again.stderr).toContain('Network policy: deny');
+    expect(readRecords().scoped).toMatchObject({ network_policy: 'deny', allowedMembers: ['a'] });
+    expect(readRecords().scoped.encryptedValue).not.toBe(before);
+  });
+
+  it('--set --persist keeps an unexpired expiry and drops an expired one, on a bound secret too', () => {
+    expect(cli(['--set', 'R', '--persist', '-y'], 'one\n').status).toBe(0);
+    expect(cli(['--live', 'consumer', '--env', 'X={{secret.R}}', '--', 'node', okScript]).status).toBe(0);
+    expect(cli(['--update', 'R', '--deny', '--members', 'a', '--ttl', '3600']).status).toBe(0);
+    const expiresAt = readRecords().R.expiresAt;
+
+    expect(cli(['--set', 'R', '--persist', '-y'], 'two\n').status).toBe(0);
+    expect(readRecords().R).toMatchObject({ network_policy: 'deny', allowedMembers: ['a'], expiresAt });
+
+    const file = JSON.parse(fs.readFileSync(credentialsPath(), 'utf-8'));
+    file.credentials.R.expiresAt = new Date(Date.now() - 1000).toISOString();
+    fs.writeFileSync(credentialsPath(), JSON.stringify(file));
+    expect(cli(['--set', 'R', '--persist', '-y'], 'three\n').status).toBe(0);
+    expect(readRecords().R).toMatchObject({ network_policy: 'deny', allowedMembers: ['a'] });
+    expect(readRecords().R.expiresAt).toBeUndefined();
+  });
+
+  it('--set --persist replacing a live secret keeps its policy fields', () => {
+    register('swapkept');
+    expect(cli(['--update', 'swapkept', '--deny', '--members', 'a']).status).toBe(0);
+    expect(cli(['--set', 'swapkept', '--persist', '-y'], 'static-value\n').status).toBe(0);
+    expect(readRecords().swapkept.kind).toBeUndefined();
+    expect(readRecords().swapkept).toMatchObject({ network_policy: 'deny', allowedMembers: ['a'] });
+  });
+
   it('--update changes the policy fields, keeps the script, and refuses --ttl', () => {
     register('upd');
     const args = readRecords().upd.args;
