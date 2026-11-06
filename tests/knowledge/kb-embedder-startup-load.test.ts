@@ -141,6 +141,53 @@ describe('restart on a KB that already has vectors', () => {
     }
   });
 
+  it('a ready embedder after restart still drops a paraphrase scoring below the floor: [] is the floor, not loading', async () => {
+    // An empty paraphrase result after a restart has two possible causes:
+    // the model never loaded, or the target's best vector scored below the
+    // model's similarity floor (hybridRows then answers exactly as keyword
+    // search does). This pins the second: no write, the embedder reaches
+    // ready, nothing is re-embedded, and the floor alone decides.
+    const { file, target } = await seedEmbeddedKb();
+
+    // The target's real score for the paraphrase under the fake runtime.
+    const probe = new Embedder({ choice, runtimeFactory: async () => conceptRuntime(), log: () => {} });
+    const scoring = new SqliteProvider(file, repo);
+    await scoring.init();
+    const qv = await probe.embedQuery(PARAPHRASE);
+    const model = { modelId: probe.modelId!, revision: probe.revision!, dims: qv!.length };
+    const score = scoring.scoreVectorsForModel(qv!, model).find((s) => s.entry_id === target)!.score;
+    scoring.close();
+    await probe.close();
+    expect(score).toBeGreaterThan(0.1);
+
+    // Same model identity, with a floor just above the target's score.
+    const floored = resolveEmbeddingModel({ path: modelDir, semantic_floor: Math.min(1, score + 0.05) }, () => {});
+    expect(floored.kind === 'enabled' && choice.kind === 'enabled'
+      && floored.profile.modelId === choice.profile.modelId && floored.profile.revision === choice.profile.revision).toBe(true);
+    const e = new Embedder({ choice: floored, runtimeFactory: async () => conceptRuntime(), log: () => {} });
+    const p = new SqliteProvider(file, repo);
+    p.attachEmbedder(() => e);
+    await p.init();
+    try {
+      const vectorsBefore = p.vectorStore.count();
+      // No capture: the post-open queue run loads the model on its own.
+      await settle(() => e.state.state === 'ready');
+      expect(p.vectorIndexStatus().pending).toBe(0);
+      expect(p.vectorStore.count()).toBe(vectorsBefore);
+
+      // Below the floor: exactly the keyword-only answer (empty here).
+      const keywordOnly = ids(await p.query({ query: PARAPHRASE, confidence: [...ALL_TIERS], limit: 10, disable_lists: ['semantic'] }));
+      expect(keywordOnly).not.toContain(target);
+      expect(ids(await query(p, PARAPHRASE))).toEqual(keywordOnly);
+      // The semantic list is there: a floor just under the score returns the target.
+      const under = await p.query({ query: PARAPHRASE, confidence: [...ALL_TIERS], limit: 10, semantic_floor: score - 0.01 });
+      expect(ids(under)[0]).toBe(target);
+    } finally {
+      p.close();
+      await e.close();
+    }
+  });
+
   it('a load that fails once is retried after the bounded wait, then semantic results appear', async () => {
     const { file, target } = await seedEmbeddedKb();
 

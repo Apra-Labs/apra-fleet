@@ -163,6 +163,15 @@ function hubProfile(
  * Nonsense queries changed by the semantic list with no floor: 26 of 26 for
  * every model. Tolerance (kb-recall-eval.test.ts): recall@5 and MRR within
  * 0.03 of no-floor on each set -- one query of the 42-query real set is 0.024.
+ *
+ * A terse paraphrase can land just under the floor. Measured 2026-11-06,
+ * arctic-xs: 'automobile dies chilly weather' against 'Car engine stalls on
+ * cold mornings' scores 0.587 and is dropped, while 'automobile dies whenever
+ * winter dawns are freezing' scores 0.655 and is kept. The floor is not
+ * lowered for such a query: anything under 0.59 lets a nonsense query change
+ * the keyword-only result (worst nonsense score 0.585 above). An empty
+ * semantic result with a ready embedder therefore means "below the floor",
+ * not "model not loaded" (tests/knowledge/kb-embedder-startup-load.test.ts).
  */
 export const SEMANTIC_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   'bge-small-en-v1.5': 0.68,
