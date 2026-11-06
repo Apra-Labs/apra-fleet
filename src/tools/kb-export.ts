@@ -14,6 +14,7 @@ import { extractBibleDemotions, standingAgainstTombstone, type BibleTombstone } 
 import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import { KB_AUDIT_NOTE_START, type KBEntry } from '../services/knowledge/types.js';
 import { gitExecutable } from '../os/git-executable.js';
+import { withBibleFileLock } from '../services/knowledge/bible-file-lock.js';
 
 // T3.4 (F8b, D8): export half of the shareable, diffable team bible. Writes
 // all CONFIRMED, non-superseded, non-stale project entries to
@@ -703,7 +704,11 @@ export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise
   const fileName = scope === 'global' ? 'kb-canonical-global.json' : 'kb-canonical.json';
   const outPath = path.join(fleetDir, fileName);
 
-  return serializeBibleWrite(outPath, async () => {
+  // One writer per bible: in this process (serializeBibleWrite) and across
+  // processes on this checkout (withBibleFileLock), the same two gates
+  // kb_bible_commit takes, so a manual `apra-fleet kb commit` during a run cannot
+  // overwrite a sprint's commit with its stale read.
+  return serializeBibleWrite(outPath, () => withBibleFileLock(outPath, async () => {
   if (scope === 'project') {
     return exportProjectBible(requireSqliteProject(providers.project, 'kb_export'), repoPath, outPath, input);
   }
@@ -762,5 +767,5 @@ export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise
   const committed = maybeAutoCommitBible(repoPath, outPath, canonical.length, scope, previousEntryCount);
 
   return JSON.stringify({ exported: canonical.length, path: outPath, scope, committed });
-  });
+  }));
 }

@@ -1332,6 +1332,8 @@ export class ApraFleet {
      * to record the target base branch and base commit in provenance. Writes
      * bible format v3: each added project entry is a KbBibleEntry carrying its
      * source_file_hashes basis; a bible holding a duplicate id is refused.
+     * Writers of one bible are serialized across processes by a lock file next
+     * to it; a call that cannot take it within 60 s rejects.
      * Result JSON: {exported, path, scope, committed}; extract with parseToolJson().
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.

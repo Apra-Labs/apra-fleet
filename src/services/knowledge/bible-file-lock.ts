@@ -39,7 +39,7 @@ const UNREADABLE_GRACE_MS = 5_000;
 
 export class BibleLockTimeoutError extends Error {
   constructor(lockPath: string, holder: string) {
-    super('kb_bible_commit: timed out waiting for the bible lock ' + lockPath + ' (held by ' + holder
+    super('timed out waiting for the bible lock ' + lockPath + ' (held by ' + holder
       + '). Another process is writing this bible; retry, or remove the lock file if its holder is gone.');
     this.name = 'BibleLockTimeoutError';
   }

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { kbBibleCommit } from '../../src/tools/kb-bible-commit.js';
 import { bibleLockPath } from '../../src/services/knowledge/bible-file-lock.js';
@@ -91,6 +91,85 @@ afterEach(() => {
     else process.env[k] = v;
   }
   fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+});
+
+/** Start a child that takes the bible lock and holds it; resolves once it does. */
+async function holdBibleLock(biblePath: string): Promise<ChildProcess> {
+  const holder = spawn(process.execPath, [CHILD, 'hold', biblePath], {
+    env: childEnv(path.join(sandbox, 'data-hold')), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+  });
+  children.push(holder);
+  await new Promise<void>((resolve, reject) => {
+    let out = '';
+    holder.stdout!.on('data', (d) => {
+      out += d;
+      if (out.includes('\n')) resolve();
+    });
+    holder.on('exit', (code) => reject(new Error('holder exited early: ' + code)));
+  });
+  return holder;
+}
+
+describe('kb_export across processes', () => {
+  for (const [mode, modeArgs] of [['export', ['0']], ['kbcommit', []]] as Array<[string, string[]]>) {
+    it(mode + ': waits for a held bible lock, writes nothing until it is gone, then lands', async () => {
+      const biblePath = path.join(repo, BIBLE_REL);
+      const dataA = path.join(sandbox, 'data-a');
+      const rel = writeSource('alpha');
+      const { id } = await runChild(['setup', repo, rel], dataA);
+
+      const holder = await holdBibleLock(biblePath);
+      let finished = false;
+      const run = runChild([mode, repo, ...modeArgs], dataA).finally(() => { finished = true; });
+      // A writer that ignores the lock writes and exits well inside this window.
+      await new Promise(resolve => setTimeout(resolve, 2500));
+      expect(finished, 'the writer must still be waiting on the lock').toBe(false);
+      expect(fs.existsSync(biblePath), 'nothing may be written under another process\'s lock').toBe(false);
+
+      const exited = new Promise(resolve => holder.once('exit', resolve));
+      holder.kill('SIGKILL');
+      await exited;
+      const result = await run;
+      if (mode === 'kbcommit') expect(result.code).toBe(0);
+      else expect(result.committed).toBe(true);
+
+      const committedIds = new Set(JSON.parse(git(['show', 'HEAD:' + BIBLE_REL])).entries.map((e: { id: string }) => e.id));
+      expect(committedIds.has(id)).toBe(true);
+      expect(fs.existsSync(bibleLockPath(biblePath))).toBe(false);
+    }, 60_000);
+  }
+
+  it('kb_export racing kb_bible_commit from another process: neither entry is lost', async () => {
+    const dataA = path.join(sandbox, 'data-a');
+    const dataB = path.join(sandbox, 'data-b');
+    const relA = writeSource('alpha');
+    const relB = writeSource('beta');
+    const { id: idA } = await runChild(['setup', repo, relA], dataA);
+    const { id: idB } = await runChild(['setup', repo, relB], dataB);
+
+    const startAt = String(Date.now() + 1500);
+    const [exported, committed] = await Promise.all([
+      runChild(['export', repo, startAt], dataA),
+      runChild(['commit', repo, idB, startAt], dataB),
+    ]);
+    expect(committed.merged).toEqual([idB]);
+    expect(committed.committed).toBe(true);
+    expect(exported.committed).toBe(true);
+
+    const committedIds = new Set(JSON.parse(git(['show', 'HEAD:' + BIBLE_REL])).entries.map((e: { id: string }) => e.id));
+    expect(committedIds).toEqual(new Set([idA, idB]));
+    expect(git(['status', '--porcelain'])).toBe('');
+    expect(fs.existsSync(bibleLockPath(path.join(repo, BIBLE_REL)))).toBe(false);
+  }, 60_000);
+});
+
+describe('the bible lock file is not committable', () => {
+  it('git ignores .fleet/kb-canonical.json.lock and still tracks the bible', () => {
+    const check = (p: string) => spawnSync('git', ['check-ignore', '-q', '--no-index', p], { cwd: REPO_ROOT, windowsHide: true }).status;
+    expect(check('.fleet/kb-canonical.json.lock')).toBe(0);
+    expect(check('.fleet/kb-canonical-global.json.lock')).toBe(0);
+    expect(check('.fleet/kb-canonical.json')).toBe(1);
+  });
 });
 
 describe('kb_bible_commit across processes', () => {

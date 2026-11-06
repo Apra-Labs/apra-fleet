@@ -413,7 +413,8 @@ value.
   server, so parallel calls all land, and across processes on one checkout by an
   exclusive lock file next to the bible (`<bible>.lock`, holding pid, host and
   time; a lock whose holder pid is gone on this host, or older than 10 minutes,
-  is stale and recovered; a call that cannot take it within 60 s throws). After
+  is stale and recovered; a call that cannot take it within 60 s throws).
+  `kb_export`, and so `apra-fleet kb commit`, takes the same two gates. After
   committing, the call reads the bible back at HEAD: when it does not hold every
   merged id, or still holds a removed or demoted id (another writer replaced
   the file), the call returns `committed: false` with an additive

@@ -6,6 +6,8 @@
 // Modes (each prints one JSON line on stdout):
 //   setup <repo> <srcRel>          capture + promote a CONFIRMED entry citing srcRel -> {id}
 //   commit <repo> <id> <startAtMs> wait until startAtMs, then kb_bible_commit {ids:[id]} -> result
+//   export <repo> <startAtMs>      wait until startAtMs, then kb_export -> result
+//   kbcommit <repo>                the `apra-fleet kb commit --repo <repo>` path -> {code}
 //   hold <biblePath>               take the bible lock and never release it -> {held: pid}
 //
 // ASCII only.
@@ -40,6 +42,21 @@ if (mode === 'setup') {
   if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
   const out = await kbBibleCommit({ ids: [id], baseBranch: 'main', baseCommit: 'a'.repeat(40) }, { folder: repo });
   process.stdout.write(out + '\n');
+  process.exit(0);
+} else if (mode === 'export') {
+  const [repo, startAt] = args;
+  const { kbExport } = await load('tools/kb-export.js');
+  const wait = Number(startAt) - Date.now();
+  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  const out = await kbExport({ baseBranch: 'main', baseCommit: 'a'.repeat(40) }, { folder: repo });
+  process.stdout.write(out + '\n');
+  process.exit(0);
+} else if (mode === 'kbcommit') {
+  // The real `apra-fleet kb commit` path, minus argv dispatch.
+  const [repo] = args;
+  const { runKbCommit } = await load('cli/kb-commit.js');
+  const code = await runKbCommit(['--repo', repo]);
+  process.stdout.write(JSON.stringify({ code }) + '\n');
   process.exit(0);
 } else if (mode === 'hold') {
   const [biblePath] = args;
