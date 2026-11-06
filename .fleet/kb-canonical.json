@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 144
+    "entry_count": 146
   },
   "entries": [
     {
@@ -1950,6 +1950,27 @@
       "updated_at": "2026-09-29T06:13:15.733Z"
     },
     {
+      "id": "a754029d-f807-4919-aa2c-74788e5c03c7",
+      "type": "knowledge",
+      "title": "git remote set-url can leave .git/config size and mtime unchanged; only the inode changes",
+      "summary": "A git metadata fingerprint must include the config file's inode: set-url to a same-length URL keeps size and mtime (1 s granularity) but rewrites the file through lock+rename.",
+      "symbols": [
+        "gitMetaFingerprint",
+        "statSig",
+        "gitOut"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-self.ts",
+        "tests/knowledge/kb-self-git-cache.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T07:56:02.929Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-self.ts": "df56190b21c61122c66a7c2cdaeb64ac7275c700",
+        "tests/knowledge/kb-self-git-cache.test.ts": "e922caca3bcabef81816223e0ba6d6cd5168c43b"
+      }
+    },
+    {
       "id": "a888b84b-d7a0-47ad-9318-2f062770cf2f",
       "type": "learning",
       "title": "ASCII-only gate scans test fixtures too; write emoji markers as escapes",
@@ -2607,6 +2628,30 @@
         "packages/apra-fleet-se/fleet-sprint/kb.mjs": "7e22b1e41486daf8647bf83ad899c52a6a8c5263",
         "packages/apra-fleet-se/fleet-sprint/member-sync.mjs": "65991cdb22cbbe9e77d581117e0aa3144317891f",
         "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs": "27961b4e2d49ff0510e4c8abc9fa4f174238435c"
+      }
+    },
+    {
+      "id": "ea12b9e0-b515-42ee-afa2-e0911513fb07",
+      "type": "learning",
+      "title": "KB recall eval numbers drift with query history because query() bumps use_count",
+      "summary": "SqliteProvider.query increments use_count on every returned entry and trustPrior lifts by use_count, so eval configs that share one provider see rankings shifted by earlier configs' queries; reset use_count to compare configs fairly.",
+      "symbols": [
+        "SqliteProvider.query",
+        "trustPrior",
+        "semanticFloorSweep",
+        "runEval"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/hybrid-rank.ts",
+        "tests/helpers/kb-recall-eval.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T07:56:02.437Z",
+      "source_file_hashes": {
+        "src/services/knowledge/hybrid-rank.ts": "31e0d6893e87cf4344baf26c89a77f25947b86db",
+        "src/services/knowledge/sqlite-provider.ts": "375e377de7ac2b70b42f053173606a6d4a9e9b6d",
+        "tests/helpers/kb-recall-eval.ts": "d8dd0c0d50a3215552a0284528825c67af9029a1"
       }
     },
     {
