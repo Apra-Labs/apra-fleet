@@ -136,13 +136,15 @@ describe('secret --live grammar, through the real CLI', () => {
     const dotSlash = live(`./${name}`);
     expect(dotSlash.stderr).toBe('');
     expect(dotSlash.status).toBe(0);
-    expect(records().dashpath.program).toBe(path.join(sandbox, name));
+    // Real paths: on macOS the temp folder is a symlink, and a child's cwd is already resolved.
+    expect(fs.realpathSync(records().dashpath.program)).toBe(fs.realpathSync(path.join(sandbox, name)));
+    expect(path.isAbsolute(records().dashpath.program)).toBe(true);
     const onPath = spawnSync(process.execPath, [CLI, 'secret', '--live', 'dashonpath', '--env', 'BOUND={{secret.R}}', '--', name], {
       ...opts, cwd: dataDir, env: { ...opts.env, PATH: `${sandbox}${path.delimiter}${process.env.PATH}` },
     });
     expect(onPath.stderr).toBe('');
     expect(onPath.status).toBe(0);
-    expect(records().dashonpath.program).toBe(path.join(sandbox, name));
+    expect(fs.realpathSync(records().dashonpath.program)).toBe(fs.realpathSync(path.join(sandbox, name)));
   });
 
   it('an unknown option before the script path is an error, and saves nothing', () => {
