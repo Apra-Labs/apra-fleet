@@ -8,12 +8,17 @@ import { ModelStore } from '../../src/services/knowledge/embedding/model-store.j
 import { BUILTIN_EMBEDDING_PROFILES, DEFAULT_EMBEDDING_PROFILE } from '../../src/services/knowledge/embedding/profiles.js';
 import { FLEET_DIR } from '../../src/paths.js';
 
-// KB recall evaluation harness: loads the checked-in bible (plus eval-only
-// fixture entries) into a temp SqliteProvider, runs labelled queries and
-// computes recall@K and MRR. Configurations: keyword-only (always runs),
-// hybrid with the default embedding model and hybrid with an alternative
-// model -- the model configs are reported as skipped (with the reason) when
-// the model is not available locally; npm test never downloads one.
+// KB recall evaluation harness: loads the pinned bible snapshot (with each
+// entry's real captured content where one exists, and its recall_cues /
+// error_signatures -- tests/fixtures/kb-recall-eval/enrichment.json) plus the
+// push+pr entry into a temp SqliteProvider, runs labelled queries and computes
+// recall@K and MRR, overall and per query source (real recorded queries,
+// authored situation queries, the owner-reported scope-error case).
+// Configurations: keyword-only (always runs) and hybrid with each built-in
+// embedding model. A model config is reported as skipped (with the reason)
+// when the model is not available locally; npm test never downloads one.
+// APRA_KB_EVAL_REQUIRE_MODELS=1 (the nightly real-model lane) turns such a
+// skip into a test failure. Fixtures: scripts/gen-kb-recall-eval.mjs.
 
 export const EVAL_DIR = path.resolve(__dirname, '../fixtures/kb-recall-eval');
 // Pinned snapshot of .fleet/kb-canonical.json (refreshed only by
@@ -27,7 +32,10 @@ export const RECALL_K = 5;
  * error_text input (matched against error_signatures, and part of the
  * semantic text).
  */
-export interface EvalQuery { id: string; query: string; expected: string[]; source: string; error_text?: string }
+export interface EvalQuery { id: string; query: string; expected: string[]; source: string; provenance?: string; error_text?: string }
+
+/** Query sources in queries.json: recorded agent traffic, hand-authored, owner-reported. */
+export const QUERY_SOURCES = ['real', 'authored', 'owner-notes'] as const;
 
 export type RankFn = (q: EvalQuery) => Promise<string[]>;
 
@@ -127,21 +135,33 @@ export function modelConfig(profileName: string, label = 'hybrid'): EvalConfig {
   };
 }
 
-export const hybridConfig: EvalConfig = modelConfig(DEFAULT_EMBEDDING_PROFILE);
-export const ALT_MODEL_PROFILE = 'snowflake-arctic-embed-xs';
-export const altModelConfig: EvalConfig = modelConfig(ALT_MODEL_PROFILE, 'hybrid alt-model');
+/** Every built-in model is measured: the default first, then the others in profile order. */
+export const MODEL_PROFILES: string[] = [
+  DEFAULT_EMBEDDING_PROFILE,
+  ...Object.keys(BUILTIN_EMBEDDING_PROFILES).filter(n => n !== DEFAULT_EMBEDDING_PROFILE),
+];
+export const modelConfigs: EvalConfig[] = MODEL_PROFILES.map(p => modelConfig(p));
+/** Hybrid with the default embedding model. */
+export const hybridConfig: EvalConfig = modelConfigs[0];
 
-/** Keyword-only first (always runs), then hybrid default model, then the alternative model. */
-export const DEFAULT_CONFIGS: EvalConfig[] = [keywordConfig, hybridConfig, altModelConfig];
+/** Keyword-only first (always runs), then hybrid with each built-in model. */
+export const DEFAULT_CONFIGS: EvalConfig[] = [keywordConfig, ...modelConfigs];
+
+/** Nightly real-model lane: a model config that skips is a failure, not a note. */
+export function modelsRequired(): boolean {
+  return process.env.APRA_KB_EVAL_REQUIRE_MODELS === '1';
+}
 
 export function loadQueries(): EvalQuery[] {
   return JSON.parse(fs.readFileSync(path.join(EVAL_DIR, 'queries.json'), 'utf-8')).queries;
 }
 
+/** Bible snapshot + extra entries, each overlaid with its enrichment.json fields. */
 export function loadEvalEntries(): unknown[] {
-  const bible = JSON.parse(fs.readFileSync(BIBLE_PATH, 'utf-8')).entries as unknown[];
-  const extra = JSON.parse(fs.readFileSync(path.join(EVAL_DIR, 'extra-entries.json'), 'utf-8')).entries as unknown[];
-  return [...bible, ...extra];
+  const bible = JSON.parse(fs.readFileSync(BIBLE_PATH, 'utf-8')).entries as Array<Record<string, unknown>>;
+  const extra = JSON.parse(fs.readFileSync(path.join(EVAL_DIR, 'extra-entries.json'), 'utf-8')).entries as Array<Record<string, unknown>>;
+  const enrichment = JSON.parse(fs.readFileSync(path.join(EVAL_DIR, 'enrichment.json'), 'utf-8')).entries as Record<string, Record<string, unknown>>;
+  return [...bible, ...extra].map(e => ({ ...e, ...(enrichment[e.id as string] ?? {}) }));
 }
 
 /** 1-based rank of the first expected id within the top `k`, or null. */
@@ -161,11 +181,15 @@ export function meanReciprocalRank(ranks: Array<number | null>): number {
   return ranks.reduce<number>((s, r) => s + (r === null ? 0 : 1 / r), 0) / ranks.length;
 }
 
+export interface SetMetrics { queries: number; recallAt5: number; mrr: number }
+
 export interface EvalReport {
   config: string;
   queries: number;
   recallAt5: number;
   mrr: number;
+  /** The same metrics restricted to each query source present (real, authored, owner-notes). */
+  bySource: Record<string, SetMetrics>;
   perQuery: Array<{ id: string; rank: number | null }>;
   /** Set when the config could not run (e.g. model unavailable); metrics are then 0. */
   skipped?: string;
@@ -188,13 +212,18 @@ export async function loadEvalProvider(): Promise<{ provider: SqliteProvider; di
 export async function runEval(config: EvalConfig, provider: SqliteProvider, queries: EvalQuery[]): Promise<EvalReport> {
   const rank = await config.setup(provider);
   if ('skip' in rank) {
-    return { config: config.name, queries: queries.length, recallAt5: 0, mrr: 0, perQuery: [], skipped: rank.skip };
+    return { config: config.name, queries: queries.length, recallAt5: 0, mrr: 0, bySource: {}, perQuery: [], skipped: rank.skip };
   }
   try {
     const perQuery: EvalReport['perQuery'] = [];
     for (const q of queries) perQuery.push({ id: q.id, rank: firstHitRank(await rank(q), q.expected) });
     const ranks = perQuery.map(p => p.rank);
-    return { config: config.name, queries: queries.length, recallAt5: recallAtK(ranks), mrr: meanReciprocalRank(ranks), perQuery };
+    const bySource: Record<string, SetMetrics> = {};
+    for (const src of new Set(queries.map(q => q.source))) {
+      const r = perQuery.filter((_, i) => queries[i].source === src).map(p => p.rank);
+      bySource[src] = { queries: r.length, recallAt5: recallAtK(r), mrr: meanReciprocalRank(r) };
+    }
+    return { config: config.name, queries: queries.length, recallAt5: recallAtK(ranks), mrr: meanReciprocalRank(ranks), bySource, perQuery };
   } finally {
     await config.teardown?.(provider);
   }
@@ -202,7 +231,24 @@ export async function runEval(config: EvalConfig, provider: SqliteProvider, quer
 
 export function formatReport(r: EvalReport): string {
   if (r.skipped !== undefined) return `[kb-recall-eval] config="${r.config}" SKIPPED: ${r.skipped}`;
-  return `[kb-recall-eval] config="${r.config}" queries=${r.queries} recall@5=${r.recallAt5.toFixed(4)} MRR=${r.mrr.toFixed(4)}`;
+  const lines = [`[kb-recall-eval] config="${r.config}" queries=${r.queries} recall@5=${r.recallAt5.toFixed(4)} MRR=${r.mrr.toFixed(4)}`];
+  for (const [src, m] of Object.entries(r.bySource)) {
+    lines.push(`[kb-recall-eval]   ${src}: queries=${m.queries} recall@5=${m.recallAt5.toFixed(4)} MRR=${m.mrr.toFixed(4)}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Markdown table of recall@5 / MRR per config for one query source (the
+ * real set is the headline); a skipped config shows its reason.
+ */
+export function formatTable(reports: EvalReport[], source: string): string {
+  const rows = reports.map(r => {
+    if (r.skipped !== undefined) return `| ${r.config} | - | - | - | skipped: ${r.skipped.replace(/\|/g, '/')} |`;
+    const m = r.bySource[source];
+    return m ? `| ${r.config} | ${m.queries} | ${m.recallAt5.toFixed(4)} | ${m.mrr.toFixed(4)} | |` : `| ${r.config} | 0 | - | - | |`;
+  });
+  return [`KB recall eval -- ${source} queries`, '', '| config | queries | recall@5 | MRR | note |', '|---|---|---|---|---|', ...rows].join('\n');
 }
 
 /** Labelled expected ids that are not present in the eval KB (a missing label can never hit). */
@@ -219,5 +265,8 @@ export function writeReportFile(reports: EvalReport[]): string {
   const file = process.env.APRA_KB_RECALL_REPORT || path.join(os.tmpdir(), 'apra-kb-recall-eval', 'report.json');
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify({ generatedAt: new Date().toISOString(), reports }, null, 2) + '\n');
+  // Markdown tables next to it (<report>.md), e.g. for a CI job summary.
+  const tables = QUERY_SOURCES.filter(s => s !== 'owner-notes').map(s => formatTable(reports, s)).join('\n\n');
+  fs.writeFileSync(file.replace(/\.json$/, '') + '.md', tables + '\n');
   return file;
 }

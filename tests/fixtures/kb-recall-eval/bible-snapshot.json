@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 134
+    "entry_count": 139
   },
   "entries": [
     {
@@ -193,6 +193,35 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.978Z"
+    },
+    {
+      "id": "1168f68e-99aa-405a-be40-e127e561f1f0",
+      "type": "knowledge",
+      "title": "KB embed worker in the SEA binary runs from an embedded CommonJS asset via eval",
+      "summary": "build-sea.mjs bundles embed-worker.ts into dist/kb-embed-worker.cjs, gen-sea-config.mjs embeds it as SEA asset kb/embed-worker.cjs, and worker-runtime.ts starts it with new Worker(source, {eval:true}); the WASM bytes are passed in workerData.",
+      "symbols": [
+        "resolveEmbedWorkerScript",
+        "createWorkerRuntime",
+        "EMBED_WORKER_SEA_ASSET",
+        "loadOrtWasmBinary",
+        "runKbEmbedCheck"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/worker-runtime.ts",
+        "src/services/knowledge/embedding/embed-worker.ts",
+        "scripts/build-sea.mjs",
+        "scripts/gen-sea-config.mjs",
+        "src/cli/kb-embed-check.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T01:59:51.739Z",
+      "source_file_hashes": {
+        "scripts/build-sea.mjs": "e9f455d48a46de8ab4a38d4f872e0c9a76635ecd",
+        "scripts/gen-sea-config.mjs": "4b0051f12c0aec5a85532c839a05247cb5dbe8e8",
+        "src/cli/kb-embed-check.ts": "03d86e30ddc5735d9afc05df4ccb62036d5532e1",
+        "src/services/knowledge/embedding/embed-worker.ts": "97b2d81b5f93fe0c3f33da266b8c29f4f78bd1d4",
+        "src/services/knowledge/embedding/worker-runtime.ts": "17186e75f7614a0383db0ecda17aeba90fabab31"
+      }
     },
     {
       "id": "176d4504-d6d0-43a4-b77d-453ac54dc154",
@@ -551,6 +580,30 @@
       "source_file_hashes": {
         "src/services/credential-store.ts": "9150c836c40136de45189ebc0930108d64c3656e",
         "tests/credential-store-atomic-write.test.ts": "a7d3c27ae6925a97c66ead0603609b48001056ed"
+      }
+    },
+    {
+      "id": "2eadf404-bb9c-4d9f-b4a6-5a9c5ec21c75",
+      "type": "knowledge",
+      "title": "KB embedder runs onnxruntime-web WASM with the .wasm embedded as a SEA asset",
+      "summary": "The KB embedder uses onnxruntime-web/wasm (bundle variant, glue inlined) plus @huggingface/tokenizers, never @huggingface/transformers, whose Node entry point loads the native onnxruntime-node and sharp addons at import time and would fail only at runtime in the SEA.",
+      "symbols": [
+        "createOrtRuntime",
+        "loadOrtWasmBinary",
+        "WASM_SEA_ASSET",
+        "Embedder"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/embedder.ts",
+        "scripts/gen-sea-config.mjs",
+        "tests/knowledge/embedder.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T17:04:52.481Z",
+      "source_file_hashes": {
+        "scripts/gen-sea-config.mjs": "479b2800b2080a57fbc3b9c3189f655acaa823df",
+        "src/services/knowledge/embedding/embedder.ts": "ce07589b9d275b8aab4f182e40214300390122ea",
+        "tests/knowledge/embedder.test.ts": "219a56baf219cfaf132726ef577b1f4a7e0a3e4a"
       }
     },
     {
@@ -1473,6 +1526,34 @@
       }
     },
     {
+      "id": "8e76e27c-13eb-40bd-bd9f-65473ee3833b",
+      "type": "learning",
+      "title": "KB capture paths must not write the fleet log in tests: hermetic guards snapshot FLEET_DIR/logs",
+      "summary": "tests/knowledge/kb-bible-rich-content.test.ts snapshots every file under FLEET_DIR (including logs/fleet-<pid>.log) and the repo .fleet dir around each test, and kb-sqlite-stock-and-http-guard asserts console.error is never called during capture+query. Any logLine/logWarn from a capture-triggered background job (embedding, code links) fails them.",
+      "symbols": [
+        "logLine",
+        "logWarn",
+        "CodeLinkStore",
+        "kbEmbedderSource"
+      ],
+      "source_files": [
+        "tests/knowledge/kb-bible-rich-content.test.ts",
+        "tests/knowledge/kb-sqlite-stock-and-http-guard.test.ts",
+        "src/utils/log-helpers.ts",
+        "src/services/knowledge/code-links.ts",
+        "tests/setup.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T17:04:52.929Z",
+      "source_file_hashes": {
+        "src/services/knowledge/code-links.ts": "f16bad872eda804070b0f9559a47be4c367a2899",
+        "src/utils/log-helpers.ts": "27f4f02a8004ceae5d1b8883ada455890a6d6997",
+        "tests/knowledge/kb-bible-rich-content.test.ts": "ab2b5eb4ac2d462bc46cb93546ffe0268718f7cf",
+        "tests/knowledge/kb-sqlite-stock-and-http-guard.test.ts": "0e6dd75876aca3bc4802025a9d5e8b34da5990e6",
+        "tests/setup.ts": "64b0099ea61c3c885cff14c7bf80cce876eceb2a"
+      }
+    },
+    {
       "id": "8fdf21fa-e64c-43d2-a22a-edfd21bd6791",
       "type": "knowledge",
       "title": "Three distinct git-credential-helper file shapes exist across member OS/shell combinations",
@@ -1813,6 +1894,54 @@
         "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "0dffb028188c744e0bcc172691eb9fc79bfb354b",
         "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56",
         "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
+    },
+    {
+      "id": "ab967e3e-4b21-4143-8cf0-6d43065535d9",
+      "type": "learning",
+      "title": "The KB process embedder only loads when something embeds; reads never trigger it",
+      "summary": "Embedder starts idle and loads only inside embedWith (embedQuery/embedDocuments). EmbedQueue calls embedDocuments only for pending entries and SqliteProvider.queryEmbedder requires state ready, so a process whose KB is already embedded never loads the model from reads alone.",
+      "symbols": [
+        "Embedder",
+        "EmbedQueue",
+        "queryEmbedder",
+        "hybridRows"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/embedder.ts",
+        "src/services/knowledge/embedding/embed-queue.ts",
+        "src/services/knowledge/sqlite-provider.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T17:04:51.973Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/embed-queue.ts": "793bf9232fb2cdb4218217f4ac5a262b20aef941",
+        "src/services/knowledge/embedding/embedder.ts": "ce07589b9d275b8aab4f182e40214300390122ea",
+        "src/services/knowledge/sqlite-provider.ts": "1df93b09d7eed6873399f072259f672f4a42954f"
+      }
+    },
+    {
+      "id": "af351ced-8562-477e-8122-1baddba46817",
+      "type": "knowledge",
+      "title": "kb_query hybrid ranking only runs when there is something to fuse beyond keyword",
+      "summary": "SqliteProvider.hybridRows returns null (plain keyword path, unchanged order) unless error_text, files/symbols anchors, or an already-loaded query embedder with embedQuery is present; QueryOptions.disable_lists is an internal switch used by the eval and falsifiability tests.",
+      "symbols": [
+        "SqliteProvider.hybridRows",
+        "SqliteProvider.queryEmbedder",
+        "reciprocalRankFusion",
+        "trustPrior"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/hybrid-rank.ts",
+        "src/services/knowledge/types.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T16:17:31.026Z",
+      "source_file_hashes": {
+        "src/services/knowledge/hybrid-rank.ts": "31e0d6893e87cf4344baf26c89a77f25947b86db",
+        "src/services/knowledge/sqlite-provider.ts": "1df93b09d7eed6873399f072259f672f4a42954f",
+        "src/services/knowledge/types.ts": "74b69e36b091e7eae8cd72068b5ef3cbb80d9892"
       }
     },
     {

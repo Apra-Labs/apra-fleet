@@ -138,4 +138,9 @@ export const AUTHORED = {
   '45a64b2d': 'knowledge search fails with a database busy error while another process is writing',
   '87f501b6': 'search handed back more rows than the number I asked for after combining shared and repo knowledge',
   '9b49976a': 'how the search index stays current no matter which code path edits a stored entry',
+  '1168f68e': 'packaged single-file executable cannot find the background thread script when it starts the vector job',
+  '2eadf404': 'single executable crashes at runtime loading a native inference addon pulled in by the ml library import',
+  '8e76e27c': 'my isolation spec compares the home directory before and after and a background worker wrote a line mid run',
+  'ab967e3e': 'server with an already populated vector table never loads the model after restart until a write happens',
+  'af351ced': 'search order identical with and without the semantic model when the query has no anchors or error',
 };

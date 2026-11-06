@@ -1,13 +1,420 @@
 {
-  "version": 2,
+  "version": 3,
   "queries": [
+    {
+      "id": "real-01",
+      "query": "kb_bible_commit",
+      "expected": [
+        "7ec3c926-46e3-42df-ba26-148260f36a61"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session dad08c49 at 2026-10-10T03:42:50.173Z"
+    },
+    {
+      "id": "real-02",
+      "query": "kb-server token file bearer",
+      "expected": [
+        "2d11a53b-f992-4a4a-aa83-f3670dc08959",
+        "81df596b-4490-4862-8cef-3ad5ee7c0785"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 69019da7 at 2026-10-30T04:33:53.659Z"
+    },
+    {
+      "id": "real-03",
+      "query": "credentials.json write atomic credential store",
+      "expected": [
+        "2e85c726-b08e-4d07-991d-28a387e4a507"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 403799f3 at 2026-10-30T04:45:41.026Z"
+    },
+    {
+      "id": "real-04",
+      "query": "HttpKbProvider token offline queue tryFlushQueue",
+      "expected": [
+        "2d11a53b-f992-4a4a-aa83-f3670dc08959"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session b8c81bf9 at 2026-10-30T05:03:19.190Z"
+    },
+    {
+      "id": "real-05",
+      "query": "fleet_status kbHealthSummary KB provider",
+      "expected": [
+        "81df596b-4490-4862-8cef-3ad5ee7c0785",
+        "176d4504-d6d0-43a4-b77d-453ac54dc154"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session b8c81bf9 at 2026-10-30T05:03:19.950Z"
+    },
+    {
+      "id": "real-06",
+      "query": "named secret lookup credential store token_ref",
+      "expected": [
+        "c4fb3b10-577e-46a8-8ddb-bde2844b57c7",
+        "2d11a53b-f992-4a4a-aa83-f3670dc08959"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session b8c81bf9 at 2026-10-30T05:03:20.383Z"
+    },
+    {
+      "id": "real-07",
+      "query": "member command environment provider auth env vars built for member",
+      "expected": [
+        "bcd7c247-9534-4ba5-bc6a-997c94ca7bbd",
+        "93bbfb5a-0681-45d2-9024-ecf14c44a479"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session b8c81bf9 at 2026-10-30T05:08:58.355Z"
+    },
+    {
+      "id": "real-08",
+      "query": "HTTP KB provider token offline queue flush",
+      "expected": [
+        "2d11a53b-f992-4a4a-aa83-f3670dc08959"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 403799f3 at 2026-10-30T05:26:07.583Z"
+    },
+    {
+      "id": "real-09",
+      "query": "named KB credentials secret placeholder E-KB-HTTP-AUTH kb-server token-file",
+      "expected": [
+        "2d11a53b-f992-4a4a-aa83-f3670dc08959",
+        "81df596b-4490-4862-8cef-3ad5ee7c0785"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session fa299099 at 2026-10-30T05:44:50.767Z"
+    },
+    {
+      "id": "real-10",
+      "query": "secret set stdin refresher kb-server token-file e2e",
+      "expected": [
+        "f8b2695a-bfbf-4a63-93de-5dcfe7d6c374"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 403799f3 at 2026-10-30T05:49:51.167Z"
+    },
+    {
+      "id": "real-11",
+      "query": "HttpKbProvider token secret credential-store",
+      "expected": [
+        "2d11a53b-f992-4a4a-aa83-f3670dc08959",
+        "c4fb3b10-577e-46a8-8ddb-bde2844b57c7"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 24aa635f at 2026-10-30T06:12:30.820Z"
+    },
+    {
+      "id": "real-12",
+      "query": "named secret 401 retry credential health lookupServerSecret secret --set",
+      "expected": [
+        "2d11a53b-f992-4a4a-aa83-f3670dc08959",
+        "c4fb3b10-577e-46a8-8ddb-bde2844b57c7",
+        "81df596b-4490-4862-8cef-3ad5ee7c0785",
+        "f8b2695a-bfbf-4a63-93de-5dcfe7d6c374"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session acd1ebc6 at 2026-11-02T05:14:35.358Z"
+    },
+    {
+      "id": "real-13",
+      "query": "E-CODE-INDEX-NOT-READY retry polling code_status",
+      "expected": [
+        "f5c5d252-51e0-4107-a55f-c4eba27ea15d"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 51576cc7 at 2026-11-04T03:51:52.849Z"
+    },
+    {
+      "id": "real-14",
+      "query": "test isolation APRA_FLEET_DATA_DIR temp git repos MCP client HTTP transport",
+      "expected": [
+        "8e76e27c-13eb-40bd-bd9f-65473ee3833b"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 51576cc7 at 2026-11-04T03:56:03.850Z"
+    },
+    {
+      "id": "real-15",
+      "query": "indexNotReadyError readiness states code index building status.json",
+      "expected": [
+        "f5c5d252-51e0-4107-a55f-c4eba27ea15d"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 51576cc7 at 2026-11-04T04:15:51.861Z"
+    },
+    {
+      "id": "real-16",
+      "query": "ensureDeployPermissions compose_permissions deploy permissions provisioner",
+      "expected": [
+        "43bc4917-e7c1-4be0-9a0a-c6fc407a155c",
+        "a4d684ba-ff2b-48e7-831c-7f68346f5d19"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 8d819eda at 2026-11-04T04:26:28.599Z"
+    },
+    {
+      "id": "real-17",
+      "query": "client roots scope resolveSelfSession",
+      "expected": [
+        "f40ed9c2-9dd5-4b32-a216-db902c79ddb2"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 460726b7 at 2026-11-04T05:58:56.965Z"
+    },
+    {
+      "id": "real-18",
+      "query": "FTS5 query sanitization orJoin tokenizer SEA build-sea native addon esbuild bundle dependency",
+      "expected": [
+        "9b49976a-e24b-45fb-b25c-6a604cb16be7",
+        "2eadf404-bb9c-4d9f-b4a6-5a9c5ec21c75"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 4cc17777 at 2026-11-05T09:15:28.042Z"
+    },
+    {
+      "id": "real-19",
+      "query": "SEA build native addon better-sqlite3 loader empty",
+      "expected": [
+        "2eadf404-bb9c-4d9f-b4a6-5a9c5ec21c75",
+        "1168f68e-99aa-405a-be40-e127e561f1f0"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session fe49bd21 at 2026-11-05T09:31:07.321Z"
+    },
+    {
+      "id": "real-20",
+      "query": "fleet_status check-status KB section",
+      "expected": [
+        "176d4504-d6d0-43a4-b77d-453ac54dc154",
+        "81df596b-4490-4862-8cef-3ad5ee7c0785"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session fe49bd21 at 2026-11-05T09:31:07.809Z"
+    },
+    {
+      "id": "real-21",
+      "query": "KB recall evaluation sqlite provider query keyword embedding model none",
+      "expected": [
+        "af351ced-8562-477e-8122-1baddba46817"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session de69f0d9 at 2026-11-05T10:02:32.902Z"
+    },
+    {
+      "id": "real-22",
+      "query": "kb_query member split read limit embedding SEA native addon",
+      "expected": [
+        "71323701-67db-4aa8-b7ce-858fb5e2aea7",
+        "87f501b6-48cb-462b-b112-1ca0a294dca0"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 7b0a7f40 at 2026-11-05T10:27:20.206Z"
+    },
+    {
+      "id": "real-23",
+      "query": "kb_query member session limit split read bible global",
+      "expected": [
+        "71323701-67db-4aa8-b7ce-858fb5e2aea7",
+        "87f501b6-48cb-462b-b112-1ca0a294dca0",
+        "48e12361-051f-4d38-9cf0-ca955eca4fdc"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 50d7ec22 at 2026-11-05T10:48:04.750Z"
+    },
+    {
+      "id": "real-24",
+      "query": "FTS5 orJoinFtsTerms sanitization SqliteProvider query",
+      "expected": [
+        "9b49976a-e24b-45fb-b25c-6a604cb16be7",
+        "45a64b2d-bf11-4967-8b69-d63e25332825"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session d9413520 at 2026-11-05T11:18:11.685Z"
+    },
+    {
+      "id": "real-25",
+      "query": "entries_fts triggers migration schema SqliteProvider init",
+      "expected": [
+        "9b49976a-e24b-45fb-b25c-6a604cb16be7",
+        "1c6f3afa-f936-4ca5-a1df-e00dc51f24a4"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session d9413520 at 2026-11-05T11:18:12.382Z"
+    },
+    {
+      "id": "real-26",
+      "query": "sqlite kb.sqlite two handles WAL busy_timeout concurrent provider FTS",
+      "expected": [
+        "0f432ed4-a1fa-4185-8a5f-d7d62fe8cc5d",
+        "45a64b2d-bf11-4967-8b69-d63e25332825"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 50d7ec22 at 2026-11-05T11:51:29.765Z"
+    },
+    {
+      "id": "real-27",
+      "query": "SqliteProvider FTS entries_fts bm25 trigram index rebuild migration",
+      "expected": [
+        "9b49976a-e24b-45fb-b25c-6a604cb16be7"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 73ba9789 at 2026-11-05T12:15:39.215Z"
+    },
+    {
+      "id": "real-28",
+      "query": "keyword index normalization test migration old schema",
+      "expected": [
+        "9b49976a-e24b-45fb-b25c-6a604cb16be7"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 73ba9789 at 2026-11-05T12:15:39.531Z"
+    },
+    {
+      "id": "real-29",
+      "query": "sqlite provider fts entries_fts migration WAL busy_timeout",
+      "expected": [
+        "9b49976a-e24b-45fb-b25c-6a604cb16be7",
+        "0f432ed4-a1fa-4185-8a5f-d7d62fe8cc5d",
+        "45a64b2d-bf11-4967-8b69-d63e25332825"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 4f280895 at 2026-11-05T12:24:52.074Z"
+    },
+    {
+      "id": "real-30",
+      "query": "embedder model profile failure state embedding",
+      "expected": [
+        "ab967e3e-4b21-4143-8cf0-6d43065535d9"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 786048b7 at 2026-11-05T12:31:18.335Z"
+    },
+    {
+      "id": "real-31",
+      "query": "keyword index version background rebuild metadata table",
+      "expected": [
+        "9b49976a-e24b-45fb-b25c-6a604cb16be7"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 786048b7 at 2026-11-05T12:31:19.083Z"
+    },
+    {
+      "id": "real-32",
+      "query": "background rebuild claim owner heartbeat two processes kb.sqlite",
+      "expected": [
+        "0f432ed4-a1fa-4185-8a5f-d7d62fe8cc5d"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 786048b7 at 2026-11-05T12:42:31.083Z"
+    },
+    {
+      "id": "real-33",
+      "query": "SqliteProvider query hybrid fusion semantic vectors anchors lookupAnchors",
+      "expected": [
+        "af351ced-8562-477e-8122-1baddba46817",
+        "1c6f3afa-f936-4ca5-a1df-e00dc51f24a4"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session fa2421a1 at 2026-11-05T14:38:24.473Z"
+    },
+    {
+      "id": "real-34",
+      "query": "kb_query splitQuery member merge bible half",
+      "expected": [
+        "71323701-67db-4aa8-b7ce-858fb5e2aea7",
+        "87f501b6-48cb-462b-b112-1ca0a294dca0"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session fa2421a1 at 2026-11-05T14:38:25.218Z"
+    },
+    {
+      "id": "real-35",
+      "query": "hybrid kb_query reciprocal rank fusion error_text files symbols",
+      "expected": [
+        "af351ced-8562-477e-8122-1baddba46817"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 883bea9f at 2026-11-05T16:41:46.927Z"
+    },
+    {
+      "id": "real-36",
+      "query": "kb_query hybrid search reciprocal rank fusion files symbols error_text",
+      "expected": [
+        "af351ced-8562-477e-8122-1baddba46817"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 9a81e5ab at 2026-11-05T16:44:27.022Z"
+    },
+    {
+      "id": "real-37",
+      "query": "kb_query hybrid vector store embedding fallback",
+      "expected": [
+        "af351ced-8562-477e-8122-1baddba46817",
+        "1c6f3afa-f936-4ca5-a1df-e00dc51f24a4",
+        "ab967e3e-4b21-4143-8cf0-6d43065535d9"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 75602fd7 at 2026-11-05T17:10:22.415Z"
+    },
+    {
+      "id": "real-38",
+      "query": "embedding blocks event loop member bible view embedder",
+      "expected": [
+        "ab967e3e-4b21-4143-8cf0-6d43065535d9"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 5a404b6c at 2026-11-05T17:32:30.376Z"
+    },
+    {
+      "id": "real-39",
+      "query": "embedder onnxruntime worker thread SEA wasm asset",
+      "expected": [
+        "2eadf404-bb9c-4d9f-b4a6-5a9c5ec21c75",
+        "1168f68e-99aa-405a-be40-e127e561f1f0"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 495148cc at 2026-11-05T23:30:52.710Z"
+    },
+    {
+      "id": "real-40",
+      "query": "embed queue drain warm up model load retry backoff",
+      "expected": [
+        "ab967e3e-4b21-4143-8cf0-6d43065535d9",
+        "1c6f3afa-f936-4ca5-a1df-e00dc51f24a4"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 495148cc at 2026-11-05T23:56:45.795Z"
+    },
+    {
+      "id": "real-41",
+      "query": "embed worker thread onnxruntime model download deadline",
+      "expected": [
+        "1168f68e-99aa-405a-be40-e127e561f1f0",
+        "2eadf404-bb9c-4d9f-b4a6-5a9c5ec21c75"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session e90a4f13 at 2026-11-06T01:25:16.997Z"
+    },
+    {
+      "id": "real-42",
+      "query": "embedding worker thread model download",
+      "expected": [
+        "1168f68e-99aa-405a-be40-e127e561f1f0"
+      ],
+      "source": "real",
+      "provenance": "recorded kb_query, agent session 6dda15a4 at 2026-11-06T01:40:08.749Z"
+    },
     {
       "id": "q-0349a241",
       "query": "my tool returns a JSON payload but the client only sees one content block and no welcome banner",
       "expected": [
         "0349a241-9b26-47c6-91d5-2bd998154430"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-0b6a7734",
@@ -15,7 +422,8 @@
       "expected": [
         "0b6a7734-3224-4b5e-b407-6353af651e29"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-0c2d907a",
@@ -23,7 +431,8 @@
       "expected": [
         "0c2d907a-bee5-4324-b61e-6ee0e2bc4b74"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-0c998153",
@@ -31,7 +440,8 @@
       "expected": [
         "0c998153-a3fa-4e2f-a8d8-749917425ed5"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-0cd76690",
@@ -39,7 +449,8 @@
       "expected": [
         "0cd76690-8f11-4441-8604-d722134a879d"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-0dd36c44",
@@ -47,7 +458,8 @@
       "expected": [
         "0dd36c44-87bd-4743-952c-ba90f5c85c3c"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-0ee42346",
@@ -55,7 +467,8 @@
       "expected": [
         "0ee42346-ce6b-4988-9a0e-325115dce8ad"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-0f432ed4",
@@ -63,7 +476,8 @@
       "expected": [
         "0f432ed4-a1fa-4185-8a5f-d7d62fe8cc5d"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-101692b0",
@@ -71,7 +485,8 @@
       "expected": [
         "101692b0-d5e6-4a32-8d6e-e8595ddc39f0"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-1045da8b",
@@ -79,7 +494,17 @@
       "expected": [
         "1045da8b-1650-40db-aa11-2389ad00e9a2"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
+    },
+    {
+      "id": "q-1168f68e",
+      "query": "packaged single-file executable cannot find the background thread script when it starts the vector job",
+      "expected": [
+        "1168f68e-99aa-405a-be40-e127e561f1f0"
+      ],
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-176d4504",
@@ -87,7 +512,8 @@
       "expected": [
         "176d4504-d6d0-43a4-b77d-453ac54dc154"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-17b581e1",
@@ -95,7 +521,8 @@
       "expected": [
         "17b581e1-3760-4947-b4fa-b7793874384a"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-18ed0717",
@@ -103,7 +530,8 @@
       "expected": [
         "18ed0717-9b70-4d66-af9a-f27499c122d3"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-19197697",
@@ -111,7 +539,8 @@
       "expected": [
         "19197697-8273-4c51-9d9e-ecffe39d2dc7"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-1b2df6eb",
@@ -119,7 +548,8 @@
       "expected": [
         "1b2df6eb-33c9-4deb-8253-2a553183fcfe"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-1be49eaa",
@@ -127,7 +557,8 @@
       "expected": [
         "1be49eaa-30f9-4ae0-917e-5b98d3d37eeb"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-1c6f3afa",
@@ -135,7 +566,8 @@
       "expected": [
         "1c6f3afa-f936-4ca5-a1df-e00dc51f24a4"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-20a4a71f",
@@ -143,7 +575,8 @@
       "expected": [
         "20a4a71f-bf80-4dab-b90c-d167eb1bd7e2"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-20de02b8",
@@ -151,7 +584,8 @@
       "expected": [
         "20de02b8-1dd8-4bb0-9ee3-223babb6866c"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-22dd4e68",
@@ -159,7 +593,8 @@
       "expected": [
         "22dd4e68-3702-4ecd-a500-df6e9b27f4b3"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-2405734f",
@@ -167,7 +602,8 @@
       "expected": [
         "2405734f-e88a-42b5-83bb-abce9a2215db"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-266d51a9",
@@ -175,7 +611,8 @@
       "expected": [
         "266d51a9-b30a-4d52-bf4c-97f26de518d7"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-26b8c94b",
@@ -183,7 +620,8 @@
       "expected": [
         "26b8c94b-20c8-4d6e-8862-8e65bc512ba6"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-2b244307",
@@ -191,7 +629,8 @@
       "expected": [
         "2b244307-8635-4406-904f-6a2290d54490"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-2d11a53b",
@@ -199,7 +638,8 @@
       "expected": [
         "2d11a53b-f992-4a4a-aa83-f3670dc08959"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-2d4ffb90",
@@ -207,7 +647,8 @@
       "expected": [
         "2d4ffb90-4bd2-4b84-a143-c2b84dc4cb21"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-2e85c726",
@@ -215,7 +656,17 @@
       "expected": [
         "2e85c726-b08e-4d07-991d-28a387e4a507"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
+    },
+    {
+      "id": "q-2eadf404",
+      "query": "single executable crashes at runtime loading a native inference addon pulled in by the ml library import",
+      "expected": [
+        "2eadf404-bb9c-4d9f-b4a6-5a9c5ec21c75"
+      ],
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-2ffc0a85",
@@ -223,7 +674,8 @@
       "expected": [
         "2ffc0a85-7607-49d0-9e9a-f3ca9b8cfbb4"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-304fb583",
@@ -231,7 +683,8 @@
       "expected": [
         "304fb583-7651-44f4-a038-61bf9927db8b"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-3377795a",
@@ -239,7 +692,8 @@
       "expected": [
         "3377795a-7d1a-4f6f-98b6-fd721581db37"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-33c1189c",
@@ -247,7 +701,8 @@
       "expected": [
         "33c1189c-bf95-4cf3-b875-4b93620bea0f"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-399f2e9b",
@@ -255,7 +710,8 @@
       "expected": [
         "399f2e9b-c7d1-4c6a-9785-192062276a11"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-3fe69283",
@@ -263,7 +719,8 @@
       "expected": [
         "3fe69283-7266-44c7-9f6d-d376847b4873"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-416532bd",
@@ -271,7 +728,8 @@
       "expected": [
         "416532bd-32a5-4056-8cb5-03f2219c2870"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-43bc4917",
@@ -279,7 +737,8 @@
       "expected": [
         "43bc4917-e7c1-4be0-9a0a-c6fc407a155c"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-44cfb13c",
@@ -287,7 +746,8 @@
       "expected": [
         "44cfb13c-397c-4b93-88b3-5731cb417c65"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-44d154ae",
@@ -295,7 +755,8 @@
       "expected": [
         "44d154ae-2927-443c-bdae-fa7aa15f8f1f"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-45a64b2d",
@@ -303,7 +764,8 @@
       "expected": [
         "45a64b2d-bf11-4967-8b69-d63e25332825"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-45fa7bb5",
@@ -311,7 +773,8 @@
       "expected": [
         "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-4694fdaf",
@@ -319,7 +782,8 @@
       "expected": [
         "4694fdaf-0c7f-4ad3-90b2-85615da53a92"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-483c4334",
@@ -327,7 +791,8 @@
       "expected": [
         "483c4334-ebbd-4dda-9e66-ca7899110f85"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-48e12361",
@@ -335,7 +800,8 @@
       "expected": [
         "48e12361-051f-4d38-9cf0-ca955eca4fdc"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-4ab868ea",
@@ -343,7 +809,8 @@
       "expected": [
         "4ab868ea-bb49-459a-b21e-f2b906d3cb58"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-4bbf15d9",
@@ -351,7 +818,8 @@
       "expected": [
         "4bbf15d9-821e-460f-aea3-10d749f9320b"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-4e315af5",
@@ -359,7 +827,8 @@
       "expected": [
         "4e315af5-d8ab-460e-850a-36d1d38ce19a"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-4f62e71d",
@@ -367,7 +836,8 @@
       "expected": [
         "4f62e71d-0544-49f1-863f-6bbc503604ac"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-50e0fad1",
@@ -375,7 +845,8 @@
       "expected": [
         "50e0fad1-a4ed-4aaf-82cc-486b8cfc5a05"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-5461f16e",
@@ -383,7 +854,8 @@
       "expected": [
         "5461f16e-7fbf-4e46-9005-1922220c1854"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-5b0c0a37",
@@ -391,7 +863,8 @@
       "expected": [
         "5b0c0a37-6e58-4854-b1f4-b672ca0a6080"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-5b8dec9a",
@@ -399,7 +872,8 @@
       "expected": [
         "5b8dec9a-f054-4867-8422-a7cb3e008952"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-64bedb7a",
@@ -407,7 +881,8 @@
       "expected": [
         "64bedb7a-8a2d-46ba-9586-6254a88f6dcd"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-65688ff3",
@@ -415,7 +890,8 @@
       "expected": [
         "65688ff3-63b2-4d8d-8772-9767a7008a59"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-668bc632",
@@ -423,7 +899,8 @@
       "expected": [
         "668bc632-0c2b-49b8-956b-9da60709ff36"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-66ab34e7",
@@ -431,7 +908,8 @@
       "expected": [
         "66ab34e7-0092-4be5-b77d-17453ddc46c9"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-698deaad",
@@ -439,7 +917,8 @@
       "expected": [
         "698deaad-20a7-468e-9ed6-e696dd03bd0c"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-6b538682",
@@ -447,7 +926,8 @@
       "expected": [
         "6b538682-67b1-4cf2-ab81-ae27d8d2bf8e"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-70f0e881",
@@ -455,7 +935,8 @@
       "expected": [
         "70f0e881-49d9-40eb-85ab-ff9c8868f49b"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-70f6818d",
@@ -463,7 +944,8 @@
       "expected": [
         "70f6818d-fe2c-425e-80b1-e2124b82270c"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-71323701",
@@ -471,7 +953,8 @@
       "expected": [
         "71323701-67db-4aa8-b7ce-858fb5e2aea7"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-715c2ff2",
@@ -479,7 +962,8 @@
       "expected": [
         "715c2ff2-f5fa-43ba-a0e2-1946939af614"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-76754ef3",
@@ -487,7 +971,8 @@
       "expected": [
         "76754ef3-5ff3-4fb4-a7cf-d74504f5013b"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-774ec22a",
@@ -495,7 +980,8 @@
       "expected": [
         "774ec22a-e9a1-448a-bd46-b5b0fd7b17ef"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-780724c4",
@@ -503,7 +989,8 @@
       "expected": [
         "780724c4-bbfa-458d-94fc-ebb733800a55"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-78f14fd2",
@@ -511,7 +998,8 @@
       "expected": [
         "78f14fd2-717c-4201-9897-fb638379f393"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-7a7649d6",
@@ -519,7 +1007,8 @@
       "expected": [
         "7a7649d6-fd51-4e47-b898-384499d53c54"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-7d7320d0",
@@ -527,7 +1016,8 @@
       "expected": [
         "7d7320d0-ed80-4b16-8ac8-c5df806cea55"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-7ec3c926",
@@ -535,7 +1025,8 @@
       "expected": [
         "7ec3c926-46e3-42df-ba26-148260f36a61"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-7f7c5b11",
@@ -543,7 +1034,8 @@
       "expected": [
         "7f7c5b11-5779-4c0b-8265-d21a7f0e1d6d"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-7fe61086",
@@ -551,7 +1043,8 @@
       "expected": [
         "7fe61086-2df7-44bf-9d40-a16d6081c1f5"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-81df596b",
@@ -559,7 +1052,8 @@
       "expected": [
         "81df596b-4490-4862-8cef-3ad5ee7c0785"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-84258482",
@@ -567,7 +1061,8 @@
       "expected": [
         "84258482-2b78-4c46-a077-7698d06fc4b4"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-8672df56",
@@ -575,7 +1070,8 @@
       "expected": [
         "8672df56-841f-4c14-8e15-f3c6926063f2"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-86ae8b43",
@@ -583,7 +1079,8 @@
       "expected": [
         "86ae8b43-42ad-4606-a961-2755421723be"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-87f501b6",
@@ -591,7 +1088,17 @@
       "expected": [
         "87f501b6-48cb-462b-b112-1ca0a294dca0"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
+    },
+    {
+      "id": "q-8e76e27c",
+      "query": "my isolation spec compares the home directory before and after and a background worker wrote a line mid run",
+      "expected": [
+        "8e76e27c-13eb-40bd-bd9f-65473ee3833b"
+      ],
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-8fdf21fa",
@@ -599,7 +1106,8 @@
       "expected": [
         "8fdf21fa-e64c-43d2-a22a-edfd21bd6791"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-919a3f50",
@@ -607,7 +1115,8 @@
       "expected": [
         "919a3f50-dcb3-4ee9-91d1-767fd503a3b8"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-93bbfb5a",
@@ -615,7 +1124,8 @@
       "expected": [
         "93bbfb5a-0681-45d2-9024-ecf14c44a479"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-962688bf",
@@ -623,7 +1133,8 @@
       "expected": [
         "962688bf-cee4-4461-bc3b-10b87eaf56c4"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-9699c735",
@@ -631,7 +1142,8 @@
       "expected": [
         "9699c735-270e-439f-8313-c01fd6c98814"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-96a63862",
@@ -639,7 +1151,8 @@
       "expected": [
         "96a63862-eb7a-43f3-8352-4cd686412d43"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-98dd92b2",
@@ -647,7 +1160,8 @@
       "expected": [
         "98dd92b2-2606-4baa-8d60-fd3cd3dc78a0"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-9af40daa",
@@ -655,7 +1169,8 @@
       "expected": [
         "9af40daa-2521-430a-a529-7db25d27da87"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-9b49976a",
@@ -663,7 +1178,8 @@
       "expected": [
         "9b49976a-e24b-45fb-b25c-6a604cb16be7"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-a05ff689",
@@ -671,7 +1187,8 @@
       "expected": [
         "a05ff689-9610-4624-ac2f-301d91e83846"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-a098caf8",
@@ -679,7 +1196,8 @@
       "expected": [
         "a098caf8-263f-4b72-b5a7-55fc3d290a07"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-a1a279ec",
@@ -687,7 +1205,8 @@
       "expected": [
         "a1a279ec-5537-4820-a23a-c9a7737f2507"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-a3fdac5d",
@@ -695,7 +1214,8 @@
       "expected": [
         "a3fdac5d-31b6-4b87-9456-10d813aa095b"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-a4d684ba",
@@ -703,7 +1223,8 @@
       "expected": [
         "a4d684ba-ff2b-48e7-831c-7f68346f5d19"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-a67295f1",
@@ -711,7 +1232,8 @@
       "expected": [
         "a67295f1-33ca-4960-93a0-da0275505905"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-a888b84b",
@@ -719,7 +1241,26 @@
       "expected": [
         "a888b84b-d7a0-47ad-9318-2f062770cf2f"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
+    },
+    {
+      "id": "q-ab967e3e",
+      "query": "server with an already populated vector table never loads the model after restart until a write happens",
+      "expected": [
+        "ab967e3e-4b21-4143-8cf0-6d43065535d9"
+      ],
+      "source": "authored",
+      "provenance": "hand-authored situation query"
+    },
+    {
+      "id": "q-af351ced",
+      "query": "search order identical with and without the semantic model when the query has no anchors or error",
+      "expected": [
+        "af351ced-8562-477e-8122-1baddba46817"
+      ],
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-b03effcd",
@@ -727,7 +1268,8 @@
       "expected": [
         "b03effcd-0488-452b-9b49-ab21049c0ece"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-b7ec6763",
@@ -735,7 +1277,8 @@
       "expected": [
         "b7ec6763-407e-4ca3-8cf7-91183e33e39f"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-b7fc09bb",
@@ -743,7 +1286,8 @@
       "expected": [
         "b7fc09bb-cf5b-40bb-a965-9ab9852c7cdf"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-b8d328fa",
@@ -751,7 +1295,8 @@
       "expected": [
         "b8d328fa-e22b-498f-98cf-2ff10bd6370a"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-bcd7c247",
@@ -759,7 +1304,8 @@
       "expected": [
         "bcd7c247-9534-4ba5-bc6a-997c94ca7bbd"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-c2899616",
@@ -767,7 +1313,8 @@
       "expected": [
         "c2899616-0cb1-41e8-b229-76e291a0cd81"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-c4fb3b10",
@@ -775,7 +1322,8 @@
       "expected": [
         "c4fb3b10-577e-46a8-8ddb-bde2844b57c7"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-c5ebfbc3",
@@ -783,7 +1331,8 @@
       "expected": [
         "c5ebfbc3-a76c-42e4-8254-87fc2c82e39d"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-cc085797",
@@ -791,7 +1340,8 @@
       "expected": [
         "cc085797-4b47-455d-9357-fbbb267281ed"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-cdb38747",
@@ -799,7 +1349,8 @@
       "expected": [
         "cdb38747-c24d-47f0-8e38-2d62f13eeb61"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-d1963b85",
@@ -807,7 +1358,8 @@
       "expected": [
         "d1963b85-b03a-4da7-85c0-ce433768c615"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-d3016610",
@@ -815,7 +1367,8 @@
       "expected": [
         "d3016610-0d2a-40db-ba0b-537f49ff1cbf"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-d3e704fd",
@@ -823,7 +1376,8 @@
       "expected": [
         "d3e704fd-d1ee-49d5-aca9-c9eea9c03cb4"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-d3ec9cb9",
@@ -831,7 +1385,8 @@
       "expected": [
         "d3ec9cb9-285c-4e61-842b-c81393237c68"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-d6a925e2",
@@ -839,7 +1394,8 @@
       "expected": [
         "d6a925e2-7ffb-409e-9d6d-df112557edda"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-d75f28a9",
@@ -847,7 +1403,8 @@
       "expected": [
         "d75f28a9-bb69-4fd8-bf81-1ad9bd17d51b"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-da7d0105",
@@ -855,7 +1412,8 @@
       "expected": [
         "da7d0105-e454-43d0-b12f-c27d00e7f337"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-da934546",
@@ -863,7 +1421,8 @@
       "expected": [
         "da934546-d15f-42ca-bdce-bfab58ec0e83"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-dd912ec8",
@@ -871,7 +1430,8 @@
       "expected": [
         "dd912ec8-958c-49d0-9926-636ee3a17f95"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-ddc0692c",
@@ -879,7 +1439,8 @@
       "expected": [
         "ddc0692c-edc3-4883-a409-d6a958b9c71f"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-de1c60a9",
@@ -887,7 +1448,8 @@
       "expected": [
         "de1c60a9-b27f-411b-a23c-953e37207536"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-deeaaf96",
@@ -895,7 +1457,8 @@
       "expected": [
         "deeaaf96-ce12-4249-834c-f7562dda6013"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-e078ec0e",
@@ -903,7 +1466,8 @@
       "expected": [
         "e078ec0e-b747-4274-a82b-4155c342928b"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-e0d3a928",
@@ -911,7 +1475,8 @@
       "expected": [
         "e0d3a928-0df8-49c1-bd69-3674ad65310a"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-e0de87cc",
@@ -919,7 +1484,8 @@
       "expected": [
         "e0de87cc-0368-4014-8cfe-e1879bbe57f9"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-e1673449",
@@ -927,7 +1493,8 @@
       "expected": [
         "e1673449-1192-4948-bd32-7b743635a820"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-e6525404",
@@ -935,7 +1502,8 @@
       "expected": [
         "e6525404-e387-4360-8df3-fe08d050a28a"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-e687ffa8",
@@ -943,7 +1511,8 @@
       "expected": [
         "e687ffa8-8697-4f7f-9418-ba7f3efd6c2b"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-e7d3e8e5",
@@ -951,7 +1520,8 @@
       "expected": [
         "e7d3e8e5-0564-4f16-8318-f5e81c436302"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-e9f7d4a8",
@@ -959,7 +1529,8 @@
       "expected": [
         "e9f7d4a8-575a-4f4f-9342-9bf47b017b6f"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-ec1c087a",
@@ -967,7 +1538,8 @@
       "expected": [
         "ec1c087a-90bd-4475-828a-c684ee1c1342"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-ed948146",
@@ -975,7 +1547,8 @@
       "expected": [
         "ed948146-37b6-4146-9d10-b2a31512b0bd"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-ee61d08c",
@@ -983,7 +1556,8 @@
       "expected": [
         "ee61d08c-1bd1-471b-97c4-23afc08470c3"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-efc3bf05",
@@ -991,7 +1565,8 @@
       "expected": [
         "efc3bf05-c36c-480f-a69e-7ece4b2536bd"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-f2c0c490",
@@ -999,7 +1574,8 @@
       "expected": [
         "f2c0c490-c149-488d-939c-beb60734c8bc"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-f33011e2",
@@ -1007,7 +1583,8 @@
       "expected": [
         "f33011e2-8ae6-4388-95d4-5e21f1716d0f"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-f40ed9c2",
@@ -1015,7 +1592,8 @@
       "expected": [
         "f40ed9c2-9dd5-4b32-a216-db902c79ddb2"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-f503ec1b",
@@ -1023,7 +1601,8 @@
       "expected": [
         "f503ec1b-2ff6-488f-9f2c-583adaeec7e9"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-f5c5d252",
@@ -1031,7 +1610,8 @@
       "expected": [
         "f5c5d252-51e0-4107-a55f-c4eba27ea15d"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-f60d53f5",
@@ -1039,7 +1619,8 @@
       "expected": [
         "f60d53f5-f72a-439f-82c9-03b7deaefc9a"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-f76a103e",
@@ -1047,7 +1628,8 @@
       "expected": [
         "f76a103e-797e-4606-b224-bc130e8243e0"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-f8b2695a",
@@ -1055,7 +1637,8 @@
       "expected": [
         "f8b2695a-bfbf-4a63-93de-5dcfe7d6c374"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-fbf058a3",
@@ -1063,7 +1646,8 @@
       "expected": [
         "fbf058a3-a2de-45e1-b97f-ec58b048cbc4"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "q-ff02b32b",
@@ -1071,16 +1655,18 @@
       "expected": [
         "ff02b32b-5d77-4af5-ad6b-0d7288e2476f"
       ],
-      "source": "authored"
+      "source": "authored",
+      "provenance": "hand-authored situation query"
     },
     {
       "id": "real-miss-resource-not-accessible",
       "query": "agent session on a member fails to open a change request after login provisioning: Resource not accessible by integration",
       "error_text": "Resource not accessible by integration",
       "expected": [
-        "eval-fixture-vcs-scope-push-pr"
+        "eval-real-memory-vcs-auth-explicit-access"
       ],
-      "source": "owner-notes"
+      "source": "owner-notes",
+      "provenance": "owner-reported recall miss; the target is the recorded operator memory on VCS auth access levels, verbatim"
     }
   ]
 }

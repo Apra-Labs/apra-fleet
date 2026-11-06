@@ -1,18 +1,17 @@
 {
   "entries": [
     {
-      "id": "eval-fixture-vcs-scope-push-pr",
+      "id": "eval-real-memory-vcs-auth-explicit-access",
       "type": "learning",
-      "title": "Mint VCS auth with push+pr access to create pull requests",
-      "summary": "A GitHub \"Resource not accessible by integration\" error on gh pr create means the token was minted with push access only; re-mint it with git_access push+pr.",
+      "title": "Manual provision_vcs_auth needs git_access push+pr to create PRs or dispatch workflows",
+      "summary": "Manual provision_vcs_auth (github-app) must pass repos as full Apra-Labs/<repo> names and git_access: push for pushing, push+pr to create PRs or dispatch workflows.",
+      "content": "Manual provision_vcs_auth (github-app) must pass repos as full Apra-Labs/<repo> names and git_access: push for pushing, push+pr to create PRs or dispatch workflows. gh \"Resource not accessible by integration\" means re-mint with push+pr; no owner login needed. Members provisioned only by sprint preflight have no stored access level and fail with deploy_failed otherwise. The [FAIL] reason is only in the tool text content, not the JSON.",
       "symbols": [
         "provisionVcsAuth"
       ],
       "source_files": [
-        "src/tools/provision-vcs-auth.ts"
-      ],
-      "error_signatures": [
-        "Resource not accessible by integration"
+        "src/tools/provision-vcs-auth.ts",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/github.mjs"
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-11-05T00:00:00.000Z"

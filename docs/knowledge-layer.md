@@ -930,10 +930,21 @@ prints hybrid query p50/p95 (`--breakdown` times each list alone). Query
 scoring keeps the active model's vectors in memory as float16 (2 bytes per
 dimension per vector, about 36 MB for 5k entries at 384 dims), reloaded only
 when the vector table changes. The recall eval (`tests/knowledge/kb-recall-eval.test.ts`,
-part of `npm test`) reports recall@5 and MRR for keyword-only, hybrid with the
-default model and hybrid with `snowflake-arctic-embed-xs`; the model configs
-print a skip line unless a models folder is given with `APRA_KB_EVAL_MODELS_DIR`
-(or `APRA_KB_EVAL_ALLOW_DOWNLOAD=1` for a manual run). The bench takes
+part of `npm test`) reports recall@5 and MRR for keyword-only and hybrid with
+each built-in model, overall and per query source: REAL queries (kb_query
+calls agents actually made in this repo, recorded verbatim with provenance,
+labelled against the bible -- `scripts/kb-recall-queries-real.mjs`), AUTHORED
+situation queries (one per CONFIRMED bible entry) and the owner-reported
+`Resource not accessible by integration` case. Eval entries carry real
+captured content where the maintainer KB has it, plus recall_cues and
+error_signatures derived from each entry's own text, so those vectors are
+measured too; `node scripts/gen-kb-recall-eval.mjs [--kb-db <kb.sqlite>]`
+rebuilds the fixtures. Under `npm test` the model configs print a skip line
+unless a models folder is given with `APRA_KB_EVAL_MODELS_DIR` (or
+`APRA_KB_EVAL_ALLOW_DOWNLOAD=1` for a manual run); the nightly workflow's
+`kb-real-model` job downloads every built-in model into a cached folder, sets
+`APRA_KB_EVAL_REQUIRE_MODELS=1` (a model that cannot load fails rather than
+skips) and puts the recall@5 / MRR tables in its job summary. The bench takes
 `APRA_KB_BENCH_MODELS_DIR` / `APRA_KB_BENCH_ALLOW_DOWNLOAD=1` the same way to
 include real query-embedding time.
 
