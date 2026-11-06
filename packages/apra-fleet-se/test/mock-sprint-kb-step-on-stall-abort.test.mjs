@@ -5,6 +5,8 @@ import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
 import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
 import { runHarvestKbStep } from '../fleet-sprint/phases/harvest.mjs';
+import { formatKnowledgeBankSection } from '../fleet-sprint/sprint-report.mjs';
+import { buildSprintPrBody } from '../fleet-sprint/pr-body.mjs';
 
 // =============================================================================
 // D5: the harvester's KB step (queued KB writes applied plus the harvest
@@ -21,6 +23,34 @@ const assignedIds = (prompt) => {
 };
 const kbStepLines = (logs, label) => logs.filter((l) => l.includes(`[kb-work] KB step '${label}' ran:`));
 const TIMEOUT = scaledTimeout(240000, { concurrency: TEST_CONCURRENCY });
+
+// No harvest runs on these paths: the section goes to the run log and the
+// terminal record (and to the [ABORTED] PR body, see the unit test below).
+function assertKnowledgeBankReachedTheOutput(run, roleLine) {
+    const logged = run.logs.filter((l) => l.includes('[kb-report]')).join('\n');
+    assert.match(logged, /## Knowledge bank this sprint/);
+    assert.match(logged, roleLine);
+    const terminal = run.states.filter((s) => s.namespace === 'terminal');
+    assert.equal(terminal.length, 1, JSON.stringify(run.states.map((s) => s.namespace)));
+    assert.match(terminal[0].data.knowledgeBank, /## Knowledge bank this sprint/);
+    assert.match(terminal[0].data.knowledgeBank, roleLine);
+}
+
+describe('the [ABORTED] PR body carries the Knowledge bank section', () => {
+    const section = formatKnowledgeBankSection([{
+        index: 1, member: 'm1', role: 'doer', pushed: { ids: ['kb-a'], bytes: 90 }, kb_used: ['kb-a', '<!-- x'], kb_wrong: [], captures: [], rejects: [], promoted: [],
+    }]);
+    test('the section is rendered at the body heading level and sanitized', () => {
+        const body = buildSprintPrBody({ verdict: 'ABORTED', branch: 'b', baseBranch: 'main', runId: 'r', notes: 'n', knowledgeBank: section });
+        assert.match(body, /^### Knowledge bank this sprint$/m);
+        assert.doesNotMatch(body, /^## Knowledge bank/m);
+        assert.match(body, /- doer: 1 dispatch\(es\), pushed 1 entr\(ies\) \(90 bytes\), cited 2, wrong 0\./);
+    });
+    test('no section given: no heading, as before', () => {
+        const body = buildSprintPrBody({ verdict: 'ABORTED', branch: 'b', baseBranch: 'main', runId: 'r', notes: 'n' });
+        assert.doesNotMatch(body, /Knowledge bank/);
+    });
+});
 
 describe('the KB step runs on a stalled or aborted sprint', () => {
     test('a stalled sprint (every bead BLOCKED, set-aside stall in cycle 1) still runs the KB step, and the stall stands', { timeout: TIMEOUT }, async () => {
@@ -43,6 +73,7 @@ describe('the KB step runs on a stalled or aborted sprint', () => {
             const stepAt = run.logs.findIndex((l) => l.includes("KB step 'harvest (sprint stalled)' ran:"));
             const sealAt = run.logs.findIndex((l) => l.includes('[kb-work] bible commits sealed'));
             assert.ok(sealAt === -1 || sealAt > stepAt, `the seal must follow the KB step (step ${stepAt}, seal ${sealAt})`);
+            assertKnowledgeBankReachedTheOutput(run, /- doer: \d+ dispatch\(es\), pushed/);
         });
     });
 
@@ -60,6 +91,7 @@ describe('the KB step runs on a stalled or aborted sprint', () => {
             });
             assert.ok(run.error instanceof SprintPlanRejectedError, `expected SprintPlanRejectedError, got ${run.error && run.error.constructor.name}`);
             assert.equal(kbStepLines(run.logs, 'harvest (sprint aborted)').length, 1, run.logs.filter((l) => l.includes('[kb-work]')).join('\n'));
+            assertKnowledgeBankReachedTheOutput(run, /- plan-reviewer: \d+ dispatch\(es\), pushed/);
         });
     });
 });

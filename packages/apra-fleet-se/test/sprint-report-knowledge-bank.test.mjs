@@ -23,7 +23,9 @@ const RECORDS = [
     }),
     rec(3, 'reviewer', {
         pushed: { ids: ['kb-a', 'kb-b'], bytes: 700 }, kb_used: ['kb-b'], kb_wrong: [],
-        captures: [], rejects: [{ title: 'another bad', rule: 'first-person', reason: 'y' }], promoted: ['kb-new-1', 'kb-new-2'],
+        captures: [],
+        rejects: [{ title: 'another bad', rule: 'first-person', reason: 'y' }, { id: 'kb-cand', rule: 'kb_rejects', reason: 'true but restates the diff' }],
+        promoted: ['kb-new-1', 'kb-new-2'],
     }),
     // A record from before the KB fields existed: counts toward its role's dispatches only.
     rec(4, 'planner', {}),
@@ -47,7 +49,8 @@ describe('Knowledge bank this sprint', () => {
     test('aggregates: promoted, rejected and wrong counts', () => {
         const a = knowledgeBankAggregates(RECORDS);
         assert.equal(a.promoted, 2);
-        assert.equal(a.rejected, 2);
+        assert.equal(a.rejected, 2, 'captures the engine refused');
+        assert.equal(a.reviewerRejected, 1, "the reviewer's kb_rejects, counted apart");
         assert.equal(a.wrong, 1);
     });
 
@@ -64,7 +67,7 @@ describe('Knowledge bank this sprint', () => {
         assert.match(text, /- doer: 2 dispatch\(es\), pushed 5 entr\(ies\) \(1400 bytes\), cited 3, wrong 1\./);
         assert.match(text, /- reviewer: 1 dispatch\(es\), pushed 2 entr\(ies\) \(700 bytes\), cited 1, wrong 0\./);
         assert.match(text, /Captures by trigger: hidden-invariant 2, test-failure 1\./);
-        assert.match(text, /Promoted: 2\. Rejected \(captures refused by the engine\): 2\. Wrong \(kb_wrong reports\): 1\./);
+        assert.match(text, /Promoted: 2\. Rejected \(captures refused by the engine\): 2\. Rejected by a reviewer \(kb_rejects\): 1\. Wrong \(kb_wrong reports\): 1\./);
         assert.match(text, /Entries cited by more than one dispatch: kb-a \(2 dispatches\), kb-b \(2 dispatches\)\./);
     });
 

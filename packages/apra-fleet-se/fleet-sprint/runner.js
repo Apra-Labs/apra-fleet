@@ -310,6 +310,7 @@ import {
 // rather than from this file.
 import {
     sanitizePrText, buildAnalysisText, buildCostAnalysis, computeBranchSlug,
+    formatKnowledgeBankSection,
 } from './sprint-report.mjs';
 // The per-role, per-cycle round-resume session registry: DEFAULT_CONTEXT_CEILING
 // and createRoundSessionRegistry. Extracted out of runner.js
@@ -1033,6 +1034,7 @@ async function runSprintCycle(context) {
             captureChannel,
             fallbackBlock: () => kbKnowledgeBlock(kbPriming.knowledgeOf(opts.member_name), { captureChannel }),
             onPushed: (p) => { pushed = p; },
+            log,
         });
         if (!pushed && kbInjection && typeof kbInjection.pushedIn === 'function') {
             pushed = kbInjection.pushedIn(finalPrompt, opts.member_name);
@@ -1582,6 +1584,9 @@ async function runSprintCycle(context) {
     // handler can seal the bible commit: an aborted sprint commits nothing
     // further to the bible.
     context.kbWork = kbWork;
+    // Likewise for the per-dispatch records: a stalled or aborted sprint has no
+    // harvest, so main() renders the Knowledge bank section from these.
+    context.kbDispatchRecords = sprintState.dispatchToolCalls;
     // Engine-side KNOWLEDGE BANK injection: pushed to every member's dispatch.
     // context.isMemberVerified (set by the init probe above) is passed for
     // logging only and never suppresses the block.
@@ -1942,7 +1947,12 @@ async function runSprintCycle(context) {
                     const vetted = vetKbWork(policy.agentType, value);
                     dispatchAccounting.noteKbCaptures?.(
                         { memberName: dispatchMemberName(member), role: policy.agentType },
-                        { captures: vetted.captures, rejects: vetted.refusedCaptures, promoted: vetted.promotions.map((x) => x.id) },
+                        {
+                            captures: vetted.captures,
+                            rejects: vetted.refusedCaptures,
+                            reviewerRejects: vetted.rejects,
+                            promoted: vetted.promotions.map((x) => x.id),
+                        },
                     );
                 } catch (err) {
                     log(`[kb-work] could not record the dispatch's captures (non-fatal): ${err && err.message ? err.message : err}`);
@@ -4320,6 +4330,19 @@ export async function main(context) {
                     : TERMINAL_KB_STEP_TIMEOUT_MS,
             });
         }
+        // No harvest runs on this path, so the sprint's Knowledge bank section
+        // reaches the run log, the terminal record and the [ABORTED] PR body
+        // from here. The log is the only one of the three every path has.
+        let knowledgeBank = [];
+        if (isTerminalSprintFailure(err)) {
+            try {
+                knowledgeBank = formatKnowledgeBankSection(runContext.kbDispatchRecords);
+                for (const line of knowledgeBank) if (line) log(`[kb-report] ${line}`);
+            } catch (reportErr) {
+                knowledgeBank = [];
+                log(`[kb-report] could not render the Knowledge bank section (non-fatal): ${reportErr && reportErr.message ? reportErr.message : reportErr}`);
+            }
+        }
         // An aborted sprint commits nothing further to the KB bible: its
         // queued confirmations are not flushed.
         if (runContext.kbWork && typeof runContext.kbWork.seal === 'function') {
@@ -4375,6 +4398,7 @@ export async function main(context) {
                     onAuthFailure: abortOnAuthFailure,
                     callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
                     runId: (args && typeof args.run_id === 'string') ? args.run_id : undefined,
+                    knowledgeBank,
                 });
             } catch (finalizeErr) {
                 log(
@@ -4404,6 +4428,7 @@ export async function main(context) {
                 prUrl: abortResult.prUrl,
                 pushed: abortResult.pushed,
                 commitCount: abortResult.commitCount,
+                ...(knowledgeBank.length > 0 ? { knowledgeBank: knowledgeBank.join('\n') } : {}),
                 ...(conflictDump ? { conflictDump } : {}),
             });
         }

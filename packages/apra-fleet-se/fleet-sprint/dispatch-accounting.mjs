@@ -31,7 +31,9 @@
 //   kb_used  ids the role's report said it relied on (kb_used).
 //   kb_wrong ids the role's report said proved wrong (kb_wrong).
 //   captures [{title, trigger}] the engine accepted from the report.
-//   rejects  [{title, rule, reason}] captures the engine refused.
+//   rejects  [{title, rule, reason}] captures the engine refused, plus
+//            [{id, rule: 'kb_rejects', reason}] candidates the reviewer's report
+//            rejected (kb_rejects) that passed the engine's vetting.
 //   promoted ids the reviewer's report asked to promote (kb_promotions) that
 //            passed the engine's vetting.
 // The report-side fields are filled after the dispatch returns, by the
@@ -47,6 +49,9 @@
 
 /** The value recorded for a count the engine could not establish. */
 export const UNKNOWN_COUNT = 'unknown';
+
+/** The rule a record's reject carries when a reviewer's kb_rejects made it. */
+export const KB_REVIEWER_REJECT_RULE = 'kb_rejects';
 
 /** publishState namespace for the per-dispatch records (viewer tab). */
 export const DISPATCH_TOOL_CALLS_STATE_NAMESPACE = 'dispatch-tool-calls';
@@ -333,11 +338,11 @@ export function createDispatchAccounting(deps = {}) {
         },
         /**
          * The captures the engine accepted ({title, trigger}) and refused
-         * ({title, rule, reason}), and the promotion ids that passed vetting,
-         * from the latest dispatch of `memberName`
-         * (the 'kb-apply' postResult step). Never throws.
+         * ({title, rule, reason}), the reviewer's vetted kb_rejects ({id, reason})
+         * and the promotion ids that passed vetting, from the latest dispatch of
+         * `memberName` (the 'kb-apply' postResult step). Never throws.
          */
-        noteKbCaptures({ memberName, role } = {}, { captures, rejects, promoted } = {}) {
+        noteKbCaptures({ memberName, role } = {}, { captures, rejects, reviewerRejects, promoted } = {}) {
             const r = memberName ? latestFor(memberName, role) : null;
             if (!r) return;
             ensureKbFields(r);
@@ -346,6 +351,9 @@ export function createDispatchAccounting(deps = {}) {
             }
             for (const c of Array.isArray(rejects) ? rejects : []) {
                 if (c && typeof c === 'object') r.rejects.push({ title: c.title ?? null, rule: c.rule ?? null, reason: c.reason ?? null });
+            }
+            for (const c of Array.isArray(reviewerRejects) ? reviewerRejects : []) {
+                if (c && typeof c === 'object') r.rejects.push({ id: c.id ?? null, rule: KB_REVIEWER_REJECT_RULE, reason: c.reason ?? null });
             }
             r.promoted = idList([...r.promoted, ...idList(promoted)]);
             publish();

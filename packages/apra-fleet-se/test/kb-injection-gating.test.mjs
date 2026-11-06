@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKbWorkClient, kbKnowledgeBlock, KB_MAX_KNOWLEDGE_ENTRIES } from '../fleet-sprint/kb.mjs';
-import { createKbInjection } from '../fleet-sprint/kb-injection.mjs';
+import { createKbInjection, withWrapperKbBlock } from '../fleet-sprint/kb-injection.mjs';
 import fs from 'node:fs';
 import { roleHints, cleanQueryTerms, isTrackerIdToken, isPriorityTierToken } from '../fleet-sprint/kb-hints.mjs';
 import { kbQueryTerms } from '../fleet-sprint/kb.mjs';
@@ -40,6 +40,78 @@ function injection({ kb, verified = () => false, diffFiles, deployTargets } = {}
     const kbWork = createKbWorkClient({ memberCall: kb.memberCall, maintainers: selector(), log: () => {} });
     return createKbInjection({ kbWork, isMemberVerified: verified, diffFiles, deployTargets, log: () => {} });
 }
+
+describe('the KNOWLEDGE BANK block can be cited', () => {
+    test('each entry in the real block text carries its id, and the block says to cite by id', async () => {
+        const kb = fakeKb({ query: [entry('kb-one', 'First durable lesson'), entry('kb-two', 'Second durable lesson')] });
+        const inj = injection({ kb });
+        const { block, pushed } = await inj.blockWithInfoFor({ role: 'doer', member: 'doer-1', context: { beadTitles: [{ title: 'anything useful' }] } });
+        assert.deepEqual(pushed.ids, ['kb-one', 'kb-two']);
+        assert.match(block[0], /"id": "kb-one"/);
+        assert.match(block[0], /"id": "kb-two"/);
+        assert.match(block[0], /kb_used.*kb_wrong.*copy its `id` exactly/);
+        // The id precedes the title it belongs to in the same entry.
+        assert.ok(block[0].indexOf('"id": "kb-one"') < block[0].indexOf('First durable lesson'));
+    });
+});
+
+describe('an injection failure never fails a dispatch', () => {
+    const failures = [
+        ['a throwing knowledgeFor', { knowledgeFor: async () => { throw new Error('boom'); } }],
+        ['a knowledgeFor resolving undefined', { knowledgeFor: async () => undefined }],
+    ];
+    for (const [name, kbWork] of failures) {
+        test(`${name}: no block, an empty push, one log line`, async () => {
+            const logs = [];
+            const inj = createKbInjection({ kbWork, log: (m) => logs.push(m) });
+
+            assert.deepEqual(await inj.blockWithInfoFor({ role: 'deployer', member: 'dep-1' }), { block: [], pushed: { ids: [], bytes: 0 } });
+            assert.deepEqual(await inj.blockFor({ role: 'doer', member: 'doer-1' }), []);
+            assert.deepEqual(inj.pushedIn('any prompt', 'dep-1'), { ids: [], bytes: 0 });
+            assert.equal(logs.filter((l) => l.includes('[kb-inject]') && l.includes('non-fatal')).length, 2, logs.join('\n'));
+
+            const pushed = [];
+            const out = await withWrapperKbBlock('THE PROMPT', {
+                kbInjection: inj, agentType: 'deployer', member: 'dep-1', onPushed: (p) => pushed.push(p),
+            });
+            assert.equal(out, 'THE PROMPT');
+            assert.deepEqual(pushed, [{ ids: [], bytes: 0 }]);
+        });
+    }
+
+    test('a throwing roleHints input (a bad hint value) costs only the block', async () => {
+        const logs = [];
+        const kbWork = { knowledgeFor: async () => ({ entries: [], source: 'prime' }) };
+        const inj = createKbInjection({ kbWork, log: (m) => logs.push(m) });
+        const bad = { get goals() { throw new Error('bad hint'); } };
+        const out = await inj.blockWithInfoFor({ role: 'planner', member: 'plan-1', context: bad });
+        assert.deepEqual(out, { block: [], pushed: { ids: [], bytes: 0 } });
+    });
+
+    test('a block that fails after an earlier success does not leave the old push attributed', async () => {
+        let fail = false;
+        const kbWork = { knowledgeFor: async () => { if (fail) throw new Error('boom'); return { entries: [entry('kb-one', 'First durable lesson')], source: 'query' }; } };
+        const inj = createKbInjection({ kbWork });
+        const [first] = await inj.blockFor({ role: 'doer', member: 'doer-1' });
+        assert.deepEqual(inj.pushedIn(`p\n${first}`, 'doer-1').ids, ['kb-one']);
+        fail = true;
+        assert.deepEqual(await inj.blockFor({ role: 'doer', member: 'doer-1' }), []);
+        assert.deepEqual(inj.pushedIn(`p\n${first}`, 'doer-1'), { ids: [], bytes: 0 });
+    });
+
+    for (const [name, opts] of [
+        ['a kbInjection whose blockWithInfoFor throws', { kbInjection: { blockWithInfoFor: async () => { throw new Error('boom'); } } }],
+        ['a kbInjection whose blockFor throws', { kbInjection: { blockFor: async () => { throw new Error('boom'); } } }],
+        ['a fallbackBlock that throws', { kbInjection: null, fallbackBlock: () => { throw new Error('boom'); } }],
+    ]) {
+        test(`withWrapperKbBlock with ${name}: the prompt goes out unchanged and the failure is logged`, async () => {
+            const logs = [];
+            const out = await withWrapperKbBlock('THE PROMPT', { ...opts, agentType: 'deployer', member: 'dep-1', log: (m) => logs.push(m) });
+            assert.equal(out, 'THE PROMPT');
+            assert.ok(logs.some((l) => l.includes('[kb-inject]') && l.includes('boom')), logs.join('\n'));
+        });
+    }
+});
 
 describe('per-role KB hints (b4g.19.1)', () => {
     const ctx = {

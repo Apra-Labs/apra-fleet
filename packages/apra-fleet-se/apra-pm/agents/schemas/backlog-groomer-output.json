@@ -161,26 +161,45 @@
       }
     },
     "kb_used": {
-      "type": "array",
+      "type": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ],
       "description": "Optional. Knowledge bank entries (pushed into your prompt or returned by a query) you actually relied on, and how. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
       "items": {
         "type": [
           "object",
-          "string"
+          "array",
+          "string",
+          "number",
+          "boolean",
+          "null"
         ],
         "description": "One entry used: an object {id, how}.",
         "properties": {
           "id": {
             "type": [
+              "object",
+              "array",
               "string",
-              "number"
+              "number",
+              "boolean",
+              "null"
             ],
             "description": "REQUIRED string: the KB entry id exactly as it was given to you."
           },
           "how": {
             "type": [
+              "object",
+              "array",
               "string",
-              "number"
+              "number",
+              "boolean",
+              "null"
             ],
             "description": "REQUIRED string: one sentence on how the entry shaped your work."
           }
@@ -188,26 +207,45 @@
       }
     },
     "kb_wrong": {
-      "type": "array",
+      "type": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ],
       "description": "Optional. Knowledge bank entries that proved wrong in practice. The engine forwards each one as KB feedback. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
       "items": {
         "type": [
           "object",
-          "string"
+          "array",
+          "string",
+          "number",
+          "boolean",
+          "null"
         ],
         "description": "One wrong entry: an object {id, reason}.",
         "properties": {
           "id": {
             "type": [
+              "object",
+              "array",
               "string",
-              "number"
+              "number",
+              "boolean",
+              "null"
             ],
             "description": "REQUIRED string: the KB entry id exactly as it was given to you."
           },
           "reason": {
             "type": [
+              "object",
+              "array",
               "string",
-              "number"
+              "number",
+              "boolean",
+              "null"
             ],
             "description": "REQUIRED string: what was wrong, as observed."
           }

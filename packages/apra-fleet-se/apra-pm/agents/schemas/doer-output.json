@@ -35,29 +35,68 @@
       }
     },
     "kb_captures": {
-      "type": "array",
+      "type": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ],
       "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
       "items": {
         "type": [
           "object",
-          "string"
+          "array",
+          "string",
+          "number",
+          "boolean",
+          "null"
         ],
         "description": "One capture. Everything listed under each field is checked by the engine per capture, never by the report schema: a capture that breaks a rule is refused and logged on its own, and the rest of this report stands. See the capture rubric.",
         "properties": {
           "type": {
-            "type": "string",
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ],
             "description": "REQUIRED string, one of: knowledge, learning, runbook."
           },
           "title": {
-            "type": "string",
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ],
             "description": "REQUIRED string, 8 to 160 characters, ASCII only."
           },
           "summary": {
-            "type": "string",
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ],
             "description": "REQUIRED string, 20 to 500 characters, ASCII only. The lesson in at most 2 sentences, present tense, standing alone as current truth."
           },
           "trigger": {
-            "type": "string",
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ],
             "description": "REQUIRED string, exactly one of the listed examples: what kind of event produced this lesson. Never \"describes the change\".",
             "examples": [
               "failed-attempt",
@@ -70,46 +109,97 @@
           },
           "content": {
             "type": [
+              "object",
+              "array",
               "string",
-              "number"
+              "number",
+              "boolean",
+              "null"
             ],
             "description": "Optional string, 40 to 2000 characters, ASCII only. Written only when it adds what the summary cannot hold (labelled sections: Context, Symptom, Cause, Rule/Fix, Tried (failed), Evidence). Content that repeats the summary is refused. A failed-attempt capture must have Cause and Rule/Fix. No credentials or token-shaped strings."
           },
           "source_files": {
             "type": [
+              "object",
               "array",
-              "string"
+              "string",
+              "number",
+              "boolean",
+              "null"
             ],
             "description": "REQUIRED array of strings, at least one: files that make this claim checkable. An entry with no basis is rejected, because the freshness sweep can never stale it.",
             "items": {
-              "type": "string"
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
             }
           },
           "symbols": {
-            "type": "array",
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ],
             "description": "Optional array of strings: symbols this claim is about.",
             "items": {
-              "type": "string"
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
             }
           },
           "recall_cues": {
             "type": [
+              "object",
               "array",
-              "string"
+              "string",
+              "number",
+              "boolean",
+              "null"
             ],
             "description": "Optional array of strings: phrases a future reader would search for to find this lesson.",
             "items": {
-              "type": "string"
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
             }
           },
           "error_signatures": {
             "type": [
+              "object",
               "array",
-              "string"
+              "string",
+              "number",
+              "boolean",
+              "null"
             ],
             "description": "Optional array of strings: exact error strings that this lesson explains.",
             "items": {
-              "type": "string"
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
             }
           }
         }
@@ -148,26 +238,45 @@
       }
     },
     "kb_used": {
-      "type": "array",
+      "type": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ],
       "description": "Optional. Knowledge bank entries (pushed into your prompt or returned by a query) you actually relied on, and how. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
       "items": {
         "type": [
           "object",
-          "string"
+          "array",
+          "string",
+          "number",
+          "boolean",
+          "null"
         ],
         "description": "One entry used: an object {id, how}.",
         "properties": {
           "id": {
             "type": [
+              "object",
+              "array",
               "string",
-              "number"
+              "number",
+              "boolean",
+              "null"
             ],
             "description": "REQUIRED string: the KB entry id exactly as it was given to you."
           },
           "how": {
             "type": [
+              "object",
+              "array",
               "string",
-              "number"
+              "number",
+              "boolean",
+              "null"
             ],
             "description": "REQUIRED string: one sentence on how the entry shaped your work."
           }
@@ -175,26 +284,45 @@
       }
     },
     "kb_wrong": {
-      "type": "array",
+      "type": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ],
       "description": "Optional. Knowledge bank entries that proved wrong in practice. The engine forwards each one as KB feedback. Omit or send [] when none. Each item is checked by the engine, never by the report schema: a malformed item is logged and dropped, and the rest of this report stands.",
       "items": {
         "type": [
           "object",
-          "string"
+          "array",
+          "string",
+          "number",
+          "boolean",
+          "null"
         ],
         "description": "One wrong entry: an object {id, reason}.",
         "properties": {
           "id": {
             "type": [
+              "object",
+              "array",
               "string",
-              "number"
+              "number",
+              "boolean",
+              "null"
             ],
             "description": "REQUIRED string: the KB entry id exactly as it was given to you."
           },
           "reason": {
             "type": [
+              "object",
+              "array",
               "string",
-              "number"
+              "number",
+              "boolean",
+              "null"
             ],
             "description": "REQUIRED string: what was wrong, as observed."
           }

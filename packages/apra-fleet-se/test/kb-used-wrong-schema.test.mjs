@@ -53,7 +53,8 @@ for (const [file, schema] of outputSchemas) {
     const p = schema.properties || {};
     for (const field of ['kb_used', 'kb_wrong']) {
       assert.ok(p[field], `${file} must declare ${field}`);
-      assert.equal(p[field].type, 'array');
+      assert.ok(p[field].type.includes('array'), `${field} must admit an array`);
+      assert.ok(p[field].items, `${field} must declare its items`);
       assert.ok(!(schema.required || []).includes(field), `${field} must stay optional`);
     }
     assert.ok(p.kb_used.items.properties.id && p.kb_used.items.properties.how);

@@ -83,24 +83,32 @@ export function createKbInjection(opts = {}) {
          */
         async blockWithInfoFor({ role, member, context = {}, captureChannel = true }) {
             if (!member || !kbWork || typeof kbWork.knowledgeFor !== 'function') return { block: [], pushed: emptyPushed() };
-            const ctx = { ...context };
-            if (!ctx.diffFiles && typeof opts.diffFiles === 'function' && /^(reviewer|harvester)$/.test(role)) {
-                try { ctx.diffFiles = await opts.diffFiles(member); } catch (err) {
-                    log(`[kb-inject] could not list the diff files for ${member} (non-fatal): ${err && err.message ? err.message : err}`);
+            // Advisory only: a failure here costs the block, never the dispatch.
+            try {
+                const ctx = { ...context };
+                if (!ctx.diffFiles && typeof opts.diffFiles === 'function' && /^(reviewer|harvester)$/.test(role)) {
+                    try { ctx.diffFiles = await opts.diffFiles(member); } catch (err) {
+                        log(`[kb-inject] could not list the diff files for ${member} (non-fatal): ${err && err.message ? err.message : err}`);
+                    }
                 }
-            }
-            if (!ctx.deployTargets && typeof opts.deployTargets === 'function'
-                && /^(deployer|integ-test-runner|regression-test-runner)$/.test(role)) {
-                try { ctx.deployTargets = await opts.deployTargets(member, role); } catch (err) {
-                    log(`[kb-inject] could not read the deploy targets for ${member} (non-fatal): ${err && err.message ? err.message : err}`);
+                if (!ctx.deployTargets && typeof opts.deployTargets === 'function'
+                    && /^(deployer|integ-test-runner|regression-test-runner)$/.test(role)) {
+                    try { ctx.deployTargets = await opts.deployTargets(member, role); } catch (err) {
+                        log(`[kb-inject] could not read the deploy targets for ${member} (non-fatal): ${err && err.message ? err.message : err}`);
+                    }
                 }
+                const hints = roleHints(role, ctx);
+                const { entries, source } = await kbWork.knowledgeFor(member, hints);
+                const block = kbKnowledgeBlock(entries, { captureChannel, source, reportEmpty: true });
+                const pushed = pushedInfo(entries, block[0]);
+                if (block[0]) lastBlock.set(member, { block: block[0], pushed });
+                else lastBlock.delete(member);
+                return { block, pushed };
+            } catch (err) {
+                lastBlock.delete(member);
+                log(`[kb-inject] could not build the KNOWLEDGE BANK block for ${role} on ${member} (non-fatal, dispatching without it): ${err && err.message ? err.message : err}`);
+                return { block: [], pushed: emptyPushed() };
             }
-            const hints = roleHints(role, ctx);
-            const { entries, source } = await kbWork.knowledgeFor(member, hints);
-            const block = kbKnowledgeBlock(entries, { captureChannel, source, reportEmpty: true });
-            const pushed = pushedInfo(entries, block[0]);
-            if (block[0]) lastBlock.set(member, { block: block[0], pushed });
-            return { block, pushed };
         },
         /**
          * The pushed info for a dispatch of `prompt` to `memberName`: the
@@ -132,26 +140,34 @@ export function createKbInjection(opts = {}) {
  *   captureChannel?: boolean,
  *   fallbackBlock?: () => string[],
  *   onPushed?: (pushed: {ids: string[], bytes: number}) => void,
+ *   log?: Function,
  * }} opts  fallbackBlock supplies the block when kbInjection is not bound yet.
  *   onPushed receives what the block this call appended pushes (ids, bytes);
  *   it is not called when this call appends nothing (a self-injecting role,
- *   no member). It never changes the returned prompt.
+ *   no member). It never changes the returned prompt. A failure building the
+ *   block is logged and the prompt goes out without it.
  * @returns {Promise<string>}
  */
-export async function withWrapperKbBlock(prompt, { kbInjection, agentType, member, context = {}, captureChannel = true, fallbackBlock, onPushed } = {}) {
+export async function withWrapperKbBlock(prompt, { kbInjection, agentType, member, context = {}, captureChannel = true, fallbackBlock, onPushed, log = () => {} } = {}) {
     if (!agentType || KB_SELF_INJECTING_ROLES.has(agentType) || !member) return prompt;
     let block;
     let pushed = emptyPushed();
-    if (kbInjection && typeof kbInjection.blockWithInfoFor === 'function') {
-        const out = await kbInjection.blockWithInfoFor({ role: agentType, member, context, captureChannel });
-        block = out.block[0];
-        pushed = out.pushed || pushed;
-    } else if (kbInjection) {
-        [block] = await kbInjection.blockFor({ role: agentType, member, context, captureChannel });
-        pushed = pushedInfo([], block);
-    } else {
-        [block] = typeof fallbackBlock === 'function' ? fallbackBlock() : [];
-        pushed = pushedInfo([], block);
+    try {
+        if (kbInjection && typeof kbInjection.blockWithInfoFor === 'function') {
+            const out = await kbInjection.blockWithInfoFor({ role: agentType, member, context, captureChannel });
+            block = out.block[0];
+            pushed = out.pushed || pushed;
+        } else if (kbInjection) {
+            [block] = await kbInjection.blockFor({ role: agentType, member, context, captureChannel });
+            pushed = pushedInfo([], block);
+        } else {
+            [block] = typeof fallbackBlock === 'function' ? fallbackBlock() : [];
+            pushed = pushedInfo([], block);
+        }
+    } catch (err) {
+        block = undefined;
+        pushed = emptyPushed();
+        log(`[kb-inject] could not build the KNOWLEDGE BANK block for ${agentType} on ${member} (non-fatal, dispatching without it): ${err && err.message ? err.message : err}`);
     }
     if (typeof onPushed === 'function') {
         try { onPushed(block ? pushed : emptyPushed()); } catch { /* informational only */ }

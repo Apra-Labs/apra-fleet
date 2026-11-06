@@ -140,6 +140,24 @@ function mockAbortCallTool(command) {
     };
 }
 
+test('finalizeAbort: the Knowledge bank section it is given reaches the [ABORTED] PR body', async () => {
+    const { command, log } = buildMockCommand({ commitCount: 1, prOutcome: 'created' });
+    const knowledgeBank = ['## Knowledge bank this sprint', '', '- doer: 1 dispatch(es), pushed 2 entr(ies) (90 bytes), cited 1, wrong 0.'];
+    const result = await finalizeAbort({
+        error: new SprintPlanRejectedError('Plan rejected', { notes: 'n', cycle: 1, planningRounds: 1 }),
+        branch: 'auto-sprint/abort-kb-section',
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        callTool: mockAbortCallTool(command),
+        knowledgeBank,
+    });
+    check(result.reason === 'aborted-pr-created', JSON.stringify(result));
+    const prCmd = log.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
+    check(prCmd.includes('### Knowledge bank this sprint'), prCmd);
+    check(prCmd.includes('- doer: 1 dispatch(es), pushed 2 entr(ies) (90 bytes), cited 1, wrong 0.'), prCmd);
+});
+
 // -----------------------------------------------------------------------
 // (a) commits exist -> branch pushed and a fleet-sprint [ABORTED] PR is
 // created, with the triggering error's evidence embedded in the PR body.

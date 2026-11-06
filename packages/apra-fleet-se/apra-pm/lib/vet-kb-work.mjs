@@ -137,6 +137,14 @@ export function vetKbWork(role, result) {
       rejected.push(`${role}: capture "${c.title}" cites no source files`);
       continue;
     }
+    if (!isStringArray(c.source_files)) {
+      rejected.push(`${role}: capture "${c.title}" refused -- rule source-files: source_files must be an array of strings`);
+      continue;
+    }
+    if (c.symbols !== undefined && c.symbols !== null && !isStringArray(c.symbols)) {
+      rejected.push(`${role}: capture "${c.title}" refused -- rule symbols: symbols must be an array of strings`);
+      continue;
+    }
     if (!KB_CAPTURE_TYPES.includes(c.type)) {
       rejected.push(`${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
       continue;

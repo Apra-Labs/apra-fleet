@@ -238,6 +238,14 @@ export function vetKbWork(role, result) {
             refuseCapture(c.title, 'source-files', `${role}: capture "${c.title}" cites no source files`);
             continue;
         }
+        if (!isStringArray(c.source_files)) {
+            refuseCapture(c.title, 'source-files', `${role}: capture "${c.title}" refused -- rule source-files: source_files must be an array of strings`);
+            continue;
+        }
+        if (c.symbols !== undefined && c.symbols !== null && !isStringArray(c.symbols)) {
+            refuseCapture(c.title, 'symbols', `${role}: capture "${c.title}" refused -- rule symbols: symbols must be an array of strings`);
+            continue;
+        }
         if (!KB_CAPTURE_TYPES.includes(c.type)) {
             refuseCapture(c.title, 'type', `${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
             continue;
@@ -867,9 +875,12 @@ export function createKbWorkClient(opts = {}) {
             log(`[kb-work] maintainer '${maintainer}' is mid-dispatch -- ${queue.length} KB write(s) for ${repo} stay queued until its dispatch ends`);
             return counts;
         }
-        // G-pull BEFORE every batch: the maintainer's checkout must hold the
-        // files the queued captures cite before kb_capture's basis check runs.
-        if (typeof gPull === 'function') {
+        // G-pull BEFORE every batch that touches entries: the maintainer's
+        // checkout must hold the files the queued captures cite before
+        // kb_capture's basis check runs. Usage and feedback read no checkout
+        // file, so a batch of only those skips the pull.
+        const needsCheckout = queue.some((op) => op.kind !== 'usage' && op.kind !== 'feedback');
+        if (needsCheckout && typeof gPull === 'function') {
             // Same sprint-branch guard as the bible commit path: a pull on any
             // other branch would move that branch, so nothing runs there.
             if (!(await onSprintBranch(maintainer, repo, queue.length, 'KB write'))) return counts;
@@ -1009,6 +1020,13 @@ export function createKbWorkClient(opts = {}) {
         }
         if (isToolError(res)) return { ok: false, stage: 'kb_bible_commit', error: toolErrorText(res) };
         const result = parseResult(res) || {};
+        // The server saw the committed bible does not hold this call's merge
+        // (another writer replaced it). That is a lost write, whatever origin
+        // holds: the ids stay queued. notCommitted takes the same retry as a
+        // rejected push, because a local bible commit is left behind.
+        if (typeof result.not_committed_reason === 'string' && result.not_committed_reason.length > 0) {
+            return { ok: false, stage: 'kb_bible_commit', error: `not committed: ${result.not_committed_reason}`, notCommitted: true };
+        }
         // Nothing committed (every id skipped, or the entry set unchanged).
         // That alone does not mean the entries are published: an earlier
         // round's bible commit may still sit unpushed on the maintainer (its
@@ -1134,8 +1152,11 @@ export function createKbWorkClient(opts = {}) {
         inFlight.set(maintainer, new Promise((r) => { release = r; }));
         try {
             let outcome = await bibleAttempt(target, repo, ids);
-            if (!outcome.ok && outcome.stage === 'G-push') {
-                log(`[kb-work] G-push of the bible commit on maintainer '${maintainer}' (${repo}) was rejected (${outcome.error}) -- retrying once: rebase --abort, G-pull, kb_bible_commit, G-push`);
+            if (!outcome.ok && (outcome.stage === 'G-push' || outcome.notCommitted)) {
+                const why = outcome.notCommitted
+                    ? `WARN: kb_bible_commit on maintainer '${maintainer}' (${repo}) did not land (${outcome.error})`
+                    : `G-push of the bible commit on maintainer '${maintainer}' (${repo}) was rejected (${outcome.error})`;
+                log(`[kb-work] ${why} -- retrying once: rebase --abort, G-pull, kb_bible_commit, G-push`);
                 if (typeof abortRebase === 'function' && (await bibleOnSprintBranch(maintainer, repo, ids))) {
                     try { await abortRebase(maintainer); } catch (err) { log(`[kb-work] rebase --abort on maintainer '${maintainer}' failed (non-fatal): ${errText(err)}`); }
                 }
@@ -2050,9 +2071,11 @@ export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'pri
         + 'in your notes rather than bending your work to fit the entry.\n'
         + 'You do not need a kb_* tool to read these entries; they do not replace any kb_* lookup '
         + 'your role instructions call for. '
+        + 'To cite an entry in `kb_used` or `kb_wrong`, copy its `id` exactly as shown, never its title.\n'
         + captureLine
         + wrapUntrustedBlock(label, JSON.stringify(
             injectable.map((e) => ({
+                id: e.id,
                 confidence: e.confidence,
                 title: e.title,
                 summary: e.summary,

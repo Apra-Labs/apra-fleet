@@ -95,6 +95,7 @@ describe('mock sprint: per-dispatch KB records and the Knowledge bank section', 
                 return report({
                     verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [],
                     kb_used: [{ id: 'kb-p1', how: 'checked the change against it' }],
+                    kb_rejects: [{ id: 'kb-cand-rejected', reason: 'true but only restates the diff, fails the rubric' }],
                     ...(good ? { kb_promotions: [{ id: good.id, reason: `verified against ${CITED} WidgetCache and the tenant test` }] } : {}),
                 });
             };
@@ -136,6 +137,9 @@ describe('mock sprint: per-dispatch KB records and the Knowledge bank section', 
             assert.ok(reviewer.length >= 1, 'the reviewer dispatch cited an entry');
             assert.deepEqual(reviewer[0].kb_used, ['kb-p1']);
             assert.deepEqual(reviewer[0].pushed.ids, PUSHED);
+            // The reviewer's kb_rejects reach the record as well as the engine's refusals.
+            assert.ok(reviewer[0].rejects.some((x) => x.id === 'kb-cand-rejected' && x.rule === 'kb_rejects' && /fails the rubric/.test(x.reason)), JSON.stringify(reviewer[0].rejects));
+            const reviewerRejected = records.flatMap((r) => r.rejects).filter((x) => x.rule === 'kb_rejects').length;
             const citingP1 = records.filter((r) => r.kb_used.includes('kb-p1')).length;
 
             // The harvester's sprint analysis carries the section and every aggregate.
@@ -146,7 +150,8 @@ describe('mock sprint: per-dispatch KB records and the Knowledge bank section', 
             assert.match(analysis, new RegExp(`- doer: 1 dispatch\\(es\\), pushed 3 entr\\(ies\\) \\(${doer[0].pushed.bytes} bytes\\), cited 2, wrong 1\\.`));
             assert.match(analysis, /- reviewer: \d+ dispatch\(es\), pushed \d+ entr\(ies\) \(\d+ bytes\), cited [1-9]\d*, wrong 0\./);
             assert.match(analysis, /Captures by trigger: hidden-invariant 1\./);
-            assert.match(analysis, new RegExp(`Promoted: ${promoted}\\. Rejected \\(captures refused by the engine\\): 1\\. Wrong \\(kb_wrong reports\\): 1\\.`));
+            assert.ok(reviewerRejected >= 1);
+            assert.match(analysis, new RegExp(`Promoted: ${promoted}\\. Rejected \\(captures refused by the engine\\): 1\\. Rejected by a reviewer \\(kb_rejects\\): ${reviewerRejected}\\. Wrong \\(kb_wrong reports\\): 1\\.`));
             assert.match(analysis, new RegExp(`Entries cited by more than one dispatch: kb-p1 \\(${citingP1} dispatches\\)`));
             assert.ok(citingP1 >= 2, 'kb-p1 is cited by the doer and the reviewer');
 

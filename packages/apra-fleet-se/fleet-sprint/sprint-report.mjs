@@ -23,7 +23,7 @@
 
 import { createHash } from 'crypto';
 import { SAFE_TEXT_RE } from './newtask-text.mjs';
-import { formatDispatchToolCalls, kbFieldsOf } from './dispatch-accounting.mjs';
+import { formatDispatchToolCalls, kbFieldsOf, KB_REVIEWER_REJECT_RULE } from './dispatch-accounting.mjs';
 import { formatSetAsideItems, formatWaitedLine } from './set-aside.mjs';
 
 // ---------------------------------------------------------------------------
@@ -245,7 +245,7 @@ export function buildAnalysisText({
  *   dispatches: number,
  *   roles: Array<{role: string, dispatches: number, pushed: number, pushedBytes: number, cited: number, wrong: number}>,
  *   capturesByTrigger: Record<string, number>,
- *   promoted: number, rejected: number, wrong: number,
+ *   promoted: number, rejected: number, reviewerRejected: number, wrong: number,
  *   multiplyCited: Array<{id: string, dispatches: number}>,
  * }}
  */
@@ -257,6 +257,7 @@ export function knowledgeBankAggregates(records) {
     const citedBy = new Map();
     let promoted = 0;
     let rejected = 0;
+    let reviewerRejected = 0;
     let wrong = 0;
     for (const r of list) {
         const f = kbFieldsOf(r);
@@ -277,14 +278,16 @@ export function knowledgeBankAggregates(records) {
             capturesByTrigger[trigger] = (capturesByTrigger[trigger] || 0) + 1;
         }
         promoted += f.promoted.length;
-        rejected += f.rejects.length;
+        const byReviewer = f.rejects.filter((c) => c.rule === KB_REVIEWER_REJECT_RULE).length;
+        reviewerRejected += byReviewer;
+        rejected += f.rejects.length - byReviewer;
         wrong += f.kb_wrong.length;
         for (const id of f.kb_used) citedBy.set(id, (citedBy.get(id) || 0) + 1);
     }
     const multiplyCited = [...citedBy].filter(([, n]) => n > 1)
         .map(([id, n]) => ({ id, dispatches: n }))
         .sort((a, b) => b.dispatches - a.dispatches || a.id.localeCompare(b.id));
-    return { dispatches: list.length, roles, capturesByTrigger, promoted, rejected, wrong, multiplyCited };
+    return { dispatches: list.length, roles, capturesByTrigger, promoted, rejected, reviewerRejected, wrong, multiplyCited };
 }
 
 /**
@@ -310,7 +313,7 @@ export function formatKnowledgeBankSection(records) {
     const triggers = Object.entries(a.capturesByTrigger).sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]));
     lines.push('');
     lines.push(`Captures by trigger: ${triggers.length > 0 ? triggers.map(([k, n]) => `${k} ${n}`).join(', ') : 'none'}.`);
-    lines.push(`Promoted: ${a.promoted}. Rejected (captures refused by the engine): ${a.rejected}. Wrong (kb_wrong reports): ${a.wrong}.`);
+    lines.push(`Promoted: ${a.promoted}. Rejected (captures refused by the engine): ${a.rejected}. Rejected by a reviewer (kb_rejects): ${a.reviewerRejected}. Wrong (kb_wrong reports): ${a.wrong}.`);
     lines.push(`Entries cited by more than one dispatch: ${a.multiplyCited.length > 0
         ? a.multiplyCited.map((m) => `${m.id} (${m.dispatches} dispatches)`).join(', ')
         : 'none'}.`);
