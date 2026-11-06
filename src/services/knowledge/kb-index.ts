@@ -144,7 +144,7 @@ function jsonArrayText(raw: unknown): string {
 
 function rawTokens(s: KeywordSearch): string[] {
   const src = s.terms?.length ? s.terms.join(' ') : (s.query ?? '');
-  return src.match(/[A-Za-z0-9_]+/g) ?? [];
+  return src.normalize('NFKC').match(/[\p{L}\p{M}\p{N}_]+/gu) ?? [];
 }
 
 /** FTS5 MATCH for the trigram table: identifier-ish raw tokens, quoted, OR-joined. */
@@ -154,7 +154,7 @@ export function trigramMatch(s: KeywordSearch): string {
     if (t.length >= TRIGRAM_MIN_LEN) seen.add(t);
     if (seen.size >= MAX_TRIGRAM_TERMS) break;
   }
-  // Tokens are [A-Za-z0-9_]+ so quoting needs no escaping.
+  // Tokens are letters/marks/digits/_ only, so quoting needs no escaping.
   return Array.from(seen).map(t => `"${t}"`).join(' OR ');
 }
 

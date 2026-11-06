@@ -314,6 +314,64 @@ describe('migration from the old external-content FTS schema', () => {
   });
 });
 
+describe('non-ASCII text in the keyword index (strings written as \\u escapes)', () => {
+  const GRUESSE = 'Gr\u00fc\u00dfe';
+  const NIHONGO = '\u65e5\u672c\u8a9e';
+
+  it('a keyword kb_query for a non-ASCII word finds the entry whose title contains it', async () => {
+    const p = await freshProvider('non-ascii');
+    const de = await p.capture(input({ title: `${GRUESSE} aus dem Lager`, summary: 'German note.', content: 'Body.' }));
+    const ja = await p.capture(input({ title: `${NIHONGO} notes`, summary: 'Japanese note.', content: 'Body.', source_files: ['src/b.ts'] }));
+    await p.capture(input({ title: 'Plain ascii neighbour', summary: 'Nothing else.', content: 'Body.' }));
+    vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
+      project: p, global: p, projectSlug: 'kw-test',
+    } as any);
+    const q1 = JSON.parse(await kbQuery({ query: GRUESSE, limit: 10, confidence: [...ALL_TIERS] }));
+    expect(q1.l1_results.map((e: { id: string }) => e.id)).toEqual([de.id]);
+    const q2 = JSON.parse(await kbQuery({ query: NIHONGO, limit: 10, confidence: [...ALL_TIERS] }));
+    expect(q2.l1_results.map((e: { id: string }) => e.id)).toEqual([ja.id]);
+  });
+
+  it('an index built by the previous normalizer version rebuilds on the next open and keeps the legacy index intact', async () => {
+    const file = path.join(tmp, 'norm-version.sqlite');
+    let p = new SqliteProvider(file, repo);
+    await p.init();
+    const de = await p.capture(input({ title: `${GRUESSE} vom Versionstest`, summary: 'Version note.', content: 'Body.' }));
+    await p.capture(input({ title: 'Ascii sibling for the version test', summary: 'Sibling.', content: 'Body.' }));
+    expect(await p.waitForKeywordIndex(30_000)).toBe(true);
+    p.close();
+
+    // Make the DB look like a ready index from normalizer version 1, which
+    // dropped every non-ASCII token.
+    expect(KB_KEYWORD_INDEX_VERSION).toContain('norm2');
+    const raw = new DatabaseSync(file);
+    raw.prepare("UPDATE kb_index_meta SET value = ? WHERE key = 'kw_version'").run(KB_KEYWORD_INDEX_VERSION.replace('norm2', 'norm1'));
+    raw.exec('DELETE FROM entries_kw');
+    raw.close();
+
+    p = new SqliteProvider(file, repo);
+    await p.init();
+    providers.push(p);
+    const atInit = p.keywordIndexStatus();
+    expect(atInit.ready).toBe(false);
+    expect(atInit.rebuilding).toBe(true);
+    expect(await p.waitForKeywordIndex(30_000)).toBe(true);
+    expect(p.keywordIndexStatus().version).toBe(KB_KEYWORD_INDEX_VERSION);
+    const r = await p.query({ query: GRUESSE, confidence: [...ALL_TIERS], limit: 10 });
+    expect(r.results.map(e => e.id)).toEqual([de.id]);
+
+    // The version-triggered rebuild keeps the rollback contract (kb-index.ts).
+    const chk = new DatabaseSync(file);
+    try {
+      const docs = chk.prepare('SELECT COUNT(*) AS n FROM entries_fts_docsize').get() as { n: number };
+      expect(Number(docs.n)).toBe(2);
+      expect(() => chk.exec("INSERT INTO entries_fts(entries_fts, rank) VALUES ('integrity-check', 1)")).not.toThrow();
+    } finally {
+      chk.close();
+    }
+  });
+});
+
 describe('additive kb_query contract', () => {
   it('query + limit returns the same response keys and entry keys as before', async () => {
     const p = await freshProvider('contract');

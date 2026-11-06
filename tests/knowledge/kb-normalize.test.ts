@@ -135,3 +135,46 @@ describe('normalizeQueryTerms', () => {
     }
   });
 });
+
+describe('non-ASCII text (written as \\u escapes: the repo is ASCII-only)', () => {
+  const GRUESSE = 'Gr\u00fc\u00dfe';
+  const NIHONGO = '\u65e5\u672c\u8a9e';
+
+  it('normalizeForIndex keeps a non-ASCII word as one lowercased token', () => {
+    expect(normalizeForIndex(`${GRUESSE} aus Berlin`).split(' ')).toEqual(['gr\u00fc\u00dfe', 'au', 'berlin']);
+    expect(normalizeForIndex(`notes on ${NIHONGO} input`).split(' ')).toContain(NIHONGO);
+    expect(normalizeForIndex('caf\u00e9-cr\u00e8me').split(' ')).toEqual(['caf\u00e9cr\u00e8me', 'caf\u00e9', 'cr\u00e8me']);
+  });
+
+  it('normalizeQueryTerms and normalizeQueryTermList keep it too', () => {
+    expect(normalizeQueryTerms(GRUESSE)).toBe('"gr\u00fc\u00dfe"');
+    expect(normalizeQueryTerms(NIHONGO)).toBe(`"${NIHONGO}"`);
+    expect(normalizeQueryTermList([GRUESSE, 'getMemberSplitRead'])).toBe(
+      '"gr\u00fc\u00dfe" OR "getmembersplitread" "get" "member" "split" "read"'
+    );
+  });
+
+  it('composed and decomposed forms normalize to the same token (NFKC)', () => {
+    expect(normalizeTokens('Gru\u0308\u00dfe')).toEqual(normalizeTokens(GRUESSE));
+  });
+
+  it('ASCII identifier splitting is unchanged next to non-ASCII text', () => {
+    expect(normalizeForIndex(`getMemberSplitRead ${GRUESSE}`).split(' ')).toEqual(
+      ['getmembersplitread', 'get', 'member', 'split', 'read', 'gr\u00fc\u00dfe']
+    );
+  });
+
+  it('an FTS5 unicode61 MATCH finds the indexed non-ASCII word', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("CREATE VIRTUAL TABLE t USING fts5(body, tokenize = 'unicode61')");
+      db.prepare('INSERT INTO t(body) VALUES (?)').run(normalizeForIndex(`${GRUESSE} and ${NIHONGO} notes`));
+      db.prepare('INSERT INTO t(body) VALUES (?)').run(normalizeForIndex('plain ascii row'));
+      for (const q of [GRUESSE, NIHONGO, 'GR\u00dcSSE'.slice(0, 2) + '\u00fc\u00dfe']) {
+        expect(db.prepare('SELECT rowid FROM t WHERE t MATCH ?').all(normalizeQueryTerms(q))).toEqual([{ rowid: 1 }]);
+      }
+    } finally {
+      db.close();
+    }
+  });
+});

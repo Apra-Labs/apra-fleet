@@ -77,7 +77,9 @@ export function filesOverlap(a: string[], b: string[]): boolean {
 // previously passed the caller's raw string to MATCH, which threw on '.',
 // '-', '(', ')', '/' -- 61% of real agent queries.
 export function ftsSafeTerm(term: string): string | null {
-  const tokens = term.match(/[A-Za-z0-9_]+/g);
+  // Unicode letters/marks/digits, so non-ASCII words survive (none of them
+  // can be a double quote, so quoting still needs no escaping).
+  const tokens = term.match(/[\p{L}\p{M}\p{N}_]+/gu);
   if (!tokens || tokens.length === 0) return null;
   return tokens.map(t => `"${t}"`).join(' ');
 }

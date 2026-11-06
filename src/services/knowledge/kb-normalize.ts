@@ -8,17 +8,23 @@
 //   src/services/knowledge/kb-self.ts -> src servic knowledg kbself kb self ts
 //
 // Pipeline (shared by normalizeForIndex and normalizeQueryTerms):
-//   1. split the text into segments on anything that is not [A-Za-z0-9_-]
-//      (so paths split on '/', '\' and '.', and prose punctuation drops out);
-//   2. split each segment on '_' / '-' runs, then on camelCase, PascalCase and
-//      acronym-run boundaries;
+//   1. NFKC-normalize, then split the text into segments on anything that is
+//      not a Unicode letter, mark or digit, '_' or '-' (so paths split on '/',
+//      '\' and '.', and prose punctuation drops out);
+//   2. split each segment on '_' / '-' runs; an ASCII-only piece is then split
+//      on camelCase, PascalCase and acronym-run boundaries, while a piece
+//      holding any non-ASCII letter (Gruesse with an umlaut, Japanese text) is
+//      kept whole, lowercased -- case splitting is only meaningful for ASCII
+//      identifiers, and the FTS5 unicode61 tokenizer folds the rest the same
+//      way at index and query time;
 //   3. lowercase, then stem every part with a dependency-free Porter stemmer;
 //   4. when a segment split into more than one part, ALSO keep the original
 //      identifier (lowercased, separators removed) so an exact identifier
 //      query still matches it as one token.
 //
-// Every emitted token is [a-z0-9]+ only, so the output is safe to store in an
-// FTS5 column and, via orJoinFtsTerms (the ONE sanitization point -- each
+// Every emitted token is lowercase letters/marks/digits only ([a-z0-9]+ for
+// ASCII input), so the output is safe to store in an FTS5 column and, via
+// orJoinFtsTerms (the ONE sanitization point -- each
 // token is still quoted there), safe to feed to FTS5 MATCH. Pure, synchronous,
 // no I/O.
 
@@ -28,9 +34,10 @@ import { orJoinFtsTerms } from './audn.js';
  * Bumped whenever the token stream this module emits changes, so an index
  * built by an older normalizer is detected and rebuilt (kb index metadata).
  */
-export const KB_NORMALIZER_VERSION = 1;
+export const KB_NORMALIZER_VERSION = 2;
 
-const SEGMENT_SPLIT = /[^A-Za-z0-9_-]+/;
+const SEGMENT_SPLIT = /[^\p{L}\p{M}\p{N}_-]+/u;
+const ASCII_PIECE = /^[\x00-\x7F]*$/;
 const SEPARATOR_SPLIT = /[_-]+/;
 // Acronym run followed by a capitalized word (HTTP|Kb), a capitalized or
 // lowercase word with trailing digits, a bare upper run, or a digit run.
@@ -41,6 +48,10 @@ export function splitIdentifier(segment: string): string[] {
   const parts: string[] = [];
   for (const piece of segment.split(SEPARATOR_SPLIT)) {
     if (!piece) continue;
+    if (!ASCII_PIECE.test(piece)) {
+      parts.push(piece.toLowerCase());
+      continue;
+    }
     const caseParts = piece.match(CASE_PARTS);
     if (!caseParts) continue;
     for (const p of caseParts) parts.push(p.toLowerCase());
@@ -68,7 +79,7 @@ function segmentTokens(segment: string): string[] {
 /** Normalized token list for arbitrary text (index or query side). */
 export function normalizeTokens(text: string): string[] {
   const out: string[] = [];
-  for (const segment of text.split(SEGMENT_SPLIT)) {
+  for (const segment of text.normalize('NFKC').split(SEGMENT_SPLIT)) {
     if (!segment) continue;
     out.push(...segmentTokens(segment));
   }
