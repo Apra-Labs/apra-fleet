@@ -18,6 +18,7 @@ import {
 } from '../services/credential-store.js';
 import { mintLiveSecret } from '../services/live-secret-cache.js';
 import { LiveSecretError } from '../services/live-secret-runner.js';
+import { hasMemberInstallMarker } from './install-guard.js';
 
 const NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -88,6 +89,13 @@ function parseLiveArgs(args: string[]): LiveSecretSpec | null {
  * script's output is never shown. No failure path echoes the script text.
  */
 async function handleLive(args: string[]): Promise<void> {
+  // Temporary limit for 0.4.5, to be removed: renewal comes only from the
+  // orchestrator, so fleet would not manage a live secret registered on a remote
+  // member. The marker is in the data dir this command would write to.
+  if (hasMemberInstallMarker()) {
+    console.error("FAILED: member-install: this is a remote member's install, where a live secret cannot be registered. Register it on the orchestrator, which is the only place fleet renews live secrets.");
+    process.exit(1);
+  }
   const name = args[0];
   const spec = parseLiveArgs(args.slice(1));
   if (!name || name.startsWith('-') || !spec) {

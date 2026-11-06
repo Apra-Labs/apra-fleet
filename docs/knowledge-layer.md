@@ -657,6 +657,10 @@ apra-fleet secret --live KB_TOKEN [--env 'VAR={{secret.R}}']... -- <script file>
 kb_setup with provider=http, remote=https://<host>, token={{secret.KB_TOKEN}}
 ```
 
+In 0.4.5 `secret --live` is refused on a remote member's install (one with
+`data/member-install.json`), because fleet renews live secrets only on the
+orchestrator.
+
 - **Inline:** the script runs in the orchestrator's shell: bash, or PowerShell
   on Windows. A `{{secret.R}}` behaves like text replacement, but it is really
   rewritten to an env var reference (`"$FLEET_SECRET_R"` in bash,
