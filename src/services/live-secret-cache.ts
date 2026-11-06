@@ -55,7 +55,13 @@ interface CacheEntry {
   lastFailureReason?: string;
   consecutiveFailures: number;
   backoffUntilMs?: number;
-  inFlight?: Promise<string>;
+  inFlight?: Promise<LiveTokenDetail>;
+}
+
+/** A token and the expires_at its script printed for it, always from the same mint. */
+export interface LiveTokenDetail {
+  token: string;
+  expiresAt: string;
 }
 
 const _entries = new Map<string, CacheEntry>();
@@ -93,6 +99,10 @@ export function liveBackoffMs(consecutiveFailures: number): number {
 
 function hasUnexpiredToken(entry: CacheEntry, nowMs: number): boolean {
   return entry.token !== undefined && entry.expiresAtMs !== undefined && nowMs < entry.expiresAtMs;
+}
+
+function cachedDetail(entry: CacheEntry): LiveTokenDetail {
+  return { token: entry.token as string, expiresAt: entry.expiresAt as string };
 }
 
 function backoffError(name: string, entry: CacheEntry): LiveSecretError {
@@ -143,7 +153,7 @@ export async function mintLiveSecret(record: LiveSecretRecord): Promise<LiveToke
   return runLiveSecret({ credential: name, invocation, env, cwd: path.resolve(credentialDataDir()) });
 }
 
-function startMint(name: string, record: LiveSecretRecord, entry: CacheEntry): Promise<string> {
+function startMint(name: string, record: LiveSecretRecord, entry: CacheEntry): Promise<LiveTokenDetail> {
   const run = mintLiveSecret(record)
     .then((minted) => {
       const obtainedAtMs = Date.now();
@@ -156,7 +166,7 @@ function startMint(name: string, record: LiveSecretRecord, entry: CacheEntry): P
       entry.lastMintedAt = new Date(obtainedAtMs).toISOString();
       entry.consecutiveFailures = 0;
       entry.backoffUntilMs = undefined;
-      return minted.token;
+      return { token: minted.token, expiresAt: minted.expiresAt };
     }, (err: unknown) => {
       const failedAtMs = Date.now();
       // A non-runner error is not quoted: only the runner's reasons are known leak-free.
@@ -165,7 +175,7 @@ function startMint(name: string, record: LiveSecretRecord, entry: CacheEntry): P
       entry.lastFailureAt = new Date(failedAtMs).toISOString();
       entry.lastFailureReason = reason;
       entry.backoffUntilMs = failedAtMs + liveBackoffMs(entry.consecutiveFailures);
-      if (hasUnexpiredToken(entry, failedAtMs)) return entry.token as string;
+      if (hasUnexpiredToken(entry, failedAtMs)) return cachedDetail(entry);
       throw err instanceof LiveSecretError ? err : new LiveSecretError(name, 'unexpected', reason);
     });
   const shared = run.finally(() => {
@@ -176,22 +186,29 @@ function startMint(name: string, record: LiveSecretRecord, entry: CacheEntry): P
 }
 
 /**
- * The token for live secret `name`, from the cache or from one mint shared by
- * every concurrent caller. Rejects with a LiveSecretError (leak-free) when the
+ * The token for live secret `name` with its expiry, from the cache or from one
+ * mint shared by every concurrent caller. The two come from one mint, so a caller
+ * that stores the expiry next to the token (a push to a member) cannot pair a token
+ * with a later mint's expiry. Rejects with a LiveSecretError (leak-free) when the
  * script fails or is backing off.
  */
-export function getLiveToken(name: string, record: LiveSecretRecord): Promise<string> {
+export function getLiveTokenDetail(name: string, record: LiveSecretRecord): Promise<LiveTokenDetail> {
   const entry = entryFor(name, record);
   if (entry.inFlight) return entry.inFlight;
   const nowMs = Date.now();
   if (entry.token !== undefined && entry.refreshAtMs !== undefined && nowMs <= entry.refreshAtMs) {
-    return Promise.resolve(entry.token);
+    return Promise.resolve(cachedDetail(entry));
   }
   if (entry.backoffUntilMs !== undefined && nowMs < entry.backoffUntilMs) {
-    if (hasUnexpiredToken(entry, nowMs)) return Promise.resolve(entry.token as string);
+    if (hasUnexpiredToken(entry, nowMs)) return Promise.resolve(cachedDetail(entry));
     return Promise.reject(backoffError(name, entry));
   }
   return startMint(name, record, entry);
+}
+
+/** The token alone: see getLiveTokenDetail. */
+export function getLiveToken(name: string, record: LiveSecretRecord): Promise<string> {
+  return getLiveTokenDetail(name, record).then((detail) => detail.token);
 }
 
 /**
@@ -202,6 +219,26 @@ export function getLiveToken(name: string, record: LiveSecretRecord): Promise<st
 export function dropLiveToken(name: string, rejectedToken: string): void {
   const entry = _entries.get(name);
   if (!entry || entry.token !== rejectedToken) return;
+  clearToken(entry);
+}
+
+/**
+ * Forget the cached token when it was minted at or before `rejectedAtMs`, for a
+ * rejection seen somewhere that cannot name the token (a remote member's own KB
+ * call). A token minted later is kept, because the rejection is not about it. A
+ * mint already in flight is left to finish: its token is newer, and with the old
+ * one gone a failed mint cannot fall back to the token that was rejected. Backoff
+ * is untouched. Returns true when a token was dropped.
+ */
+export function dropLiveTokenMintedBefore(name: string, rejectedAtMs: number): boolean {
+  const entry = _entries.get(name);
+  if (!entry || entry.token === undefined || entry.lastMintedAt === undefined) return false;
+  if (Date.parse(entry.lastMintedAt) > rejectedAtMs) return false;
+  clearToken(entry);
+  return true;
+}
+
+function clearToken(entry: CacheEntry): void {
   entry.token = undefined;
   entry.expiresAt = undefined;
   entry.expiresAtMs = undefined;
