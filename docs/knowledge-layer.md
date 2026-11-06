@@ -904,9 +904,10 @@ With the http provider, `kb_feedback` is sent to the server as
 `POST /api/kb/feedback` with body `{id, reason, role}` and returns the
 server's answer unchanged; the client never sets confidence. While the server
 is unreachable the feedback is queued offline with captures and invalidates
-and the tool answers `{id, queued: true}`. The server must implement that
-route: the bundled `kb-server` command does not serve it yet, so against it
-`kb_feedback` fails with the server's HTTP 404.
+and the tool answers `{id, queued: true}`. The bundled `kb-server` command
+serves that route: it validates the role like the tool does, marks the entry
+stale and flagged without touching confidence, and answers an unknown id with
+HTTP 404 and code `ENTRY_NOT_FOUND`.
 
 With a named secret the config holds a reference instead of a ciphertext:
 
