@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "c2ccca462fd60b150aa750bed0f410ab5bce1933",
     "branch": "main",
-    "entry_count": 128
+    "entry_count": 130
   },
   "entries": [
     {
@@ -27,6 +27,34 @@
         "packages/apra-fleet-se/src/supervisor/fleet-members.mjs": "186eaa038d775ac2912e80b9b2214da2ae00bf3a",
         "src/services/onboarding.ts": "20513f4211fed7b80c6d86d321a1fcf3afb01382",
         "src/services/tool-registry.ts": "9b38a4b703924d141c74ccc300f92f8a7bb3315e"
+      }
+    },
+    {
+      "id": "0393845a-9de5-44c8-b1d4-ce5bf5f156eb",
+      "type": "knowledge",
+      "title": "kb_feedback is served by both SqliteProvider and HttpKbProvider",
+      "summary": "kb_feedback no longer goes through requireSqliteProject: over an http KB it POSTs {id, reason, role} to /api/kb/feedback and returns the server body, or {id, queued:true} when offline. The bundled kb-server has no feedback route.",
+      "symbols": [
+        "kbFeedback",
+        "HttpKbProvider.feedback",
+        "HttpKbFeedbackResult",
+        "QueuedOperation"
+      ],
+      "source_files": [
+        "src/tools/kb-feedback.ts",
+        "src/services/knowledge/http-provider.ts",
+        "memory-contract/v1/response-schemas.mjs",
+        "memory-contract/v1/methods.json",
+        "src/commands/kb-server.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T06:44:23.485Z",
+      "source_file_hashes": {
+        "memory-contract/v1/methods.json": "785348ac7a83ef356667aa19dc1c45ae2768c586",
+        "memory-contract/v1/response-schemas.mjs": "14ebd727bce2e25ffc22398ed43136b8c56913fe",
+        "src/commands/kb-server.ts": "1fc6ea069a3c14a96c7a67cbdfc21a878f2b3bca",
+        "src/services/knowledge/http-provider.ts": "4b3e4d77410ab424fae83494616f17bd505d3ce4",
+        "src/tools/kb-feedback.ts": "857140f5fcc4cb75898cd746926ef20c7d58662b"
       }
     },
     {
@@ -520,6 +548,28 @@
         "packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json": "58fffe7c86aa875100bc8b66769c43a462cc3111",
         "packages/apra-fleet-se/apra-pm/test/auto-sprint-schemas-drift.test.mjs": "eaca88fa5ff10f41b4acd11099776d9e78415b0e",
         "packages/apra-fleet-se/test/golden-transcript.test.mjs": "9ec222f8856aa6a5935b49d144ae6caf2fd05ee9"
+      }
+    },
+    {
+      "id": "33755a95-9855-49cf-90da-22e36bb6f33e",
+      "type": "learning",
+      "title": "Stale gitignored dist/agents/schemas fails root npm test via the se staleness guard",
+      "summary": "npm run build does not refresh dist/agents/schemas. When the apra-pm source schemas change after a dist-pm run, the apra-fleet-se contracts-schema-dist-staleness-guard test fails root npm test with DRIFTED entries, even on a branch that touches no schema. npm run dist-pm fixes it.",
+      "symbols": [
+        "DIST_BUNDLED_SCHEMAS_DIR",
+        "PACKAGE_LOCAL_SCHEMAS_DIR"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs",
+        "scripts/run-all-tests.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T06:44:28.049Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs": "4c07b8ed157d0d89186c903466ba757be2c48ba6",
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs": "1db1ddf04d24ac369fb510e69d39af9406640bbe",
+        "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637"
       }
     },
     {
