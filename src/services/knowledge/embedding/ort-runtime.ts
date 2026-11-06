@@ -25,7 +25,12 @@ import { ONNX_FILE_FOR_DTYPE, type EmbeddingProfile } from './profiles.js';
 /** A loaded model: embeds already-prefixed texts into pooled (and, per profile, normalized) vectors. */
 export interface EmbeddingRuntime {
   dims: number;
-  embed(texts: string[]): Promise<Float32Array[]>;
+  /**
+   * Embed texts. opts.priority 'high' (search queries) is served ahead of
+   * 'normal' work (background document batches) by runtimes that queue;
+   * others ignore it.
+   */
+  embed(texts: string[], opts?: { priority?: 'high' | 'normal' }): Promise<Float32Array[]>;
   /** Release the runtime (terminates its worker). Optional: in-process and fake runtimes have nothing to free. */
   close?(): Promise<void>;
   /**

@@ -69,6 +69,26 @@ describe('embedding runs off the main thread', () => {
     expect(maxGapMs).toBeGreaterThan(BUSY_MS * TEXTS.length * 0.8);
   });
 
+  it('a query is served ahead of a long background document batch (not after it)', async () => {
+    const folder = writeTinyModel(path.join(tmp, 'tiny'));
+    // 100 ms of CPU per text, settled through microtasks only -- like onnxruntime-web.
+    const e = new Embedder({ choice: tinyChoice(folder), runtimeFactory: workerFactory(busyRuntimeSource(100)), log: vi.fn() });
+    expect(await e.embedQuery('warm')).toBeInstanceOf(Float32Array);
+    const batch = e.embedDocuments(Array.from({ length: 20 }, (_, i) => `doc ${i}`)); // ~2 s
+    let batchDone = false;
+    void batch.then(() => { batchDone = true; });
+    await new Promise((r) => setTimeout(r, 150));
+    const started = Date.now();
+    const q = await e.embedQuery('urgent');
+    const waited = Date.now() - started;
+    expect(q).toBeInstanceOf(Float32Array);
+    expect(batchDone).toBe(false);
+    // At most the one document text already running, plus the query itself.
+    expect(waited).toBeLessThan(600);
+    expect((await batch)!).toHaveLength(20);
+    await e.close();
+  });
+
   it('vectors come back as Float32Arrays with their own buffers (transferred)', async () => {
     const folder = writeTinyModel(path.join(tmp, 'tiny'));
     const e = new Embedder({ choice: tinyChoice(folder), runtimeFactory: workerFactory(busyRuntimeSource(1)), log: vi.fn() });

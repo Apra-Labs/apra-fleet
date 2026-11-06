@@ -255,14 +255,14 @@ export async function createWorkerRuntime(
 
   return {
     dims,
-    embed(texts: string[]): Promise<Float32Array[]> {
+    embed(texts: string[], opts?: { priority?: 'high' | 'normal' }): Promise<Float32Array[]> {
       if (closing) return Promise.reject(new EmbedWorkerLostError('embed worker closed'));
       if (lost !== null) return Promise.reject(new EmbedWorkerLostError(lost));
       const id = nextId++;
       return new Promise<Float32Array[]>((resolve, reject) => {
         pending.set(id, { resolve, reject });
         updateRef();
-        const msg: MainToWorker = { type: 'embed', id, texts };
+        const msg: MainToWorker = { type: 'embed', id, texts, priority: opts?.priority ?? 'normal' };
         worker.postMessage(msg);
       });
     },

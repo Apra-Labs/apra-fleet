@@ -159,7 +159,8 @@ export class Embedder {
 
   /** Embed a search query (profile query prefix applied). Null when disabled or failed. */
   async embedQuery(text: string): Promise<Float32Array | null> {
-    const out = await this.embedWith([text], this.profile?.queryPrefix ?? '');
+    // High priority: a search query goes ahead of background document batches.
+    const out = await this.embedWith([text], this.profile?.queryPrefix ?? '', 'high');
     return out ? out[0] : null;
   }
 
@@ -169,11 +170,11 @@ export class Embedder {
     return this.embedWith(texts, this.profile?.docPrefix ?? '');
   }
 
-  private async embedWith(texts: string[], prefix: string): Promise<Float32Array[] | null> {
+  private async embedWith(texts: string[], prefix: string, priority: 'high' | 'normal' = 'normal'): Promise<Float32Array[] | null> {
     try {
       const runtime = await this.ensureLoaded();
       if (!runtime) return null;
-      return await runtime.embed(texts.map((t) => prefix + t));
+      return await runtime.embed(texts.map((t) => prefix + t), { priority });
     } catch (err) {
       if (err instanceof EmbedWorkerLostError) {
         // The worker died under this request: the runtime is gone (onLost has
