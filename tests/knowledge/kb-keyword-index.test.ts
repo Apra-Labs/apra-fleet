@@ -244,11 +244,20 @@ describe('migration from the old external-content FTS schema', () => {
     const ins = old.prepare(
       'INSERT INTO entries (id, type, title, summary, content, source_files, symbols, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
-    for (let i = 0; i < OLD_COUNT; i++) {
-      ins.run(
-        `legacy-${i}`, 'knowledge', `Legacy fact ${i} about orbitwidget`, `Summary ${i}.`, `Body ${i}.`,
-        '["src/a.ts"]', `["legacyHandler${i}"]`, 'CONFIRMED', new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
-      );
+    // One transaction for all fixture rows: per-row autocommit made this
+    // beforeAll slow enough to time out on slow machines.
+    old.exec('BEGIN');
+    try {
+      for (let i = 0; i < OLD_COUNT; i++) {
+        ins.run(
+          `legacy-${i}`, 'knowledge', `Legacy fact ${i} about orbitwidget`, `Summary ${i}.`, `Body ${i}.`,
+          '["src/a.ts"]', `["legacyHandler${i}"]`, 'CONFIRMED', new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
+        );
+      }
+      old.exec('COMMIT');
+    } catch (err) {
+      old.exec('ROLLBACK');
+      throw err;
     }
     rowidsBefore = old.prepare('SELECT id, rowid AS r FROM entries ORDER BY rowid').all();
     old.close();
