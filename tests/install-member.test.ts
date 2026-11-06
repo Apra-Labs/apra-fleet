@@ -164,6 +164,25 @@ describe('install --member', () => {
     expect([...files.keys()].filter(k => k.includes('member-install'))).toEqual([expect.stringContaining('member-install.json')]);
   });
 
+  describe('what apra-fleet update runs on a member, through the real installer', () => {
+    const MARKER = `${HOME}/.apra-fleet/data/member-install.json`;
+    const markerRemoved = () => vi.mocked(fs.rmSync).mock.calls.some(c => String(c[0]).replace(/\\/g, '/').endsWith('member-install.json'));
+
+    beforeEach(() => { files.set(MARKER, JSON.stringify({ version: 'old', port: 7523 })); });
+
+    it('the arguments update now passes keep the marker', async () => {
+      const { memberInstallArgs } = await import('../src/services/member-fleet-install.js');
+      await runInstall(memberInstallArgs('claude').slice(1));
+      expect(markerRemoved()).toBe(false);
+      expect(files.has(MARKER)).toBe(true);
+    });
+
+    it('the full-install arguments update used to pass clear it, so the refusal of secret --live would lift', async () => {
+      await runInstall(['--force', '--llm', 'claude', '--skill', 'none', '--workflows', 'none']);
+      expect(markerRemoved()).toBe(true);
+    });
+  });
+
   it('install step labels are sequential: no duplicate or skipped numbers', async () => {
     for (const args of [['--member'], ['--skill', 'none']]) {
       vi.mocked(console.log).mockClear();
