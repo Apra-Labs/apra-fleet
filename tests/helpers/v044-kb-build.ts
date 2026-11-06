@@ -83,7 +83,8 @@ export async function buildV044Kb(sandboxDir: string): Promise<V044Kb | { ok: fa
   const tarFile = path.join(dir, 'src.tar');
   try {
     execFileSync('git', ['-C', REPO_ROOT, 'archive', '-o', tarFile, V044_TAG, 'src'], { stdio: 'pipe' });
-    execFileSync('tar', ['-xf', tarFile, '-C', dir], { stdio: 'pipe' });
+    // A relative name: GNU tar reads 'C:\...' as a remote host:path.
+    execFileSync('tar', ['-xf', path.basename(tarFile)], { cwd: dir, stdio: 'pipe' });
   } catch (err) {
     return { ok: false, reason: `could not extract ${V044_TAG} sources: ${(err as Error).message}` };
   }

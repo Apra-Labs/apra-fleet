@@ -1634,11 +1634,20 @@ export class SqliteProvider implements MemoryProvider {
   private bumpReturned(db: DatabaseSync, ids: string[]): void {
     if (ids.length === 0 || getSessionEngineOrigin()) return;
     const now = new Date().toISOString();
-    db.prepare(`
-      UPDATE entries SET use_count = use_count + 1, last_accessed = ?
-      WHERE id IN (${ids.map(() => '?').join(',')})
-    `).run(now, ...ids);
-    this.insertUsageEvents(db, ids, 'returned', 'query', now);
+    // One transaction: a separate commit per returned row is most of a read's
+    // cost on a slow filesystem.
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare(`
+        UPDATE entries SET use_count = use_count + 1, last_accessed = ?
+        WHERE id IN (${ids.map(() => '?').join(',')})
+      `).run(now, ...ids);
+      this.insertUsageEvents(db, ids, 'returned', 'query', now);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   private insertUsageEvents(db: DatabaseSync, ids: string[], kind: 'returned' | 'cited', source: string, at: string): number {
