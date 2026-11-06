@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "c2ccca462fd60b150aa750bed0f410ab5bce1933",
     "branch": "main",
-    "entry_count": 132
+    "entry_count": 133
   },
   "entries": [
     {
@@ -1910,6 +1910,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T10:23:39.272Z"
+    },
+    {
+      "id": "c72f090a-334f-4c0a-8b8b-a2fedfa7b81b",
+      "type": "learning",
+      "title": "A profile change via kb_setup or the CLI shows only after the MCP session reconnects",
+      "summary": "The KB tool profile is read in scopeGatedServer once per session, when registerAllTools runs. An open session keeps its tool list after kb_setup or apra-fleet kb profile changes knowledge/config.json, so a test or user must reconnect to see the new list.",
+      "symbols": [
+        "scopeGatedServer",
+        "fullSessionKbToolProfile",
+        "readKbToolProfileFromDisk",
+        "runKbProfile"
+      ],
+      "source_files": [
+        "src/services/tool-registry.ts",
+        "src/cli/kb-profile.ts",
+        "tests/kb-tool-profile-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T07:26:57.942Z",
+      "source_file_hashes": {
+        "src/cli/kb-profile.ts": "2ae2abf6f3c4a62e3ca10f3013fedcd43103bb24",
+        "src/services/tool-registry.ts": "05e3d5e04b949b3bfefef7693c230e59da947f02",
+        "tests/kb-tool-profile-e2e.test.ts": "949f75c916529d89cd7b80d5433042449935d31a"
+      }
     },
     {
       "id": "cc085797-4b47-455d-9357-fbbb267281ed",
