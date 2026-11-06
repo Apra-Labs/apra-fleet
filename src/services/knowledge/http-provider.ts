@@ -166,7 +166,7 @@ export class HttpKbProvider implements MemoryProvider {
       if (this.offlineQueue.length > 0) {
         process.stderr.write(
           `[KB] WARNING: offline queue has ${this.offlineQueue.length} unsaved operations (captures, invalidations, feedback). ` +
-          `Reconnect to the KB server and run kb_harvest to recover from the session transcript.\n`
+          `They never reached the KB server and the queue is lost when this process exits. Repeat them once the KB server is reachable.\n`
         );
       }
     };

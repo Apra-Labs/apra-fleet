@@ -253,6 +253,10 @@ describe('HttpKbProvider', () => {
           l => l.includes('[KB] WARNING: offline queue has') && l.includes('unsaved operations')
         );
         expect(hasWarning).toBe(true);
+        // kb_harvest is hidden under the developer profile and cannot recover
+        // queued invalidations or feedback, so the warning must not send anyone there.
+        expect(stderrLines.join('')).toMatch(/lost when this process exits/);
+        expect(stderrLines.join('')).not.toMatch(/kb_harvest/);
       } finally {
         provider.dispose();
       }

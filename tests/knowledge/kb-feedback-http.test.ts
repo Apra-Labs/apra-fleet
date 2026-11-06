@@ -25,6 +25,10 @@ const REQUEST_SCHEMA_PATH = path.join(
   __dirname, '..', '..', 'memory-contract', 'v1', 'schemas', 'kb_feedback.request.json',
 );
 
+const QUEUED_FIXTURE_PATH = path.join(
+  __dirname, '..', '..', 'memory-contract', 'v1', 'fixtures', 'kb_feedback', 'happy-queued-offline.json',
+);
+
 const TOKEN_ENV_VAR = 'APRA_FLEET_TEST_KB_HTTP_TOKEN';
 const TOKEN_FIXTURE_PATH = path.join(__dirname, 'fixtures', 'kb-http-test-token.txt');
 
@@ -224,6 +228,18 @@ describe('kb_feedback over the HTTP KB provider (GitHub #761)', () => {
     const fb = feedbackRequests();
     expect(fb).toHaveLength(1);
     expect(fb[0].body).toEqual({ id: 'remote-entry-2', reason: 'Stale advice.', role: 'planner' });
+  });
+
+  it('the committed happy-queued-offline fixture is what the real tool answers offline', async () => {
+    const fixture = JSON.parse(fs.readFileSync(QUEUED_FIXTURE_PATH, 'utf-8'));
+    const folder = makeRepoPath();
+    const provider = await httpProviderFor(folder);
+    await stopStub();
+
+    const text = await kbFeedback(fixture.request, { folder });
+
+    expect(text).toBe(fixture.response.content[0].text);
+    expect(provider.offlineQueue).toHaveLength(1);
   });
 
   it('member session: E-MEMBER-VIEW-READ-ONLY and the server receives nothing', async () => {
