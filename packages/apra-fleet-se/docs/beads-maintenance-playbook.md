@@ -160,8 +160,8 @@ local scratch clones) -- there is no automated version of this today.
 
 First, in each clone, run `bd export` and compare it with the source's
 pre-flatten export: a write that landed after the prerequisite check is lost
-when `.beads` is replaced. Replay what differs, plus anything saved in
-prerequisite 1, on the new clone. Then:
+when `.beads` is replaced. Note what differs. Then run the commands below, and
+replay those changes, plus anything saved in prerequisite 1, on the new clone:
 
 ```bash
 mv .beads .beads.bak-$(date +%s)
