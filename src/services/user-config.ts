@@ -27,7 +27,15 @@ export interface UserConfig {
      *  only attaches the structured warning. */
     mode?: 'enforce' | 'warn';
   };
+  /** Live secret refresh threshold T = min(refreshFraction x lifetime, refreshMaxSeconds). */
+  liveSecrets?: {
+    refreshFraction?: number;
+    refreshMaxSeconds?: number;
+  };
 }
+
+export const DEFAULT_LIVE_SECRET_REFRESH_FRACTION = 0.1;
+export const DEFAULT_LIVE_SECRET_REFRESH_MAX_SECONDS = 600;
 
 /**
  * Default length of the command/prompt preview kept on a fleet-log line. The
@@ -171,6 +179,31 @@ export function loadUserConfig(): UserConfig {
     result.contextAdmission = parsedCa;
   }
 
+  if (obj.liveSecrets && typeof obj.liveSecrets === 'object' && !Array.isArray(obj.liveSecrets)) {
+    const ls = obj.liveSecrets as Record<string, unknown>;
+    const parsedLs: NonNullable<UserConfig['liveSecrets']> = {};
+
+    if (ls.refreshFraction !== undefined) {
+      if (typeof ls.refreshFraction === 'number' && ls.refreshFraction > 0 && ls.refreshFraction < 1) {
+        parsedLs.refreshFraction = ls.refreshFraction;
+      } else {
+        console.error('[fleet] user config: liveSecrets.refreshFraction must be a number between 0 and 1 (both exclusive), using the default');
+      }
+    }
+
+    if (ls.refreshMaxSeconds !== undefined) {
+      if (typeof ls.refreshMaxSeconds === 'number' && Number.isFinite(ls.refreshMaxSeconds) && ls.refreshMaxSeconds > 0) {
+        parsedLs.refreshMaxSeconds = ls.refreshMaxSeconds;
+      } else {
+        console.error('[fleet] user config: liveSecrets.refreshMaxSeconds must be a positive number, using the default');
+      }
+    }
+
+    result.liveSecrets = parsedLs;
+  } else if (obj.liveSecrets !== undefined) {
+    console.error('[fleet] user config: liveSecrets must be an object, using the defaults');
+  }
+
   cached = result;
   return cached;
 }
@@ -183,6 +216,15 @@ export function getModelOverride(provider: LlmProvider, tier: ModelTier): string
 /** Characters of command/prompt text to keep on a fleet-log line (config-driven). */
 export function getLogPreviewChars(): number {
   return loadUserConfig().logging?.previewChars ?? DEFAULT_LOG_PREVIEW_CHARS;
+}
+
+/** The live secret refresh settings (config-driven); an absent or invalid value gives the default. */
+export function getLiveSecretRefreshConfig(): { refreshFraction: number; refreshMaxSeconds: number } {
+  const ls = loadUserConfig().liveSecrets;
+  return {
+    refreshFraction: ls?.refreshFraction ?? DEFAULT_LIVE_SECRET_REFRESH_FRACTION,
+    refreshMaxSeconds: ls?.refreshMaxSeconds ?? DEFAULT_LIVE_SECRET_REFRESH_MAX_SECONDS,
+  };
 }
 
 /** Reset the cached config -- for testing only. */

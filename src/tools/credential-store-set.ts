@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { collectOobApiKey } from '../services/auth-socket.js';
 import { decryptPassword } from '../utils/crypto.js';
-import { credentialSet, isCredentialHelper } from '../services/credential-store.js';
+import { credentialSet, isLiveSecret, secretBoundBy } from '../services/credential-store.js';
 import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreSetSchema = z.object({
@@ -22,8 +22,13 @@ export const credentialStoreSetSchema = z.object({
 export type CredentialStoreSetInput = z.infer<typeof credentialStoreSetSchema>;
 
 export async function credentialStoreSet(input: CredentialStoreSetInput): Promise<string> {
-  if (isCredentialHelper(input.name)) {
-    return `[x] '${input.name}' is a credential helper and cannot be set through this tool. Replace or remove it from the CLI: apra-fleet secret --set / --delete ${input.name}.`;
+  if (isLiveSecret(input.name)) {
+    return `[FAIL] '${input.name}' is a live secret and cannot be set through this tool. Replace or remove it from the CLI: apra-fleet secret --set / --delete ${input.name}.`;
+  }
+  // Refused before asking for a value; credentialSet holds the same rule.
+  const consumers = input.persist ? [] : secretBoundBy(input.name);
+  if (consumers.length > 0) {
+    return `[FAIL] '${input.name}' is in use by: ${consumers.join(', ')}, so it cannot have a session value. Use persist: true, or apra-fleet secret --set ${input.name} --persist.`;
   }
   const result = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt });
 

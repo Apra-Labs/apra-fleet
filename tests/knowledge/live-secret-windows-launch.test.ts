@@ -2,15 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  buildHelperInvocation,
+  buildProgramInvocation,
   isBatchProgram,
   quoteCmdArg,
-  runCredentialHelper,
-} from '../../src/services/credential-helper-runner.js';
-import { afterStdinJs, futureIso, makeTempDir, writeNodeHelper } from './token-command-helpers.js';
+} from '../../src/services/live-secret-runner.js';
+import { afterStdinJs, futureIso, makeTempDir, runLaunch, writeNodeHelper } from './token-command-helpers.js';
 
 const CREDENTIAL = 'kb-windows-launch-cred';
-const AUDIENCE = 'https://kb.example.test/api';
+
 const BS = '\\';
 
 /** Every character cmd.exe or the argv parser treats specially, plus a mixed hostile value. */
@@ -89,30 +88,44 @@ describe('quoteCmdArg (runs on every OS)', () => {
   });
 });
 
-describe('buildHelperInvocation (runs on every OS)', () => {
-  it('launches a .cmd or .bat on Windows through cmd.exe /d /v:off /s /c with every piece quoted', () => {
+describe('buildProgramInvocation (runs on every OS)', () => {
+  const CMD = `C:${BS}Windows${BS}System32${BS}cmd.exe`;
+  const PS = `C:${BS}Windows${BS}System32${BS}WindowsPowerShell${BS}v1.0${BS}powershell.exe`;
+  const tools = (tool: string) => (tool === 'cmd' ? CMD : tool === 'powershell' ? PS : null);
+
+  it('launches a .cmd or .bat on Windows through the resolved cmd.exe /d /v:off /s /c with every piece quoted', () => {
     const program = `C:${BS}Program Files${BS}az${BS}az.cmd`;
     const args = ['account', 'get-access-token', '%TEMP%'];
-    const inv = buildHelperInvocation(program, args, 'win32', `C:${BS}Windows${BS}system32${BS}cmd.exe`);
-    expect(inv).toEqual({
-      file: `C:${BS}Windows${BS}system32${BS}cmd.exe`,
+    expect(buildProgramInvocation(program, args, 'win32', tools)).toEqual({
+      file: CMD,
       args: ['/d', '/v:off', '/s', '/c', `"${[program, ...args].map(quoteCmdArg).join(' ')}"`],
       windowsVerbatimArguments: true,
     });
-    // An empty ComSpec stands for "unset": an explicit undefined would trigger the parameter default,
-    // process.env.ComSpec, which is set on every Windows host.
-    expect(buildHelperInvocation('C:/x/helper.BAT', [], 'win32', '').file).toBe('cmd.exe');
+    expect(buildProgramInvocation('C:/x/helper.BAT', [], 'win32', tools).file).toBe(CMD);
+  });
+
+  it('refuses a batch file when no absolute cmd.exe can be found, instead of a bare name', () => {
+    expect(() => buildProgramInvocation('C:/x/helper.cmd', [], 'win32', () => null)).toThrow(/cmd\.exe was not found/);
+  });
+
+  it('runs a .ps1 on Windows through the resolved powershell.exe -File', () => {
+    const script = `C:${BS}kb${BS}mint.ps1`;
+    expect(buildProgramInvocation(script, ['a b'], 'win32', tools)).toEqual({
+      file: PS,
+      args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, 'a b'],
+      windowsVerbatimArguments: false,
+    });
   });
 
   it('spawns a .exe on Windows directly, never through cmd.exe', () => {
-    const inv = buildHelperInvocation(`C:${BS}tools${BS}helper.exe`, ['%PATH%', 'a&b'], 'win32', 'cmd.exe');
+    const inv = buildProgramInvocation(`C:${BS}tools${BS}helper.exe`, ['%PATH%', 'a&b'], 'win32', tools);
     expect(inv).toEqual({ file: `C:${BS}tools${BS}helper.exe`, args: ['%PATH%', 'a&b'], windowsVerbatimArguments: false });
   });
 
   it('spawns POSIX programs directly, even one named like a batch file', () => {
-    expect(buildHelperInvocation('/usr/bin/az', ['a b'], 'linux')).toEqual(
+    expect(buildProgramInvocation('/usr/bin/az', ['a b'], 'linux')).toEqual(
       { file: '/usr/bin/az', args: ['a b'], windowsVerbatimArguments: false });
-    expect(buildHelperInvocation('/opt/helper.cmd', ['x'], 'darwin')).toEqual(
+    expect(buildProgramInvocation('/opt/helper.cmd', ['x'], 'darwin')).toEqual(
       { file: '/opt/helper.cmd', args: ['x'], windowsVerbatimArguments: false });
   });
 
@@ -140,7 +153,7 @@ describe('direct spawn of a non-batch helper (runs on every OS)', () => {
     const launch = writeNodeHelper(tmp, 'direct', recordingHelperJs(record), HOSTILE_ARGS);
     expect(isBatchProgram(launch.program)).toBe(false);
 
-    const result = await runCredentialHelper({ credential: CREDENTIAL, audience: AUDIENCE, ...launch });
+    const result = await runLaunch(CREDENTIAL, launch);
 
     expect(result.token).toBe('tok-from-helper');
     const seen = JSON.parse(fs.readFileSync(record, 'utf8'));
@@ -164,14 +177,12 @@ describe('Windows .cmd round trip', () => {
       const cmdFile = path.join(dir, 'fake az.cmd');
       fs.writeFileSync(cmdFile, `@"${process.execPath}" "${dumpScript}" %*\r\n`);
 
-      const result = await runCredentialHelper({
-        credential: CREDENTIAL, audience: AUDIENCE, program: cmdFile, args: HOSTILE_ARGS,
-      });
+      const result = await runLaunch(CREDENTIAL, { program: cmdFile, args: HOSTILE_ARGS });
 
       expect(result.token).toBe('tok-from-helper');
       const seen = JSON.parse(fs.readFileSync(record, 'utf8'));
       expect(seen.argv).toEqual(HOSTILE_ARGS);
-      expect(seen.stdin).toBe(JSON.stringify({ credential: CREDENTIAL, audience: AUDIENCE }));
+      expect(seen.stdin).toBe('');
     },
   );
 });

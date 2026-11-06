@@ -20,6 +20,7 @@ export async function credentialStoreList(): Promise<string> {
   const display = entries.map(e => ({
     name: e.name,
     scope: e.scope,
+    ...(e.kind ? { kind: e.kind } : {}),
     network_policy: e.network_policy,
     created_at: e.created_at,
     members: e.allowedMembers === '*' ? '*' : e.allowedMembers.join(', '),

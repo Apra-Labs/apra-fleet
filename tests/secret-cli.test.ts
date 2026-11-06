@@ -47,6 +47,7 @@ vi.mock('../src/services/credential-store.js', () => ({
   credentialDelete: mockCredentialDelete,
   credentialSet: mockCredentialSet,
   credentialUpdate: mockCredentialUpdate,
+  isLiveSecret: () => false,
 }));
 
 import { runSecret } from '../src/cli/secret.js';

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import fs from 'node:fs';
 import path from 'node:path';
 
-// HttpKbProvider with a credential-helper-backed named credential: the token
+// HttpKbProvider with a live-secret-backed named credential: the token
 // cache (one helper run, shared by concurrent requests, refreshed before
 // expiry), the backoff after a helper failure, the 401 drop-rerun-retry rule,
 // and the fleet_status credential block. Real pieces only: a real node helper
@@ -18,14 +18,14 @@ import { HttpKbProvider, KbHttpAuthError } from '../../src/services/knowledge/ht
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { KB_CONFIG_PATH, readKbConfigFromDisk } from '../../src/services/knowledge/kb-config.js';
 import { resetKbHttpAuthState } from '../../src/services/knowledge/kb-http-auth-state.js';
-import { credentialHelperSet, credentialDelete } from '../../src/services/credential-store.js';
+import { prepareLiveSecret, saveLiveSecret, credentialDelete } from '../../src/services/credential-store.js';
 import {
-  resetHelperTokenCache,
-  helperRefreshAt,
-  helperBackoffMs,
-  HELPER_BACKOFF_BASE_MS,
-  HELPER_BACKOFF_MAX_MS,
-} from '../../src/services/credential-helper-cache.js';
+  resetLiveTokenCache,
+  liveRefreshAt,
+  liveBackoffMs,
+  LIVE_BACKOFF_BASE_MS,
+  LIVE_BACKOFF_MAX_MS,
+} from '../../src/services/live-secret-cache.js';
 import { kbHttpCredentialHealth, kbCredentialCompactLine } from '../../src/tools/check-status.js';
 import { getActiveLogFile } from '../../src/utils/log-helpers.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
@@ -36,11 +36,11 @@ import {
   helperRunOf,
   type CountingHelper,
   type StubKbServer,
-} from './kb-credential-helper-fixture.js';
+} from './kb-live-secret-fixture.js';
 
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-const NAME = `KB_HELPER_${RUN}`;
-const PREFIX = `zqcanary-kbhelper-${RUN}`;
+const NAME = `KB_LIVE_${RUN}`;
+const PREFIX = `zqcanary-kblive-${RUN}`;
 
 let stub: StubKbServer;
 let tmp: string;
@@ -53,7 +53,7 @@ const stderrChunks: string[] = [];
 const originalStderrWrite = process.stderr.write;
 
 function register(): void {
-  credentialHelperSet(NAME, helper.launch.program, helper.launch.args);
+  saveLiveSecret(prepareLiveSecret(NAME, { program: helper.launch.program, args: helper.launch.args, env: [] }));
 }
 
 function newProvider(): HttpKbProvider {
@@ -82,8 +82,8 @@ async function expectAuthError(p: Promise<unknown>, reason: string): Promise<KbH
   expect(err.code).toBe('E-KB-HTTP-AUTH');
   expect(err.reason).toBe(reason);
   expect(err.secretName).toBe(NAME);
-  expect(err.message).toContain(`credential helper "${NAME}"`);
-  expect(err.message).toContain(`apra-fleet secret --helper ${NAME} --`);
+  expect(err.message).toContain(`live secret "${NAME}"`);
+  expect(err.message).toContain(`apra-fleet secret --live ${NAME}`);
   return err;
 }
 
@@ -103,7 +103,7 @@ beforeEach(() => {
   tmp = makeTempDir('kb-http-cred-helper-');
   helper = writeCountingHelper(tmp, PREFIX);
   register();
-  resetHelperTokenCache();
+  resetLiveTokenCache();
   resetKbHttpAuthState();
   stub.requests.length = 0;
   stub.accept = (token) => token.includes(PREFIX);
@@ -124,26 +124,26 @@ afterAll(async () => {
 });
 
 describe('refresh point and backoff schedule', () => {
-  it('refreshes at expires_at minus the smaller of 5 minutes and 10% of the lifetime', () => {
-    expect(helperRefreshAt(0, 3_600_000)).toBe(3_600_000 - 300_000); // 10% = 6 min -> 5 min cap
-    expect(helperRefreshAt(0, 1_000_000)).toBe(900_000); // 10% = 100 s
-    expect(helperRefreshAt(1_000, 1_000)).toBe(1_000); // zero lifetime: no margin
+  it('refreshes at expires_at minus the smaller of 10 minutes and 10% of the lifetime', () => {
+    expect(liveRefreshAt(0, 10_000_000)).toBe(10_000_000 - 600_000); // 10% = 16 min -> 10 min cap
+    expect(liveRefreshAt(0, 3_600_000)).toBe(3_600_000 - 360_000); // 10% = 6 min
+    expect(liveRefreshAt(1_000, 1_000)).toBe(1_000); // zero lifetime: no margin
   });
 
   it('backs off 10 s, doubling per consecutive failure, capped at 5 minutes', () => {
-    expect(helperBackoffMs(1)).toBe(HELPER_BACKOFF_BASE_MS);
-    expect(helperBackoffMs(2)).toBe(2 * HELPER_BACKOFF_BASE_MS);
-    expect(helperBackoffMs(3)).toBe(4 * HELPER_BACKOFF_BASE_MS);
-    expect(helperBackoffMs(50)).toBe(HELPER_BACKOFF_MAX_MS);
+    expect(liveBackoffMs(1)).toBe(LIVE_BACKOFF_BASE_MS);
+    expect(liveBackoffMs(2)).toBe(2 * LIVE_BACKOFF_BASE_MS);
+    expect(liveBackoffMs(3)).toBe(4 * LIVE_BACKOFF_BASE_MS);
+    expect(liveBackoffMs(50)).toBe(LIVE_BACKOFF_MAX_MS);
   });
 });
 
 describe('HttpKbProvider with a credential helper', () => {
-  it('runs the helper once for the first request and reuses the token after it; audience is the KB URL', async () => {
+  it('runs the helper once for the first request and reuses the token after it', async () => {
     await query();
     await query();
     await provider.capture(entry('Helper gear'));
-    expect(helper.runs()).toEqual([{ credential: NAME, audience: stub.url }]);
+    expect(helper.runs()).toEqual([{ credential: NAME }]);
     expect(stub.requests).toHaveLength(3);
     expect(stub.requests.every(r => r.authorized && helperRunOf(r.token, PREFIX) === 1)).toBe(true);
   });
@@ -171,13 +171,13 @@ describe('HttpKbProvider with a credential helper', () => {
 
   it('a failing helper raises E-KB-HTTP-AUTH and is not run again inside the backoff window; re-registering clears it', async () => {
     helper.setControl({ mode: 'fail' });
-    const first = await expectAuthError(provider.query({ query: 'gear' }), 'helper-failed');
+    const first = await expectAuthError(provider.query({ query: 'gear' }), 'live-secret-failed');
     expect(first.message).toContain('exit code 3');
     expect(helper.runs()).toHaveLength(1);
 
-    const second = await expectAuthError(provider.query({ query: 'gear' }), 'helper-failed');
+    const second = await expectAuthError(provider.query({ query: 'gear' }), 'live-secret-failed');
     expect(second.message).toContain('not run again until');
-    const queued = await expectAuthError(provider.capture(entry('Queued while failing')), 'helper-failed');
+    const queued = await expectAuthError(provider.capture(entry('Queued while failing')), 'live-secret-failed');
     expect(queued.queued).toBe(true);
     expect(provider.offlineQueue).toHaveLength(1);
     expect(helper.runs()).toHaveLength(1);
@@ -218,7 +218,7 @@ describe('HttpKbProvider with a credential helper', () => {
   });
 });
 
-describe('fleet_status credential block for a helper', () => {
+describe('fleet_status credential block for a live secret', () => {
   function health() {
     fs.mkdirSync(path.dirname(KB_CONFIG_PATH), { recursive: true });
     fs.writeFileSync(KB_CONFIG_PATH, JSON.stringify({ provider: 'http', url: stub.url, token_ref: `{{secret.${NAME}}}` }));
@@ -227,33 +227,33 @@ describe('fleet_status credential block for a helper', () => {
     return block;
   }
 
-  it('shows helper name, program path, resolve state, last refresh, JWT exp and call times; never the token', async () => {
+  it('shows the secret name, resolve state, last minted, JWT exp and call times; never the token', async () => {
     const before = health();
-    expect(before).toMatchObject({ kind: 'helper', helperName: NAME, program: helper.launch.program, resolves: 'not run', lastRefresh: null });
+    expect(before).toMatchObject({ kind: 'live', secretName: NAME, resolves: 'not run', lastMinted: null });
 
     await query();
     const after = health();
-    if (after?.kind !== 'helper') throw new Error(`expected a helper block, got ${after?.kind}`);
+    if (after?.kind !== 'live') throw new Error(`expected a live block, got ${after?.kind}`);
     expect(after.resolves).toBe('ok');
-    expect(after.lastRefresh).not.toBeNull();
+    expect(after.lastMinted).not.toBeNull();
     const expSeconds = Math.floor(helper.expiresAtOf(1) / 1000);
     expect(after.tokenExpiry).toBe(new Date(expSeconds * 1000).toISOString());
     expect(after.lastSuccessfulCall).not.toBeNull();
     const line = kbCredentialCompactLine(after);
     resultTexts.push(line);
-    expect(line).toContain(`kb credential: helper ${NAME} | program: ${helper.launch.program} | resolves: ok`);
-    expect(line).toContain(`last refresh: ${after.lastRefresh}`);
+    expect(line).toContain(`kb credential: live secret ${NAME} | resolves: ok`);
+    expect(line).toContain(`last minted: ${after.lastMinted}`);
   });
 
-  it('shows a failed helper with its reason and retry time', async () => {
+  it('shows a failed live secret with its reason and retry time', async () => {
     helper.setControl({ mode: 'fail' });
-    await expectAuthError(provider.query({ query: 'gear' }), 'helper-failed');
+    await expectAuthError(provider.query({ query: 'gear' }), 'live-secret-failed');
     const block = health();
-    if (block?.kind !== 'helper') throw new Error(`expected a helper block, got ${block?.kind}`);
+    if (block?.kind !== 'live') throw new Error(`expected a live block, got ${block?.kind}`);
     expect(block.resolves).toBe('failed');
     expect(block.lastFailure).toBe('exit code 3');
     expect(block.retryAfter).not.toBeNull();
-    expect(kbCredentialCompactLine(block)).toContain('| last failure: exit code 3 | next helper run after: ');
+    expect(kbCredentialCompactLine(block)).toContain('| last failure: exit code 3 | next run after: ');
   });
 });
 
