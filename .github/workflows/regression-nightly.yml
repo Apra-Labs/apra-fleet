@@ -305,6 +305,23 @@ jobs:
           cat "$RUNNER_TEMP/kb-recall/bench.txt"
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
 
+      # MEMBER-session reads with the real default model: a member's bible
+      # view gets the semantic list (paraphrase in the top 5), file anchors,
+      # the similarity floor (nonsense -> 0 rows) and the engine's
+      # knowledgeFor-through-memberCall injection. A missing model fails here
+      # (APRA_KB_EVAL_REQUIRE_MODELS=1) instead of skipping as under npm test.
+      - name: KB member reads with the real model
+        id: member
+        timeout-minutes: 30
+        continue-on-error: true
+        env:
+          APRA_KB_EVAL_REQUIRE_MODELS: '1'
+        run: |
+          export APRA_KB_EVAL_MODELS_DIR="$HOME/.cache/apra-kb-models"
+          rc=0
+          npx vitest run tests/knowledge/kb-member-real-model.test.ts || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
       - name: Upload KB recall report
         if: always()
         continue-on-error: true
@@ -323,16 +340,17 @@ jobs:
           EVAL_RC: ${{ steps.eval.outputs.rc }}
           RESP_RC: ${{ steps.resp.outputs.rc }}
           BENCH_RC: ${{ steps.bench.outputs.rc }}
+          MEMBER_RC: ${{ steps.member.outputs.rc }}
           SEA_OUTCOME: ${{ steps.sea.outcome }}
           REPORT_MD: ${{ runner.temp }}/kb-recall/report.md
           BENCH_TXT: ${{ runner.temp }}/kb-recall/bench.txt
         run: |
-          if [ -z "$EVAL_RC" ] || [ -z "$RESP_RC" ] || [ -z "$BENCH_RC" ]; then verdict=BROKEN
-          elif [ "$EVAL_RC" = 0 ] && [ "$RESP_RC" = 0 ] && [ "$BENCH_RC" = 0 ]; then verdict=PASS
+          if [ -z "$EVAL_RC" ] || [ -z "$RESP_RC" ] || [ -z "$BENCH_RC" ] || [ -z "$MEMBER_RC" ]; then verdict=BROKEN
+          elif [ "$EVAL_RC" = 0 ] && [ "$RESP_RC" = 0 ] && [ "$BENCH_RC" = 0 ] && [ "$MEMBER_RC" = 0 ]; then verdict=PASS
           else verdict=FAIL; fi
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           {
-            echo "## $verdict -- KB real-model lane (recall eval rc=${EVAL_RC:-none}, responsiveness rc=${RESP_RC:-none}, query bench rc=${BENCH_RC:-none}, SEA build ${SEA_OUTCOME})"
+            echo "## $verdict -- KB real-model lane (recall eval rc=${EVAL_RC:-none}, responsiveness rc=${RESP_RC:-none}, query bench rc=${BENCH_RC:-none}, member reads rc=${MEMBER_RC:-none}, SEA build ${SEA_OUTCOME})"
             echo
             if [ -f "$REPORT_MD" ]; then cat "$REPORT_MD"; else echo "No recall report was written (see the job log)."; fi
             echo

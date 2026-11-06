@@ -976,7 +976,14 @@ unless a models folder is given with `APRA_KB_EVAL_MODELS_DIR` (or
 `APRA_KB_EVAL_REQUIRE_MODELS=1` (a model that cannot load fails rather than
 skips) and puts the recall@5 / MRR tables in its job summary. The bench takes
 `APRA_KB_BENCH_MODELS_DIR` / `APRA_KB_BENCH_ALLOW_DOWNLOAD=1` the same way to
-include real query-embedding time.
+include real query-embedding time. Member reads with the real model are
+covered by `tests/knowledge/kb-member-real-model.test.ts`: as a registered
+member with a committed bible, a no-shared-keyword paraphrase must return the
+bible entry in the top 5 (also through fleet-sprint's knowledgeFor via
+memberCall), a file anchor must rank its entry first and a nonsense query must
+return 0 rows. It takes `APRA_KB_EVAL_MODELS_DIR` (skips with a printed reason
+without it); the nightly `kb-real-model` job runs it with
+`APRA_KB_EVAL_REQUIRE_MODELS=1` and adds its result to the lane verdict.
 
 Fallback: when no model is loaded the semantic list is simply absent and the
 search is keyword + error + anchor, never an error. A read never waits for a
