@@ -4,7 +4,7 @@ import { getSocketPath } from '../services/auth-socket.js';
 import { collectSecret } from '../utils/collect-secret.js';
 import {
   BoundSecretError,
-  credentialSet,
+  credentialSetValue,
   credentialList,
   credentialDelete,
   credentialUpdate,
@@ -14,6 +14,7 @@ import {
   saveLiveSecret,
   SecretInUseError,
   type CredentialUpdatePatch,
+  type NetworkPolicy,
   type LiveSecretSpec,
 } from '../services/credential-store.js';
 import { mintLiveSecret } from '../services/live-secret-cache.js';
@@ -288,6 +289,12 @@ async function handleDelete(args: string[]): Promise<void> {
   }
 }
 
+function policyNote(name: string, policy: NetworkPolicy): string {
+  return policy === 'allow'
+    ? `  i Network policy: allow. Use 'apra-fleet secret --update ${name} --deny' to restrict.`
+    : `  i Network policy: ${policy}.`;
+}
+
 async function handleSet(args: string[]): Promise<void> {
   const name = args[0];
   const persist = args.includes('--persist');
@@ -406,9 +413,9 @@ async function handleSet(args: string[]): Promise<void> {
 
     // Persist mode: store the secret
     try {
-      credentialSet(name, persistValue, true, 'allow');
+      const meta = credentialSetValue(name, persistValue, { persist: true });
       console.error(`✓ Secret stored for ${name}.`);
-      console.error(`  ℹ Network policy: allow. Use 'apra-fleet secret --update ${name} --deny' to restrict.`);
+      console.error(policyNote(name, meta.network_policy));
     } catch (err: any) {
       console.error(`✗ Failed to store secret: ${err.message}`);
       process.exit(1);
@@ -416,9 +423,9 @@ async function handleSet(args: string[]): Promise<void> {
   } else if (persist) {
     // OOB delivery + persist: store the secret
     try {
-      credentialSet(name, persistValue, true, 'allow');
+      const meta = credentialSetValue(name, persistValue, { persist: true });
       console.error(`✓ Secret also stored for future use.`);
-      console.error(`  ℹ Network policy: allow. Use 'apra-fleet secret --update ${name} --deny' to restrict.`);
+      console.error(policyNote(name, meta.network_policy));
     } catch (err: any) {
       console.error(`✗ Failed to store secret: ${err.message}`);
       process.exit(1);

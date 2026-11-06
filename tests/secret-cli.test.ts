@@ -45,7 +45,7 @@ vi.mock('../src/services/auth-socket.js', () => ({
 vi.mock('../src/services/credential-store.js', () => ({
   credentialList: mockCredentialList,
   credentialDelete: mockCredentialDelete,
-  credentialSet: mockCredentialSet,
+  credentialSetValue: mockCredentialSet,
   credentialUpdate: mockCredentialUpdate,
   isLiveSecret: () => false,
 }));
@@ -279,7 +279,7 @@ describe('runSecret --set', () => {
   it('stores credential when no server but --persist is given', async () => {
     mockNetConnect.mockImplementation(() => makeErrorSocket());
     await runSecret(['--set', 'my_secret', '--persist']);
-    expect(mockCredentialSet).toHaveBeenCalledWith('my_secret', 'my-secret-value', true, 'allow');
+    expect(mockCredentialSet).toHaveBeenCalledWith('my_secret', 'my-secret-value', { persist: true });
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
@@ -306,7 +306,7 @@ describe('runSecret --set', () => {
     });
     await runSecret(['--set', 'my_secret', '--persist']);
     expect(exitSpy).not.toHaveBeenCalled();
-    expect(mockCredentialSet).toHaveBeenCalledWith('my_secret', 'my-secret-value', true, 'allow');
+    expect(mockCredentialSet).toHaveBeenCalledWith('my_secret', 'my-secret-value', { persist: true });
   });
 
   describe('runSecret --set with -y (stdin)', () => {
@@ -336,7 +336,7 @@ describe('runSecret --set', () => {
 
       await runPromise;
 
-      expect(mockCredentialSet).toHaveBeenCalledWith('stdin_secret', 'secret-from-stdin', true, 'allow');
+      expect(mockCredentialSet).toHaveBeenCalledWith('stdin_secret', 'secret-from-stdin', { persist: true });
       expect(mockCollectSecret).not.toHaveBeenCalled();
     });
 
@@ -370,7 +370,7 @@ describe('runSecret --set', () => {
 
       await runPromise;
 
-      expect(mockCredentialSet).toHaveBeenCalledWith('chunk_secret', 'part1-part2', true, 'allow');
+      expect(mockCredentialSet).toHaveBeenCalledWith('chunk_secret', 'part1-part2', { persist: true });
     });
   });
 });

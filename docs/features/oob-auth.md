@@ -94,7 +94,7 @@ Run this in a separate terminal to provide the credential:
 Alternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.
 ```
 
-`credential_store_set` stores the value it collects persistently, with network policy `allow` and all members, unless the call says otherwise.
+For what `credential_store_set` does with the value it collects, see [Storing and re-setting a secret](../secret-variables.md#storing-and-re-setting-a-secret).
 
 The `fallback:` prefix is a protocol marker consumed by `collectOobInput` to distinguish the fallback path from a successful terminal launch. It is stripped before the message reaches the user.
 

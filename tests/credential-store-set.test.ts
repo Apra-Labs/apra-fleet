@@ -168,6 +168,93 @@ describe('credentialStoreSet', () => {
     });
   });
 
+  describe('re-setting an existing secret changes only its value', () => {
+    const credsPath = () => path.join(TEST_DATA_DIR, 'credentials.json');
+    const onDisk = (name: string) => JSON.parse(fs.readFileSync(credsPath(), 'utf-8')).credentials[name];
+    const reset = (args: Record<string, unknown>) => credentialStoreSet(credentialStoreSetSchema.parse({ prompt: 'test', ...args }));
+    const stored = (name: string, extra: Record<string, unknown> = {}) => {
+      fs.writeFileSync(credsPath(), JSON.stringify({ version: '1.0', credentials: {
+        [name]: { name, network_policy: 'deny', created_at: '2026-01-01T00:00:00.000Z', encryptedValue: encryptPassword('old'), allowedMembers: ['a'], ...extra },
+      } }));
+    };
+
+    beforeEach(() => {
+      vi.mocked(authSocket.collectOobApiKey).mockResolvedValue({ password: encryptPassword('new') });
+    });
+
+    it('a deny and member-scoped persistent secret keeps both, and its tier', async () => {
+      stored('kept');
+      expect(await reset({ name: 'kept' })).toContain('kept stored [persistent]');
+      expect(onDisk('kept')).toMatchObject({ network_policy: 'deny', allowedMembers: ['a'] });
+      expect(credentialResolve('kept', 'a')).toMatchObject({ plaintext: 'new' });
+    });
+
+    it('a session secret stays session, with its policy and members', async () => {
+      credentialSet('kept_session', 'old', false, 'deny', ['a']);
+      expect(await reset({ name: 'kept_session' })).toContain('kept_session stored [session]');
+      expect(credentialResolve('kept_session', 'a')).toMatchObject({ plaintext: 'new', meta: { scope: 'session', network_policy: 'deny', allowedMembers: ['a'] } });
+      expect(fs.existsSync(credsPath())).toBe(false);
+      credentialDelete('kept_session');
+    });
+
+    it('an explicit network_policy changes only the policy', async () => {
+      stored('p');
+      await reset({ name: 'p', network_policy: 'allow' });
+      expect(onDisk('p')).toMatchObject({ network_policy: 'allow', allowedMembers: ['a'] });
+    });
+
+    it('explicit members change only the members', async () => {
+      stored('m');
+      await reset({ name: 'm', members: '*' });
+      expect(onDisk('m')).toMatchObject({ network_policy: 'deny', allowedMembers: '*' });
+    });
+
+    it('an explicit ttl changes only the expiry', async () => {
+      stored('t');
+      const before = Date.now();
+      await reset({ name: 't', ttl_seconds: 60 });
+      expect(onDisk('t')).toMatchObject({ network_policy: 'deny', allowedMembers: ['a'] });
+      expect(new Date(onDisk('t').expiresAt).getTime()).toBeGreaterThanOrEqual(before + 59_000);
+    });
+
+    it('explicit persist: true moves a session secret to the file, keeping policy and members', async () => {
+      credentialSet('promote', 'old', false, 'deny', ['a']);
+      expect(await reset({ name: 'promote', persist: true })).toContain('stored [persistent]');
+      expect(onDisk('promote')).toMatchObject({ network_policy: 'deny', allowedMembers: ['a'] });
+    });
+
+    it('explicit persist: false moves a persistent secret to the session, so the new value is the one read', async () => {
+      stored('demote');
+      expect(await reset({ name: 'demote', persist: false })).toContain('stored [session]');
+      expect(onDisk('demote')).toBeUndefined();
+      expect(credentialResolve('demote', 'a')).toMatchObject({ plaintext: 'new', meta: { scope: 'session', network_policy: 'deny', allowedMembers: ['a'] } });
+      credentialDelete('demote');
+    });
+
+    it('an unexpired expiry stays as stored when ttl is omitted', async () => {
+      const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+      stored('live_ttl', { expiresAt });
+      await reset({ name: 'live_ttl' });
+      expect(onDisk('live_ttl').expiresAt).toBe(expiresAt);
+      expect(credentialResolve('live_ttl', 'a')).toMatchObject({ plaintext: 'new' });
+    });
+
+    it('an expired record gets a value that does not expire, keeping policy and members', async () => {
+      stored('dead_ttl', { expiresAt: new Date(Date.now() - 1000).toISOString() });
+      await reset({ name: 'dead_ttl' });
+      expect(onDisk('dead_ttl').expiresAt).toBeUndefined();
+      expect(onDisk('dead_ttl')).toMatchObject({ network_policy: 'deny', allowedMembers: ['a'] });
+      expect(credentialResolve('dead_ttl', 'a')).toMatchObject({ plaintext: 'new' });
+    });
+
+    it('an expired record with an explicit ttl takes that ttl', async () => {
+      stored('dead_new_ttl', { expiresAt: new Date(Date.now() - 1000).toISOString() });
+      const before = Date.now();
+      await reset({ name: 'dead_new_ttl', ttl_seconds: 60 });
+      expect(new Date(onDisk('dead_new_ttl').expiresAt).getTime()).toBeGreaterThanOrEqual(before + 59_000);
+    });
+  });
+
   describe('a name bound to a live secret', () => {
     const bound = 'bound_input';
 
@@ -184,6 +271,16 @@ describe('credentialStoreSet', () => {
       expect(authSocket.collectOobApiKey).toHaveBeenCalledOnce();
       expect(result).toContain(`${bound} stored [persistent]`);
       expect(credentialResolve(bound)).toMatchObject({ plaintext: 'rotated' });
+    });
+
+    it('persist omitted: a deny, member-scoped bound secret keeps both, and an expired one loses only its expiry', async () => {
+      const credsPath = path.join(TEST_DATA_DIR, 'credentials.json');
+      credentialSet(bound, 'v', true, 'deny', ['a'], -1);
+      await credentialStoreSet(credentialStoreSetSchema.parse({ name: bound, prompt: 'test' }));
+      const rec = JSON.parse(fs.readFileSync(credsPath, 'utf-8')).credentials[bound];
+      expect(rec).toMatchObject({ network_policy: 'deny', allowedMembers: ['a'] });
+      expect(rec.expiresAt).toBeUndefined();
+      expect(credentialResolve(bound, 'a')).toMatchObject({ plaintext: 'rotated' });
     });
 
     it('explicit persist: false: refused before any value is asked for', async () => {

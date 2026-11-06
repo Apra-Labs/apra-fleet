@@ -199,6 +199,6 @@ Secrets resolved from the credential store:
 - **SendGrid:** `sendgrid_api_key`
 - **SMTP:** `smtp_password`
 
-Sends require `network_policy=allow` on those credentials (the default). `deny` is blocked.
+Sends require `network_policy=allow` on those credentials (the default). `deny` is blocked. See [Network policy](secret-variables.md#network-policy).
 
 Returns: `{ ok: true, messageId }` on success, `{ ok: false, error }` on failure.

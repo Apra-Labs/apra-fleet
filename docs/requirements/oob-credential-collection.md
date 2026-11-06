@@ -16,7 +16,7 @@ apra-fleet secret --set MyPass
 **Implicit / on-demand** - a tool call needs a credential it doesn't have:
 - `register_member` with SSH password auth and no password provided -> OOB opens with the SSH context as the prompt
 - Any `{{secret.NAME}}` reference where `NAME` is not yet in the store -> OOB opens, user is asked whether to persist the value after entry
-- `credential_store_set` tool call -> OOB always opens; the value is stored persistently unless the call passes `persist: false`
+- `credential_store_set` tool call -> OOB always opens; see [Storing and re-setting a secret](../secret-variables.md#storing-and-re-setting-a-secret)
 
 In all cases the UX is identical - only the prompt text changes to give the user context about what they're entering.
 

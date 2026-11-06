@@ -29,7 +29,7 @@ export default {
     "scripts/gen-ico.mjs": 6,
     "scripts/gen-sea-config.mjs": 5,
     "src/cli/auth.ts": 15,
-    "src/cli/secret.ts": 24,
+    "src/cli/secret.ts": 22,
     "src/cli/uninstall.ts": 2,
     "src/hub-service/handlers/installers.ts": 2,
     "src/onboarding/text.ts": 1748,

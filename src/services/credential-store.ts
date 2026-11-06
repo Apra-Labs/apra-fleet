@@ -203,10 +203,64 @@ export function credentialSet(
   allowedMembers: string[] | '*' = '*',
   ttl_seconds?: number,
 ): CredentialMeta {
-  const created_at = new Date().toISOString();
-  const expiresAt = ttl_seconds !== undefined
+  return writeCredential(name, plaintext, persist, network_policy, allowedMembers, expiryFromTtl(ttl_seconds));
+}
+
+function expiryFromTtl(ttl_seconds: number | undefined): string | undefined {
+  return ttl_seconds !== undefined
     ? new Date(Date.now() + ttl_seconds * 1000).toISOString()
     : undefined;
+}
+
+/** What a caller of credentialSetValue named. Anything left out is decided there. */
+export interface CredentialSetFields {
+  persist?: boolean;
+  network_policy?: NetworkPolicy;
+  allowedMembers?: string[] | '*';
+  ttl_seconds?: number;
+}
+
+/**
+ * Set a secret's value, as credential_store_set and `secret --set --persist` do.
+ * On a name that exists, only the value and the fields named in `given` change; a
+ * new name gets persistent, allow, all members. A stored expiry stays unless it has
+ * passed, because a kept past expiry would make the new value resolve as expired.
+ *
+ * Only this process's session values are visible: a CLI process sees the file alone.
+ */
+export function credentialSetValue(name: string, plaintext: string, given: CredentialSetFields = {}): CredentialMeta {
+  const file = loadCredentialFile();
+  const stored = file.credentials[name];
+  const session = sessionStore.get(name);
+  const existing = stored ?? session;
+  const persist = given.persist ?? (stored !== undefined || session === undefined);
+  const keptExpiry = existing && !isLiveRecord(existing) ? existing.expiresAt : undefined;
+
+  const meta = writeCredential(
+    name,
+    plaintext,
+    persist,
+    given.network_policy ?? existing?.network_policy ?? 'allow',
+    given.allowedMembers ?? existing?.allowedMembers ?? '*',
+    given.ttl_seconds !== undefined || isExpired(keptExpiry) ? expiryFromTtl(given.ttl_seconds) : keptExpiry,
+  );
+  if (!persist && stored) {
+    // A persistent record would shadow the session value this call was asked to store.
+    delete file.credentials[name];
+    saveCredentialFile(file);
+  }
+  return meta;
+}
+
+function writeCredential(
+  name: string,
+  plaintext: string,
+  persist: boolean,
+  network_policy: NetworkPolicy,
+  allowedMembers: string[] | '*',
+  expiresAt: string | undefined,
+): CredentialMeta {
+  const created_at = new Date().toISOString();
 
   if (persist) {
     const file = loadCredentialFile();
