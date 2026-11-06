@@ -1,9 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
+import { headBranchReader } from '../../src/services/knowledge/repository-header.js';
 
 // A real local HTTP server that records the repository headers of every
 // request it receives -- no mocks of the provider or of node:http.
@@ -12,7 +17,7 @@ const OFFLINE_URL = 'http://127.0.0.1:17779'; // nothing listens here
 const REPO = 'github.com/example/repo-headers';
 const SHA = 'a'.repeat(40);
 
-interface Seen { method: string; path: string; url: string; repository?: string; commit?: string; raw: string[] }
+interface Seen { method: string; path: string; url: string; repository?: string; commit?: string; branch?: string; raw: string[] }
 const seen: Seen[] = [];
 let server: http.Server;
 let baseUrl: string;
@@ -47,6 +52,7 @@ beforeAll(async () => {
         url: req.url ?? '',
         repository: req.headers['x-repository'] as string | undefined,
         commit: req.headers['x-repository-commit'] as string | undefined,
+        branch: req.headers['x-repository-branch'] as string | undefined,
         raw: req.rawHeaders,
       });
       const body: Record<string, unknown> =
@@ -64,9 +70,32 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 
+const tempDirs: string[] = [];
+
 afterAll(async () => {
   await new Promise<void>(resolve => server.close(() => resolve()));
+  for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
 });
+
+function makeDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-provider-branch-hdr-'));
+  tempDirs.push(dir);
+  return dir;
+}
+
+function git(cwd: string, args: string[]): void {
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], {
+    cwd, stdio: ['ignore', 'ignore', 'ignore'],
+  });
+}
+
+function makeRepoOnBranch(branch: string): string {
+  const dir = makeDir();
+  git(dir, ['init', '-q', '.']);
+  git(dir, ['commit', '-q', '--allow-empty', '-m', 'init']);
+  git(dir, ['checkout', '-q', '-b', branch]);
+  return dir;
+}
 
 beforeEach(() => {
   seen.length = 0;
@@ -183,5 +212,56 @@ describe('HttpKbProvider repository headers', () => {
       expect(request.repository).toBe(REPO);
       expect(request.commit).toBe(SHA);
     }
+  });
+});
+
+describe('HttpKbProvider X-Repository-Branch', () => {
+  it('a folder that is not a git repository (git fails): no branch header, the request succeeds', async () => {
+    const notARepo = makeDir();
+    await withProvider(baseUrl, { repository: { remote: REPO, branchOf: headBranchReader(notARepo) } }, async provider => {
+      const result = await provider.capture(makeInput());
+      expect(result.id).toBe('srv-1');
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].repository).toBe(REPO);
+    expect(seen[0].branch).toBeUndefined();
+  });
+
+  it('a throwing branch reader: no branch header, the request succeeds', async () => {
+    const branchOf = () => { throw new Error('git exploded'); };
+    await withProvider(baseUrl, { repository: { remote: REPO, commitOf: () => SHA, branchOf } }, async provider => {
+      const result = await provider.capture(makeInput());
+      expect(result.id).toBe('srv-1');
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].repository).toBe(REPO);
+    expect(seen[0].commit).toBe(SHA);
+    expect(seen[0].branch).toBeUndefined();
+  });
+
+  it('an invalid branch value (empty, space, raw non-ASCII, over 255 chars) is omitted; the request succeeds', async () => {
+    const invalid = ['', 'has space', 'caf\u00e9', 'x'.repeat(256)];
+    for (const value of invalid) {
+      seen.length = 0;
+      await withProvider(baseUrl, { repository: { remote: REPO, branchOf: () => value } }, async provider => {
+        const result = await provider.query({});
+        expect(result).toBeDefined();
+      });
+      expect(seen, JSON.stringify(value)).toHaveLength(1);
+      expect(seen[0].repository).toBe(REPO);
+      expect(seen[0].branch, JSON.stringify(value)).toBeUndefined();
+    }
+  });
+
+  it('a branch switch is sent once the reader TTL has passed', async () => {
+    const ttlMs = 50;
+    const dir = makeRepoOnBranch('first');
+    await withProvider(baseUrl, { repository: { remote: REPO, branchOf: headBranchReader(dir, ttlMs) } }, async provider => {
+      await provider.query({});
+      git(dir, ['checkout', '-q', '-b', 'second']);
+      await new Promise(resolve => setTimeout(resolve, ttlMs * 3));
+      await provider.query({});
+    });
+    expect(seen.map(s => s.branch)).toEqual(['first', 'second']);
   });
 });
