@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 148
+    "entry_count": 150
   },
   "entries": [
     {
@@ -1258,6 +1258,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:31.774Z"
+    },
+    {
+      "id": "6baf7369-d6e5-413e-ba86-76ea6b2483de",
+      "type": "learning",
+      "title": "Empty semantic kb_query with a ready embedder usually means below the similarity floor",
+      "summary": "A paraphrase whose best vector scores under the per-model floor (arctic-xs 0.60) returns exactly the keyword-only result, which is indistinguishable from 'model not loaded'; terse 4-word paraphrases often land just under it.",
+      "symbols": [
+        "SqliteProvider.hybridRows",
+        "semanticFloorFor",
+        "SEMANTIC_FLOORS",
+        "SqliteProvider.scoreVectorsForModel"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/embedding/profiles.ts",
+        "tests/knowledge/kb-embed-worker-responsiveness.test.ts",
+        "tests/knowledge/kb-embedder-startup-load.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T10:44:03.877Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/profiles.ts": "c29decfd986e64a28e174f8d8fcc669e9a97706c",
+        "src/services/knowledge/sqlite-provider.ts": "b3d3d48f72dd8002ee3ed6a66d1d4c6233ce711e",
+        "tests/knowledge/kb-embed-worker-responsiveness.test.ts": "4a4fe36c8fc83a0b17feed30dd3a78f0676a993b",
+        "tests/knowledge/kb-embedder-startup-load.test.ts": "968dc91b48d53d54b179704e0ea800d75851bc4e"
+      }
     },
     {
       "id": "70f0e881-49d9-40eb-85ab-ff9c8868f49b",
@@ -2987,6 +3013,33 @@
         "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "bd92d5073942148377413cf030e6787cf1a3f679",
         "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "95b3752f2049b201e649e091520f35645fd8d96e",
         "packages/apra-fleet-se/test/doer-max-turns-resume-explicit-session.test.mjs": "725d0dab768d2ad2c42aad09ca0c12c5137c6c79"
+      }
+    },
+    {
+      "id": "fc908045-3c3d-4ba6-b679-16237d284211",
+      "type": "knowledge",
+      "title": "An EmbedQueue attached to the shared Embedder stays reachable until close(): onReady listeners pin it",
+      "summary": "EmbedQueue.watchReady subscribes Embedder.onReady when the embedder is failed or idle with stored vectors; Embedder keeps listeners until unsubscribed, so any SqliteProvider given attachEmbedder must be closed, or it and its DB are retained for the process lifetime.",
+      "symbols": [
+        "EmbedQueue.watchReady",
+        "EmbedQueue.close",
+        "Embedder.onReady",
+        "getMemberBibleView",
+        "attachViewEmbedding"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/embed-queue.ts",
+        "src/services/knowledge/embedding/embedder.ts",
+        "src/services/knowledge/member-bible-view.ts",
+        "src/services/knowledge/sqlite-provider.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T10:44:03.446Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/embed-queue.ts": "146d93963cc3cdbbf13b3ee493e4e34b9991d39b",
+        "src/services/knowledge/embedding/embedder.ts": "e887f648227cef25d5628987a3822f121d9bb692",
+        "src/services/knowledge/member-bible-view.ts": "402c27b39ba70a090fc7387a954ab08d7a5a7663",
+        "src/services/knowledge/sqlite-provider.ts": "b3d3d48f72dd8002ee3ed6a66d1d4c6233ce711e"
       }
     },
     {
