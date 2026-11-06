@@ -940,7 +940,13 @@ include real query-embedding time.
 Fallback: when no model is loaded the semantic list is simply absent and the
 search is keyword + error + anchor, never an error. A read never waits for a
 model load or download: the background embed queue loads the model, and
-until then queries run without the semantic list.
+until then queries run without the semantic list. After a restart on a KB
+that already has vectors for the active model, the queue's first run loads
+the model in the background (nothing needs to be written first), so semantic
+search comes back on its own. A failed load is retried after 60 s, doubling
+up to 15 min between attempts, with one log line per attempt; it is never
+left failed for the life of the process. With `APRA_FLEET_KB_EMBED=off`
+nothing loads and nothing retries.
 
 #### embedding.model
 

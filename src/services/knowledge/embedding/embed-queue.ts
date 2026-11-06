@@ -26,6 +26,15 @@
 // later (the owner drains the shared pending table, captures from this
 // process included).
 //
+// Start-up: a KB that is already fully embedded has nothing pending, so no
+// run would ever call the embedder and the model would stay unloaded (no
+// semantic search until the next write). When a run finds nothing pending but
+// vectors stored for the active model and the embedder idle, it calls
+// warmUp() (a background load in the embed worker; the run does not wait).
+// It also subscribes to the embedder's onReady, so a load that succeeds on a
+// later retry (after a failed one) kicks a run that drains anything queued
+// meanwhile.
+//
 // The bible carries no vectors: they are model-specific. Each host embeds
 // the bible's entries after kb_import, through the same triggers.
 
@@ -53,6 +62,10 @@ export interface EmbedderLike {
    * semantic list (keyword + anchor only).
    */
   embedQuery?(text: string): Promise<Float32Array | null>;
+  /** Start loading the model in the background (no wait). Optional. */
+  warmUp?(): void;
+  /** Subscribe to successful loads (including retries); returns an unsubscribe. Optional. */
+  onReady?(cb: () => void): () => void;
 }
 
 /** Resolves the active embedder at run time (so a swapped process embedder is seen). */
@@ -112,6 +125,8 @@ export class EmbedQueue {
   private recheckTimer: NodeJS.Timeout | null = null;
   private lastNotice = '';
   private batchesThisRebuild = 0;
+  /** onReady subscriptions, one per embedder object seen (dropped on close). */
+  private readySubs = new Map<EmbedderLike, () => void>();
   /** Why the last run stopped (tests and diagnostics). */
   lastStop: StopReason | null = null;
 
@@ -141,6 +156,14 @@ export class EmbedQueue {
     this.closed = true;
     if (this.recheckTimer) clearTimeout(this.recheckTimer);
     this.recheckTimer = null;
+    for (const unsubscribe of this.readySubs.values()) unsubscribe();
+    this.readySubs.clear();
+  }
+
+  /** Kick a run whenever emb finishes a load (a retry after a failure included). */
+  private watchReady(emb: EmbedderLike): void {
+    if (typeof emb.onReady !== 'function' || this.readySubs.has(emb) || this.closed) return;
+    this.readySubs.set(emb, emb.onReady(() => this.kick()));
   }
 
   /** Schedule a run off the current call stack. Cheap, idempotent, never throws. */
@@ -389,6 +412,7 @@ export class EmbedQueue {
         return 'unusable';
       }
       if (state === 'failed') {
+        this.watchReady(emb);
         const reason = emb.state.reason ?? 'embedder failed';
         this.notice('warn', `failed:${reason}`, `embedder unavailable, KB entries are not embedded (keyword and anchor search serve): ${reason}`);
         this.failRebuild(reason);
@@ -405,6 +429,7 @@ export class EmbedQueue {
         .map(r => r.entry_id);
       if (ids.length === 0) {
         this.finishDrain(active);
+        this.warmUpIfEmbedded(active);
         return 'drained';
       }
 
@@ -467,6 +492,20 @@ export class EmbedQueue {
       // Yield between batches so a long rebuild never starves request handling.
       await new Promise(r => setImmediate(r));
     }
+  }
+
+  /**
+   * Nothing pending: if vectors of the active model are stored and the
+   * embedder has not loaded, load it in the background so queries get the
+   * semantic list without waiting for a write.
+   */
+  private warmUpIfEmbedded(emb: EmbedderLike): void {
+    if (emb.state.state !== 'idle' || typeof emb.warmUp !== 'function') return;
+    const recorded = this.recordedModel();
+    const stored = recorded ? this.opts.store.count(recorded) : this.opts.store.count();
+    if (stored === 0) return;
+    this.watchReady(emb);
+    emb.warmUp();
   }
 
   /** Inputs of a live entry, or null when the entry is gone or retired. */
