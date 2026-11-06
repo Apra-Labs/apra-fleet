@@ -198,6 +198,8 @@ export function headCommitReader(folder: string, ttlMs = HEAD_COMMIT_TTL_MS): ()
   };
 }
 
+const BRANCH_REF_PREFIX = 'refs/heads/';
+
 /**
  * True when `value` is an X-Repository-Branch value that may be sent: 1-255
  * printable ASCII characters, no spaces.
@@ -218,17 +220,20 @@ export function branchHeaderValue(branch: string): string | undefined {
 
 /**
  * A reader for the checked-out branch of a local folder (`git symbolic-ref
- * --quiet --short HEAD`), cached for `ttlMs` like headCommitReader so a branch
- * switch shows within one TTL. Returns the header value (see
- * branchHeaderValue), or undefined (never throws) on a detached HEAD, a folder
- * that is not a git repository, a git failure or timeout, or an invalid value.
+ * --quiet HEAD`, with `refs/heads/` stripped), cached for `ttlMs` like
+ * headCommitReader so a branch switch shows within one TTL. `--short` is not
+ * used: it prints `heads/x` when a tag `x` also exists. Returns the header value
+ * (see branchHeaderValue), or undefined (never throws) on a detached HEAD, a HEAD
+ * not under refs/heads/, a folder that is not a git repository, a git failure or
+ * timeout, or an invalid value.
  */
 export function headBranchReader(folder: string, ttlMs = HEAD_COMMIT_TTL_MS): () => string | undefined {
   let cached: { value: string | undefined; at: number } | undefined;
   return () => {
     const now = Date.now();
     if (cached && now - cached.at < ttlMs) return cached.value;
-    const branch = gitOut(folder, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+    const ref = gitOut(folder, ['symbolic-ref', '--quiet', 'HEAD']);
+    const branch = ref?.startsWith(BRANCH_REF_PREFIX) ? ref.slice(BRANCH_REF_PREFIX.length) : undefined;
     cached = { value: branch ? branchHeaderValue(branch) : undefined, at: now };
     return cached.value;
   };

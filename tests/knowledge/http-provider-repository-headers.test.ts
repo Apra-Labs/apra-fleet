@@ -253,6 +253,30 @@ describe('HttpKbProvider X-Repository-Branch', () => {
     }
   });
 
+  it('a tag with the same name as the branch: the header is the plain branch name, not heads/<name>', async () => {
+    const dir = makeRepoOnBranch('same');
+    git(dir, ['tag', 'same']);
+    await withProvider(baseUrl, { repository: { remote: REPO, branchOf: headBranchReader(dir) } }, async provider => {
+      await provider.query({});
+    });
+    expect(seen.map(s => s.branch)).toEqual(['same']);
+  });
+
+  it('a branch whose own name starts with heads/ keeps that whole name', () => {
+    expect(headBranchReader(makeRepoOnBranch('heads/x'))()).toBe('heads/x');
+  });
+
+  it('a HEAD not under refs/heads/ is omitted, the request succeeds', async () => {
+    const dir = makeRepoOnBranch('first');
+    git(dir, ['symbolic-ref', 'HEAD', 'refs/remotes/origin/first']);
+    await withProvider(baseUrl, { repository: { remote: REPO, branchOf: headBranchReader(dir) } }, async provider => {
+      const result = await provider.query({});
+      expect(result).toBeDefined();
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].branch).toBeUndefined();
+  });
+
   it('a branch switch is sent once the reader TTL has passed', async () => {
     const ttlMs = 50;
     const dir = makeRepoOnBranch('first');
