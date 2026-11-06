@@ -33,7 +33,8 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { resolveProjectSlug } from '../../src/services/knowledge/project-slug.js';
 import { ModelStore } from '../../src/services/knowledge/embedding/model-store.js';
-import { BUILTIN_EMBEDDING_PROFILES, DEFAULT_EMBEDDING_PROFILE } from '../../src/services/knowledge/embedding/profiles.js';
+import { BUILTIN_EMBEDDING_PROFILES, DEFAULT_EMBEDDING_PROFILE, semanticFloorFor } from '../../src/services/knowledge/embedding/profiles.js';
+import { Embedder, createInProcessOrtRuntime } from '../../src/services/knowledge/embedding/embedder.js';
 import { MEMBER_ACCESS_SECRET_FILE, MEMBER_SECRET_HEADER, readMemberAccessSecret } from '../../src/services/member-access-secret.js';
 
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -111,7 +112,26 @@ function entryFor(i: number) {
   };
 }
 
-/** The paraphrase target and a query sharing no keyword with it. */
+/**
+ * The paraphrase target and a query sharing no keyword with it, nor with any
+ * of the other 629 entries (stems and trigrams included), so the result is
+ * the semantic list alone. The keyword-only control below checks the target
+ * side.
+ *
+ * Which cause applied (the restart case failing with []): the target scoring
+ * below the similarity floor, not the restart load path. The earlier query
+ * 'automobile dies chilly weather' scored 0.587 against the target with
+ * snowflake-arctic-embed-xs, below its floor of 0.60 (profiles.ts
+ * SEMANTIC_FLOORS), so it returned the keyword-only (empty) result before
+ * and after a restart alike. The floor stays: the recall eval found 0.59 to
+ * be the lowest floor at which every nonsense query returns exactly the
+ * keyword-only result (worst nonsense score 0.585). So the pair changed.
+ * Measured 2026-11-06 with snowflake-arctic-embed-xs: this query scores
+ * 0.655 against the target (floor 0.60), 0 keyword hits in the KB. Words
+ * shared with the corpus ('when', 'it', 'at', ...) would put corpus entries
+ * on the keyword list and push the target out of the top 3. The test asserts
+ * the score clears the floor, so a pair that only passes by luck fails there.
+ */
 const TARGET = {
   type: 'learning' as const,
   title: 'Car engine stalls on cold mornings',
@@ -120,7 +140,7 @@ const TARGET = {
   source_files: ['src/a.ts'], symbols: [], tags: [], content_hash: '', content_hash_type: 'sha256' as const,
   flagged_for_review: false, author: 't', source: 'doer' as const, confidence: 'INFERRED' as const,
 };
-const PARAPHRASE = 'automobile dies chilly weather';
+const PARAPHRASE = 'automobile dies whenever winter dawns are freezing';
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -239,6 +259,63 @@ function resultIds(text: string): string[] {
   return (parsed.l1_results ?? parsed.results ?? []).map((r) => r.id);
 }
 
+/**
+ * The target's real-model score for PARAPHRASE (its best stored vector), the
+ * active floor, and the keyword-only result for the same query, computed in
+ * this process with the same model folder the server uses. Reads only; call
+ * with no server running.
+ */
+async function targetScoreVsFloor(): Promise<{ score: number | null; floor: number; vectors: number; keywordIds: string[] }> {
+  const emb = new Embedder({
+    choice: { kind: 'enabled', profile: PROFILE },
+    store: new ModelStore({ modelsDir: path.join(dataDir, 'models'), hubEndpoint: 'https://example.invalid' }),
+    runtimeFactory: createInProcessOrtRuntime,
+    log: () => {},
+  });
+  const p = new SqliteProvider(kbFile, repo);
+  await p.init();
+  try {
+    const q = await emb.embedQuery(PARAPHRASE);
+    if (!q) throw new Error(`real model did not load in the test process: ${JSON.stringify(emb.state)}`);
+    const model = { modelId: PROFILE.modelId, revision: PROFILE.revision, dims: q.length };
+    const hit = p.scoreVectorsForModel(q, model, { entryIds: [targetId] }).find((s) => s.entry_id === targetId);
+    const kw = await p.query({ query: PARAPHRASE, confidence: ALL_TIERS as never, limit: 5, disable_lists: ['semantic'] });
+    return {
+      score: hit?.score ?? null,
+      floor: semanticFloorFor(PROFILE.modelId, PROFILE.revision),
+      vectors: p.vectorStore.count(model),
+      keywordIds: kw.results.map((e) => e.id),
+    };
+  } finally {
+    p.close();
+    await emb.close();
+  }
+}
+
+/**
+ * Why the paraphrase did not return the target: which side failed, with the
+ * numbers. The server exposes no embedder state to this client (fleet_status
+ * prints no KB section without members), so the semantic list's presence is
+ * read from the result: a result that differs from the keyword-only result
+ * had a semantic list; an identical one means either the embedder was not
+ * ready or nothing cleared the floor, which the target's score decides.
+ */
+async function explainMiss(where: string, ids: string[]): Promise<string> {
+  const s = await targetScoreVsFloor();
+  const semanticPresent = JSON.stringify(ids) !== JSON.stringify(s.keywordIds);
+  const aboveFloor = s.score !== null && s.score >= s.floor;
+  const side = !aboveFloor
+    ? 'TARGET SCORE BELOW FLOOR (the floor drops it whether or not the embedder is ready)'
+    : !semanticPresent
+      ? 'EMBEDDER NOT READY in the server (result equals keyword-only although the target clears the floor)'
+      : 'semantic list present and target above the floor, but the target ranked outside the top 3';
+  const scoreText = s.score === null ? 'none (no stored vector for the target)' : s.score.toFixed(4);
+  return `${where}: paraphrase '${PARAPHRASE}' did not return the target in the top 3 -- ${side}. ` +
+    `Target score ${scoreText} vs floor ${s.floor} (${PROFILE.modelId}@${PROFILE.revision}, ${s.vectors} stored vectors of that model); ` +
+    `semantic list in the server result: ${semanticPresent ? 'yes' : 'no'}. Server ids: ${JSON.stringify(ids)}; ` +
+    `keyword-only ids: ${JSON.stringify(s.keywordIds)}; target ${targetId}.`;
+}
+
 beforeAll(async () => {
   if (SKIP) return;
   scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kb-resp-')));
@@ -347,26 +424,51 @@ describe.skipIf(SKIP !== null)('real-model KB rebuild in the built server', () =
     expect(loop.maxGap).toBeLessThan(100);
   }, REBUILD_TIMEOUT_MS + 120_000);
 
+  it('before any restart, the paraphrase already returns the target (ranking and floor, not restart loading)', async () => {
+    // Same server that ran the rebuild: the model is loaded. A miss here is a
+    // ranking/floor problem; a miss only in the restart case is a load problem.
+    const r = await tool('kb_query', { query: PARAPHRASE, confidence: ALL_TIERS, limit: 5 });
+    expect(r.isError).toBe(false);
+    const ids = resultIds(r.text);
+    console.log(`[kb-embed-worker-responsiveness] before restart: paraphrase target rank ${ids.indexOf(targetId) + 1 || 'none'} of ${ids.length}`);
+    if (!ids.slice(0, 3).includes(targetId)) {
+      await stopServer();
+      throw new Error(await explainMiss('before restart', ids));
+    }
+  }, 120_000);
+
   it('after a restart with no write, a paraphrase query returns semantic results', async () => {
     await stopServer();
     const before = rebuildState();
     server = await startServer();
-    const deadline = Date.now() + 120_000;
+    const restartedAt = Date.now();
+    const deadline = restartedAt + 120_000;
     let ids: string[] = [];
     // The model loads in the background after open; poll until the semantic list is there.
     while (Date.now() < deadline) {
       const r = await tool('kb_query', { query: PARAPHRASE, confidence: ALL_TIERS, limit: 5 });
       expect(r.isError).toBe(false);
       ids = resultIds(r.text);
-      if (ids.includes(targetId)) break;
+      if (ids.slice(0, 3).includes(targetId)) break;
       await new Promise((r) => setTimeout(r, 500));
     }
-    expect(ids.slice(0, 3)).toContain(targetId);
+    console.log(`[kb-embed-worker-responsiveness] after restart: paraphrase target rank ${ids.indexOf(targetId) + 1 || 'none'} ` +
+      `of ${ids.length}, ${((Date.now() - restartedAt) / 1000).toFixed(1)} s after the server answered /health`);
+    if (!ids.slice(0, 3).includes(targetId)) {
+      await stopServer();
+      throw new Error(await explainMiss('after restart with no write', ids));
+    }
     // No write happened: nothing was queued or re-embedded.
     const after = rebuildState();
     expect(after.pending).toBe(0);
     expect(after.vectors).toBe(before.vectors);
     await stopServer();
+
+    // The pair is not passing by luck: the target clears the floor.
+    const s = await targetScoreVsFloor();
+    console.log(`[kb-embed-worker-responsiveness] target score ${s.score?.toFixed(4)} vs floor ${s.floor}`);
+    expect(s.score).not.toBeNull();
+    expect(s.score!).toBeGreaterThanOrEqual(s.floor);
 
     // Control: keyword search alone does not find the target for this query.
     const p = new SqliteProvider(kbFile, repo);
