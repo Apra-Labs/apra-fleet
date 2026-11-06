@@ -25,12 +25,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { getSelfMemoSlot, getSessionMemberId, getSessionRoots, type SessionRoots } from '../tool-scope.js';
 import { getAgent } from '../registry.js';
 import type { Agent } from '../../types.js';
 import { knownRepoRemoteUrl } from '../member-remote-url.js';
-import { getKbProviders, getGlobalKbProvider, getProjectSlug, type KbProviders } from './kb-providers.js';
+import { getKbProviders, getGlobalKbProvider, getProjectSlug, primeProjectSlug, type KbProviders } from './kb-providers.js';
 import { getMemberBibleView } from './member-bible-view.js';
 import { requireSqliteProject } from './require-sqlite-project.js';
 import type { SqliteProvider } from './sqlite-provider.js';
@@ -93,17 +93,261 @@ function noWorkFolder(folder: string, memberLabel?: string): KbSelfError {
   );
 }
 
-function gitOut(folder: string, args: string[], opts: { ceiling?: boolean } = {}): string | null {
+// ---------------------------------------------------------------------------
+// Per-folder git answer cache.
+//
+// Every kb_* and code_* tool call resolves its scope through gitOut (rev-parse
+// --git-dir, remote get-url origin, and for client roots rev-parse
+// --show-toplevel). Run as synchronous spawns on every call these block the
+// event loop for ~25 ms each, over 100 ms under CPU load (measured during a
+// real-model KB rebuild), so /health and concurrent calls stall.
+//
+// Chosen design (option "cache", not "make every caller async"): the answer of
+// each git query is cached by (ceiling, folder, args), together with a
+// fingerprint of the folder's git metadata read with plain fs.stat calls:
+//   - <folder>/.git kind+inode (deleting .git or re-running git init changes it),
+//   - <git dir>/config and <git dir>/HEAD (inode, size, mtime, ctime) -- git
+//     rewrites config through a lock file + rename on 'git remote add/remove/
+//     set-url', so the inode changes even on coarse-mtime filesystems,
+//   - for a gitfile (.git is a file: linked worktree, submodule) the real git
+//     dir's HEAD/config and its common dir's config,
+//   - for a bare repo (no .git) <folder>/HEAD and <folder>/config.
+// A cached answer is served only while the fingerprint still matches; any
+// change re-runs git synchronously, so losing the origin remote or the .git
+// folder is reported on the very next call with the same E-SELF-* code and
+// text as before. As a backstop for changes the fingerprint cannot see
+// (includeIf/global config, a repo created in an ancestor of a client root),
+// an answer older than GIT_CACHE_TTL_MS is re-checked with an ASYNC git spawn
+// (stale-while-revalidate), so steady-state calls never spawn git on the main
+// thread. On the tool-call path a cache miss (first call, or a fingerprint
+// change) is not answered synchronously either: the tool wrapper awaits
+// prewarmSelfGitCache() first, which replays the same resolution in a dry run
+// and fills each miss with an async spawn; only callers outside that wrapper
+// still fall back to a synchronous spawn. The GIT_CEILING_DIRECTORIES behaviour is unchanged: ceiling and
+// no-ceiling queries use separate keys and the same spawn options as before.
+// Paths are built with path.join/resolve only -- no shell, so Windows works.
+// ---------------------------------------------------------------------------
+
+/** Backstop lifetime of a cached git answer before an async re-check. */
+export const GIT_CACHE_TTL_MS = 30_000;
+const GIT_CACHE_MAX_ENTRIES = 256;
+const GIT_TIMEOUT_MS = 3000;
+
+interface GitCacheEntry {
+  value: string | null;
+  fingerprint: string;
+  at: number;
+  refreshing?: boolean;
+}
+const gitCache = new Map<string, GitCacheEntry>();
+
+/** Test hook: drop every cached git answer. */
+export function _resetKbSelfGitCacheForTests(): void {
+  gitCache.clear();
+}
+
+function statSig(p: string): string {
+  try {
+    const s = fs.statSync(p);
+    return `${s.isDirectory() ? 'd' : 'f'}:${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`;
+  } catch {
+    return '-';
+  }
+}
+
+/** Cheap fs-only fingerprint of the git metadata that decides gitOut's answers for `dir`. */
+function gitMetaFingerprint(dir: string): string {
+  const dotGit = path.join(dir, '.git');
+  let st: fs.Stats | undefined;
+  try { st = fs.statSync(dotGit); } catch { st = undefined; }
+  if (st?.isDirectory()) {
+    // Kind + inode only for the directory itself: its mtime moves on every
+    // git operation (index.lock, FETCH_HEAD, ...) and would defeat the cache.
+    return ['d', st.ino, statSig(path.join(dotGit, 'config')), statSig(path.join(dotGit, 'HEAD'))].join('|');
+  }
+  if (st?.isFile()) {
+    const parts: string[] = ['f', statSig(dotGit)];
+    try {
+      const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, 'utf-8'));
+      if (m) {
+        const gitDir = path.resolve(dir, m[1]);
+        parts.push(statSig(path.join(gitDir, 'HEAD')), statSig(path.join(gitDir, 'config')));
+        let common = gitDir;
+        try { common = path.resolve(gitDir, fs.readFileSync(path.join(gitDir, 'commondir'), 'utf-8').trim()); } catch { /* not a linked worktree */ }
+        parts.push(statSig(path.join(common, 'config')));
+      }
+    } catch { /* unreadable gitfile: the stat above still changes with it */ }
+    return parts.join('|');
+  }
+  return ['-', statSig(path.join(dir, 'HEAD')), statSig(path.join(dir, 'config'))].join('|');
+}
+
+function gitEnv(folder: string, ceiling: boolean): NodeJS.ProcessEnv {
   // Same ceiling as resolveProjectSlug: the folder itself must be the repo, so a
   // temp folder that merely sits inside some other checkout is not mistaken
   // for that checkout.
-  const env = opts.ceiling === false ? process.env : { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(folder) };
+  return ceiling ? { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(folder) } : process.env;
+}
+
+/**
+ * Run git synchronously. `verdict` is false when git gave no answer of its own
+ * (spawn failure, timeout, signal): the null is then returned as before but
+ * not cached, so a transient failure under load is not remembered.
+ */
+function gitOutSync(folder: string, args: string[], ceiling: boolean): { value: string | null; verdict: boolean } {
   try {
-    return execFileSync(gitExecutable(), args, {
-      cwd: folder, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
+    const value = execFileSync(gitExecutable(), args, {
+      cwd: folder, env: gitEnv(folder, ceiling), encoding: 'utf-8', timeout: GIT_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
-  } catch {
+    return { value, verdict: true };
+  } catch (e) {
+    return { value: null, verdict: typeof (e as { status?: unknown }).status === 'number' };
+  }
+}
+
+function fingerprintFor(folder: string, ceiling: boolean, value: string | null, folderPart?: string): string {
+  const own = folderPart ?? gitMetaFingerprint(folder);
+  // Without a ceiling the answer can come from an ancestor repository (a
+  // client root in a subfolder): fingerprint that repository too.
+  if (ceiling || !value) return own;
+  return `${own}#${gitMetaFingerprint(path.resolve(value))}`;
+}
+
+/** Run git without blocking the event loop; same options and verdict rule as gitOutSync. */
+function gitOutAsync(folder: string, args: string[], ceiling: boolean): Promise<{ value: string | null; verdict: boolean }> {
+  return new Promise(resolve => {
+    try {
+      execFile(gitExecutable(), args, {
+        cwd: folder, env: gitEnv(folder, ceiling), encoding: 'utf-8', timeout: GIT_TIMEOUT_MS, windowsHide: true,
+      }, (err, stdout) => {
+        if (!err) return resolve({ value: String(stdout).trim(), verdict: true });
+        // A non-zero exit is git's verdict; a spawn failure, timeout or signal is not.
+        resolve({ value: null, verdict: typeof (err as { code?: unknown }).code === 'number' });
+      });
+    } catch {
+      resolve({ value: null, verdict: false });
+    }
+  });
+}
+
+function gitCacheKey(folder: string, args: string[], ceiling: boolean): string {
+  return `${ceiling ? 'c' : 'n'}\0${folder}\0${args.join('\0')}`;
+}
+
+function storeGitAnswer(key: string, folder: string, ceiling: boolean, value: string | null, before: string): void {
+  gitCache.delete(key);
+  if (gitCache.size >= GIT_CACHE_MAX_ENTRIES) {
+    const oldest = gitCache.keys().next().value;
+    if (oldest !== undefined) gitCache.delete(oldest);
+  }
+  gitCache.set(key, { value, fingerprint: fingerprintFor(folder, ceiling, value, before), at: Date.now() });
+}
+
+function refreshAsync(key: string, entry: GitCacheEntry, folder: string, args: string[], ceiling: boolean): void {
+  entry.refreshing = true;
+  const before = gitMetaFingerprint(folder);
+  void gitOutAsync(folder, args, ceiling).then(({ value, verdict }) => {
+    entry.refreshing = false;
+    if (gitCache.get(key) !== entry) return;
+    if (!verdict) {
+      // Spawn failure or timeout (not a git verdict): keep the answer and
+      // re-check after another lifetime instead of flipping to an error.
+      entry.at = Date.now();
+      return;
+    }
+    storeGitAnswer(key, folder, ceiling, value, before);
+  });
+}
+
+/**
+ * Thrown by gitOut instead of spawning while a dry run is active
+ * (prewarmSelfGitCache): names the git query the resolution needs next.
+ */
+class GitCacheMiss {
+  constructor(readonly folder: string, readonly args: string[], readonly ceiling: boolean) {}
+}
+let dryRun = false;
+
+function gitOut(folder: string, args: string[], opts: { ceiling?: boolean } = {}): string | null {
+  const ceiling = opts.ceiling !== false;
+  const key = gitCacheKey(folder, args, ceiling);
+  const hit = gitCache.get(key);
+  if (hit && hit.fingerprint === fingerprintFor(folder, ceiling, hit.value)) {
+    if (Date.now() - hit.at >= GIT_CACHE_TTL_MS && !hit.refreshing) refreshAsync(key, hit, folder, args, ceiling);
+    return hit.value;
+  }
+  if (dryRun) throw new GitCacheMiss(folder, args, ceiling);
+  // Fingerprint before the spawn: a change racing the spawn then mismatches on
+  // the next call instead of being cached as current.
+  const before = gitMetaFingerprint(folder);
+  const { value, verdict } = gitOutSync(folder, args, ceiling);
+  gitCache.delete(key);
+  if (verdict) storeGitAnswer(key, folder, ceiling, value, before);
+  return value;
+}
+
+/** Run `fn` with gitOut in dry-run mode; returns the first cache miss, or null when none. */
+function dryResolve(fn: () => unknown): GitCacheMiss | null {
+  dryRun = true;
+  try {
+    fn();
     return null;
+  } catch (e) {
+    return e instanceof GitCacheMiss ? e : null; // a KbSelfError is the handler's to report
+  } finally {
+    dryRun = false;
+  }
+}
+
+const PREWARM_MAX_QUERIES = 16;
+
+/**
+ * Fill the git answer cache for the calling session's (self) resolution with
+ * ASYNC git spawns, so the handler's synchronous resolution that follows is
+ * all cache hits and the first call on a folder does not block the event loop
+ * either. It runs the real resolution (resolveSelfSession, the code-tool repo
+ * check, resolveSelfAnchor) in a dry-run mode where a cache miss throws a
+ * GitCacheMiss instead of spawning; each miss is answered asynchronously and
+ * the resolution re-run, so the queries are exactly the ones the handler will
+ * make. Never throws: any error is left for the handler's own resolution.
+ * Must run inside the tool call's context (runWithSessionMember).
+ */
+export async function prewarmSelfGitCache(): Promise<void> {
+  const steps: Array<() => unknown> = [
+    () => {
+      const self = resolveSelfSession();
+      if (!self.agent || self.agent.agentType === 'local') validateSelfRepoFolder(self.folder, self.memberLabel);
+    },
+    () => resolveSelfAnchor(),
+  ];
+  try {
+    let queries = 0;
+    for (const step of steps) {
+      let miss = dryResolve(step);
+      while (miss && queries < PREWARM_MAX_QUERIES) {
+        queries++;
+        const { folder, args, ceiling } = miss;
+        const before = gitMetaFingerprint(folder);
+        const { value, verdict } = await gitOutAsync(folder, args, ceiling);
+        // No verdict (spawn failure, timeout): stop and let the handler's
+        // synchronous resolution try for itself, exactly as before.
+        if (!verdict) return;
+        storeGitAnswer(gitCacheKey(folder, args, ceiling), folder, ceiling, value, before);
+        miss = dryResolve(step);
+      }
+    }
+    // The KB providers for a local anchor resolve its project slug from the
+    // same origin query (resolveProjectSlug): seed it from the cached answer.
+    let anchor: KbAnchor | undefined;
+    let origin: string | null = null;
+    dryResolve(() => {
+      anchor = resolveSelfAnchor();
+      if (!anchor.remoteUrl) origin = gitOut(anchor.folder, ['remote', 'get-url', 'origin']);
+    });
+    if (anchor && origin) primeProjectSlug((anchor as KbAnchor).folder, origin);
+  } catch {
+    /* best effort: the handler resolves (and reports) on its own */
   }
 }
 
@@ -274,7 +518,9 @@ function selectFullSessionFolder(): SelfSession {
 export function resolveSelfSession(): SelfSession {
   const memberId = getSessionMemberId();
   if (memberId === undefined) {
-    const memo = getSelfMemoSlot();
+    // A dry run (prewarmSelfGitCache) never touches the per-call memo: its
+    // GitCacheMiss must not be remembered as the call's answer.
+    const memo = dryRun ? undefined : getSelfMemoSlot();
     if (!memo) return selectFullSessionFolder();
     if (memo.error !== undefined) throw memo.error;
     if (memo.value !== undefined) return memo.value as SelfSession;

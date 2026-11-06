@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { ensureKbCodeLinkResolver } from './kb-code-link-resolver.js';
 
 // T1.3 (F2/D2 HARDENED, resolution R2): kb_freshness_sweep -- a bounded,
 // full-KB BIDIRECTIONAL freshness sweep. Re-hashes the stored per-file basis of
@@ -29,6 +30,8 @@ export async function kbFreshnessSweep(input: KbFreshnessSweepInput, anchor?: Kb
   // this call re-hashed against the fleet server's process.cwd() while
   // checkFreshness used repoPath, so prime and sweep could contradict each other.
   const sqliteProvider = requireSqliteProject(providers.project, 'kb_freshness_sweep');
+  // The sweep also re-resolves every live entry's code links (background).
+  ensureKbCodeLinkResolver(sqliteProvider, anchor?.memberId);
   const result = await sqliteProvider.freshnessSweep();
   return JSON.stringify(result);
 }

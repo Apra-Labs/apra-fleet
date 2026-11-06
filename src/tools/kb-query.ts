@@ -3,17 +3,45 @@ import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-sc
 import {
   getSelfReadKb, getMemberSplitRead, mergeSplitById, type KbAnchor, type MemberSplitRead,
 } from '../services/knowledge/kb-self.js';
+import { getSessionMemberId } from '../services/tool-scope.js';
+// Registers the code-link resolver factory member bible views use.
+import './kb-code-link-resolver.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import type { MemoryProvider } from '../services/knowledge/types.js';
 
 const L2_CONTENT_CAP = 3200;
 
+// Defaults by caller. A MEMBER session (its own context window pays for every
+// row) that gives no explicit limit gets at most 6 slim L1 rows and L2 content
+// for the top 3. Everyone else, and any caller naming a limit, keeps the
+// historical 20 rows / top 5 / full row shape, so the engine's explicit-limit
+// kb_query reads (which need confidence and the dispute flags) are unchanged.
+const FULL_DEFAULTS = { limit: 20, l2Top: 5, slim: false } as const;
+const MEMBER_DEFAULTS = { limit: 6, l2Top: 3, slim: true } as const;
+type ReadDefaults = { limit: number; l2Top: number; slim: boolean };
+
+function readDefaults(input: KbQueryInput, anchor: unknown): ReadDefaults {
+  const isMember = anchor === undefined && getSessionMemberId() !== undefined;
+  return isMember && input.limit === undefined ? MEMBER_DEFAULTS : FULL_DEFAULTS;
+}
+
+// `limit` bounds the MERGED L1 result. The per-provider limits are per side, so
+// project + global could otherwise return up to 2x the limit.
+function capMerged(rows: Entry[], limit: number): Entry[] {
+  return rows.slice(0, limit);
+}
+
+// The slim L1 row of a member read: just enough to decide what to open.
+function slimRow(e: Entry): Pick<Entry, 'id' | 'title' | 'summary' | 'confidence' | 'source_files'> {
+  return { id: e.id, title: e.title, summary: e.summary, confidence: e.confidence, source_files: e.source_files };
+}
+
 export const kbQuerySchema = z.object({
-  query: z.string().min(1).optional().describe('Free-text search string. Required unless flagged_only is true or tag is provided.'),
+  query: z.string().min(1).optional().describe('Free-text search string. Required unless flagged_only is true or tag, files, symbols or error_text is provided.'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook']).optional()
     .describe('Filter by content type'),
   tag: z.string().optional().describe('Filter to entries whose tags array contains this value (exact match, ANDed alongside other filters -- not an FTS term). May be used alone (no query) to list all entries carrying the tag.'),
-  limit: z.number().optional().describe('Max L1 results (default 20)'),
+  limit: z.number().optional().describe('Max L1 results. Default 20; a MEMBER session that omits it gets 6 slim rows (id, title, summary, confidence, source_files) with expanded content for the top 3. An explicit limit always wins and keeps the full row shape.'),
   include_stale: z.boolean().optional().describe('Include stale and superseded entries (default false)'),
   flagged_only: z.boolean().optional()
     .describe('Return all contradiction-flagged entries. When true, query is optional and full content is returned.'),
@@ -31,6 +59,15 @@ export const kbQuerySchema = z.object({
     .describe('Only return entries whose confidence tier is in this list (e.g. ["CONFIRMED"]). Applies to l1_results, l2_expanded and related_claims alike. Default when omitted: ["CONFIRMED"] -- INFERRED and UNVERIFIED entries are returned only when listed explicitly. Ignored when flagged_only is true.'),
   exclude_disputed: z.boolean().optional()
     .describe('Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default true when confidence is omitted (CONFIRMED-undisputed default); default false when confidence is given explicitly. Ignored when flagged_only is true.'),
+  // Hybrid search inputs (design D2b). Optional and additive: a call without
+  // them returns exactly the keys it always did. Only the local SQLite KB
+  // uses them; an HTTP KB backend ignores them.
+  files: z.array(z.string().min(1)).optional()
+    .describe('Optional file paths you are working on. Entries whose source_files (or code-index links) touch these files rank higher. Additive: omit it and the result is unchanged.'),
+  symbols: z.array(z.string().min(1)).optional()
+    .describe('Optional symbol names you are working on. Entries naming these symbols, or linked one code-graph hop from them, rank higher.'),
+  error_text: z.string().min(1).optional()
+    .describe('Optional error message you hit. Matched against the error_signatures of entries and added to the semantic search text, so an entry that explains this error is returned.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
   // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
   ...KB_REMOVED_SCOPE_KEYS_SHAPE,
@@ -54,6 +91,19 @@ function passesTrustFilter(
 }
 
 type L1Opts = Parameters<MemoryProvider['query']>[0] & { limit: number };
+
+// The hybrid inputs as provider QueryOptions (absent keys stay absent).
+function hybridOpts(input: KbQueryInput): Pick<L1Opts, 'anchor_files' | 'anchor_symbols' | 'error_text'> {
+  return {
+    ...(input.files?.length ? { anchor_files: input.files } : {}),
+    ...(input.symbols?.length ? { anchor_symbols: input.symbols } : {}),
+    ...(input.error_text ? { error_text: input.error_text } : {}),
+  };
+}
+
+function hasHybridInput(input: KbQueryInput): boolean {
+  return Boolean(input.files?.length || input.symbols?.length || input.error_text);
+}
 type Entry = Awaited<ReturnType<MemoryProvider['query']>>['results'][number];
 
 // One provider's L1 page with the trust filter re-applied (see passesTrustFilter).
@@ -94,9 +144,9 @@ function capL2Content<T extends { content: string }>(e: T): T {
 // (project side = bible view + per-repo DB, global side = both global halves),
 // mirroring the per-provider limit of the unsplit read, so the CONFIRMED-only
 // result is always a prefix of each side and the mixed result a superset of it.
-async function splitQuery(split: MemberSplitRead, raw: KbQueryInput): Promise<string> {
+async function splitQuery(split: MemberSplitRead, raw: KbQueryInput, defaults: ReadDefaults): Promise<string> {
   const input: KbQueryInput = { ...raw, exclude_disputed: raw.exclude_disputed ?? false };
-  const limit = input.limit ?? 20;
+  const limit = input.limit ?? defaults.limit;
   const baseOpts = {
     query: input.query,
     type: input.type,
@@ -106,6 +156,8 @@ async function splitQuery(split: MemberSplitRead, raw: KbQueryInput): Promise<st
     include_stale: input.include_stale ?? false,
     include_superseded: input.include_stale ?? false,
     exclude_disputed: input.exclude_disputed,
+    // Both halves get the hybrid inputs; the merge order below is unchanged.
+    ...hybridOpts(input),
   };
   const bibleInput: KbQueryInput = { ...input, confidence: split.bible.tiers };
   const ownInput: KbQueryInput = { ...input, confidence: split.own.tiers };
@@ -126,19 +178,20 @@ async function splitQuery(split: MemberSplitRead, raw: KbQueryInput): Promise<st
   const repoIds = new Set(repoL1.map(e => e.id));
 
   const seenTitles = new Set(projectL1.map(e => e.title));
-  const mergedL1 = [...projectL1, ...globalL1.filter(e => !seenTitles.has(e.title))];
+  const mergedL1 = capMerged([...projectL1, ...globalL1.filter(e => !seenTitles.has(e.title))], limit);
 
   const top5Ids = mergedL1.slice(0, 5).map(e => e.id);
-  let l2Results: Entry[] = mergedL1.slice(0, 5);
-  if (top5Ids.length > 0) {
-    const fromView = top5Ids.filter(id => viewIds.has(id));
-    const fromRepo = top5Ids.filter(id => !viewIds.has(id) && repoIds.has(id));
-    const fromGlobal = top5Ids.filter(id => !viewIds.has(id) && !repoIds.has(id));
+  const l2Ids = mergedL1.slice(0, defaults.l2Top).map(e => e.id);
+  let l2Results: Entry[] = mergedL1.slice(0, defaults.l2Top);
+  if (l2Ids.length > 0) {
+    const fromView = l2Ids.filter(id => viewIds.has(id));
+    const fromRepo = l2Ids.filter(id => !viewIds.has(id) && repoIds.has(id));
+    const fromGlobal = l2Ids.filter(id => !viewIds.has(id) && !repoIds.has(id));
     const fetched = new Map<string, Entry>();
     if (fromView.length) for (const e of (await split.bible.project.query({ ids: fromView })).results) fetched.set(e.id, e);
     if (fromRepo.length) for (const e of (await split.own.project.query({ ids: fromRepo })).results) fetched.set(e.id, e);
     if (fromGlobal.length) for (const e of (await split.bible.global.query({ ids: fromGlobal })).results) fetched.set(e.id, e);
-    l2Results = top5Ids.flatMap(id => (fetched.has(id) ? [capL2Content(fetched.get(id)!)] : []));
+    l2Results = l2Ids.flatMap(id => (fetched.has(id) ? [capL2Content(fetched.get(id)!)] : []));
   }
 
   let relatedClaims: Entry[] = [];
@@ -161,7 +214,7 @@ async function splitQuery(split: MemberSplitRead, raw: KbQueryInput): Promise<st
   }
 
   return JSON.stringify({
-    l1_results: mergedL1,
+    l1_results: defaults.slim ? mergedL1.map(slimRow) : mergedL1,
     l2_expanded: l2Results,
     ...(input.expand_related ? { related_claims: relatedClaims } : {}),
   });
@@ -171,7 +224,9 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // Tag-only calls are valid (HIGH-1 fix): the provider's plain (non-FTS)
   // branch supports a queryless listing, so `kb_query({ tag })` lists all
   // entries carrying the tag -- the KB Agent curator's Step 2 depends on it.
-  if (!input.query && !input.flagged_only && !input.tag) {
+  if (!input.query && !input.flagged_only && !input.tag && !hasHybridInput(input)) {
+    // The refusal text is recorded in the memory contract (E-QUERY-NO-SELECTOR);
+    // files/symbols/error_text are additional selectors that avoid it.
     throw new Error('Provide query (free-text search), tag (exact-match tag listing), or flagged_only: true (list contradictions)');
   }
 
@@ -181,7 +236,7 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // never splits.
   if (!input.flagged_only) {
     const split = await getMemberSplitRead(anchor, input.confidence, 'kb_query');
-    if (split) return splitQuery(split, input);
+    if (split) return splitQuery(split, input, readDefaults(input, anchor));
   }
 
   // A MEMBER session reads its checkout bible view unless it explicitly asks
@@ -230,17 +285,19 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
     exclude_disputed: input.exclude_disputed ?? !input.confidence?.length,
   };
 
+  const defaults = readDefaults(input, anchor);
   const queryOpts = {
     query: input.query,
     type: input.type,
     tag: input.tag,
-    limit: input.limit ?? 20,
+    limit: input.limit ?? defaults.limit,
     l1_only: true,
     include_stale: input.include_stale ?? false,
     include_superseded: input.include_stale ?? false,
     confidence: input.confidence,
     exclude_disputed: input.exclude_disputed,
     owner_tag: ownerTag,
+    ...hybridOpts(input),
   };
 
   // The trust filter runs PER PROVIDER, before the title de-dup below: filtering
@@ -251,24 +308,27 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
 
   // Merge project first, deduplicate global entries by title
   const seen = new Set(projectL1.map(e => e.title));
-  const mergedL1 = [
+  const mergedL1 = capMerged([
     ...projectL1,
     ...globalL1.filter(e => !seen.has(e.title)),
-  ];
+  ], queryOpts.limit);
 
   const top5Ids = mergedL1.slice(0, 5).map(e => e.id);
-  let l2Results = mergedL1.slice(0, 5);
+  const l2Ids = mergedL1.slice(0, defaults.l2Top).map(e => e.id);
+  let l2Results = mergedL1.slice(0, defaults.l2Top);
 
-  if (top5Ids.length > 0) {
+  if (l2Ids.length > 0) {
     // L2 fetch: check project first, then global for IDs not found in project
-    const projectL2 = await providers.project.query({ ids: top5Ids });
+    const projectL2 = await providers.project.query({ ids: l2Ids });
     const projectL2Ids = new Set(projectL2.results.map(e => e.id));
-    const missingIds = top5Ids.filter(id => !projectL2Ids.has(id));
+    const missingIds = l2Ids.filter(id => !projectL2Ids.has(id));
     const globalL2Results = missingIds.length > 0
       ? (await providers.global.query({ ids: missingIds })).results
       : [];
 
-    l2Results = [...projectL2.results, ...globalL2Results].map(e => ({
+    // An ids lookup returns rows in table order; keep L2 in the L1 rank order.
+    const fetched = new Map([...projectL2.results, ...globalL2Results].map(e => [e.id, e] as const));
+    l2Results = l2Ids.flatMap(id => (fetched.has(id) ? [fetched.get(id)!] : [])).map(e => ({
       ...e,
       content: e.content.length > L2_CONTENT_CAP
         ? e.content.slice(0, L2_CONTENT_CAP) + '...[truncated]'
@@ -295,7 +355,7 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   }
 
   return JSON.stringify({
-    l1_results: mergedL1,
+    l1_results: defaults.slim ? mergedL1.map(slimRow) : mergedL1,
     l2_expanded: l2Results,
     ...(input.expand_related ? { related_claims: relatedClaims } : {}),
   });

@@ -7,6 +7,8 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { extractBibleDemotions, tombstonedIds } from '../services/knowledge/bible-import.js';
 import { getProvider } from './code-intelligence.js';
+// Registers the code-link resolver factory member bible views use.
+import './kb-code-link-resolver.js';
 import type { KBEntry, MemoryProvider } from '../services/knowledge/types.js';
 import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import { FLEET_DIR } from '../paths.js';

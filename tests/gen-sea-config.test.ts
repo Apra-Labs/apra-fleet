@@ -30,9 +30,14 @@ describe('gen-sea-config.mjs -- generated SEA manifest', () => {
     if (!existsSync(path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'agents'))) {
       throw new Error('packages/apra-fleet-se/apra-pm package directory is missing -- re-clone the repo.');
     }
+    // The generator refuses to run without the KB embed worker bundle, which
+    // only build:sea produces; a plain `npm run build` tree does not have it.
+    if (!existsSync(path.join(root, 'dist', 'kb-embed-worker.cjs'))) {
+      execFileSync('node', ['scripts/build-sea.mjs'], { cwd: root, stdio: 'pipe' });
+    }
     execFileSync('node', ['scripts/gen-sea-config.mjs'], { cwd: root, stdio: 'pipe' });
     manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
-  });
+  }, 120_000);
 
   it('includes agents/schemas/*.json role I/O contracts', () => {
     const schemaKeys = Object.keys(manifest.agents).filter(k => k.startsWith('schemas/') && k.endsWith('.json'));
@@ -48,6 +53,14 @@ describe('gen-sea-config.mjs -- generated SEA manifest', () => {
     const keys = Object.keys(manifest.autoSprintArgsSkill);
     expect(keys.length).toBeGreaterThan(0);
     expect(keys).toContain('SKILL.md');
+  });
+
+  it('embeds the onnxruntime-web WASM binary under the asset name the KB embedder reads', async () => {
+    const { WASM_SEA_ASSET } = await import('../src/services/knowledge/embedding/embedder.js');
+    const config = JSON.parse(readFileSync(configPath, 'utf-8')) as { assets: Record<string, string> };
+    const wasm = config.assets[WASM_SEA_ASSET];
+    expect(wasm).toBe(path.join(root, 'node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.wasm'));
+    expect(existsSync(wasm)).toBe(true);
   });
 
   it('still includes plain role-agent files alongside the nested ones', () => {

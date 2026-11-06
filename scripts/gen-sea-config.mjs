@@ -325,6 +325,30 @@ for (const [, relPath] of Object.entries(claudePlugins)) {
   assets[relPath] = join(root, relPath);
 }
 
+// onnxruntime-web WASM binary for the KB embedder. The asset name must equal
+// WASM_SEA_ASSET in src/services/knowledge/embedding/embedder.ts. Embedded
+// (rather than fetched at runtime) so the binary works offline and stays
+// version-locked to the Emscripten glue esbuild bundled from the same
+// package; the embedding MODEL is never shipped (it downloads on first use).
+const ortWasm = join(root, 'node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.wasm');
+if (!existsSync(ortWasm)) {
+  console.error('Error: node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm is missing (KB embedder runtime).');
+  console.error('Run: npm install');
+  process.exit(1);
+}
+assets['onnxruntime-web/ort-wasm-simd-threaded.wasm'] = ortWasm;
+
+// KB embed worker script (built by build-sea.mjs). The asset name must equal
+// EMBED_WORKER_SEA_ASSET in src/services/knowledge/embedding/worker-runtime.ts:
+// in the binary the worker is started from this asset's source (eval), since
+// a SEA has no script file on disk.
+const embedWorker = join(distDir, 'kb-embed-worker.cjs');
+if (!existsSync(embedWorker)) {
+  console.error('Error: dist/kb-embed-worker.cjs is missing (KB embed worker). Run: npm run build:sea');
+  process.exit(1);
+}
+assets['kb/embed-worker.cjs'] = embedWorker;
+
 const seaConfig = {
   main: join(distDir, 'sea-bundle.cjs'),
   output: join(distDir, 'sea-prep.blob'),

@@ -43,6 +43,7 @@ export function pushedInfo(entries, block) {
  *   kbWork: { knowledgeFor: Function },
  *   isMemberVerified?: (memberName: string) => boolean,
  *   diffFiles?: (memberName: string) => Promise<string[]>,
+ *   diffHunks?: (memberName: string) => Promise<string>,
  *   deployTargets?: (memberName: string, role: string) => Promise<string[]>,
  *   log?: Function,
  * }} opts
@@ -89,6 +90,11 @@ export function createKbInjection(opts = {}) {
                 if (!ctx.diffFiles && typeof opts.diffFiles === 'function' && /^(reviewer|harvester)$/.test(role)) {
                     try { ctx.diffFiles = await opts.diffFiles(member); } catch (err) {
                         log(`[kb-inject] could not list the diff files for ${member} (non-fatal): ${err && err.message ? err.message : err}`);
+                    }
+                }
+                if (!ctx.diffHunks && typeof opts.diffHunks === 'function' && /^(reviewer|harvester)$/.test(role)) {
+                    try { ctx.diffHunks = await opts.diffHunks(member); } catch (err) {
+                        log(`[kb-inject] could not read the diff hunks for ${member} (non-fatal): ${err && err.message ? err.message : err}`);
                     }
                 }
                 if (!ctx.deployTargets && typeof opts.deployTargets === 'function'

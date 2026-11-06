@@ -213,3 +213,148 @@ jobs:
             echo "verdict=BROKEN" >> "$GITHUB_OUTPUT"
             echo "## BROKEN -- nightly summary script crashed (see the job log)" >> "$GITHUB_STEP_SUMMARY"
           }
+
+  # KB recall with the REAL embedding models. npm test only runs the recall
+  # eval keyword-only (it never downloads a model; model configs skip with the
+  # reason), so this lane is where hybrid recall with each built-in model is
+  # actually measured. Models are downloaded once (pinned revisions, sha256
+  # verified) into a cached folder keyed on the profile pins. Advisory like
+  # the job above: a test outcome never fails the job; the verdict and the
+  # recall@5 / MRR tables are the headline of the job summary.
+  kb-real-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      verdict: ${{ steps.report.outputs.verdict || 'BROKEN' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # dist/index.js for the built-server responsiveness test.
+      - name: Build
+        run: npm run build
+
+      # The SEA binary for the responsiveness test's SEA case; that case skips
+      # with the reason printed when the binary is missing, so a build failure
+      # here is reported, not fatal.
+      - name: Build single-executable binary
+        id: sea
+        continue-on-error: true
+        run: npm run build:binary
+
+      - name: Cache embedding models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/apra-kb-models
+          key: kb-models-${{ hashFiles('src/services/knowledge/embedding/profiles.ts') }}
+
+      # Keyword-only plus hybrid with every built-in model. A model that
+      # cannot be loaded FAILS here (APRA_KB_EVAL_REQUIRE_MODELS=1) instead of
+      # skipping as it does under npm test.
+      - name: KB recall eval with real models
+        id: eval
+        timeout-minutes: 60
+        continue-on-error: true
+        env:
+          APRA_KB_EVAL_ALLOW_DOWNLOAD: '1'
+          APRA_KB_EVAL_REQUIRE_MODELS: '1'
+          APRA_KB_RECALL_REPORT: ${{ runner.temp }}/kb-recall/report.json
+        run: |
+          export APRA_KB_EVAL_MODELS_DIR="$HOME/.cache/apra-kb-models"
+          rc=0
+          npx vitest run tests/knowledge/kb-recall-eval.test.ts || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      # The built server stays responsive while the KB rebuilds its vectors
+      # with the real default model (reads the models folder the eval filled).
+      - name: KB embed worker responsiveness with the real model
+        id: resp
+        timeout-minutes: 40
+        continue-on-error: true
+        run: |
+          export APRA_KB_EVAL_MODELS_DIR="$HOME/.cache/apra-kb-models"
+          rc=0
+          npx vitest run tests/knowledge/kb-embed-worker-responsiveness.test.ts || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      # kb_query latency on 5k entries with the real default model's query
+      # vectors (single query and a 6-query knowledgeFor-style burst), plus
+      # the similarity floor check on real document vectors. A missing model
+      # fails (APRA_KB_BENCH_REQUIRE_MODEL=1); the numbers go to the summary.
+      - name: KB query latency bench with the real model
+        id: bench
+        timeout-minutes: 40
+        continue-on-error: true
+        env:
+          APRA_KB_BENCH_REQUIRE_MODEL: '1'
+        run: |
+          export APRA_KB_BENCH_MODELS_DIR="$HOME/.cache/apra-kb-models"
+          mkdir -p "$RUNNER_TEMP/kb-recall"
+          rc=0
+          node scripts/kb-query-bench.mjs --breakdown > "$RUNNER_TEMP/kb-recall/bench.txt" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/kb-recall/bench.txt"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      # MEMBER-session reads with the real default model: a member's bible
+      # view gets the semantic list (paraphrase in the top 5), file anchors,
+      # the similarity floor (nonsense -> 0 rows) and the engine's
+      # knowledgeFor-through-memberCall injection. A missing model fails here
+      # (APRA_KB_EVAL_REQUIRE_MODELS=1) instead of skipping as under npm test.
+      - name: KB member reads with the real model
+        id: member
+        timeout-minutes: 30
+        continue-on-error: true
+        env:
+          APRA_KB_EVAL_REQUIRE_MODELS: '1'
+        run: |
+          export APRA_KB_EVAL_MODELS_DIR="$HOME/.cache/apra-kb-models"
+          rc=0
+          npx vitest run tests/knowledge/kb-member-real-model.test.ts || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Upload KB recall report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: kb-recall-report
+          path: ${{ runner.temp }}/kb-recall/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: KB real-model verdict and summary
+        id: report
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          EVAL_RC: ${{ steps.eval.outputs.rc }}
+          RESP_RC: ${{ steps.resp.outputs.rc }}
+          BENCH_RC: ${{ steps.bench.outputs.rc }}
+          MEMBER_RC: ${{ steps.member.outputs.rc }}
+          SEA_OUTCOME: ${{ steps.sea.outcome }}
+          REPORT_MD: ${{ runner.temp }}/kb-recall/report.md
+          BENCH_TXT: ${{ runner.temp }}/kb-recall/bench.txt
+        run: |
+          if [ -z "$EVAL_RC" ] || [ -z "$RESP_RC" ] || [ -z "$BENCH_RC" ] || [ -z "$MEMBER_RC" ]; then verdict=BROKEN
+          elif [ "$EVAL_RC" = 0 ] && [ "$RESP_RC" = 0 ] && [ "$BENCH_RC" = 0 ] && [ "$MEMBER_RC" = 0 ]; then verdict=PASS
+          else verdict=FAIL; fi
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+          {
+            echo "## $verdict -- KB real-model lane (recall eval rc=${EVAL_RC:-none}, responsiveness rc=${RESP_RC:-none}, query bench rc=${BENCH_RC:-none}, member reads rc=${MEMBER_RC:-none}, SEA build ${SEA_OUTCOME})"
+            echo
+            if [ -f "$REPORT_MD" ]; then cat "$REPORT_MD"; else echo "No recall report was written (see the job log)."; fi
+            echo
+            echo '### kb_query latency bench'
+            echo
+            if [ -f "$BENCH_TXT" ]; then echo '```'; grep '^\[kb-query-bench\]' "$BENCH_TXT" || true; echo '```'; else echo "No bench output (see the job log)."; fi
+          } >> "$GITHUB_STEP_SUMMARY"

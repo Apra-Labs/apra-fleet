@@ -1,0 +1,28 @@
+{
+  "tool": "kb_query",
+  "case": "happy-hybrid",
+  "kind": "happy",
+  "request": {
+    "query": "exampleFn",
+    "files": [
+      "src/example.ts"
+    ],
+    "symbols": [
+      "exampleFn"
+    ],
+    "error_text": "example failure",
+    "confidence": [
+      "CONFIRMED",
+      "INFERRED",
+      "UNVERIFIED"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"l1_results\":[{\"id\":\"25202871-e4f5-4f35-94ef-2cbafbc96c34\",\"title\":\"exampleFn returns x + 1\",\"summary\":\"exampleFn in src/example.ts is a trivial increment helper used by the fixture corpus.\",\"confidence\":\"CONFIRMED\",\"source_files\":[\"src/example.ts\"]},{\"id\":\"ec7e8c64-d52f-489b-9143-5feb4a05a387\",\"title\":\"src/example.ts summary\",\"summary\":\"File summary cache entry for src/example.ts.\",\"confidence\":\"INFERRED\",\"source_files\":[\"src/example.ts\"]},{\"id\":\"d08654b8-01c6-43ad-b204-94e8d9480355\",\"title\":\"Entry whose cited file changes after capture\",\"summary\":\"Set up to demonstrate the kb_bible_commit basis_mismatch skip reason.\",\"confidence\":\"CONFIRMED\",\"source_files\":[\"src/basis-drift.ts\"]},{\"id\":\"06cb5f93-4119-4d81-bf0c-7f0f274d881a\",\"title\":\"Entry walked up to CONFIRMED so it can be demoted\",\"summary\":\"Set up to demonstrate the kb_demote happy path and its E-DEMOTE-NOT-CONFIRMED refusal.\",\"confidence\":\"INFERRED\",\"source_files\":[\"src/demote-basis.ts\"]}],\"l2_expanded\":[{\"id\":\"25202871-e4f5-4f35-94ef-2cbafbc96c34\",\"type\":\"knowledge\",\"title\":\"exampleFn returns x + 1\",\"summary\":\"exampleFn in src/example.ts is a trivial increment helper used by the fixture corpus.\",\"content\":\"exampleFn(x) returns x + 1. Captured as a synthetic fixture for the memory-contract round-trip corpus.\",\"source_files\":[\"src/example.ts\"],\"symbols\":[\"exampleFn\"],\"module\":null,\"tags\":[],\"content_hash\":\"\",\"content_hash_type\":\"sha256\",\"stale\":false,\"flagged_for_review\":false,\"contradiction_of\":null,\"author\":\"unknown\",\"source\":\"import\",\"confidence\":\"CONFIRMED\",\"scope\":\"project\",\"created_at\":\"2026-11-05T14:50:53.715Z\",\"superseded_at\":null,\"promoted_at\":null,\"demoted_basis_hashes\":{},\"recall_cues\":[],\"error_signatures\":[],\"use_count\":3,\"last_accessed\":\"2026-11-05T14:50:53.793Z\"},{\"id\":\"ec7e8c64-d52f-489b-9143-5feb4a05a387\",\"type\":\"context-cache\",\"title\":\"src/example.ts summary\",\"summary\":\"File summary cache entry for src/example.ts.\",\"content\":\"src/example.ts exports exampleFn, a one-line increment helper.\",\"source_files\":[\"src/example.ts\"],\"symbols\":[\"exampleFn\"],\"module\":null,\"tags\":[\"member:cee13c13-a240-460f-9bcf-c40fbeec19f4\"],\"content_hash\":\"\",\"content_hash_type\":\"sha256\",\"stale\":false,\"flagged_for_review\":false,\"contradiction_of\":null,\"author\":\"unknown\",\"source\":\"session\",\"confidence\":\"INFERRED\",\"scope\":\"project\",\"created_at\":\"2026-11-05T14:50:47.180Z\",\"superseded_at\":null,\"promoted_at\":null,\"demoted_basis_hashes\":{},\"recall_cues\":[],\"error_signatures\":[],\"use_count\":1,\"last_accessed\":\"2026-11-05T14:50:53.827Z\"},{\"id\":\"d08654b8-01c6-43ad-b204-94e8d9480355\",\"type\":\"knowledge\",\"title\":\"Entry whose cited file changes after capture\",\"summary\":\"Set up to demonstrate the kb_bible_commit basis_mismatch skip reason.\",\"content\":\"This entry cites src/basis-drift.ts, which is edited after the entry is promoted to CONFIRMED.\\n[Promoted: First promotion (UNVERIFIED -> INFERRED) of the entry used by the basis_mismatch fixture. -- unknown]\",\"source_files\":[\"src/basis-drift.ts\"],\"symbols\":[],\"module\":null,\"tags\":[\"member:cee13c13-a240-460f-9bcf-c40fbeec19f4\"],\"content_hash\":\"\",\"content_hash_type\":\"sha256\",\"stale\":false,\"flagged_for_review\":false,\"contradiction_of\":null,\"author\":\"unknown\",\"source\":\"promotion\",\"confidence\":\"CONFIRMED\",\"scope\":\"project\",\"created_at\":\"2026-11-05T14:50:52.196Z\",\"superseded_at\":null,\"promoted_at\":\"2026-11-05T14:50:52.286Z\",\"demoted_basis_hashes\":{},\"recall_cues\":[],\"error_signatures\":[],\"use_count\":1,\"last_accessed\":\"2026-11-05T14:50:53.827Z\"}]}"
+      }
+    ]
+  }
+}

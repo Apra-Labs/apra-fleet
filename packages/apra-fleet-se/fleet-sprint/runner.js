@@ -235,7 +235,7 @@ import {
     kbKnowledgeBlock, kbPromotionBlock,
 } from './kb.mjs';
 import { createKbInjection, withWrapperKbBlock } from './kb-injection.mjs';
-import { pathsFromText, isPriorityTierToken } from './kb-hints.mjs';
+import { pathsFromText, isPriorityTierToken, KB_HINT_LIMITS } from './kb-hints.mjs';
 // Beads scope discovery + the shared full-DB snapshot: the single in-memory
 // BFS scope rule (now shared by bdListScoped and classifyVerifySet instead of
 // duplicated), the `bd list --all --limit 0 --json` snapshot, and the
@@ -1010,6 +1010,16 @@ async function runSprintCycle(context) {
     // bead id -> bead, refreshed with the sprint tree; the reviewer's hint
     // sources (titles of the beads under review) are read from it.
     let kbBeadIndex = new Map();
+    // Aligned bead hint arrays (titles, descriptions, acceptance) for the beads
+    // under review; a bead with no title is skipped from every array together.
+    const kbBeadHintFields = (ids) => {
+        const beads = (Array.isArray(ids) ? ids : []).map((id) => kbBeadIndex.get(id)).filter((b) => b && typeof b.title === 'string' && b.title);
+        return {
+            beadTitles: beads.map((b) => b.title),
+            beadDescriptions: beads.map((b) => (typeof b.description === 'string' ? b.description : '')),
+            beadAcceptance: beads.map((b) => (typeof b.acceptance_criteria === 'string' ? b.acceptance_criteria : '')),
+        };
+    };
     const kbBeadTitles = (ids) => (Array.isArray(ids) ? ids : []).map((id) => kbBeadIndex.get(id)?.title).filter((t) => typeof t === 'string' && t);
     const agent = async (prompt, opts = {}) => {
         // Only promise the kb_captures channel to a persona whose returned
@@ -1612,6 +1622,13 @@ async function runSprintCycle(context) {
             const res = await command(`git diff --name-only origin/${validated.baseBranch}...${validated.branch}`, { member_name: memberName, silent: true, failSoft: true });
             if (!res || !res.ok) return [];
             return String(res.output || '').split('\n').map((l) => l.trim()).filter(Boolean);
+        },
+        // Zero-context hunks of the sprint diff: changed symbols are read off
+        // them (kb-hints.mjs parseDiffHunks, which caps the size it uses).
+        diffHunks: async (memberName) => {
+            const res = await command(`git diff -U0 origin/${validated.baseBranch}...${validated.branch}`, { member_name: memberName, silent: true, failSoft: true });
+            if (!res || !res.ok) return '';
+            return String(res.output || '').slice(0, KB_HINT_LIMITS.maxHunkChars);
         },
         log,
     });
@@ -2383,7 +2400,7 @@ async function runSprintCycle(context) {
         const reviewerKbBlock = await kbInjection.blockFor({
             role: ROLE_REVIEWER,
             member: reviewerPool[0],
-            context: { ...kbSprintContext, beadIds, beadTitles: kbBeadTitles(beadIds) },
+            context: { ...kbSprintContext, beadIds, ...kbBeadHintFields(beadIds) },
             captureChannel: true,
         });
         // A full-cycle review can genuinely exhaust the fleet's default turn

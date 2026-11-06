@@ -304,6 +304,18 @@
  */
 
 /**
+ * Local KB embedding model state, `kbHealth.embedding` in fleet_status json
+ * output (one compact `kb embedding:` line in compact output). This host
+ * only; reading it never loads or downloads a model.
+ * @typedef {Object} FleetStatusKbEmbedding
+ * @property {"idle" | "loading" | "ready" | "disabled" | "failed"} state - idle: configured, downloads and loads on first use; disabled: embedding.model none; failed: semantic search off, keyword and anchor search remain
+ * @property {string} [modelId] - Model repo id or local folder (absent when disabled)
+ * @property {string} [revision] - Pinned revision, or "local" for a folder model
+ * @property {number} [dims] - state "ready": vector size
+ * @property {string} [reason] - state "failed": why the download or load failed
+ */
+
+/**
  * @typedef {Object} SendFilesOptions
  * @property {string[]} local_paths - Array of local file paths to upload
  * @property {string} [dest_subdir] - Destination subdirectory relative to work_folder on the member
@@ -777,6 +789,31 @@
  */
 
 /**
+ * @typedef {Object} KbQueryOptions
+ * @property {string} [query] - Free-text search string. Required unless flagged_only
+ *   is true or tag, files, symbols or error_text is provided.
+ * @property {'context-cache'|'learning'|'knowledge'|'runbook'} [type] - Filter by content type.
+ * @property {string} [tag] - Exact-match tag filter; may be used alone to list a tag.
+ * @property {number} [limit] - Max L1 results (default 20; a MEMBER session that omits
+ *   it gets 6 slim rows).
+ * @property {boolean} [include_stale] - Include stale and superseded entries.
+ * @property {boolean} [flagged_only] - Return contradiction-flagged entries instead
+ *   ({flagged_entries, total, note}).
+ * @property {boolean} [expand_related] - Add related_claims (refines / contradiction_of).
+ * @property {Array<'CONFIRMED'|'INFERRED'|'UNVERIFIED'>} [confidence] - Tier allow-list
+ *   (default ["CONFIRMED"]).
+ * @property {boolean} [exclude_disputed] - Drop entries in an unresolved contradiction.
+ * @property {string[]} [files] - Optional, additive: file paths you are working on;
+ *   entries whose source_files (or code-index links) touch them rank higher.
+ * @property {string[]} [symbols] - Optional, additive: symbol names; entries naming
+ *   them, or linked one code-graph hop away, rank higher.
+ * @property {string} [error_text] - Optional, additive: an error message; matched
+ *   against entries' error_signatures and added to the semantic query text.
+ *   files/symbols/error_text are used by the local SQLite KB only; an HTTP KB
+ *   backend ignores them.
+ */
+
+/**
  * @typedef {Object} KbUsageOptions
  * @property {string[]} [pushed] - Ids of KB entries the engine delivered to a
  *   dispatch; each is recorded as one returned usage event (duplicates in the
@@ -1146,7 +1183,8 @@ export class ApraFleet {
     /**
      * Get status of all fleet members. With format "json" the result's
      * kbHealth.credential is a {@link FleetStatusKbCredential} when the KB
-     * config selects the http provider.
+     * config selects the http provider, and kbHealth.embedding is a
+     * {@link FleetStatusKbEmbedding}.
      * @param {FleetStatusOptions} [options]
      */
     async fleetStatus(options = {}) {
@@ -1387,6 +1425,20 @@ export class ApraFleet {
     async kbBibleCommit(options) {
         assertNoRemovedKbScopeKeys('kb_bible_commit', options);
         return this.mcpClient.callTool('kb_bible_commit', options);
+    }
+
+    /**
+     * Search the calling session's KB (kb_query). Result JSON is
+     * {l1_results, l2_expanded, related_claims?}, or {flagged_entries, total,
+     * note} with flagged_only; extract with parseToolJson(). The optional
+     * files / symbols / error_text inputs are additive hybrid-ranking hints.
+     * The removed scope keys (repo_path, repo, repo_remote_url) are refused
+     * with E-SCOPE-KEY-REMOVED before anything is sent.
+     * @param {KbQueryOptions} options
+     */
+    async kbQuery(options) {
+        assertNoRemovedKbScopeKeys('kb_query', options);
+        return this.mcpClient.callTool('kb_query', options);
     }
 
     /**

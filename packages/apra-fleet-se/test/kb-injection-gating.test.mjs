@@ -144,9 +144,12 @@ describe('per-role KB hints (b4g.19.1)', () => {
             const inj = injection({ kb });
             const memberFor = { planner: 'plan-1', 'plan-reviewer': 'pr-1', doer: 'doer-1', reviewer: 'rev-1', deployer: 'dep-1', 'integ-test-runner': 'it-1', 'regression-test-runner': 'rt-1', harvester: 'hv-1' }[role];
             await inj.blockFor({ role, member: memberFor, context: ctx });
-            const q = kb.calls.find((c) => c.name === 'kb_query');
-            assert.ok(q, `${role}: kb_query issued`);
-            for (const t of want.terms) assert.ok(q.args.query.split(' ').includes(t), `${role}: query ${q.args.query} carries ${t}`);
+            const qs = kb.calls.filter((c) => c.name === 'kb_query');
+            assert.ok(qs.length > 0, `${role}: kb_query issued`);
+            // doer / reviewer ask one situation-phrased query per bead and file
+            // (kb-hints.mjs situations); the other roles one joined-terms query.
+            const queryText = qs.map((c) => c.args.query).join(' | ');
+            for (const t of want.terms) assert.ok(queryText.includes(t), `${role}: queries ${queryText} carry ${t}`);
             if (want.modules.length) {
                 const p = kb.calls.find((c) => c.name === 'kb_session_prime');
                 assert.ok(p, `${role}: the hint-ranked prime runs when the query finds nothing`);
@@ -171,7 +174,9 @@ describe('per-role KB hints (b4g.19.1)', () => {
             role: 'doer', member: 'doer-1',
             context: { beadTitles: [{ title: 'Fix the apra-fleet-b4g.19.1 parser and a custom-id' }], beadIds: ['custom-id'] },
         });
-        assert.equal(kb.calls.find((c) => c.name === 'kb_query').args.query, 'Fix parser');
+        const asked = kb.calls.filter((c) => c.name === 'kb_query').map((c) => c.args.query).join(' | ');
+        assert.ok(!/b4g|custom-id/.test(asked), `no tracker id in ${asked}`);
+        assert.ok(asked.includes('parser'), asked);
     });
 });
 
@@ -185,12 +190,12 @@ describe('KNOWLEDGE BANK block shape (b4g.19.2)', () => {
         for (const m of ['inferredx', 'unverifiedx', 'flaggedx', 'contraryx']) assert.ok(!block.includes(m), m);
     });
 
-    test('at most 12 entries are injected', async () => {
+    test('at most 8 entries are injected', async () => {
         const many = Array.from({ length: 30 }, (_, i) => entry(`m${i}`, `entry number ${i}`));
         const kb = fakeKb({ query: many });
         const [block] = await injection({ kb }).blockFor({ role: 'doer', member: 'doer-1', context: { beadTitles: [{ title: 'anything useful' }] } });
         assert.equal((block.match(/"title":/g) || []).length, KB_MAX_KNOWLEDGE_ENTRIES);
-        assert.equal(KB_MAX_KNOWLEDGE_ENTRIES, 12);
+        assert.equal(KB_MAX_KNOWLEDGE_ENTRIES, 8);
     });
 
     test('no relevant match: no entries and an explicit statement, never an arbitrary set', async () => {

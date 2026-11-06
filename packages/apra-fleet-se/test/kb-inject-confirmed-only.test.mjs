@@ -168,7 +168,7 @@ describe('only CONFIRMED, undisputed KB entries reach a role prompt', () => {
         assert.match(header, /the code wins/);
     });
 
-    test('the 12-entry cap applies AFTER filtering, on both paths', async () => {
+    test('the 8-entry cap applies AFTER filtering, on both paths', async () => {
         const inferred = Array.from({ length: 20 }, (_, i) => entry(`inf${i}`, `inferredmarker ${i}`, 'INFERRED'));
         const confirmed = Array.from({ length: 15 }, (_, i) => entry(`conf${i}`, `confirmedmarker ${i}`, 'CONFIRMED'));
         const { callTool, memberCall } = oldServer({ l1: [...inferred, ...confirmed], related: [], top: [...inferred, ...confirmed.slice(0, 3)] });
@@ -183,7 +183,7 @@ describe('only CONFIRMED, undisputed KB entries reach a role prompt', () => {
             'INFERRED entries ranked first must not crowd the CONFIRMED ones out of the cap');
     });
 
-    // b4g.19.2: the block itself enforces the 12-entry cap (CONFIRMED-first,
+    // b4g.19.2: the block itself enforces the 8-entry cap (CONFIRMED-first,
     // in the relevance order the source handed them over).
     test('kbKnowledgeBlock caps at KB_MAX_KNOWLEDGE_ENTRIES after filtering, keeping the first (most relevant) entries', () => {
         const many = Array.from({ length: KB_MAX_KNOWLEDGE_ENTRIES + 5 }, (_, i) => entry(`m${i}`, `confirmedmarker many ${i}`, 'CONFIRMED'));

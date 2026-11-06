@@ -100,6 +100,18 @@ All tools accept `member_id` (UUID) or `member_name` (friendly name) to identify
 - **Local members:** ALWAYS use fleet tools (`execute_command`, `execute_prompt`, `send_files`, etc.)  -  never SSH directly or bypass fleet infrastructure
 - Fleet tools are the canonical interface  -  all member interactions go through them
 
+## Failure-time Knowledge Bank lookup
+
+- When a tool, command, test or provider call fails, or a reviewer bounces work: call
+  `kb_query` with the exact error text (the `error_text` input, plus the `files` and
+  `symbols` involved) BEFORE diagnosing or escalating. This applies to orchestrator and
+  interactive sessions as well as dispatched roles. A missing `kb_query` tool or a failing
+  KB call is never a reason to stop; continue without it.
+- A provider 401/403 that is about scope or access means the credential lacks the access
+  level the action needs: re-provision the credential with the access level the action
+  needs. Escalate to the owner only if the tool refuses. Before asking the owner, check how
+  the engine already performs the same action.
+
 ## Dispatch Rules
 
 **Rule:** Shell commands (git, npm, bash scripts, file ops) -> `execute_command`. LLM reasoning tasks (write code, review, plan, analyse) -> `execute_prompt`. When in doubt: if a human could write the exact command string upfront, it's `execute_command`.

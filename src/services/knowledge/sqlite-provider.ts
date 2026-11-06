@@ -19,9 +19,19 @@ import {
   filesOverlap,
   makeFtsQuery,
   makeAudnDecision,
-  orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
+import { logWarn } from '../../utils/log-helpers.js';
+import { KbKeywordIndex, type KeywordIndexStatus } from './kb-index.js';
+import { VectorStore, type VectorModel, type VectorScore } from './embedding/vector-store.js';
+import { buildVectorInputs, type VectorInput } from './embedding/chunker.js';
+import { semanticFloorFor, type EmbeddingProfile } from './embedding/profiles.js';
+import {
+  EmbedQueue, DEFAULT_TOKEN_LIMIT, KB_VECTOR_INDEX_VERSION,
+  type EmbedderLike, type EmbedderSource, type EmbedQueueStatus,
+} from './embedding/embed-queue.js';
+import { CodeLinkStore, normalizeFileRef, type CodeLinkResolver, type CodeLinksStatus, type ResolvedCodeLink } from './code-links.js';
+import { hybridOrder, ranksFromOrder, ranksFromScores, reciprocalRankFusion, trustPrior, type RankedList } from './hybrid-rank.js';
 import { getSessionEngineOrigin } from '../tool-scope.js';
 import { validateFilePaths } from './path-validation.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
@@ -158,8 +168,49 @@ function trustFilterSql(filter: EntryTrustFilter | undefined): { conditions: str
   return { conditions, params };
 }
 
+/**
+ * Longest a read waits for its query vector. A query normally embeds in tens of
+ * milliseconds and a burst of 6 takes about 500 ms on a slow host, even during a
+ * rebuild, because the worker serves one text at a time with queries first. A
+ * worker that hangs (one that dies is reported at once) must not hold every
+ * dispatch's KB reads until the caller's own timeout, so the read drops the
+ * semantic list and answers from keyword and anchor matches.
+ */
+export const QUERY_EMBED_DEADLINE_MS = 5_000;
+
+async function withinQueryEmbedDeadline(
+  pending: Promise<Float32Array | null>,
+  modelId: string | null,
+): Promise<Float32Array | null> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      logWarn('kb_query', `query embedding took over ${QUERY_EMBED_DEADLINE_MS} ms on ${modelId ?? 'model'}; answering without the semantic list`);
+      resolve(null);
+    }, QUERY_EMBED_DEADLINE_MS);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([pending, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class SqliteProvider implements MemoryProvider {
   private db: DatabaseSync | null = null;
+  private readonly keywordIndex = new KbKeywordIndex(() => this.db);
+  /** Per-entry multi-vectors (design D2a vector half); see embedding/vector-store.ts. */
+  readonly vectorStore = new VectorStore(() => this.db);
+  /** Off-request-path embedding of kb_embed_pending; see embedding/embed-queue.ts. */
+  private readonly embedQueue = new EmbedQueue({
+    getDb: () => this.db,
+    store: this.vectorStore,
+    inputsFor: (id, tokenLimit) => this.entryVectorInputs(id, tokenLimit),
+  });
+  private embedderSource: EmbedderSource | null = null;
+  /** Entry -> code-index links (design D2a anchors); see code-links.ts. */
+  private readonly codeLinks = new CodeLinkStore(() => this.db);
   readonly dbPath: string;
   readonly projectSlug: string;
   /**
@@ -244,31 +295,13 @@ export class SqliteProvider implements MemoryProvider {
       CREATE INDEX IF NOT EXISTS idx_entries_superseded_at ON entries(superseded_at);
       CREATE INDEX IF NOT EXISTS idx_entries_use_count ON entries(use_count);
 
-      CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
-        title,
-        summary,
-        content,
-        tags,
-        content='entries',
-        content_rowid='rowid'
-      );
-
-      CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
-        INSERT INTO entries_fts(rowid, title, summary, content, tags)
-        VALUES (new.rowid, new.title, new.summary, new.content, new.tags);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
-        INSERT INTO entries_fts(entries_fts, rowid, title, summary, content, tags)
-        VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.tags);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
-        INSERT INTO entries_fts(entries_fts, rowid, title, summary, content, tags)
-        VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.tags);
-        INSERT INTO entries_fts(rowid, title, summary, content, tags)
-        VALUES (new.rowid, new.title, new.summary, new.content, new.tags);
-      END;
+      -- The keyword index (entries_kw / entries_tri, normalized and weighted)
+      -- is created by KbKeywordIndex.init() at the end of init(), after the
+      -- column migrations below. KbKeywordIndex.init() also keeps the legacy
+      -- external-content entries_fts plus entries_ai/ad/au triggers present
+      -- and consistent (repairing them when needed): they serve keyword reads
+      -- during a background rebuild, and an older build (0.4.4) opening this
+      -- same kb.sqlite reads them (kb-index.ts header, rollback contract).
 
       CREATE TABLE IF NOT EXISTS links (
         from_id TEXT NOT NULL,
@@ -392,6 +425,215 @@ export class SqliteProvider implements MemoryProvider {
         recorded_at TEXT NOT NULL
       );
     `);
+
+    // Design D2a keyword index: normalized, column-weighted FTS plus a
+    // trigram index, versioned in kb_index_meta. A version mismatch (an old
+    // DB, or a normalizer change) starts a BACKGROUND rebuild; init and the
+    // first query do not wait for it. Must run after the column migrations
+    // above (its triggers name recall_cues / error_signatures).
+    this.keywordIndex.init();
+
+    // Design D2a vector half: entry_vectors (float16 multi-vectors tagged with
+    // the model that made them) and the kb_embed_pending queue, both kept in
+    // step with entries by pure-SQL triggers. After the column migrations for
+    // the same reason as the keyword index (triggers name recall_cues etc.).
+    this.vectorStore.init();
+
+    // Model-change check and backlog: a run off the init call stack compares
+    // the recorded model identity with the active embedder and starts a
+    // background rebuild when they differ (no-op without an embedder).
+    this.embedQueue.reopen();
+    this.embedQueue.kick();
+
+    // Entry -> code-index links (anchors for hybrid search).
+    this.codeLinks.init();
+  }
+
+  /**
+   * Set the resolver that maps entry symbols/files to code-index nodes. It is
+   * injected by the tool layer (src/tools/kb-code-link-resolver.ts) because
+   * this module must not import src/tools. Null detaches: captures then store
+   * no links (a logged skip).
+   */
+  attachCodeResolver(resolver: CodeLinkResolver | null): void {
+    this.codeLinks.setResolver(resolver);
+  }
+
+  get hasCodeResolver(): boolean {
+    return this.codeLinks.hasResolver;
+  }
+
+  /** Stored code links of one entry. */
+  codeLinksOf(entryId: string): ResolvedCodeLink[] {
+    return this.codeLinks.linksOf(entryId);
+  }
+
+  /**
+   * Live entry ids whose linked files intersect `files`, or whose linked
+   * symbols equal or sit one code-graph hop from any of `symbols` -- the
+   * anchor list of the hybrid search.
+   */
+  lookupAnchors(files: string[], symbols: string[]): string[] {
+    return this.codeLinks.lookupAnchors(files, symbols);
+  }
+
+  /** When code links were last resolved, and why the last attempt was skipped. */
+  codeLinksStatus(): CodeLinksStatus {
+    return this.codeLinks.status();
+  }
+
+  /** Resolve true once code-link resolution has nothing scheduled or running. */
+  waitForCodeLinks(timeoutMs?: number): Promise<boolean> {
+    return this.codeLinks.whenIdle(timeoutMs);
+  }
+
+  /**
+   * Set where this KB gets its embedder (the production wiring passes the
+   * process embedder; tests pass a fake). Null detaches: entries are still
+   * queued by the triggers but nothing embeds them. Never loads a model here:
+   * the first background run does, lazily.
+   */
+  attachEmbedder(source: EmbedderSource | null): void {
+    this.embedderSource = source;
+    this.embedQueue.attach(source);
+  }
+
+  /**
+   * Stop background embedding for good WITHOUT closing the database: drops the
+   * embed queue's embedder onReady subscriptions and its recheck timer, so the
+   * shared embedder no longer references this provider. A reader already
+   * holding the provider can finish: reads (keyword lists and the query-side
+   * semantic list) keep working; entries still pending simply stay unembedded.
+   * For a provider that is being discarded (e.g. a replaced member bible view).
+   */
+  releaseEmbedQueue(): void {
+    this.embedQueue.close();
+  }
+
+  /**
+   * Resolve true once background embedding has nothing scheduled or in
+   * flight (false on timeout). Captures never need this; tests and
+   * maintenance callers do.
+   */
+  waitForEmbeddings(timeoutMs?: number): Promise<boolean> {
+    this.embedQueue.kick();
+    return this.embedQueue.whenIdle(timeoutMs);
+  }
+
+  /**
+   * Copy vectors from `from` (another KB holding the same entries, e.g. the
+   * per-repo DB a member bible view is built beside) for entries this KB
+   * still has queued for embedding, instead of embedding them again.
+   *
+   * An entry is adopted only when `from` holds vectors for the SAME entry id
+   * under `emb`'s model (id + revision + dims, recorded at the current
+   * KB_VECTOR_INDEX_VERSION) and every chunk's text hash equals the chunk this
+   * KB would embed now (same kind, ordinal and text); a partial or differing
+   * set is left queued, so the background queue embeds it. Records `emb`'s
+   * model identity here first, so the first background run finds the
+   * identity matching and does not start a full rebuild that would re-queue
+   * the adopted entries. Call BEFORE attachEmbedder (which kicks the queue).
+   * Synchronous and cheap (one indexed read per queued entry); returns the
+   * number of entries adopted. Never throws for a mismatch -- it adopts none.
+   */
+  adoptVectorsFrom(from: SqliteProvider, emb: EmbedderLike | null): number {
+    if (!emb || emb.modelId === null || emb.revision === null || emb.state.state === 'disabled') return 0;
+    const src = from.vectorIndexStatus();
+    if (src.model_id !== emb.modelId || src.model_revision !== emb.revision
+      || src.index_version !== KB_VECTOR_INDEX_VERSION || src.dims === null) return 0;
+    if (emb.dims !== undefined && emb.dims !== src.dims) return 0;
+    const model: VectorModel = { modelId: emb.modelId, revision: emb.revision, dims: src.dims };
+    const tokenLimit = emb.tokenLimit ?? DEFAULT_TOKEN_LIMIT;
+    const db = this.getDb();
+    const setMeta = db.prepare(
+      'INSERT INTO kb_index_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    );
+    const pending = (db.prepare('SELECT entry_id FROM kb_embed_pending ORDER BY entry_id').all() as { entry_id: string }[])
+      .map(r => r.entry_id);
+    let adopted = 0;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      setMeta.run('vec_model_id', model.modelId);
+      setMeta.run('vec_model_revision', model.revision);
+      setMeta.run('vec_dims', String(model.dims));
+      setMeta.run('vec_index_version', KB_VECTOR_INDEX_VERSION);
+      const done = db.prepare('DELETE FROM kb_embed_pending WHERE entry_id = ?');
+      for (const id of pending) {
+        const inputs = this.entryVectorInputs(id, tokenLimit);
+        if (!inputs || inputs.length === 0) continue;
+        const stored = new Map(from.vectorStore.entryVectors(id, model).map(v => [`${v.kind}:${v.ordinal}`, v]));
+        if (stored.size !== inputs.length) continue;
+        const vectors = inputs.map(inp => {
+          const v = stored.get(`${inp.kind}:${inp.ordinal}`);
+          return v && v.textHash === inp.textHash
+            ? { kind: inp.kind, ordinal: inp.ordinal, textHash: inp.textHash, vector: v.vector }
+            : null;
+        });
+        if (vectors.some(v => v === null)) continue;
+        this.vectorStore.replaceEntryVectors(id, model, vectors as NonNullable<(typeof vectors)[number]>[]);
+        done.run(id);
+        adopted++;
+      }
+      db.exec('COMMIT');
+    } catch (err) {
+      try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+      throw err;
+    }
+    return adopted;
+  }
+
+  /** Recorded vector model identity, queue depth and rebuild state. */
+  vectorIndexStatus(): EmbedQueueStatus {
+    return this.embedQueue.status();
+  }
+
+  /**
+   * Score live entries against a query vector made by the ACTIVE embedder:
+   * only rows of its model id + revision + dims (the query's length) are
+   * read. Empty when no embedder is attached or it has no model.
+   */
+  scoreVectors(query: Float32Array, opts?: { limit?: number; entryIds?: string[] }): VectorScore[] {
+    const emb = this.embedderSource?.() ?? null;
+    if (!emb || emb.modelId === null || emb.revision === null) return [];
+    return this.vectorStore.score(query, { modelId: emb.modelId, revision: emb.revision, dims: query.length }, opts);
+  }
+
+  /**
+   * The vector inputs (chunks) of one entry at `tokenLimit`, or null when the
+   * id is unknown. What the embed queue embeds; exposed for tests and tools.
+   */
+  entryVectorInputs(id: string, tokenLimit: number): VectorInput[] | null {
+    const row = this.getDb().prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const e = this.rowToEntry(row);
+    return buildVectorInputs({
+      title: e.title, summary: e.summary, content: e.content, recall_cues: e.recall_cues,
+      error_signatures: e.error_signatures, module: e.module ?? null, source_files: e.source_files,
+      symbols: e.symbols, trigger: e.trigger ?? null, type: e.type,
+    }, tokenLimit);
+  }
+
+  /**
+   * Brute-force semantic scoring: cosine of `query` against every stored
+   * vector of `model` (id + revision + dims; no other model's rows are read),
+   * one score per live entry -- its best-matching vector -- best first.
+   */
+  scoreVectorsForModel(query: Float32Array, model: VectorModel, opts?: { limit?: number; entryIds?: string[] }): VectorScore[] {
+    return this.vectorStore.score(query, model, opts);
+  }
+
+  /** Keyword-index version and rebuild state (kb_index_meta). */
+  keywordIndexStatus(): KeywordIndexStatus {
+    return this.keywordIndex.status();
+  }
+
+  /**
+   * Resolve once the keyword index is complete at the current version (true),
+   * or false on timeout / close. Queries never need this -- they fall back
+   * while a rebuild runs -- it exists for maintenance callers and tests.
+   */
+  waitForKeywordIndex(timeoutMs?: number): Promise<boolean> {
+    return this.keywordIndex.waitUntilReady(timeoutMs);
   }
 
   /**
@@ -966,6 +1208,9 @@ export class SqliteProvider implements MemoryProvider {
   async freshnessSweep(root?: string): Promise<{ checked: number; staled: number; unstaled: number }> {
     const anchor = root ?? this.repoPath;
     if (this.anchorIsMissing(anchor)) return { checked: 0, staled: 0, unstaled: 0 };
+    // Re-resolve every live entry's code links in the background, replacing
+    // stale rows (the code graph moves with the tree the sweep re-hashes).
+    this.codeLinks.enqueueAll();
     const db = this.getDb();
     const rows = db.prepare(
       `SELECT id, stale, superseded_at, flagged_for_review, content_hash, content, source_file_hashes
@@ -1032,8 +1277,10 @@ export class SqliteProvider implements MemoryProvider {
   }
 
   private findAudnCandidates(db: DatabaseSync, input: KBEntryInput): KBEntry[] {
-    const ftsQuery = makeFtsQuery(input.title);
-    if (!ftsQuery) return [];
+    // Same title-token selection as makeFtsQuery (OR across tokens), but each
+    // token goes through the keyword-index normalizer.
+    if (!makeFtsQuery(input.title)) return [];
+    const titleTokens = input.title.match(/\b[a-zA-Z0-9_]{3,}\b/g) ?? [];
     try {
       // D2 HALF B (candidate-discovery fix): candidates are discovered by symbol/
       // title overlap across ALL entry types -- the same-type restriction was
@@ -1041,14 +1288,7 @@ export class SqliteProvider implements MemoryProvider {
       // contradicting a 'learning' entry on shared symbols) are discoverable.
       // makeAudnDecision re-imposes candidate.type === input.type for the
       // dedup/update decisions; only the contradiction path stays cross-type.
-      const rows = db.prepare(`
-        SELECT e.* FROM entries e
-        JOIN entries_fts ON entries_fts.rowid = e.rowid
-        WHERE entries_fts MATCH ?
-          AND e.superseded_at IS NULL
-        ORDER BY rank
-        LIMIT 10
-      `).all(ftsQuery) as Record<string, unknown>[];
+      const rows = this.keywordIndex.search({ terms: titleTokens }, ['e.superseded_at IS NULL'], [], 10);
       return rows.map(r => this.rowToEntry(r));
     } catch {
       return [];
@@ -1180,7 +1420,20 @@ export class SqliteProvider implements MemoryProvider {
     }
   }
 
+  /**
+   * Store an entry (or AUDN-link it) and return. Its embedding is NOT awaited:
+   * the insert/update triggers queued it in kb_embed_pending and the kick
+   * below only schedules a background run.
+   */
   async capture(input: KBEntryInput, opts?: CaptureOpts): Promise<CaptureResult> {
+    const result = await this.captureEntry(input, opts);
+    this.embedQueue.kick();
+    // Code links resolve off the request path too (never fails the capture).
+    this.codeLinks.enqueue([result.id]);
+    return result;
+  }
+
+  private async captureEntry(input: KBEntryInput, opts?: CaptureOpts): Promise<CaptureResult> {
     const db = this.getDb();
     const now = new Date().toISOString();
 
@@ -1381,11 +1634,20 @@ export class SqliteProvider implements MemoryProvider {
   private bumpReturned(db: DatabaseSync, ids: string[]): void {
     if (ids.length === 0 || getSessionEngineOrigin()) return;
     const now = new Date().toISOString();
-    db.prepare(`
-      UPDATE entries SET use_count = use_count + 1, last_accessed = ?
-      WHERE id IN (${ids.map(() => '?').join(',')})
-    `).run(now, ...ids);
-    this.insertUsageEvents(db, ids, 'returned', 'query', now);
+    // One transaction: a separate commit per returned row is most of a read's
+    // cost on a slow filesystem.
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare(`
+        UPDATE entries SET use_count = use_count + 1, last_accessed = ?
+        WHERE id IN (${ids.map(() => '?').join(',')})
+      `).run(now, ...ids);
+      this.insertUsageEvents(db, ids, 'returned', 'query', now);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   private insertUsageEvents(db: DatabaseSync, ids: string[], kind: 'returned' | 'cited', source: string, at: string): number {
@@ -1414,6 +1676,10 @@ export class SqliteProvider implements MemoryProvider {
 
   async query(opts: QueryOptions): Promise<KBResult> {
     const db = this.getDb();
+    // Writes that do not kick the embed queue themselves (promote, demote,
+    // feedback, contradiction resolution) were still queued by the triggers;
+    // a read is a cheap moment to schedule the background run.
+    this.embedQueue.kick();
     const conditions: string[] = [];
     const params: SQLInputValue[] = [];
 
@@ -1472,23 +1738,19 @@ export class SqliteProvider implements MemoryProvider {
 
     let rows: Record<string, unknown>[];
 
-    if (opts.query || opts.fts_terms?.length) {
+    const hybrid = opts.flagged_only ? null : await this.hybridRows(opts, conditions, params, limit);
+    if (hybrid) {
+      rows = hybrid;
+    } else if (opts.query || opts.fts_terms?.length) {
       // ONE sanitization point. Free text is tokenized then OR-joined; internal
       // callers pass discrete terms via fts_terms. Raw MATCH threw on '.', '-',
       // '(', ')', '/' and implicit-AND'd multi-term queries to zero rows.
-      const ftsQuery = opts.fts_terms?.length
-        ? orJoinFtsTerms(opts.fts_terms)
-        : orJoinFtsTerms(opts.query!.match(/[A-Za-z0-9_]+/g) ?? []);
-      if (!ftsQuery) return { results: [], total: 0, l1_only: !!opts.l1_only };
-      const ftsWhere = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
-      rows = db.prepare(`
-        SELECT e.* FROM entries e
-        JOIN entries_fts ON entries_fts.rowid = e.rowid
-        WHERE entries_fts MATCH ?
-        ${ftsWhere}
-        ORDER BY rank
-        LIMIT ?
-      `).all(ftsQuery, ...params, limit) as Record<string, unknown>[];
+      // Design D2a: the keyword index normalizes both sides (camel/snake/
+      // kebab/path split + stem), ranks with per-column bm25 weights and folds
+      // trigram (partial identifier) hits in below every full-token hit.
+      // orJoinFtsTerms remains the single quoting point (kb-normalize).
+      const search = opts.fts_terms?.length ? { terms: opts.fts_terms } : { query: opts.query! };
+      rows = this.keywordIndex.search(search, conditions, params, limit, { trigram: true });
     } else {
       rows = db.prepare(`
         SELECT e.* FROM entries e
@@ -1509,6 +1771,177 @@ export class SqliteProvider implements MemoryProvider {
     this.bumpReturned(db, results.map(r => r.id));
 
     return { results, total: results.length, l1_only: opts.l1_only ?? false };
+  }
+
+  /**
+   * The embedder usable for a query-time semantic list, or null. Only an
+   * already-loaded (state 'ready') embedder with embedQuery qualifies: a read
+   * never waits for a model load or download -- the background embed queue
+   * loads it, and until then the search is keyword + anchor only.
+   */
+  private queryEmbedder(): (EmbedderLike & { embedQuery(text: string): Promise<Float32Array | null> }) | null {
+    const emb = this.embedderSource?.() ?? null;
+    if (!emb || typeof emb.embedQuery !== 'function') return null;
+    if (emb.modelId === null || emb.revision === null || emb.state.state !== 'ready') return null;
+    return emb as EmbedderLike & { embedQuery(text: string): Promise<Float32Array | null> };
+  }
+
+  /**
+   * Hybrid search (design D2b): reciprocal rank fusion of up to four ranked
+   * lists -- keyword (query text), error (error_text against
+   * error_signatures), semantic (query text + error_text, best vector of the
+   * active model) and anchor (entries whose source_files / symbols or
+   * code-index links touch anchor_files / anchor_symbols) -- then trust
+   * priors (hybrid-rank.ts). Every row returned passes `conditions`, the
+   * same filters as the keyword path.
+   *
+   * Returns null when there is nothing to fuse beyond the keyword list (no
+   * anchors, no error_text, no ready embedder): the caller then takes the
+   * plain keyword path, so a legacy query without an embedder ranks exactly
+   * as before. A failed or missing embedder only drops the semantic list.
+   *
+   * Semantic candidates below the active model's similarity floor
+   * (profiles.ts SEMANTIC_FLOORS) are dropped. When that leaves no semantic
+   * list and there were no anchors or error_text, the result is the plain
+   * keyword result (empty for a nonsense query or an unknown fts_terms
+   * symbol), so loading a model changes nothing for such a caller.
+   */
+  private async hybridRows(
+    opts: QueryOptions,
+    conditions: string[],
+    params: SQLInputValue[],
+    limit: number,
+  ): Promise<Record<string, unknown>[] | null> {
+    const off = new Set(opts.disable_lists ?? []);
+    const queryText = opts.query?.trim() || (opts.fts_terms?.length ? opts.fts_terms.join(' ') : '');
+    const errorText = opts.error_text?.trim() ?? '';
+    const files = (opts.anchor_files ?? []).map(normalizeFileRef).filter(Boolean);
+    const symbols = (opts.anchor_symbols ?? []).map(x => x.trim()).filter(Boolean);
+    const semanticText = [queryText, errorText].filter(Boolean).join('\n');
+
+    const useError = errorText !== '' && !off.has('error');
+    const useAnchor = (files.length > 0 || symbols.length > 0) && !off.has('anchor');
+    const embedder = semanticText !== '' && !off.has('semantic') ? this.queryEmbedder() : null;
+    if (!useError && !useAnchor && !embedder) return null;
+
+    const db = this.getDb();
+    const depth = Math.max(limit * 3, 50);
+    const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+    const lists: RankedList[] = [];
+    const rowById = new Map<string, Record<string, unknown>>();
+    const keep = (rs: Record<string, unknown>[]): string[] => rs.map(r => {
+      rowById.set(r.id as string, r);
+      return r.id as string;
+    });
+
+    let keywordRows: Record<string, unknown>[] | null = null;
+    if (queryText && !off.has('keyword')) {
+      const search = opts.fts_terms?.length ? { terms: opts.fts_terms } : { query: queryText };
+      keywordRows = this.keywordIndex.search(search, conditions, params, depth, { trigram: true });
+      lists.push({ name: 'keyword', ranks: ranksFromOrder(keep(keywordRows)) });
+    }
+    if (useError) {
+      const rs = this.keywordIndex.search({ query: errorText }, conditions, params, depth, { column: 'error_signatures' });
+      lists.push({ name: 'error', ranks: ranksFromOrder(keep(rs)) });
+    }
+
+    // The semantic and code-link lists are built outside SQL's WHERE: keep
+    // only the ids that pass every filter (checked on that bounded id list,
+    // never a scan of the whole table).
+    const admissibleAmong = (ids: string[]): Set<string> => {
+      const ok = new Set<string>();
+      for (let i = 0; i < ids.length; i += 500) {
+        const chunk = ids.slice(i, i + 500);
+        const idCond = `e.id IN (${chunk.map(() => '?').join(',')})`;
+        const rs = db.prepare(`SELECT e.id FROM entries e WHERE ${[idCond, ...conditions].join(' AND ')}`)
+          .all(...chunk, ...params) as { id: string }[];
+        for (const r of rs) ok.add(r.id);
+      }
+      return ok;
+    };
+
+    if (useAnchor) {
+      const hits = new Map<string, number>();
+      // Direct overlap with the entry's own source_files / symbols. instr()
+      // on the stored JSON text (a quoted element) instead of json_each, so
+      // the scan stays cheap on a large KB; stored backslash paths ('\\'
+      // in JSON) are folded to '/' first.
+      const parts: string[] = [];
+      const anchorParams: SQLInputValue[] = [];
+      for (const f of new Set(files)) {
+        parts.push("(instr(replace(e.source_files, '\\\\', '/'), ?) > 0)");
+        anchorParams.push(JSON.stringify(f));
+      }
+      for (const sym of new Set(symbols)) {
+        parts.push('(instr(e.symbols, ?) > 0)');
+        anchorParams.push(JSON.stringify(sym));
+      }
+      const direct = db.prepare(`
+        SELECT id, hits FROM (SELECT e.id AS id, ${parts.join(' + ')} AS hits FROM entries e ${where})
+        WHERE hits > 0
+      `).all(...anchorParams, ...params) as { id: string; hits: number }[];
+      for (const r of direct) hits.set(r.id, Number(r.hits));
+      // Code-index links (one graph hop for symbols); unfiltered, so filter.
+      const linked = this.codeLinks.lookupAnchors(files, symbols);
+      if (linked.length > 0) {
+        const ok = admissibleAmong(linked);
+        for (const id of linked) if (ok.has(id)) hits.set(id, (hits.get(id) ?? 0) + 1);
+      }
+      if (hits.size > 0) lists.push({ name: 'anchor', ranks: ranksFromScores(hits) });
+    }
+
+    if (embedder) {
+      try {
+        const vec = await withinQueryEmbedDeadline(embedder.embedQuery(semanticText), embedder.modelId);
+        if (vec) {
+          // Similarity floor (per model, profiles.ts SEMANTIC_FLOORS): a
+          // dense model gives every text some similarity, so without it a
+          // nonsense query would still pull in the least-unrelated entries.
+          const floor = opts.semantic_floor ?? semanticFloorFor(
+            embedder.modelId, embedder.revision, (embedder as { profile?: EmbeddingProfile | null }).profile ?? null,
+          );
+          // A wider window than depth, so filtered-out ids do not starve it.
+          const top = this.vectorStore
+            .score(vec, { modelId: embedder.modelId!, revision: embedder.revision!, dims: vec.length }, { limit: depth * 4 })
+            .filter(sc => sc.score >= floor)
+            .map(sc => sc.entry_id);
+          const ok = admissibleAmong(top);
+          const ids = top.filter(id => ok.has(id)).slice(0, depth);
+          if (ids.length > 0) lists.push({ name: 'semantic', ranks: ranksFromOrder(ids) });
+        }
+      } catch {
+        // Semantic is best-effort: an embedder error leaves keyword + anchor.
+      }
+    }
+
+    // Only the semantic list could have made this a hybrid query (no error
+    // text, no anchors) and nothing cleared the floor: answer exactly as the
+    // plain keyword path does (same search, its first `limit` rows), so a
+    // caller who passed nothing new sees no change -- empty for nonsense.
+    if (!useError && !useAnchor && !lists.some(l => l.name === 'semantic')) {
+      return keywordRows ? keywordRows.slice(0, limit) : [];
+    }
+
+    const fused = reciprocalRankFusion(lists);
+    if (fused.size === 0) return [];
+
+    // Load rows for ids no SQL list returned (semantic / anchor only),
+    // re-applying the filters as a backstop.
+    const missing = [...fused.keys()].filter(id => !rowById.has(id));
+    for (let i = 0; i < missing.length; i += 500) {
+      const chunk = missing.slice(i, i + 500);
+      const idCond = `e.id IN (${chunk.map(() => '?').join(',')})`;
+      const rs = db.prepare(`SELECT e.* FROM entries e WHERE ${[idCond, ...conditions].join(' AND ')}`)
+        .all(...chunk, ...params) as Record<string, unknown>[];
+      for (const r of rs) rowById.set(r.id as string, r);
+    }
+    for (const id of [...fused.keys()]) if (!rowById.has(id)) fused.delete(id);
+
+    const order = hybridOrder(fused, (id) => {
+      const r = rowById.get(id)!;
+      return trustPrior({ confidence: r.confidence as string, use_count: Number(r.use_count ?? 0), stale: Number(r.stale ?? 0) === 1 });
+    }, lists[0] ? [...lists[0].ranks.keys()] : []);
+    return order.slice(0, limit).map(id => rowById.get(id)!);
   }
 
   async context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean, ownerTag?: string): Promise<FileContextResult[]> {
@@ -1624,6 +2057,8 @@ export class SqliteProvider implements MemoryProvider {
         fields.error_signatures === undefined ? null : JSON.stringify(fields.error_signatures),
         id,
       );
+    // Re-embedding was queued by the update trigger; run it off this call.
+    this.embedQueue.kick();
     return true;
   }
 
@@ -2864,6 +3299,9 @@ export class SqliteProvider implements MemoryProvider {
   }
 
   close(): void {
+    this.keywordIndex.close();
+    this.embedQueue.close();
+    this.codeLinks.close();
     this.db?.close();
     this.db = null;
   }
