@@ -259,10 +259,11 @@ export class SqliteProvider implements MemoryProvider {
 
       -- The keyword index (entries_kw / entries_tri, normalized and weighted)
       -- is created by KbKeywordIndex.init() at the end of init(), after the
-      -- column migrations below. DBs from before it carry a legacy
-      -- external-content entries_fts plus entries_ai/ad/au triggers; those
-      -- keep serving keyword reads until the background rebuild finishes and
-      -- drops them. A fresh DB never creates them.
+      -- column migrations below. KbKeywordIndex.init() also keeps the legacy
+      -- external-content entries_fts plus entries_ai/ad/au triggers present
+      -- and consistent (repairing them when needed): they serve keyword reads
+      -- during a background rebuild, and an older build (0.4.4) opening this
+      -- same kb.sqlite reads them (kb-index.ts header, rollback contract).
 
       CREATE TABLE IF NOT EXISTS links (
         from_id TEXT NOT NULL,

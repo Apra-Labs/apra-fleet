@@ -27,6 +27,25 @@
 // destructively, and it proceeds in small chunks yielded to the event loop.
 // Until it finishes, keyword reads answer from the legacy entries_fts table
 // when it exists, else from a LIKE scan -- never throwing.
+//
+// Rollback contract (an older build, e.g. 0.4.4, on the same kb.sqlite):
+// the legacy external-content entries_fts and its entries_ai/ad/au triggers
+// are KEPT, populated and in step, by this build -- never dropped. 0.4.4 runs
+// `CREATE ... IF NOT EXISTS` for exactly that table and those triggers on
+// every open; if they were missing it would recreate the table EMPTY over a
+// full entries table, its keyword reads would return 0 rows, and its first
+// UPDATE would issue an FTS 'delete' for a row the index never held, which
+// corrupts an external-content FTS5 index ("database disk image is
+// malformed") for both builds. Keeping them means 0.4.4 finds a complete,
+// consistent index and keeps it consistent itself through its own triggers,
+// while 0.4.4's writes also enqueue rowids through the entries_kw_* triggers
+// (they are plain SQL), so this build re-indexes them on its next read.
+// On every init this build also REPAIRS the legacy index (LEGACY_FTS_SQL is
+// byte-for-byte what 0.4.4 creates): a missing table or trigger is created,
+// and when the legacy index row count disagrees with entries (a DB from a
+// pre-fix build that had dropped it, then re-created empty by 0.4.4) or an
+// FTS integrity check fails, it is rebuilt from entries with the FTS5
+// 'rebuild' command. The cost is one extra FTS index on writes.
 
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
@@ -63,6 +82,39 @@ const REBUILD_STALE_MS = 30_000;
 const TRIGRAM_MIN_LEN = 4;
 const MAX_TRIGRAM_TERMS = 12;
 const MAX_LIKE_TERMS = 16;
+
+/**
+ * The legacy external-content FTS and its triggers, exactly as 0.4.4 creates
+ * them on open (see the rollback contract in the header). Must not change:
+ * an older build re-runs these same IF NOT EXISTS statements.
+ */
+export const LEGACY_FTS_SQL = `
+      CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+        title,
+        summary,
+        content,
+        tags,
+        content='entries',
+        content_rowid='rowid'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
+        INSERT INTO entries_fts(rowid, title, summary, content, tags)
+        VALUES (new.rowid, new.title, new.summary, new.content, new.tags);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
+        INSERT INTO entries_fts(entries_fts, rowid, title, summary, content, tags)
+        VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.tags);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
+        INSERT INTO entries_fts(entries_fts, rowid, title, summary, content, tags)
+        VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.tags);
+        INSERT INTO entries_fts(rowid, title, summary, content, tags)
+        VALUES (new.rowid, new.title, new.summary, new.content, new.tags);
+      END;
+`;
 
 export interface KeywordIndexStatus {
   version: string | null;
@@ -163,6 +215,7 @@ export class KbKeywordIndex {
     `);
     this.setMetaIfAbsent('tokenizer_version', String(KB_NORMALIZER_VERSION));
     this.setMetaIfAbsent('cue_schema_version', String(KB_CUE_SCHEMA_VERSION));
+    this.ensureLegacyFts();
 
     if (this.isReady()) return;
 
@@ -173,6 +226,38 @@ export class KbKeywordIndex {
       return;
     }
     this.startRebuild();
+  }
+
+  /**
+   * Keep the legacy entries_fts (the index an older build reads) present,
+   * complete and consistent -- see the rollback contract in the header.
+   * Creates what is missing, then rebuilds it from entries when its row count
+   * disagrees with entries or its FTS integrity check fails.
+   */
+  private ensureLegacyFts(): void {
+    const db = this.db();
+    this.inTxn(() => {
+      const existed = !!db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entries_fts'")
+        .get();
+      db.exec(LEGACY_FTS_SQL);
+      let reason: string | null = existed ? null : 'missing';
+      if (!reason) {
+        const n = (db.prepare('SELECT COUNT(*) AS n FROM entries').get() as { n: number }).n;
+        const m = (db.prepare('SELECT COUNT(*) AS n FROM entries_fts_docsize').get() as { n: number }).n;
+        if (Number(n) !== Number(m)) reason = `row count ${m} != entries ${n}`;
+      }
+      if (!reason) {
+        try {
+          db.exec("INSERT INTO entries_fts(entries_fts, rank) VALUES ('integrity-check', 1)");
+        } catch (err) {
+          reason = `integrity check failed: ${(err as Error)?.message ?? String(err)}`;
+        }
+      }
+      if (!reason) return;
+      db.exec("INSERT INTO entries_fts(entries_fts) VALUES ('rebuild')");
+      if (existed) logLine('kb_index', `legacy keyword index (entries_fts) rebuilt from entries (${reason})`);
+    });
   }
 
   // -- meta ----------------------------------------------------------------
@@ -306,15 +391,11 @@ export class KbKeywordIndex {
     this.setMeta('rebuild_target', KB_KEYWORD_INDEX_VERSION);
   }
 
-  /** Mark ready, drop the legacy external-content FTS and its triggers. */
+  /**
+   * Mark ready. The legacy entries_fts and its triggers are deliberately NOT
+   * dropped: an older build on the same kb.sqlite reads them (header).
+   */
   private finish(): void {
-    const db = this.db();
-    db.exec(`
-      DROP TRIGGER IF EXISTS entries_ai;
-      DROP TRIGGER IF EXISTS entries_ad;
-      DROP TRIGGER IF EXISTS entries_au;
-      DROP TABLE IF EXISTS entries_fts;
-    `);
     this.setMeta('kw_version', KB_KEYWORD_INDEX_VERSION);
     this.setMeta('tokenizer_version', String(KB_NORMALIZER_VERSION));
     this.setMeta('cue_schema_version', String(KB_CUE_SCHEMA_VERSION));

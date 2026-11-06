@@ -292,15 +292,20 @@ describe('migration from the old external-content FTS schema', () => {
     const sym = await p.query({ query: 'legacy handler 17', confidence: [...ALL_TIERS], limit: 5 });
     expect(sym.results.map(e => e.id)).toContain('legacy-17');
 
-    // ids and rowids unchanged; the legacy FTS and its triggers are gone.
+    // ids and rowids unchanged; the legacy FTS and its triggers are KEPT,
+    // complete and consistent, for an older build on the same file (kb-index.ts
+    // header, rollback contract).
     p.close();
     const chk = new DatabaseSync(dbFile);
     try {
       expect(chk.prepare('SELECT id, rowid AS r FROM entries ORDER BY rowid').all()).toEqual(rowidsBefore);
       const legacy = chk.prepare(
-        "SELECT name FROM sqlite_master WHERE name IN ('entries_fts', 'entries_ai', 'entries_ad', 'entries_au')"
-      ).all();
-      expect(legacy).toEqual([]);
+        "SELECT name FROM sqlite_master WHERE name IN ('entries_fts', 'entries_ai', 'entries_ad', 'entries_au') ORDER BY name"
+      ).all() as { name: string }[];
+      expect(legacy.map(r => r.name)).toEqual(['entries_ad', 'entries_ai', 'entries_au', 'entries_fts']);
+      const docs = chk.prepare('SELECT COUNT(*) AS n FROM entries_fts_docsize').get() as { n: number };
+      expect(Number(docs.n)).toBe(OLD_COUNT);
+      expect(() => chk.exec("INSERT INTO entries_fts(entries_fts, rank) VALUES ('integrity-check', 1)")).not.toThrow();
       const meta = chk.prepare("SELECT value FROM kb_index_meta WHERE key = 'kw_version'").get() as { value: string };
       expect(meta.value).toBe(KB_KEYWORD_INDEX_VERSION);
     } finally {
