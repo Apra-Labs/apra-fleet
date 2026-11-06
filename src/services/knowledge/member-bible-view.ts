@@ -148,6 +148,22 @@ interface ViewSlot {
 const _views = new Map<string, ViewSlot>();
 const _loadCounts = new Map<string, number>();
 
+/**
+ * Release a view that is leaving the cache (replaced by a rebuild, or dropped
+ * by resetMemberBibleViews). The view's embed queue subscribes to the shared
+ * process embedder's onReady (when the embedder is failed, or idle with stored
+ * vectors), and the embedder keeps that listener until it is unsubscribed --
+ * so a dropped view would stay reachable, with its in-memory DB, for the life
+ * of the process, and every later embedder load would wake it to embed its
+ * stale pending entries. Only the embed queue is released, not the database:
+ * a concurrent reader may still hold the old view mid-call and must be able to
+ * finish. Once that reader is done, nothing references the view any more and
+ * it is collected. A build still in flight is released when it settles.
+ */
+function releaseSlot(slot: ViewSlot): void {
+  slot.provider.then(p => p.releaseEmbedQueue(), () => { /* a failed build holds nothing */ });
+}
+
 function statOrMissing(biblePath: string): { mtimeMs: number; size: number } {
   try {
     const st = fs.statSync(biblePath);
@@ -273,6 +289,7 @@ async function getRemoteMemberBibleView(anchor: KbAnchor): Promise<SqliteProvide
     await attachViewEmbedding(provider, anchor);
     return provider;
   };
+  if (current) releaseSlot(current);
   const slot: ViewSlot = { mtimeMs, size, provider: build() };
   _views.set(key, slot);
   slot.provider.catch(() => {
@@ -293,8 +310,10 @@ export async function getMemberBibleView(anchor: KbAnchor): Promise<SqliteProvid
   if (current && current.mtimeMs === mtimeMs && current.size === size) {
     return current.provider;
   }
-  // The replaced view is not closed: a concurrent reader may still hold it
-  // mid-call. Dropping the reference lets it be collected.
+  // The replaced view's DB is not closed (a concurrent reader may still hold
+  // it mid-call); only its embedder subscriptions are released -- see
+  // releaseSlot. Without that release the shared embedder would pin it.
+  if (current) releaseSlot(current);
   const slot: ViewSlot = { mtimeMs, size, provider: buildView(biblePath, anchor, mtimeMs === -1) };
   _views.set(biblePath, slot);
   // Never cache a failed build (a malformed bible must fail on every read, and
@@ -312,6 +331,7 @@ export function memberBibleViewLoadCount(biblePath: string): number {
 
 /** Drop every cached view (what a server restart does). */
 export function resetMemberBibleViews(): void {
+  for (const slot of _views.values()) releaseSlot(slot);
   _views.clear();
   _loadCounts.clear();
 }

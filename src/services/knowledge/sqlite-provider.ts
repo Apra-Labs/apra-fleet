@@ -448,6 +448,18 @@ export class SqliteProvider implements MemoryProvider {
   }
 
   /**
+   * Stop background embedding for good WITHOUT closing the database: drops the
+   * embed queue's embedder onReady subscriptions and its recheck timer, so the
+   * shared embedder no longer references this provider. A reader already
+   * holding the provider can finish: reads (keyword lists and the query-side
+   * semantic list) keep working; entries still pending simply stay unembedded.
+   * For a provider that is being discarded (e.g. a replaced member bible view).
+   */
+  releaseEmbedQueue(): void {
+    this.embedQueue.close();
+  }
+
+  /**
    * Resolve true once background embedding has nothing scheduled or in
    * flight (false on timeout). Captures never need this; tests and
    * maintenance callers do.
