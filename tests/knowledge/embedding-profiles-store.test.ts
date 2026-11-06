@@ -171,8 +171,9 @@ describe('ModelStore', () => {
     const state = await store.ensure({ kind: 'enabled', profile });
     expect(state.state).toBe('failed');
     expect(state.state === 'failed' && state.reason).toMatch(/sha256 mismatch.*onnx\/model_quantized\.onnx/);
-    const onnxDir = path.join(tmp, 'Test', 'tiny-model@abc123', 'onnx');
-    expect(fs.readdirSync(onnxDir)).toEqual([]);
+    // Staged download: no model folder at all, and no staging leftovers.
+    expect(fs.existsSync(path.join(tmp, 'Test', 'tiny-model@abc123'))).toBe(false);
+    expect(fs.readdirSync(path.join(tmp, 'Test'))).toEqual([]);
   });
 
   it('a corrupt file already on disk is re-downloaded', async () => {

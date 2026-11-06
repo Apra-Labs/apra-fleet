@@ -181,8 +181,9 @@ describe('fallback at the embedder: null vectors, failed state, one log line', (
       log,
     });
     await expectFallback(e, log, /sha256 mismatch/);
-    const onnxDir = path.join(tmp, 'Test', `tiny-embed@${REV}`, 'onnx');
-    expect(fs.readdirSync(onnxDir)).toEqual([]);
+    // Staged download: the refused model never reaches its folder.
+    expect(fs.existsSync(path.join(tmp, 'Test', `tiny-embed@${REV}`))).toBe(false);
+    expect(fs.readdirSync(path.join(tmp, 'Test'))).toEqual([]);
   });
 });
 

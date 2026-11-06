@@ -967,9 +967,17 @@ Set the embedding model in the KB config file (`<FLEET_DIR>/knowledge/config.jso
 
 An invalid value logs a warning and uses the default. The model is never
 shipped with fleet: it is downloaded lazily on first use, off the request
-path, into `<FLEET_DIR>/models/<repo id>@<revision>/` (a local model id is
-resolved relative to `<FLEET_DIR>/models`). `HF_ENDPOINT` overrides the
-download host. The environment variable `APRA_FLEET_KB_EMBED=off` turns
+path, into `<FLEET_DIR>/models/<owner>/<name>@<revision>/` -- for example
+`<FLEET_DIR>/models/Xenova/bge-small-en-v1.5@ea104dacec62c0de699686887e3f920caeb4f3e3/`,
+with the hub file layout inside (`tokenizer.json`, `onnx/model_quantized.onnx`).
+This path is the contract: a model already in that folder is used without a
+download. A local model id is resolved relative to `<FLEET_DIR>/models`.
+`HF_ENDPOINT` overrides the download host. A download is staged in a temp
+folder beside the model folder and renamed into place only once every file is
+present and sha256-verified, so an interrupted download never leaves a folder
+that loads as ready. One overall deadline (20 min) bounds the whole download,
+all files included; a stalled or trickling server fails it with a reason
+naming the timeout, and the load is retried later like any failed load. The environment variable `APRA_FLEET_KB_EMBED=off` turns
 background embedding off for the process (used by sandboxes and the test
 suite) without writing a config file. Changing the model re-embeds every entry
 in the background; queries only ever compare vectors of the active model.
