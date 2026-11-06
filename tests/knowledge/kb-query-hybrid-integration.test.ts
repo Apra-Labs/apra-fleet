@@ -34,6 +34,7 @@ const kbState = vi.hoisted(() => ({ project: undefined as unknown, global: undef
 vi.mock('../../src/services/tool-scope.js', () => ({
   getSessionMemberId: () => undefined,
   getSessionKbMaintainer: () => false,
+  getSessionEngineOrigin: () => false,
 }));
 vi.mock('../../src/services/knowledge/kb-self.js', () => {
   const providers = () => ({ project: kbState.project, global: kbState.global, projectSlug: 'hybrid-int' });

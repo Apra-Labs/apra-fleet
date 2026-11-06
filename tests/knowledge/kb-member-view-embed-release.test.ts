@@ -150,7 +150,8 @@ describe('member bible view releases embedder subscriptions of dropped views', (
     await expectOnlyLiveViewDrains(views, emb);
   });
 
-  it('remote view: N bible rewrites keep one onReady listener; a later load drains only the live view', async () => {
+  // The stub runs the view's POSIX commands in /bin/sh, which win32 does not have.
+  it.skipIf(process.platform === 'win32')('remote view: N bible rewrites keep one onReady listener; a later load drains only the live view', async () => {
     const emb = new FailingEmbedder();
     setMemberViewEmbedderSourceForTests(() => emb);
     const folder = makeFolder(`remote-${RUN}`);

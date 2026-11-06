@@ -30,9 +30,14 @@ describe('gen-sea-config.mjs -- generated SEA manifest', () => {
     if (!existsSync(path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'agents'))) {
       throw new Error('packages/apra-fleet-se/apra-pm package directory is missing -- re-clone the repo.');
     }
+    // The generator refuses to run without the KB embed worker bundle, which
+    // only build:sea produces; a plain `npm run build` tree does not have it.
+    if (!existsSync(path.join(root, 'dist', 'kb-embed-worker.cjs'))) {
+      execFileSync('node', ['scripts/build-sea.mjs'], { cwd: root, stdio: 'pipe' });
+    }
     execFileSync('node', ['scripts/gen-sea-config.mjs'], { cwd: root, stdio: 'pipe' });
     manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
-  });
+  }, 120_000);
 
   it('includes agents/schemas/*.json role I/O contracts', () => {
     const schemaKeys = Object.keys(manifest.agents).filter(k => k.startsWith('schemas/') && k.endsWith('.json'));
