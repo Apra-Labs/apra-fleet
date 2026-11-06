@@ -174,6 +174,17 @@ call from a member session of a member registered on it (then, as applicable,
 make that folder a git repository with an origin remote). The error text is
 `<code>: <problem> Remediation: <fix>`, one line.
 
+**No git spawn per call.** Every kb_* and code_* call resolves its scope this
+way, so the git answers (`rev-parse --git-dir`, `remote get-url origin`,
+`rev-parse --show-toplevel` for client roots) are cached per folder in
+`kb-self.ts`. A cached answer is used only while a plain-`stat` fingerprint of
+the folder's git metadata (`.git` kind and inode, the git dir's `config` and
+`HEAD`; gitfile worktrees and bare repos followed) is unchanged, so removing
+the origin remote or `.git` is reported on the next call with the same error.
+After 30 s an answer is re-checked with an asynchronous git spawn while the
+cached one keeps serving, so steady-state calls never block the event loop on
+git. A spawn failure or timeout (no git verdict) is never cached.
+
 **Remote members.** A remote member's work folder is a path on another host,
 so git cannot be shelled out for it. Its KB identity is the single origin URL
 recorded on the member (`knownRepoRemoteUrl`, set via `update_member
