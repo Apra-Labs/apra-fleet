@@ -672,6 +672,13 @@ written. `kb_setup` installs its hook into the session's folder and writes one
 global config; when the folder cannot carry a KB identity it skips the hook
 and reports the typed reason rather than refusing. (INV-05, INV-06)
 
+`kb_setup` MAY also set the install-wide KB tool profile (`tool_profile`:
+`full`, `developer` or `custom` with `tool_profile_tools`) in that global
+config. The profile decides which `kb_*` tools a FULL (non-member) session is
+served when it registers its tools; it MUST NOT change a MEMBER session's tool
+list, and an unknown `custom` tool name MUST be refused with nothing written.
+It is a usability control, not a security boundary.
+
 **THE PROOF.** `src/services/knowledge/kb-self.ts` owns the resolution:
 `resolveSelfAnchor()` reads the session member id (`getSessionMemberId()`,
 `src/services/tool-scope.ts`), looks the member up in the registry and

@@ -764,6 +764,47 @@ step and does not create the directory. The hook itself calls a repo-relative
 outside the apra-fleet source tree. Hash-based freshness is the mechanism to
 rely on.)
 
+### 5. KB tool profiles (which kb_* tools interactive sessions see)
+
+An interactive session that only reads and captures does not need every
+`kb_*` tool in its tool list. The install-wide KB tool profile trims that
+list:
+
+| Profile | `kb_*` tools a FULL session lists |
+|---|---|
+| `full` (default; also what no setting means) | every `kb_*` tool |
+| `developer` | `kb_session_prime`, `kb_query`, `kb_context`, `kb_capture`, `kb_feedback` |
+| `custom` | exactly the registered `kb_*` names you list |
+
+Set it with the CLI or with `kb_setup`:
+
+```
+apra-fleet kb profile developer
+apra-fleet kb profile custom kb_query,kb_capture,kb_setup
+apra-fleet kb profile            # print the current profile
+apra-fleet kb profile full       # back to every kb_* tool
+```
+
+`kb_setup` takes `tool_profile` (`full` | `developer` | `custom`) and, for
+`custom`, `tool_profile_tools`; a profile-only call needs no
+provider/remote/token and leaves those settings as they were. Both are stored
+in `knowledge/config.json` as `tool_profile` / `tool_profile_tools`. An
+unknown `custom` name is refused with an error naming it and listing the
+valid names, and nothing is written.
+
+- **Install-wide.** One setting per fleet install, like the provider config.
+- **FULL sessions only.** Member sessions and every sprint role keep their
+  own allowlists (including the engine's kb_maintainer session and its
+  `kb_promote` / `kb_resolve_contradiction` / `kb_demote`), whatever the
+  profile. Non-kb tools, `code_*` included, are never filtered.
+- **Takes effect on reconnect.** The profile is read when a session
+  registers its tools; an open session keeps its list until it reconnects.
+- **Not a security boundary.** It is a usability control: a hidden tool is
+  just not listed, and any local process can change the profile back.
+- **Getting back.** `developer` hides `kb_setup`, so use the CLI:
+  `apra-fleet kb profile full`. A hand-edited invalid profile is ignored with
+  a logged warning (the session gets every `kb_*` tool) until it is fixed.
+
 ---
 
 ## Usage Guide

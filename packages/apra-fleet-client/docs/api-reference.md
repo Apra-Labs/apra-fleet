@@ -150,6 +150,17 @@ abort support on top of a transport.
 - **`async listTools(opts = {})`** -- `request('tools/list', {}, opts)`;
   resolves `{ tools: [{ name, ... }] }`. On a MEMBER session
   (`?member=<uuid>`) this is exactly the member allowlist.
+  On a FULL (non-member) session the `kb_*` tools listed follow the
+  install-wide KB tool profile, read when the session registers its tools
+  (so a change shows after a reconnect): `full` (default, every `kb_*`
+  tool), `developer` (`kb_session_prime`, `kb_query`, `kb_context`,
+  `kb_capture`, `kb_feedback`) or `custom` (an explicit list). Non-kb tools
+  are never filtered and member sessions ignore the profile. The profile is
+  set with `kb_setup` inputs `tool_profile` (`full` | `developer` |
+  `custom`) and `tool_profile_tools` (the custom `kb_*` names; an unknown
+  name is refused with an error naming it, and nothing is written), or with
+  `apra-fleet kb profile <full|developer|custom a,b>`. It is a usability
+  control, not a security boundary.
 
 ### `connectFleetMember(memberId, deps)` (`server-resolution.mjs`)
 
