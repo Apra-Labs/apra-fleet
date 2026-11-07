@@ -1,11 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { HttpKbProvider, KbHttpAuthError } from '../../src/services/knowledge/http-provider.js';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { resetKbHttpAuthState } from '../../src/services/knowledge/kb-http-auth-state.js';
 import { credentialSet, credentialDelete } from '../../src/services/credential-store.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
+import { headBranchReader } from '../../src/services/knowledge/repository-header.js';
 
 // Named-secret token and repository headers together, against a real local
 // HTTP server: the 401 retry re-reads the secret but resends the SAME
@@ -20,7 +25,7 @@ const TOKEN_A = `NOT_A_REAL_KEY_A_${RUN}`;
 const TOKEN_B = `NOT_A_REAL_KEY_B_${RUN}`;
 const REPO = 'github.com/example/secret-repo-headers';
 
-interface Seen { path: string; authorization?: string; repository?: string; commit?: string }
+interface Seen { path: string; authorization?: string; repository?: string; commit?: string; branch?: string }
 const stub = {
   accepted: TOKEN_B,
   seen: [] as Seen[],
@@ -59,6 +64,7 @@ beforeAll(async () => {
         authorization: req.headers.authorization,
         repository: req.headers['x-repository'] as string | undefined,
         commit: req.headers['x-repository-commit'] as string | undefined,
+        branch: req.headers['x-repository-branch'] as string | undefined,
       });
       res.setHeader('Content-Type', 'application/json');
       if (req.headers.authorization !== `Bearer ${stub.accepted}`) {
@@ -78,9 +84,18 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 
+const tempDirs: string[] = [];
+
 afterAll(async () => {
   await new Promise<void>(resolve => server.close(() => resolve()));
+  for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
 });
+
+function git(cwd: string, args: string[]): void {
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], {
+    cwd, stdio: ['ignore', 'ignore', 'ignore'],
+  });
+}
 
 beforeEach(() => {
   stub.accepted = TOKEN_B;
@@ -93,11 +108,15 @@ afterEach(() => {
   try { credentialDelete(NAME); } catch { /* best effort */ }
 });
 
-async function withProvider(commit: ReturnType<typeof countingCommit>, body: (p: HttpKbProvider) => Promise<void>): Promise<void> {
+async function withProvider(
+  commit: ReturnType<typeof countingCommit>,
+  body: (p: HttpKbProvider) => Promise<void>,
+  branchOf?: () => string | undefined,
+): Promise<void> {
   const fallback = new SqliteProvider(':memory:');
   await fallback.init();
   const provider = new HttpKbProvider(baseUrl, { secretName: NAME }, fallback, {
-    repository: { remote: REPO, commitOf: commit.commitOf },
+    repository: { remote: REPO, commitOf: commit.commitOf, branchOf },
   });
   try {
     await body(provider);
@@ -123,6 +142,32 @@ describe('HttpKbProvider: named secret + repository headers', () => {
     expect(captures[0].commit).toMatch(/^[0-9a-f]{40}$/);
     expect(captures[1].commit).toBe(captures[0].commit);
     expect(commit.calls()).toBe(1);
+  });
+
+  it('a 401 retry sends the same X-Repository-Branch as the first attempt, even if the branch changed in between', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-secret-branch-hdr-'));
+    tempDirs.push(dir);
+    git(dir, ['init', '-q', '.']);
+    git(dir, ['commit', '-q', '--allow-empty', '-m', 'init']);
+    git(dir, ['checkout', '-q', '-b', 'first-attempt']);
+    setSecret(TOKEN_A);
+    // The server rejects the first attempt; meanwhile the secret rotates AND the
+    // folder switches branch. A TTL of 0 makes the real reader re-run git on
+    // every call, so only computing the headers once per request keeps the
+    // retry on the first attempt's branch.
+    stub.on401 = () => {
+      setSecret(TOKEN_B);
+      git(dir, ['checkout', '-q', '-b', 'switched-mid-request']);
+      stub.on401 = undefined;
+    };
+    await withProvider(countingCommit(), async (p) => {
+      const result = await p.capture(makeInput('branch retry'));
+      expect(result.id).toBeTruthy();
+    }, headBranchReader(dir, 0));
+    const captures = stub.seen.filter(s => s.path === '/api/kb/capture');
+    expect(captures).toHaveLength(2);
+    expect(captures.map(c => c.authorization)).toEqual([`Bearer ${TOKEN_A}`, `Bearer ${TOKEN_B}`]);
+    expect(captures.map(c => c.branch)).toEqual(['first-attempt', 'first-attempt']);
   });
 
   it('a missing secret fails before the commit is read and before any request', async () => {

@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "6ecdfda08a76fc206721e855d72cf94b16f5f011",
+    "commit": "c2ccca462fd60b150aa750bed0f410ab5bce1933",
     "branch": "main",
-    "entry_count": 124
+    "entry_count": 132
   },
   "entries": [
     {
@@ -520,6 +520,28 @@
         "packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json": "58fffe7c86aa875100bc8b66769c43a462cc3111",
         "packages/apra-fleet-se/apra-pm/test/auto-sprint-schemas-drift.test.mjs": "eaca88fa5ff10f41b4acd11099776d9e78415b0e",
         "packages/apra-fleet-se/test/golden-transcript.test.mjs": "9ec222f8856aa6a5935b49d144ae6caf2fd05ee9"
+      }
+    },
+    {
+      "id": "33755a95-9855-49cf-90da-22e36bb6f33e",
+      "type": "learning",
+      "title": "Stale gitignored dist/agents/schemas fails root npm test via the se staleness guard",
+      "summary": "npm run build does not refresh dist/agents/schemas. When the apra-pm source schemas change after a dist-pm run, the apra-fleet-se contracts-schema-dist-staleness-guard test fails root npm test with DRIFTED entries, even on a branch that touches no schema. npm run dist-pm fixes it.",
+      "symbols": [
+        "DIST_BUNDLED_SCHEMAS_DIR",
+        "PACKAGE_LOCAL_SCHEMAS_DIR"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs",
+        "scripts/run-all-tests.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T06:44:28.049Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs": "4c07b8ed157d0d89186c903466ba757be2c48ba6",
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs": "1db1ddf04d24ac369fb510e69d39af9406640bbe",
+        "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637"
       }
     },
     {
@@ -1341,6 +1363,21 @@
       }
     },
     {
+      "id": "8be9cb68-4270-4a68-bd98-1f7e6ca74d47",
+      "type": "learning",
+      "title": "Root npm test can be narrowed to specific vitest files via APRA_TEST_SUITES_JSON",
+      "summary": "scripts/run-all-tests.mjs replaces its default suite list with the JSON in APRA_TEST_SUITES_JSON, so a doer can run chosen test files through the bounded npm test runner instead of calling vitest directly.",
+      "symbols": [],
+      "source_files": [
+        "scripts/run-all-tests.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T06:24:10.073Z",
+      "source_file_hashes": {
+        "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637"
+      }
+    },
+    {
       "id": "8fdf21fa-e64c-43d2-a22a-edfd21bd6791",
       "type": "knowledge",
       "title": "Three distinct git-credential-helper file shapes exist across member OS/shell combinations",
@@ -1769,6 +1806,23 @@
       "updated_at": "2026-10-06T09:41:38.971Z"
     },
     {
+      "id": "bfcfe1fe-571d-4f3a-a0ce-04fedcd7a088",
+      "type": "learning",
+      "title": "APRA_TEST_SUITES_JSON narrowing leaks into run-all-tests-suite-enumeration test",
+      "summary": "Running the full vitest suite through scripts/run-all-tests.mjs with APRA_TEST_SUITES_JSON set makes tests/run-all-tests-suite-enumeration.test.ts fail, because it imports the real script, which reads the inherited env var.",
+      "symbols": [],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "tests/run-all-tests-suite-enumeration.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T07:14:05.528Z",
+      "source_file_hashes": {
+        "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637",
+        "tests/run-all-tests-suite-enumeration.test.ts": "6b869932251561145575443ff2d70652ba73b787"
+      }
+    },
+    {
       "id": "c2899616-0cb1-41e8-b229-76e291a0cd81",
       "type": "learning",
       "title": "SqliteProvider freshness verdicts must be suppressed, not re-hashed, when the repo anchor is unreachable",
@@ -1828,6 +1882,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T10:23:39.272Z"
+    },
+    {
+      "id": "c72f090a-334f-4c0a-8b8b-a2fedfa7b81b",
+      "type": "learning",
+      "title": "A profile change via kb_setup or the CLI shows only after the MCP session reconnects",
+      "summary": "The KB tool profile is read in scopeGatedServer once per session, when registerAllTools runs. An open session keeps its tool list after kb_setup or apra-fleet kb profile changes knowledge/config.json, so a test or user must reconnect to see the new list.",
+      "symbols": [
+        "scopeGatedServer",
+        "fullSessionKbToolProfile",
+        "readKbToolProfileFromDisk",
+        "runKbProfile"
+      ],
+      "source_files": [
+        "src/services/tool-registry.ts",
+        "src/cli/kb-profile.ts",
+        "tests/kb-tool-profile-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T07:26:57.942Z",
+      "source_file_hashes": {
+        "src/cli/kb-profile.ts": "2ae2abf6f3c4a62e3ca10f3013fedcd43103bb24",
+        "src/services/tool-registry.ts": "05e3d5e04b949b3bfefef7693c230e59da947f02",
+        "tests/kb-tool-profile-e2e.test.ts": "949f75c916529d89cd7b80d5433042449935d31a"
+      }
     },
     {
       "id": "cc085797-4b47-455d-9357-fbbb267281ed",
@@ -2368,6 +2446,38 @@
         "src/services/session-roots.ts": "b27a9b1df28aad228dbec60ab57984f142eb024e",
         "src/services/tool-registry.ts": "eb1b91bac7395927dd12548734bccb86e7ae1de3",
         "tests/kb-code-scope-roots.test.ts": "494812934178a85b8196995e32a3df9991af9253"
+      }
+    },
+    {
+      "id": "f43cd51c-c59e-4938-baed-8b6afc2b10f3",
+      "type": "knowledge",
+      "title": "KB tool profile filters kb_* tools only in FULL sessions via scopeGatedServer",
+      "summary": "The install-wide KB tool profile (knowledge/config.json tool_profile/tool_profile_tools) is read in scopeGatedServer when a FULL session registers its tools; member scope never consults it, and an invalid on-disk profile falls back to full with a warning.",
+      "symbols": [
+        "scopeGatedServer",
+        "readKbToolProfileFromDisk",
+        "kbToolAllowedByProfile",
+        "makeKbToolProfile",
+        "writeKbToolProfile",
+        "runKbProfile"
+      ],
+      "source_files": [
+        "src/services/kb-tool-profile.ts",
+        "src/services/knowledge/kb-config.ts",
+        "src/services/tool-registry.ts",
+        "src/tools/kb-setup.ts",
+        "src/cli/kb-profile.ts",
+        "tests/kb-tool-profile-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T07:14:03.165Z",
+      "source_file_hashes": {
+        "src/cli/kb-profile.ts": "2ae2abf6f3c4a62e3ca10f3013fedcd43103bb24",
+        "src/services/kb-tool-profile.ts": "302b2e9ef0633dfd8e2a1c5ffa4ee0d52ab4fb35",
+        "src/services/knowledge/kb-config.ts": "5571d65b6d096d7742527c16649dbfff17faf51c",
+        "src/services/tool-registry.ts": "05e3d5e04b949b3bfefef7693c230e59da947f02",
+        "src/tools/kb-setup.ts": "eaa0fe1fc385cafbf2c3f9b14c9e5b7159dc86fe",
+        "tests/kb-tool-profile-e2e.test.ts": "949f75c916529d89cd7b80d5433042449935d31a"
       }
     },
     {

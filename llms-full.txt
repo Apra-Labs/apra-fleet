@@ -272,6 +272,18 @@ session's own repo, including linked worktrees and custom `core.hooksPath`);
 it does not scope the config. On a shared fleet server, treat
 `kb_setup --remote` as a change for all of its users.
 
+**KB tool profiles.** `apra-fleet kb profile developer` (or `kb_setup` with
+`tool_profile`) trims the `kb_*` tools an interactive (non-member) session
+lists to `kb_session_prime`, `kb_query`, `kb_context`, `kb_capture` and
+`kb_feedback`; `custom <a,b>` lists exactly the named `kb_*` tools and `full`
+(the default) lists them all. The profile is install-wide, applies to FULL
+sessions only (member sessions and sprint roles are unaffected), and takes
+effect when a session reconnects. It is a usability control, not a security
+boundary. `developer` hides `kb_setup` and the tools the PM skills `kb-review`,
+`kb-reconcile` and `knowledge-agent` need, so get back with
+`apra-fleet kb profile full` (and reconnect) before running those. See
+[KB tool profiles](docs/knowledge-layer.md#5-kb-tool-profiles-which-kb_-tools-interactive-sessions-see).
+
 Every KB tool call is scoped to the calling session's own repo -- a fleet
 server handling many members across many repos never lets one repo's
 learnings land in another repo's KB. No `kb_*` tool takes a scope argument:
