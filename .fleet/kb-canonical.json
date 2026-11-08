@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "9a7760f37f70876b9b3fdd5360714698ea4dd270",
     "branch": "main",
-    "entry_count": 136
+    "entry_count": 137
   },
   "entries": [
     {
@@ -1005,6 +1005,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.708Z"
+    },
+    {
+      "id": "602e5074-1727-414a-ae5d-1dc07a9b3698",
+      "type": "knowledge",
+      "title": "Viewer extensions can render a header banner visible on every tab via extension-banner-<id>",
+      "summary": "The live viewer's HTML_TEMPLATE puts one hidden div#extension-banner-<ext.id> per dashboard extension outside every tab panel; the extension's own js fills and shows it. The decisions extension uses it for pending decisions.",
+      "symbols": [
+        "HTML_TEMPLATE",
+        "createDecisionsExtension",
+        "renderDecisionsBannerHtml",
+        "parseDocument"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/viewer/index.mjs",
+        "packages/apra-fleet-se/fleet-sprint/viewer-extensions.mjs",
+        "packages/apra-fleet-se/test/helpers/mini-dom.mjs",
+        "packages/apra-fleet-se/test/viewer-decisions-header-banner-dom.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T09:57:16.041Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/viewer-extensions.mjs": "024cab503db74f0efe7c0e711d79b90dfb6aead5",
+        "packages/apra-fleet-se/test/helpers/mini-dom.mjs": "b24188395cc9337fa9babdc182b3f272fb1fd8a4",
+        "packages/apra-fleet-se/test/viewer-decisions-header-banner-dom.test.mjs": "a92ec7d3f896c3c8a613b2df509b1bfcd11133b1",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs": "61849fc5b49537780c598e50aa36afdb568e5120"
+      }
     },
     {
       "id": "64bedb7a-8a2d-46ba-9586-6254a88f6dcd",
