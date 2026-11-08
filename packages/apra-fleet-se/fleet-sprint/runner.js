@@ -1357,6 +1357,15 @@ async function runSprintCycle(context) {
 
     let cycle = 1;
     const MAX_CYCLES = validated.maxCycles;
+    // The cycle loop's ceiling. A decision answered at Cycle Evaluation of the
+    // last allowed cycle (a "late" answer) raises it by one cycle -- when the
+    // run's budget allows -- so the released bead is still dispatched; see
+    // handleLateDecisionAnswers(). Starts at MAX_CYCLES.
+    let effectiveMaxCycles = MAX_CYCLES;
+    // Answers applied at the last cycle's evaluation, not yet resolved into an
+    // extra cycle or a report; and the beads reported released too late.
+    let lateDecisionAnswers = [];
+    const lateUnworkedReports = [];
 
     // Per-(role, cycle) session registry: a role's session is resumed across
     // ROUNDS within one cycle via an explicit session id, but NEVER across
@@ -3057,6 +3066,48 @@ async function runSprintCycle(context) {
     // oscillating in and out of eligibility.
     const verifyEverIds = new Set();
 
+    // Applies the decision answers recorded while the run was running
+    // (decision-wait.mjs recordDecisionAnswer only queues them). The bd writes
+    // and the beads push happen INSIDE one sync bracket, after its pull, under
+    // the same dolt mutex as every other phase's pull/push -- never as a
+    // free-standing push. No bracket and no command when nothing is queued.
+    async function applyRecordedDecisionAnswers() {
+        if (!decisionWait || !decisionWait.hasQueuedAnswers()) return [];
+        const settleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
+        return gitSync.withOpenSyncBracket(async () => {
+            await gitSync.syncBeadsBefore(backlogMember, { fatal: true, settle: buildSettleCallback(backlogMember, { command, log, shell: settleShell }) });
+            return decisionWait.applyRecordedAnswers();
+        });
+    }
+
+    // Whether the run's cost budget leaves room to dispatch more work.
+    function budgetAllowsMoreWork() {
+        try {
+            return !(budget && typeof budget.remaining === 'function' && budget.remaining() <= 0);
+        } catch { return true; }
+    }
+
+    // Called at the end of a cycle. A decision answered at the evaluation of the
+    // last allowed cycle grants exactly ONE extra cycle (per late answer batch)
+    // when the budget allows, so the released bead is dispatched; otherwise the
+    // unworked released bead and its decision are named in the log and in the
+    // final verdict notes.
+    function handleLateDecisionAnswers() {
+        if (lateDecisionAnswers.length === 0) return;
+        const batch = lateDecisionAnswers;
+        lateDecisionAnswers = [];
+        const named = batch.map((a) => `${(a.released && a.released.length ? a.released : [a.beadId]).join(', ')} (decision ${a.decisionId})`).join('; ');
+        if (cycle >= effectiveMaxCycles && budgetAllowsMoreWork()) {
+            effectiveMaxCycles = cycle + 1;
+            log(`Cycle ${cycle}: decision answered at the last allowed cycle (maxCycles ${MAX_CYCLES}); granting one extra cycle (${cycle + 1}) so the released bead(s) are dispatched: ${named}.`);
+            return;
+        }
+        const why = budgetAllowsMoreWork() ? `maxCycles ${MAX_CYCLES} reached` : 'the budget is exhausted';
+        const line = `Decision answered too late to be worked: released bead(s) ${named} were not dispatched in this run (${why}). Re-run the sprint to work them.`;
+        lateUnworkedReports.push(line);
+        log(line);
+    }
+
     // Immediate set-aside stall (see ./set-aside.mjs). When nothing is ready
     // and every open in-scope bead at goal priority is set aside for this run
     // -- doer-BLOCKED (sprintState.doctorBlockedIds) or, while the deploy is
@@ -3148,8 +3199,11 @@ async function runSprintCycle(context) {
         });
         if (!stall) return false;
         if (decisionWait && decisionWait.hasPending()) {
-            await decisionWait.awaitAnswer({ where, cycle });
+            const answers = await decisionWait.awaitAnswer({ where, cycle });
             staleCycles = 0;
+            // Answered at the end of the last allowed cycle: the loop would
+            // end before the released bead is dispatched.
+            if (cycle >= effectiveMaxCycles && Array.isArray(answers)) lateDecisionAnswers.push(...answers);
             return true;
         }
         const unfiledDecisions = decisionWait ? decisionWait.unfiled() : [];
@@ -3264,8 +3318,12 @@ async function runSprintCycle(context) {
     let lastReviewVerdict = null;
     let reviewedThisCycle = false;
 
-    while (cycle <= MAX_CYCLES) {
+    while (cycle <= effectiveMaxCycles) {
         group(`Sprint Cycle ${cycle}`);
+
+        // Answers recorded since the last bracket are applied (and pushed) now,
+        // inside a sync bracket, before this cycle reads the ready set.
+        await applyRecordedDecisionAnswers();
 
         // Reset per-cycle review state -- a verdict is only ever trustworthy
         // for the cycle that actually produced it.
@@ -4090,14 +4148,22 @@ async function runSprintCycle(context) {
             `. Continuing.`
         );
 
+        handleLateDecisionAnswers();
         cycle++;
         endGroup();
+    }
+
+    // An answer recorded after the last cycle's bracket never reached a cycle.
+    if (decisionWait && decisionWait.hasQueuedAnswers()) {
+        const line = 'Decision answer(s) recorded too late to be applied in this run (the cycle loop had ended); the decision(s) stay pending. Re-run the sprint to work the released bead(s).';
+        lateUnworkedReports.push(line);
+        log(line);
     }
 
     // When the loop exits because `cycle` exceeded MAX_CYCLES (rather than via
     // an early `break`), `cycle` is MAX_CYCLES + 1 at this point; the labels
     // below must report the last cycle actually run.
-    const finalCycleLabel = Math.min(cycle, MAX_CYCLES);
+    const finalCycleLabel = Math.min(cycle, effectiveMaxCycles);
 
     // =======================
     // 6. Finalization: the evidence-based final verdict drives the return value
@@ -4261,7 +4327,9 @@ async function runSprintCycle(context) {
     return {
         status: finalVerdictResult.verdict === 'PASS' ? 'success' : 'failed',
         verdict: finalVerdictResult.verdict,
-        notes: finalVerdictResult.notes,
+        notes: lateUnworkedReports.length > 0 && typeof finalVerdictResult.notes === 'string'
+            ? `${finalVerdictResult.notes}\n${lateUnworkedReports.join('\n')}`
+            : finalVerdictResult.notes,
         branch: validated.branch,
         baseBranch: validated.baseBranch,
         goal: validated.goal,
