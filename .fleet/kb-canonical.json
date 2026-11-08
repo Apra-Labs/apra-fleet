@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "c2ccca462fd60b150aa750bed0f410ab5bce1933",
+    "commit": "9a7760f37f70876b9b3fdd5360714698ea4dd270",
     "branch": "main",
-    "entry_count": 132
+    "entry_count": 133
   },
   "entries": [
     {
@@ -246,6 +246,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:39.994Z"
+    },
+    {
+      "id": "1a9e0a10-395b-412f-a5ff-1360ae529877",
+      "type": "knowledge",
+      "title": "bd create is only allowed in beads-children.mjs; its command() count is pinned",
+      "summary": "explicit-id-create-guard fails any bd create outside beads-children.mjs, and dispatch-safety-guard.test pins that module's command() count (now 9). New bead-creation paths must add a helper there and bump the pin.",
+      "symbols": [
+        "createDecisionBead",
+        "EXPECTED_BEADS_CHILDREN_COMMAND_COUNT",
+        "checkExplicitIdCreateModules"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/explicit-id-create-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-children.mjs",
+        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs",
+        "packages/apra-fleet-se/test/sprint-state.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T06:18:12.388Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-children.mjs": "dd5bf8c5d072a622e7a5c355d1235a70f64f2c81",
+        "packages/apra-fleet-se/fleet-sprint/explicit-id-create-guard.mjs": "2f23987c7b2c75f47feff528258ba0a2a8455ced",
+        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs": "cbdca634f5c5dc0f8f640f114761fa3ab117992e",
+        "packages/apra-fleet-se/test/sprint-state.test.mjs": "bd1629a4797d638aac29a21828f67918cae4fdf7"
+      }
     },
     {
       "id": "1b2df6eb-33c9-4deb-8253-2a553183fcfe",
