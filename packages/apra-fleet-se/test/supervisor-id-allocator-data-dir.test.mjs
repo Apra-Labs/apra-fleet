@@ -202,6 +202,36 @@ test('upgrade: a live legacy reservation pid logs exactly one remedy warning; a 
     }
 });
 
+test('upgrade: a legacy mtime slightly in the future (fs/clock skew) still counts as recent: one warning, "modified 0s ago"', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'id-alloc-skew-'));
+    try {
+        const legacyFile = await legacySetup(root, { version: 1, parents: { 'p.1': { highWater: 7, free: [], reserved: {} } } }, -5000);
+        const logs = [];
+        const a = createIdAllocator({ dataDir: path.join(root, 'new'), legacyFilePath: legacyFile, logger: { log: (m) => logs.push(m) } });
+        await a.start();
+        await a.stop();
+        const warns = logs.filter((m) => m.includes('WARNING'));
+        assert.equal(warns.length, 1, logs.join('|'));
+        assert.match(warns[0], /modified 0s ago/);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('upgrade: a legacy mtime more than the live window in the future logs no warning', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'id-alloc-future-'));
+    try {
+        const legacyFile = await legacySetup(root, { version: 1, parents: { 'p.1': { highWater: 7, free: [], reserved: {} } } }, -11 * 60 * 1000);
+        const logs = [];
+        const a = createIdAllocator({ dataDir: path.join(root, 'new'), legacyFilePath: legacyFile, logger: { log: (m) => logs.push(m) } });
+        await a.start();
+        await a.stop();
+        assert.equal(logs.filter((m) => m.includes('WARNING')).length, 0, logs.join('|'));
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('concurrent: legacy instance minting above the snapshot never collides with the seeded instance; the live-legacy warning fires', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'id-alloc-conc-'));
     try {
