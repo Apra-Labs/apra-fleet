@@ -124,7 +124,7 @@ describe('decisions surface through a real child viewer and the supervisor contr
         });
     });
 
-    test('answer route: invalid decision id -> 404, malformed body -> 400, valid -> answered and resumed', async () => {
+    test('answer route: invalid decision id -> 404, malformed body -> 400, valid -> recorded', async () => {
         wf.emit('state', { namespace: 'decisions', data: { state: 'paused-awaiting-decision', pending: [pendingRecord()], waitingSince: 't' } });
         await assert.rejects(() => controller.answerDecision('s1', 'decision-nope', { answer: 'a' }), (e) => e instanceof ApiError && e.status === 404);
         await assert.rejects(() => controller.answerDecision('s1', 'decision-1-x-1', null), (e) => e instanceof ApiError && e.status === 400);
@@ -134,7 +134,7 @@ describe('decisions surface through a real child viewer and the supervisor contr
         assert.equal(answers.length, 0, 'no answer reached the run on a rejected request');
 
         const ok = await controller.answerDecision('s1', 'decision-1-x-1', { answer: 'a: upgrade the emulator' });
-        assert.equal(ok.status, 'answered');
+        assert.equal(ok.status, 'recorded');
         assert.deepEqual(answers, [{ decisionId: 'decision-1-x-1', answer: 'a: upgrade the emulator' }]);
         const after = await controller.getSprint('s1');
         assert.deepEqual(after.pendingDecisions, []);
