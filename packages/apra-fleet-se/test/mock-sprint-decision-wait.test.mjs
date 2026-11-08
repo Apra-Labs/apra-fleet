@@ -193,7 +193,8 @@ test('unit: a failed resume keeps the run parked, is retried every interval whil
     await until(() => engine.waiting() === 1, 'the read to block at the pause gate');
     const rec = await wait.recordDecisionAnswer('decision-1-x-1', 'a');
     const answered = await p;
-    assert.equal(rec.answer, 'a');
+    assert.equal(rec.status, 'recorded');
+    assert.equal(answered[0].answer, 'a');
     assert.equal(answered.length, 1);
     assert.equal(engine.rec.resumes.length, 1, 'resumed exactly once, after two failed attempts');
     assert.equal(engine.rec.pauses.length, 1, 'parked once');
@@ -215,7 +216,8 @@ test('unit: recordDecisionAnswer during the wait wakes it at once and answers th
     const rec = await live.recordDecisionAnswer('decision-1-x-1', 'b, locally only');
     const answered = await p;
     check(Date.now() - started < 5_000, 'woken without waiting out the interval');
-    assert.equal(rec.answer, 'b, locally only');
+    assert.equal(rec.status, 'recorded');
+    assert.equal(answered[0].answer, 'b, locally only');
     assert.equal(answered[0].via, 'recordDecisionAnswer');
     check(engine.rec.commands.some((c) => /^bd human respond x-dec --file "/.test(c)), 'answered with the same command an operator runs');
     check(engine.rec.commands.some((c) => c.startsWith('bd note x-1 --file')), 'answer appended to the work bead');
@@ -223,7 +225,7 @@ test('unit: recordDecisionAnswer during the wait wakes it at once and answers th
     await assert.rejects(() => wait.recordDecisionAnswer('nope', 'x'), /no pending decision/);
 });
 
-test('unit: recordDecisionAnswer outside a wait applies at once; an empty answer is refused', async () => {
+test('unit: recordDecisionAnswer outside a wait only records; applyRecordedAnswers applies once and pushes once; an empty answer is refused', async () => {
     const engine = fakeEngine();
     const sprintState = sprintStateWithDecision();
     const pushes = [];
@@ -233,8 +235,16 @@ test('unit: recordDecisionAnswer outside a wait applies at once; an empty answer
     });
     await assert.rejects(() => wait.recordDecisionAnswer('decision-1-x-1', '  '), /empty/);
     const rec = await wait.recordDecisionAnswer('decision-1-x-1', 'a');
-    assert.deepEqual(rec.released.sort(), ['x-1', 'x-2']);
+    assert.equal(rec.status, 'recorded');
+    assert.equal(engine.rec.commands.length, 0, 'recording issues no member command');
+    assert.deepEqual(pushes, [], 'recording pushes nothing');
+    assert.equal(wait.hasQueuedAnswers(), true);
+    await assert.rejects(() => wait.recordDecisionAnswer('decision-1-x-1', 'b'), /already recorded/);
+    const applied = await wait.applyRecordedAnswers();
+    assert.deepEqual(applied[0].released.sort(), ['x-1', 'x-2']);
     assert.deepEqual(pushes, ['m']);
+    assert.deepEqual(await wait.applyRecordedAnswers(), [], 'applied exactly once');
+    assert.equal(engine.rec.commands.filter((c) => c.startsWith('bd human respond')).length, 1);
     assert.equal(engine.rec.pauses.length, 0, 'no pause needed');
 });
 

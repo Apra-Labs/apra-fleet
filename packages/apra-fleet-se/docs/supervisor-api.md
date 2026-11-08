@@ -343,7 +343,12 @@ A sprint that is waiting on an operator decision (see
   `paused-awaiting-decision` while the run is paused on a decision).
 - `POST /api/sprints/:id/decisions/:decisionId`, body `{answer}` (a non-empty
   string, length-capped), proxies the answer to the child's decisions
-  extension. Response `{sprintId, decisionId, status: "answered", released}`.
+  extension. Returns as soon as the run has durably recorded the answer, not after it
+  resumes or applies it: `{sprintId, decisionId, status: "recorded", released}`
+  (`released` is empty: the bead is released when the answer is applied, which
+  happens at the run's next beads sync bracket or at once if it is paused).
+  An error applying it later is shown in the log and the decisions state
+  (`answerErrors`), not by this route.
   `400` (field `body` or `answer`): body not an object, or `answer` missing,
   empty or too long (also a child-side rejection of the answer). `404`: unknown
   sprint, or no pending decision with that id. `409`: the sprint has no

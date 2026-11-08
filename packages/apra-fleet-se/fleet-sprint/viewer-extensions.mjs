@@ -1406,7 +1406,7 @@ export function createDecisionsExtension({ answer = answerPendingDecision } = {}
                 }
                 try {
                     const rec = await answer(checked.decisionId, checked.answer);
-                    return { status: 200, body: { ok: true, decisionId: checked.decisionId, released: (rec && rec.released) || [] } };
+                    return { status: 200, body: { ok: true, decisionId: checked.decisionId, status: (rec && rec.status) || 'recorded', released: (rec && rec.released) || [] } };
                 } catch (err) {
                     return { status: 409, body: { error: String(err && err.message ? err.message : err).slice(0, 500) } };
                 }

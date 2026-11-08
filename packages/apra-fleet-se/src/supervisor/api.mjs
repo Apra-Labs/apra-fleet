@@ -959,7 +959,7 @@ export function createSprintController(deps = {}) {
         if (out.statusCode === 404) throw new ApiError(404, `no pending decision '${decisionId}' in sprint '${id}'`);
         if (out.statusCode === 400) throw new ApiError(400, (out.body && out.body.error) || 'bad decision answer', 'answer');
         if (out.statusCode !== 200) throw new ApiError(409, (out.body && out.body.error) || `decision answer failed (${out.statusCode})`);
-        return { sprintId: id, decisionId, status: 'answered', released: (out.body && out.body.released) || [] };
+        return { sprintId: id, decisionId, status: (out.body && out.body.status) || 'recorded', released: (out.body && out.body.released) || [] };
     }
 
     return {

@@ -118,7 +118,8 @@ test('an answer recorded mid-wait resumes the run exactly once; member commands 
     const rec = await answerPendingDecision('decision-mid-wait', 'a: keep them');
     const answered = await s.run;
 
-    assert.equal(rec.answer, 'a: keep them');
+    assert.equal(rec.status, 'recorded');
+    assert.equal(answered[0].answer, 'a: keep them');
     assert.equal(answered.length, 1);
     assert.equal(s.events.resumed, 1, 'exactly one resume');
     assert.equal(s.events.pauseRequested.length, 1, 'parked once for the whole wait');

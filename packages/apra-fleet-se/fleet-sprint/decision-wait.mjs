@@ -89,11 +89,21 @@
 // re-parks a run whose stop signal has fired.
 //
 // recordDecisionAnswer(decisionId, answer) is the programmatic answer entry
-// point (for a dashboard route). It answers through the SAME
-// `bd human respond` command an operator runs, so the bead state is
-// identical, then applies the answer exactly as a polled one. While the run is
-// waiting it queues the answer for the wait (which is woken at once, resumes
-// the run once and applies it); otherwise it runs it directly.
+// point (for a dashboard route). It only VALIDATES and QUEUES the answer and
+// resolves as soon as it is recorded ({ status: 'recorded' }); it never awaits
+// a resume, a member command or a push, and it never calls pushBeads itself.
+// The queued answer is applied exactly once, through the SAME
+// `bd human respond` command an operator runs, so the bead state is identical:
+//   - while the run is waiting: the wait is woken at once, resumes the run
+//     once and applies it;
+//   - while the run is running: the runner calls applyRecordedAnswers() inside
+//     its next beads sync bracket (the start of the next cycle, after the
+//     bracket's pull), which writes the `bd human respond` / `bd note`
+//     commands and pushes once, all inside that bracket and under the dolt
+//     push mutex -- never a free-standing push overlapping a phase's own.
+// An apply error surfaces in the log and in the published 'decisions' state
+// (answerErrors), not through the route; the decision stays pending so it can
+// be answered again.
 // =============================================================================
 
 import { stageCommandBodyMemberSide } from './member-provisioning.mjs';
@@ -249,7 +259,8 @@ export function createDecisionWait({
 }) {
     let waiting = false;
     let wake = null;
-    const queued = new Map(); // decisionId -> { answer, resolve, reject }
+    const queued = new Map(); // decisionId -> { answer, recordedAt }
+    const answerErrors = new Map(); // decisionId -> last apply error message
 
     const pendingMap = () => (sprintState.pendingDecisions instanceof Map ? sprintState.pendingDecisions : new Map());
     const setAside = () => (sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map());
@@ -272,12 +283,14 @@ export function createDecisionWait({
             question: d.question, options: d.options, recommendation: d.recommendation,
             raisedBy: d.raisedBy, cycle: d.cycle, round: d.round, raisedAt: d.raisedAt || null,
             notification: d.notification || {},
+            answerRecorded: queued.has(d.decisionId),
         }));
         try {
             publishState(DECISIONS_STATE_NAMESPACE, {
                 state, pending,
                 waitingSince: sprintState.decisionWait ? sprintState.decisionWait.since : null,
                 setAside: collectSetAsideEntries(sprintState),
+                answerErrors: [...answerErrors].map(([decisionId, error]) => ({ decisionId, error })),
             });
         } catch (err) {
             log(`decision wait: publishing state failed (non-fatal): ${err.message}`);
@@ -370,21 +383,30 @@ export function createDecisionWait({
         return out;
     };
 
+    // Applies every queued answer (bd human respond + note + set-aside
+    // release). An apply error is logged and published, the answer dropped and
+    // its decision left pending (so it can be answered again, and a failing
+    // answer can never spin the wait); a stop propagates.
     const drainQueued = async () => {
         const results = [];
+        let failed = false;
         for (const [decisionId, q] of [...queued]) {
             queued.delete(decisionId);
             const decision = pendingMap().get(decisionId);
-            if (!decision) { q.reject(new Error(`no pending decision ${decisionId}`)); continue; }
+            if (!decision) continue;
             try {
                 const rec = await applyAnswer(decision, q.answer, { via: 'recordDecisionAnswer', respond: true });
-                q.resolve(rec);
+                answerErrors.delete(decisionId);
                 results.push(rec);
             } catch (err) {
-                q.reject(err);
                 if (err && err.name === 'CancelledError') throw err;
+                const msg = err && err.message ? err.message : String(err);
+                answerErrors.set(decisionId, msg);
+                failed = true;
+                log(`decision ${decisionId}: applying the recorded answer FAILED (${msg}); the decision stays pending and can be answered again.`);
             }
         }
+        if (failed) publish(waiting ? PAUSED_AWAITING_DECISION : 'running');
         return results;
     };
 
@@ -491,6 +513,27 @@ export function createDecisionWait({
             return holding().length > 0;
         },
 
+        /** Whether a recorded answer is waiting to be applied. */
+        hasQueuedAnswers() {
+            return queued.size > 0;
+        },
+
+        /**
+         * Applies the answers recorded while the run was running, and pushes
+         * once when any applied. The runner calls this INSIDE an open beads
+         * sync bracket (after its pull); this is the only place a mid-run
+         * answer's bd writes and push happen. Returns the applied records.
+         */
+        async applyRecordedAnswers() {
+            if (waiting || queued.size === 0) return [];
+            const applied = await drainQueued();
+            if (applied.length > 0) {
+                await pushBeads(member);
+                publish('running');
+            }
+            return applied;
+        },
+
         /**
          * Pending decisions still setting their bead aside whose decision
          * bead could NOT be filed: nothing can answer them in this run.
@@ -578,16 +621,15 @@ export function createDecisionWait({
             }
             const text = String(answer ?? '').trim();
             if (!text) throw new Error('recordDecisionAnswer: the answer is empty');
-            if (!waiting) {
-                const rec = await applyAnswer(decision, text, { via: 'recordDecisionAnswer', respond: true });
-                await pushBeads(member);
-                publish('running');
-                return rec;
+            if (queued.has(decisionId)) {
+                throw new Error(`recordDecisionAnswer: an answer for decision ${JSON.stringify(decisionId)} is already recorded and awaiting apply`);
             }
-            return new Promise((resolve, reject) => {
-                queued.set(decisionId, { answer: text, resolve, reject });
-                if (wake) wake();
-            });
+            queued.set(decisionId, { answer: text, recordedAt: new Date(now()).toISOString() });
+            answerErrors.delete(decisionId);
+            log(`Decision ${decisionId}: answer recorded; it is applied ${waiting ? 'now (the paused run is woken)' : 'in the next beads sync bracket'}.`);
+            publish(waiting ? PAUSED_AWAITING_DECISION : 'running');
+            if (wake) wake();
+            return { status: 'recorded', decisionId, released: [] };
         },
     };
     for (const w of [...allWaits]) if (w.pending().length === 0) allWaits.delete(w);
