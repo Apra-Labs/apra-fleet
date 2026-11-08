@@ -297,9 +297,13 @@ Dolt mode wedges on row-level conflicts if two sprints write concurrently:
   mutex.
   The allocator's high-water-mark file lives under `FLEET_SE_DATA_DIR`, so
   separate data dirs never share counters. When that file does not exist yet,
-  the allocator copies the marks once from the legacy file under the
-  supervisor's old data location, keeping them above any outstanding
-  reservations, and saves on start; the legacy file is only ever read.
+  the allocator copies the high-water marks (not the free pool) once from the
+  legacy file under the supervisor's old data location, keeping them above
+  any outstanding reservations, and saves on start; the legacy file is only
+  ever read. If a legacy supervisor may still be running (a reservation with
+  a live pid, or a legacy file modified in the last 10 minutes) one warning
+  is logged: stop the legacy supervisor or run both with the same
+  `FLEET_SE_DATA_DIR`, otherwise both can mint the same child id.
 
 Both are supervisor-local, in-memory-plus-persisted-snapshot singletons
 (state files under the supervisor's data dir, atomic temp-file+rename

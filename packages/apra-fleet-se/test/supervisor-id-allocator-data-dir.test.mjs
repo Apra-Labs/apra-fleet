@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, readdir, access, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, readdir, access, mkdir, writeFile, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -152,6 +152,85 @@ test('upgrade: missing or corrupt legacy file starts empty and logs the reason',
             await a.stop();
             assert.ok(logs.some((m) => m.includes('starting empty')), logs.join('|'));
         }
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+async function legacySetup(root, doc, ageMs = 0) {
+    const legacyFile = path.join(root, 'legacy', ID_ALLOCATOR_FILENAME);
+    await mkdir(path.dirname(legacyFile), { recursive: true });
+    await writeFile(legacyFile, JSON.stringify(doc));
+    if (ageMs) { const t = new Date(Date.now() - ageMs); await utimes(legacyFile, t, t); }
+    return legacyFile;
+}
+
+test('upgrade: legacy free pool [3,5] is not reused; first allocation is highWater+1', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'id-alloc-pool-'));
+    try {
+        const legacyFile = await legacySetup(root, { version: 1, parents: { 'p.1': { highWater: 7, free: [3, 5], reserved: {} } } });
+        const a = createIdAllocator({ dataDir: path.join(root, 'new'), legacyFilePath: legacyFile, logger: { log() {} } });
+        await a.start();
+        assert.equal((await a.allocate('p.1', { pid: null })).childId, 'p.1.8');
+        assert.equal((await a.allocate('p.1', { pid: null })).childId, 'p.1.9');
+        await a.stop();
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('upgrade: a live legacy reservation pid logs exactly one remedy warning; a stale, idle legacy file logs none', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'id-alloc-live-'));
+    try {
+        const live = await legacySetup(root, { version: 1, parents: { 'p.1': { highWater: 7, free: [], reserved: { t: { seq: 8, pid: process.pid, sprintId: 's', reservedAt: 1, expiresAt: 2 } } } } }, 3_600_000);
+        let logs = [];
+        let a = createIdAllocator({ dataDir: path.join(root, 'n1'), legacyFilePath: live, logger: { log: (m) => logs.push(m) } });
+        await a.start();
+        await a.stop();
+        const warns = logs.filter((m) => m.includes('WARNING'));
+        assert.equal(warns.length, 1, logs.join('|'));
+        assert.match(warns[0], /Stop the legacy supervisor, or run both with the same FLEET_SE_DATA_DIR/);
+
+        const idle = await legacySetup(path.join(root, 'idle'), { version: 1, parents: { 'p.1': { highWater: 7, free: [], reserved: {} } } }, 3_600_000);
+        logs = [];
+        a = createIdAllocator({ dataDir: path.join(root, 'n2'), legacyFilePath: idle, logger: { log: (m) => logs.push(m) } });
+        await a.start();
+        await a.stop();
+        assert.equal(logs.filter((m) => m.includes('WARNING')).length, 0, logs.join('|'));
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('concurrent: legacy instance minting above the snapshot never collides with the seeded instance; the live-legacy warning fires', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'id-alloc-conc-'));
+    try {
+        const P = 'p.1';
+        const legacyDir = path.join(root, 'legacy');
+        await legacySetup(root, { version: 1, parents: { [P]: { highWater: 7, free: [3, 5], reserved: {} } } });
+        const legacyFilePath = path.join(legacyDir, ID_ALLOCATOR_FILENAME);
+        const legacy = createIdAllocator({ dataDir: legacyDir, legacyFilePath: null, logger: { log() {} } });
+        await legacy.start();
+        const logs = [];
+        const fresh = createIdAllocator({ dataDir: path.join(root, 'new'), legacyFilePath, logger: { log: (m) => logs.push(m) } });
+        await fresh.start();
+        assert.equal(logs.filter((m) => m.includes('WARNING')).length, 1, logs.join('|'));
+        // Legacy reuses its own pool (3,5) -- below the snapshot highWater, so the
+        // seeded side (which dropped the pool) cannot collide with it -- then mints
+        // above. Documented residual risk: once the legacy side mints ABOVE the
+        // snapshot (8, 9...) after seeding, the seeded side's 8, 9 collide; that
+        // window is what the warning exists for.
+        const seen = new Set();
+        const legacyIds = [];
+        const freshIds = [];
+        for (let i = 0; i < 2; i++) {
+            legacyIds.push((await legacy.allocate(P, { pid: null })).childId);
+            freshIds.push((await fresh.allocate(P, { pid: null })).childId);
+        }
+        for (const id of [...legacyIds.slice(0, 2), ...freshIds]) { assert.equal(seen.has(id), false, `duplicate ${id}`); seen.add(id); }
+        assert.deepEqual(freshIds, ['p.1.8', 'p.1.9']);
+        await legacy.stop();
+        await fresh.stop();
     } finally {
         await rm(root, { recursive: true, force: true });
     }

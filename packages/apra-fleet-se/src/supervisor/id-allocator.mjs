@@ -133,6 +133,9 @@ export function defaultDataDir() {
  *     (5 attempts, ~10ms escalating).
  * }} [deps]
  */
+/** A legacy allocator file modified this recently is treated as possibly still live. */
+const LEGACY_LIVE_WINDOW_MS = 10 * 60 * 1000;
+
 export function createIdAllocator(deps = {}) {
     const dataDir = deps.dataDir ?? defaultDataDir();
     const filePath = deps.filePath ?? path.join(dataDir, ID_ALLOCATOR_FILENAME);
@@ -228,9 +231,20 @@ export function createIdAllocator(deps = {}) {
     }
 
     /**
-     * One-time upgrade seed: copy per-parent high-water marks (and free pools)
-     * from the legacy file. Reservations are not carried over. The legacy file is
-     * only read, never modified. Any failure leaves the allocator empty.
+     * One-time upgrade seed: copy per-parent high-water marks ONLY from the legacy
+     * file. The free pool is deliberately NOT copied: reusing legacy holes is the
+     * likeliest way to hand out an id a still-running legacy supervisor also
+     * hands out. Reservations are not carried over (their seqs lift the
+     * high-water mark). The legacy file is only read, never modified. Any
+     * failure leaves the allocator empty.
+     *
+     * Remaining risk: a legacy supervisor (no FLEET_SE_DATA_DIR) still running
+     * against the same beads DB keeps minting above the snapshot, so both can
+     * mint the same seq. When the legacy file shows a live signal (a
+     * reservation whose pid is alive, or an mtime within LEGACY_LIVE_WINDOW_MS)
+     * ONE warning is logged naming the remedy. We warn rather than refuse: a
+     * stale-but-recent file would otherwise block a legitimate upgrade, and the
+     * supervisor must not fail to start.
      */
     async function seedFromLegacy() {
         if (!legacyFilePath || path.resolve(legacyFilePath) === path.resolve(filePath)) return;
@@ -248,16 +262,26 @@ export function createIdAllocator(deps = {}) {
             }
             return;
         }
+        let liveSignal = null;
         for (const [parentId, st] of Object.entries(doc.parents)) {
             if (!st || typeof st !== 'object') continue;
-            const free = Array.isArray(st.free) ? st.free.filter(Number.isInteger).sort((a, b) => a - b) : [];
             let highWater = Number.isInteger(st.highWater) ? st.highWater : 0;
             // Outstanding reservations are dropped, but their seqs were handed out:
             // keep the high-water above them so they are never re-minted.
             for (const r of Object.values(st.reserved ?? {})) {
                 if (Number.isInteger(r?.seq) && r.seq > highWater) highWater = r.seq;
+                if (!liveSignal && r?.pid != null && Number.isInteger(r.pid) && probe(r.pid)) liveSignal = `a reservation is held by live pid ${r.pid}`;
             }
-            parents.set(parentId, { highWater, free: free.filter((n) => n <= highWater), reserved: new Map() });
+            parents.set(parentId, { highWater, free: [], reserved: new Map() });
+        }
+        if (!liveSignal) {
+            try {
+                const age = now() - (await fs.stat(legacyFilePath)).mtimeMs;
+                if (age >= 0 && age < LEGACY_LIVE_WINDOW_MS) liveSignal = `the legacy file was modified ${Math.round(age / 1000)}s ago`;
+            } catch { /* no mtime: no signal */ }
+        }
+        if (liveSignal) {
+            log(`[id-allocator] WARNING: a legacy supervisor may still be running against ${legacyFilePath} (${liveSignal}); both allocators can then mint the same child id. Stop the legacy supervisor, or run both with the same FLEET_SE_DATA_DIR.`);
         }
         seededFromLegacy = true;
         log(`[id-allocator] seeded ${parents.size} parent high-water mark(s) from legacy file ${legacyFilePath} into ${filePath}`);
