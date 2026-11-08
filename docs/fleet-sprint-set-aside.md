@@ -118,6 +118,17 @@ reason. The sprint carries on in every case. A supervisor-launched
 sprint can set it per launch with the `decisionNotify` field of
 `POST /api/sprints` (see `packages/apra-fleet-se/docs/supervisor-api.md`).
 
+## Late decision answers
+
+A decision answered while the run waits at Cycle Evaluation of its last
+allowed cycle (`maxCycles`) grants exactly one extra cycle when the run's
+budget allows, so the released bead is dispatched in the same run (a further
+late answer in that extra cycle grants one more). When the budget is
+exhausted the run ends with a log line and a line in the final verdict notes
+naming the released-but-unworked bead and its decision. An answer recorded
+after the cycle loop has ended stays pending and is reported the same way.
+A wait at the start of a develop round dispatches the bead in the same cycle.
+
 ## Known gaps
 
 - Dependents are computed once, when the BLOCKED report arrives. A bead
@@ -126,9 +137,5 @@ sprint can set it per launch with the `decisionNotify` field of
   back to the two-cycle stall.
 - The abort path passing the set-aside data into the PR body is covered only by
   building the body directly, not by an end-to-end test.
-- A decision answered while the run waits at Cycle Evaluation of its last
-  cycle is applied, but the run ends with that cycle; the released bead is
-  dispatched by the next run. A wait at the start of a develop round
-  dispatches it in the same run.
 - The "Set aside this run" report lists a decision only while it is pending;
   an answered decision is logged and kept on sprintState.answeredDecisions.
