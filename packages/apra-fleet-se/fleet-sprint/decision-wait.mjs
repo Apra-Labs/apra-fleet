@@ -7,6 +7,12 @@
 // aside or stuck behind a set-aside bead -- and at least one decision is
 // still pending, runner.js calls awaitAnswer() below instead of throwing.
 //
+// UNFILED DECISION: a decision whose decision bead could not be filed (the
+// best-effort `bd create` in decisions.mjs failed) has no answer path, so it
+// never holds the run: a stall on it alone still throws StalledSprintError,
+// whose set-aside reason names it with its full question and says the
+// decision bead could not be filed. recordDecisionAnswer refuses it.
+//
 // MIXED CASE (decided): the run pauses while ANY decision is pending, even if
 // some other remaining bead is set aside for a non-decision reason (a doer
 // BLOCKED, a set-aside deploy): answering the decision may unblock work. Only
@@ -193,11 +199,18 @@ export function createDecisionWait({
 
     const pendingMap = () => (sprintState.pendingDecisions instanceof Map ? sprintState.pendingDecisions : new Map());
     const setAside = () => (sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map());
-    // A decision only holds the run while its bead is still set aside for it.
-    const holding = () => [...pendingMap().values()].filter((d) => {
+    // Pending decisions whose bead is still set aside for them.
+    const settingAside = () => [...pendingMap().values()].filter((d) => {
         const e = setAside().get(d.beadId);
         return e && e.decisionId === d.decisionId;
     });
+    // A decision only holds the run while its bead is still set aside for it
+    // AND it has a decision bead. One whose decision bead could not be filed
+    // has no answer path (polling reads decision beads; bd human respond and
+    // recordDecisionAnswer both respond on one), so waiting on it could never
+    // end: it does not hold the run, and a stall on it throws
+    // StalledSprintError naming it with its full question, as before.
+    const holding = () => settingAside().filter((d) => d.decisionBeadId);
 
     const publish = (state) => {
         const pending = [...pendingMap().values()].map((d) => ({
@@ -266,10 +279,9 @@ export function createDecisionWait({
         return record;
     };
 
-    // The ids one poll reads: each pending decision's bead (or, when filing
-    // it failed, its work bead -- only a programmatic answer can release
-    // that one, but the read still serves as the pause-gate wait).
-    const pollIds = (decisions) => [...new Set(decisions.map((d) => d.decisionBeadId || d.beadId))];
+    // The ids one poll reads: each holding decision's decision bead (a
+    // decision without one never holds the run, see holding()).
+    const pollIds = (decisions) => [...new Set(decisions.map((d) => d.decisionBeadId).filter(Boolean))];
 
     const readBeads = async (ids, label) => {
         if (ids.length === 0) return [];
@@ -376,6 +388,14 @@ export function createDecisionWait({
         },
 
         /**
+         * Pending decisions still setting their bead aside whose decision
+         * bead could NOT be filed: nothing can answer them in this run.
+         */
+        unfiled() {
+            return settingAside().filter((d) => !d.decisionBeadId);
+        },
+
+        /**
          * Pauses until at least one pending decision is answered; returns the
          * applied answers. Throws whatever a resume or poll throws (an
          * operator stop's CancelledError included).
@@ -433,6 +453,13 @@ export function createDecisionWait({
         async recordDecisionAnswer(decisionId, answer) {
             const decision = pendingMap().get(decisionId);
             if (!decision) throw new Error(`recordDecisionAnswer: no pending decision ${JSON.stringify(decisionId)}`);
+            if (!decision.decisionBeadId) {
+                throw new Error(
+                    `recordDecisionAnswer: decision ${decisionId} on '${decision.beadId}' has no decision bead (filing it failed), ` +
+                    'so there is no bd human respond path to record the answer on; the run cannot be resumed with it. ' +
+                    `Record the decision in '${decision.beadId}' notes and re-run the sprint.`,
+                );
+            }
             const text = String(answer ?? '').trim();
             if (!text) throw new Error('recordDecisionAnswer: the answer is empty');
             if (!waiting) {

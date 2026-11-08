@@ -3057,7 +3057,9 @@ async function runSprintCycle(context) {
     // releases the answered bead(s), resets the no-progress counter (an answer
     // is progress), and returns true so the caller re-reads the ready set.
     // Returns false when there is no stall; throws StalledSprintError when
-    // there is one and no decision is pending.
+    // there is one and no decision is pending. A decision whose decision bead
+    // could not be filed does not count as pending here (nothing can answer
+    // it in-run); the stall error names it with its full question.
     async function throwIfSetAsideStall({ where, cycle, openAtGoal = null, closedIds = null, runbooks = null }) {
         const doctorBlockedIds = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map();
         const deploySetAside = sprintState.deploySetAside || null;
@@ -3121,6 +3123,15 @@ async function runSprintCycle(context) {
             await decisionWait.awaitAnswer({ where, cycle });
             staleCycles = 0;
             return true;
+        }
+        const unfiledDecisions = decisionWait ? decisionWait.unfiled() : [];
+        if (unfiledDecisions.length > 0) {
+            // A pending decision whose decision bead could not be filed has
+            // no answer path in this run, so it cannot hold a pause open.
+            log(
+                `Not pausing for ${unfiledDecisions.length} pending decision(s) whose decision bead could NOT be filed ` +
+                `(no bd human respond path): ${unfiledDecisions.map((d) => `${d.beadId} -- ${d.question}`).join('; ')}`,
+            );
         }
         const message = formatSetAsideStallMessage(stall, { where, scope: sprintFilter });
         log(message);

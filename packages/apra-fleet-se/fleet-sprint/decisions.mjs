@@ -117,7 +117,10 @@ export function decisionBeadTitle(beadId) {
 
 /** The set-aside reason for the work bead: names the decision bead and carries the whole question. */
 export function needsDecisionReason({ decision, raisedBy, decisionBeadId }) {
-    const where = decisionBeadId ? ` (decision bead ${decisionBeadId})` : '';
+    const where = decisionBeadId
+        ? ` (decision bead ${decisionBeadId})`
+        : ' (the decision bead could NOT be filed, so this run has no bd human respond path for it: ' +
+          'record the decision in this bead\'s notes and re-run)';
     return `awaiting an operator decision${where} raised by ${raisedBy}: ${decision.question}`;
 }
 

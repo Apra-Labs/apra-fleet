@@ -48,7 +48,11 @@ forever or burning cycles on it.
    appended to the work bead's notes, the bead and its dependents are released
    and re-enter through the ready set, and the run continues without a
    relaunch. A stall with no pending decision is unchanged
-   (fleet-sprint/decision-wait.mjs).
+   (fleet-sprint/decision-wait.mjs). A decision whose decision bead could not
+   be filed (the best-effort `bd create` failed) has no answer path, so it
+   never holds a pause: a stall on it still throws StalledSprintError, whose
+   set-aside reason names it with its full question and says the decision
+   bead could not be filed, and `recordDecisionAnswer` refuses it.
 
    While paused, member reservations are released and re-acquired on each
    poll's resume, exactly as for a usage-limit pause; the sprint lock is held.

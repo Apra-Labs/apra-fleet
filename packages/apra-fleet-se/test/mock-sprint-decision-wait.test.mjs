@@ -200,6 +200,23 @@ test('unit: recordDecisionAnswer outside a wait applies at once; an empty answer
     assert.equal(engine.rec.pauses.length, 0, 'no pause needed');
 });
 
+test('unit: a decision whose decision bead could not be filed never holds the run -- no pause, no endless wait, and recordDecisionAnswer refuses it', { timeout: 30_000 }, async () => {
+    const engine = fakeEngine({ shows: [[{ id: 'x-1', status: 'open' }]] });
+    const sprintState = sprintStateWithDecision({ decisionBeadId: null });
+    const wait = createDecisionWait({
+        sprintState, requestPause: engine.requestPause, requestResume: engine.requestResume, command: engine.command,
+        member: 'm', pollIntervalMs: 5,
+    });
+    assert.equal(wait.hasPending(), false, 'nothing can answer it, so it does not hold the run');
+    assert.deepEqual(wait.unfiled().map((d) => d.decisionId), ['decision-1-x-1'], 'it is reported as unfiled');
+    assert.deepEqual(await wait.awaitAnswer({ where: 'test', cycle: 1 }), [], 'awaitAnswer returns at once');
+    assert.equal(engine.rec.pauses.length, 0, 'no pause was requested');
+    assert.equal(engine.rec.commands.length, 0, 'no poll read');
+    await assert.rejects(() => wait.recordDecisionAnswer('decision-1-x-1', 'a'), /has no decision bead/);
+    assert.equal(sprintState.doctorBlockedIds.get('x-1').kind, 'needs-decision', 'the bead stays set aside');
+    assert.equal(sprintState.pendingDecisions.size, 1);
+});
+
 // --- mock sprints ------------------------------------------------------------
 
 let priorPoll;
@@ -235,10 +252,11 @@ const OTHER = 'Task: unrelated work';
 // dispatch and closes it in a later one (recording what its notes said);
 // OTHER closes at once. `answer(workflow, ctx, data)` runs when the run
 // pauses awaiting the decision.
-async function decisionScenario(tag, answer) {
+async function decisionScenario(tag, answer, { onCommand } = {}) {
     const seen = { pauses: [], states: [], resumed: 0, notesAtRedispatch: null, decisionBeadId: null, comments: null };
     const scenario = await runDevelopLoopScenario(tag, {
         members: ['local'],
+        ...(onCommand ? { onCommand } : {}),
         taskSpecs: [DECIDE, OTHER].map((title) => ({ title })),
         maxCycles: 2,
         beforeSprint: async ({ runCmd: rc, tempDir: td, tasks }) => {
@@ -356,5 +374,29 @@ test('mock sprint: a stop request during the decision pause ends the run cleanly
         assert.notEqual(scenario.finalBeadsById.get(x).status, 'closed', 'the bead stays open for a later run');
         assert.equal(scenario.finalBeadsById.get(seen.decisionBeadId).status, 'deferred', 'the decision stays pending for the operator');
         assert.equal(activeDecisionWaits().length, 0, 'the wait is gone');
+    });
+});
+
+test('mock sprint: when the decision bead cannot be filed, the stall still throws StalledSprintError naming the decision with its full question (no endless pause)', { timeout: 180_000 }, async () => {
+    resetSyncMemo();
+    await withScenarioMarkers('decision bead create fails -> stall', async () => {
+        const { scenario, seen } = await decisionScenario('dwait-unfiled', async (workflow) => {
+            // Reaching this is the regression: stop so the test fails fast
+            // instead of hanging on a wait nothing can answer.
+            workflow.requestStop('test: paused on an unfiled decision');
+        }, {
+            onCommand: async ({ command }) => {
+                if (command.includes('bd create') && command.includes('-t decision')) throw new Error('simulated bd create failure');
+                return undefined;
+            },
+        });
+        const x = scenario.tasks.find((t) => t.title === DECIDE).id;
+        assert.equal(seen.pauses.filter((p) => p.source === 'needs_decision').length, 0, 'never paused awaiting the unfiled decision');
+        check(!seen.states.some((d) => d.state === PAUSED_AWAITING_DECISION), 'never reached paused-awaiting-decision');
+        check(scenario.error && scenario.error.code === 'SPRINT_STALLED', `throws StalledSprintError: ${scenario.error && (scenario.error.code || scenario.error.message)}`);
+        check(scenario.error.message.includes(x), 'the stall names the work bead');
+        check(scenario.error.message.includes(QUESTION), 'the stall carries the full question');
+        check(scenario.error.message.includes('could NOT be filed'), `the stall says the decision bead could not be filed: ${scenario.error.message}`);
+        assert.equal(doerDispatches(scenario).filter((d) => assignedIds(d).includes(x)).length, 1, 'not re-dispatched');
     });
 });
