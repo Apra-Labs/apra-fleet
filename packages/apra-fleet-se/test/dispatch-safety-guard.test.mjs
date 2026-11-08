@@ -610,7 +610,12 @@ const VCS_AUTH_PATH = path.join(__dirname, '../fleet-sprint/vcs-auth.mjs');
 // probe-first branch: the unregistered-provider remote read and the
 // non-interactive `git ls-remote origin` credential probe, both carrying
 // member_name -- 6.
-const EXPECTED_VCS_AUTH_COMMAND_COUNT = 6;
+//
+// The Bitbucket labelled-credential probe (checkLabelledCredential inside
+// createVcsAuthPreflightCallback) added two more, both carrying member_name:
+// its own origin read (to derive the REST probe's repository) and the
+// member-side username= line read of the labelled helper -- 8.
+const EXPECTED_VCS_AUTH_COMMAND_COUNT = 8;
 
 test('every command() call site in vcs-auth.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(VCS_AUTH_PATH);

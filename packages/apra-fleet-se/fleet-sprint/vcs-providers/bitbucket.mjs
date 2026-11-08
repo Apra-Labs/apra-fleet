@@ -734,6 +734,53 @@ function buildBitbucketUpdatePrCommand(params) {
     };
 }
 
+/**
+ * Build the preflight's REST credential probe: GET
+ * .../repositories/{workspace}/{repo}/pullrequests?pagelen=1 -- the
+ * cheapest call that needs exactly what Publish PR will need (repository
+ * visibility plus read:pullrequest), sent with the SAME labelled credential
+ * the PR path reads (the caller passes the {{vcs_token_inline}} placeholder
+ * and dispatches through vcs_credential_exec). `git ls-remote` alone cannot
+ * prove this: it goes through the host's whole git credential helper chain,
+ * where another helper can answer for a fleet helper that is broken.
+ * Same Bearer auth, -D - header capture and -w status line as the PR
+ * builders, so a refusal parses into the same { status, body, headers }
+ * httpFailureHint diagnoses.
+ */
+function buildBitbucketCredentialProbeCommand(params) {
+    const { token, os, shell } = params || {};
+    const coords = assertRepoCoords(params, 'credential-probe');
+    const safeToken = assertToken(token);
+    const url = `${repoApiBase(coords)}/pullrequests?pagelen=1`;
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X GET`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/json', os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        DUMP_RESPONSE_HEADERS,
+        shQuote(url, os, shell),
+    ].join(' ');
+    return {
+        provider: 'bitbucket',
+        action: 'credential-probe',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        interpret: { successStatusRange: [200, 299] },
+    };
+}
+
+/** The OPTIONAL `credentialProbe` descriptor field (see ./index.mjs): what
+ *  the VCS preflight checks on the labelled credential, beyond git ls-remote.
+ *    build             the REST probe command builder above
+ *    expectedUsername  the only username= line a fleet-deployed helper has
+ *    remedy(ctx)       the member-specific fix, worded by credential store
+ *                      contents (credentialRemedy above) */
+const credentialProbe = Object.freeze({
+    build: buildBitbucketCredentialProbeCommand,
+    expectedUsername: TOKEN_USERNAME,
+    remedy: credentialRemedy,
+});
+
 // ---------------------------------------------------------------------------
 // Pull-request RESPONSE mapping (apra-fleet-qeq1.3)
 // ---------------------------------------------------------------------------
@@ -809,6 +856,9 @@ export const BitbucketVCS = Object.freeze({
     // apra-fleet-qeq1.9: API tokens are never minted server-side -- see
     // above.
     authRemedy,
+    // Preflight checks the labelled PR credential itself (REST probe +
+    // username line), not only git ls-remote -- see credentialProbe above.
+    credentialProbe,
     // Create is not an upsert: look the open PR up first and update it.
     findBeforeCreate: true,
     defaultAuthMode: null,
