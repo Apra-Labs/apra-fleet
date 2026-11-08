@@ -120,6 +120,30 @@ export function readJsonBody(req, opts = {}) {
 }
 
 /**
+ * Error responses must carry a message only, never a stack trace. Normalizes an
+ * Error to its message and cuts any "at frame" lines out of string values, so no
+ * caller can leak a stack through sendJson.
+ * @param {any} v
+ * @param {number} [depth]
+ * @returns {any}
+ */
+export function stripStacks(v, depth = 0) {
+    if (v instanceof Error) return v.message;
+    if (typeof v === 'string') {
+        const i = v.search(/\r?\n\s*at\s+\S/);
+        return i === -1 ? v : v.slice(0, i);
+    }
+    if (depth > 8 || v === null || typeof v !== 'object') return v;
+    if (Array.isArray(v)) return v.map((x) => stripStacks(x, depth + 1));
+    const out = {};
+    for (const [k, x] of Object.entries(v)) {
+        if (k === 'stack') continue;
+        out[k] = stripStacks(x, depth + 1);
+    }
+    return out;
+}
+
+/**
  * Writes a JSON response. Centralized so every handler (and the error-isolation
  * wrapper) emits a consistent shape.
  * @param {import('http').ServerResponse} res
@@ -127,7 +151,7 @@ export function readJsonBody(req, opts = {}) {
  * @param {any} payload
  */
 export function sendJson(res, status, payload) {
-    const body = JSON.stringify(payload ?? {});
+    const body = JSON.stringify(stripStacks(payload) ?? {});
     res.writeHead(status, {
         'content-type': 'application/json; charset=utf-8',
         'content-length': Buffer.byteLength(body),

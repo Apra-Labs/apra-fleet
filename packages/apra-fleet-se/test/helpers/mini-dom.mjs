@@ -114,6 +114,54 @@ function matches(el, selector) {
     return true;
 }
 
+
+const isWs = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f' || c === '\v';
+const isNameCh = (c) => c !== undefined && !isWs(c) && c !== '=' && c !== '/' && c !== '>';
+
+/**
+ * Linear-time open-tag scanner (replaces a nested-quantifier regex that could
+ * backtrack exponentially on hostile input). Returns [whole, name, attrs,
+ * selfClosingSlash] like the old regex exec result, or null when the text at
+ * `i` is not a well-formed open tag.
+ */
+function matchOpenTag(html, i) {
+    if (html[i] !== '<' || !/[a-zA-Z]/.test(html[i + 1] || '')) return null;
+    let p = i + 2;
+    while (p < html.length && /[a-zA-Z0-9-]/.test(html[p])) p++;
+    const name = html.slice(i + 1, p);
+    const attrsStart = p;
+    let attrsEnd = p;
+    for (;;) {
+        let q = p;
+        while (isWs(html[q])) q++;
+        const c = html[q];
+        if (c === '>') return [html.slice(i, q + 1), name, html.slice(attrsStart, attrsEnd), ''];
+        if (c === '/' && html[q + 1] === '>') return [html.slice(i, q + 2), name, html.slice(attrsStart, attrsEnd), '/'];
+        if (q === p || !isNameCh(c)) return null; // attributes need leading whitespace
+        let r = q;
+        while (isNameCh(html[r])) r++;
+        p = r;
+        let s = r;
+        while (isWs(html[s])) s++;
+        if (html[s] === '=') {
+            s++;
+            while (isWs(html[s])) s++;
+            const quote = html[s];
+            if (quote === '"' || quote === "'") {
+                const close = html.indexOf(quote, s + 1);
+                if (close === -1) return null;
+                p = close + 1;
+            } else {
+                let v = s;
+                while (v < html.length && !isWs(html[v]) && html[v] !== '>') v++;
+                if (v === s) return null;
+                p = v;
+            }
+        }
+        attrsEnd = p;
+    }
+}
+
 function parseInto(root, html, doc) {
     const stack = [root];
     const top = () => stack[stack.length - 1];
@@ -134,7 +182,7 @@ function parseInto(root, html, doc) {
             i = end + 1;
             continue;
         }
-        const open = /^<([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[^\s=/>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?)*)\s*(\/?)>/.exec(html.slice(i));
+        const open = matchOpenTag(html, i);
         if (open) {
             const tag = open[1].toLowerCase();
             const el = new MiniElement(tag, parseAttrs(open[2]), doc);

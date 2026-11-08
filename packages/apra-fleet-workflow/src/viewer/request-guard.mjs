@@ -53,8 +53,12 @@ function headerValue(req, name) {
 function presentedToken(req) {
     const auth = headerValue(req, 'authorization');
     if (auth) {
-        const m = /^Bearer\s+(.+)$/i.exec(auth.trim());
-        if (m) return m[1].trim();
+        // No regex: a prefix check cannot backtrack on a hostile header.
+        const a = auth.trim();
+        if (a.length > 7 && a.slice(0, 6).toLowerCase() === 'bearer' && /^\s$/.test(a[6])) {
+            const tok = a.slice(7).trim();
+            if (tok) return tok;
+        }
     }
     const t = headerValue(req, TOKEN_HEADER);
     return t ? t.trim() : undefined;
