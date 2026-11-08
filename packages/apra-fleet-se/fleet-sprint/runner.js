@@ -4195,7 +4195,7 @@ async function runSprintCycle(context) {
     // phase, before the endGroup() below, exactly as the inline version did.
     // Sprint-summary WARN: repeat the lower-quality banner once at the end.
     const lowerQualityBanner = logLowerQualityWarn(log, MEMBER_INIT_LOG_PREFIX, sprintState.memberInit, 'summary');
-    const { pushed } = await runPublishPrPhase({
+    const { pushed, prSkipped } = await runPublishPrPhase({
         lowerQualityBanner,
         phase, log, command,
         args, validated, targetIssues, backlogMember, finalCycleLabel,
@@ -4204,6 +4204,11 @@ async function runSprintCycle(context) {
         setAside: collectSetAsideEntries(sprintState),
         waited: collectWaitEntries(sprintState),
     });
+
+    // Final summary line: a skipped PR must not read as a clean success.
+    if (prSkipped) {
+        log(`[Sprint Summary] ${finalVerdictResult.verdict}, ${prSkipped.message} (reason: ${prSkipped.reason}); branch '${validated.branch}' is pushed.`);
+    }
 
     endGroup();
 
@@ -4223,6 +4228,10 @@ async function runSprintCycle(context) {
         goal: validated.goal,
         maxCycles: validated.maxCycles,
         pushed,
+        // Present only when the branch was pushed but no PR was opened
+        // ({ reason, message }); surfaces in the supervisor's persisted
+        // terminal state as state.result.prSkipped. Never changes the verdict.
+        ...(prSkipped ? { prSkipped } : {}),
     };
 }
 
