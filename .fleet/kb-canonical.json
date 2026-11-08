@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "9a7760f37f70876b9b3fdd5360714698ea4dd270",
     "branch": "main",
-    "entry_count": 133
+    "entry_count": 135
   },
   "entries": [
     {
@@ -422,6 +422,34 @@
       "updated_at": "2026-09-25T22:26:33.419Z"
     },
     {
+      "id": "26cf5a7e-4d90-467b-b358-e51fca33c78c",
+      "type": "knowledge",
+      "title": "Bitbucket preflight checks the labelled PR credential via a credentialProbe provider hook",
+      "summary": "For a provider exposing credentialProbe, createVcsAuthPreflightCallback runs git ls-remote plus a REST probe via vcs_credential_exec under the provider label and a member-side username= line read; verdict ok only if all pass.",
+      "symbols": [
+        "createVcsAuthPreflightCallback",
+        "checkLabelledCredential",
+        "credentialProbe",
+        "readCredentialHelperUsername"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/index.mjs",
+        "packages/apra-fleet-se/fleet-sprint/se-posix.mjs",
+        "packages/apra-fleet-se/fleet-sprint/se-windows.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T06:41:01.399Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/se-posix.mjs": "d7927b860c9a8070036e97057cce946dc6c5eebb",
+        "packages/apra-fleet-se/fleet-sprint/se-windows.mjs": "7abbee311d9856f62c98ac00e87af7a9017bbdc7",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "4276b8301bf882b9709e295893904595f2bff86c",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "e812ec5afad19e11b2739690991035342855fe02",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/index.mjs": "b90e97ee49cdba5ded5877d17d88351984fe409b"
+      }
+    },
+    {
       "id": "2b244307-8635-4406-904f-6a2290d54490",
       "type": "learning",
       "title": "check-generic-boundary tokenizer treats slash-star inside a template literal as a comment",
@@ -781,6 +809,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T12:01:02.130Z"
+    },
+    {
+      "id": "48835120-c2d2-4e23-985e-0dddce9c68be",
+      "type": "knowledge",
+      "title": "httpFailureHint ctx form returns { hint, remedy } and the remedy replaces authRemedy.hint",
+      "summary": "raiseVcsPrForMember passes { status, body, headers, availableSecrets, memberName, repoRef, repo } to a provider's httpFailureHint; a string answer is a legacy hint, an object's non-empty remedy replaces the generic authRemedy.hint.",
+      "symbols": [
+        "httpFailureHint",
+        "parseVcsCurlOutput",
+        "raiseVcsPrForMember",
+        "credentialRemedy"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs",
+        "packages/apra-fleet-se/test/vcs-bitbucket-403-diagnosis.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T06:40:58.999Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "4276b8301bf882b9709e295893904595f2bff86c",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "e812ec5afad19e11b2739690991035342855fe02",
+        "packages/apra-fleet-se/test/vcs-bitbucket-403-diagnosis.test.mjs": "79d7365dc332472a64287c82ef1bac14f32edf21"
+      }
     },
     {
       "id": "48e12361-051f-4d38-9cf0-ca955eca4fdc",
