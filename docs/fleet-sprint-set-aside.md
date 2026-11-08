@@ -91,8 +91,21 @@ with `--decision-notify <json>`:
 `user`; `port`, `secure` optional). Credentials are never part of it; the fleet
 credential store holds them, and unknown keys are rejected. If `--decision-notify`
 is absent, the `FLEET_SPRINT_DECISION_NOTIFY` environment variable (same JSON)
-is used. With neither set, every decision records a loud `no channel
-configured` notification failure; the sprint carries on. A supervisor-launched
+is used.
+
+The message target is resolved once at launch. An explicit `message_member` is
+used as given. Without one, the default is `orchestrator`: the fleet server
+registers every session that has no member identity and declares the
+`claude/channel` capability (the operator's own Claude Code session that
+launches or orchestrates sprints) under that stable id in the session registry,
+the newest such session holding it, so `send_message` reaches it. When that
+session closes the id moves to the newest one still open. If no target can be
+resolved (the run has no fleet client), or the email channel is not configured,
+the sprint logs that once at launch, naming how to configure it; each decision
+still records that channel as `failed` (`no channel configured`) without
+repeating the warning. A configured target that is not connected when a
+decision is raised records `failed` with the server's `member not connected`
+reason. The sprint carries on in every case. A supervisor-launched
 sprint can set it per launch with the `decisionNotify` field of
 `POST /api/sprints` (see `packages/apra-fleet-se/docs/supervisor-api.md`).
 

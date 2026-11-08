@@ -1380,8 +1380,9 @@ export class ApraFleet {
     }
 
     /**
-     * Send a message to a connected member session (the orchestrating
-     * Claude Code session, for operator notifications).
+     * Send a message to a connected member session. member_id is a member
+     * UUID, or "orchestrator" for the operator's own channel-capable
+     * orchestrating session (operator notifications).
      * @param {{ member_id: string, content: string, reply_to?: string }} options
      */
     async sendMessage(options) {

@@ -258,8 +258,11 @@ with field `decisionNotify`. A valid value is forwarded to the child as
 `--decision-notify <json>`. Credentials never go in the body (unknown keys are
 rejected); the fleet credential store holds them. When omitted, the child
 falls back to the `FLEET_SPRINT_DECISION_NOTIFY` environment variable it
-inherits from the supervisor; with neither set, each pending decision records a
-loud `no channel configured` notification failure. See
+inherits from the supervisor. Without `message_member` the message goes to the
+default target `orchestrator`, the operator's channel-capable orchestrating
+session registered on the fleet server; a channel with no target (no email
+block, or no fleet client) is logged once at launch and recorded `failed` per
+decision without a repeated warning. See
 `docs/fleet-sprint-set-aside.md`.
 
 ## Pending decisions

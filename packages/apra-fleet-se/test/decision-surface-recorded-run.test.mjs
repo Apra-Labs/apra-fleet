@@ -247,8 +247,32 @@ test('recorded run: answering with bd human respond resumes the run with the ans
     });
 });
 
+// No decision_notify at all: the message channel defaults (resolved once at
+// launch) to the operator's orchestrating session, and the unconfigured email
+// channel is reported ONCE at launch -- recorded failed per decision without a
+// repeated loud line.
+test('recorded run: no decision_notify -> message to the default orchestrator session, email reported once at launch', { timeout: 300_000 }, async () => {
+    resetSyncMemo();
+    await withScenarioMarkers('decision surface: no channel configured', async () => {
+        const ANSWER = 'c: skip locally';
+        const run = await incident('dsurf-nochan', { notify: undefined, modes: { message: 'ok', email: 'ok' }, answerVia: 'route', answer: ANSWER });
+        assertSurfaced(run, { answer: ANSWER });
+        assert.equal(run.calls.message.length, 1);
+        assert.equal(run.calls.message[0].member_id, 'orchestrator');
+        assert.equal(run.calls.email.length, 0);
+        const n = run.seen.api.pendingDecisions[0].notification;
+        assert.equal(n.message.status, 'sent');
+        assert.equal(n.email.status, 'failed');
+        check(n.email.reason.includes('no channel configured'), n.email.reason);
+        assert.deepEqual(run.scenario.logs.filter((l) => l.startsWith('NOTIFICATION FAILED')), []);
+        assert.equal(run.scenario.logs.filter((l) => l.startsWith('Decision notification: no email channel configured')).length, 1);
+        assert.equal(run.scenario.logs.filter((l) => l.startsWith('Decision notification: no message target')).length, 0);
+        check(run.seen.bannerHtml.includes('notification failed'), 'the dashboard shows the email notification failed');
+        if (baseline) assert.deepEqual(sequence(run.scenario), baseline, 'identical dispatch order to the success case');
+    });
+});
+
 const FAILURES = [
-    { tag: 'dsurf-nochan', name: 'no channel configured', notify: undefined, modes: { message: 'ok', email: 'ok' }, reasons: ['no channel configured', 'no channel configured'], attempted: [0, 0] },
     { tag: 'dsurf-errors', name: 'send error and thrown exception', notify: NOTIFY, modes: { message: 'error', email: 'throw' }, reasons: ['member not connected', 'email transport exploded'], attempted: [1, 1] },
     { tag: 'dsurf-timeout', name: 'timeout', notify: { ...NOTIFY, timeout_s: 1 }, modes: { message: 'hang', email: 'hang' }, reasons: ['timed out', 'timed out'], attempted: [1, 1] },
 ];

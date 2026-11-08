@@ -225,8 +225,9 @@ Options:
       --decision-notify <json>  Where to notify the operator of a pending decision, as JSON
                                 ({"message_member","email":{provider,from,to,host,port,user,secure},
                                 "dashboard_url","timeout_s"}); env fallback FLEET_SPRINT_DECISION_NOTIFY.
-                                Credentials stay in the fleet credential store. Unset: a loud
-                                'no channel configured' notification failure per decision.
+                                Credentials stay in the fleet credential store. message_member
+                                defaults to "orchestrator" (the operator's channel-capable
+                                session); a channel with no target is logged once at launch.
       --budget <usd>            USD ceiling for this run's total estimated spend. Optional;
                                 omitted (the default) means unlimited, identical to prior behavior.
       --dispatch-timeout-s <s>  Per-dispatch time budget in seconds (default 9000). The hard ceiling

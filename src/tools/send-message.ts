@@ -5,7 +5,7 @@ import { getTokenIssuer } from '../services/token-issuer.js';
 import { logLine } from '../utils/log-helpers.js';
 
 export const sendMessageSchema = z.object({
-  member_id: z.string().describe('ID (UUID) of the target member session'),
+  member_id: z.string().describe('ID (UUID) of the target member session, or "orchestrator" for the operator\'s own channel-capable orchestrating session'),
   content: z.string().describe('Message content to send to the member'),
   reply_to: z.string().optional().describe('Optional message ID this is in reply to'),
 });

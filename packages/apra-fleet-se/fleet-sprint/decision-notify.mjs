@@ -21,6 +21,17 @@
 // decision (sent OR failed) is never attempted again, so later rounds, a
 // pause/resume or a repeated call do not re-send. Never retried in a loop.
 //
+// MESSAGE TARGET, resolved ONCE at launch (resolveNotifyTargets): an explicit
+// decision_notify.message_member is honoured as-is; otherwise the default is
+// DEFAULT_MESSAGE_TARGET ("orchestrator"), the stable id under which the fleet
+// server registers the operator's own orchestrating session (a session with no
+// member identity that declared the claude/channel capability; newest wins).
+// The sprint therefore reaches the session that launched or orchestrates it
+// with no configuration. A run with no fleet client has no resolvable target:
+// that, and any channel that is not configured, is logged ONCE at launch with
+// how to configure it; per decision the channel is still recorded `failed`
+// but the warning is not repeated.
+//
 // CONFIGURATION is explicit (the `decision_notify` sprint arg, validated by
 // validateDecisionNotify): { message_member, email: { provider, from, to,
 // host, port, user, secure }, dashboard_url, timeout_s }. Credentials are
@@ -32,6 +43,9 @@
 
 export const DEFAULT_NOTIFY_TIMEOUT_MS = 30_000;
 export const NO_CHANNEL_REASON = 'no channel configured';
+/** Registry id of the operator's orchestrating session on the fleet server. */
+export const DEFAULT_MESSAGE_TARGET = 'orchestrator';
+export const NO_MESSAGE_TARGET_LOG_PREFIX = 'Decision notification: no message target';
 
 const ALLOWED_KEYS = new Set(['message_member', 'email', 'dashboard_url', 'timeout_s']);
 const ALLOWED_EMAIL_KEYS = new Set(['provider', 'from', 'to', 'host', 'port', 'user', 'secure']);
@@ -87,6 +101,42 @@ export function validateDecisionNotify(raw) {
         for (const k of ['host', 'port', 'user', 'secure']) if (e[k] !== undefined) out.email[k] = e[k];
     }
     return out;
+}
+
+/**
+ * Resolves the notification targets ONCE at sprint launch.
+ *
+ * message: the explicit message_member when configured, else
+ * DEFAULT_MESSAGE_TARGET -- both only when the run has a fleet client to send
+ * through. email: as configured. Returns the config notifyDecision() should
+ * use plus the launch log lines (one per channel that has no target, each
+ * naming how to configure it). Channels reported here are marked in
+ * `launchReported` so notifyDecision() records them failed without repeating
+ * the warning per decision.
+ *
+ * @param {{ config?: object, hasFleetClient: boolean }} opts
+ * @returns {{ config: object, launchLines: string[] }}
+ */
+export function resolveNotifyTargets({ config, hasFleetClient }) {
+    const resolved = { timeoutMs: DEFAULT_NOTIFY_TIMEOUT_MS, ...(config || {}) };
+    const launchReported = new Set();
+    const launchLines = [];
+    if (!hasFleetClient) {
+        delete resolved.messageMember;
+        launchReported.add('message');
+        launchLines.push(`${NO_MESSAGE_TARGET_LOG_PREFIX} can be resolved: this run has no fleet client to send through, so needs-decision messages will not be sent. Launch the sprint through the fleet server (CLI or supervisor) and set decision_notify.message_member (--decision-notify, or the decisionNotify launch field) to a connected session id; the default "${DEFAULT_MESSAGE_TARGET}" is the operator's own channel-capable session.`);
+    } else if (config && config.messageMember) {
+        resolved.messageTargetSource = 'configured';
+    } else {
+        resolved.messageMember = DEFAULT_MESSAGE_TARGET;
+        resolved.messageTargetSource = 'default';
+    }
+    if (!resolved.email) {
+        launchReported.add('email');
+        launchLines.push('Decision notification: no email channel configured; needs-decision emails will not be sent. Set decision_notify.email (--decision-notify, or the decisionNotify launch field) to enable it.');
+    }
+    resolved.launchReported = launchReported;
+    return { config: resolved, launchLines };
 }
 
 /** Plain-text notification body: bead, full question, every option, recommendation, how to answer. */
@@ -187,7 +237,10 @@ export async function notifyDecision({ decision, config, fleetApi, log = () => {
             }
             if (reason) {
                 record('failed', reason);
-                log(`NOTIFICATION FAILED (${channel}) for decision ${decision.decisionId} on bead '${decision.beadId}': ${reason}. The sprint continues unchanged; answer with bd human respond ${decision.decisionBeadId || '<decision bead>'}.`);
+                // A channel reported at launch as having no target is recorded
+                // but not re-warned per decision.
+                const reportedAtLaunch = reason === NO_CHANNEL_REASON && config && config.launchReported instanceof Set && config.launchReported.has(channel);
+                if (!reportedAtLaunch) log(`NOTIFICATION FAILED (${channel}) for decision ${decision.decisionId} on bead '${decision.beadId}': ${reason}. The sprint continues unchanged; answer with bd human respond ${decision.decisionBeadId || '<decision bead>'}.`);
             } else {
                 record('sent');
                 log(`Notification sent (${channel}) for decision ${decision.decisionId} on bead '${decision.beadId}'.`);

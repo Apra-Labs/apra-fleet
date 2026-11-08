@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     notifyDecision, validateDecisionNotify, formatNotificationBody, judgeSendResult, NO_CHANNEL_REASON,
+    resolveNotifyTargets, DEFAULT_MESSAGE_TARGET, NO_MESSAGE_TARGET_LOG_PREFIX,
 } from '../fleet-sprint/decision-notify.mjs';
 import { recordPendingDecision } from '../fleet-sprint/decisions.mjs';
 
@@ -123,4 +124,29 @@ test('recordPendingDecision triggers the notifier once; a throwing notifier does
         });
         assert.ok(rec && sprintState.doctorBlockedIds.has('x-1'), 'still set aside');
     }
+});
+
+test('resolveNotifyTargets: default message target is the orchestrator session; an explicit one is honoured', () => {
+    const def = resolveNotifyTargets({ config: undefined, hasFleetClient: true });
+    assert.equal(def.config.messageMember, DEFAULT_MESSAGE_TARGET);
+    assert.equal(def.config.messageTargetSource, 'default');
+    assert.equal(def.launchLines.filter((l) => l.startsWith(NO_MESSAGE_TARGET_LOG_PREFIX)).length, 0);
+    const explicit = resolveNotifyTargets({ config: validateDecisionNotify({ message_member: 'ops-session' }), hasFleetClient: true });
+    assert.equal(explicit.config.messageMember, 'ops-session');
+    assert.equal(explicit.config.messageTargetSource, 'configured');
+});
+
+test('resolveNotifyTargets: no fleet client -> one launch line, and decisions record failed without repeating it', async () => {
+    const { config, launchLines } = resolveNotifyTargets({ config: validateDecisionNotify({ message_member: 'm' }), hasFleetClient: false });
+    assert.equal(config.messageMember, undefined);
+    assert.equal(launchLines.filter((l) => l.startsWith(NO_MESSAGE_TARGET_LOG_PREFIX)).length, 1);
+    assert.ok(launchLines.some((l) => l.includes('message_member')), 'names how to configure it');
+    const logs = [];
+    for (const d of [record(), record()]) {
+        await notifyDecision({ decision: d, config, fleetApi: null, log: (m) => logs.push(m) });
+        assert.equal(d.notification.message.status, 'failed');
+        assert.equal(d.notification.message.reason, NO_CHANNEL_REASON);
+        assert.equal(d.notification.email.status, 'failed');
+    }
+    assert.deepEqual(logs.filter((l) => l.startsWith('NOTIFICATION FAILED')), [], JSON.stringify(logs));
 });

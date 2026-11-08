@@ -766,8 +766,10 @@ authentication. Options: `member_id?`, `member_name?`.
 #### `sendMessage(options)`
 
 Calls `send_message` -- pushes a message to a connected member session.
-Options: `member_id` (required, the target session's member id), `content`
-(required), `reply_to?`. A target that is not connected is reported in the
+Options: `member_id` (required, the target session's member id, or
+`"orchestrator"` for the operator's own channel-capable orchestrating session
+-- the newest such session connected to the server), `content` (required),
+`reply_to?`. A target that is not connected is reported in the
 result JSON (`{ "error": "member not connected or no MCP session" }`), not
 thrown.
 
