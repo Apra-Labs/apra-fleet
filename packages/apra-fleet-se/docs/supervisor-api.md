@@ -247,6 +247,41 @@ writes) -- there is exactly one of each per running supervisor process, and
 every sprint child talks to them over the SAME supervisor HTTP port their
 spawner injected as `FLEET_SE_SERVICE_URL`, not a side channel.
 
+## POST /api/sprints: `decisionNotify` (optional)
+
+Same JSON shape as the CLI's `--decision-notify`: `{message_member, email:
+{provider, from, to, host, port, user, secure}, dashboard_url, timeout_s}`
+(an object, or the same thing as a JSON string). It is validated with
+`validateDecisionNotify` (`fleet-sprint/decision-notify.mjs`) before any
+spawn; an invalid value (bad JSON, unknown key, bad email block) is a `400`
+with field `decisionNotify`. A valid value is forwarded to the child as
+`--decision-notify <json>`. Credentials never go in the body (unknown keys are
+rejected); the fleet credential store holds them. When omitted, the child
+falls back to the `FLEET_SPRINT_DECISION_NOTIFY` environment variable it
+inherits from the supervisor; with neither set, each pending decision records a
+loud `no channel configured` notification failure. See
+`docs/fleet-sprint-set-aside.md`.
+
+## Pending decisions
+
+A sprint that is waiting on an operator decision (see
+`docs/fleet-sprint-set-aside.md`) surfaces it as follows.
+
+- `GET /api/sprints/:id` (live sprints) gains `pendingDecisions` (the
+  child's pending-decision list), `decisionState` (the decisions extension
+  state string, when present) and `runState` (set to
+  `paused-awaiting-decision` while the run is paused on a decision).
+- `POST /api/sprints/:id/decisions/:decisionId`, body `{answer}` (a non-empty
+  string, length-capped), proxies the answer to the child's decisions
+  extension. Response `{sprintId, decisionId, status: "answered", released}`.
+  `400` (field `body` or `answer`): body not an object, or `answer` missing,
+  empty or too long (also a child-side rejection of the answer). `404`: unknown
+  sprint, or no pending decision with that id. `409`: the sprint has no
+  reachable child, or the child answered with an unexpected failure.
+- `POST /sprints/:id/live/extensions/:extId/actions/:actionId` is the generic
+  proxy route to the child's extension action endpoint (the dashboard uses it
+  for the decisions `answer` action).
+
 ## Live-view proxy (`/sprints/:id/live*`) vs. history view (`/sprints/:id/history`) vs. log (`/sprints/:id/log`)
 
 Three different "look at sprint :id" surfaces that are easy to conflate:
@@ -350,10 +385,11 @@ answer `503`, and a background retry flips it to `ready`.
   port and no history (`/sprints/:id/live` subpaths), no persisted state
   (`/sprints/:id/history`), no recorded/on-disk log
   (`/sprints/:id/log`, `/supervisor/log`).
-- **409** -- used ONLY by `POST /api/sprints` (relaunch gate and member-overlap
+- **409** -- used by `POST /api/sprints` (relaunch gate and member-overlap
   guard, both field `issue`/`members`; plus the issue-scope overlap guard,
-  field `issue`) and `POST /api/sprints/:id/stop` (reservation exists but no
-  reachable child port). The dolt-mutex and id-allocator surfaces
+  field `issue`), `POST /api/sprints/:id/stop` (reservation exists but no
+  reachable child port) and `POST /api/sprints/:id/decisions/:decisionId`
+  (no reachable child, or the child refused the answer). The dolt-mutex and id-allocator surfaces
   deliberately never use 409 -- see above.
 - **500** -- generic unhandled-error isolation (`server.mjs`'s dispatcher
   never lets a handler exception escape uncaught) plus a couple of named

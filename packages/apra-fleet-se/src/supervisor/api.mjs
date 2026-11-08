@@ -43,6 +43,7 @@ import { statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { readJsonBody, sendJson } from './server.mjs';
+import { validateDecisionNotify } from '../../fleet-sprint/decision-notify.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair } from '../../fleet-sprint/runner.js';
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { resolveBacklogRoleAlias, ROLE_BACKLOG } from '../../fleet-sprint/backlog-role.mjs';
@@ -542,7 +543,17 @@ export function createSprintController(deps = {}) {
         // buildSprintArgv/cli.mjs's --issue flag expects, and byte-identical
         // to the input for the single-id case); `issueIds` is the split array
         // callers use for issueRoots / per-root history lookups.
-        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression };
+        // decisionNotify (optional): same JSON shape as the CLI's
+        // --decision-notify; validated here so a bad value is a 400 before any
+        // spawn. Forwarded to the child as a JSON string; credentials never
+        // travel in the body (validateDecisionNotify rejects unknown keys).
+        let decisionNotify;
+        if (body.decisionNotify !== undefined && body.decisionNotify !== null && body.decisionNotify !== '') {
+            try { validateDecisionNotify(body.decisionNotify); }
+            catch (err) { throw new ApiError(400, err.message, 'decisionNotify'); }
+            decisionNotify = typeof body.decisionNotify === 'string' ? body.decisionNotify : JSON.stringify(body.decisionNotify);
+        }
+        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, decisionNotify };
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
@@ -583,7 +594,7 @@ export function createSprintController(deps = {}) {
 
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
     async function launch(body = {}) {
-        const { issue, issueIds, branch, base, members, skipRegression } = validateLaunchRequest(body);
+        const { issue, issueIds, branch, base, members, skipRegression, decisionNotify } = validateLaunchRequest(body);
         // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
         // the supervisor read an arbitrary server-side path named by the request
         // body, and the alias warning could not be computed from it. Reject it.
@@ -760,6 +771,7 @@ export function createSprintController(deps = {}) {
             budget: body.budget,
             runId: sprintId,
             skipRegression,
+            decisionNotify,
         };
         let spawned;
         try {

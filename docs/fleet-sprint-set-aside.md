@@ -78,6 +78,24 @@ forever or burning cycles on it.
 - The code is plain JS with no shell, path or process assumptions, so it is
   OS-neutral.
 
+## Notifying the operator of a pending decision
+
+Each pending decision sends one message and one email, configured per sprint
+with `--decision-notify <json>`:
+
+    {"message_member": "orchestrator",
+     "email": {"provider": "sendgrid", "from": "a@x.io", "to": ["b@x.io"]},
+     "dashboard_url": "http://localhost:8787", "timeout_s": 30}
+
+`email.provider` is `sendgrid` (default) or `smtp` (smtp also needs `host` and
+`user`; `port`, `secure` optional). Credentials are never part of it; the fleet
+credential store holds them, and unknown keys are rejected. If `--decision-notify`
+is absent, the `FLEET_SPRINT_DECISION_NOTIFY` environment variable (same JSON)
+is used. With neither set, every decision records a loud `no channel
+configured` notification failure; the sprint carries on. A supervisor-launched
+sprint can set it per launch with the `decisionNotify` field of
+`POST /api/sprints` (see `packages/apra-fleet-se/docs/supervisor-api.md`).
+
 ## Known gaps
 
 - Dependents are computed once, when the BLOCKED report arrives. A bead
