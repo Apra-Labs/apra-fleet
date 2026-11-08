@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, readdir, access } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, readdir, access, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -10,7 +10,7 @@ import { createIdAllocator, defaultDataDir, ID_ALLOCATOR_FILENAME } from '../src
 // share (and so regress) one child-id-allocator.json. Allocators are built
 // exactly as bin/serve.mjs builds them: createIdAllocator({ dataDir:
 // defaultDataDir() }), resolving the dir from the env var. HOME is pointed at a
-// temp dir so the legacy ~/.apra-fleet/supervisor file can be asserted untouched.
+// temp dir so the real legacy ~/.apra-fleet/supervisor file is never touched.
 
 const exists = (p) => access(p).then(() => true, () => false);
 
@@ -30,7 +30,7 @@ const buildAllocator = (dataDirEnv) => withEnv({ FLEET_SE_DATA_DIR: dataDirEnv }
     return a;
 });
 
-test('separate FLEET_SE_DATA_DIRs: ids unique, high-water marks monotonic across restarts, legacy HOME file untouched', async () => {
+test('separate FLEET_SE_DATA_DIRs: ids unique, high-water marks monotonic across restarts, no legacy file created when none exists', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'id-alloc-datadir-'));
     const home = path.join(root, 'home');
     const dirA = path.join(root, 'a');
@@ -97,4 +97,62 @@ test('defaultDataDir: FLEET_SE_DATA_DIR wins; unset keeps the legacy ~/.apra-fle
             assert.equal(defaultDataDir(), path.join('/tmp/h-ugw3', '.apra-fleet', 'supervisor'));
         });
     } finally { if (saved !== undefined) process.env.FLEET_SE_DATA_DIR = saved; }
+});
+
+test('upgrade: legacy file seeds the new FLEET_SE_DATA_DIR allocator once; legacy bytes untouched', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'id-alloc-upgrade-'));
+    const legacyFile = path.join(root, 'legacy', ID_ALLOCATOR_FILENAME);
+    const dataDir = path.join(root, 'new');
+    try {
+        await mkdir(path.dirname(legacyFile), { recursive: true });
+        const P = 'proj.5';
+        const legacyDoc = { version: 1, parents: { [P]: { highWater: 7, free: [], reserved: {} } } };
+        const legacyBytes = `${JSON.stringify(legacyDoc, null, 2)}\n`;
+        await writeFile(legacyFile, legacyBytes);
+
+        const build = () => createIdAllocator({ dataDir, legacyFilePath: legacyFile, leaseMs: 100_000, logger: { log() {}, error() {} } });
+        let a = build();
+        await a.start();
+        const g = await a.allocate(P, { pid: process.pid });
+        assert.equal(g.childId, `${P}.8`);
+        await a.confirm(g.token);
+        await a.stop();
+        assert.equal(await exists(path.join(dataDir, ID_ALLOCATOR_FILENAME)), true);
+
+        // Mutate legacy: must be ignored on restart (seeded once).
+        const mutated = { version: 1, parents: { [P]: { highWater: 99, free: [], reserved: {} } } };
+        await writeFile(legacyFile, JSON.stringify(mutated));
+        a = build();
+        await a.start();
+        const g2 = await a.allocate(P, { pid: process.pid });
+        assert.equal(g2.childId, `${P}.9`);
+        await a.stop();
+
+        // Unmutated-legacy byte check on a fresh upgrade.
+        await writeFile(legacyFile, legacyBytes);
+        const b = createIdAllocator({ dataDir: path.join(root, 'new2'), legacyFilePath: legacyFile, logger: { log() {}, error() {} } });
+        await b.start();
+        await b.stop();
+        assert.equal(await readFile(legacyFile, 'utf-8'), legacyBytes);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('upgrade: missing or corrupt legacy file starts empty and logs the reason', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'id-alloc-upgrade-bad-'));
+    try {
+        const corrupt = path.join(root, 'corrupt.json');
+        await writeFile(corrupt, '{not json');
+        for (const legacyFilePath of [path.join(root, 'missing.json'), corrupt]) {
+            const logs = [];
+            const a = createIdAllocator({ dataDir: path.join(root, path.basename(legacyFilePath, '.json')), legacyFilePath, logger: { log: (m) => logs.push(m) } });
+            await a.start();
+            assert.equal((await a.allocate('p.1', { pid: process.pid })).childId, 'p.1.1');
+            await a.stop();
+            assert.ok(logs.some((m) => m.includes('starting empty')), logs.join('|'));
+        }
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
 });
