@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "9a7760f37f70876b9b3fdd5360714698ea4dd270",
     "branch": "main",
-    "entry_count": 140
+    "entry_count": 141
   },
   "entries": [
     {
@@ -1890,6 +1890,30 @@
         "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "0dffb028188c744e0bcc172691eb9fc79bfb354b",
         "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56",
         "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
+    },
+    {
+      "id": "af9ecaf3-fc46-44b2-bf75-456446e2fc99",
+      "type": "learning",
+      "title": "Detect an open sync bracket in a mock sprint through workflow._pauseGuard()",
+      "summary": "git-sync.mjs registers setPauseGuard(() => openSyncBracketCount === 0), so in a mock-sprint test a false return from workflow._pauseGuard() at command time means a sync bracket is open; this is how a test proves runner writes run inside withOpenSyncBracket.",
+      "symbols": [
+        "createSyncBrackets",
+        "setPauseGuard",
+        "_pauseGuard",
+        "openSyncBracketCount"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-se/test/decision-answer-sync-bracket.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T11:51:38.276Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "0c97d9ee4e6c1e854f1240134b9ee4bddb329abf",
+        "packages/apra-fleet-se/test/decision-answer-sync-bracket.test.mjs": "1cd7c44598ef8fba15416b48e872a2f7a9263a3c",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs": "7e5eb559093799e8e8d0923636eb27fb9d83c0ab"
       }
     },
     {
