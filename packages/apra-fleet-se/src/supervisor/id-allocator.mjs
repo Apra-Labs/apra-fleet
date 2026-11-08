@@ -88,6 +88,10 @@ function nextToken(parentId) {
  * allocator file), else the legacy per-user ~/.apra-fleet/supervisor (path
  * unchanged for single-supervisor hosts; no migration).
  */
+export function legacyDataDir() {
+    return path.join(os.homedir() || os.tmpdir(), '.apra-fleet', 'supervisor');
+}
+
 export function defaultDataDir() {
     if (process.env.FLEET_SE_DATA_DIR) return path.resolve(process.env.FLEET_SE_DATA_DIR);
     return path.join(os.homedir() || os.tmpdir(), '.apra-fleet', 'supervisor');
@@ -99,6 +103,10 @@ export function defaultDataDir() {
  * @param {{
  *   dataDir?: string,
  *   filePath?: string,
+ *   legacyFilePath?: string|null,
+ *     legacy allocator file to seed per-parent high-water marks from ONCE when
+ *     the configured file is missing. Defaults to the ~/.apra-fleet/supervisor
+ *     file only when dataDir is the FLEET_SE_DATA_DIR dir; null disables.
  *   leaseMs?: number,
  *   sweepMs?: number,
  *   now?: () => number,
@@ -128,6 +136,13 @@ export function createIdAllocator(deps = {}) {
     const dataDir = deps.dataDir ?? defaultDataDir();
     const filePath = deps.filePath ?? path.join(dataDir, ID_ALLOCATOR_FILENAME);
     const tmpPath = `${filePath}.tmp`;
+    const envDir = process.env.FLEET_SE_DATA_DIR ? path.resolve(process.env.FLEET_SE_DATA_DIR) : null;
+    const legacyFilePath = deps.legacyFilePath !== undefined
+        ? deps.legacyFilePath
+        : (!deps.filePath && envDir && path.resolve(dataDir) === envDir
+            ? path.join(legacyDataDir(), ID_ALLOCATOR_FILENAME)
+            : null);
+    let seededFromLegacy = false;
     const leaseMs = Number.isFinite(deps.leaseMs) && deps.leaseMs > 0 ? deps.leaseMs : DEFAULT_LEASE_MS;
     const sweepMs = Number.isFinite(deps.sweepMs) && deps.sweepMs > 0 ? deps.sweepMs : DEFAULT_SWEEP_MS;
     const now = deps.now ?? (() => Date.now());
@@ -212,6 +227,42 @@ export function createIdAllocator(deps = {}) {
     }
 
     /**
+     * One-time upgrade seed: copy per-parent high-water marks (and free pools)
+     * from the legacy file. Reservations are not carried over. The legacy file is
+     * only read, never modified. Any failure leaves the allocator empty.
+     */
+    async function seedFromLegacy() {
+        if (!legacyFilePath || path.resolve(legacyFilePath) === path.resolve(filePath)) return;
+        let doc;
+        try {
+            doc = JSON.parse(await fs.readFile(legacyFilePath, 'utf-8'));
+            if (!doc || typeof doc !== 'object' || doc.version !== ID_ALLOCATOR_VERSION || !doc.parents || typeof doc.parents !== 'object') {
+                throw new Error('unexpected shape or version');
+            }
+        } catch (err) {
+            if (err && err.code === 'ENOENT') {
+                log(`[id-allocator] no legacy allocator file at ${legacyFilePath}; starting empty`);
+            } else {
+                log(`[id-allocator] cannot seed from legacy allocator file ${legacyFilePath} (${err.message}); starting empty`);
+            }
+            return;
+        }
+        for (const [parentId, st] of Object.entries(doc.parents)) {
+            if (!st || typeof st !== 'object') continue;
+            const free = Array.isArray(st.free) ? st.free.filter(Number.isInteger).sort((a, b) => a - b) : [];
+            let highWater = Number.isInteger(st.highWater) ? st.highWater : 0;
+            // Outstanding reservations are dropped, but their seqs were handed out:
+            // keep the high-water above them so they are never re-minted.
+            for (const r of Object.values(st.reserved ?? {})) {
+                if (Number.isInteger(r?.seq) && r.seq > highWater) highWater = r.seq;
+            }
+            parents.set(parentId, { highWater, free: free.filter((n) => n <= highWater), reserved: new Map() });
+        }
+        seededFromLegacy = true;
+        log(`[id-allocator] seeded ${parents.size} parent high-water mark(s) from legacy file ${legacyFilePath} into ${filePath}`);
+    }
+
+    /**
      * Load allocator state from disk. A missing file yields empty state. A
      * corrupt/foreign-version file is a hard error -- the supervisor must not
      * silently drop high-water marks and start re-minting live ids.
@@ -224,6 +275,7 @@ export function createIdAllocator(deps = {}) {
             if (err && err.code === 'ENOENT') {
                 parents = new Map();
                 loaded = true;
+                await seedFromLegacy();
                 return;
             }
             throw err;
@@ -417,6 +469,10 @@ export function createIdAllocator(deps = {}) {
         // -- seam lifecycle (server.mjs calls start()/stop()) ----------------
         async start() {
             if (!loaded) await load();
+            if (seededFromLegacy) {
+                seededFromLegacy = false;
+                await persist();
+            }
             if (sweepTimer) return;
             sweepTimer = setIntervalFn(() => {
                 if (reclaimExpired() > 0) persist().catch(() => {});
