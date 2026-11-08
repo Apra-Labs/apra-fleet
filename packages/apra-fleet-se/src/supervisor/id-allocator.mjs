@@ -82,16 +82,17 @@ function nextToken(parentId) {
     return `${parentId}#${tokenSeq}#${Date.now().toString(36)}`;
 }
 
-/**
- * Default allocator data dir: FLEET_SE_DATA_DIR when set (same resolution as
- * ledger.mjs, so two supervisors with separate data dirs never share one
- * allocator file), else the legacy per-user ~/.apra-fleet/supervisor (path
- * unchanged for single-supervisor hosts; no migration).
- */
+/** Legacy per-user allocator dir (~/.apra-fleet/supervisor); read-only seed source. */
 export function legacyDataDir() {
     return path.join(os.homedir() || os.tmpdir(), '.apra-fleet', 'supervisor');
 }
 
+/**
+ * Default allocator data dir: FLEET_SE_DATA_DIR when set (same resolution as
+ * ledger.mjs, so two supervisors with separate data dirs never share one
+ * allocator file), else the legacy per-user ~/.apra-fleet/supervisor. A new
+ * allocator file is seeded once from the legacy file (see seedFromLegacy).
+ */
 export function defaultDataDir() {
     if (process.env.FLEET_SE_DATA_DIR) return path.resolve(process.env.FLEET_SE_DATA_DIR);
     return path.join(os.homedir() || os.tmpdir(), '.apra-fleet', 'supervisor');

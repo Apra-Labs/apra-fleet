@@ -304,6 +304,20 @@ block, or no fleet client) is logged once at launch and recorded `failed` per
 decision without a repeated warning. See
 `docs/fleet-sprint-set-aside.md`.
 
+## GET /api/sprints/:id: `resultStatus` and `warnings` (finished sprints)
+
+A finished sprint's own result status and warnings are lifted to the top level
+of the response, on both read paths: while the ledger reservation is still
+held (from the persisted terminal state's `result`), and after the watchdog
+has released it (from the durable `finished` history event, which carries
+`resultStatus` and `warnings`). `resultStatus` is `success` or
+`success-with-warnings`; the latter is returned when the branch was pushed but
+the PR was not opened for a VCS auth failure, and `warnings` then holds the
+reason (e.g. `PR not opened: VCS auth failure ... auth-failure`). The verdict
+is unchanged (a PASS stays PASS) and `success-with-warnings` is a success, not
+a failure. `warnings` is omitted when empty. Terminal sprints are not listed
+by `GET /api/sprints` (live only); read them by id.
+
 ## Pending decisions
 
 A sprint that is waiting on an operator decision (see

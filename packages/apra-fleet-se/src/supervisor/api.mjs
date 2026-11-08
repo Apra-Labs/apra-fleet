@@ -48,7 +48,7 @@ import { validateIssueId, validateBranchName, validateBranchPair } from '../../f
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { resolveBacklogRoleAlias, ROLE_BACKLOG } from '../../fleet-sprint/backlog-role.mjs';
 import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
-import { isDeterministicTerminalReason } from './history.mjs';
+import { isDeterministicTerminalReason, HISTORY_EVENTS } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
 import { fleetMembersUnavailableReason, fleetMembersStoppedByUserReason } from './fleet-members.mjs';
@@ -901,7 +901,15 @@ export function createSprintController(deps = {}) {
         // Not live (finished/gone, or port unknown): return the historical record.
         const latest = history.latestFor(id);
         if (latest) {
-            return { sprintId: id, live: false, history: history.forSprint(id), latest };
+            // Lift the FINISHED event's resultStatus + warnings (e.g. PR skipped
+            // for auth failure) so they stay visible after the reservation release.
+            const fin = history.forSprint(id).filter((e) => e.event === HISTORY_EVENTS.FINISHED).pop();
+            const warnings = fin && Array.isArray(fin.warnings) ? fin.warnings : [];
+            return {
+                sprintId: id, live: false, history: history.forSprint(id), latest,
+                ...(fin && fin.resultStatus ? { resultStatus: fin.resultStatus } : {}),
+                ...(warnings.length > 0 ? { warnings } : {}),
+            };
         }
         throw new ApiError(404, `no sprint '${id}' is live or in history`);
     }
