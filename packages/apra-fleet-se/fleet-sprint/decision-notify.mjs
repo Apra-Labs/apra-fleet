@@ -141,6 +141,81 @@ export function resolveNotifyTargets({ config, hasFleetClient }) {
     return { config: resolved, launchLines };
 }
 
+/** Prefix of the one launch line saying no session can receive the message target. */
+export const MESSAGE_TARGET_UNREACHABLE_LOG_PREFIX = 'Decision notification: no channel-capable session holds message target';
+/** Prefix of the one launch line saying the message target could not be checked. */
+export const MESSAGE_TARGET_PROBE_FAILED_LOG_PREFIX = 'Decision notification: could not check message target';
+/** Upper bound on the launch-time check, so it can never hold the launch up for long. */
+export const MESSAGE_TARGET_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Launch-time check, run ONCE: does a session that can receive channel
+ * messages hold the message target? Asks the fleet server through
+ * send_message's read-only probe mode (fleetApi.probeMessageTarget), which
+ * sends nothing. Never throws and never blocks the launch beyond
+ * MESSAGE_TARGET_PROBE_TIMEOUT_MS.
+ *
+ *   - a channel-capable session holds it: no log line;
+ *   - none does: ONE line naming the remedy, and config.messageTargetUnreachable
+ *     is set so each later decision's failed send logs one short line only;
+ *   - the check itself fails: ONE line saying so (messages are still tried).
+ *
+ * @param {{ config: object, fleetApi: object|null, log?: Function }} opts
+ * @returns {Promise<'reachable'|'unreachable'|'probe-failed'|'skipped'>}
+ */
+export async function checkMessageTarget({ config, fleetApi, log = () => {} }) {
+    const target = config && config.messageMember;
+    if (!target || !fleetApi) return 'skipped';
+    const failed = (why) => {
+        log(`${MESSAGE_TARGET_PROBE_FAILED_LOG_PREFIX} '${target}' (${why}); needs-decision messages will still be tried and a failure is logged per decision.`);
+        return 'probe-failed';
+    };
+    if (typeof fleetApi.probeMessageTarget !== 'function') return failed('this fleet client has no probeMessageTarget');
+    let parsed = null;
+    try {
+        const timeoutMs = Math.min((config && config.timeoutMs) || DEFAULT_NOTIFY_TIMEOUT_MS, MESSAGE_TARGET_PROBE_TIMEOUT_MS);
+        const res = await withTimeout(Promise.resolve().then(() => fleetApi.probeMessageTarget(target)), timeoutMs);
+        if (res && typeof res === 'object' && res.isError === true) return failed(`tool error: ${resultText(res).slice(0, 200) || 'unknown'}`);
+        const text = resultText(res).trim();
+        parsed = text ? JSON.parse(text) : (res && typeof res === 'object' && !Array.isArray(res.content) ? res : null);
+    } catch (err) {
+        return failed(err && err.message ? err.message : String(err));
+    }
+    if (!parsed || typeof parsed !== 'object') return failed('empty answer');
+    if (parsed.error) return failed(String(parsed.error).slice(0, 200));
+    if (parsed.probe !== true) return failed('the fleet server does not support the send_message probe; update it');
+    if (parsed.connected === true && parsed.channel_capable === true) return 'reachable';
+    config.messageTargetUnreachable = true;
+    const why = parsed.connected ? 'a session holds it but did not declare the claude/channel capability' : 'no session holds it';
+    const holder = target === DEFAULT_MESSAGE_TARGET ? ' (the newest such session holds it)' : '';
+    log(
+        MESSAGE_TARGET_UNREACHABLE_LOG_PREFIX + ' \'' + target + '\' (' + why + '); ' +
+        'needs-decision messages will not arrive. To receive them, launch the operator Claude Code session with ' +
+        'the --dangerously-load-development-channels flag' + holder + ', ' +
+        'or set decision_notify.message_member (--decision-notify, or the decisionNotify launch field) to a connected channel-capable session id.',
+    );
+    return 'unreachable';
+}
+
+/**
+ * Everything the sprint does about decision notifications at launch, once:
+ * resolve the targets, log a line per channel without a target, name the
+ * message target, and check it (checkMessageTarget). Returns the config
+ * notifyDecision() uses.
+ *
+ * @param {{ config?: object, fleetApi: object|null, log?: Function }} opts
+ * @returns {Promise<object>}
+ */
+export async function prepareDecisionNotify({ config, fleetApi, log = () => {} }) {
+    const targets = resolveNotifyTargets({ config, hasFleetClient: !!fleetApi });
+    for (const line of targets.launchLines) log(line);
+    if (targets.config.messageMember) {
+        log(`Decision notification: needs-decision messages go to session '${targets.config.messageMember}' (${targets.config.messageTargetSource}).`);
+    }
+    await checkMessageTarget({ config: targets.config, fleetApi, log });
+    return targets.config;
+}
+
 /** Plain-text notification body: bead, full question, every option, recommendation, how to answer. */
 export function formatNotificationBody(decision, { dashboardUrl, readPollIntervalMs = decisionReadPollIntervalMs() } = {}) {
     const lines = [
@@ -245,7 +320,11 @@ export async function notifyDecision({ decision, config, fleetApi, log = () => {
                 // A channel reported at launch as having no target is recorded
                 // but not re-warned per decision.
                 const reportedAtLaunch = reason === NO_CHANNEL_REASON && config && config.launchReported instanceof Set && config.launchReported.has(channel);
-                if (!reportedAtLaunch) log(`NOTIFICATION FAILED (${channel}) for decision ${decision.decisionId} on bead '${decision.beadId}': ${reason}. The sprint continues unchanged; answer with bd human respond ${decision.decisionBeadId || '<decision bead>'}.`);
+                // A message target the launch check already reported as
+                // unreachable gets one short line, not the full warning.
+                if (channel === 'message' && config && config.messageTargetUnreachable) {
+                    log(`Notification not delivered (message) for decision ${decision.decisionId}: target '${config.messageMember}' unreachable, see the launch log.`);
+                } else if (!reportedAtLaunch) log(`NOTIFICATION FAILED (${channel}) for decision ${decision.decisionId} on bead '${decision.beadId}': ${reason}. The sprint continues unchanged; answer with bd human respond ${decision.decisionBeadId || '<decision bead>'}.`);
             } else {
                 record('sent');
                 log(`Notification sent (${channel}) for decision ${decision.decisionId} on bead '${decision.beadId}'.`);

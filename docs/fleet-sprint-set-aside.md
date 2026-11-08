@@ -129,7 +129,13 @@ session closes the id moves to the newest one still open. If no target can be
 resolved (the run has no fleet client), or the email channel is not configured,
 the sprint logs that once at launch, naming how to configure it; each decision
 still records that channel as `failed` (`no channel configured`) without
-repeating the warning. A configured target that is not connected when a
+repeating the warning. A resolved message target is also checked once at
+launch through `send_message`'s read-only `probe` mode: if no session that
+declared the `claude/channel` capability holds it (for `orchestrator`, a
+Claude Code session launched with `--dangerously-load-development-channels`),
+the sprint logs ONE line naming that flag and the `message_member`
+alternative, and each later decision's failed send logs one short line. A
+failed check logs one line; the launch is never blocked. A configured target that is not connected when a
 decision is raised records `failed` with the server's `member not connected`
 reason. The sprint carries on in every case. A supervisor-launched
 sprint can set it per launch with the `decisionNotify` field of

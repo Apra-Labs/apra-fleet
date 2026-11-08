@@ -1382,11 +1382,24 @@ export class ApraFleet {
     /**
      * Send a message to a connected member session. member_id is a member
      * UUID, or "orchestrator" for the operator's own channel-capable
-     * orchestrating session (operator notifications).
-     * @param {{ member_id: string, content: string, reply_to?: string }} options
+     * orchestrating session (operator notifications). With probe: true the
+     * server sends nothing and only reports whether a session holds the
+     * target ({ probe: true, member_id, connected, channel_capable }).
+     * @param {{ member_id: string, content: string, reply_to?: string, probe?: boolean }} options
      */
     async sendMessage(options) {
         return this.mcpClient.callTool('send_message', options);
+    }
+
+    /**
+     * Read-only check of a message target: send_message with probe: true.
+     * Sends nothing. The result text is JSON
+     * { probe: true, member_id, connected, channel_capable }; only a
+     * channel_capable session can receive a message.
+     * @param {string} memberId a member UUID or "orchestrator"
+     */
+    async probeMessageTarget(memberId) {
+        return this.mcpClient.callTool('send_message', { member_id: memberId, content: '', probe: true });
     }
 
     /**

@@ -231,6 +231,29 @@ No `roleMap.backlog`: the supervisor injects its own backlog member (Step
 launching, checking status, and killing a sprint is exactly what
 `docs/supervisor-api.md` describes.
 
+### Receiving decision messages (optional)
+
+When a role needs an operator decision, the sprint pauses and sends a message
+to the session named by `decision_notify.message_member` (the `decisionNotify`
+launch field), by default `orchestrator`. The fleet server gives that id to
+the newest operator session that can receive channel messages: a Claude Code
+session connected to the fleet server and launched with
+
+```bash
+claude --dangerously-load-development-channels
+```
+
+A session launched without that flag connects normally but cannot receive
+these messages. To send them somewhere else, set
+`"decisionNotify": {"message_member": "<connected session id>"}` on the launch
+instead. At launch the sprint checks, once and without sending anything,
+whether a channel-capable session holds the target (the `send_message` tool's
+`probe` mode). If none does, the sprint log has ONE line naming both remedies
+and each later decision adds one short line; if the check itself fails, one
+line says so. The launch is never blocked. You can always answer from the
+dashboard's decision banner, or with `bd human respond <decision bead>
+"<answer>"` (picked up within 5 minutes).
+
 ## Recap: what lives where
 
 | Folder | Contains | Used for |

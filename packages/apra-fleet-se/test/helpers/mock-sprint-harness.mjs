@@ -553,6 +553,12 @@ export function defaultMockCallTool({ executeCommand } = {}) {
         if (name === 'vcs_credential_exec') {
             return mockVcsCredentialExec(toolArgs, executeCommand);
         }
+        // The launch-time decision-notify check (send_message probe mode):
+        // answer as a working setup -- a channel-capable session holds the
+        // target -- so a mock sprint's launch log carries no warning.
+        if (name === 'send_message' && toolArgs && toolArgs.probe) {
+            return { content: [{ text: JSON.stringify({ probe: true, member_id: toolArgs.member_id, connected: true, channel_capable: true }) }] };
+        }
         return { content: [{ text: `[OK] mock ${name}` }] };
     };
 }

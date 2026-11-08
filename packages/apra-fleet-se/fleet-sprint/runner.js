@@ -141,7 +141,7 @@ import { policyFor, USAGE_LIMIT_BUDGET_DEFAULTS, agentTypeAppliesKbCaptures } fr
 // into the dispatchRole engine as ctx.onUsageLimit below.
 import { createUsageLimitPauseController } from './usage-limit-controller.mjs';
 import { createDecisionWait } from './decision-wait.mjs';
-import { notifyDecision, resolveNotifyTargets } from './decision-notify.mjs';
+import { notifyDecision, prepareDecisionNotify } from './decision-notify.mjs';
 // apra-fleet-3swo.6.2: the first two of runSprintCycle's twelve phase()
 // boundaries, sliced into their own modules under ./phases/. Each takes ONE
 // explicit state argument instead of closing over runSprintCycle's locals; the
@@ -1897,19 +1897,18 @@ async function runSprintCycle(context) {
     // Targets are resolved ONCE here at launch (default message target: the
     // operator's orchestrating session); a channel with no target is logged
     // once now, not once per decision.
+    // The message target is also checked once here (a read-only probe):
+    // when no channel-capable session holds it, one launch line names the
+    // remedy and later decisions log one short line each.
     const notifyFleetApi = (args && typeof args.callTool === 'function') ? sprintScopedFleetApi({ callTool: args.callTool, log }) : null;
-    const notifyTargets = resolveNotifyTargets({ config: validated.decisionNotify, hasFleetClient: !!notifyFleetApi });
-    for (const line of notifyTargets.launchLines) log(line);
-    if (notifyTargets.config.messageMember) {
-        log(`Decision notification: needs-decision messages go to session '${notifyTargets.config.messageMember}' (${notifyTargets.config.messageTargetSource}).`);
-    }
+    const notifyConfig = await prepareDecisionNotify({ config: validated.decisionNotify, fleetApi: notifyFleetApi, log });
     sprintState.notifyDecision = async (record) => {
         // Publish first (the banner shows the decision at once), notify, then
         // publish again so the per-channel outcome shows.
         if (decisionWait) decisionWait.publish();
         await notifyDecision({
             decision: record,
-            config: notifyTargets.config,
+            config: notifyConfig,
             fleetApi: notifyFleetApi,
             log,
         });

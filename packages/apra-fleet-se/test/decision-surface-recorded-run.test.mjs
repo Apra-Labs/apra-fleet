@@ -71,6 +71,14 @@ function fakeCallTool(modes, calls) {
         const base = defaultMockCallTool({ executeCommand });
         return async (name, args) => {
             if (name !== 'send_message' && name !== 'send_email') return base(name, args);
+            // The launch-time target check (send_message probe mode) sends
+            // nothing: recorded on its own and answered as reachable (the
+            // session was there at launch; the modes below then shape the
+            // actual sends).
+            if (name === 'send_message' && args && args.probe) {
+                calls.probe.push(args);
+                return { content: [{ text: JSON.stringify({ probe: true, member_id: args.member_id, connected: true, channel_capable: true }) }] };
+            }
             const channel = name === 'send_message' ? 'message' : 'email';
             calls[channel].push(args);
             const mode = modes[channel];
@@ -83,7 +91,7 @@ function fakeCallTool(modes, calls) {
 }
 
 async function incident(tag, { notify, modes = { message: 'ok', email: 'ok' }, answerVia, answer }) {
-    const calls = { message: [], email: [] };
+    const calls = { message: [], email: [], probe: [] };
     const seen = {
         decideDispatches: 0, atPause: null, api: null, bannerHtml: null, pageHtml: null,
         resumed: 0, notesAtRedispatch: null, answerError: null, pauses: [], ANSWER: answer,
@@ -230,6 +238,9 @@ test('recorded run: both channels succeed -- each called once with the full body
         const run = await incident('dsurf-route', { notify: NOTIFY, answerVia: 'route', answer: ANSWER });
         assertSurfaced(run, { answer: ANSWER });
         assert.equal(run.calls.message.length, 1, 'message attempted exactly once');
+        assert.equal(run.calls.probe.length, 1, 'the message target was checked once, at launch');
+        assert.equal(run.calls.probe[0].member_id, run.calls.message[0].member_id, 'the check is for the same target');
+        assert.deepEqual(run.scenario.logs.filter((l) => l.startsWith('Decision notification: no channel-capable session') || l.startsWith('Decision notification: could not check')), [], 'a reachable target logs no warning');
         assert.equal(run.calls.email.length, 1, 'email attempted exactly once');
         check(bodiesFull(run.calls.message[0].content) && bodiesFull(run.calls.email[0].body), 'full question, options and recommendation in both bodies');
         check(run.calls.message[0].content.includes('bd human respond'), 'says how to answer');

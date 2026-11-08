@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
     notifyDecision, validateDecisionNotify, formatNotificationBody, judgeSendResult, NO_CHANNEL_REASON,
     resolveNotifyTargets, DEFAULT_MESSAGE_TARGET, NO_MESSAGE_TARGET_LOG_PREFIX,
+    prepareDecisionNotify, checkMessageTarget, MESSAGE_TARGET_UNREACHABLE_LOG_PREFIX, MESSAGE_TARGET_PROBE_FAILED_LOG_PREFIX,
 } from '../fleet-sprint/decision-notify.mjs';
 import { recordPendingDecision } from '../fleet-sprint/decisions.mjs';
 
@@ -77,6 +78,7 @@ function realServer() {
         await sprintClient.connect(transportOf());
         const fleetApi = {
             sendMessage: (o) => sprintClient.callTool({ name: 'send_message', arguments: o }),
+            probeMessageTarget: (id) => sprintClient.callTool({ name: 'send_message', arguments: { member_id: id, content: '', probe: true } }),
         };
         const waitForReceived = async (n) => {
             const until = Date.now() + 5000;
@@ -275,4 +277,95 @@ test('resolveNotifyTargets: no fleet client -> one launch line, and decisions re
         assert.equal(d.notification.email.status, 'failed');
     }
     assert.deepEqual(logs.filter((l) => l.startsWith('NOTIFICATION FAILED')), [], JSON.stringify(logs));
+});
+
+// --- Launch-time message target check (send_message probe) ------------------
+
+const EMAIL_CFG = { email: { provider: 'sendgrid', from: 'sprint@example.com', to: 'ops@example.com' } };
+const probeAnswer = (o) => async (id) => JSON.stringify({ probe: true, member_id: id, ...o });
+const isWarning = (l) => l.startsWith(MESSAGE_TARGET_UNREACHABLE_LOG_PREFIX) || l.startsWith(MESSAGE_TARGET_PROBE_FAILED_LOG_PREFIX) || /NOTIFICATION FAILED/.test(l);
+
+test('launch with no session holding the target: exactly one remedy line; N later decisions add one short line each', async () => {
+    const f = fakes();
+    let probes = 0;
+    f.fleetApi.probeMessageTarget = async (id) => { probes += 1; return probeAnswer({ connected: false, channel_capable: false })(id); };
+    const launchLog = [];
+    const config = await prepareDecisionNotify({ config: validateDecisionNotify(EMAIL_CFG), fleetApi: f.fleetApi, log: (m) => launchLog.push(m) });
+    assert.equal(probes, 1, 'probed once at launch');
+    const remedy = launchLog.filter((l) => l.startsWith(MESSAGE_TARGET_UNREACHABLE_LOG_PREFIX));
+    assert.equal(remedy.length, 1, JSON.stringify(launchLog));
+    assert.ok(remedy[0].includes(`'${DEFAULT_MESSAGE_TARGET}'`), remedy[0]);
+    assert.ok(remedy[0].includes('--dangerously-load-development-channels'), 'names the launch flag');
+    assert.ok(remedy[0].includes('decision_notify.message_member'), 'names the message_member alternative');
+    assert.ok(remedy[0].includes('no session holds it'), remedy[0]);
+
+    const N = 4;
+    for (let i = 0; i < N; i++) {
+        const before = launchLog.length;
+        const d = { ...record(), decisionId: `decision-${i}-x-1` };
+        await notifyDecision({ decision: d, config, fleetApi: f.fleetApi, log: (m) => launchLog.push(m) });
+        assert.equal(d.notification.message.status, 'failed');
+        const added = launchLog.slice(before).filter((l) => /\(message\)/.test(l));
+        assert.equal(added.length, 1, `one message line for decision ${i}: ${JSON.stringify(added)}`);
+        assert.ok(added[0].length < 160, `short: ${added[0]}`);
+        assert.doesNotMatch(added[0], /NOTIFICATION FAILED/);
+    }
+    assert.equal(f.calls.message.length, N, 'each decision still tries the send (a session may connect later)');
+    assert.equal(launchLog.filter((l) => l.startsWith(MESSAGE_TARGET_UNREACHABLE_LOG_PREFIX)).length, 1, 'the remedy is never repeated');
+});
+
+test('launch with a session that holds the target but is not channel-capable: one remedy line saying so', async () => {
+    const f = fakes();
+    f.fleetApi.probeMessageTarget = probeAnswer({ connected: true, channel_capable: false });
+    const logs = [];
+    await prepareDecisionNotify({ config: validateDecisionNotify({ ...EMAIL_CFG, message_member: 'ops-session' }), fleetApi: f.fleetApi, log: (m) => logs.push(m) });
+    const remedy = logs.filter((l) => l.startsWith(MESSAGE_TARGET_UNREACHABLE_LOG_PREFIX));
+    assert.equal(remedy.length, 1, JSON.stringify(logs));
+    assert.ok(remedy[0].includes("'ops-session'") && remedy[0].includes('did not declare the claude/channel capability'), remedy[0]);
+});
+
+test('launch with a channel-capable session holding the target: no warning', async () => {
+    const f = fakes();
+    f.fleetApi.probeMessageTarget = probeAnswer({ connected: true, channel_capable: true });
+    const logs = [];
+    const config = await prepareDecisionNotify({ config: validateDecisionNotify(EMAIL_CFG), fleetApi: f.fleetApi, log: (m) => logs.push(m) });
+    assert.deepEqual(logs.filter(isWarning), [], JSON.stringify(logs));
+    assert.equal(config.messageTargetUnreachable, undefined);
+    assert.equal(f.calls.message.length, 0, 'the check sends nothing');
+});
+
+test('a failing probe logs one line and the launch proceeds (throw, tool error, timeout, old server)', async () => {
+    const modes = {
+        throws: async () => { throw new Error('transport down'); },
+        'tool error': async () => ({ isError: true, content: [{ text: 'boom' }] }),
+        'error json': async () => JSON.stringify({ error: 'unknown tool' }),
+        'old server (no probe field)': async () => JSON.stringify({ ok: true, msgid: 'm1' }),
+        hangs: () => new Promise(() => {}),
+    };
+    for (const [name, probe] of Object.entries(modes)) {
+        const f = fakes();
+        f.fleetApi.probeMessageTarget = probe;
+        const logs = [];
+        const config = await prepareDecisionNotify({ config: validateDecisionNotify({ ...EMAIL_CFG, timeout_s: 1 }), fleetApi: f.fleetApi, log: (m) => logs.push(m) });
+        assert.equal(logs.filter((l) => l.startsWith(MESSAGE_TARGET_PROBE_FAILED_LOG_PREFIX)).length, 1, `${name}: ${JSON.stringify(logs)}`);
+        assert.equal(logs.filter((l) => l.startsWith(MESSAGE_TARGET_UNREACHABLE_LOG_PREFIX)).length, 0, name);
+        assert.equal(config.messageMember, DEFAULT_MESSAGE_TARGET, `${name}: the launch proceeds with the target`);
+        assert.equal(config.messageTargetUnreachable, undefined, `${name}: per-decision failures keep their full line`);
+    }
+    // A client without the probe method at all.
+    const logs = [];
+    assert.equal(await checkMessageTarget({ config: { messageMember: 'orchestrator' }, fleetApi: { sendMessage: async () => okResult }, log: (m) => logs.push(m) }), 'probe-failed');
+    assert.equal(logs.length, 1);
+});
+
+test('launch-time check against the REAL send_message probe: the registered orchestrator session is reachable; an unknown target gets the remedy', async () => {
+    const real = await realServer();
+    const before = real.received.length;
+    const okLogs = [];
+    await prepareDecisionNotify({ config: validateDecisionNotify(EMAIL_CFG), fleetApi: real.fleetApi, log: (m) => okLogs.push(m) });
+    assert.deepEqual(okLogs.filter(isWarning), [], JSON.stringify(okLogs));
+    const badLogs = [];
+    await prepareDecisionNotify({ config: validateDecisionNotify({ ...EMAIL_CFG, message_member: 'no-such-session' }), fleetApi: real.fleetApi, log: (m) => badLogs.push(m) });
+    assert.equal(badLogs.filter((l) => l.startsWith(MESSAGE_TARGET_UNREACHABLE_LOG_PREFIX)).length, 1, JSON.stringify(badLogs));
+    assert.equal(real.received.length, before, 'the probe delivered nothing to the orchestrator session');
 });
