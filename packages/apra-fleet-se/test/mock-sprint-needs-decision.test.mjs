@@ -351,3 +351,50 @@ test('mock sprint: a reviewer NEEDS-DECISION reopens the closed bead, sets it as
         check(paused && paused.setAside.some((e) => e.id === x && e.kind === 'needs-decision'), 'listed as needs-decision');
     });
 });
+
+// --- relaunch: reuse an open decision bead (fresh sprintState) ----------------
+
+function relaunchCommand(listOutput, commands) {
+    return async (cmd) => {
+        commands.push(cmd);
+        if (cmd.includes('rmSync')) return '';
+        if (cmd.startsWith('node -e')) return '/tmp/staged.txt';
+        if (cmd.startsWith('bd list')) {
+            if (listOutput instanceof Error) throw listOutput;
+            return listOutput;
+        }
+        if (cmd.startsWith('bd create')) return 'x-new\n';
+        return '';
+    };
+}
+
+const relaunch = (command) => recordPendingDecision({
+    sprintState: {}, decision: decisionFor('x-1'), raisedBy: 'doer', cycle: 1, round: 1, command, member: 'm',
+    scopeBeads: [{ id: 'x-1', status: 'open', dependencies: [] }],
+});
+
+test('unit: relaunch with an open decision bead for the work bead reuses it and files nothing', async () => {
+    const commands = [];
+    const open = JSON.stringify([
+        { id: 'x-10dec', title: 'Decision needed for x-10', status: 'deferred' },
+        { id: 'x-old', title: 'Decision needed for x-1', status: 'deferred' },
+    ]);
+    const rec = await relaunch(relaunchCommand(open, commands));
+    assert.equal(rec.decisionBeadId, 'x-old');
+    assert.ok(!commands.some((c) => c.startsWith('bd create')), `no bd create: ${commands.join(' | ')}`);
+});
+
+test('unit: relaunch with only a closed decision bead files exactly one new bead', async () => {
+    const commands = [];
+    const closed = JSON.stringify([{ id: 'x-old', title: 'Decision needed for x-1', status: 'closed' }]);
+    const rec = await relaunch(relaunchCommand(closed, commands));
+    assert.equal(rec.decisionBeadId, 'x-new');
+    assert.equal(commands.filter((c) => c.startsWith('bd create')).length, 1);
+});
+
+test('unit: a failed decision-bead lookup still files (best-effort)', async () => {
+    const commands = [];
+    const rec = await relaunch(relaunchCommand(new Error('bd list failed'), commands));
+    assert.equal(rec.decisionBeadId, 'x-new');
+    assert.equal(commands.filter((c) => c.startsWith('bd create')).length, 1);
+});
