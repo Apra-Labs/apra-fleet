@@ -10,7 +10,7 @@ import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs'
 import { buildRunTitle } from './run-title.mjs';
 import { billedTokens } from '../workflow/pricing.mjs';
 import { createRunSummary, refreshSummaryCore, applyExtensionSummary, backfillExtensionSummaries } from './run-summary.mjs';
-import { checkMutatingRequest } from './request-guard.mjs';
+import { checkMutatingRequest, checkRequestHost } from './request-guard.mjs';
 
 // apra-fleet-eft.6.5: the SAME template serves both the live view and the
 // process-free History view -- `opts.history` (true) feeds a FROZEN state
@@ -1025,6 +1025,9 @@ export { HTML_TEMPLATE };
  * @param {number} [opts.port=8080] - HTTP server port
  * @param {string} [opts.host='127.0.0.1'] - Interface to bind. Loopback by default; pass '0.0.0.0' (or a
  *   specific address) to expose the dashboard off-box -- an explicit opt-in.
+ * @param {string[]|string} [opts.allowedHosts] - Extra Host header names this server answers to. Loopback
+ *   names, IP literals and `host` are always accepted; any other name is refused on every request
+ *   (DNS-rebinding defence, request-guard.mjs checkRequestHost()).
  * @param {string} [opts.runId] - Stable per-run identifier (generated if not provided)
  * @param {string} [opts.name] - Workflow display name
  * @param {string} [opts.debouncedStatePath] - Path to write state JSON (uses default if not provided)
@@ -1473,7 +1476,10 @@ export function createDashboardViewer(workflow, opts = {}) {
         // its POST routes stop/pause the run or record an operator answer. A
         // mutating request must be JSON and same-origin (no Origin: the
         // supervisor's proxy and HTTP clients; or this page's own origin).
-        const refused = checkMutatingRequest(req);
+        // The Host header is checked on EVERY request (GET /state included):
+        // a DNS-rebound page controls Origin and Host alike.
+        const hostOpts = { bindHost: host, allowedHosts: opts.allowedHosts };
+        const refused = checkRequestHost(req, hostOpts) || checkMutatingRequest(req, hostOpts);
         if (refused) {
             if (typeof req.resume === 'function') req.resume();
             res.writeHead(refused.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });

@@ -17,7 +17,10 @@ info:
     supervisor's own -- unless it carries the token configured via
     FLEET_SUPERVISOR_TOKEN (`Authorization: Bearer <token>` or
     `X-Fleet-Token: <token>`); a cross-site Origin/Sec-Fetch-Site without a
-    valid token, or an invalid token, is 403. See supervisor-api.md,
+    valid token, or an invalid token, is 403. Every request (GET included)
+    whose Host header names something other than a loopback name, an IP
+    literal, the bind host or a --allowed-host / FLEET_SUPERVISOR_ALLOWED_HOSTS
+    entry is 403 (DNS-rebinding defence). See supervisor-api.md,
     "Mutating requests".
   version: "1.0.0"
 servers:

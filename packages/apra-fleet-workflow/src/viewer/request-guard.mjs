@@ -21,9 +21,23 @@
 //       token is configured.
 // A presented token that does not match is always refused, even when the
 // request would otherwise pass the origin check.
+//
+// DNS rebinding: (b) compares the Origin with the request's Host header, and a
+// rebound page (attacker.example re-resolved to 127.0.0.1) controls BOTH and
+// makes them agree. So the Host header is validated first, on EVERY request
+// (GET included -- a rebound page could otherwise read /api/sprints, /state):
+// checkRequestHost() admits only a Host whose name is a loopback name
+// (localhost, 127.0.0.1, [::1]), any IP literal (a page served from an IP
+// literal is served by that IP, so it cannot rebind to us), the server's own
+// configured bind host (unless a wildcard), or an explicitly allowed extra
+// name. The port is not compared: a rebinding attacker cannot choose the NAME
+// the browser puts in Host, and a same-machine port-forward/reverse proxy
+// legitimately changes the port. A token does not waive the Host check (a
+// non-browser token holder sends a real name anyway).
 // =============================================================================
 
 import crypto from 'node:crypto';
+import net from 'node:net';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -60,19 +74,94 @@ export function isJsonContentType(req) {
     return ct.split(';')[0].trim().toLowerCase() === 'application/json';
 }
 
+const LOOPBACK_NAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
+const WILDCARD_BIND_HOSTS = new Set(['', '0.0.0.0', '::', '[::]']);
+
 /**
- * Decides whether a request may reach a mutating route.
+ * Normalises a host name or `host[:port]` value to the lowercase hostname a
+ * WHATWG URL would report (IPv6 bracketed, trailing dot dropped), or null when
+ * it does not parse.
+ * @param {string} value
+ * @returns {string|null}
+ */
+export function normalizeHostName(value) {
+    let v = String(value ?? '').trim();
+    if (!v) return null;
+    // A bare IPv6 literal (bind host '::1') needs brackets to parse as a host.
+    if (!v.startsWith('[') && net.isIPv6(v)) v = `[${v}]`;
+    try {
+        const u = new URL(`http://${v}`);
+        if (u.username || u.password || (u.pathname && u.pathname !== '/') || u.search || u.hash) return null;
+        const name = u.hostname.toLowerCase().replace(/\.$/, '');
+        return name || null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Parses a comma/whitespace separated allowed-hosts list (an env var or CLI
+ * value) into normalised host names; unparseable entries are dropped.
+ * @param {string|string[]|null|undefined} value
+ * @returns {string[]}
+ */
+export function parseAllowedHosts(value) {
+    const parts = Array.isArray(value) ? value.flatMap((v) => String(v).split(/[\s,]+/)) : String(value ?? '').split(/[\s,]+/);
+    return parts.map(normalizeHostName).filter(Boolean);
+}
+
+function isIpLiteralHost(name) {
+    const bare = name.startsWith('[') && name.endsWith(']') ? name.slice(1, -1) : name;
+    return net.isIP(bare) !== 0;
+}
+
+/**
+ * Validates the request's Host header (DNS-rebinding defence). Applies to every
+ * method. A request with no Host header (HTTP/1.0, some raw clients) is
+ * admitted: a browser always sends one.
  *
  * @param {import('node:http').IncomingMessage} req
- * @param {{ token?: string|null }} [opts] - `token`: the accepted token, or
- *   empty/absent when no token mechanism is configured (then only same-origin
- *   requests pass).
+ * @param {{ bindHost?: string|null, allowedHosts?: string[]|string|null }} [opts]
+ *   `bindHost`: the interface the server bound (admitted as a name unless it
+ *   is a wildcard such as 0.0.0.0); `allowedHosts`: extra names to admit (for
+ *   an off-box bind reached by DNS name).
+ * @returns {null | { status: number, error: string }}
+ */
+export function checkRequestHost(req, opts = {}) {
+    const raw = headerValue(req, 'host');
+    if (raw === undefined || raw.trim() === '') return null;
+    const name = normalizeHostName(raw);
+    if (name) {
+        if (LOOPBACK_NAMES.has(name) || isIpLiteralHost(name)) return null;
+        const bind = opts.bindHost ? String(opts.bindHost).trim().toLowerCase() : '';
+        if (!WILDCARD_BIND_HOSTS.has(bind) && normalizeHostName(bind) === name) return null;
+        if (parseAllowedHosts(opts.allowedHosts).includes(name)) return null;
+    }
+    return {
+        status: 403,
+        error: `request refused: Host '${raw}' is not a name this server answers to (possible DNS rebinding); add it to the server's allowed hosts if it is legitimate`,
+    };
+}
+
+/**
+ * Decides whether a request may reach a mutating route. Also runs
+ * checkRequestHost() first, so a rebound page whose Origin and Host agree on a
+ * foreign name is refused.
+ *
+ * @param {import('node:http').IncomingMessage} req
+ * @param {{ token?: string|null, bindHost?: string|null, allowedHosts?: string[]|string|null }} [opts] -
+ *   `token`: the accepted token, or empty/absent when no token mechanism is
+ *   configured (then only same-origin requests pass); `bindHost` and
+ *   `allowedHosts`: see checkRequestHost().
  * @returns {null | { status: number, error: string }} null when allowed, else
  *   the status and message to answer with.
  */
 export function checkMutatingRequest(req, opts = {}) {
     const method = String((req && req.method) || 'GET').toUpperCase();
     if (SAFE_METHODS.has(method)) return null;
+
+    const badHost = checkRequestHost(req, opts);
+    if (badHost) return badHost;
 
     if (!isJsonContentType(req)) {
         return {

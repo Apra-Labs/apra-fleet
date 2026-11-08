@@ -25,6 +25,7 @@ import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
 import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_FILENAME } from '../src/supervisor/history.mjs';
+import { checkMutatingRequest, checkRequestHost } from '@apralabs/apra-fleet-workflow/viewer/request-guard';
 
 const TOKEN = 'test-supervisor-token-0123456789';
 const EVIL_ORIGIN = 'http://evil.example';
@@ -302,7 +303,55 @@ describe('supervisor mutating routes refuse cross-site and non-JSON requests', (
         assert.equal(sideEffects(), before);
     });
 
-    test('GET routes are not affected by the guard', async () => {
+    /** A DNS-rebound page: its own (foreign) name in BOTH Host and Origin, same-origin per fetch metadata. */
+    const rebound = (p) => ({ host: `attacker.example:${p}`, origin: `http://attacker.example:${p}`, 'sec-fetch-site': 'same-origin' });
+
+    test('DNS rebinding: a JSON POST whose foreign Host and Origin agree is refused (403) on every mutating route, with no side effect', async () => {
+        publishPending();
+        const before = sideEffects();
+        for (const route of ROUTES) {
+            const res = await rawRequest(port, 'POST', route.path, {
+                headers: { 'content-type': 'application/json', ...rebound(port) }, body: JSON.stringify(route.json),
+            });
+            assert.equal(res.status, 403, `${route.name} / rebinding: expected 403, got ${res.status} ${res.text}`);
+            assert.match(res.json.error, /Host 'attacker\.example:\d+'.*DNS rebinding/);
+        }
+        // A token never waives the Host check.
+        const withToken = await rawRequest(port, 'POST', '/api/sprints/s1/stop', {
+            headers: { 'content-type': 'application/json', ...rebound(port), authorization: `Bearer ${TOKEN}` }, body: '{}',
+        });
+        assert.equal(withToken.status, 403, withToken.text);
+        assert.equal(sideEffects(), before, 'no rebound request changed anything (answers count included)');
+    });
+
+    test('DNS rebinding: GET routes refuse a foreign Host too, so a rebound page cannot read sprint state', async () => {
+        for (const p of ['/api/sprints', '/api/sprints/s1', '/api/health', '/sprints/s1/live/state']) {
+            const res = await rawRequest(port, 'GET', p, { headers: { host: `attacker.example:${port}` } });
+            assert.equal(res.status, 403, `GET ${p}: expected 403, got ${res.status}`);
+        }
+        for (const host of [`localhost:${port}`, `127.0.0.1:${port}`, 'localhost', `[::1]:${port}`, `10.1.2.3:${port}`]) {
+            const res = await rawRequest(port, 'GET', '/api/health', { headers: { host } });
+            assert.equal(res.status, 200, `Host ${host} is a name this supervisor answers to`);
+        }
+    });
+
+    test('DNS rebinding: the child viewer port refuses a foreign Host on POST and GET when reached directly', async () => {
+        publishPending();
+        const before = sideEffects();
+        const answer = await rawRequest(childPort, 'POST', '/extensions/decisions/actions/answer', {
+            headers: { 'content-type': 'application/json', ...rebound(childPort) }, body: JSON.stringify({ decisionId: DECISION_ID, answer: 'x' }),
+        });
+        assert.equal(answer.status, 403, answer.text);
+        const stop = await rawRequest(childPort, 'POST', '/stop', { headers: { 'content-type': 'application/json', ...rebound(childPort) }, body: '{}' });
+        assert.equal(stop.status, 403, stop.text);
+        const state = await rawRequest(childPort, 'GET', '/state', { headers: { host: `attacker.example:${childPort}` } });
+        assert.equal(state.status, 403, state.text);
+        assert.equal(sideEffects(), before, 'no rebound request changed anything (answers count included)');
+        const own = await rawRequest(childPort, 'GET', '/state', { headers: { host: `localhost:${childPort}` } });
+        assert.equal(own.status, 200, own.text);
+    });
+
+    test('GET routes are not affected by the Origin/content-type guard', async () => {
         const res = await rawRequest(port, 'GET', '/api/health', { headers: { origin: EVIL_ORIGIN, 'sec-fetch-site': 'cross-site' } });
         assert.equal(res.status, 200);
     });
@@ -314,5 +363,48 @@ describe('supervisor mutating routes refuse cross-site and non-JSON requests', (
         assert.equal(res.status, 200, res.text);
         await supervisor.shutdownRequested;
         assert.equal(shutdownResolved, true);
+    });
+});
+
+describe('request-guard Host allowlist (DNS-rebinding defence)', () => {
+    const req = (host, extra = {}) => ({
+        method: 'POST',
+        headers: { 'content-type': 'application/json', host, origin: `http://${host}`, 'sec-fetch-site': 'same-origin', ...extra },
+    });
+
+    test('a rebound request whose foreign Host and Origin agree is refused', () => {
+        const refused = checkMutatingRequest(req('attacker.example:8787'));
+        assert.equal(refused?.status, 403);
+        assert.match(refused.error, /DNS rebinding/);
+        assert.equal(checkRequestHost({ method: 'GET', headers: { host: 'attacker.example:8787' } })?.status, 403);
+    });
+
+    test('loopback names, IP literals, the bind host and allowed hosts are admitted', () => {
+        for (const host of ['127.0.0.1:8787', 'localhost:8787', 'LOCALHOST.', '[::1]:8787', '192.168.1.5:8787', '[fe80::1]']) {
+            assert.equal(checkMutatingRequest(req(host)), null, host);
+        }
+        assert.equal(checkMutatingRequest(req('fleet.lan:8787'), { bindHost: 'fleet.lan' }), null);
+        assert.equal(checkMutatingRequest(req('fleet.lan:8787'), { bindHost: '0.0.0.0' })?.status, 403, 'a wildcard bind admits no name');
+        assert.equal(checkMutatingRequest(req('box.example.com:8787'), { allowedHosts: 'other.example, Box.Example.com' }), null);
+        assert.equal(checkMutatingRequest(req('box.example.com:8787'), { allowedHosts: ['other.example'] })?.status, 403);
+    });
+
+    test('a request with no Host header (non-browser HTTP/1.0 client) is admitted; a malformed one is refused', () => {
+        assert.equal(checkRequestHost({ method: 'GET', headers: {} }), null);
+        assert.equal(checkRequestHost({ method: 'GET', headers: { host: 'a b/c' } })?.status, 403);
+        assert.equal(checkRequestHost({ method: 'GET', headers: { host: 'user@127.0.0.1' } })?.status, 403);
+    });
+
+    test('createSupervisor admits a name from allowedHosts and refuses others', async () => {
+        const sup = createSupervisor({ port: 0, apiToken: null, host: '127.0.0.1', allowedHosts: ['fleet.internal'], logger: { log() {}, error() {} } });
+        await sup.start();
+        try {
+            const ok = await rawRequest(sup.port, 'GET', '/api/health', { headers: { host: `fleet.internal:${sup.port}` } });
+            assert.equal(ok.status, 200, ok.text);
+            const bad = await rawRequest(sup.port, 'GET', '/api/health', { headers: { host: `evil.internal:${sup.port}` } });
+            assert.equal(bad.status, 403, bad.text);
+        } finally {
+            await sup.stop();
+        }
     });
 });

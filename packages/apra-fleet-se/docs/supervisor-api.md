@@ -45,8 +45,22 @@ origin. With no token configured, only same-origin requests pass. The
 dashboard's own buttons and forms send JSON from the supervisor's own origin,
 so they need no token.
 
+Host header (DNS-rebinding defence, EVERY request, GET included): checked
+before anything else. An attacker page whose name is re-resolved to
+127.0.0.1 controls both `Origin` and `Host`, so the origin comparison above
+would admit it. The supervisor therefore answers only a `Host` whose name is a
+loopback name (`localhost`, `127.0.0.1`, `[::1]`), any IP literal (a page
+served from an IP literal cannot rebind), its own `--host` (unless a wildcard
+such as `0.0.0.0`), or a name listed with `--allowed-host <name>` (repeatable
+or comma-separated) / `FLEET_SUPERVISOR_ALLOWED_HOSTS`. Any other name is
+`403` with a JSON `error`, whatever the method, origin or token. The port in
+`Host` is not compared (a port-forward or reverse proxy may change it; a
+rebinding attacker cannot choose the name). Off-box binds reached by a DNS
+name must list that name; reaching them by IP needs no configuration.
+
 The per-sprint child viewer (the `--viewer-port` server the live proxy
-forwards to) applies the same guard (no token mechanism) to its own POST routes
+forwards to) applies the same guard (no token mechanism; same Host check on every request,
+extra names via `createDashboardViewer({ allowedHosts })`) to its own POST routes
 (`/stop`, `/pause`, `/resume`, `/save_logs`, `/extensions/:id/actions/:id`),
 since it is reachable directly on loopback and is the endpoint the decision
 answer ultimately reaches. The live proxy strips the browser's `Origin`,
@@ -438,7 +452,8 @@ answer `503`, and a background retry flips it to `ready`.
   token). Used across nearly every JSON POST route.
 - **403** -- a mutating request refused as cross-site (foreign `Origin` or
   `Sec-Fetch-Site`) without a valid token, or carrying an invalid token (see
-  "Mutating requests" above).
+  "Mutating requests" above), or any request whose `Host` header names a host
+  the supervisor does not answer to (DNS-rebinding defence).
 - **415** -- a mutating request without `Content-Type: application/json`.
 - **404** -- "no such live/known thing": unknown sprint id (`GET
   /api/sprints/:id`, `POST /api/sprints/:id/stop`, force-release), no live

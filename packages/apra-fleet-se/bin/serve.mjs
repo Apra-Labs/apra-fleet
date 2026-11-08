@@ -21,7 +21,7 @@ import { parseArgs } from 'node:util';
 import path from 'node:path';
 import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { createSupervisor, DEFAULT_SERVICE_PORT, DEFAULT_SERVICE_HOST, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
+import { createSupervisor, DEFAULT_SERVICE_PORT, DEFAULT_SERVICE_HOST, SUPERVISOR_ALLOWED_HOSTS_ENV, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
@@ -72,6 +72,12 @@ Options:
                             (loopback only). Pass 0.0.0.0 to expose it off-box;
                             the API has no authentication, so that is an explicit
                             opt-in.
+      --allowed-host <name> Extra Host header name the supervisor answers to
+                            (repeatable, or comma-separated). Loopback names, IP
+                            literals and --host are always accepted; any other
+                            name is refused (DNS-rebinding defence), so add the
+                            DNS name operators use for an off-box bind. Also
+                            read from FLEET_SUPERVISOR_ALLOWED_HOSTS.
       --beads-dir <path>    Project folder (or its .beads dir) whose beads tracker
                             this supervisor runs against. Default: discovered by
                             walking up from the current directory, exactly like
@@ -185,6 +191,7 @@ export function parseServeArgs(argv) {
             options: {
                 port: { type: 'string' },
                 host: { type: 'string' },
+                'allowed-host': { type: 'string', multiple: true },
                 'beads-dir': { type: 'string' },
                 help: { type: 'boolean', short: 'h' },
             },
@@ -520,7 +527,10 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
         console.warn(`[supervisor] TEST HOOK: seam '${hangSeam}' stop() will never settle`);
     }
     const supervisor = createSupervisor({
-        port, host, ledger, spawner, watchdog: hangable.watchdog, dashboard: hangable.dashboard, idAllocator, doltMutex,
+        port, host,
+        // CLI names add to (not replace) the env var's list.
+        allowedHosts: [...(values['allowed-host'] ?? []), ...String(process.env[SUPERVISOR_ALLOWED_HOSTS_ENV] ?? '').split(/[\s,]+/).filter(Boolean)],
+        ledger, spawner, watchdog: hangable.watchdog, dashboard: hangable.dashboard, idAllocator, doltMutex,
         doltOrphanSweep: hangable.doltOrphanSweep, beadsIdentity, backlogMember,
         seamStopTimeoutMs: envMs('FLEET_SE_SHUTDOWN_SEAM_TIMEOUT_MS', 3000),
         forcedExitMs: envMs('FLEET_SE_SHUTDOWN_FORCE_EXIT_MS', 10_000),

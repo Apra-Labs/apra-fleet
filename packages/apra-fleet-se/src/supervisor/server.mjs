@@ -40,7 +40,7 @@
 
 import http from 'node:http';
 import { toBeadsSummary } from './beads-identity.mjs';
-import { checkMutatingRequest } from '@apralabs/apra-fleet-workflow/viewer/request-guard';
+import { checkMutatingRequest, checkRequestHost, parseAllowedHosts } from '@apralabs/apra-fleet-workflow/viewer/request-guard';
 
 /**
  * Environment variable holding the optional supervisor API token. When set
@@ -49,6 +49,14 @@ import { checkMutatingRequest } from '@apralabs/apra-fleet-workflow/viewer/reque
  * only same-origin / Origin-less JSON requests reach a mutating route.
  */
 export const SUPERVISOR_TOKEN_ENV = 'FLEET_SUPERVISOR_TOKEN';
+
+/**
+ * Env var listing extra Host names (comma/space separated) the supervisor
+ * answers to, beyond loopback names, IP literals and its --host. Needed only
+ * for an off-box bind reached by DNS name (DNS-rebinding defence, see
+ * request-guard.mjs checkRequestHost()).
+ */
+export const SUPERVISOR_ALLOWED_HOSTS_ENV = 'FLEET_SUPERVISOR_ALLOWED_HOSTS';
 
 /** Default HTTP service port for the always-on supervisor. */
 export const DEFAULT_SERVICE_PORT = 8787;
@@ -143,11 +151,17 @@ export function sendJson(res, status, payload) {
  *   logger?: { log?: Function, error?: Function },
  *   createServer?: (handler: (req: any, res: any) => void) => import('http').Server,
  *   apiToken?: string|null,
+ *   host?: string,
+ *   allowedHosts?: string[]|string|null,
  * }} [deps]
  *
  * `apiToken`: the token that admits a cross-site mutating request (see
  * request-guard.mjs). Defaults to process.env[SUPERVISOR_TOKEN_ENV]; pass null
  * to disable the token mechanism explicitly.
+ *
+ * `allowedHosts`: extra Host header names admitted besides loopback names, IP
+ * literals and `host` itself (DNS-rebinding defence). Defaults to
+ * process.env[SUPERVISOR_ALLOWED_HOSTS_ENV].
  * @returns {{
  *   route(method: string, path: string, handler: Function): void,
  *   start(): Promise<{ port: number }>,
@@ -162,6 +176,7 @@ export function createSupervisor(deps = {}) {
     let port = Number.isInteger(deps.port) ? deps.port : DEFAULT_SERVICE_PORT;
     const apiToken = deps.apiToken !== undefined ? deps.apiToken : (process.env[SUPERVISOR_TOKEN_ENV] || null);
     const host = (typeof deps.host === 'string' && deps.host) ? deps.host : DEFAULT_SERVICE_HOST;
+    const allowedHosts = parseAllowedHosts(deps.allowedHosts !== undefined ? deps.allowedHosts : process.env[SUPERVISOR_ALLOWED_HOSTS_ENV]);
     const logger = deps.logger ?? console;
     const log = (...a) => logger.log?.(...a);
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
@@ -276,7 +291,12 @@ export function createSupervisor(deps = {}) {
             // covers every route registered through route(), including those
             // added by api.mjs, reconcile.mjs, proxy.mjs, the dolt mutex and
             // the id allocator.
-            const refused = checkMutatingRequest(req, { token: apiToken });
+            //
+            // The Host header is checked on EVERY request first (GET too): a
+            // DNS-rebound page controls both Origin and Host, so an origin
+            // comparison alone admits it, and it could also read GET routes.
+            const refused = checkRequestHost(req, { bindHost: host, allowedHosts })
+                || checkMutatingRequest(req, { token: apiToken, bindHost: host, allowedHosts });
             if (refused) {
                 if (typeof req.resume === 'function') req.resume();
                 sendJson(res, refused.status, { error: refused.error });
