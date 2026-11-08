@@ -3139,7 +3139,7 @@ async function runSprintCycle(context) {
     // there is one and no decision is pending. A decision whose decision bead
     // could not be filed does not count as pending here (nothing can answer
     // it in-run); the stall error names it with its full question.
-    async function throwIfSetAsideStall({ where, cycle, openAtGoal = null, closedIds = null, runbooks = null }) {
+    async function throwIfSetAsideStall({ where, cycle, openAtGoal = null, closedIds = null, runbooks = null, queueLateAnswers = false }) {
         const doctorBlockedIds = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map();
         const deploySetAside = sprintState.deploySetAside || null;
         if (doctorBlockedIds.size === 0 && !deploySetAside) return false;
@@ -3203,7 +3203,9 @@ async function runSprintCycle(context) {
             staleCycles = 0;
             // Answered at the end of the last allowed cycle: the loop would
             // end before the released bead is dispatched.
-            if (cycle >= effectiveMaxCycles && Array.isArray(answers)) lateDecisionAnswers.push(...answers);
+            // Only a wait at Cycle Evaluation is late: a wait at the start of a
+            // Develop round dispatches the released bead in the same cycle.
+            if (queueLateAnswers && cycle >= effectiveMaxCycles && Array.isArray(answers)) lateDecisionAnswers.push(...answers);
             return true;
         }
         const unfiledDecisions = decisionWait ? decisionWait.unfiled() : [];
@@ -3888,7 +3890,7 @@ async function runSprintCycle(context) {
         // it: everything left is set aside, so no later cycle can progress.
         await throwIfSetAsideStall({
             where: `Cycle ${cycle} evaluation`, cycle, openAtGoal, closedIds: closedIdsNow,
-            runbooks: { hasDeploy, hasPlaybook },
+            runbooks: { hasDeploy, hasPlaybook }, queueLateAnswers: true,
         });
 
         // apra-fleet-b4g.102.1: a cycle spent re-attempting a failed deploy

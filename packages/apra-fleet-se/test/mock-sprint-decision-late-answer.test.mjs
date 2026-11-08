@@ -25,7 +25,7 @@ const DECISION = (beadId) => ({
 
 // maxCycles is 1, so the only cycle is the last one. The decision is raised in
 // it; the answer arrives when the run parks.
-async function lateScenario(tag, { exhaustBudget }) {
+async function lateScenario(tag, { exhaustBudget, parkAtRoundStart = false }) {
     const seen = { states: [], cycleGroups: [], answered: false };
     const scenario = await runDevelopLoopScenario(tag, {
         members: ['local'],
@@ -36,6 +36,12 @@ async function lateScenario(tag, { exhaustBudget }) {
             // A chain, so the decision is raised in the third and last develop
             // round: the round loop then ends and the stall is met at Cycle
             // Evaluation (a wait at the start of a round is not "late").
+            if (parkAtRoundStart) {
+                // DECIDE is raised in round 1; STEP2 waits behind it, so round 2
+                // starts with nothing ready and parks there (not at Cycle Evaluation).
+                await rc(`bd dep add ${id(STEP2)} ${id(DECIDE)}`, td);
+                return;
+            }
             await rc(`bd dep add ${id(STEP2)} ${id(STEP1)}`, td);
             await rc(`bd dep add ${id(DECIDE)} ${id(STEP2)}`, td);
         },
@@ -66,8 +72,11 @@ async function lateScenario(tag, { exhaustBudget }) {
                     return { content: [{ text: JSON.stringify({ status: 'NEEDS-DECISION', closedIds: [], notes: 'choose', decision: DECISION(decide.id) }) }] };
                 }
             }
-            for (const x of ids) await rc(`bd close ${x}`, td);
-            return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Done.' }) }] };
+            // Round-start scenario: STEP2 is never finished, so other work stays open.
+            const step2 = list.find((b) => b.title === STEP2);
+            const toClose = parkAtRoundStart ? ids.filter((x) => !step2 || x !== step2.id) : ids;
+            for (const x of toClose) await rc(`bd close ${x}`, td);
+            return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: toClose, notes: 'Done.' }) }] };
         },
         reviewerHandler: approve,
     });
@@ -104,5 +113,18 @@ test('mock sprint: a decision answered in the last cycle with the budget exhaust
         assert.ok(line.includes(x) && line.includes('decision-'), 'the line names the bead and the decision');
         const notes = scenario.result && scenario.result.notes;
         assert.ok(typeof notes === 'string' && notes.includes('answered too late to be worked') && notes.includes(x), `verdict notes name it: ${notes}`);
+    });
+});
+
+test('mock sprint: a decision answered at the start of a develop round in the last cycle is not late and grants no extra cycle', async () => {
+    resetSyncMemo();
+    await withScenarioMarkers('decision parked at develop round start', async () => {
+        const { scenario, seen } = await lateScenario('dlate-roundstart', { exhaustBudget: false, parkAtRoundStart: true });
+        assert.ok(!seen.answerError, `answering failed: ${seen.answerError && seen.answerError.message}`);
+        assert.ok(seen.answered, 'the run did park for a decision');
+        const x = scenario.tasks.find((t) => t.title === DECIDE).id;
+        assert.ok(scenario.logs.some((l) => /start of Develop C1 R2/.test(l)), `parked at the start of develop round 2: ${JSON.stringify(scenario.logs.slice(-20))}`);
+        assert.equal(scenario.logs.filter((l) => l.includes('granting one extra cycle')).length, 0, 'no extra cycle granted');
+        assert.ok(doerOn(scenario, x).length >= 2, 'released bead dispatched in the same cycle');
     });
 });
