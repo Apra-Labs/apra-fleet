@@ -119,7 +119,7 @@ function getFreePort() {
 function httpRequest(port, pathname, method = 'GET') {
     return new Promise((resolve, reject) => {
         const req = http.request(
-            { host: '127.0.0.1', port, path: pathname, method, timeout: 3000 },
+            { host: '127.0.0.1', port, path: pathname, method, timeout: 3000, headers: method === 'GET' ? {} : { 'content-type': 'application/json' } },
             (res) => {
                 let body = '';
                 res.on('data', (c) => { body += c; });

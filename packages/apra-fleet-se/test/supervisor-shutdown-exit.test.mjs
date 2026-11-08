@@ -43,7 +43,7 @@ function getFreePort() {
 
 function request(port, urlPath, method = 'GET') {
     return new Promise((resolve, reject) => {
-        const req = http.request({ host: '127.0.0.1', port, path: urlPath, method, timeout: scaledTimeout(5000, { concurrency: TEST_CONCURRENCY }) }, (res) => {
+        const req = http.request({ host: '127.0.0.1', port, path: urlPath, method, headers: method === 'GET' ? {} : { 'content-type': 'application/json' }, timeout: scaledTimeout(5000, { concurrency: TEST_CONCURRENCY }) }, (res) => {
             let body = '';
             res.on('data', (c) => { body += c; });
             res.on('end', () => resolve({ status: res.statusCode, body }));

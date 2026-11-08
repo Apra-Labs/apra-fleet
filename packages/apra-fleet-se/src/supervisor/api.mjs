@@ -297,13 +297,19 @@ export function proxyChildStop(port, opts = {}) {
     const host = opts.host ?? '127.0.0.1';
     const timeoutMs = Number.isInteger(opts.timeoutMs) ? opts.timeoutMs : 2000;
     return new Promise((resolve, reject) => {
-        const req = http.request({ host, port, path: '/stop', method: 'POST', timeout: timeoutMs }, (res) => {
+        // The child viewer's POST routes require a JSON content type
+        // (request-guard.mjs), so send an empty JSON object.
+        const data = Buffer.from('{}', 'utf-8');
+        const req = http.request({
+            host, port, path: '/stop', method: 'POST', timeout: timeoutMs,
+            headers: { 'content-type': 'application/json', 'content-length': data.length },
+        }, (res) => {
             res.resume();
             res.on('end', () => resolve({ statusCode: res.statusCode }));
         });
         req.on('timeout', () => { req.destroy(new Error('child /stop timed out')); });
         req.on('error', reject);
-        req.end();
+        req.end(data);
     });
 }
 

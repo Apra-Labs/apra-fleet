@@ -50,6 +50,7 @@ import http from 'node:http';
 import fsp from 'node:fs/promises';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { getTerminalRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
+import { ADMITTED_REQUEST_STRIP_HEADERS } from '@apralabs/apra-fleet-workflow/viewer/request-guard';
 import { withTimestamps } from './log-timestamp.mjs';
 import { createChildPortResolver } from './child-port.mjs';
 
@@ -101,10 +102,17 @@ export function rewriteChildHtml(html, prefix) {
         .split("'/activities/").join("'" + prefix + "/activities/");
 }
 
-/** Copy request headers for the upstream call, dropping host/encoding/hop-by-hop. */
+/**
+ * Copy request headers for the upstream call, dropping host/encoding/hop-by-hop
+ * and the browser-origin/token headers: the supervisor's route() guard already
+ * admitted this request against the SUPERVISOR's origin, and the child viewer
+ * (a different port, same guard) would otherwise read the supervisor's Origin
+ * as cross-site and refuse the forwarded POST.
+ */
 function upstreamRequestHeaders(req) {
     const headers = { ...req.headers };
     delete headers.host;
+    for (const h of ADMITTED_REQUEST_STRIP_HEADERS) delete headers[h];
     // SSE passthrough must stay uncompressed and unbuffered -- never let the
     // child gzip a stream we need to flush event-by-event.
     delete headers['accept-encoding'];

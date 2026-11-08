@@ -14,6 +14,45 @@ Source files: `src/supervisor/api.mjs`, `server.mjs`, `dashboard.mjs`,
 `history-view.mjs`, `log-view.mjs`, `self-log.mjs`, wired together in
 `bin/serve.mjs`.
 
+## Mutating requests: JSON content type and same origin (or token)
+
+Every non-GET/HEAD/OPTIONS supervisor route -- `POST /api/sprints`,
+`/api/sprints/:id/decisions/:decisionId`, `/api/sprints/:id/stop`,
+`/api/shutdown`, `/api/reservations/:sprintId/force-release`, the
+`/api/dolt-push-mutex/*` and `/api/child-id-allocator/*` routes, and the
+`/sprints/:id/live/{stop,pause,resume,save_logs}` and
+`/sprints/:id/live/extensions/:extId/actions/:actionId` proxy actions -- is
+checked by the single dispatcher in `server.mjs` (helper:
+`packages/apra-fleet-workflow/src/viewer/request-guard.mjs`) BEFORE any
+handler runs. A request is admitted only when:
+
+1. its `Content-Type` is `application/json` (parameters such as
+   `; charset=utf-8` are fine). Anything else -- an HTML form's
+   `application/x-www-form-urlencoded` or `multipart/form-data`, `text/plain`,
+   or no content type at all -- is `415` with a JSON `error`, even with an
+   empty body (send `-H "Content-Type: application/json"` with curl);
+2. it is same-origin: no `Origin` header (curl, the sprint child's HTTP
+   clients, server-side callers), or an `Origin` whose host:port equals the
+   request's `Host`. A different `Origin` (including `null`), or a
+   `Sec-Fetch-Site` of `cross-site` or `same-site`, is `403` -- UNLESS the
+   request carries a valid token.
+
+Token: set `FLEET_SUPERVISOR_TOKEN` in the supervisor's environment (or pass
+`apiToken` to `createSupervisor()`), then send `Authorization: Bearer <token>`
+or `X-Fleet-Token: <token>`. A matching token admits a cross-origin JSON
+request; a presented token that does not match is always `403`, whatever the
+origin. With no token configured, only same-origin requests pass. The
+dashboard's own buttons and forms send JSON from the supervisor's own origin,
+so they need no token.
+
+The per-sprint child viewer (the `--viewer-port` server the live proxy
+forwards to) applies the same guard (no token mechanism) to its own POST routes
+(`/stop`, `/pause`, `/resume`, `/save_logs`, `/extensions/:id/actions/:id`),
+since it is reachable directly on loopback and is the endpoint the decision
+answer ultimately reaches. The live proxy strips the browser's `Origin`,
+`Referer`, `Sec-Fetch-*` and token headers when forwarding an admitted request,
+so the child sees it as a same-host, Origin-less call.
+
 ## POST /api/sprints: the full precondition order
 
 `launch()` in `api.mjs` runs these checks strictly in order; any failure
@@ -383,6 +422,10 @@ answer `503`, and a background retry flips it to `ready`.
 - **400** -- always paired with a `field` name (for `POST /api/sprints`) or
   a plain `error` message (missing path param, invalid JSON body, missing
   token). Used across nearly every JSON POST route.
+- **403** -- a mutating request refused as cross-site (foreign `Origin` or
+  `Sec-Fetch-Site`) without a valid token, or carrying an invalid token (see
+  "Mutating requests" above).
+- **415** -- a mutating request without `Content-Type: application/json`.
 - **404** -- "no such live/known thing": unknown sprint id (`GET
   /api/sprints/:id`, `POST /api/sprints/:id/stop`, force-release), no live
   port and no history (`/sprints/:id/live` subpaths), no persisted state

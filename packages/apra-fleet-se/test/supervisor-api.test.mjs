@@ -76,6 +76,8 @@ function mockReq(method, url, body) {
     return {
         method,
         url,
+        // Mutating routes require a JSON content type (request-guard.mjs).
+        headers: { 'content-type': 'application/json' },
         on(event, cb) {
             if (event === 'data') { for (const c of chunks) cb(c); }
             if (event === 'end') { cb(); }

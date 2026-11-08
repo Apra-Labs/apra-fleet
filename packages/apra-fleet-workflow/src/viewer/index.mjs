@@ -10,6 +10,7 @@ import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs'
 import { buildRunTitle } from './run-title.mjs';
 import { billedTokens } from '../workflow/pricing.mjs';
 import { createRunSummary, refreshSummaryCore, applyExtensionSummary, backfillExtensionSummaries } from './run-summary.mjs';
+import { checkMutatingRequest } from './request-guard.mjs';
 
 // apra-fleet-eft.6.5: the SAME template serves both the live view and the
 // process-free History view -- `opts.history` (true) feeds a FROZEN state
@@ -362,7 +363,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 
     async function confirmStopWorkflow() {
       closeStopModal();
-      await fetch('/stop', { method: 'POST' });
+      await fetch('/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       showStopToast();
     }
 
@@ -378,10 +379,10 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // tick, below. That keeps the button truthful about what the engine has
     // ACTUALLY done rather than what the browser merely asked for.
     async function pauseWorkflow() {
-      await fetch('/pause', { method: 'POST' });
+      await fetch('/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     }
     async function resumeWorkflow() {
-      await fetch('/resume', { method: 'POST' });
+      await fetch('/resume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     }
 
 
@@ -1457,6 +1458,18 @@ export function createDashboardViewer(workflow, opts = {}) {
     });
 
     const server = http.createServer((req, res) => {
+        // Cross-site request forgery guard (request-guard.mjs): this server
+        // listens on a loopback port any visited web page could POST to, and
+        // its POST routes stop/pause the run or record an operator answer. A
+        // mutating request must be JSON and same-origin (no Origin: the
+        // supervisor's proxy and HTTP clients; or this page's own origin).
+        const refused = checkMutatingRequest(req);
+        if (refused) {
+            if (typeof req.resume === 'function') req.resume();
+            res.writeHead(refused.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({ error: refused.error }));
+            return;
+        }
         if (req.url === '/') {
             res.writeHead(200, { 'Content-Type': 'text/html' });
             res.end(HTML_TEMPLATE(dashboardExtensions));
