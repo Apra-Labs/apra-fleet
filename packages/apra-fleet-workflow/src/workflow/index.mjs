@@ -414,6 +414,15 @@ function buildRepairPrompt(errorsText, initialPrompt) {
  *   return type. `CancelledError` (cooperative `requestStop()`) is never
  *   soft-caught -- it always throws, regardless of this option.
  *   (apra-fleet-unw.17)
+ * @property {boolean} [pauseExempt] - When true, the call skips the
+ *   cooperative pause gate: it runs even while the run is paused, and it is
+ *   not counted as an in-flight activity, so it neither blocks behind a pause
+ *   nor holds one back from engaging. It is not journaled for replay either
+ *   (no sequence number is consumed), so a resumed run's replay order does
+ *   not depend on how many such calls ran. Meant for short, read-only probes
+ *   a paused script issues while it waits on an external condition. A
+ *   requestStop() still cancels it (the run's stop signal is passed through
+ *   as for any command).
  */
 
 export class FleetWorkflow extends EventEmitter {
@@ -1566,6 +1575,18 @@ export class FleetWorkflow extends EventEmitter {
         if (!opts.member_name && !opts.member_id) {
             throw new Error(`[Workflow Error] command() requires either member_name or member_id`);
         }
+        // opts.pauseExempt (see CommandOptions): no gate, no in-flight
+        // bookkeeping -- a read-only probe a paused script issues while it
+        // waits. A stop still cancels it through the run's stop signal.
+        if (opts.pauseExempt) {
+            const signal = opts.signal ?? this._currentSignal();
+            if (signal && signal.aborted) {
+                throw signal.reason instanceof CancelledError
+                    ? signal.reason
+                    : new CancelledError('[Workflow Error] command() not started: the run was stopped');
+            }
+            return this._commandDispatch(cmd, opts);
+        }
         await this._pauseGate();
         this._enterActivity();
         try {
@@ -1623,7 +1644,9 @@ export class FleetWorkflow extends EventEmitter {
         const store = this._store();
         let sequence = null;
         let replayKey = null;
-        if (store && store.activitySeq) {
+        // A pause-exempt call is never journaled for replay (see
+        // CommandOptions.pauseExempt): it takes no sequence number.
+        if (store && store.activitySeq && !opts.pauseExempt) {
             // (apra-fleet-unw2.14, N6) See agent()/_nextSequence(): numeric at
             // the top level, hierarchical/order-independent inside parallel().
             sequence = this._nextSequence(store);

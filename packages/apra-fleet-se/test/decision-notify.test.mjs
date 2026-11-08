@@ -136,6 +136,19 @@ test('launch-resolved default target: the message reaches the registered orchest
     assert.ok(/^[\x00-\x7F]*$/.test(formatNotificationBody(d)), 'ASCII body');
 });
 
+test('the how-to-answer text says a bd human respond answer is picked up within the read poll interval, never to press Resume', () => {
+    const d = record();
+    const dflt = formatNotificationBody(d);
+    assert.ok(
+        dflt.includes('bd human respond x-dec "<chosen option id and any instructions>" (the paused sprint picks the answer up within 5 minutes and resumes on its own)'),
+        dflt,
+    );
+    assert.doesNotMatch(dflt, /press Resume/i);
+    assert.doesNotMatch(dflt, /Resume/);
+    const custom = formatNotificationBody(d, { readPollIntervalMs: 90_000 });
+    assert.ok(custom.includes('picks the answer up within 90 seconds'), custom);
+});
+
 const failureModes = {
     'not configured': { config: undefined, reason: NO_CHANNEL_REASON, expectCalls: 0 },
     'tool error': { fakes: { message: async () => { throw new Error('boom message'); }, email: async () => ({ isError: true, content: [{ text: 'smtp down' }] }) }, reason: ['boom message', 'smtp down'] },

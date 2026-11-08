@@ -28,31 +28,35 @@
 //       'paused-awaiting-decision' (sprintState.decisionWait and the
 //       'decisions' published state namespace)
 //   issue ONE read of the pending decision beads (`bd show`), which blocks
-//       at the engine's pause gate: it runs only once the run is released
-//       (so it is never a per-poll command), and an operator stop rejects it
+//       at the engine's pause gate: it runs only once the run is released,
+//       and an operator stop rejects it
 //   every poll interval (a non-blocking timer; woken at once by
 //       recordDecisionAnswer) check ONLY the in-process answer queue -- no
 //       command, no log line, no resume
-//   an answer is queued: requestResume(...) ONCE -- the engine's pre-resume
-//       hook runs as for any resume (the CLI skips its re-reserve/resync for
-//       this pause, because it never handed the reservations back) -- the
-//       blocked read runs, the queued answer is applied, and `bd comments` is
-//       read for any other decision bead the read reports closed
+//   every read poll interval, ONE pause-exempt `bd show --json` of the
+//       holding decision beads on the backlog member (command() with
+//       opts.pauseExempt: it skips the pause gate and is not an in-flight
+//       activity) -- no pull, no resync, no member release, no pause/resume
+//   an answer is queued, or the read reports a holding decision bead
+//       closed: requestResume(...) ONCE -- the engine's pre-resume hook runs
+//       as for any resume (the CLI skips its re-reserve/resync for this
+//       pause, because it never handed the reservations back) -- the blocked
+//       read runs, a queued answer is applied, and `bd comments` is read for
+//       every decision bead the read reports closed
 //
 // ANSWER SOURCES. (a) The in-process answer queue: recordDecisionAnswer /
 // answerPendingDecision, which the run's own viewer action and the
 // supervisor's POST /api/sprints/:id/decisions/:decisionId reach. It needs no
-// member command, so it is the only thing a poll checks. (b) An operator
-// running `bd human respond` elsewhere: there is NO member-free source for it
-// -- the sprint's beads clone lives on a sprint member, and this process has
-// no beads access of its own -- so it is NOT polled. It is picked up when the
-// run is next released: by an in-process answer (the post-resume read reports
-// every closed decision bead), or by an operator Resume (dashboard Resume /
-// POST /sprints/:id/live/resume), which runs the blocked read, pulls the beads
-// clone and reads once more when nothing is answered yet. A release with no
-// answer logs ONE line and, after one poll interval (an answer or a stop ends
-// it early), parks the run again -- never a tight loop. The pause log line
-// tells the operator this.
+// member command, so the 60s poll checks only it. (b) An operator running
+// `bd human respond` elsewhere: the read poll above sees the decision bead
+// closed and resumes the run on its own, within one read poll interval -- no
+// dashboard Resume needed. The read targets the backlog member (the
+// supervisor-owned, unreservable member on the project beads folder), so it
+// touches no reserved sprint member. An operator Resume still works as
+// before: it runs the blocked read, pulls the beads clone and reads once more
+// when nothing is answered yet. A release with no answer logs ONE line and,
+// after one poll interval (an answer or a stop ends it early), parks the run
+// again -- never a tight loop.
 //
 // A decision bead CLOSED by `bd human respond` is an answer; its last
 // "Response: ..." comment is the answer text (a bead closed some other way,
@@ -63,18 +67,22 @@
 // sprintState.answeredDecisions, and the run continues: the released bead
 // re-enters through the ordinary ready set.
 //
-// POLL INTERVAL: DECISION_POLL_INTERVAL_MS_DEFAULT (60s), overridable with
-// the APRA_FLEET_DECISION_POLL_MS environment variable (a positive integer, in
-// milliseconds). Never a tight loop. Logging is one line per state change
-// (paused, a failed resume -- once per distinct error --, released without an
+// POLL INTERVALS: DECISION_POLL_INTERVAL_MS_DEFAULT (60s, the in-process
+// queue check), overridable with the APRA_FLEET_DECISION_POLL_MS environment
+// variable, and DECISION_READ_POLL_INTERVAL_MS_DEFAULT (5 minutes, the
+// decision bead read), overridable with APRA_FLEET_DECISION_READ_POLL_MS (each
+// a positive integer, in milliseconds). Never a tight loop. Logging is one
+// line per state change (paused, an out-of-process answer seen, a failed
+// resume or a failed read -- once per distinct error --, released without an
 // answer, resumed), never one per poll.
 //
 // IDLE TIMEOUT: the ~30 minute DEFAULT_IDLE_TIMEOUT_MS is the fleet server's
 // cloud idle manager, which STOPS an idle cloud member's VM; it never aborts a
 // sprint. The engine itself has no pause timeout, and this wait has no total
-// budget of its own: a decision may take hours. Nothing touches the members
-// while waiting, so a cloud member may be stopped as idle; the next dispatch
-// to it restarts it transparently, as after a usage-limit pause.
+// budget of its own: a decision may take hours. Nothing touches the sprint
+// members while waiting (the read poll goes to the backlog member only), so a
+// cloud member may be stopped as idle; the next dispatch to it restarts it
+// transparently, as after a usage-limit pause.
 //
 // RESERVATIONS: unlike the usage-limit pause, the members stay reserved by
 // this sprint for the whole wait: the CLI's 'paused' handler skips the
@@ -83,8 +91,9 @@
 // a member meanwhile. The sprint lock is held too: a paused run is running.
 //
 // STOP: an operator stop during the wait rejects at once with a CancelledError
-// -- through the engine's stop signal (context.stopSignal()) and through the
-// read blocked at the pause gate -- and it is propagated (never swallowed),
+// -- through the engine's stop signal (context.stopSignal()), which also
+// cancels an in-flight pause-exempt read, and through the read blocked at the
+// pause gate -- and it is propagated (never swallowed),
 // so the run tears down immediately, with no further dispatch. The wait never
 // re-parks a run whose stop signal has fired.
 //
@@ -121,6 +130,9 @@ export const DECISION_PAUSE_SOURCE = 'needs_decision';
 export const DECISIONS_STATE_NAMESPACE = 'decisions';
 
 export const DECISION_POLL_INTERVAL_MS_DEFAULT = 60_000;
+
+/** How often a paused run reads its decision beads for an out-of-process answer. */
+export const DECISION_READ_POLL_INTERVAL_MS_DEFAULT = 5 * 60_000;
 
 // Every decision wait currently paused in this process. An in-process answer
 // route (the sprint's own viewer/dashboard) finds the run to answer here.
@@ -169,6 +181,16 @@ export function decisionPollIntervalMs(env = process.env) {
 }
 
 /**
+ * The decision bead read interval while paused: APRA_FLEET_DECISION_READ_POLL_MS
+ * when it is a positive integer, else the default (5 minutes).
+ */
+export function decisionReadPollIntervalMs(env = process.env) {
+    const raw = env && env.APRA_FLEET_DECISION_READ_POLL_MS;
+    const n = Number(raw);
+    return raw !== undefined && raw !== '' && Number.isInteger(n) && n > 0 ? n : DECISION_READ_POLL_INTERVAL_MS_DEFAULT;
+}
+
+/**
  * The answer text from a decision bead's comments: the last comment written
  * by `bd human respond` ("Response: <text>"), else the last comment, else ''.
  * @param {Array<{ text?: string }>} comments
@@ -210,6 +232,13 @@ export function formatDecisionAnswerNote(decision, answer, via) {
     ].join('\n');
 }
 
+/** "5 minutes", "90 seconds": a poll cadence as the operator reads it. */
+export function formatInterval(ms) {
+    if (ms >= 60_000 && ms % 60_000 === 0) return `${ms / 60_000} minute${ms === 60_000 ? '' : 's'}`;
+    const sec = Math.max(1, Math.round(ms / 1000));
+    return `${sec} second${sec === 1 ? '' : 's'}`;
+}
+
 function parseJson(raw) {
     if (raw && typeof raw === 'object') return raw;
     const text = String(raw ?? '').trim();
@@ -225,13 +254,16 @@ function parseJson(raw) {
  * @param {object} deps.sprintState
  * @param {(reason: string, opts?: object) => (void|Promise<void>)} deps.requestPause
  * @param {(reason: string) => Promise<void>} deps.requestResume
- * @param {Function} deps.command the workflow command() seam
- * @param {string} deps.member the member whose beads clone the engine reads and writes
+ * @param {Function} deps.command the workflow command() seam (must honour
+ *   opts.pauseExempt for the read made while paused)
+ * @param {string} deps.member the member whose beads clone the engine reads and
+ *   writes: the runner passes its backlog member, which no sprint reserves
  * @param {(member: string) => Promise<any>} [deps.pullBeads] pull that clone before a poll read
  * @param {(member: string) => Promise<any>} [deps.pushBeads] push it after applying answers
  * @param {(namespace: string, data: object) => void} [deps.publishState]
  * @param {(msg: string) => void} [deps.log]
- * @param {number} [deps.pollIntervalMs]
+ * @param {number} [deps.pollIntervalMs] the in-process answer queue check interval
+ * @param {number} [deps.readPollIntervalMs] the pause-exempt decision bead read interval
  * @param {() => number} [deps.now]
  * @param {() => (AbortSignal|undefined)} [deps.stopSignal] the engine's run
  *   stop signal (context.stopSignal); without it a stop is seen only through
@@ -254,6 +286,7 @@ export function createDecisionWait({
     publishState = () => {},
     log = () => {},
     pollIntervalMs = decisionPollIntervalMs(),
+    readPollIntervalMs = decisionReadPollIntervalMs(),
     now = () => Date.now(),
     stopSignal = () => undefined,
 }) {
@@ -351,11 +384,11 @@ export function createDecisionWait({
     // decision without one never holds the run, see holding()).
     const pollIds = (decisions) => [...new Set(decisions.map((d) => d.decisionBeadId).filter(Boolean))];
 
-    const readBeads = async (ids, label) => {
+    const readBeads = async (ids, label, extraOpts = {}) => {
         if (ids.length === 0) return [];
         const shown = parseJson(await command(
             `bd show ${ids.join(' ')} --json`,
-            { member_name: member, silent: true, label },
+            { member_name: member, silent: true, label, ...extraOpts },
         ));
         return Array.isArray(shown) ? shown : (shown ? [shown] : []);
     };
@@ -439,51 +472,111 @@ export function createDecisionWait({
         });
     };
 
-    // Parks the run ONCE and holds it parked -- no member command, no resume
-    // -- until it is released. The one read is issued while the run is
+    // Parks the run ONCE and holds it parked -- no member release, no resume
+    // -- until it is released. The one gated read is issued while the run is
     // paused, so it blocks at the engine's pause gate and only runs on
-    // release. Each poll interval (and every recordDecisionAnswer wake)
-    // checks only the in-process answer queue; a queued answer resumes the
-    // run once. A failed resume (the pre-resume hook threw) keeps the run
-    // parked and is retried on the next interval, logged once per distinct
-    // error. Any other release (an operator Resume) also ends the hold.
-    // Returns the read and whether this wait did the resume; rejects with a
-    // CancelledError on a stop.
+    // release. Two timers run meanwhile:
+    //   - every pollIntervalMs (and every recordDecisionAnswer wake): check
+    //     the in-process answer queue; no command;
+    //   - every readPollIntervalMs: ONE pause-exempt `bd show` of the holding
+    //     decision beads on the backlog member (command opts.pauseExempt:
+    //     it skips the pause gate and is not an in-flight activity). No pull,
+    //     no resync, no release, no pause/resume per read. A read failure is
+    //     logged once per distinct error and the wait keeps going.
+    // A queued answer, or a decision bead the read reports closed (answered
+    // out of process with `bd human respond`), resumes the run ONCE. A failed
+    // resume (the pre-resume hook threw) keeps the run parked and is retried
+    // on the next interval, logged once per distinct error. Any other release
+    // (an operator Resume) also ends the hold. Returns the gated read and
+    // whether this wait did the resume; rejects with a CancelledError on a
+    // stop.
     const holdUntilReleased = async (reason, ids) => {
         throwIfStopped();
+        // Captured now, inside the run: the timers below may fire outside the
+        // run's async context, where stopSignal() can no longer find it.
+        const runSignal = signalOf();
         await requestPause(reason, { source: DECISION_PAUSE_SOURCE });
         let selfResume = false;
         let resuming = false;
         let lastResumeError = null;
+        let lastReadError = null;
+        let answeredOutOfProcess = false;
+        let reading = false;
+        let released = false;
         let timer = null;
+        let readTimer = null;
+        const stopped = () => !!(runSignal && runSignal.aborted);
         const tryResume = () => {
-            if (resuming || selfResume || queued.size === 0) return;
-            const signal = signalOf();
-            if (signal && signal.aborted) return;
+            if (resuming || selfResume || (queued.size === 0 && !answeredOutOfProcess)) return;
+            if (stopped()) return;
             resuming = true;
             selfResume = true;
+            const why = queued.size > 0
+                ? 'an operator answer to a pending decision was recorded'
+                : 'an operator answered a pending decision with bd human respond';
             Promise.resolve()
-                .then(() => requestResume('an operator answer to a pending decision was recorded'))
+                .then(() => requestResume(why))
                 .then(() => { resuming = false; }, (err) => {
                     resuming = false;
                     selfResume = false;
                     const msg = err && err.message ? err.message : String(err);
                     if (msg !== lastResumeError) {
                         lastResumeError = msg;
-                        log(`decision wait: resume failed, staying paused and retrying every ${Math.round(pollIntervalMs / 1000)}s while the answer is queued: ${msg}`);
+                        log(`decision wait: resume failed, staying paused and retrying every ${Math.round(pollIntervalMs / 1000)}s while an answer is waiting: ${msg}`);
                     }
                 });
+        };
+        // One pause-exempt read of the holding decision beads (never two at
+        // once, none after an answer was seen or the run was released/stopped).
+        const pollRead = async () => {
+            if (reading || answeredOutOfProcess || released || stopped()) return;
+            reading = true;
+            try {
+                // The run's stop signal is passed explicitly: this read is
+                // issued from a timer, outside any guarantee that the run's
+                // async context (where command() finds it) is still current.
+                const shown = await readBeads(
+                    ids, 'Check pending decision beads for an answer (read while paused)',
+                    { pauseExempt: true, ...(runSignal ? { signal: runSignal } : {}) },
+                );
+                if (released || stopped()) return;
+                const closedIds = shown.filter((b) => b && b.status === 'closed').map((b) => String(b.id)).filter((id) => ids.includes(id));
+                if (closedIds.length > 0) {
+                    answeredOutOfProcess = true;
+                    log(`Decision bead(s) ${closedIds.join(', ')} answered with bd human respond; resuming the sprint to apply the answer.`);
+                    tryResume();
+                }
+            } catch (err) {
+                if (err && err.name === 'CancelledError') return; // a stop: untilStopped reports it
+                const msg = err && err.message ? err.message : String(err);
+                if (msg !== lastReadError) {
+                    lastReadError = msg;
+                    log(`decision wait: reading the decision bead(s) for an answer failed (non-fatal; retrying every ${Math.round(readPollIntervalMs / 1000)}s): ${msg}`);
+                }
+            } finally {
+                reading = false;
+            }
         };
         const tick = () => {
             tryResume();
             timer = setTimeout(tick, pollIntervalMs);
         };
+        const readTick = () => {
+            pollRead().then(() => tryResume(), () => {});
+            readTimer = setTimeout(readTick, readPollIntervalMs);
+        };
         timer = setTimeout(tick, pollIntervalMs);
+        if (ids.length > 0) readTimer = setTimeout(readTick, readPollIntervalMs);
         wake = tryResume;
         const read = readBeads(ids, 'Read pending decisions once the run is released (waits at the pause gate)');
         read.catch(() => {}); // a stop rejects it; untilStopped reports that
         tryResume();
-        const shown = await untilStopped(read, () => { clearTimeout(timer); wake = null; });
+        const shown = await untilStopped(read, () => {
+            released = true;
+            clearTimeout(timer);
+            clearTimeout(readTimer);
+            wake = null;
+        });
         return { shown, resumedBySelf: selfResume };
     };
 
@@ -559,8 +652,8 @@ export function createDecisionWait({
             log(
                 `Sprint ${PAUSED_AWAITING_DECISION} (${where}): nothing else can run until an operator answers ` +
                 `${decisions.length} pending decision(s): ${names}. Members stay reserved and idle. Answer from the ` +
-                `sprint dashboard's decision banner (resumes at once); an answer recorded elsewhere with ` +
-                `bd human respond <decision bead> "<answer>" is picked up when the run is resumed (dashboard Resume).`,
+                `sprint dashboard's decision banner (resumes at once), or with ` +
+                `bd human respond <decision bead> "<answer>" (picked up within ${formatInterval(readPollIntervalMs)}, no Resume needed).`,
             );
             publish(PAUSED_AWAITING_DECISION);
             liveWaits.add(api);

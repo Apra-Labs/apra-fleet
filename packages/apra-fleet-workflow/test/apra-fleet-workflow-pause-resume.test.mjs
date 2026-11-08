@@ -461,3 +461,94 @@ describe('apra-fleet-p2to.1.3.2: resume pre-resume hook is a barrier ahead of th
         assert.strictEqual(resumedFired, false);
     });
 });
+
+// command(..., { pauseExempt: true }): a read-only probe a paused script issues
+// while it waits on an external condition. It runs while the run is paused,
+// is never counted in flight (so it cannot hold back a pause), takes no journal
+// sequence, and is still cancelled by requestStop(). Ordinary agent()/command()
+// calls keep blocking at the gate while it runs.
+describe('command() pauseExempt option', () => {
+    test('runs while paused and is not counted in flight; ordinary command()/agent() still block at the gate', async () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        wf.requestPause();
+        assert.strictEqual(wf._paused, true);
+
+        let inFlightDuringProbe = null;
+        const api = wf.fleetApi;
+        const orig = api.executeCommand.bind(api);
+        api.executeCommand = async (payload) => {
+            if (payload.command === 'probe') inFlightDuringProbe = wf._inFlight;
+            return orig(payload);
+        };
+
+        const out = await wf.command('probe', { member_name: 'fleet-dev', pauseExempt: true });
+        assert.strictEqual(out, 'probe');
+        assert.strictEqual(inFlightDuringProbe, 0, 'a pause-exempt call is never counted in flight');
+        assert.strictEqual(wf._paused, true, 'the pause stays engaged');
+
+        let cmdSettled = false;
+        let agentSettled = false;
+        const cmd = wf.command('ordinary', { member_name: 'fleet-dev' }).then((r) => { cmdSettled = true; return r; });
+        const ag = wf.agent('hello', { member_name: 'fleet-dev' }).then((r) => { agentSettled = true; return r; });
+        await nextTick();
+        assert.strictEqual(cmdSettled, false, 'ordinary command() blocks at the pause gate');
+        assert.strictEqual(agentSettled, false, 'agent() blocks at the pause gate');
+        assert.strictEqual(wf._pauseWaiters.length, 2);
+
+        await wf.requestResume();
+        assert.strictEqual(await cmd, 'ordinary');
+        assert.strictEqual(await ag, 'echo: hello');
+    });
+
+    test('an in-flight pause-exempt call does not hold back a requested pause', async () => {
+        const api = createGatedFleetApi();
+        const wf = new FleetWorkflow(api);
+        const probe = wf.command('probe', { member_name: 'fleet-dev', pauseExempt: true });
+        await nextTick();
+        assert.strictEqual(api.started.length, 1, 'the probe is dispatched');
+        wf.requestPause();
+        assert.strictEqual(wf._paused, true, 'the pause engages with the probe still in flight');
+        api.release();
+        assert.strictEqual(await probe, 'probe');
+        assert.strictEqual(wf._paused, true);
+    });
+
+    test('takes no journal sequence number inside a run', async () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        const seqs = [];
+        wf.on('activity:start', (m) => seqs.push([m.command, m.sequence ?? null]));
+        await wf.runWithContext({}, async (ctx) => {
+            const store = wf._store();
+            store.activitySeq = { value: 0 };
+            await ctx.command('a', { member_name: 'fleet-dev' });
+            await ctx.command('probe', { member_name: 'fleet-dev', pauseExempt: true });
+            await ctx.command('b', { member_name: 'fleet-dev' });
+        });
+        assert.deepStrictEqual(seqs, [['a', 0], ['probe', null], ['b', 1]]);
+    });
+
+    test('requestStop() cancels a pause-exempt call issued while paused, and one issued after the stop never dispatches', async () => {
+        const api = createGatedFleetApi();
+        const wf = new FleetWorkflow(api);
+        await wf.runWithContext({}, async (ctx) => {
+            ctx.requestPause();
+            assert.strictEqual(wf._paused, true);
+            const probe = ctx.command('probe', { member_name: 'fleet-dev', pauseExempt: true });
+            probe.catch(() => {});
+            await nextTick();
+            assert.strictEqual(api.started.length, 1, 'the probe is dispatched while paused');
+            // The gated fake never observes the signal itself; a real
+            // McpClient rejects on abort. Simulate it by aborting and
+            // releasing: the engine must surface a CancelledError either way
+            // for the next call.
+            wf.requestStop('operator stop');
+            api.release();
+            await probe.catch(() => {});
+            await assert.rejects(
+                ctx.command('late', { member_name: 'fleet-dev', pauseExempt: true }),
+                (err) => err instanceof CancelledError,
+            );
+            assert.strictEqual(api.started.length, 1, 'no command dispatched after the stop');
+        });
+    });
+});

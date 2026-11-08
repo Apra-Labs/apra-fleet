@@ -41,6 +41,8 @@
 // failure ("no channel configured"), logged loudly, never silent.
 // =============================================================================
 
+import { decisionReadPollIntervalMs, formatInterval } from './decision-wait.mjs';
+
 export const DEFAULT_NOTIFY_TIMEOUT_MS = 30_000;
 export const NO_CHANNEL_REASON = 'no channel configured';
 /** Registry id of the operator's orchestrating session on the fleet server. */
@@ -140,7 +142,7 @@ export function resolveNotifyTargets({ config, hasFleetClient }) {
 }
 
 /** Plain-text notification body: bead, full question, every option, recommendation, how to answer. */
-export function formatNotificationBody(decision, { dashboardUrl } = {}) {
+export function formatNotificationBody(decision, { dashboardUrl, readPollIntervalMs = decisionReadPollIntervalMs() } = {}) {
     const lines = [
         `A sprint is waiting for an operator decision on bead ${decision.beadId}.`,
         '',
@@ -156,7 +158,7 @@ export function formatNotificationBody(decision, { dashboardUrl } = {}) {
         'How to answer:',
     ];
     if (decision.decisionBeadId) {
-        lines.push(`- bd human respond ${decision.decisionBeadId} "<chosen option id and any instructions>", then press Resume in the sprint dashboard (a run paused for a decision touches no member, so it does not see a bd answer until it is resumed)`);
+        lines.push(`- bd human respond ${decision.decisionBeadId} "<chosen option id and any instructions>" (the paused sprint picks the answer up within ${formatInterval(readPollIntervalMs)} and resumes on its own)`);
     } else {
         lines.push('- the decision bead could not be filed; record the decision in the work bead notes and re-run the sprint');
     }

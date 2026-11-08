@@ -7,6 +7,7 @@ import {
 } from '../fleet-sprint/dolt-sync.mjs';
 import {
     createDecisionWait, activeDecisionWaits, answerFromComments, decisionPollIntervalMs, formatDecisionAnswerNote,
+    decisionReadPollIntervalMs, DECISION_READ_POLL_INTERVAL_MS_DEFAULT,
     DECISION_POLL_INTERVAL_MS_DEFAULT, PAUSED_AWAITING_DECISION, DECISION_PAUSE_SOURCE,
 } from '../fleet-sprint/decision-wait.mjs';
 
@@ -14,9 +15,9 @@ import {
 // The run parks once awaiting an operator decision instead of throwing
 // StalledSprintError, and resumes on the answer without a relaunch:
 // recordDecisionAnswer() (the dashboard / supervisor answer route) resumes it
-// at once; a `bd human respond` made elsewhere is picked up when the run is
-// next resumed (an operator Resume), since nothing polls the members. An
-// operator stop during the pause ends the run.
+// at once; a `bd human respond` made elsewhere is picked up by the periodic
+// pause-exempt decision bead read (decision-wait-long-wait.test.mjs) or, as
+// here, by an operator Resume. An operator stop during the pause ends the run.
 // =============================================================================
 
 const check = (cond, msg) => assert.ok(cond, msg);
@@ -44,6 +45,15 @@ test('unit: the poll interval defaults to 60s and honours a positive APRA_FLEET_
     assert.equal(decisionPollIntervalMs({ APRA_FLEET_DECISION_POLL_MS: '250' }), 250);
     for (const bad of ['0', '-5', 'abc', '1.5', '']) {
         assert.equal(decisionPollIntervalMs({ APRA_FLEET_DECISION_POLL_MS: bad }), 60_000, `ignores ${JSON.stringify(bad)}`);
+    }
+});
+
+test('unit: the decision bead read interval defaults to 5 minutes and honours a positive APRA_FLEET_DECISION_READ_POLL_MS only', () => {
+    assert.equal(DECISION_READ_POLL_INTERVAL_MS_DEFAULT, 300_000);
+    assert.equal(decisionReadPollIntervalMs({}), 300_000);
+    assert.equal(decisionReadPollIntervalMs({ APRA_FLEET_DECISION_READ_POLL_MS: '2000' }), 2000);
+    for (const bad of ['0', '-5', 'abc', '1.5', '']) {
+        assert.equal(decisionReadPollIntervalMs({ APRA_FLEET_DECISION_READ_POLL_MS: bad }), 300_000, `ignores ${JSON.stringify(bad)}`);
     }
 });
 
@@ -354,8 +364,9 @@ test('mock sprint: the only remaining bead awaits a decision -- the run pauses (
         const ANSWER = 'a: keep the attributes and upgrade the emulator';
         const { scenario, seen } = await decisionScenario('dwait-respond', async (_workflow, { runCmd: rc, tempDir: td }, data) => {
             await rc(`bd human respond ${data.pending[0].decisionBeadId} -r "${ANSWER}"`, td);
-            // Answered outside the run: nothing polls the members, so the
-            // operator resumes it (the dashboard Resume button).
+            // Answered outside the run; the operator resumes it at once (the
+            // dashboard Resume button) rather than waiting for the periodic
+            // decision bead read, which still works.
             await _workflow.requestResume('operator Resume after bd human respond');
         });
         const x = scenario.tasks.find((t) => t.title === DECIDE).id;
