@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "9a7760f37f70876b9b3fdd5360714698ea4dd270",
     "branch": "main",
-    "entry_count": 137
+    "entry_count": 139
   },
   "entries": [
     {
@@ -975,6 +975,35 @@
       "updated_at": "2026-09-29T06:13:14.812Z"
     },
     {
+      "id": "55c80cc0-609c-499d-bca4-1fa4d4889e46",
+      "type": "knowledge",
+      "title": "Supervisor and child viewer validate Host on every request (DNS-rebinding defence)",
+      "summary": "request-guard.mjs checkRequestHost admits only loopback names, IP literals, the non-wildcard bind host, or allowedHosts entries; both servers run it on every method before the Origin/JSON check, and a token never waives it.",
+      "symbols": [
+        "checkRequestHost",
+        "checkMutatingRequest",
+        "parseAllowedHosts",
+        "normalizeHostName",
+        "SUPERVISOR_ALLOWED_HOSTS_ENV"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/viewer/request-guard.mjs",
+        "packages/apra-fleet-se/src/supervisor/server.mjs",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs",
+        "packages/apra-fleet-se/bin/serve.mjs",
+        "packages/apra-fleet-se/test/supervisor-csrf-guard.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T10:56:25.181Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/bin/serve.mjs": "9f5f5ed40c249a83ee3d9682bc0a9e2686ef6fe6",
+        "packages/apra-fleet-se/src/supervisor/server.mjs": "dbf29794be7e911d74ca0406e011491469d9ffd2",
+        "packages/apra-fleet-se/test/supervisor-csrf-guard.test.mjs": "3e0e41677274ac685d61218451e4ff40d2ce09a5",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs": "40a249163390fa53bb1bc336418433a5792f83ea",
+        "packages/apra-fleet-workflow/src/viewer/request-guard.mjs": "7ec63f0bc021035080ea03d03f64f7ba0ec3bf75"
+      }
+    },
+    {
       "id": "5b0c0a37-6e58-4854-b1f4-b672ca0a6080",
       "type": "knowledge",
       "title": "A crossing sync-bracket close can never be the last open bracket, so the pause-guard poke is unreachable there",
@@ -1634,6 +1663,29 @@
         "src/services/knowledge/bible-import.ts": "9a75635a8ccb17c83c0aef0cc1806386ec3c8cd5",
         "src/services/knowledge/sqlite-provider.ts": "3b70b8d2bfe7a3e3b4c1c522400841d0b5282d6f",
         "tests/knowledge/kb-member-mixed-tier-reads.test.ts": "f452ea5700809ded25e518a2743994214a4bc750"
+      }
+    },
+    {
+      "id": "9db85b59-1883-43cf-8357-717914e3c8b9",
+      "type": "knowledge",
+      "title": "The needs_decision pause keeps member reservations; only a pause that released re-reserves on resume",
+      "summary": "cli.mjs wirePauseReservations reads the pause source from 'pause:requested' (the 'paused' event carries none). For source needs_decision it skips releaseForPause, and the pre-resume hook runs re-reserve and resync only after a pause that actually released.",
+      "symbols": [
+        "wirePauseReservations",
+        "reReserveOnResume",
+        "DECISION_PAUSE_SOURCE"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/bin/cli.mjs",
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs",
+        "packages/apra-fleet-se/test/cli-decision-pause-keeps-reservations.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T10:56:22.781Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/bin/cli.mjs": "4518b0b43e5a46ca599db84eb4a7ef6911140027",
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs": "3e92e65adff97cc499eccb1de83a6efc4483c7ab",
+        "packages/apra-fleet-se/test/cli-decision-pause-keeps-reservations.test.mjs": "0f160dc4078b021b9af3a0e5995b092ce93b8029"
       }
     },
     {
