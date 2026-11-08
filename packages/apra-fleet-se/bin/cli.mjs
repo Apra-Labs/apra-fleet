@@ -163,6 +163,9 @@ export function buildOptionsSpec() {
         // env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted (direct launch):
         // the runner takes the expectation from the backlog member.
         'expect-beads': { type: 'string' },
+        // Operator-notification config for a pending decision (JSON; env
+        // fallback FLEET_SPRINT_DECISION_NOTIFY). See decision-notify.mjs.
+        'decision-notify': { type: 'string' },
         budget: { type: 'string' },
         // Stabilization Issue 32: per-dispatch time budget in seconds
         // (timeout_s == max_total_s at every dispatch; integ ceiling 2x).
@@ -219,6 +222,11 @@ Options:
                                 the supervisor; env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted: the
                                 backlog member's own 'bd where' becomes the expectation and every
                                 other member must match it. A mismatch aborts before any bd mutation.
+      --decision-notify <json>  Where to notify the operator of a pending decision, as JSON
+                                ({"message_member","email":{provider,from,to,host,port,user,secure},
+                                "dashboard_url","timeout_s"}); env fallback FLEET_SPRINT_DECISION_NOTIFY.
+                                Credentials stay in the fleet credential store. Unset: a loud
+                                'no channel configured' notification failure per decision.
       --budget <usd>            USD ceiling for this run's total estimated spend. Optional;
                                 omitted (the default) means unlimited, identical to prior behavior.
       --dispatch-timeout-s <s>  Per-dispatch time budget in seconds (default 9000). The hard ceiling
@@ -353,7 +361,7 @@ export async function resolveRoleMapWithWarnings(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, ciGate }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, ciGate, decisionNotify }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -388,6 +396,7 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // The raw --expect-beads JSON, forwarded verbatim; runner.js's
     // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
     if (expectBeads !== undefined) args.expect_beads = expectBeads;
+    if (decisionNotify !== undefined) args.decision_notify = decisionNotify;
     // --ci-gate is not wired (apra-fleet-dv8i); ci_gate is never forwarded.
     // if (ciGate !== undefined) args.ci_gate = ciGate;
     return args;
@@ -1158,6 +1167,7 @@ async function main() {
                 serviceUrl,
                 runId: effectiveRunId,
                 expectBeads,
+                decisionNotify: (values['decision-notify'] || process.env.FLEET_SPRINT_DECISION_NOTIFY || '').trim() || undefined,
                 skipRegression: Boolean(values['skip-regression']),
                 // ciGate: values['ci-gate'],  -- not wired (apra-fleet-dv8i)
             }),

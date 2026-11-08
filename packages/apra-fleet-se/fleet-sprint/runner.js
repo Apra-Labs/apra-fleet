@@ -141,6 +141,7 @@ import { policyFor, USAGE_LIMIT_BUDGET_DEFAULTS, agentTypeAppliesKbCaptures } fr
 // into the dispatchRole engine as ctx.onUsageLimit below.
 import { createUsageLimitPauseController } from './usage-limit-controller.mjs';
 import { createDecisionWait } from './decision-wait.mjs';
+import { notifyDecision } from './decision-notify.mjs';
 // apra-fleet-3swo.6.2: the first two of runSprintCycle's twelve phase()
 // boundaries, sliced into their own modules under ./phases/. Each takes ONE
 // explicit state argument instead of closing over runSprintCycle's locals; the
@@ -1878,6 +1879,13 @@ async function runSprintCycle(context) {
         })
         : null;
     if (decisionWait) sprintState.recordDecisionAnswer = decisionWait.recordDecisionAnswer;
+    // Operator notification (message + email, once per decision, never fatal).
+    sprintState.notifyDecision = (record) => notifyDecision({
+        decision: record,
+        config: validated.decisionNotify,
+        fleetApi: (args && typeof args.callTool === 'function') ? sprintScopedFleetApi({ callTool: args.callTool, log }) : null,
+        log,
+    });
 
     // --- dispatchRole engine context (apra-fleet-3swo.5.3) -------------------
     // Every runner-side primitive fleet-sprint/dispatch-role.mjs needs to run

@@ -247,6 +247,16 @@ export async function recordPendingDecision({ sprintState, decision, raisedBy, c
         `(${decisionId}, decision bead ${decisionBeadId || 'NOT FILED'}); set aside for the rest of this run with its open dependent(s) ` +
         `[${dependents.join(', ')}] and not re-dispatched while the decision is pending. Request: ${JSON.stringify(record)}`,
     );
+    // Tell the operator (decision-notify.mjs). Injected by the runner as
+    // sprintState.notifyDecision; it never throws, and a failure here must
+    // never change the sprint, so this guard is belt and braces.
+    if (typeof sprintState.notifyDecision === 'function') {
+        try {
+            await sprintState.notifyDecision(record);
+        } catch (err) {
+            log(`NOTIFICATION FAILED for decision ${decisionId}: ${err && err.message}. The sprint continues unchanged.`);
+        }
+    }
     return record;
 }
 

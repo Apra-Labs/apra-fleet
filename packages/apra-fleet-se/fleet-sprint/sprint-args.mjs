@@ -9,6 +9,7 @@ import { normalizeRole, validateCredentialStoreName } from './contracts.mjs';
 import { ROLE_KB_MAINTAINER } from './kb-maintainer.mjs';
 import { parseExpectedIdentity } from './beads-identity.mjs';
 import { resolveBacklogRoleAlias } from './backlog-role.mjs';
+import { validateDecisionNotify } from './decision-notify.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI -> runner argument contract
@@ -162,6 +163,11 @@ const KNOWN_ARG_KEYS = new Set([
     // verifyBeadsIdentity precondition (beads-identity-check.mjs); absent, the
     // backlog member's own probed identity becomes the expectation.
     'expect_beads',
+    // Explicit operator-notification config for a pending NEEDS-DECISION
+    // (decision-notify.mjs): JSON string or object { message_member, email,
+    // dashboard_url, timeout_s }. Absent: each decision logs a loud
+    // 'no channel configured' notification failure; the sprint is unaffected.
+    'decision_notify',
 ]);
 
 /**
@@ -558,6 +564,8 @@ export function validateArgs(args) {
     // --- expect_beads (optional) ------------------------------------------
     const expectBeads = validateExpectBeads(args.expect_beads);
 
+    const decisionNotify = validateDecisionNotify(args.decision_notify);
+
     // --- ci_gate: NOT WIRED (see the KNOWN_ARG_KEYS note; apra-fleet-dv8i) ---
     // const ciGate = validateCiGate(args.ci_gate);
     const ciGate = undefined;
@@ -585,6 +593,7 @@ export function validateArgs(args) {
         usageLimitMaxWaitS: args.usage_limit_max_wait_s,
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,
         expectBeads,
+        decisionNotify,
         ciGate,
     };
 }

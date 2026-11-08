@@ -1380,6 +1380,15 @@ export class ApraFleet {
     }
 
     /**
+     * Send a message to a connected member session (the orchestrating
+     * Claude Code session, for operator notifications).
+     * @param {{ member_id: string, content: string, reply_to?: string }} options
+     */
+    async sendMessage(options) {
+        return this.mcpClient.callTool('send_message', options);
+    }
+
+    /**
      * Send an email. Pass provider config inline (provider, from, and for
      * SMTP: host, port, user, secure). Secrets resolve from the credential
      * store (sendgrid_api_key / smtp_password).

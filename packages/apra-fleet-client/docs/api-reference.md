@@ -763,6 +763,14 @@ union -- a user-authored deny rule is never dropped; only fleet-derived
 Calls `setup_ssh_key` -- converts a remote member from password to SSH key
 authentication. Options: `member_id?`, `member_name?`.
 
+#### `sendMessage(options)`
+
+Calls `send_message` -- pushes a message to a connected member session.
+Options: `member_id` (required, the target session's member id), `content`
+(required), `reply_to?`. A target that is not connected is reported in the
+result JSON (`{ "error": "member not connected or no MCP session" }`), not
+thrown.
+
 #### `sendEmail(options: SendEmailOptions)`
 
 Calls `send_email`. Provider config is passed inline; secrets resolve
