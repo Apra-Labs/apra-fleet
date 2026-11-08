@@ -125,8 +125,9 @@ function isIpLiteralHost(name) {
  * admitted: a browser always sends one.
  *
  * @param {import('node:http').IncomingMessage} req
- * @param {{ bindHost?: string|null, allowedHosts?: string[]|string|null }} [opts]
- *   `bindHost`: the interface the server bound (admitted as a name unless it
+ * @param {{ bindHost?: string|null, allowedHosts?: string[]|string|null, allowedHostsHint?: string }} [opts]
+ *   `allowedHostsHint`: embedder-specific remedy text appended to the 403
+ *   (e.g. the CLI flag or env var that sets `allowedHosts`); `bindHost`: the interface the server bound (admitted as a name unless it
  *   is a wildcard such as 0.0.0.0); `allowedHosts`: extra names to admit (for
  *   an off-box bind reached by DNS name).
  * @returns {null | { status: number, error: string }}
@@ -143,7 +144,7 @@ export function checkRequestHost(req, opts = {}) {
     }
     return {
         status: 403,
-        error: `request refused: Host '${raw}' is not a name this server answers to (possible DNS rebinding); add it to the server's allowed hosts if it is legitimate`,
+        error: `request refused: Host '${raw}' is not a name this server answers to (possible DNS rebinding); add it to the server's allowed hosts if it is legitimate${opts.allowedHostsHint ? ` (${opts.allowedHostsHint})` : ''}`,
     };
 }
 
@@ -170,7 +171,7 @@ export function checkMutatingRequest(req, opts = {}) {
     if (!isJsonContentType(req)) {
         return {
             status: 415,
-            error: `${method} requests must send Content-Type: application/json (form, multipart and text/plain bodies are refused)`,
+            error: `${method} requests must send Content-Type: application/json (form, multipart and text/plain bodies are refused); set that header and send a JSON body`,
         };
     }
 

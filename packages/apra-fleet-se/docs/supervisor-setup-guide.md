@@ -266,3 +266,33 @@ dashboard's decision banner, or with `bd human respond <decision bead>
 The supervisor *process* runs the installed `.mjs` source with your system
 Node.js (it is not bundled into the `apra-fleet` binary); its project
 folder is separate and is the one its backlog member works in.
+
+## Upgrade notes: the request guard
+
+Copy these into the release notes. They describe the supervisor's request
+guard (see `supervisor-api.md`, "Mutating requests") and the sprint result
+contract.
+
+1. **POSTs without a JSON content type now get `415`.** Every non-GET/HEAD/
+   OPTIONS request must send `Content-Type: application/json`; form,
+   multipart and `text/plain` bodies are refused. Fix: add the header
+   `Content-Type: application/json` to the client (for curl: `-H "Content-Type: application/json"`
+   and a JSON `-d` body, even `{}`). The `415` body names this header.
+2. **A supervisor bound to `0.0.0.0` and reached by a DNS name now answers
+   `403` to every method, GETs included**, unless that name is allowed.
+   The `Host` header is checked on every request as a DNS-rebinding defence;
+   loopback names, IP literals and the supervisor's own non-wildcard `--host`
+   are always admitted. Fix: start the supervisor with `--allowed-host <name>`
+   (repeatable or comma-separated) or set `FLEET_SUPERVISOR_ALLOWED_HOSTS=<name>`,
+   or reach it by IP address. The `403` body names both. A token sent to a
+   per-sprint child viewer is refused with a message saying the viewer accepts
+   no token: send the request through the supervisor, or without the
+   `Authorization` / `X-Fleet-Token` header.
+3. **The sprint result contract gains `success-with-warnings`.** A sprint whose
+   work passed but whose PR was not opened (for example a VCS auth failure)
+   ends as a success with a `warnings` list instead of a failure. API
+   consumers see it as `resultStatus` (`success` or `success-with-warnings`)
+   and `warnings` on `GET /api/sprints/:id`, in the terminal state's `result`,
+   and in the `finished` history event. Fix: treat `success-with-warnings`
+   as success when branching on `resultStatus`, and surface `warnings` to the
+   operator; code that only accepted `success` should accept both.

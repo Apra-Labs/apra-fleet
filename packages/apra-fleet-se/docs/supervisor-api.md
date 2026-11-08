@@ -67,6 +67,8 @@ answer ultimately reaches. The live proxy strips the browser's `Origin`,
 `Referer`, `Sec-Fetch-*` and token headers when forwarding an admitted request,
 so the child sees it as a same-host, Origin-less call.
 
+See also the upgrade notes in `supervisor-setup-guide.md` ("Upgrade notes: the request guard").
+
 ## POST /api/sprints: the full precondition order
 
 `launch()` in `api.mjs` runs these checks strictly in order; any failure

@@ -319,8 +319,8 @@ export function createSupervisor(deps = {}) {
             // The Host header is checked on EVERY request first (GET too): a
             // DNS-rebound page controls both Origin and Host, so an origin
             // comparison alone admits it, and it could also read GET routes.
-            const refused = checkRequestHost(req, { bindHost: host, allowedHosts })
-                || checkMutatingRequest(req, { token: apiToken, bindHost: host, allowedHosts });
+            const guardOpts = { token: apiToken, bindHost: host, allowedHosts, allowedHostsHint: `start the supervisor with --allowed-host <name> or set ${SUPERVISOR_ALLOWED_HOSTS_ENV}=<name>` };
+            const refused = checkRequestHost(req, guardOpts) || checkMutatingRequest(req, guardOpts);
             if (refused) {
                 if (typeof req.resume === 'function') req.resume();
                 sendJson(res, refused.status, { error: refused.error });

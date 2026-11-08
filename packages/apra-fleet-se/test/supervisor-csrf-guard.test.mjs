@@ -422,6 +422,22 @@ describe('request-guard Host allowlist (DNS-rebinding defence)', () => {
         assert.equal(checkRequestHost({ method: 'GET', headers: { host: 'user@127.0.0.1' } })?.status, 403);
     });
 
+    test('the supervisor 403 for an unknown Host names --allowed-host and the env var; the 415 names application/json', async () => {
+        const sup = createSupervisor({ port: 0, apiToken: null, host: '127.0.0.1', logger: { log() {}, error() {} } });
+        await sup.start();
+        try {
+            const bad = await rawRequest(sup.port, 'GET', '/api/health', { headers: { host: `evil.internal:${sup.port}` } });
+            assert.equal(bad.status, 403, bad.text);
+            assert.match(bad.json.error, /--allowed-host/);
+            assert.match(bad.json.error, /FLEET_SUPERVISOR_ALLOWED_HOSTS/);
+            const form = await rawRequest(sup.port, 'POST', '/api/shutdown', { headers: { 'content-type': 'text/plain' }, body: '{}' });
+            assert.equal(form.status, 415, form.text);
+            assert.match(form.json.error, /application\/json/);
+        } finally {
+            await sup.stop();
+        }
+    });
+
     test('createSupervisor admits a name from allowedHosts and refuses others', async () => {
         const sup = createSupervisor({ port: 0, apiToken: null, host: '127.0.0.1', allowedHosts: ['fleet.internal'], logger: { log() {}, error() {} } });
         await sup.start();

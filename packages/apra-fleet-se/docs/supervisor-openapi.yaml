@@ -501,6 +501,13 @@ paths:
                         type: array
                         items: { $ref: "#/components/schemas/HistoryEvent" }
                       latest: { $ref: "#/components/schemas/HistoryEvent" }
+                      resultStatus:
+                        type: string
+                        description: present for a finished sprint; success or success-with-warnings (branch pushed, PR skipped for a VCS auth failure). Treat both as success.
+                      warnings:
+                        type: array
+                        items: { type: string }
+                        description: present when non-empty; the reasons behind success-with-warnings
         "404":
           description: no sprint with this id is live or in history
           content:
