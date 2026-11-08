@@ -74,6 +74,7 @@ import { applyGuardedReopens, ensureRedBranchFixTask, isInGoalPriority } from '.
 import {
     validateNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
 } from '../abort.mjs';
+import { applyReviewerDecision, reviewerReopenEntries } from '../decisions.mjs';
 
 /**
  * Runs the Re-Review phase: one fresh review of the CURRENT state, plus the
@@ -100,6 +101,9 @@ export async function runReReviewPhase({
     // The git/beads sync bracket this phase's post-mutation D-push goes
     // through.
     gitSync,
+    // Per-sprint resolved state (../sprint-state.mjs): a NEEDS-DECISION
+    // verdict records its pending decision and set-aside here.
+    sprintState,
     // Mutated in place; never reassigned by this phase (see header).
     rejectedNewTasks,
     // Reassigned, so passed in and returned (see header).
@@ -145,6 +149,9 @@ export async function runReReviewPhase({
     // verdict in; acceptanceCriteriaJson still carries the full scope
     // for context.
     const reReviewVerdict = await dispatchReview({ beadIds: targetIssues, acceptanceCriteriaJson: JSON.stringify(reReviewScope) });
+    // The re-review covers the whole sprint scope: a NEEDS-DECISION may name
+    // any bead in it.
+    const reReviewScopeIds = [...targetIssues, ...(Array.isArray(reReviewScope) ? reReviewScope.map((b) => b && b.id).filter(Boolean) : [])];
     lastReviewVerdict = reReviewVerdict.verdict;
     reviewedThisCycle = true;
 
@@ -162,7 +169,8 @@ export async function runReReviewPhase({
     // "deferred scope, not reopened" outcome instead of being pulled
     // back into a sprint that no longer targets it.
     const reopenedIds = new Set(await applyGuardedReopens({
-        entries: reReviewVerdict.reopenIds,
+        // reopenIds, plus a NEEDS-DECISION bead (../decisions.mjs).
+        entries: reviewerReopenEntries(reReviewVerdict, reReviewScopeIds),
         bdListScoped, goalMax, goal: validated.goal, log, command,
         member: backlogMember,
         workedOnIds,
@@ -174,6 +182,14 @@ export async function runReReviewPhase({
         // Track per-bead reopen counts for reopen-thrash detection.
         onReopened: ({ id }) => recordReopen(id),
     }));
+    // A NEEDS-DECISION verdict: same handling as the per-round Review phase
+    // (../decisions.mjs); a closed bead was reopened just above through the
+    // same guarded reopen call (reviewerReopenEntries).
+    await applyReviewerDecision({
+        verdict: reReviewVerdict, scopeIds: reReviewScopeIds, reopenedIds,
+        sprintState, command, member: backlogMember, bdListScoped, cycle, round: null,
+        site: `Re-Review C${cycle}`, log,
+    });
     let inGoalNewTaskCount = 0;
     for (const newTask of reReviewVerdict.newTasks) {
         const validation = validateNewTask(newTask);

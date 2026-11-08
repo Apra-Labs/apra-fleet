@@ -418,6 +418,11 @@ export const GUARDED_MODULES = [
     // Per-dispatch kb_* and code_* accounting: reads session_stats through the
     // injected memberCall around each dispatch. No command() or agent() site.
     'dispatch-accounting.mjs',
+    // NEEDS-DECISION recording: member_name-bearing command() sites (the
+    // decision bead create and the work-bead note, each staged through
+    // stageCommandBodyMemberSide), no agent(), no push of its own (callers
+    // D-push through gitSync).
+    'decisions.mjs',
     // The per-member sprint-init probe: kb_*/code_* calls through the injected
     // memberCall, member_detail on the orchestrator session, and ONE
     // member-bound command channel (fleetApi.executeCommand, command strings

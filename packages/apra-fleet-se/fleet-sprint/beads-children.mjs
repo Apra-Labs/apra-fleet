@@ -366,6 +366,27 @@ async function adoptLandedChild(opts, childId) {
  * How many `bd create` dispatches createChildBeadWithAllocatedId makes for one
  * newTask before giving up -- each with a freshly allocated id (GitHub #615).
  */
+/**
+ * Files an operator DECISION bead (decisions.mjs recordPendingDecision):
+ * a top-level bead -- no parent, no `--id`, so bd mints the id and there is
+ * no allocator id to probe -- of type `decision`, labelled for `bd human`,
+ * created `deferred` so it is never sprint work, and linked to the work bead
+ * by a `discovered-from` edge (never a blocks edge). The body is a
+ * member-local file staged by the caller; only the bead id and the fixed
+ * title shape are inline. Lives here because this module is the single
+ * permitted bead-creation surface (explicit-id-create-guard.mjs).
+ *
+ * @param {{ command: Function, member: string, workBeadId: string, title: string, bodyFile: string, priority: number, label: string, labelName?: string }} opts
+ * @returns {Promise<string>} bd's raw output (the new id, from --silent)
+ */
+export async function createDecisionBead({ command, member, workBeadId, title, bodyFile, priority, label, labelName = 'human' }) {
+    return command(
+        `bd create "${title}" --body-file "${bodyFile}" -p ${priority} -t decision ` +
+        `-l ${labelName} -s deferred --deps "discovered-from:${workBeadId}" --silent`,
+        { member_name: member, silent: true, label },
+    );
+}
+
 export const CHILD_CREATE_MAX_ATTEMPTS = 3;
 
 /**

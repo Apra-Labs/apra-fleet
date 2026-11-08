@@ -3518,7 +3518,7 @@ async function runSprintCycle(context) {
             ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks } = await runReviewPhase({
                 phase, log, command,
                 cycle, validated, targetIssues, backlogMember,
-                gitSync,
+                gitSync, sprintState,
                 replanIds, replannedThisCycle, perBeadFeedback, rejectedNewTasks,
                 devRounds, streakOutcomes, readyTitleById,
                 lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks,
@@ -3879,7 +3879,7 @@ async function runSprintCycle(context) {
             ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks } = await runReReviewPhase({
                 phase, log, command,
                 cycle, validated, targetIssues, backlogMember,
-                gitSync,
+                gitSync, sprintState,
                 rejectedNewTasks,
                 lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks,
                 dispatchReview, bdListScoped, goalMax, recordReopen,
