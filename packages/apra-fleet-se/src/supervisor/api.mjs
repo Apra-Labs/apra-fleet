@@ -867,7 +867,17 @@ export function createSprintController(deps = {}) {
             // and surfacing a raw ECONNREFUSED-derived 500.
             const terminalState = hasTerminalState(id, reservation.branch ?? null);
             if (terminalState) {
-                return { sprintId: id, live: false, terminal: true, state: terminalState };
+                // Lift the run's own terminal status + warnings (e.g.
+                // success-with-warnings when the PR was skipped for an auth
+                // failure) so consumers need not dig through state.result.
+                const res = terminalState && typeof terminalState === 'object' ? terminalState.result : null;
+                const resultStatus = res && typeof res === 'object' && typeof res.status === 'string' ? res.status : null;
+                const warnings = res && typeof res === 'object' && Array.isArray(res.warnings) ? res.warnings : [];
+                return {
+                    sprintId: id, live: false, terminal: true, state: terminalState,
+                    ...(resultStatus ? { resultStatus } : {}),
+                    ...(warnings.length > 0 ? { warnings } : {}),
+                };
             }
             const port = resolvePort(reservation.childPid ?? null);
             if (port != null) {

@@ -4265,7 +4265,13 @@ async function runSprintCycle(context) {
         // Present only when the branch was pushed but no PR was opened
         // ({ reason, message }); surfaces in the supervisor's persisted
         // terminal state as state.result.prSkipped. Never changes the verdict.
-        ...(prSkipped ? { prSkipped } : {}),
+        // A PASS whose PR was skipped (push ok, PR not opened) ends as
+        // 'success-with-warnings' so it never reads as a plain success.
+        ...(prSkipped ? {
+            ...(finalVerdictResult.verdict === 'PASS' ? { status: 'success-with-warnings' } : {}),
+            prSkipped,
+            warnings: [`${prSkipped.message} (reason: ${prSkipped.reason})`],
+        } : {}),
     };
 }
 

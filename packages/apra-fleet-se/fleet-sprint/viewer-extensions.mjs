@@ -721,9 +721,12 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
 export function renderResultExtrasHtml(result) {
     const verdict = result && typeof result === 'object' ? result.verdict : undefined;
     const prUrl = result && typeof result === 'object' ? result.prUrl : undefined;
+    const warnings = result && typeof result === 'object' && Array.isArray(result.warnings)
+        ? result.warnings.filter((w) => typeof w === 'string' && w.length > 0)
+        : [];
     // Nothing se-meaningful to show (non-fleet-sprint workflow, or a run that
     // hasn't finished yet) -- let the caller hide its container entirely.
-    if (verdict == null && prUrl == null) return '';
+    if (verdict == null && prUrl == null && warnings.length === 0) return '';
 
     // Color signals outcome, same register as the beads status badges above:
     // a clean PASS/MERGED/APPROVED recedes to green, anything that means
@@ -753,7 +756,17 @@ export function renderResultExtrasHtml(result) {
             'style="color: var(--accent); font-size: 11px; text-decoration: none; white-space: nowrap;">PR -&gt;</a>';
     }
 
-    return verdictHtml + prHtml;
+    // A terminal status of success-with-warnings (e.g. PR skipped for a VCS
+    // auth failure) renders each warning as an amber badge, never as plain
+    // success.
+    let warnHtml = '';
+    for (let i = 0; i < warnings.length; i++) {
+        warnHtml += '<span title="' + escapeHtml(warnings[i]) + '" style="color: var(--warning, #f59e0b); ' +
+            'font-weight: 700; font-size: 11px; border: 1px solid var(--warning, #f59e0b); border-radius: 4px; ' +
+            'padding: 2px 6px; white-space: nowrap;">WARNING: ' + escapeHtml(warnings[i]) + '</span>';
+    }
+
+    return verdictHtml + warnHtml + prHtml;
 }
 
 /**

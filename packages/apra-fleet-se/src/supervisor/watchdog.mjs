@@ -446,6 +446,9 @@ export function formatFinishedDetail(state) {
     const parts = [];
     if (terminalReason) parts.push(`terminalReason=${terminalReason}`);
     if (verdict) parts.push(`verdict=${verdict}`);
+    const rs = state.result && typeof state.result === 'object' ? state.result : null;
+    if (rs && rs.status === 'success-with-warnings') parts.push('status=success-with-warnings');
+    if (rs && Array.isArray(rs.warnings) && rs.warnings.length > 0) parts.push(`warnings=${rs.warnings.join('; ')}`);
     return parts.length > 0 ? parts.join(' ') : 'finished';
 }
 
