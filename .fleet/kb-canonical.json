@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "9a7760f37f70876b9b3fdd5360714698ea4dd270",
     "branch": "main",
-    "entry_count": 141
+    "entry_count": 142
   },
   "entries": [
     {
@@ -2645,6 +2645,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T17:05:07.548Z"
+    },
+    {
+      "id": "f3a5a58e-1d41-4ddd-8705-2b4e1985deab",
+      "type": "learning",
+      "title": "Mock-timer callbacks lose the workflow run's async context, so ctx.stopSignal() and command()'s implicit signal are undefined there",
+      "summary": "With node:test mock timers, a setTimeout callback fires from t.mock.timers.tick() in the test's context, not the run's, so the run's AsyncLocalStorage store is gone: stopSignal() and command()'s implicit signal are undefined.",
+      "symbols": [
+        "holdUntilReleased",
+        "_currentSignal",
+        "stopSignal"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-se/test/decision-wait-long-wait.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T13:09:07.086Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs": "81d80292d1610b12376416e4e51fd54c49195835",
+        "packages/apra-fleet-se/test/decision-wait-long-wait.test.mjs": "b8dc5918339c0e11495c1fcddbcd7fae46607314",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs": "7dda9487de73744a7b6cf234bd87bca2dc662b3c"
+      }
     },
     {
       "id": "f40ed9c2-9dd5-4b32-a216-db902c79ddb2",
