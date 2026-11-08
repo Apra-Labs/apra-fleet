@@ -214,7 +214,8 @@ export async function runPublishPrPhase({
     // the issue anyway; it still ends the sprint 'failed' via the return value
     // below, same as the PR path. `why` names the no-PR cause in the log.
     // Typed marker (field `prSkipped`) for a push that succeeded but whose PR
-    // was not raised for a reason the operator must see; runner.js folds it
+    // was not raised because of a VCS auth failure (the credentialAbsent branch
+    // closes targets directly by design and stays unmarked); runner.js folds it
     // into the run result (verdict untouched) and the final summary line.
     let prSkipped = null;
     const closeTargetsDirectly = async (why) => {
@@ -337,7 +338,6 @@ export async function runPublishPrPhase({
                     // PASS) instead of leaving them open with nothing to gate
                     // on. A deployed-but-failing credential is the branch below.
                     log(`[Publish PR Skipped] NO pull request was opened for branch '${validated.branch}' -> '${validated.baseBranch}' (branch is pushed): no PR credential is deployed -- closing target issue(s) directly on PASS as for a remote that cannot open a PR. Deploy a credential to get PRs: ${prResult.error}`);
-                    prSkipped = { reason: 'no-credential', message: 'PR not opened: no PR credential is deployed' };
                     await closeTargetsDirectly('no PR credential deployed');
                 } else if (prResult.authFailure) {
                     // apra-fleet-5co8.15: an auth failure raiseVcsPrForMember
