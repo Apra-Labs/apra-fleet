@@ -1202,6 +1202,15 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
 
     const api = {
         executeCommand: async (opts) => {
+            // Same as the real fleet client (McpClient.request): a request
+            // whose signal is already aborted -- the run was stopped with
+            // requestStop() -- is rejected with code 'ABORTED' before it is
+            // sent, which the workflow turns into a CancelledError.
+            if (opts && opts.signal && opts.signal.aborted) {
+                const aborted = new Error(`Request "execute_command" aborted before a response was received.`);
+                aborted.code = 'ABORTED';
+                throw aborted;
+            }
             commandLog.push(opts.command);
             if (onCommand) {
                 const injected = await onCommand({ command: opts.command, member_name: opts.member_name });
@@ -2143,6 +2152,11 @@ export async function runDevelopLoopScenario(tag, {
     // by plain taskSpecs (e.g. a permanently-blocked bead for the A5
     // goal-priority exit-condition scenarios below).
     beforeSprint,
+    // Optional hook invoked with (workflow, {tempDir, runCmd, epicBead, tasks})
+    // once the scenario's FleetWorkflow exists and BEFORE the sprint runs, so a
+    // scenario can react to its lifecycle events ('pause:requested', 'paused',
+    // 'resumed') -- e.g. answer a pending decision, or requestStop() mid-pause.
+    onWorkflow,
     // deploy.md / integ-test-playbook.md are NOT written by setupMinimal();
     // set true to write them (enabling the Deploy/Integ phases).
     withRunbooks = false,
@@ -2326,6 +2340,7 @@ export async function runDevelopLoopScenario(tag, {
         // a terminal error was actually PERSISTED to sprint state, not just
         // logged.
         workflow.on('state', (e) => states.push(e));
+        if (onWorkflow) await onWorkflow(workflow, { tempDir, runCmd, epicBead, tasks });
         const engine = new WorkflowEngine(workflow);
         const scriptPath = path.join(__dirname, '../../fleet-sprint/runner.js');
 

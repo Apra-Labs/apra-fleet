@@ -26,6 +26,36 @@ forever or burning cycles on it.
 4. **Report.** A "Set aside this run" section appears in the PR body (publish
    and abort paths) and in the sprint analysis. It is omitted when nothing was
    set aside.
+5. **A NEEDS-DECISION bead is set aside and filed for a human.** A doer
+   (status) or reviewer (verdict) that needs an operator to choose returns
+   `NEEDS-DECISION` with a `decision` (bead id, full question, at least two
+   options, recommendation). The engine files a separate decision bead
+   (type `decision`, label `human`, status `deferred`, linked to the work
+   bead by a `discovered-from` edge), appends the request to the work bead's
+   notes, and sets the work bead and its `blocks` dependents aside (kind
+   `needs-decision`). The work bead itself is never labelled `human`:
+   `bd human respond` closes the bead it answers. Nothing on this path is
+   truncated (fleet-sprint/decisions.mjs).
+6. **A pending decision pauses the run instead of stalling it.** When rule 3
+   would stall the run and any decision is still pending -- even if other
+   beads are set aside for other reasons, since the answer may unblock work --
+   the run pauses through the engine's cooperative pause (source
+   `needs_decision`, state `paused-awaiting-decision`, published under the
+   `decisions` state namespace) instead of throwing StalledSprintError. It
+   polls the decision beads once per interval (60s, or
+   `APRA_FLEET_DECISION_POLL_MS`). An answer -- `bd human respond <decision
+   bead> "<answer>"`, or the programmatic `recordDecisionAnswer` -- is
+   appended to the work bead's notes, the bead and its dependents are released
+   and re-enter through the ready set, and the run continues without a
+   relaunch. A stall with no pending decision is unchanged
+   (fleet-sprint/decision-wait.mjs).
+
+   While paused, member reservations are released and re-acquired on each
+   poll's resume, exactly as for a usage-limit pause; the sprint lock is held.
+   The fleet server's 30-minute cloud idle timeout only stops an idle cloud
+   member's VM (restarted by its next dispatch); it never aborts the wait, and
+   the wait has no total budget. An operator stop during the pause ends the
+   run at once.
 
 ## Design points
 
@@ -52,3 +82,9 @@ forever or burning cycles on it.
   back to the two-cycle stall.
 - The abort path passing the set-aside data into the PR body is covered only by
   building the body directly, not by an end-to-end test.
+- A decision answered while the run waits at Cycle Evaluation of its last
+  cycle is applied, but the run ends with that cycle; the released bead is
+  dispatched by the next run. A wait at the start of a develop round
+  dispatches it in the same run.
+- The "Set aside this run" report lists a decision only while it is pending;
+  an answered decision is logged and kept on sprintState.answeredDecisions.

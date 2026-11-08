@@ -124,7 +124,7 @@ export function needsDecisionReason({ decision, raisedBy, decisionBeadId }) {
 // Deletes a member-side staged body file once bd has read it. Best-effort:
 // a failure only leaves one temp file behind. No backticks or `$`, like the
 // staging script itself, so it is inert on every member shell.
-async function removeStagedBody({ command, member, file, log }) {
+export async function removeStagedBody({ command, member, file, log = () => {} }) {
     if (!file) return;
     try {
         await command(

@@ -192,6 +192,18 @@ const decisionRecord = (logs) => {
     return line ? JSON.parse(line.slice(line.indexOf('Request: ') + 'Request: '.length)) : null;
 };
 
+// Stops the run the moment it pauses awaiting a decision (the decision wait
+// itself is covered by mock-sprint-decision-wait.test.mjs), recording the
+// published 'decisions' state at that point.
+const stopOnDecisionPause = (seen) => async (workflow) => {
+    workflow.on('state', (e) => { if (e.namespace === 'decisions') seen.states.push(e.data); });
+    workflow.on('pause:requested', (e) => {
+        if (e.source !== 'needs_decision' || seen.stopped) return;
+        seen.stopped = true;
+        workflow.requestStop('test: stop at the decision pause');
+    });
+};
+
 const DECIDE = 'Task: needs an operator decision';
 const DEPENDS = 'Task: depends on the decision bead';
 const OTHER = 'Task: independent first';
@@ -200,7 +212,9 @@ const LATER = 'Task: independent second';
 test('mock sprint: a doer NEEDS-DECISION sets the bead aside at once, files a human decision bead, and other beads keep dispatching', async () => {
     resetSyncMemo();
     await withScenarioMarkers('doer needs-decision set-aside', async () => {
+        const seen = { states: [], stopped: false };
         const scenario = await runDevelopLoopScenario('ndec-doer', {
+            onWorkflow: stopOnDecisionPause(seen),
             members: ['local'],
             taskSpecs: [DECIDE, DEPENDS, OTHER, LATER].map((title) => ({ title })),
             maxCycles: 2,
@@ -271,16 +285,18 @@ test('mock sprint: a doer NEEDS-DECISION sets the bead aside at once, files a hu
         check(work.notes.includes(`bd human respond ${rec.decisionBeadId}`), 'the note says how to answer');
 
         // (5) The set-aside report lists X with kind needs-decision and the
-        // untruncated question. In this task the run still ends in the
-        // set-aside stall once only the decision remains.
-        check(scenario.error, 'the run ends once only the decision bead (and its dependent) remain');
-        assert.equal(scenario.error.code, 'SPRINT_STALLED');
-        const entry = scenario.error.setAside.find((e) => e.id === x);
+        // untruncated question: published with the decisions state when the
+        // run pauses awaiting the decision (here stopped at that point).
+        check(seen.stopped, 'the run paused awaiting the decision once only it (and its dependent) remained');
+        check(scenario.error && scenario.error.name === 'CancelledError', `stopped at the pause, not stalled: ${scenario.error && scenario.error.name}`);
+        const paused = seen.states.find((d) => d.state === 'paused-awaiting-decision');
+        check(paused, 'the paused-awaiting-decision state was published');
+        const entry = paused.setAside.find((e) => e.id === x);
         assert.equal(entry.kind, 'needs-decision');
         check(entry.reason.includes(QUESTION), `untruncated question in the set-aside entry: ${entry.reason}`);
         assert.equal(entry.decisionBeadId, rec.decisionBeadId);
-        assert.equal(scenario.error.setAside.find((e) => e.id === dep).kind, 'dependent');
-        check(scenario.error.message.includes(QUESTION), 'the stall text carries the whole question');
+        assert.equal(paused.setAside.find((e) => e.id === dep).kind, 'dependent');
+        assert.equal(paused.pending[0].question, QUESTION, 'the published pending decision carries the whole question');
         check(!scenario.dispatched.some((d) => d.agent === 'doer' && d.prompt.includes(rec.decisionBeadId)), 'the decision bead is never dispatched as work');
     });
 });
@@ -289,7 +305,9 @@ test('mock sprint: a reviewer NEEDS-DECISION reopens the closed bead, sets it as
     resetSyncMemo();
     await withScenarioMarkers('reviewer needs-decision set-aside', async () => {
         let asked = false;
+        const seen = { states: [], stopped: false };
         const scenario = await runDevelopLoopScenario('ndec-reviewer', {
+            onWorkflow: stopOnDecisionPause(seen),
             members: ['local'],
             taskSpecs: [DECIDE, OTHER].map((title) => ({ title })),
             maxCycles: 2,
@@ -329,6 +347,7 @@ test('mock sprint: a reviewer NEEDS-DECISION reopens the closed bead, sets it as
         check(decisionBead && (decisionBead.labels || []).includes('human'), 'decision bead labelled human');
         const doersOnX = doerDispatches(scenario).filter((d) => assignedIds(d).includes(x));
         assert.equal(doersOnX.length, 1, 'the reopened bead is not re-dispatched while the decision is pending');
-        check(scenario.error && scenario.error.setAside.some((e) => e.id === x && e.kind === 'needs-decision'), 'listed as needs-decision');
+        const paused = seen.states.find((d) => d.state === 'paused-awaiting-decision');
+        check(paused && paused.setAside.some((e) => e.id === x && e.kind === 'needs-decision'), 'listed as needs-decision');
     });
 });

@@ -140,6 +140,7 @@ import { policyFor, USAGE_LIMIT_BUDGET_DEFAULTS, agentTypeAppliesKbCaptures } fr
 // apra-fleet-hzeb.4.2: the usage-limit pause/resume/re-probe controller wired
 // into the dispatchRole engine as ctx.onUsageLimit below.
 import { createUsageLimitPauseController } from './usage-limit-controller.mjs';
+import { createDecisionWait } from './decision-wait.mjs';
 // apra-fleet-3swo.6.2: the first two of runSprintCycle's twelve phase()
 // boundaries, sliced into their own modules under ./phases/. Each takes ONE
 // explicit state argument instead of closing over runSprintCycle's locals; the
@@ -1856,6 +1857,28 @@ async function runSprintCycle(context) {
         })
         : undefined;
 
+    // NEEDS-DECISION wait (./decision-wait.mjs): when the run would stall
+    // with a decision still pending, it pauses through the same cooperative
+    // pause instead of throwing StalledSprintError, polls the decision beads
+    // and resumes on an answer. Only wired with the engine's pause/resume
+    // primitives (absent for direct/legacy runSprintCycle() callers, which
+    // keep the stall). recordDecisionAnswer is exposed on sprintState for an
+    // in-process answer route.
+    const decisionWait = (typeof requestPause === 'function' && typeof requestResume === 'function')
+        ? createDecisionWait({
+            sprintState,
+            requestPause,
+            requestResume,
+            command,
+            member: backlogMember,
+            pullBeads: (m) => gitSync.syncBeadsBefore(m),
+            pushBeads: (m) => gitSync.syncBeadsAfter(m, { pushBeads: true }),
+            publishState: typeof publishState === 'function' ? publishState : undefined,
+            log,
+        })
+        : null;
+    if (decisionWait) sprintState.recordDecisionAnswer = decisionWait.recordDecisionAnswer;
+
     // --- dispatchRole engine context (apra-fleet-3swo.5.3) -------------------
     // Every runner-side primitive fleet-sprint/dispatch-role.mjs needs to run
     // a role's ladder out of role-policies.mjs's data table. INJECTED, never
@@ -3025,10 +3048,20 @@ async function runSprintCycle(context) {
     // Integration Test later in this cycle can still close it, so it counts
     // as open work that keeps the run going. Without the runbooks it cannot
     // be verified at all; the existing "cannot verify" exit owns that case.
+    //
+    // A pending operator decision turns the stall into a resumable pause
+    // (./decision-wait.mjs): when the stall would be thrown and any decision
+    // is still pending -- even if other set-aside reasons are mixed in, since
+    // the answer may unblock work -- the run waits in state
+    // 'paused-awaiting-decision' until at least one decision is answered,
+    // releases the answered bead(s), resets the no-progress counter (an answer
+    // is progress), and returns true so the caller re-reads the ready set.
+    // Returns false when there is no stall; throws StalledSprintError when
+    // there is one and no decision is pending.
     async function throwIfSetAsideStall({ where, cycle, openAtGoal = null, closedIds = null, runbooks = null }) {
         const doctorBlockedIds = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map();
         const deploySetAside = sprintState.deploySetAside || null;
-        if (doctorBlockedIds.size === 0 && !deploySetAside) return;
+        if (doctorBlockedIds.size === 0 && !deploySetAside) return false;
         let open = openAtGoal;
         if (!open) {
             const [raw, parentIds] = await Promise.all([
@@ -3083,7 +3116,12 @@ async function runSprintCycle(context) {
         const stall = evaluateSetAsideStall({
             openIds: open.map((b) => b.id), integBoundIds, verifyBlockedIds, doctorBlockedIds, deploySetAside, stuckIds,
         });
-        if (!stall) return;
+        if (!stall) return false;
+        if (decisionWait && decisionWait.hasPending()) {
+            await decisionWait.awaitAnswer({ where, cycle });
+            staleCycles = 0;
+            return true;
+        }
         const message = formatSetAsideStallMessage(stall, { where, scope: sprintFilter });
         log(message);
         throw new StalledSprintError(message, {
@@ -3393,7 +3431,10 @@ async function runSprintCycle(context) {
             // ./phases/develop.mjs excludes the set-aside beads itself.
             const roundSetAside = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : null;
             if (roundSetAside && currentReadyAll.every((b) => roundSetAside.has(b.id))) {
-                await throwIfSetAsideStall({ where: `start of Develop C${cycle} R${devRounds + 1}`, cycle });
+                // true: an operator answered a pending decision while the run
+                // was paused -- re-read the ready set (the released bead is
+                // in it again) and dispatch this round.
+                if (await throwIfSetAsideStall({ where: `start of Develop C${cycle} R${devRounds + 1}`, cycle })) continue;
                 log(
                     `Develop C${cycle} R${devRounds + 1}: every still-ready bead is set aside for this run ` +
                     `(${currentReadyAll.map((b) => b.id).join(', ')}) -- skipping the remaining develop/review rounds this cycle.`

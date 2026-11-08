@@ -423,6 +423,10 @@ export const GUARDED_MODULES = [
     // stageCommandBodyMemberSide), no agent(), no push of its own (callers
     // D-push through gitSync).
     'decisions.mjs',
+    // The NEEDS-DECISION wait: member_name-bearing command() sites (the
+    // decision-bead poll reads, bd human respond, the work-bead note), no
+    // agent(); its beads pull/push go through injected gitSync callbacks.
+    'decision-wait.mjs',
     // The per-member sprint-init probe: kb_*/code_* calls through the injected
     // memberCall, member_detail on the orchestrator session, and ONE
     // member-bound command channel (fleetApi.executeCommand, command strings
