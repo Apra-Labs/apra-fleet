@@ -32,7 +32,7 @@ import { createChildPortResolver } from '../src/supervisor/child-port.mjs';
 import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
 import { createLogView, registerLogViewRoutes } from '../src/supervisor/log-view.mjs';
 import { installSelfLogTee, createSelfLogView, registerSelfLogRoutes } from '../src/supervisor/self-log.mjs';
-import { createIdAllocator, registerIdAllocatorRoutes } from '../src/supervisor/id-allocator.mjs';
+import { createIdAllocator, registerIdAllocatorRoutes, defaultDataDir as defaultAllocatorDataDir } from '../src/supervisor/id-allocator.mjs';
 import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
 // eft.4.8.1: the operator-facing surface -- PID-liveness watchdog (eft.4.3),
 // dashboard/backlog/launch-form (eft.6.*), and the six sprint/member/backlog
@@ -82,7 +82,8 @@ Options:
   -h, --help                Show this help message.
 
 Environment:
-  FLEET_SE_DATA_DIR                 Service data dir (ledger/history/logs).
+  FLEET_SE_DATA_DIR                 Service data dir (ledger/history/logs and
+                                    child-id-allocator.json).
   FLEET_SE_SWEEP_OWNER_DATA_DIR     Scope the dolt-orphan-sweep to ephemeral
                                     dolt sql-servers whose --data-dir is under
                                     this path, so an isolated supervisor
@@ -421,7 +422,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // (load persisted high-water marks + the abandoned-reservation sweep) is
     // driven by the seam machinery; its HTTP routes let detached sprint children
     // mint collision-free child ids under a shared parent (constraint C.4).
-    const idAllocator = createIdAllocator();
+    const idAllocator = createIdAllocator({ dataDir: defaultAllocatorDataDir() });
 
     // eft.9.2: the supervisor-owned global dolt push mutex -- a LOAD-BEARING v1
     // requirement (PoC constraints C.2/C.3). Every cross-sprint `bd dolt push`
