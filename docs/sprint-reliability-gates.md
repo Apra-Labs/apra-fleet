@@ -146,3 +146,22 @@ Design record for sprint-engine hardening around work that gets stranded mid-run
   or shell loops, since headless CLIs refuse them; such logic lives in
   `scripts/deploy-install.mjs`, and a test scans deploy.md for the forbidden
   constructs.
+
+## PR skipped for VCS auth failure: success-with-warnings
+
+When a sprint passes its final review but the pull request cannot be opened
+because VCS authentication failed, the engine does not report plain success and
+does not fail. The run ends as success-with-warnings: the engine still exits 0,
+and the terminal state carries a result status and warnings list. The
+supervisor surfaces both from the terminal state and keeps them in the FINISHED
+history entry after the member reservations are released, so a later reader
+still sees that the PR is missing and why. Consumers must treat a warnings list
+on a successful run as work still owed (open the PR by hand), not as noise.
+
+## Child-id allocator data directory
+
+The supervisor's child-id allocator honours `FLEET_SE_DATA_DIR`, so supervisors
+with separate data dirs never share allocator state. When the variable is set,
+the allocator seeds only its high-water marks from the legacy single-file
+location, once, so ids never regress across an upgrade, and warns once if a
+legacy supervisor may still be live and writing to the old file.
