@@ -276,8 +276,11 @@ export function createIdAllocator(deps = {}) {
         }
         if (!liveSignal) {
             try {
+                // A just-written file's mtime can be a few ms AHEAD of Date.now()
+                // (fractional fs timestamps vs whole-ms clock; Windows clock skew),
+                // so a slightly negative age is "just now", not "no signal".
                 const age = now() - (await fs.stat(legacyFilePath)).mtimeMs;
-                if (age >= 0 && age < LEGACY_LIVE_WINDOW_MS) liveSignal = `the legacy file was modified ${Math.round(age / 1000)}s ago`;
+                if (Math.abs(age) < LEGACY_LIVE_WINDOW_MS) liveSignal = `the legacy file was modified ${Math.max(0, Math.round(age / 1000))}s ago`;
             } catch { /* no mtime: no signal */ }
         }
         if (liveSignal) {
