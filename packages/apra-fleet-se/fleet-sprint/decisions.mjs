@@ -115,6 +115,30 @@ export function decisionBeadTitle(beadId) {
     return `Decision needed for ${beadId}`;
 }
 
+/**
+ * Looks up an existing NOT-closed decision bead for `beadId` (a relaunch has a
+ * fresh sprintState, so the per-run pending map cannot see the prior run's).
+ * Decision beads are filed `deferred`, so every non-closed status counts.
+ * Best-effort: a failed or unparseable lookup returns null (caller files).
+ * @returns {Promise<string|null>} the open decision bead's id, or null
+ */
+export async function findOpenDecisionBead({ command, member, beadId, log = () => {} }) {
+    const title = decisionBeadTitle(beadId);
+    try {
+        const out = await command(
+            `bd list -t decision -l ${DECISION_BEAD_LABEL} --title-contains "${title}" --status open,in_progress,blocked,deferred --json`,
+            { member_name: member, silent: true, label: `Look up open decision bead for ${beadId}` },
+        );
+        const parsed = JSON.parse(String(out ?? '').trim() || '[]');
+        const list = Array.isArray(parsed) ? parsed : [];
+        const hit = list.find((b) => b && b.title === title && b.status !== 'closed' && BEAD_ID_RE.test(String(b.id)));
+        return hit ? String(hit.id) : null;
+    } catch (err) {
+        log(`NEEDS-DECISION on '${beadId}': open decision bead lookup FAILED (non-fatal, filing a new one): ${err.message}`);
+        return null;
+    }
+}
+
 /** The set-aside reason for the work bead: names the decision bead and carries the whole question. */
 export function needsDecisionReason({ decision, raisedBy, decisionBeadId }) {
     const where = decisionBeadId
@@ -177,9 +201,11 @@ export async function recordPendingDecision({ sprintState, decision, raisedBy, c
     const workBead = (scopeBeads || []).find((b) => b && String(b.id) === beadId);
     const priority = normalizePriority(workBead && workBead.priority);
 
-    let decisionBeadId = null;
+    let decisionBeadId = await findOpenDecisionBead({ command, member, beadId, log });
+    const reused = decisionBeadId !== null;
+    if (reused) log(`NEEDS-DECISION on '${beadId}': reusing the open decision bead ${decisionBeadId} from an earlier run -- not filing a new one.`);
     let bodyFile = null;
-    try {
+    if (!reused) try {
         bodyFile = await stageCommandBodyMemberSide({
             command, member,
             content: formatDecisionRequest(decision, { raisedBy, cycle, round }),
