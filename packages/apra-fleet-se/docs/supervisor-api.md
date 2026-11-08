@@ -293,6 +293,11 @@ Dolt mode wedges on row-level conflicts if two sprints write concurrently:
   success or `release()` on failure. An abandoned reservation (crash before
   confirm/release) is reclaimed back to the free pool the same way as the
   mutex.
+  The allocator's high-water-mark file lives under `FLEET_SE_DATA_DIR`, so
+  separate data dirs never share counters. When that file does not exist yet,
+  the allocator copies the marks once from the legacy file under the
+  supervisor's old data location, keeping them above any outstanding
+  reservations, and saves on start; the legacy file is only ever read.
 
 Both are supervisor-local, in-memory-plus-persisted-snapshot singletons
 (state files under the supervisor's data dir, atomic temp-file+rename

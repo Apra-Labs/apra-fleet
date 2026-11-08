@@ -36,6 +36,9 @@ forever or burning cycles on it.
    `needs-decision`). The work bead itself is never labelled `human`:
    `bd human respond` closes the bead it answers. Nothing on this path is
    truncated (fleet-sprint/decisions.mjs).
+   Filing is idempotent: an open decision bead with the exact same title is
+   reused rather than duplicated, and its id is validated before it is placed
+   in a `bd` command.
 6. **A pending decision pauses the run instead of stalling it.** When rule 3
    would stall the run and any decision is still pending -- even if other
    beads are set aside for other reasons, since the answer may unblock work --
@@ -69,6 +72,11 @@ forever or burning cycles on it.
    idle cloud member's VM (restarted by its next dispatch); it never aborts
    the wait, and the wait has no total budget. An operator stop during the
    pause ends the run at once.
+
+   `recordDecisionAnswer` only queues the answer and returns `recorded`. The
+   runner applies queued answers at the top of each cycle, inside the
+   open-sync bracket and after a fatal pull, so the bead is released with the
+   beads state in a consistent position.
 
 ## Design points
 
