@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "9a7760f37f70876b9b3fdd5360714698ea4dd270",
     "branch": "main",
-    "entry_count": 135
+    "entry_count": 136
   },
   "entries": [
     {
@@ -1750,6 +1750,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.733Z"
+    },
+    {
+      "id": "a82bffe3-a078-44cf-a91d-4aae1e4a0095",
+      "type": "knowledge",
+      "title": "Pending decisions reach the supervisor via the decisions summary and a generic extension action route",
+      "summary": "decision-wait publishes the 'decisions' namespace; its extension summarize() puts the full pending list in state.summary, and answers go through POST /extensions/:id/actions/:actionId.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/viewer-extensions.mjs",
+        "packages/apra-fleet-se/src/supervisor/api.mjs",
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T07:33:19.610Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs": "e3cd9febf0d13dcdaac610859def051d8d0c0d86",
+        "packages/apra-fleet-se/fleet-sprint/viewer-extensions.mjs": "23495a3465b50733210cde0f90e170cb1134762e",
+        "packages/apra-fleet-se/src/supervisor/api.mjs": "00b5ffb6c77cf66f3d2775aa5e86d02ed79069c2",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs": "040715fdd4a6ad18504dbb68dba67fa9a2c3053a"
+      }
     },
     {
       "id": "a888b84b-d7a0-47ad-9318-2f062770cf2f",
