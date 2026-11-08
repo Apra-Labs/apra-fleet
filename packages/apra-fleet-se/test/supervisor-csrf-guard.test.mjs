@@ -303,6 +303,18 @@ describe('supervisor mutating routes refuse cross-site and non-JSON requests', (
         assert.equal(sideEffects(), before);
     });
 
+    test('a direct POST to the child viewer carrying the supervisor token is told no token is accepted, not "invalid token"', async () => {
+        publishPending();
+        const before = sideEffects();
+        const direct = await rawRequest(childPort, 'POST', '/extensions/decisions/actions/answer', {
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ decisionId: DECISION_ID, answer: 'x' }),
+        });
+        assert.equal(direct.status, 403, direct.text);
+        assert.doesNotMatch(direct.json.error, /invalid token/);
+        assert.match(direct.json.error, /accepts no token/);
+        assert.equal(sideEffects(), before);
+    });
+
     /** A DNS-rebound page: its own (foreign) name in BOTH Host and Origin, same-origin per fetch metadata. */
     const rebound = (p) => ({ host: `attacker.example:${p}`, origin: `http://attacker.example:${p}`, 'sec-fetch-site': 'same-origin' });
 
@@ -387,6 +399,21 @@ describe('request-guard Host allowlist (DNS-rebinding defence)', () => {
         assert.equal(checkMutatingRequest(req('fleet.lan:8787'), { bindHost: '0.0.0.0' })?.status, 403, 'a wildcard bind admits no name');
         assert.equal(checkMutatingRequest(req('box.example.com:8787'), { allowedHosts: 'other.example, Box.Example.com' }), null);
         assert.equal(checkMutatingRequest(req('box.example.com:8787'), { allowedHosts: ['other.example'] })?.status, 403);
+    });
+
+    test('a token presented to a server with no token configured is refused with an accurate message, never "invalid token"', () => {
+        // Child viewers are built without a token; a direct client sending a
+        // (valid supervisor) token must be told no token is accepted there.
+        for (const h of [{ authorization: `Bearer ${TOKEN}` }, { 'x-fleet-token': TOKEN }]) {
+            const refused = checkMutatingRequest(req('127.0.0.1:8787', h), {});
+            assert.equal(refused?.status, 403);
+            assert.doesNotMatch(refused.error, /invalid token/);
+            assert.match(refused.error, /accepts no token/);
+            assert.match(refused.error, /Authorization/);
+        }
+        // With a token configured the old behaviour holds.
+        assert.equal(checkMutatingRequest(req('127.0.0.1:8787', { authorization: 'Bearer wrong' }), { token: TOKEN })?.error, 'invalid token');
+        assert.equal(checkMutatingRequest(req('127.0.0.1:8787', { authorization: `Bearer ${TOKEN}` }), { token: TOKEN }), null);
     });
 
     test('a request with no Host header (non-browser HTTP/1.0 client) is admitted; a malformed one is refused', () => {

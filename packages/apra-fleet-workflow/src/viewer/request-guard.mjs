@@ -178,6 +178,13 @@ export function checkMutatingRequest(req, opts = {}) {
     const presented = presentedToken(req);
     if (presented !== undefined) {
         if (configured && tokensEqual(presented, configured)) return null;
+        if (!configured) {
+            // Never blame the token: this server simply has no token mechanism.
+            return {
+                status: 403,
+                error: 'this server accepts no token (it takes same-origin requests only, or requests forwarded by its parent proxy); drop the Authorization / X-Fleet-Token header and resend the request without it',
+            };
+        }
         return { status: 403, error: 'invalid token' };
     }
 
