@@ -1880,12 +1880,18 @@ async function runSprintCycle(context) {
         : null;
     if (decisionWait) sprintState.recordDecisionAnswer = decisionWait.recordDecisionAnswer;
     // Operator notification (message + email, once per decision, never fatal).
-    sprintState.notifyDecision = (record) => notifyDecision({
-        decision: record,
-        config: validated.decisionNotify,
-        fleetApi: (args && typeof args.callTool === 'function') ? sprintScopedFleetApi({ callTool: args.callTool, log }) : null,
-        log,
-    });
+    sprintState.notifyDecision = async (record) => {
+        // Publish first (the banner shows the decision at once), notify, then
+        // publish again so the per-channel outcome shows.
+        if (decisionWait) decisionWait.publish();
+        await notifyDecision({
+            decision: record,
+            config: validated.decisionNotify,
+            fleetApi: (args && typeof args.callTool === 'function') ? sprintScopedFleetApi({ callTool: args.callTool, log }) : null,
+            log,
+        });
+        if (decisionWait) decisionWait.publish();
+    };
 
     // --- dispatchRole engine context (apra-fleet-3swo.5.3) -------------------
     // Every runner-side primitive fleet-sprint/dispatch-role.mjs needs to run

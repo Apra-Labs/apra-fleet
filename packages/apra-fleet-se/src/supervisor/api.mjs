@@ -14,6 +14,7 @@
 //   GET  /api/sprints/:id      LIVE child state proxied from the child's /state
 //                              when running, else the historical record
 //   POST /api/sprints/:id/stop proxy the child's own cooperative /stop endpoint
+//   POST /api/sprints/:id/decisions/:decisionId  answer a pending operator decision (proxied to the child)
 //
 // SINGLE SOURCE OF TRUTH FOR VALIDATION (acceptance criterion): request
 // validation REUSES the exported runner.js helpers validateIssueId /
@@ -306,6 +307,51 @@ export function proxyChildStop(port, opts = {}) {
 }
 
 /**
+ * Default child HTTP proxy: POST a JSON body to the child viewer's generic
+ * extension action route (`/extensions/:extId/actions/:actionId`) and return
+ * { statusCode, body } (body parsed when JSON).
+ */
+export function proxyChildAction(port, extId, actionId, payload, opts = {}) {
+    const host = opts.host ?? '127.0.0.1';
+    const timeoutMs = Number.isInteger(opts.timeoutMs) ? opts.timeoutMs : 30000;
+    const data = Buffer.from(JSON.stringify(payload ?? {}), 'utf-8');
+    return new Promise((resolve, reject) => {
+        const req = http.request({
+            host, port, method: 'POST', timeout: timeoutMs,
+            path: `/extensions/${encodeURIComponent(extId)}/actions/${encodeURIComponent(actionId)}`,
+            headers: { 'content-type': 'application/json', 'content-length': data.length },
+        }, (res) => {
+            const chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => {
+                const text = Buffer.concat(chunks).toString('utf-8');
+                let body = null;
+                try { body = text ? JSON.parse(text) : null; } catch { body = { error: text.slice(0, 200) }; }
+                resolve({ statusCode: res.statusCode, body });
+            });
+        });
+        req.on('timeout', () => { req.destroy(new Error('child action timed out')); });
+        req.on('error', reject);
+        req.end(data);
+    });
+}
+
+/** Longest operator answer the decision-answer route accepts. */
+export const DECISION_ANSWER_MAX_CHARS = 4000;
+
+/**
+ * Pulls the pending-decision view out of a child /state payload: the decisions
+ * extension's summary (never leaned, so the question and options are whole).
+ * @param {object|null|undefined} state
+ * @returns {{ pendingDecisions: object[], decisionState: string|null }}
+ */
+export function decisionsFromChildState(state) {
+    const d = state && state.summary && state.summary.extensions && state.summary.extensions.decisions;
+    const pendingDecisions = d && Array.isArray(d.pending) ? d.pending : [];
+    return { pendingDecisions, decisionState: d && typeof d.state === 'string' ? d.state : null };
+}
+
+/**
  * apra-fleet-gey.2: default build-version stamp -- this module's own on-disk
  * mtime. This package runs directly from source (no separate compiled
  * artifact, no reliable package.json version bump per fix), and api.mjs IS
@@ -403,6 +449,7 @@ export function createSprintController(deps = {}) {
     const getBacklog = deps.getBacklog ?? (() => ({ tasks: [] }));
     const proxyState = deps.proxyState ?? proxyChildState;
     const proxyStop = deps.proxyStop ?? proxyChildStop;
+    const proxyAction = deps.proxyAction ?? proxyChildAction;
     const roleMapResolver = deps.resolveRoleMap ?? resolveRoleMap;
     const beadsIdentity = deps.beadsIdentity ?? null;
     const backlogMemberHandle = deps.backlogMember && typeof deps.backlogMember.get === 'function' ? deps.backlogMember : null;
@@ -813,7 +860,14 @@ export function createSprintController(deps = {}) {
             const port = resolvePort(reservation.childPid ?? null);
             if (port != null) {
                 const state = await proxyState(port);
-                return { sprintId: id, live: true, state };
+                // pendingDecisions (full, untruncated) and the run state while
+                // paused for a decision, lifted from the child's decisions summary.
+                const { pendingDecisions, decisionState } = decisionsFromChildState(state);
+                return {
+                    sprintId: id, live: true, state, pendingDecisions,
+                    ...(decisionState ? { decisionState } : {}),
+                    ...(decisionState === 'paused-awaiting-decision' ? { runState: decisionState } : {}),
+                };
             }
         }
         // Not live (finished/gone, or port unknown): return the historical record.
@@ -850,8 +904,31 @@ export function createSprintController(deps = {}) {
         return { sprintId: id, status: 'stopping', child: result ?? null };
     }
 
+    // -- POST /api/sprints/:id/decisions/:decisionId : answer a decision -------
+    async function answerDecision(id, decisionId, body) {
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            throw new ApiError(400, 'request body must be a JSON object', 'body');
+        }
+        if (typeof body.answer !== 'string' || !body.answer.trim()) {
+            throw new ApiError(400, 'answer is required (a non-empty string)', 'answer');
+        }
+        if (body.answer.length > DECISION_ANSWER_MAX_CHARS) {
+            throw new ApiError(400, `answer is longer than ${DECISION_ANSWER_MAX_CHARS} characters`, 'answer');
+        }
+        const reservation = ledger.get(id);
+        if (!reservation) throw new ApiError(404, `no live sprint '${id}'`);
+        const port = resolvePort(reservation.childPid ?? null);
+        if (port == null) throw new ApiError(409, `sprint '${id}' has no reachable child (port unknown)`);
+        const out = await proxyAction(port, 'decisions', 'answer', { decisionId, answer: body.answer });
+        if (out.statusCode === 404) throw new ApiError(404, `no pending decision '${decisionId}' in sprint '${id}'`);
+        if (out.statusCode === 400) throw new ApiError(400, (out.body && out.body.error) || 'bad decision answer', 'answer');
+        if (out.statusCode !== 200) throw new ApiError(409, (out.body && out.body.error) || `decision answer failed (${out.statusCode})`);
+        return { sprintId: id, decisionId, status: 'answered', released: (out.body && out.body.released) || [] };
+    }
+
     return {
         name: 'sprint-controller',
+        answerDecision,
         members,
         backlog,
         launch,
@@ -904,6 +981,21 @@ export function registerSprintRoutes(supervisor, controller) {
     supervisor.route('GET', '/api/sprints/:id', async (req, res, ctx) => {
         try {
             sendJson(res, 200, await controller.getSprint(ctx.params.id));
+        } catch (err) {
+            if (!onApiError(res, err)) throw err;
+        }
+    });
+
+    supervisor.route('POST', '/api/sprints/:id/decisions/:decisionId', async (req, res, ctx) => {
+        let body;
+        try {
+            body = (await readJsonBody(req)) ?? {};
+        } catch (err) {
+            sendJson(res, 400, { error: String(err && err.message ? err.message : err), field: 'body' });
+            return;
+        }
+        try {
+            sendJson(res, 200, await controller.answerDecision(ctx.params.id, ctx.params.decisionId, body));
         } catch (err) {
             if (!onApiError(res, err)) throw err;
         }

@@ -92,6 +92,32 @@ export const DECISION_POLL_INTERVAL_MS_DEFAULT = 60_000;
 // route (the sprint's own viewer/dashboard) finds the run to answer here.
 const liveWaits = new Set();
 
+// Every decision wait created in this process, so an in-process answer route
+// can find the run owning a pending decision whether or not that run is
+// currently paused (a decision may be pending while other beads still run).
+// Pruned of idle entries on each creation so it cannot grow without bound.
+const allWaits = new Set();
+
+/**
+ * Answers a pending decision through whichever run in this process owns it.
+ * Same bead state as `bd human respond`; the run resumes without relaunch.
+ * Throws when no run has that pending decision.
+ * @param {string} decisionId
+ * @param {string} answer
+ * @returns {Promise<object>}
+ */
+export async function answerPendingDecision(decisionId, answer) {
+    for (const w of allWaits) {
+        if (w.pending().some((d) => d.decisionId === decisionId)) return w.recordDecisionAnswer(decisionId, answer);
+    }
+    throw new Error(`no pending decision ${JSON.stringify(decisionId)}`);
+}
+
+/** The pending decisions of every run in this process (full, untruncated). */
+export function allPendingDecisions() {
+    return [...allWaits].flatMap((w) => w.pending());
+}
+
 /**
  * The decision waits currently paused in this process: each exposes
  * pending() (the pending decision records) and recordDecisionAnswer().
@@ -216,7 +242,8 @@ export function createDecisionWait({
         const pending = [...pendingMap().values()].map((d) => ({
             decisionId: d.decisionId, beadId: d.beadId, decisionBeadId: d.decisionBeadId,
             question: d.question, options: d.options, recommendation: d.recommendation,
-            raisedBy: d.raisedBy, cycle: d.cycle, round: d.round,
+            raisedBy: d.raisedBy, cycle: d.cycle, round: d.round, raisedAt: d.raisedAt || null,
+            notification: d.notification || {},
         }));
         try {
             publishState(DECISIONS_STATE_NAMESPACE, {
@@ -379,6 +406,11 @@ export function createDecisionWait({
     };
 
     api = {
+        /** Re-publishes the decisions namespace (e.g. after a new decision or a notification outcome). */
+        publish() {
+            publish(waiting ? PAUSED_AWAITING_DECISION : 'running');
+        },
+
         pending() {
             return [...pendingMap().values()];
         },
@@ -465,6 +497,7 @@ export function createDecisionWait({
             if (!waiting) {
                 const rec = await applyAnswer(decision, text, { via: 'recordDecisionAnswer', respond: true });
                 await pushBeads(member);
+                publish('running');
                 return rec;
             }
             return new Promise((resolve, reject) => {
@@ -473,5 +506,7 @@ export function createDecisionWait({
             });
         },
     };
+    for (const w of [...allWaits]) if (w.pending().length === 0) allWaits.delete(w);
+    allWaits.add(api);
     return api;
 }

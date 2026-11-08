@@ -974,6 +974,9 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 // module). Reads from the LIVE, full-fidelity in-memory `state.tree` (never
 // the leaned /state payload), which is where an uncapped activity's complete
 // output/error text still lives.
+// Upper bound on a POST /extensions/:extId/actions/:actionId request body.
+const ACTION_BODY_MAX_BYTES = 64 * 1024;
+
 // True for GET /state?summary=1 (any extra query params, e.g. a _t
 // cache-buster, allowed); false for plain /state and /state?_t=....
 function isSummaryRequest(url) {
@@ -1515,6 +1518,50 @@ export function createDashboardViewer(workflow, opts = {}) {
                 text: detail.text || '',
                 updatedAt: detail.updatedAt ?? null
             }));
+        } else if (req.method === 'POST' && /^\/extensions\/[^/]+\/actions\/[^/]+$/.test(req.url)) {
+            // GENERIC extension action route (mirrors the detail route above):
+            // an extension may register `actions: { <actionId>(ctx) }`, where
+            // ctx = { body, state } with `body` the parsed JSON request body
+            // (bounded to ACTION_BODY_MAX_BYTES). The action returns
+            // { status?, body? } (sync or async). Core never names a specific
+            // extension or action; an unknown extension/action is a 404, a
+            // malformed or oversized body a 400, a throwing action a 500.
+            const match = req.url.match(/^\/extensions\/([^/]+)\/actions\/([^/]+)$/);
+            const extId = decodeURIComponent(match[1]);
+            const actionId = decodeURIComponent(match[2]);
+            const ext = dashboardExtensions.find((e) => e.id === extId);
+            const action = ext && ext.actions && Object.prototype.hasOwnProperty.call(ext.actions, actionId) ? ext.actions[actionId] : null;
+            const reply = (status, body) => {
+                res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+                res.end(JSON.stringify(body));
+            };
+            if (typeof action !== 'function') {
+                reply(404, { error: 'action not found', extension: extId, action: actionId });
+                return;
+            }
+            const chunks = [];
+            let size = 0;
+            let tooBig = false;
+            req.on('data', (c) => {
+                size += c.length;
+                if (size > ACTION_BODY_MAX_BYTES) { tooBig = true; return; }
+                chunks.push(c);
+            });
+            req.on('end', async () => {
+                if (tooBig) { reply(400, { error: 'request body too large' }); return; }
+                let body = {};
+                const raw = Buffer.concat(chunks).toString('utf-8');
+                if (raw.trim()) {
+                    try { body = JSON.parse(raw); } catch { reply(400, { error: 'request body is not valid JSON' }); return; }
+                }
+                try {
+                    const out = (await action({ body, state })) || {};
+                    reply(Number.isInteger(out.status) ? out.status : 200, out.body === undefined ? {} : out.body);
+                } catch (err) {
+                    console.error('[Viewer] extension action failed:', err && err.message ? err.message : err);
+                    reply(500, { error: 'action failed' });
+                }
+            });
         } else if (req.method === 'GET' && /^\/beads\/[^/]+\/description$/.test(req.url)) {
             // BOUNDARY-COMPAT (apra-fleet-eft.37.4, one release only, then
             // dies per docs/workflow-core-boundary-refactoring.md M3): the

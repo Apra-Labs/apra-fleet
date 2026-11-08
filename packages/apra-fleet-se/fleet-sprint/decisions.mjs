@@ -219,6 +219,7 @@ export async function recordPendingDecision({ sprintState, decision, raisedBy, c
         options: decision.options.map((o) => ({ id: o.id, text: o.text })),
         recommendation: decision.recommendation,
         decisionBeadId, raisedBy, cycle,
+        raisedAt: new Date().toISOString(),
         round: Number.isInteger(round) ? round : null,
         notification: {},
     };

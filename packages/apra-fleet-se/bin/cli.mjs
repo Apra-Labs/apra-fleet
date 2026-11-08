@@ -15,7 +15,7 @@ import {
     createFleetHttpTransport,
     getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
-import { beadsExtension, kbCodeIntelExtension } from '../fleet-sprint/viewer-extensions.mjs';
+import { beadsExtension, kbCodeIntelExtension, decisionsExtension } from '../fleet-sprint/viewer-extensions.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
 import { prepareLaunchTopology, toAlignCommandResult } from '../fleet-sprint/member-align.mjs';
@@ -1002,7 +1002,7 @@ async function main() {
         name: 'Fleet-Sprint',
         // kbCodeIntelExtension: its own tab (per-member, per-dispatch kb_* and
         // code_* call counts), separate from the Tasks tab.
-        dashboardExtensions: [beadsExtension, kbCodeIntelExtension],
+        dashboardExtensions: [beadsExtension, kbCodeIntelExtension, decisionsExtension],
         // apra-fleet-eft.37.1/37.2: the core viewer now speaks opts.runId
         // (opts.sprintId is a deprecated BOUNDARY-COMPAT alias -- never use
         // it from here).

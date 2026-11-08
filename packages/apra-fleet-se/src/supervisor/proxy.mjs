@@ -437,6 +437,21 @@ export function createLiveProxy(deps = {}) {
         proxyStream({ host, port, childPath, req, res, logError });
     }
 
+    // The generic extension action route (extension id + action id from the
+    // URL), POST with a JSON body: the decisions banner's answer form.
+    async function handleExtensionAction(req, res, ctx) {
+        const sprintId = ctx?.params?.id;
+        if (!sprintId) { sendPlain(res, 400, 'missing sprint id in path'); return; }
+        const port = safeResolvePort(sprintId);
+        if (!Number.isInteger(port)) {
+            sendPlain(res, 404, `sprint '${sprintId}' is no longer live`);
+            return;
+        }
+        const childPath = '/extensions/' + encodeURIComponent(ctx?.params?.extId ?? '')
+            + '/actions/' + encodeURIComponent(ctx?.params?.actionId ?? '');
+        proxyStream({ host, port, childPath, req, res, logError });
+    }
+
     return {
         name: 'live-proxy',
         resolvePort: safeResolvePort,
@@ -449,6 +464,7 @@ export function createLiveProxy(deps = {}) {
         handleResume,
         handleSaveLogs,
         handleExtensionDetail,
+        handleExtensionAction,
         handleActivityOutput,
     };
 }
@@ -470,5 +486,6 @@ export function registerLiveRoutes(supervisor, proxy) {
     supervisor.route('POST', '/sprints/:id/live/resume', proxy.handleResume);
     supervisor.route('POST', '/sprints/:id/live/save_logs', proxy.handleSaveLogs);
     supervisor.route('GET', '/sprints/:id/live/extensions/:extId/detail/:itemId', proxy.handleExtensionDetail);
+    supervisor.route('POST', '/sprints/:id/live/extensions/:extId/actions/:actionId', proxy.handleExtensionAction);
     supervisor.route('GET', '/sprints/:id/live/activities/:activityId/output', proxy.handleActivityOutput);
 }

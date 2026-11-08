@@ -2,6 +2,7 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { computeSprintProgress } from './sprint-progress.mjs';
 import { DISPATCH_TOOL_CALLS_STATE_NAMESPACE } from './dispatch-accounting.mjs';
 import { MEMBER_INIT_STATE_NAMESPACE } from './member-init-probe.mjs';
+import { DECISIONS_STATE_NAMESPACE, answerPendingDecision } from './decision-wait.mjs';
 
 /**
  * apra-fleet-x8r.1: pure HTML-string builder for the beads-closed/required
@@ -1284,3 +1285,166 @@ export const kbCodeIntelExtension = {
         renderKbCodeIntelPanel();
     `
 };
+
+// =============================================================================
+// PENDING OPERATOR DECISIONS: banner + answer form (decision-wait.mjs publishes
+// the 'decisions' namespace: { state, pending: [...], waitingSince, setAside }).
+// =============================================================================
+
+/** Longest operator answer the answer route accepts. */
+export const DECISION_ANSWER_MAX_CHARS = 4000;
+
+/**
+ * The decisions banner. Pure and self-contained (it is embedded into the
+ * browser page with .toString(), like the other renderers here): every
+ * interpolated value goes through escapeHtml; a malformed record can never
+ * take the page down. Returns '' when nothing is pending. Question, options
+ * and recommendation are never truncated.
+ *
+ * @param {{ state?: string, pending?: object[] }|null|undefined} data
+ * @returns {string}
+ */
+export function renderDecisionsBannerHtml(data) {
+    try {
+        const pending = data && Array.isArray(data.pending) ? data.pending.filter(function (d) { return d && typeof d === 'object'; }) : [];
+        if (pending.length === 0) return '';
+        function channelHtml(name, n) {
+            if (!n || typeof n !== 'object' || !n.status) {
+                return '<span data-notify-channel="' + escapeHtml(name) + '" style="color: #a1a1aa;">' + escapeHtml(name) + ': not attempted</span>';
+            }
+            if (n.status === 'sent') {
+                return '<span data-notify-channel="' + escapeHtml(name) + '" style="color: #4ade80;">' + escapeHtml(name) + ': sent</span>';
+            }
+            return '<span data-notify-channel="' + escapeHtml(name) + '" data-notify-failed="true" style="color: #f87171;">'
+                + escapeHtml(name) + ': notification failed' + (n.reason ? ' (' + escapeHtml(String(n.reason)) + ')' : '') + '</span>';
+        }
+        const paused = data.state === 'paused-awaiting-decision';
+        let html = '<div data-decisions-banner="true" style="border: 1px solid #f59e0b; background: #2a2110; border-radius: 6px; padding: 10px; margin: 6px;">'
+            + '<div style="font-weight: 600; color: #fbbf24; font-size: 13px;">Operator decision needed ('
+            + escapeHtml(String(pending.length)) + ' pending' + (paused ? ', sprint paused awaiting decision' : '') + ')</div>';
+        for (const d of pending) {
+            const id = escapeHtml(String(d.decisionId || ''));
+            const options = Array.isArray(d.options) ? d.options : [];
+            const n = d.notification && typeof d.notification === 'object' ? d.notification : {};
+            html += '<div data-decision-id="' + id + '" style="margin-top: 10px; font-size: 12px; color: #e4e4e7;">'
+                + '<div style="color: #a1a1aa;">Bead ' + escapeHtml(String(d.beadId || '')) + (d.decisionBeadId ? ' (decision bead ' + escapeHtml(String(d.decisionBeadId)) + ')' : '') + '</div>'
+                + '<div data-decision-question="true" style="white-space: pre-wrap; margin: 4px 0;">' + escapeHtml(String(d.question || '')) + '</div>'
+                + '<ul style="margin: 4px 0; padding-left: 18px;">';
+            for (const o of options) {
+                html += '<li data-decision-option="' + escapeHtml(String(o && o.id)) + '" style="white-space: pre-wrap;">(' + escapeHtml(String(o && o.id)) + ') ' + escapeHtml(String(o && o.text)) + '</li>';
+            }
+            html += '</ul><div data-decision-recommendation="true">Recommendation: ' + escapeHtml(String(d.recommendation || '')) + '</div>'
+                + '<div style="margin-top: 4px; font-size: 11px;">Notification: ' + channelHtml('message', n.message) + ' &middot; ' + channelHtml('email', n.email) + '</div>'
+                + '<form data-decision-form="' + id + '" style="margin-top: 6px;">';
+            for (const o of options) {
+                html += '<label style="margin-right: 10px;"><input type="radio" name="option-' + id + '" value="' + escapeHtml(String(o && o.id)) + '"/> ' + escapeHtml(String(o && o.id)) + '</label>';
+            }
+            html += '<div><textarea name="text" maxlength="4000" rows="2" placeholder="Answer or extra instructions" style="width: 90%; margin-top: 4px; background: #18181b; color: #e4e4e7; border: 1px solid #3f3f46;"></textarea></div>'
+                + '<button type="submit" style="margin-top: 4px;">Submit answer</button> <span data-decision-result="true" style="font-size: 11px;"></span>'
+                + '</form></div>';
+        }
+        return html + '</div>';
+    } catch (err) {
+        return '<div data-decisions-banner="true" data-decisions-error="true" style="color: #f87171; padding: 8px;">(pending decisions present but could not be rendered)</div>';
+    }
+}
+
+/**
+ * Validates an answer-route body: { decisionId, answer } with a non-empty
+ * string answer of at most DECISION_ANSWER_MAX_CHARS. Returns { ok, ... }.
+ */
+export function validateDecisionAnswerBody(body) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, error: 'body must be a JSON object' };
+    if (typeof body.decisionId !== 'string' || !body.decisionId.trim()) return { ok: false, error: 'decisionId is required' };
+    if (typeof body.answer !== 'string' || !body.answer.trim()) return { ok: false, error: 'answer is required' };
+    if (body.answer.length > DECISION_ANSWER_MAX_CHARS) return { ok: false, error: `answer is longer than ${DECISION_ANSWER_MAX_CHARS} characters` };
+    return { ok: true, decisionId: body.decisionId.trim(), answer: body.answer.trim() };
+}
+
+/**
+ * Builds the decisions dashboard extension. `answer(decisionId, answer)` is
+ * injectable for tests; it defaults to the in-process run that owns the
+ * decision (decision-wait.mjs), which records it exactly like
+ * `bd human respond` and resumes the sprint without a relaunch.
+ */
+export function createDecisionsExtension({ answer = answerPendingDecision } = {}) {
+    return {
+        id: DECISIONS_STATE_NAMESPACE,
+        title: 'Decisions',
+        // Once-per-publish summary, delivered unleaned in both GET /state
+        // (top-level `summary`) and GET /state?summary=1, so a pending
+        // decision's question and options are never truncated.
+        summarize(data) {
+            const d = data || {};
+            return {
+                state: d.state || 'running',
+                pending: Array.isArray(d.pending) ? d.pending : [],
+                waitingSince: d.waitingSince ?? null,
+            };
+        },
+        actions: {
+            async answer({ body, state }) {
+                const checked = validateDecisionAnswerBody(body);
+                if (!checked.ok) return { status: 400, body: { error: checked.error } };
+                const known = state && state.extensions && state.extensions[DECISIONS_STATE_NAMESPACE];
+                const pending = known && Array.isArray(known.pending) ? known.pending : [];
+                if (!pending.some((d) => d && d.decisionId === checked.decisionId)) {
+                    return { status: 404, body: { error: 'no such pending decision', decisionId: checked.decisionId } };
+                }
+                try {
+                    const rec = await answer(checked.decisionId, checked.answer);
+                    return { status: 200, body: { ok: true, decisionId: checked.decisionId, released: (rec && rec.released) || [] } };
+                } catch (err) {
+                    return { status: 409, body: { error: String(err && err.message ? err.message : err).slice(0, 500) } };
+                }
+            },
+        },
+        js: `
+            ${escapeHtml.toString()}
+            ${renderDecisionsBannerHtml.toString()}
+
+            let lastDecisions = null;
+            let formBusy = false;
+
+            function renderDecisionsPanel() {
+                const container = document.getElementById('extension-decisions');
+                if (!container || formBusy) return;
+                container.innerHTML = renderDecisionsBannerHtml(lastDecisions) || '<div style="font-size: 11px; color: #71717a; padding: 8px;">(no decisions pending)</div>';
+            }
+
+            document.addEventListener('workflow:state:decisions', (e) => {
+                lastDecisions = e.detail || null;
+                renderDecisionsPanel();
+            });
+
+            document.addEventListener('submit', async (ev) => {
+                const form = ev.target && ev.target.closest ? ev.target.closest('form[data-decision-form]') : null;
+                if (!form) return;
+                ev.preventDefault();
+                const decisionId = form.getAttribute('data-decision-form');
+                const picked = form.querySelector('input[type=radio]:checked');
+                const text = (form.querySelector('textarea') || {}).value || '';
+                const answer = [picked ? picked.value : '', text.trim()].filter(Boolean).join(': ');
+                const result = form.querySelector('[data-decision-result]');
+                if (!answer) { if (result) result.textContent = 'Choose an option or type an answer.'; return; }
+                formBusy = true;
+                try {
+                    const res = await fetch('/extensions/decisions/actions/answer', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ decisionId: decisionId, answer: answer })
+                    });
+                    const out = await res.json().catch(() => ({}));
+                    if (result) result.textContent = res.ok ? 'Answer recorded; the sprint resumes.' : ('Failed: ' + (out.error || res.status));
+                } catch (err) {
+                    if (result) result.textContent = 'Failed: ' + err.message;
+                } finally {
+                    formBusy = false;
+                }
+            });
+
+            renderDecisionsPanel();
+        `
+    };
+}
+
+export const decisionsExtension = createDecisionsExtension();
