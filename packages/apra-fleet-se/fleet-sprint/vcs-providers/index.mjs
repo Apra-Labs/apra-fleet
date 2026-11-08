@@ -184,6 +184,30 @@
  *                                                // not yet implemented" (fails
  *                                                // closed with a typed ERROR:,
  *                                                // never a silently wrong command)
+ *     httpFailureHint: (statusOrCtx) => string|{ hint, remedy }  // OPTIONAL;
+ *                                         //   REST failure explanation.
+ *                                         //   Called with a bare status
+ *                                         //   (legacy; returns a diagnosis
+ *                                         //   string, '' for none) or with
+ *                                         //   { status, body, headers,
+ *                                         //   availableSecrets, memberName,
+ *                                         //   repoRef, repo, local? } --
+ *                                         //   headers are the RESPONSE
+ *                                         //   headers (lowercased names) a
+ *                                         //   builder captured with curl
+ *                                         //   `-D -`; availableSecrets is
+ *                                         //   the credential-store name list
+ *                                         //   (null when unreadable). The
+ *                                         //   ctx form returns { hint,
+ *                                         //   remedy }: `hint` diagnoses the
+ *                                         //   failure from the response, and
+ *                                         //   a non-empty `remedy` REPLACES
+ *                                         //   authRemedy.hint for this one
+ *                                         //   failure (lead with the one-line
+ *                                         //   fix). Providers that ignore the
+ *                                         //   ctx keep working: a string
+ *                                         //   answer is used as the hint and
+ *                                         //   the generic remedy stays.
  *     findBeforeCreate: boolean,          // OPTIONAL; create is not an upsert.
  *                                         //   raiseVcsPrForMember runs
  *                                         //   find-pull-request first and

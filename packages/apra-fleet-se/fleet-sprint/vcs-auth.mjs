@@ -655,12 +655,33 @@ export function buildCredentialReadCommand(target, label) {
 // Splits a VCSModule create-pull-request curl result's captured stdout into
 // its HTTP status code and JSON body. VCSModule's buildCreatePrCommand always
 // appends `-w '\n%{http_code}'`, so curl's own stdout is "<json body>\n<status>".
+// A builder may also pass curl `-D -` (bitbucket.mjs does), which puts the
+// RESPONSE header block(s) first: "HTTP/x NNN\r\nName: v\r\n\r\n<body>\n<status>".
+// Each leading block is consumed into `headers` (lowercased names; a later
+// block -- after a 100 Continue -- replaces an earlier one), and the rest
+// parses exactly as before, so output without headers is unaffected.
+// Cookie-bearing and auth headers are dropped, never returned: callers quote
+// header values into log lines.
 /**
  * @param {string} output
- * @returns {{ status: number|null, body: unknown }}
+ * @returns {{ status: number|null, body: unknown, bodyText: string, headers: Record<string, string> }}
  */
 function parseVcsCurlOutput(output) {
-    const text = String(output || '');
+    let text = String(output || '');
+    const headers = {};
+    while (/^HTTP\/\d(?:\.\d)? \d{3}/.test(text)) {
+        const end = /\r?\n\r?\n/.exec(text);
+        const block = end ? text.slice(0, end.index) : text;
+        text = end ? text.slice(end.index + end[0].length) : '';
+        for (const k of Object.keys(headers)) delete headers[k];
+        for (const line of block.split(/\r?\n/).slice(1)) {
+            const colon = line.indexOf(':');
+            if (colon <= 0) continue;
+            const name = line.slice(0, colon).trim().toLowerCase();
+            if (/^(?:set-cookie|cookie|authorization|proxy-authorization|www-authenticate|proxy-authenticate)$/.test(name)) continue;
+            headers[name] = line.slice(colon + 1).trim();
+        }
+    }
     const lines = text.split('\n');
     const statusLine = lines.length ? lines[lines.length - 1].trim() : '';
     const status = /^\d+$/.test(statusLine) ? parseInt(statusLine, 10) : null;
@@ -673,7 +694,7 @@ function parseVcsCurlOutput(output) {
             body = null;
         }
     }
-    return { status, body, bodyText };
+    return { status, body, bodyText, headers };
 }
 
 const PR_AUTH_404_TEXT_RE = /not accessible by (this )?(integration|token|personal access token)|requires (authentication|additional scopes?)|insufficient (scope|permission)/i;
@@ -828,12 +849,36 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         const impl = getVcsProvider(provider);
         return impl && impl.authRemedy && impl.authRemedy.hint ? ` -- ${impl.authRemedy.hint}` : '';
     };
-    // Provider-owned explanation of an HTTP status (e.g. Bitbucket 410/403),
-    // appended to failure messages; '' when the provider has none.
-    const statusHint = (status) => {
+    // Provider-owned explanation of an HTTP failure (e.g. Bitbucket 410/403),
+    // appended to failure messages. The hook gets the whole parsed response
+    // ({ status, body, headers }) plus what this caller knows (credential
+    // store names, member, repo coordinates), so it can name the credential
+    // type and scopes the server reported instead of guessing from the
+    // status. It answers a string (legacy: diagnosis only) or
+    // { hint, remedy }; a non-empty `remedy` REPLACES the provider's generic
+    // authRemedy.hint for this failure (see vcs-providers/index.mjs).
+    // Returns { hint: ' -- ...'|'', remedy: ' -- ...'|null }.
+    let storeNames;
+    const statusHint = async (parsed) => {
         const impl = getVcsProvider(provider);
-        const hint = impl && typeof impl.httpFailureHint === 'function' ? impl.httpFailureHint(status) : '';
-        return hint ? ` -- ${hint}` : '';
+        if (!impl || typeof impl.httpFailureHint !== 'function') return { hint: '', remedy: null };
+        const { status } = parsed;
+        if (storeNames === undefined && typeof status === 'number' && status >= 400 && status < 500) {
+            storeNames = await listCredentialStoreNames(fleetApi);
+        }
+        const out = impl.httpFailureHint({
+            status,
+            body: parsed.body,
+            headers: parsed.headers || {},
+            availableSecrets: storeNames === undefined ? null : storeNames,
+            memberName: member,
+            repoRef,
+            repo,
+        });
+        if (typeof out === 'string') return { hint: out ? ` -- ${out}` : '', remedy: null };
+        const hint = out && typeof out.hint === 'string' && out.hint ? ` -- ${out.hint}` : '';
+        const remedy = out && typeof out.remedy === 'string' && out.remedy ? ` -- ${out.remedy}` : null;
+        return { hint, remedy };
     };
 
     // apra-fleet-3swo.7.6: the orchestrator never learns the token at all now.
@@ -911,7 +956,8 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 }
                 continue;
             }
-            return { ok: false, error: `${what} failed: HTTP ${parsed.status ?? '(unknown)'}: ${msg}${statusHint(parsed.status)}${skippedProvider && isPrAuthFailure(parsed.status, msg) ? skippedRemedy() : ''}` };
+            const why = await statusHint(parsed);
+            return { ok: false, error: `${what} failed: HTTP ${parsed.status ?? '(unknown)'}: ${msg}${why.hint}${skippedProvider && isPrAuthFailure(parsed.status, msg) ? (why.remedy ?? skippedRemedy()) : ''}` };
         }
     };
     const coords = () => ({ provider, ...(repoRef ? { repoRef } : { repo }), token, os, shell });
@@ -1065,7 +1111,8 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             return { ok: false, alreadyExists: false, prUrl: null, error: failText, authFailure: false };
         }
 
-        const { status, body: respBody, bodyText } = parseVcsCurlOutput(handoff.stdout);
+        const parsedResponse = parseVcsCurlOutput(handoff.stdout);
+        const { status, body: respBody, bodyText } = parsedResponse;
         const [lo, hi] = built.interpret.successStatusRange;
         if (status !== null && status >= lo && status <= hi) {
             // apra-fleet-lzfv.5: read the created PR's id/url through the
@@ -1107,7 +1154,8 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         if (authFailed && skippedProvider) {
             // Nothing to re-provision (the provider skipped it), so a retry
             // would resend the same credential: report it with the remedy.
-            return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}${statusHint(status)}${skippedRemedy()}`, authFailure: true };
+            const why = await statusHint(parsedResponse);
+            return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}${why.hint}${why.remedy ?? skippedRemedy()}`, authFailure: true };
         }
 
         // A provider whose duplicate-PR response is unverified declares
@@ -1140,7 +1188,8 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                     // re-provision ran nothing: no heal happened and a retry
                     // would resend a byte-identical command.
                     log(`${logPrefix}: no PR auth self-heal ran for member '${member}' (provider '${reprov.provider || provider}' skipped re-provisioning); not retrying.`);
-                    return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}${statusHint(status)}${skippedRemedy()}`, authFailure: true };
+                    const why = await statusHint(parsedResponse);
+                    return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}${why.hint}${why.remedy ?? skippedRemedy()}`, authFailure: true };
                 }
                 // No token re-read here any more: `built.command` still
                 // carries the placeholder, so the retry's own
@@ -1155,7 +1204,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             continue;
         }
 
-        return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}${statusHint(status)}`, authFailure: isPrAuthFailure(status, errorText) };
+        return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}${(await statusHint(parsedResponse)).hint}`, authFailure: isPrAuthFailure(status, errorText) };
     }
 }
 

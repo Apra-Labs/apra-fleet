@@ -54,6 +54,7 @@ const POSIX_CREATE_PR = "curl -sS -X POST"
     + " -H 'Accept: application/json'"
     + " -d '{\"title\":\"Sprint'\\''s PR\",\"source\":{\"branch\":{\"name\":\"auto-sprint/feat-x\"}},\"destination\":{\"branch\":{\"name\":\"main\"}},\"description\":\"Body line\"}'"
     + " -w '\n%{http_code}'"
+    + ' -D -'
     + ` ${API_BASE}/pullrequests`;
 
 const WINDOWS_CREATE_PR = "curl.exe -sS -X POST"
@@ -62,6 +63,7 @@ const WINDOWS_CREATE_PR = "curl.exe -sS -X POST"
     + " -H 'Accept: application/json'"
     + " -d '{\\\"title\\\":\\\"Sprint''s\\u0020PR\\\",\\\"source\\\":{\\\"branch\\\":{\\\"name\\\":\\\"auto-sprint/feat-x\\\"}},\\\"destination\\\":{\\\"branch\\\":{\\\"name\\\":\\\"main\\\"}},\\\"description\\\":\\\"Body\\u0020line\\\"}'"
     + " -w '\n%{http_code}'"
+    + ' -D -'
     + ` ${API_BASE}/pullrequests`;
 
 test('bitbucket create-pull-request: exact POSIX curl command (endpoint, source/destination branch shape, Bearer auth, no -u)', () => {
@@ -88,6 +90,7 @@ test('bitbucket create-pull-request: an omitted body emits NO description key at
         + " -H 'Accept: application/json'"
         + " -d '{\"title\":\"Sprint'\\''s PR\",\"source\":{\"branch\":{\"name\":\"auto-sprint/feat-x\"}},\"destination\":{\"branch\":{\"name\":\"main\"}}}'"
         + " -w '\n%{http_code}'"
+        + ' -D -'
         + ` ${API_BASE}/pullrequests`,
     );
 });
@@ -241,6 +244,7 @@ test('bitbucket update-pull-request: PUT (not PATCH) to /pullrequests/{id} with 
         + " -H 'Accept: application/json'"
         + " -d '{\"title\":\"new title\",\"description\":\"new body\"}'"
         + " -w '\n%{http_code}'"
+        + ' -D -'
         + ` ${API_BASE}/pullrequests/12`,
     );
     assert.throws(() => buildUpdatePrCommand({ ...FIND_PARAMS, pull_request_id: '12; rm', title: 't', os: 'linux' }), /a numeric "pull_request_id"/);
