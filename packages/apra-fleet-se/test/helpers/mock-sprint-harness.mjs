@@ -2208,6 +2208,9 @@ export async function runDevelopLoopScenario(tag, {
     // `mockFleetApi.executeCommand` once it exists. Takes priority over a
     // plain `callTool` when both are supplied.
     callToolFactory,
+    // Optional `args.decision_notify` (decision-notify.mjs): where the operator
+    // is told about a pending decision.
+    decisionNotify,
     // apra-fleet-eft.79: optional passthroughs for the multi-streak worklist
     // args (validateArgs: doer_worklist_mode 'resume'|'batch',
     // resume_model_switch boolean, worklist_effort_budget positive number) --
@@ -2369,6 +2372,7 @@ export async function runDevelopLoopScenario(tag, {
                 ...(roleMapWarnings !== undefined ? { roleMapWarnings } : {}),
                 ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
                 ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
+                ...(decisionNotify !== undefined ? { decision_notify: decisionNotify } : {}),
             }, true);
         } catch (err) {
             error = err;

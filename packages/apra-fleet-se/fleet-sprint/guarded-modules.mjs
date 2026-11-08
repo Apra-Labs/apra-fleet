@@ -427,6 +427,9 @@ export const GUARDED_MODULES = [
     // decision-bead poll reads, bd human respond, the work-bead note), no
     // agent(); its beads pull/push go through injected gitSync callbacks.
     'decision-wait.mjs',
+    // Operator notification for a pending decision: no command() or agent()
+    // site (sends through the injected fleet client), zero baseline.
+    'decision-notify.mjs',
     // The per-member sprint-init probe: kb_*/code_* calls through the injected
     // memberCall, member_detail on the orchestrator session, and ONE
     // member-bound command channel (fleetApi.executeCommand, command strings
