@@ -120,25 +120,42 @@ export function readJsonBody(req, opts = {}) {
 }
 
 /**
- * Error responses must carry a message only, never a stack trace. Normalizes an
- * Error to its message and cuts any "at frame" lines out of string values, so no
- * caller can leak a stack through sendJson.
- * @param {any} v
- * @param {number} [depth]
- * @returns {any}
+ * Cuts stack-frame lines out of an error message. Linear: one pass over the
+ * lines, no regex over the whole string. A frame line is one that starts with
+ * "at " and looks like a frame (has "(" or a .js/.mjs/.ts file:line location).
+ * Everything from the first frame line onward is dropped.
+ * @param {any} v an Error, string or other value
+ * @returns {string}
  */
-export function stripStacks(v, depth = 0) {
-    if (v instanceof Error) return v.message;
-    if (typeof v === 'string') {
-        const i = v.search(/\r?\n\s*at\s+\S/);
-        return i === -1 ? v : v.slice(0, i);
+export function messageWithoutStack(v) {
+    const text = v instanceof Error ? v.message : typeof v === 'string' ? v : String(v);
+    let start = 0;
+    while (start <= text.length) {
+        let end = text.indexOf('\n', start);
+        if (end === -1) end = text.length;
+        const line = text.slice(start, end).trim();
+        if (line.startsWith('at ') && (line.includes('(') || /\.(?:mjs|cjs|js|ts):\d/.test(line))) {
+            return text.slice(0, start).trimEnd();
+        }
+        start = end + 1;
     }
-    if (depth > 8 || v === null || typeof v !== 'object') return v;
-    if (Array.isArray(v)) return v.map((x) => stripStacks(x, depth + 1));
-    const out = {};
-    for (const [k, x] of Object.entries(v)) {
-        if (k === 'stack') continue;
-        out[k] = stripStacks(x, depth + 1);
+    return text;
+}
+
+/**
+ * Error responses (status >= 400) must carry a message only, never a stack
+ * trace: the `error` field is reduced to its message and any `stack` key is
+ * dropped. Success payloads are never touched.
+ * @param {any} payload
+ */
+function sanitizeErrorPayload(payload) {
+    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+    const out = { ...payload };
+    delete out.stack;
+    if ('error' in out && out.error !== undefined && out.error !== null && typeof out.error !== 'object') {
+        out.error = messageWithoutStack(out.error);
+    } else if (out.error instanceof Error) {
+        out.error = messageWithoutStack(out.error);
     }
     return out;
 }
@@ -151,7 +168,7 @@ export function stripStacks(v, depth = 0) {
  * @param {any} payload
  */
 export function sendJson(res, status, payload) {
-    const body = JSON.stringify(stripStacks(payload) ?? {});
+    const body = JSON.stringify((status >= 400 ? sanitizeErrorPayload(payload) : payload) ?? {});
     res.writeHead(status, {
         'content-type': 'application/json; charset=utf-8',
         'content-length': Buffer.byteLength(body),
