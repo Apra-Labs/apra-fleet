@@ -41,7 +41,7 @@ const REST_404 = rest(404, {
  * Stub fleet + member. `restQueue` answers vcs_credential_exec in order
  * (last one repeats); `lsRemote`/`username` answer the member commands.
  */
-function makeHarness({ record, restQueue = [REST_200], lsRemote = { ok: true, output: 'abc\tHEAD', error: null }, usernameOutput = 'username=x-bitbucket-api-token-auth', store = ['bitbucket_api_token'], provisionResult = null }) {
+function makeHarness({ record, restQueue = [REST_200], lsRemote = { ok: true, output: 'abc\tHEAD', error: null }, usernameOutput = 'username=x-bitbucket-api-token-auth', store = ['bitbucket_api_token'], provisionResult = null, remote = BB_REMOTE }) {
     const tools = [];
     const commands = [];
     const queue = [...restQueue];
@@ -63,7 +63,7 @@ function makeHarness({ record, restQueue = [REST_200], lsRemote = { ok: true, ou
     };
     const command = async (cmd) => {
         commands.push(cmd);
-        if (cmd === 'git remote get-url origin') return { ok: true, output: BB_REMOTE, error: null };
+        if (cmd === 'git remote get-url origin') return { ok: true, output: remote, error: null };
         if (cmd.includes('git ls-remote origin')) return lsRemote;
         if (cmd.includes("grep '^username='")) {
             // A member-side filter that let the token line through as well:
@@ -238,4 +238,24 @@ describe('no secret value in any log line', () => {
             assertNoSentinel(h.logs);
         }
     });
+});
+
+describe('an unparsable origin carrying an embedded credential', () => {
+    // git prints a credentialed origin verbatim; the probe reason quotes the
+    // origin when no repository can be derived from it, so its userinfo must
+    // be masked before it reaches the ERROR line.
+    for (const remote of [
+        `https://x-token-auth:${SENTINEL}@bitbucket.org/acme`,
+        `https://user:${SENTINEL}@github.com/acme/widgets.git`,
+    ]) {
+        test(`the ERROR line quotes the origin with its userinfo masked (${remote.replace(SENTINEL, '<token>')})`, async () => {
+            const h = makeHarness({ record: LOCAL, remote });
+            await h.ensure('bb-local');
+            const errors = errorsOf(h.logs);
+            assert.equal(errors.length, 1, h.logs.join('\n'));
+            assert.match(errors[0], /no bitbucket repository could be derived from the member's origin remote 'https:\/\/\*\*\*@/);
+            assert.equal(h.tools.filter((t) => t.name === 'vcs_credential_exec').length, 0, 'no REST probe without a repository');
+            assertNoSentinel(h.logs);
+        });
+    }
 });

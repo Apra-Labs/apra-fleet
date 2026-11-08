@@ -108,6 +108,18 @@ async function listCredentialStoreNames(fleetApi) {
 }
 
 /**
+ * A remote URL safe to quote in a log line: the userinfo of a scheme'd URL
+ * (`https://user:TOKEN@host/...` -- git prints an embedded credential
+ * verbatim) becomes `***`. scp-like `git@host:path` is left as is: `git` is
+ * the login name, not a secret.
+ * @param {string} url
+ * @returns {string}
+ */
+export function redactUrlUserinfo(url) {
+    return String(url ?? '').replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/gi, (_m, scheme) => scheme + '***@');
+}
+
+/**
  * Build the provision_vcs_auth arguments for a member, dispatched through the
  * resolved provider's OPTIONAL buildProvisionArgs hook (apra-fleet-5co8.2.1).
  *
@@ -324,7 +336,7 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
             // member/repo than `member` -- see the caller-note above -- so
             // this log deliberately does not claim the URL is `member`'s own.
             const remoteSource = remoteUrlOverride ? 'the supplied remote URL' : `member '${member}' git remote`;
-            log(`${logPrefix}: could not derive an owner/repo from ${remoteSource} (raw: '${remoteUrl}'); calling provision_vcs_auth without an explicit repos scope.`);
+            log(`${logPrefix}: could not derive an owner/repo from ${remoteSource} (raw: '${redactUrlUserinfo(remoteUrl)}'); calling provision_vcs_auth without an explicit repos scope.`);
         }
     }
 
@@ -1582,7 +1594,9 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         const remedyCtx = { availableSecrets, memberName: member, repoRef, local: plan.local };
 
         if (!repoRef) {
-            const shown = remoteUrl ? ` '${remoteUrl}'` : ' (unreadable)';
+            // The raw origin may embed a credential (https://user:TOKEN@host/...,
+            // which git prints verbatim): quote it with the userinfo masked.
+            const shown = remoteUrl ? ` '${redactUrlUserinfo(remoteUrl)}'` : ' (unreadable)';
             reasons.push(`the REST credential probe could not run: no ${plan.provider} repository could be derived from the member's origin remote${shown}`);
         } else if (!fleetApi || typeof fleetApi.vcsCredentialExec !== 'function') {
             reasons.push('the REST credential probe could not run: this fleet client exposes no vcs_credential_exec tool');
