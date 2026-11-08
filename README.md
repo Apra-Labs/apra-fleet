@@ -85,6 +85,11 @@ It is not a toy. It builds apra-fleet itself:
 - Every sprint's raw child stdout/stderr is captured to a per-sprint log
   and linked from the dashboard, so a run's output is traceable even if it
   crashes before reporting anything back
+- Asks a human when it must: a doer or reviewer that needs an operator
+  decision files a decision bead, the run pauses (not stalls), you are
+  notified once by message and email, and your answer on the dashboard or
+  via `bd human respond` resumes it
+  ([details](docs/fleet-sprint-set-aside.md))
 
 A fleet that has run in production:
 
@@ -512,6 +517,7 @@ third-party verticals.
 | The PM skill (doer-reviewer sprints, `/pm` commands) | [docs/pm-skill-overview.md](docs/pm-skill-overview.md) |
 | FAQ | [docs/FAQ.md](docs/FAQ.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Supervisor/viewer request guard | [docs/supervisor-request-guard.md](docs/supervisor-request-guard.md) |
 | Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
 | Live member activity (`apra-fleet watch`, `logging.previewChars`) | [docs/features/watch.md](docs/features/watch.md) |
 | Secret variables and passwords | [docs/secret-variables.md](docs/secret-variables.md) - [docs/features/oob-auth.md](docs/features/oob-auth.md) |

@@ -1139,10 +1139,14 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
 
 describe('execution-role dispatch: returnable verdicts', () => {
     test('each execution role can return exactly the verdict vocabulary its ladder branches on', () => {
-        assert.deepStrictEqual(reviewerVerdict.properties.verdict.enum, ['APPROVED', 'CHANGES_NEEDED']);
+        // NEEDS-DECISION: the review phases and the develop phase branch on it
+        // (decisions.mjs); it requires a `decision` object.
+        assert.deepStrictEqual(reviewerVerdict.properties.verdict.enum, ['APPROVED', 'CHANGES_NEEDED', 'NEEDS-DECISION']);
         assert.deepStrictEqual(reviewerVerdict.required, ['verdict', 'notes', 'reopenIds', 'newTasks']);
-        assert.deepStrictEqual(doerReport.properties.status.enum, ['VERIFY', 'BLOCKED']);
+        assert.deepStrictEqual(reviewerVerdict.allOf[0].then.required, ['decision']);
+        assert.deepStrictEqual(doerReport.properties.status.enum, ['VERIFY', 'BLOCKED', 'NEEDS-DECISION']);
         assert.deepStrictEqual(doerReport.required, ['status', 'closedIds', 'notes']);
+        assert.deepStrictEqual(doerReport.allOf[0].then.required, ['decision']);
         assert.strictEqual(deployerReport.properties.deployed.type, 'boolean');
         assert.deepStrictEqual(deployerReport.required, ['deployed', 'notes']);
         assert.strictEqual(integReport.properties.passed.type, 'boolean');

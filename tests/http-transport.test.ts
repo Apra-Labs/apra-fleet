@@ -10,7 +10,7 @@ import { portInUseMessage } from '../src/services/singleton.js';
 import { fleetEvents } from '../src/services/event-bus.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
 import { getTokenIssuer } from '../src/services/token-issuer.js';
-import { sessionRegistry } from '../src/services/session-registry.js';
+import { sessionRegistry, ORCHESTRATOR_SESSION_ID } from '../src/services/session-registry.js';
 import { addAgent } from '../src/services/registry.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry, memberSecretHeaders, memberSecretRequestInit } from './test-helpers.js';
 import fs from 'node:fs';
@@ -996,5 +996,92 @@ describe('(o) session ids are logged only in shortened form', () => {
     expect(log).toContain(`rejected DELETE on sid=${shortSid(sid)}`);
     expect(log).toContain(`closed sid=${shortSid(sid)}`);
     expect(log).not.toContain(sid);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (o) The operator's channel-capable FULL-scope session is addressable by
+// send_message under the stable ORCHESTRATOR_SESSION_ID (needs-decision
+// notifications reach the session that launched/orchestrates a sprint).
+// ---------------------------------------------------------------------------
+describe('(o) channel-capable FULL session registers as the orchestrator', () => {
+  const channelClient = (name: string) => new Client({ name, version: '1.0.0' }, { capabilities: { experimental: { 'claude/channel': {} } } });
+  const settle = () => new Promise(resolve => setTimeout(resolve, 100));
+
+  afterEach(() => {
+    sessionRegistry.unregister(getTokenIssuer().workspaceId(), ORCHESTRATOR_SESSION_ID);
+  });
+
+  it('a FULL session that declares claude/channel is registered under ORCHESTRATOR_SESSION_ID; one that does not is not', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+    const ws = getTokenIssuer().workspaceId();
+
+    const plain = makeClient(handle.port);
+    clients.push(plain);
+    await plain.connect(makeTransport(handle.port));
+    expect(sessionRegistry.get(ws, ORCHESTRATOR_SESSION_ID)).toBeUndefined();
+
+    const orch = channelClient('orchestrator-session');
+    clients.push(orch);
+    const t = makeTransport(handle.port);
+    await orch.connect(t);
+    const entry = sessionRegistry.get(ws, ORCHESTRATOR_SESSION_ID);
+    expect(entry).toBeDefined();
+    expect(entry?.sessionId).toBe(t.sessionId);
+    expect(entry?.role).toBe('orchestrator');
+    expect(entry?.channelCapable).toBe(true);
+    expect(entry?.server).not.toBeNull();
+  });
+
+  it('newest session holds the id; closing it hands the id back to the one still open; closing the last drops it', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+    const ws = getTokenIssuer().workspaceId();
+
+    const a = channelClient('orch-a');
+    const b = channelClient('orch-b');
+    clients.push(a, b);
+    const ta = makeTransport(handle.port);
+    const tb = makeTransport(handle.port);
+    await a.connect(ta);
+    await b.connect(tb);
+    expect(sessionRegistry.get(ws, ORCHESTRATOR_SESSION_ID)?.sessionId).toBe(tb.sessionId);
+
+    await tb.terminateSession();
+    await settle();
+    expect(sessionRegistry.get(ws, ORCHESTRATOR_SESSION_ID)?.sessionId).toBe(ta.sessionId);
+
+    await ta.terminateSession();
+    await settle();
+    expect(sessionRegistry.get(ws, ORCHESTRATOR_SESSION_ID)).toBeUndefined();
+  });
+
+  it('closing an older session leaves the newest holder in place', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+    const ws = getTokenIssuer().workspaceId();
+
+    const a = channelClient('orch-a');
+    const b = channelClient('orch-b');
+    clients.push(a, b);
+    const ta = makeTransport(handle.port);
+    const tb = makeTransport(handle.port);
+    await a.connect(ta);
+    await b.connect(tb);
+    await ta.terminateSession();
+    await settle();
+    expect(sessionRegistry.get(ws, ORCHESTRATOR_SESSION_ID)?.sessionId).toBe(tb.sessionId);
+  });
+
+  it('closing the transport drops an orchestrator entry pointing at its sessions', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    const ws = getTokenIssuer().workspaceId();
+    const a = channelClient('orch-a');
+    clients.push(a);
+    await a.connect(makeTransport(handle.port));
+    expect(sessionRegistry.get(ws, ORCHESTRATOR_SESSION_ID)).toBeDefined();
+    await handle.close();
+    expect(sessionRegistry.get(ws, ORCHESTRATOR_SESSION_ID)).toBeUndefined();
   });
 });

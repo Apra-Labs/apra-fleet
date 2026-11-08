@@ -610,7 +610,12 @@ const VCS_AUTH_PATH = path.join(__dirname, '../fleet-sprint/vcs-auth.mjs');
 // probe-first branch: the unregistered-provider remote read and the
 // non-interactive `git ls-remote origin` credential probe, both carrying
 // member_name -- 6.
-const EXPECTED_VCS_AUTH_COMMAND_COUNT = 6;
+//
+// The Bitbucket labelled-credential probe (checkLabelledCredential inside
+// createVcsAuthPreflightCallback) added two more, both carrying member_name:
+// its own origin read (to derive the REST probe's repository) and the
+// member-side username= line read of the labelled helper -- 8.
+const EXPECTED_VCS_AUTH_COMMAND_COUNT = 8;
 
 test('every command() call site in vcs-auth.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(VCS_AUTH_PATH);
@@ -1232,7 +1237,8 @@ test('every command() call site in member-provisioning.mjs passes member_name or
 // createChildBeadWithAllocatedId, verifyDoerStreakClosed and
 // claimBeadsBatched.
 //
-// Its baseline is EIGHT: createChildBeadWithAllocatedId owns THREE
+// Its baseline is NINE: createDecisionBead owns ONE (the NEEDS-DECISION
+// decision bead's `bd create --body-file`), createChildBeadWithAllocatedId owns THREE
 // (the explicit-id path's `bd show <childId> --json` collision probe, the
 // `bd create --body-file`, and the explicit-id path's `bd update --parent`
 // link), adoptLandedChild owns TWO (the post-failure `bd show` re-probe and
@@ -1246,7 +1252,7 @@ test('every command() call site in member-provisioning.mjs passes member_name or
 // helper, which is exactly what a zero baseline turns red.
 // =============================================================================
 const BEADS_CHILDREN_PATH = path.join(__dirname, '../fleet-sprint/beads-children.mjs');
-const EXPECTED_BEADS_CHILDREN_COMMAND_COUNT = 8;
+const EXPECTED_BEADS_CHILDREN_COMMAND_COUNT = 9;
 
 test('every command() call site in beads-children.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(BEADS_CHILDREN_PATH);

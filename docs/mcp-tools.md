@@ -43,6 +43,10 @@ this pair as "member identifier" rather than repeating it.
 `credential_store_update`, `credential_store_delete`.
 
 **Messaging:** `send_email`, `send_message`, `report_status`, `respond_to_message`.
+`send_message` with `probe: true` sends nothing and reports whether a session
+holds the target (`connected`) and can receive channel messages
+(`channel_capable`; for `orchestrator`, a Claude Code session launched with
+`--dangerously-load-development-channels`).
 
 **Code intelligence:** `code_graph`, `code_impact`, `code_query`, `code_context`,
 `code_map`, `code_flow`, `code_tests`.

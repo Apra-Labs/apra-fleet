@@ -207,13 +207,13 @@ export async function allocateFreePort(opts = {}) {
  *   goal?: string, maxCycles?: number|string, allowMissingMembers?: boolean,
  *   requirementsFile?: string, roleMap?: object|string, budget?: number|string,
  *   viewerPort: number, serviceUrl?: string, runId?: string, expectBeads?: string,
- *   extraArgs?: string[], skipRegression?: boolean,
+ *   extraArgs?: string[], skipRegression?: boolean, decisionNotify?: string|object,
  * }} opts
  * @returns {string[]}
  */
 export function buildSprintArgv(opts = {}) {
     const { issue, members, branch, base, goal, maxCycles, allowMissingMembers,
-        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs, skipRegression } = opts;
+        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs, skipRegression, decisionNotify } = opts;
 
     if (!issue || !members || !branch || !base) {
         throw new Error('buildSprintArgv requires issue, members, branch, and base');
@@ -238,6 +238,7 @@ export function buildSprintArgv(opts = {}) {
     }
     if (budget !== undefined) args.push('--budget', String(budget));
     if (skipRegression === true) args.push('--skip-regression');
+    if (decisionNotify !== undefined) args.push('--decision-notify', typeof decisionNotify === 'string' ? decisionNotify : JSON.stringify(decisionNotify));
     // apra-fleet-f34.1: when this supervisor instance has a known --service-url
     // (its own HTTP listen address, wired in from createSpawner()'s deps.serviceUrl
     // below), forward it so the spawned cli.mjs child threads it into

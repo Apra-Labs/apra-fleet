@@ -50,6 +50,7 @@ import http from 'node:http';
 import fsp from 'node:fs/promises';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { getTerminalRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
+import { ADMITTED_REQUEST_STRIP_HEADERS } from '@apralabs/apra-fleet-workflow/viewer/request-guard';
 import { withTimestamps } from './log-timestamp.mjs';
 import { createChildPortResolver } from './child-port.mjs';
 
@@ -101,10 +102,17 @@ export function rewriteChildHtml(html, prefix) {
         .split("'/activities/").join("'" + prefix + "/activities/");
 }
 
-/** Copy request headers for the upstream call, dropping host/encoding/hop-by-hop. */
+/**
+ * Copy request headers for the upstream call, dropping host/encoding/hop-by-hop
+ * and the browser-origin/token headers: the supervisor's route() guard already
+ * admitted this request against the SUPERVISOR's origin, and the child viewer
+ * (a different port, same guard) would otherwise read the supervisor's Origin
+ * as cross-site and refuse the forwarded POST.
+ */
 function upstreamRequestHeaders(req) {
     const headers = { ...req.headers };
     delete headers.host;
+    for (const h of ADMITTED_REQUEST_STRIP_HEADERS) delete headers[h];
     // SSE passthrough must stay uncompressed and unbuffered -- never let the
     // child gzip a stream we need to flush event-by-event.
     delete headers['accept-encoding'];
@@ -437,6 +445,21 @@ export function createLiveProxy(deps = {}) {
         proxyStream({ host, port, childPath, req, res, logError });
     }
 
+    // The generic extension action route (extension id + action id from the
+    // URL), POST with a JSON body: the decisions banner's answer form.
+    async function handleExtensionAction(req, res, ctx) {
+        const sprintId = ctx?.params?.id;
+        if (!sprintId) { sendPlain(res, 400, 'missing sprint id in path'); return; }
+        const port = safeResolvePort(sprintId);
+        if (!Number.isInteger(port)) {
+            sendPlain(res, 404, `sprint '${sprintId}' is no longer live`);
+            return;
+        }
+        const childPath = '/extensions/' + encodeURIComponent(ctx?.params?.extId ?? '')
+            + '/actions/' + encodeURIComponent(ctx?.params?.actionId ?? '');
+        proxyStream({ host, port, childPath, req, res, logError });
+    }
+
     return {
         name: 'live-proxy',
         resolvePort: safeResolvePort,
@@ -449,6 +472,7 @@ export function createLiveProxy(deps = {}) {
         handleResume,
         handleSaveLogs,
         handleExtensionDetail,
+        handleExtensionAction,
         handleActivityOutput,
     };
 }
@@ -470,5 +494,6 @@ export function registerLiveRoutes(supervisor, proxy) {
     supervisor.route('POST', '/sprints/:id/live/resume', proxy.handleResume);
     supervisor.route('POST', '/sprints/:id/live/save_logs', proxy.handleSaveLogs);
     supervisor.route('GET', '/sprints/:id/live/extensions/:extId/detail/:itemId', proxy.handleExtensionDetail);
+    supervisor.route('POST', '/sprints/:id/live/extensions/:extId/actions/:actionId', proxy.handleExtensionAction);
     supervisor.route('GET', '/sprints/:id/live/activities/:activityId/output', proxy.handleActivityOutput);
 }

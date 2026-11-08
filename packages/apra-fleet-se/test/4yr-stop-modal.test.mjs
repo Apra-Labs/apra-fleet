@@ -142,6 +142,8 @@ describe('apra-fleet-4yr.2: dashboard Stop uses the in-page modal (no native con
         assert.equal(sandbox.fetchCalls.length, 1, 'confirming must send exactly one /stop request');
         assert.equal(sandbox.fetchCalls[0].url, '/stop');
         assert.equal(sandbox.fetchCalls[0].opts.method, 'POST');
+        // The viewer's POST routes refuse a non-JSON request (request-guard.mjs).
+        assert.equal(sandbox.fetchCalls[0].opts.headers['Content-Type'], 'application/json');
 
         assert.equal(sandbox.toast.classList.contains('show'), true, 'a toast element must be shown on resolve');
     });

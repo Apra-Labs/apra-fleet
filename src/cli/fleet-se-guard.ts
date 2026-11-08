@@ -180,6 +180,10 @@ export function fleetSeRefusalText(found: RunningFleetSe, opts: {
 }): string {
   const serveScript = opts.serveScript ?? INSTALLED_SERVE_SCRIPT;
   const curl = opts.platform === 'win32' ? 'curl.exe' : 'curl';
+  // The supervisor refuses a mutating request without a JSON content type
+  // (cross-site request guard); the double-quoted header works unchanged in
+  // cmd.exe, PowerShell and POSIX shells.
+  const jsonHeader = '-H "Content-Type: application/json"';
   const sup = found.supervisor;
   const base = sup ? `http://localhost:${sup.port}` : `http://localhost:${DEFAULT_SUPERVISOR_PORT}`;
   const running: string[] = [];
@@ -192,7 +196,7 @@ export function fleetSeRefusalText(found: RunningFleetSe, opts: {
   if (found.sprints.length > 0) {
     steps.push('  1. Stop the running sprints or let them finish.');
     for (const s of found.sprints) {
-      if (sup && s.sprintId) steps.push(`       ${curl} -X POST ${base}/api/sprints/${s.sprintId}/stop`);
+      if (sup && s.sprintId) steps.push(`       ${curl} -X POST ${base}/api/sprints/${s.sprintId}/stop ${jsonHeader}`);
     }
     if (found.sprints.some(s => !(sup && s.sprintId))) {
       steps.push('     A sprint started directly (apra-fleet workflow fleet-sprint) is stopped with Ctrl-C in its');
@@ -206,7 +210,7 @@ export function fleetSeRefusalText(found: RunningFleetSe, opts: {
     steps.push('  1. No sprint is running.');
   }
   steps.push(sup
-    ? `  2. Stop the supervisor:\n       ${curl} -X POST ${base}/api/shutdown`
+    ? `  2. Stop the supervisor:\n       ${curl} -X POST ${base}/api/shutdown ${jsonHeader}`
     : '  2. No supervisor is running.');
   steps.push('  3. Upgrade:');
   for (const l of opts.rerunLines) steps.push(`       ${l}`);

@@ -14,6 +14,61 @@ Source files: `src/supervisor/api.mjs`, `server.mjs`, `dashboard.mjs`,
 `history-view.mjs`, `log-view.mjs`, `self-log.mjs`, wired together in
 `bin/serve.mjs`.
 
+## Mutating requests: JSON content type and same origin (or token)
+
+Every non-GET/HEAD/OPTIONS supervisor route -- `POST /api/sprints`,
+`/api/sprints/:id/decisions/:decisionId`, `/api/sprints/:id/stop`,
+`/api/shutdown`, `/api/reservations/:sprintId/force-release`, the
+`/api/dolt-push-mutex/*` and `/api/child-id-allocator/*` routes, and the
+`/sprints/:id/live/{stop,pause,resume,save_logs}` and
+`/sprints/:id/live/extensions/:extId/actions/:actionId` proxy actions -- is
+checked by the single dispatcher in `server.mjs` (helper:
+`packages/apra-fleet-workflow/src/viewer/request-guard.mjs`) BEFORE any
+handler runs. A request is admitted only when:
+
+1. its `Content-Type` is `application/json` (parameters such as
+   `; charset=utf-8` are fine). Anything else -- an HTML form's
+   `application/x-www-form-urlencoded` or `multipart/form-data`, `text/plain`,
+   or no content type at all -- is `415` with a JSON `error`, even with an
+   empty body (send `-H "Content-Type: application/json"` with curl);
+2. it is same-origin: no `Origin` header (curl, the sprint child's HTTP
+   clients, server-side callers), or an `Origin` whose host:port equals the
+   request's `Host`. A different `Origin` (including `null`), or a
+   `Sec-Fetch-Site` of `cross-site` or `same-site`, is `403` -- UNLESS the
+   request carries a valid token.
+
+Token: set `FLEET_SUPERVISOR_TOKEN` in the supervisor's environment (or pass
+`apiToken` to `createSupervisor()`), then send `Authorization: Bearer <token>`
+or `X-Fleet-Token: <token>`. A matching token admits a cross-origin JSON
+request; a presented token that does not match is always `403`, whatever the
+origin. With no token configured, only same-origin requests pass. The
+dashboard's own buttons and forms send JSON from the supervisor's own origin,
+so they need no token.
+
+Host header (DNS-rebinding defence, EVERY request, GET included): checked
+before anything else. An attacker page whose name is re-resolved to
+127.0.0.1 controls both `Origin` and `Host`, so the origin comparison above
+would admit it. The supervisor therefore answers only a `Host` whose name is a
+loopback name (`localhost`, `127.0.0.1`, `[::1]`), any IP literal (a page
+served from an IP literal cannot rebind), its own `--host` (unless a wildcard
+such as `0.0.0.0`), or a name listed with `--allowed-host <name>` (repeatable
+or comma-separated) / `FLEET_SUPERVISOR_ALLOWED_HOSTS`. Any other name is
+`403` with a JSON `error`, whatever the method, origin or token. The port in
+`Host` is not compared (a port-forward or reverse proxy may change it; a
+rebinding attacker cannot choose the name). Off-box binds reached by a DNS
+name must list that name; reaching them by IP needs no configuration.
+
+The per-sprint child viewer (the `--viewer-port` server the live proxy
+forwards to) applies the same guard (no token mechanism; same Host check on every request,
+extra names via `createDashboardViewer({ allowedHosts })`) to its own POST routes
+(`/stop`, `/pause`, `/resume`, `/save_logs`, `/extensions/:id/actions/:id`),
+since it is reachable directly on loopback and is the endpoint the decision
+answer ultimately reaches. The live proxy strips the browser's `Origin`,
+`Referer`, `Sec-Fetch-*` and token headers when forwarding an admitted request,
+so the child sees it as a same-host, Origin-less call.
+
+See also the upgrade notes in `supervisor-setup-guide.md` ("Upgrade notes: the request guard").
+
 ## POST /api/sprints: the full precondition order
 
 `launch()` in `api.mjs` runs these checks strictly in order; any failure
@@ -240,12 +295,78 @@ Dolt mode wedges on row-level conflicts if two sprints write concurrently:
   success or `release()` on failure. An abandoned reservation (crash before
   confirm/release) is reclaimed back to the free pool the same way as the
   mutex.
+  The allocator's high-water-mark file lives under `FLEET_SE_DATA_DIR`, so
+  separate data dirs never share counters. When that file does not exist yet,
+  the allocator copies the high-water marks (not the free pool) once from the
+  legacy file under the supervisor's old data location, keeping them above
+  any outstanding reservations, and saves on start; the legacy file is only
+  ever read. If a legacy supervisor may still be running (a reservation with
+  a live pid, or a legacy file modified in the last 10 minutes) one warning
+  is logged: stop the legacy supervisor or run both with the same
+  `FLEET_SE_DATA_DIR`, otherwise both can mint the same child id.
 
 Both are supervisor-local, in-memory-plus-persisted-snapshot singletons
 (state files under the supervisor's data dir, atomic temp-file+rename
 writes) -- there is exactly one of each per running supervisor process, and
 every sprint child talks to them over the SAME supervisor HTTP port their
 spawner injected as `FLEET_SE_SERVICE_URL`, not a side channel.
+
+## POST /api/sprints: `decisionNotify` (optional)
+
+Same JSON shape as the CLI's `--decision-notify`: `{message_member, email:
+{provider, from, to, host, port, user, secure}, dashboard_url, timeout_s}`
+(an object, or the same thing as a JSON string). It is validated with
+`validateDecisionNotify` (`fleet-sprint/decision-notify.mjs`) before any
+spawn; an invalid value (bad JSON, unknown key, bad email block) is a `400`
+with field `decisionNotify`. A valid value is forwarded to the child as
+`--decision-notify <json>`. Credentials never go in the body (unknown keys are
+rejected); the fleet credential store holds them. When omitted, the child
+falls back to the `FLEET_SPRINT_DECISION_NOTIFY` environment variable it
+inherits from the supervisor. Without `message_member` the message goes to the
+default target `orchestrator`, the operator's channel-capable orchestrating
+session registered on the fleet server; a channel with no target (no email
+block, or no fleet client) is logged once at launch and recorded `failed` per
+decision without a repeated warning. See
+`docs/fleet-sprint-set-aside.md`.
+
+## GET /api/sprints/:id: `resultStatus` and `warnings` (finished sprints)
+
+A finished sprint's own result status and warnings are lifted to the top level
+of the response, on both read paths: while the ledger reservation is still
+held (from the persisted terminal state's `result`), and after the watchdog
+has released it (from the durable `finished` history event, which carries
+`resultStatus` and `warnings`). `resultStatus` is `success` or
+`success-with-warnings`; the latter is returned when the branch was pushed but
+the PR was not opened for a VCS auth failure, and `warnings` then holds the
+reason (e.g. `PR not opened: VCS auth failure ... auth-failure`). The verdict
+is unchanged (a PASS stays PASS) and `success-with-warnings` is a success, not
+a failure. `warnings` is omitted when empty. Terminal sprints are not listed
+by `GET /api/sprints` (live only); read them by id.
+
+## Pending decisions
+
+A sprint that is waiting on an operator decision (see
+`docs/fleet-sprint-set-aside.md`) surfaces it as follows.
+
+- `GET /api/sprints/:id` (live sprints) gains `pendingDecisions` (the
+  child's pending-decision list), `decisionState` (the decisions extension
+  state string, when present) and `runState` (set to
+  `paused-awaiting-decision` while the run is paused on a decision).
+- `POST /api/sprints/:id/decisions/:decisionId`, body `{answer}` (a non-empty
+  string, length-capped), proxies the answer to the child's decisions
+  extension. Returns as soon as the run has durably recorded the answer, not after it
+  resumes or applies it: `{sprintId, decisionId, status: "recorded", released}`
+  (`released` is empty: the bead is released when the answer is applied, which
+  happens at the run's next beads sync bracket or at once if it is paused).
+  An error applying it later is shown in the log and the decisions state
+  (`answerErrors`), not by this route.
+  `400` (field `body` or `answer`): body not an object, or `answer` missing,
+  empty or too long (also a child-side rejection of the answer). `404`: unknown
+  sprint, or no pending decision with that id. `409`: the sprint has no
+  reachable child, or the child answered with an unexpected failure.
+- `POST /sprints/:id/live/extensions/:extId/actions/:actionId` is the generic
+  proxy route to the child's extension action endpoint (the dashboard uses it
+  for the decisions `answer` action).
 
 ## Live-view proxy (`/sprints/:id/live*`) vs. history view (`/sprints/:id/history`) vs. log (`/sprints/:id/log`)
 
@@ -345,15 +466,21 @@ answer `503`, and a background retry flips it to `ready`.
 - **400** -- always paired with a `field` name (for `POST /api/sprints`) or
   a plain `error` message (missing path param, invalid JSON body, missing
   token). Used across nearly every JSON POST route.
+- **403** -- a mutating request refused as cross-site (foreign `Origin` or
+  `Sec-Fetch-Site`) without a valid token, or carrying an invalid token (see
+  "Mutating requests" above), or any request whose `Host` header names a host
+  the supervisor does not answer to (DNS-rebinding defence).
+- **415** -- a mutating request without `Content-Type: application/json`.
 - **404** -- "no such live/known thing": unknown sprint id (`GET
   /api/sprints/:id`, `POST /api/sprints/:id/stop`, force-release), no live
   port and no history (`/sprints/:id/live` subpaths), no persisted state
   (`/sprints/:id/history`), no recorded/on-disk log
   (`/sprints/:id/log`, `/supervisor/log`).
-- **409** -- used ONLY by `POST /api/sprints` (relaunch gate and member-overlap
+- **409** -- used by `POST /api/sprints` (relaunch gate and member-overlap
   guard, both field `issue`/`members`; plus the issue-scope overlap guard,
-  field `issue`) and `POST /api/sprints/:id/stop` (reservation exists but no
-  reachable child port). The dolt-mutex and id-allocator surfaces
+  field `issue`), `POST /api/sprints/:id/stop` (reservation exists but no
+  reachable child port) and `POST /api/sprints/:id/decisions/:decisionId`
+  (no reachable child, or the child refused the answer). The dolt-mutex and id-allocator surfaces
   deliberately never use 409 -- see above.
 - **500** -- generic unhandled-error isolation (`server.mjs`'s dispatcher
   never lets a handler exception escape uncaught) plus a couple of named

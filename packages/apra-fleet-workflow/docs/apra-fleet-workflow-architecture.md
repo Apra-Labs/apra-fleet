@@ -68,7 +68,9 @@ await engine.executeFile('./my-workflow.js', { targetIssue: 'X-1' });
   routing, `opts.resume` for session continuity, and `opts.signal`/`opts.timeoutMs` for
   cancellation/timeout pass-through to the client.
 - `command(cmd, opts)`: dispatches a shell command to a fleet member via
-  `fleetApi.executeCommand()`. Supports `opts.failSoft` (section 4.2) and the same
+  `fleetApi.executeCommand()`. Supports `opts.failSoft` (section 4.2),
+  `opts.pauseExempt` (a read-only probe that runs while the run is paused, is not
+  counted in flight and takes no journal sequence; see workflow-guide.md) and the same
   routing/cancellation options as `agent()`.
 - `sequential(items, processor, opts)`: applies a single `processor(item, index, items)`
   function to each item in order. It accepts exactly one processor function; passing more

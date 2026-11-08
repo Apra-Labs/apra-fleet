@@ -446,6 +446,9 @@ export function formatFinishedDetail(state) {
     const parts = [];
     if (terminalReason) parts.push(`terminalReason=${terminalReason}`);
     if (verdict) parts.push(`verdict=${verdict}`);
+    const rs = state.result && typeof state.result === 'object' ? state.result : null;
+    if (rs && rs.status === 'success-with-warnings') parts.push('status=success-with-warnings');
+    if (rs && Array.isArray(rs.warnings) && rs.warnings.length > 0) parts.push(`warnings=${rs.warnings.join('; ')}`);
     return parts.length > 0 ? parts.join(' ') : 'finished';
 }
 
@@ -469,7 +472,10 @@ export function defaultRecordFinished({ sprintId, state, logger, history }) {
     const terminalReason = (state && typeof state === 'object' && state.terminalReason) || null;
     const verdict = (state && typeof state === 'object' && state?.extensions?.terminal?.verdict) || null;
     try {
-        const result = history.record({ sprintId, event: HISTORY_EVENTS.FINISHED, terminalReason, verdict });
+        const rs = state && typeof state === 'object' && state.result && typeof state.result === 'object' ? state.result : null;
+        const resultStatus = rs && typeof rs.status === 'string' ? rs.status : null;
+        const warnings = rs && Array.isArray(rs.warnings) ? rs.warnings : [];
+        const result = history.record({ sprintId, event: HISTORY_EVENTS.FINISHED, terminalReason, verdict, resultStatus, warnings });
         // history.record() is async; a rejection must never take the
         // classifier down with it (same discipline as recordTerminalError
         // below), so it is observed but not awaited by the caller.

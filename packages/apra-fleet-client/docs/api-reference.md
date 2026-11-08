@@ -763,6 +763,25 @@ union -- a user-authored deny rule is never dropped; only fleet-derived
 Calls `setup_ssh_key` -- converts a remote member from password to SSH key
 authentication. Options: `member_id?`, `member_name?`.
 
+#### `sendMessage(options)`
+
+Calls `send_message` -- pushes a message to a connected member session.
+Options: `member_id` (required, the target session's member id, or
+`"orchestrator"` for the operator's own channel-capable orchestrating session
+-- the newest such session connected to the server), `content` (required),
+`reply_to?`, `probe?`. A target that is not connected is reported in the
+result JSON (`{ "error": "member not connected or no MCP session" }`), not
+thrown. With `probe: true` nothing is sent; the result JSON reports whether a
+session holds the target: `{ "probe": true, "member_id", "connected",
+"channel_capable" }`. Only a `channel_capable` session can receive a message
+(for `"orchestrator"`: a Claude Code session launched with
+`--dangerously-load-development-channels`).
+
+#### `probeMessageTarget(memberId)`
+
+Shorthand for `sendMessage({ member_id: memberId, content: '', probe: true })`:
+a read-only check that sends nothing.
+
 #### `sendEmail(options: SendEmailOptions)`
 
 Calls `send_email`. Provider config is passed inline; secrets resolve

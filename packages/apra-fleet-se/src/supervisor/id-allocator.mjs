@@ -82,8 +82,19 @@ function nextToken(parentId) {
     return `${parentId}#${tokenSeq}#${Date.now().toString(36)}`;
 }
 
-/** Default per-user data dir shared with the ledger. */
-function defaultDataDir() {
+/** Legacy per-user allocator dir (~/.apra-fleet/supervisor); read-only seed source. */
+export function legacyDataDir() {
+    return path.join(os.homedir() || os.tmpdir(), '.apra-fleet', 'supervisor');
+}
+
+/**
+ * Default allocator data dir: FLEET_SE_DATA_DIR when set (same resolution as
+ * ledger.mjs, so two supervisors with separate data dirs never share one
+ * allocator file), else the legacy per-user ~/.apra-fleet/supervisor. A new
+ * allocator file is seeded once from the legacy file (see seedFromLegacy).
+ */
+export function defaultDataDir() {
+    if (process.env.FLEET_SE_DATA_DIR) return path.resolve(process.env.FLEET_SE_DATA_DIR);
     return path.join(os.homedir() || os.tmpdir(), '.apra-fleet', 'supervisor');
 }
 
@@ -93,6 +104,10 @@ function defaultDataDir() {
  * @param {{
  *   dataDir?: string,
  *   filePath?: string,
+ *   legacyFilePath?: string|null,
+ *     legacy allocator file to seed per-parent high-water marks from ONCE when
+ *     the configured file is missing. Defaults to the ~/.apra-fleet/supervisor
+ *     file only when dataDir is the FLEET_SE_DATA_DIR dir; null disables.
  *   leaseMs?: number,
  *   sweepMs?: number,
  *   now?: () => number,
@@ -118,10 +133,20 @@ function defaultDataDir() {
  *     (5 attempts, ~10ms escalating).
  * }} [deps]
  */
+/** A legacy allocator file modified this recently is treated as possibly still live. */
+const LEGACY_LIVE_WINDOW_MS = 10 * 60 * 1000;
+
 export function createIdAllocator(deps = {}) {
     const dataDir = deps.dataDir ?? defaultDataDir();
     const filePath = deps.filePath ?? path.join(dataDir, ID_ALLOCATOR_FILENAME);
     const tmpPath = `${filePath}.tmp`;
+    const envDir = process.env.FLEET_SE_DATA_DIR ? path.resolve(process.env.FLEET_SE_DATA_DIR) : null;
+    const legacyFilePath = deps.legacyFilePath !== undefined
+        ? deps.legacyFilePath
+        : (!deps.filePath && envDir && path.resolve(dataDir) === envDir
+            ? path.join(legacyDataDir(), ID_ALLOCATOR_FILENAME)
+            : null);
+    let seededFromLegacy = false;
     const leaseMs = Number.isFinite(deps.leaseMs) && deps.leaseMs > 0 ? deps.leaseMs : DEFAULT_LEASE_MS;
     const sweepMs = Number.isFinite(deps.sweepMs) && deps.sweepMs > 0 ? deps.sweepMs : DEFAULT_SWEEP_MS;
     const now = deps.now ?? (() => Date.now());
@@ -206,6 +231,66 @@ export function createIdAllocator(deps = {}) {
     }
 
     /**
+     * One-time upgrade seed: copy per-parent high-water marks ONLY from the legacy
+     * file. The free pool is deliberately NOT copied: reusing legacy holes is the
+     * likeliest way to hand out an id a still-running legacy supervisor also
+     * hands out. Reservations are not carried over (their seqs lift the
+     * high-water mark). The legacy file is only read, never modified. Any
+     * failure leaves the allocator empty.
+     *
+     * Remaining risk: a legacy supervisor (no FLEET_SE_DATA_DIR) still running
+     * against the same beads DB keeps minting above the snapshot, so both can
+     * mint the same seq. When the legacy file shows a live signal (a
+     * reservation whose pid is alive, or an mtime within LEGACY_LIVE_WINDOW_MS)
+     * ONE warning is logged naming the remedy. We warn rather than refuse: a
+     * stale-but-recent file would otherwise block a legitimate upgrade, and the
+     * supervisor must not fail to start.
+     */
+    async function seedFromLegacy() {
+        if (!legacyFilePath || path.resolve(legacyFilePath) === path.resolve(filePath)) return;
+        let doc;
+        try {
+            doc = JSON.parse(await fs.readFile(legacyFilePath, 'utf-8'));
+            if (!doc || typeof doc !== 'object' || doc.version !== ID_ALLOCATOR_VERSION || !doc.parents || typeof doc.parents !== 'object') {
+                throw new Error('unexpected shape or version');
+            }
+        } catch (err) {
+            if (err && err.code === 'ENOENT') {
+                log(`[id-allocator] no legacy allocator file at ${legacyFilePath}; starting empty`);
+            } else {
+                log(`[id-allocator] cannot seed from legacy allocator file ${legacyFilePath} (${err.message}); starting empty`);
+            }
+            return;
+        }
+        let liveSignal = null;
+        for (const [parentId, st] of Object.entries(doc.parents)) {
+            if (!st || typeof st !== 'object') continue;
+            let highWater = Number.isInteger(st.highWater) ? st.highWater : 0;
+            // Outstanding reservations are dropped, but their seqs were handed out:
+            // keep the high-water above them so they are never re-minted.
+            for (const r of Object.values(st.reserved ?? {})) {
+                if (Number.isInteger(r?.seq) && r.seq > highWater) highWater = r.seq;
+                if (!liveSignal && r?.pid != null && Number.isInteger(r.pid) && probe(r.pid)) liveSignal = `a reservation is held by live pid ${r.pid}`;
+            }
+            parents.set(parentId, { highWater, free: [], reserved: new Map() });
+        }
+        if (!liveSignal) {
+            try {
+                // A just-written file's mtime can be a few ms AHEAD of Date.now()
+                // (fractional fs timestamps vs whole-ms clock; Windows clock skew),
+                // so a slightly negative age is "just now", not "no signal".
+                const age = now() - (await fs.stat(legacyFilePath)).mtimeMs;
+                if (Math.abs(age) < LEGACY_LIVE_WINDOW_MS) liveSignal = `the legacy file was modified ${Math.max(0, Math.round(age / 1000))}s ago`;
+            } catch { /* no mtime: no signal */ }
+        }
+        if (liveSignal) {
+            log(`[id-allocator] WARNING: a legacy supervisor may still be running against ${legacyFilePath} (${liveSignal}); both allocators can then mint the same child id. Stop the legacy supervisor, or run both with the same FLEET_SE_DATA_DIR.`);
+        }
+        seededFromLegacy = true;
+        log(`[id-allocator] seeded ${parents.size} parent high-water mark(s) from legacy file ${legacyFilePath} into ${filePath}`);
+    }
+
+    /**
      * Load allocator state from disk. A missing file yields empty state. A
      * corrupt/foreign-version file is a hard error -- the supervisor must not
      * silently drop high-water marks and start re-minting live ids.
@@ -218,6 +303,7 @@ export function createIdAllocator(deps = {}) {
             if (err && err.code === 'ENOENT') {
                 parents = new Map();
                 loaded = true;
+                await seedFromLegacy();
                 return;
             }
             throw err;
@@ -411,6 +497,10 @@ export function createIdAllocator(deps = {}) {
         // -- seam lifecycle (server.mjs calls start()/stop()) ----------------
         async start() {
             if (!loaded) await load();
+            if (seededFromLegacy) {
+                seededFromLegacy = false;
+                await persist();
+            }
             if (sweepTimer) return;
             sweepTimer = setIntervalFn(() => {
                 if (reclaimExpired() > 0) persist().catch(() => {});

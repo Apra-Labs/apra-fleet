@@ -40,6 +40,23 @@
 
 import http from 'node:http';
 import { toBeadsSummary } from './beads-identity.mjs';
+import { checkMutatingRequest, checkRequestHost, parseAllowedHosts } from '@apralabs/apra-fleet-workflow/viewer/request-guard';
+
+/**
+ * Environment variable holding the optional supervisor API token. When set
+ * (non-empty), a mutating request carrying `Authorization: Bearer <token>` (or
+ * `X-Fleet-Token: <token>`) is admitted even from a cross-site Origin. Unset,
+ * only same-origin / Origin-less JSON requests reach a mutating route.
+ */
+export const SUPERVISOR_TOKEN_ENV = 'FLEET_SUPERVISOR_TOKEN';
+
+/**
+ * Env var listing extra Host names (comma/space separated) the supervisor
+ * answers to, beyond loopback names, IP literals and its --host. Needed only
+ * for an off-box bind reached by DNS name (DNS-rebinding defence, see
+ * request-guard.mjs checkRequestHost()).
+ */
+export const SUPERVISOR_ALLOWED_HOSTS_ENV = 'FLEET_SUPERVISOR_ALLOWED_HOSTS';
 
 /** Default HTTP service port for the always-on supervisor. */
 export const DEFAULT_SERVICE_PORT = 8787;
@@ -103,6 +120,47 @@ export function readJsonBody(req, opts = {}) {
 }
 
 /**
+ * Cuts stack-frame lines out of an error message. Linear: one pass over the
+ * lines, no regex over the whole string. A frame line is one that starts with
+ * "at " and looks like a frame (has "(" or a .js/.mjs/.ts file:line location).
+ * Everything from the first frame line onward is dropped.
+ * @param {any} v an Error, string or other value
+ * @returns {string}
+ */
+export function messageWithoutStack(v) {
+    const text = v instanceof Error ? v.message : typeof v === 'string' ? v : String(v);
+    let start = 0;
+    while (start <= text.length) {
+        let end = text.indexOf('\n', start);
+        if (end === -1) end = text.length;
+        const line = text.slice(start, end).trim();
+        if (line.startsWith('at ') && (line.includes('(') || /\.(?:mjs|cjs|js|ts):\d/.test(line))) {
+            return text.slice(0, start).trimEnd();
+        }
+        start = end + 1;
+    }
+    return text;
+}
+
+/**
+ * Error responses (status >= 400) must carry a message only, never a stack
+ * trace: the `error` field is reduced to its message and any `stack` key is
+ * dropped. Success payloads are never touched.
+ * @param {any} payload
+ */
+function sanitizeErrorPayload(payload) {
+    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+    const out = { ...payload };
+    delete out.stack;
+    if ('error' in out && out.error !== undefined && out.error !== null && typeof out.error !== 'object') {
+        out.error = messageWithoutStack(out.error);
+    } else if (out.error instanceof Error) {
+        out.error = messageWithoutStack(out.error);
+    }
+    return out;
+}
+
+/**
  * Writes a JSON response. Centralized so every handler (and the error-isolation
  * wrapper) emits a consistent shape.
  * @param {import('http').ServerResponse} res
@@ -110,7 +168,7 @@ export function readJsonBody(req, opts = {}) {
  * @param {any} payload
  */
 export function sendJson(res, status, payload) {
-    const body = JSON.stringify(payload ?? {});
+    const body = JSON.stringify((status >= 400 ? sanitizeErrorPayload(payload) : payload) ?? {});
     res.writeHead(status, {
         'content-type': 'application/json; charset=utf-8',
         'content-length': Buffer.byteLength(body),
@@ -133,7 +191,18 @@ export function sendJson(res, status, payload) {
  *   backlogMember?: { get: () => { member: object|null, status: string, reason: string|null } },
  *   logger?: { log?: Function, error?: Function },
  *   createServer?: (handler: (req: any, res: any) => void) => import('http').Server,
+ *   apiToken?: string|null,
+ *   host?: string,
+ *   allowedHosts?: string[]|string|null,
  * }} [deps]
+ *
+ * `apiToken`: the token that admits a cross-site mutating request (see
+ * request-guard.mjs). Defaults to process.env[SUPERVISOR_TOKEN_ENV]; pass null
+ * to disable the token mechanism explicitly.
+ *
+ * `allowedHosts`: extra Host header names admitted besides loopback names, IP
+ * literals and `host` itself (DNS-rebinding defence). Defaults to
+ * process.env[SUPERVISOR_ALLOWED_HOSTS_ENV].
  * @returns {{
  *   route(method: string, path: string, handler: Function): void,
  *   start(): Promise<{ port: number }>,
@@ -146,7 +215,9 @@ export function sendJson(res, status, payload) {
  */
 export function createSupervisor(deps = {}) {
     let port = Number.isInteger(deps.port) ? deps.port : DEFAULT_SERVICE_PORT;
+    const apiToken = deps.apiToken !== undefined ? deps.apiToken : (process.env[SUPERVISOR_TOKEN_ENV] || null);
     const host = (typeof deps.host === 'string' && deps.host) ? deps.host : DEFAULT_SERVICE_HOST;
+    const allowedHosts = parseAllowedHosts(deps.allowedHosts !== undefined ? deps.allowedHosts : process.env[SUPERVISOR_ALLOWED_HOSTS_ENV]);
     const logger = deps.logger ?? console;
     const log = (...a) => logger.log?.(...a);
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
@@ -255,6 +326,23 @@ export function createSupervisor(deps = {}) {
         const path = url.pathname;
 
         try {
+            // Cross-site request forgery guard: every mutating (non-GET/HEAD/
+            // OPTIONS) request must be JSON and same-origin (or carry the
+            // configured token) BEFORE any route handler runs -- one check here
+            // covers every route registered through route(), including those
+            // added by api.mjs, reconcile.mjs, proxy.mjs, the dolt mutex and
+            // the id allocator.
+            //
+            // The Host header is checked on EVERY request first (GET too): a
+            // DNS-rebound page controls both Origin and Host, so an origin
+            // comparison alone admits it, and it could also read GET routes.
+            const guardOpts = { token: apiToken, bindHost: host, allowedHosts, allowedHostsHint: `start the supervisor with --allowed-host <name> or set ${SUPERVISOR_ALLOWED_HOSTS_ENV}=<name>` };
+            const refused = checkRequestHost(req, guardOpts) || checkMutatingRequest(req, guardOpts);
+            if (refused) {
+                if (typeof req.resume === 'function') req.resume();
+                sendJson(res, refused.status, { error: refused.error });
+                return;
+            }
             const handler = routes.get(routeKey(method, path));
             if (handler) {
                 await handler(req, res, { url, params: {} });

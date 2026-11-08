@@ -6,6 +6,10 @@
 //   - beads a doer reported BLOCKED, plus their open 'blocks' dependents:
 //     `sprintState.doctorBlockedIds`, a Map id -> { kind, blockedBy, reason,
 //     cycle, round } (written by phases/develop.mjs);
+//   - beads a doer or reviewer returned NEEDS-DECISION on, plus their open
+//     'blocks' dependents: the same Map, kind 'needs-decision' (the dependents
+//     kind 'dependent'), with the decision's ids and the FULL question as the
+//     reason (written by decisions.mjs recordPendingDecision);
 //   - the deploy itself, when it failed at the deploy.md Permissions pre-step:
 //     `sprintState.deploySetAside` = { reason, notes, cycle } (written by
 //     phases/deploy.mjs).
@@ -35,7 +39,7 @@ export const DEPLOY_SET_ASIDE_ID = 'deploy';
  * then id), then the deploy. Empty when nothing was set aside.
  *
  * @param {{ doctorBlockedIds?: Map<string, object>, deploySetAside?: object|null }|null|undefined} sprintState
- * @returns {{ id: string, kind: string, blockedBy?: string, reason: string, cycle: number|null, round: number|null }[]}
+ * @returns {{ id: string, kind: string, blockedBy?: string, reason: string, cycle: number|null, round: number|null, decisionId?: string, decisionBeadId?: string }[]}
  */
 export function collectSetAsideEntries(sprintState) {
     const out = [];
@@ -48,9 +52,11 @@ export function collectSetAsideEntries(sprintState) {
             reason: e.reason || 'set aside',
             cycle: Number.isInteger(e.cycle) ? e.cycle : null,
             round: Number.isInteger(e.round) ? e.round : null,
+            ...(e.decisionId ? { decisionId: e.decisionId } : {}),
+            ...(e.decisionBeadId ? { decisionBeadId: e.decisionBeadId } : {}),
         });
     }
-    const kindRank = (k) => (k === 'blocked' ? 0 : 1);
+    const kindRank = (k) => (k === 'dependent' ? 1 : 0);
     out.sort((a, b) => (a.cycle ?? 0) - (b.cycle ?? 0) || (a.round ?? 0) - (b.round ?? 0)
         || kindRank(a.kind) - kindRank(b.kind) || a.id.localeCompare(b.id));
     const deploy = sprintState ? sprintState.deploySetAside : null;
@@ -78,14 +84,15 @@ export function formatFirstSeen(entry) {
 
 /**
  * The "Set aside this run" report lines (one list item per entry: bead,
- * reason, first seen). Empty array when nothing was set aside, so callers
+ * reason, first seen; a needs-decision entry is marked as such and carries
+ * the whole question). Empty array when nothing was set aside, so callers
  * omit the section entirely.
  *
  * @param {ReturnType<typeof collectSetAsideEntries>} entries
  * @returns {string[]}
  */
 export function formatSetAsideItems(entries) {
-    return (entries || []).map((e) => `${e.id}: ${e.reason} (first seen ${formatFirstSeen(e)})`);
+    return (entries || []).map((e) => `${e.id}: ${e.kind === 'needs-decision' ? '[needs-decision] ' : ''}${e.reason} (first seen ${formatFirstSeen(e)})`);
 }
 
 /**
