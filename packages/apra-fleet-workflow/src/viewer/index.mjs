@@ -74,6 +74,9 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     /* (apra-fleet-p2to.2.1) 'paused since <ts>' badge + reason card,
        generic to every workflow run -- no per-workflow-type styling. */
     .pause-banner { background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.4); color: var(--warning); }
+    /* Header-level extension banner slots (see the markup below the header). */
+    .extension-banners { flex-shrink: 0; }
+    .extension-banner { max-height: 45vh; overflow-y: auto; }
     
     /* min-height: 0 on every rung of the flex chain: a flex item's default
        min-height is content-sized, which lets a tall Activity list push the
@@ -226,6 +229,13 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       ${isHistory ? '' : '<button class="btn btn-stop" onclick="stopWorkflow()">Stop</button>'}
     </div>
   </div>
+  <!-- Header-level banner slot per dashboard extension: OUTSIDE every tab
+       panel, so whatever an extension renders here stays visible whichever
+       tab is active (e.g. a run-wide notice that needs the operator's
+       attention). Core never fills or shows these; the extension's own js
+       does (document.getElementById('extension-banner-' + id)). Live view
+       only, like the pause banner: a finished run has nothing to act on. -->
+  ${isHistory ? '' : `<div class="extension-banners" id="extension-banners">${dashboardExtensions.map(ext => `<div id="extension-banner-${ext.id}" class="extension-banner" style="display: none;"></div>`).join('')}</div>`}
   ${isHistory ? '' : `<div class="modal-overlay" id="stop-modal-overlay">
     <div class="modal-box">
       <p>Are you sure you want to forcibly stop the workflow?</p>

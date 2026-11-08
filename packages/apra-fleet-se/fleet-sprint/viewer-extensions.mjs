@@ -1418,16 +1418,52 @@ export function createDecisionsExtension({ answer = answerPendingDecision } = {}
 
             let lastDecisions = null;
             let formBusy = false;
+            // A render that arrived while an answer was in flight; applied once
+            // the operator has had a moment to read the inline result.
+            let renderDeferred = false;
+            // Last HTML written to each surface: an identical re-publish must
+            // not wipe an answer the operator is still typing.
+            const renderedHtml = { panel: null, banner: null };
 
             function renderDecisionsPanel() {
                 const container = document.getElementById('extension-decisions');
-                if (!container || formBusy) return;
-                container.innerHTML = renderDecisionsBannerHtml(lastDecisions) || '<div style="font-size: 11px; color: #71717a; padding: 8px;">(no decisions pending)</div>';
+                if (!container) return;
+                const html = renderDecisionsBannerHtml(lastDecisions) || '<div style="font-size: 11px; color: #71717a; padding: 8px;">(no decisions pending)</div>';
+                if (html === renderedHtml.panel) return;
+                renderedHtml.panel = html;
+                container.innerHTML = html;
             }
 
-            document.addEventListener('workflow:state:decisions', (e) => {
-                lastDecisions = e.detail || null;
+            // The header-level banner (the viewer's per-extension slot outside
+            // every tab panel): visible on every tab while a decision is
+            // pending, hidden when none is.
+            function renderDecisionsHeaderBanner() {
+                const slot = document.getElementById('extension-banner-decisions');
+                if (!slot) return;
+                const html = renderDecisionsBannerHtml(lastDecisions);
+                if (html === renderedHtml.banner) return;
+                renderedHtml.banner = html;
+                slot.innerHTML = html;
+                slot.style.display = html ? 'block' : 'none';
+            }
+
+            function renderDecisions() {
+                if (formBusy) { renderDeferred = true; return; }
                 renderDecisionsPanel();
+                renderDecisionsHeaderBanner();
+            }
+
+            // GET /state leans long strings under state.extensions, so the
+            // untruncated per-publish summary (summarize() above, dispatched
+            // just before the state event) is preferred; the raw state is the
+            // fallback when no summary has been published yet.
+            let lastSummary = null;
+            document.addEventListener('workflow:summary:decisions', (e) => {
+                lastSummary = e.detail || null;
+            });
+            document.addEventListener('workflow:state:decisions', (e) => {
+                lastDecisions = lastSummary || e.detail || null;
+                renderDecisions();
             });
 
             document.addEventListener('submit', async (ev) => {
@@ -1441,21 +1477,31 @@ export function createDecisionsExtension({ answer = answerPendingDecision } = {}
                 const result = form.querySelector('[data-decision-result]');
                 if (!answer) { if (result) result.textContent = 'Choose an option or type an answer.'; return; }
                 formBusy = true;
+                let recorded = false;
                 try {
+                    // Same-origin JSON POST: the answer routes refuse any other
+                    // content type and any cross-site origin.
                     const res = await fetch('/extensions/decisions/actions/answer', {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ decisionId: decisionId, answer: answer })
                     });
                     const out = await res.json().catch(() => ({}));
+                    recorded = res.ok;
                     if (result) result.textContent = res.ok ? 'Answer recorded; the sprint resumes.' : ('Failed: ' + (out.error || res.status));
                 } catch (err) {
                     if (result) result.textContent = 'Failed: ' + err.message;
                 } finally {
-                    formBusy = false;
+                    const release = () => {
+                        formBusy = false;
+                        if (renderDeferred) { renderDeferred = false; renderDecisions(); }
+                    };
+                    // Keep a recorded result readable briefly before a state
+                    // update that drops the answered decision hides it.
+                    if (recorded) setTimeout(release, 2500); else release();
                 }
             });
 
-            renderDecisionsPanel();
+            renderDecisions();
         `
     };
 }
