@@ -61,6 +61,7 @@ const assignedIds = (opts) => {
 const approve = async () => ({ content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'ok', reopenIds: [], newTasks: [] }) }] });
 const DECIDE = 'Task: decide the cookie handling';
 const OTHER = 'Task: unrelated work';
+const OTHER2 = 'Task: follow-on work';
 
 test('mock sprint: an answer recorded while another bead runs is written and pushed inside a sync bracket, and the released bead is then worked', async () => {
     resetSyncMemo();
@@ -68,12 +69,19 @@ test('mock sprint: an answer recorded while another bead runs is written and pus
         const seq = [];
         let recorded = false;
         let recordedAt = -1;
+        let wf = null;
+        // For each answer write (bd human respond / bd note): is a sync bracket
+        // open at that instant? The runner's pause-guard is true only when no
+        // bracket is open, so a closed guard == inside withOpenSyncBracket().
+        const writeBracket = [];
         const scenario = await runDevelopLoopScenario('dbracket', {
             members: ['local'],
-            taskSpecs: [DECIDE, OTHER].map((title) => ({ title })),
+            taskSpecs: [DECIDE, OTHER, OTHER2].map((title) => ({ title })),
             maxCycles: 3,
+            onWorkflow: async (workflow) => { wf = workflow; },
             onCommand: async ({ command }) => {
                 const c = String(command);
+                if (/bd human respond|bd note /.test(c) && wf && wf._pauseGuard) writeBracket.push({ c: c.slice(0, 40), inBracket: wf._pauseGuard() === false });
                 if (/bd human respond|bd note |dolt (pull|push)|bd dolt (pull|push)|git push/.test(c)) seq.push(c.slice(0, 60));
                 return undefined;
             },
@@ -81,6 +89,9 @@ test('mock sprint: an answer recorded while another bead runs is written and pus
                 const id = (title) => tasks.find((x) => x.title === title).id;
                 await rc(`bd update ${id(DECIDE)} --set-metadata streak=lane-d --set-metadata streakOrder=1`, td);
                 await rc(`bd update ${id(OTHER)} --set-metadata streak=lane-o --set-metadata streakOrder=1`, td);
+                await rc(`bd update ${id(OTHER2)} --set-metadata streak=lane-p --set-metadata streakOrder=1`, td);
+                // OTHER2 only becomes ready after OTHER, i.e. after the decision is pending.
+                await rc(`bd dep add ${id(OTHER2)} ${id(OTHER)}`, td);
             },
             doerHandler: async ({ opts, runCmd: rc, tempDir: td }) => {
                 const ids = assignedIds(opts);
@@ -93,13 +104,23 @@ test('mock sprint: an answer recorded while another bead runs is written and pus
                         return { content: [{ text: JSON.stringify({ status: 'NEEDS-DECISION', closedIds: [], notes: 'choose', decision: {
                             beadId: decide.id, question: 'Q?', options: [{ id: 'a', text: 'A' }, { id: 'b', text: 'B' }], recommendation: 'a' } }) }] };
                     }
-                } else if (!recorded) {
-                    // Another bead is running and the run is not parked: record the answer now.
-                    const pending = allPendingDecisions();
-                    if (pending.length > 0) {
-                        recorded = true;
-                        recordedAt = seq.length;
-                        await answerPendingDecision(pending[0].decisionId, 'a: go');
+                } else {
+                    if (!recorded) {
+                        // Another bead is running and the run is not parked: record the answer now.
+                        const pending = allPendingDecisions();
+                        if (pending.length > 0) {
+                            recorded = true;
+                            recordedAt = seq.length;
+                            await answerPendingDecision(pending[0].decisionId, 'a: go');
+                        }
+                    }
+                    // Keep this bead open until the answer has been applied, so
+                    // work stays runnable and the run reaches the top of the
+                    // next cycle (where the runner applies recorded answers
+                    // inside its sync bracket) instead of parking in the
+                    // paused-wait path that only runs when nothing can.
+                    if (recorded && !writeBracket.some((w) => w.c.includes('bd human respond'))) {
+                        return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: [], notes: 'Not finished yet.' }) }] };
                     }
                 }
                 for (const x of ids) await rc(`bd close ${x}`, td);
@@ -113,5 +134,9 @@ test('mock sprint: an answer recorded while another bead runs is written and pus
         assert.ok(respond >= 0, `the answer was written after being recorded: ${JSON.stringify(seq)}`);
         const x = scenario.tasks.find((t) => t.title === DECIDE).id;
         assert.equal(scenario.finalBeadsById.get(x).status, 'closed', 'the released bead was worked and closed');
+        // Runner wiring: every answer write ran with a sync bracket open
+        // (applyRecordedDecisionAnswers -> withOpenSyncBracket), not bare.
+        assert.ok(writeBracket.some((w) => w.c.includes('bd human respond')), `a bd human respond ran: ${JSON.stringify(writeBracket)}`);
+        assert.ok(writeBracket.every((w) => w.inBracket), `answer writes ran outside a sync bracket: ${JSON.stringify(writeBracket)}`);
     });
 });
