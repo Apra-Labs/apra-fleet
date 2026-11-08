@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "9a7760f37f70876b9b3fdd5360714698ea4dd270",
     "branch": "main",
-    "entry_count": 139
+    "entry_count": 140
   },
   "entries": [
     {
@@ -131,6 +131,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:26.644Z"
+    },
+    {
+      "id": "0f9d099d-5415-4305-a0f8-fe1ecf05fc64",
+      "type": "knowledge",
+      "title": "recordDecisionAnswer only queues; mid-run answers apply inside a runner sync bracket",
+      "summary": "recordDecisionAnswer returns {status:'recorded'} without awaiting resume or pushing; the runner applies queued answers at the top of each cycle inside a withOpenSyncBracket via applyRecordedAnswers.",
+      "symbols": [
+        "recordDecisionAnswer",
+        "applyRecordedAnswers",
+        "applyRecordedDecisionAnswers"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T11:26:44.969Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs": "100e5775d8b1a6da9cba507c8260925595ec6add",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "cfb66d795c72d41ff513e67cb077e9b8e3c5a9f1"
+      }
     },
     {
       "id": "101692b0-d5e6-4a32-8d6e-e8595ddc39f0",
