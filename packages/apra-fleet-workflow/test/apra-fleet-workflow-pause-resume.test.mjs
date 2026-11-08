@@ -366,6 +366,22 @@ describe('apra-fleet-hzeb.3: script-initiated pause via the script context', () 
             await ctx.requestResume();
         });
     });
+
+    test('ctx.stopSignal() is the run\'s cancellation signal: requestStop() aborts it with a CancelledError reason; undefined outside a run', async () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        assert.strictEqual(wf.createContext().stopSignal(), undefined, 'no active run -> no signal');
+        await wf.runWithContext({}, async (ctx) => {
+            const signal = ctx.stopSignal();
+            assert.ok(signal, 'a signal inside the run');
+            assert.strictEqual(signal.aborted, false);
+            let abortedReason = null;
+            signal.addEventListener('abort', () => { abortedReason = signal.reason; }, { once: true });
+            wf.requestStop('operator stop');
+            assert.strictEqual(signal.aborted, true);
+            assert.ok(abortedReason instanceof CancelledError, 'the abort reason is a CancelledError');
+            assert.match(abortedReason.message, /operator stop/);
+        });
+    });
 });
 
 // (apra-fleet-p2to.1.3.2) The pre-resume hook (setPreResumeHook), registered by

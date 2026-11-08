@@ -11,10 +11,12 @@ import {
 } from '../fleet-sprint/decision-wait.mjs';
 
 // =============================================================================
-// The run pauses resumably awaiting an operator decision instead of throwing
-// StalledSprintError, and resumes on the answer -- `bd human respond` on the
-// decision bead, or recordDecisionAnswer() -- without a relaunch. An operator
-// stop during the pause ends the run.
+// The run parks once awaiting an operator decision instead of throwing
+// StalledSprintError, and resumes on the answer without a relaunch:
+// recordDecisionAnswer() (the dashboard / supervisor answer route) resumes it
+// at once; a `bd human respond` made elsewhere is picked up when the run is
+// next resumed (an operator Resume), since nothing polls the members. An
+// operator stop during the pause ends the run.
 // =============================================================================
 
 const check = (cond, msg) => assert.ok(cond, msg);
@@ -52,7 +54,9 @@ test('unit: the answer note carries the answer, the question and every option', 
 
 // A fake engine for createDecisionWait: requestPause/requestResume plus a
 // command() that blocks while "paused", like the real pause gate, and that a
-// stop rejects with a CancelledError.
+// stop rejects with a CancelledError. operatorResume() is a resume from
+// outside the wait (the dashboard Resume button); waiting() counts the calls
+// blocked at the gate.
 function fakeEngine({ shows = [], resumeFailures = 0 } = {}) {
     const rec = { commands: [], pauses: [], resumes: [], published: [] };
     let paused = false;
@@ -71,6 +75,12 @@ function fakeEngine({ shows = [], resumeFailures = 0 } = {}) {
             const w = waiters; waiters = [];
             for (const x of w) x.resolve();
         },
+        operatorResume: () => {
+            paused = false;
+            const w = waiters; waiters = [];
+            for (const x of w) x.resolve();
+        },
+        waiting: () => waiters.length,
         stop: () => {
             paused = false;
             const w = waiters; waiters = [];
@@ -89,6 +99,15 @@ function fakeEngine({ shows = [], resumeFailures = 0 } = {}) {
     return engine;
 }
 
+/** Resolves once `cond()` holds (polled on short timers); fails after `ms`. */
+async function until(cond, what, ms = 5_000) {
+    const deadline = Date.now() + ms;
+    while (!cond()) {
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+        await new Promise((r) => setTimeout(r, 2));
+    }
+}
+
 function sprintStateWithDecision({ decisionBeadId = 'x-dec' } = {}) {
     const decision = {
         decisionId: 'decision-1-x-1', beadId: 'x-1', ...decisionFor('x-1'), decisionBeadId,
@@ -104,29 +123,42 @@ function sprintStateWithDecision({ decisionBeadId = 'x-dec' } = {}) {
     };
 }
 
-test('unit: awaitAnswer pauses (typed source), polls after the interval, applies a bd human respond answer and releases only that decision', async () => {
+test('unit: awaitAnswer parks once (typed source); a bd human respond answer is picked up on the next operator resume and releases only that decision', async () => {
     const engine = fakeEngine({ shows: [[{ id: 'x-dec', status: 'open' }], [{ id: 'x-dec', status: 'open' }], [{ id: 'x-dec', status: 'closed' }]] });
     const sprintState = sprintStateWithDecision();
     const pulls = [];
+    const logs = [];
     const wait = createDecisionWait({
         sprintState, requestPause: engine.requestPause, requestResume: engine.requestResume, command: engine.command,
-        member: 'm', pullBeads: async (m) => pulls.push(m), publishState: engine.publishState, pollIntervalMs: 5,
+        member: 'm', pullBeads: async (m) => pulls.push(m), publishState: engine.publishState, pollIntervalMs: 5, log: (m) => logs.push(m),
     });
     assert.equal(wait.hasPending(), true, 'a decision still holding its bead aside is pending (mixed with a non-decision set-aside)');
-    const answered = await wait.awaitAnswer({ where: 'test', cycle: 1 });
+    const p = wait.awaitAnswer({ where: 'test', cycle: 1 });
+    await until(() => engine.waiting() === 1, 'the read to block at the pause gate');
+    assert.equal(engine.rec.commands.length, 0, 'nothing ran on the member while parked');
+    // An operator Resume before anyone answered: the read runs, the clone is
+    // pulled and read once more, nothing is answered, and the run is parked
+    // again after one interval.
+    engine.operatorResume();
+    await until(() => engine.rec.pauses.length === 2 && engine.waiting() === 1, 're-parking after the empty release');
+    assert.equal(pulls.length, 1, 'the empty release pulled the beads clone once');
+    assert.equal(logs.filter((m) => m.includes('with no decision answered yet')).length, 1);
+    // The operator answered elsewhere (bd human respond) and resumes.
+    engine.operatorResume();
+    const answered = await p;
     assert.equal(answered.length, 1);
     assert.equal(answered[0].answer, 'a, go');
+    assert.equal(answered[0].via, 'bd human respond');
     assert.deepEqual(answered[0].released.sort(), ['x-1', 'x-2']);
     assert.equal(engine.rec.pauses[0].source, DECISION_PAUSE_SOURCE);
-    assert.equal(engine.rec.pauses.length, 2, 'one pause per unanswered interval');
-    check(pulls.length >= 1, 'an unanswered poll pulls the beads clone and reads again');
+    assert.equal(engine.rec.resumes.length, 0, 'the wait itself never resumed: there was no in-process answer');
     check(engine.rec.commands.some((c) => c.startsWith('bd note x-1 --file')), 'the answer is appended to the work bead notes');
     check(!engine.rec.commands.some((c) => c.startsWith('bd human respond')), 'an operator-answered bead is not responded to again');
     assert.equal(sprintState.pendingDecisions.size, 0);
     assert.equal(sprintState.doctorBlockedIds.has('y-1'), true, 'a non-decision set-aside is kept');
     assert.equal(sprintState.answeredDecisions.get('decision-1-x-1').answer, 'a, go');
     assert.equal(wait.hasPending(), false);
-    assert.deepEqual(engine.rec.published.map((p) => p.data.state), [PAUSED_AWAITING_DECISION, 'running']);
+    assert.deepEqual(engine.rec.published.map((p2) => p2.data.state), [PAUSED_AWAITING_DECISION, 'running']);
     assert.equal(sprintState.decisionWait, null);
     assert.equal(activeDecisionWaits().length, 0, 'no live wait left registered');
 });
@@ -150,16 +182,22 @@ test('unit: a stop while paused rejects the wait with CancelledError at once, wi
     assert.equal(sprintState.pendingDecisions.size, 1, 'the decision stays pending');
 });
 
-test('unit: a failed resume keeps the run paused and is retried on the next interval', async () => {
-    const engine = fakeEngine({ shows: [[{ id: 'x-dec', status: 'closed' }]], resumeFailures: 2 });
+test('unit: a failed resume keeps the run parked, is retried every interval while the answer is queued, and is logged once per distinct error', async () => {
+    const engine = fakeEngine({ shows: [[{ id: 'x-dec', status: 'open' }]], resumeFailures: 2 });
     const logs = [];
     const wait = createDecisionWait({
         sprintState: sprintStateWithDecision(), requestPause: engine.requestPause, requestResume: engine.requestResume,
         command: engine.command, member: 'm', pollIntervalMs: 5, log: (m) => logs.push(m),
     });
-    const answered = await wait.awaitAnswer({ where: 'test' });
+    const p = wait.awaitAnswer({ where: 'test' });
+    await until(() => engine.waiting() === 1, 'the read to block at the pause gate');
+    const rec = await wait.recordDecisionAnswer('decision-1-x-1', 'a');
+    const answered = await p;
+    assert.equal(rec.answer, 'a');
     assert.equal(answered.length, 1);
-    assert.equal(logs.filter((m) => m.includes('resume failed, staying paused')).length, 2);
+    assert.equal(engine.rec.resumes.length, 1, 'resumed exactly once, after two failed attempts');
+    assert.equal(engine.rec.pauses.length, 1, 'parked once');
+    assert.equal(logs.filter((m) => m.includes('resume failed, staying paused')).length, 1, 'the same failure is logged once');
 });
 
 test('unit: recordDecisionAnswer during the wait wakes it at once and answers through bd human respond', async () => {
@@ -300,19 +338,22 @@ async function decisionScenario(tag, answer, { onCommand } = {}) {
     return { scenario, seen };
 }
 
-test('mock sprint: the only remaining bead awaits a decision -- the run pauses (no StalledSprintError), bd human respond resumes it and the bead is dispatched with the answer in its notes', async () => {
+test('mock sprint: the only remaining bead awaits a decision -- the run pauses (no StalledSprintError), bd human respond plus an operator Resume resumes it and the bead is dispatched with the answer in its notes', async () => {
     resetSyncMemo();
     await withScenarioMarkers('decision wait answered by bd human respond', async () => {
         const ANSWER = 'a: keep the attributes and upgrade the emulator';
         const { scenario, seen } = await decisionScenario('dwait-respond', async (_workflow, { runCmd: rc, tempDir: td }, data) => {
             await rc(`bd human respond ${data.pending[0].decisionBeadId} -r "${ANSWER}"`, td);
+            // Answered outside the run: nothing polls the members, so the
+            // operator resumes it (the dashboard Resume button).
+            await _workflow.requestResume('operator Resume after bd human respond');
         });
         const x = scenario.tasks.find((t) => t.title === DECIDE).id;
         check(!seen.answerError, `answering failed: ${seen.answerError && seen.answerError.message}`);
 
         // (1) paused-awaiting-decision, never StalledSprintError.
         check(seen.states.some((d) => d.state === PAUSED_AWAITING_DECISION && d.pending[0].beadId === x), 'reached paused-awaiting-decision');
-        assert.equal(seen.pauses.filter((p) => p.source === 'needs_decision').length, 1, 'answered within the first poll interval');
+        assert.equal(seen.pauses.filter((p) => p.source === 'needs_decision').length, 1, 'parked once, answered on the first resume');
         check(!scenario.error || scenario.error.code !== 'SPRINT_STALLED', `never stalled: ${scenario.error && scenario.error.message}`);
         assert.equal(scenario.error, null, `the run completes: ${scenario.error && scenario.error.message}`);
 

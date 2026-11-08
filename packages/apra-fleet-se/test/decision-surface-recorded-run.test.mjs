@@ -21,7 +21,8 @@ import { createSpawner } from '../src/supervisor/spawner.mjs';
 // message and email exactly once; GET /api/sprints/:id and the sprint page show
 // the decision in full; with nothing else ready the sprint pauses
 // (paused-awaiting-decision, never StalledSprintError) and resumes, without a
-// relaunch, on an answer from the dashboard route or `bd human respond`.
+// relaunch, on an answer from the dashboard route, or on `bd human respond`
+// followed by an operator Resume.
 // Notification failures (no channel, send error, thrown, timeout) are loud and
 // visible but change nothing about the run.
 // =============================================================================
@@ -144,6 +145,10 @@ async function incident(tag, { notify, modes = { message: 'ok', email: 'ok' }, a
                             await controller.answerDecision('s1', d.decisionId, { answer: seen.ANSWER });
                         } else {
                             await ctx.runCmd(`bd human respond ${d.decisionBeadId} -r "${seen.ANSWER}"`, ctx.tempDir);
+                            // Answered outside the run: nothing polls the
+                            // members while it is parked, so the operator
+                            // resumes it (the dashboard Resume button).
+                            await workflow.requestResume('operator Resume after bd human respond');
                         }
                     })().catch((err) => { seen.answerError = err; });
                 });

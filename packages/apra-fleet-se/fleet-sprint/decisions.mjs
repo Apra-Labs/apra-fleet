@@ -105,7 +105,8 @@ export function formatDecisionRequest(decision, { raisedBy, cycle, round, decisi
         decision.recommendation,
     ];
     if (decisionBeadId) {
-        lines.push('', `Answer with: bd human respond ${decisionBeadId} "<chosen option id and any instructions>"`);
+        lines.push('', `Answer with: bd human respond ${decisionBeadId} "<chosen option id and any instructions>" ` +
+            '(then resume the run from its dashboard), or answer from the sprint dashboard\'s decision banner.');
     }
     return lines.join('\n');
 }

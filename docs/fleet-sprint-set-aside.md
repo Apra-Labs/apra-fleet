@@ -39,27 +39,36 @@ forever or burning cycles on it.
 6. **A pending decision pauses the run instead of stalling it.** When rule 3
    would stall the run and any decision is still pending -- even if other
    beads are set aside for other reasons, since the answer may unblock work --
-   the run pauses through the engine's cooperative pause (source
+   the run parks ONCE through the engine's cooperative pause (source
    `needs_decision`, state `paused-awaiting-decision`, published under the
-   `decisions` state namespace) instead of throwing StalledSprintError. It
-   polls the decision beads once per interval (60s, or
-   `APRA_FLEET_DECISION_POLL_MS`). An answer -- `bd human respond <decision
-   bead> "<answer>"`, or the programmatic `recordDecisionAnswer` -- is
-   appended to the work bead's notes, the bead and its dependents are released
-   and re-enter through the ready set, and the run continues without a
-   relaunch. A stall with no pending decision is unchanged
+   `decisions` state namespace) instead of throwing StalledSprintError. An
+   answer is appended to the work bead's notes, the bead and its dependents
+   are released and re-enter through the ready set, and the run continues
+   without a relaunch. A stall with no pending decision is unchanged
    (fleet-sprint/decision-wait.mjs). A decision whose decision bead could not
    be filed (the best-effort `bd create` failed) has no answer path, so it
    never holds a pause: a stall on it still throws StalledSprintError, whose
    set-aside reason names it with its full question and says the decision
    bead could not be filed, and `recordDecisionAnswer` refuses it.
 
-   While paused, member reservations are released and re-acquired on each
-   poll's resume, exactly as for a usage-limit pause; the sprint lock is held.
-   The fleet server's 30-minute cloud idle timeout only stops an idle cloud
-   member's VM (restarted by its next dispatch); it never aborts the wait, and
-   the wait has no total budget. An operator stop during the pause ends the
-   run at once.
+   While parked, NO command runs on any sprint member and the members stay
+   reserved by the sprint (the CLI skips the usage-limit pause's reservation
+   hand-back for this pause source, so no other sprint can take a member);
+   the sprint lock is held. Once per interval (60s, or
+   `APRA_FLEET_DECISION_POLL_MS`) the wait checks only its in-process answer
+   queue, which the dashboard's decision banner and the supervisor's
+   `POST /api/sprints/:id/decisions/:decisionId` (both reaching
+   `recordDecisionAnswer`) feed: such an answer resumes the run at once,
+   exactly once. There is no member-free way to see a
+   `bd human respond <decision bead> "<answer>"` made elsewhere (the beads
+   clone lives on a sprint member), so that answer is picked up when the run
+   is next resumed -- by the operator's dashboard Resume, or by an in-process
+   answer; a resume with nothing answered logs one line and parks the run
+   again after one interval. Logging is one line per state change, never one
+   per poll. The fleet server's 30-minute cloud idle timeout only stops an
+   idle cloud member's VM (restarted by its next dispatch); it never aborts
+   the wait, and the wait has no total budget. An operator stop during the
+   pause ends the run at once.
 
 ## Design points
 

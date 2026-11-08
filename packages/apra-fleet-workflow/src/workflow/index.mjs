@@ -2099,7 +2099,16 @@ export class FleetWorkflow extends EventEmitter {
             // one. requestStop() remains instance-only/operator-only -- a
             // script has no business tearing down its own run.
             requestPause: this.requestPause.bind(this),
-            requestResume: this.requestResume.bind(this)
+            requestResume: this.requestResume.bind(this),
+            // Script-facing, read-only view of the active run's cooperative
+            // cancellation: the AbortSignal requestStop() aborts (its reason
+            // is the CancelledError), or undefined outside a runWithContext()
+            // run. Lets a script that waits on a timer -- with no
+            // agent()/command() blocked at the pause gate -- still see an
+            // operator stop at once, and avoid re-pausing after one (a pause
+            // requested after requestStop() would block the next dispatch at
+            // the gate with nothing left to release it).
+            stopSignal: () => this._currentSignal()
         };
     }
 

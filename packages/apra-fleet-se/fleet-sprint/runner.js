@@ -893,6 +893,10 @@ async function runSprintCycle(context) {
     // controller is only wired when BOTH are present, so those callers keep the
     // pre-feature behaviour (a usage-limit error falls through the retry ladder).
     const { requestPause, requestResume } = context;
+    // The engine's run stop signal (absent for direct/legacy callers): lets
+    // the decision wait see an operator stop while it holds the run parked
+    // with nothing dispatched.
+    const stopSignal = typeof context.stopSignal === 'function' ? context.stopSignal : undefined;
 
     // Validate BEFORE any agent()/command() dispatch: a rejected/malformed arg
     // must result in zero fleet dispatches. This must happen early so the
@@ -1859,9 +1863,9 @@ async function runSprintCycle(context) {
         : undefined;
 
     // NEEDS-DECISION wait (./decision-wait.mjs): when the run would stall
-    // with a decision still pending, it pauses through the same cooperative
-    // pause instead of throwing StalledSprintError, polls the decision beads
-    // and resumes on an answer. Only wired with the engine's pause/resume
+    // with a decision still pending, it parks once through the same
+    // cooperative pause instead of throwing StalledSprintError (members stay
+    // reserved and idle) and resumes once an answer is available. Only wired with the engine's pause/resume
     // primitives (absent for direct/legacy runSprintCycle() callers, which
     // keep the stall). recordDecisionAnswer is exposed on sprintState for an
     // in-process answer route.
@@ -1876,6 +1880,7 @@ async function runSprintCycle(context) {
             pushBeads: (m) => gitSync.syncBeadsAfter(m, { pushBeads: true }),
             publishState: typeof publishState === 'function' ? publishState : undefined,
             log,
+            ...(stopSignal ? { stopSignal } : {}),
         })
         : null;
     if (decisionWait) sprintState.recordDecisionAnswer = decisionWait.recordDecisionAnswer;

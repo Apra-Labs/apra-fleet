@@ -16,6 +16,7 @@ import {
     getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
 import { beadsExtension, kbCodeIntelExtension, decisionsExtension } from '../fleet-sprint/viewer-extensions.mjs';
+import { DECISION_PAUSE_SOURCE } from '../fleet-sprint/decision-wait.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
 import { prepareLaunchTopology, toAlignCommandResult } from '../fleet-sprint/member-align.mjs';
@@ -642,6 +643,46 @@ export async function reReserveOnResume({ sprintReservation, resyncMember, reque
     }
 }
 
+// Reservation handling across a cooperative pause/resume, by pause source.
+// A pause hands every member reservation back (so another sprint may use the
+// members while this one is parked) and the matching resume re-acquires them
+// owner-checked and resyncs each one -- EXCEPT the paused-awaiting-decision
+// pause (source 'needs_decision', fleet-sprint/decision-wait.mjs): that run is
+// waiting on an operator, not on a member, and may wait hours, so it keeps
+// every reservation (no other sprint can take a member meanwhile) and touches
+// no member; its resume then has nothing to re-acquire or resync. The source
+// comes from the 'pause:requested' payload ('paused' carries none). The
+// re-reserve runs only for a pause whose 'paused' handler actually released.
+// Exported so the per-source behaviour is unit-testable without a live engine.
+export function wirePauseReservations({ workflow, releaseForPause, reReserve, log = () => {} }) {
+    let pauseSource = null;
+    let released = false;
+    workflow.on('pause:requested', (payload) => {
+        pauseSource = payload && payload.source ? payload.source : null;
+    });
+    workflow.on('paused', () => {
+        if (pauseSource === DECISION_PAUSE_SOURCE) {
+            log('[member-reservation] paused awaiting an operator decision: keeping every member reservation for the wait.');
+            return;
+        }
+        released = true;
+        // Started synchronously in the 'paused' event, as before; best-effort
+        // (a release hiccup must never fail a pause).
+        const failed = (err) => console.error('[member-reservation] release-on-pause failed:', err && err.message ? err.message : err);
+        try {
+            Promise.resolve(releaseForPause()).catch(failed);
+        } catch (err) {
+            failed(err);
+        }
+    });
+    workflow.setPreResumeHook(async (reason) => {
+        if (!released) return undefined;
+        const result = await reReserve(reason);
+        released = false;
+        return result;
+    });
+}
+
 async function main() {
     const { values } = parseCliArgs(process.argv.slice(2));
 
@@ -1093,10 +1134,6 @@ async function main() {
         const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
         return commandResultToSoftGit(res);
     };
-    workflow.on('paused', () => {
-        sprintReservation.releaseForPause().catch((err) =>
-            console.error('[member-reservation] release-on-pause failed:', err && err.message ? err.message : err));
-    });
     // (apra-fleet-p2to.1.3) The re-reserve + per-member resync is registered as
     // an AWAITABLE pre-resume hook, not a fire-and-forget 'resumed' listener.
     // requestResume() drains this hook as a hard barrier -- while the run is
@@ -1114,19 +1151,25 @@ async function main() {
     // sees exactly which members block the resume. requestPause() is still
     // passed for the exported helper's standalone contract; here it is a no-op
     // because the run has not yet been unpaused.
-    workflow.setPreResumeHook(() => reReserveOnResume({
-        sprintReservation,
-        resyncMember: (member) => resyncReacquiredMember({
-            member,
-            branch: branchName,
-            baseBranch,
-            runGit: (cmd) => runGitSoft(cmd, member),
-            doltPull: (m) => runCommand('bd dolt pull', m),
-            log: (msg) => console.log(msg),
+    // A decision pause keeps its reservations (see wirePauseReservations).
+    wirePauseReservations({
+        workflow,
+        releaseForPause: () => sprintReservation.releaseForPause(),
+        log: (msg) => console.log(msg),
+        reReserve: () => reReserveOnResume({
+            sprintReservation,
+            resyncMember: (member) => resyncReacquiredMember({
+                member,
+                branch: branchName,
+                baseBranch,
+                runGit: (cmd) => runGitSoft(cmd, member),
+                doltPull: (m) => runCommand('bd dolt pull', m),
+                log: (msg) => console.log(msg),
+            }),
+            requestPause: (reason) => workflow.requestPause(reason),
+            log: (msg) => console.error(msg),
         }),
-        requestPause: (reason) => workflow.requestPause(reason),
-        log: (msg) => console.error(msg),
-    }));
+    });
 
     let reservationReleased = false;
     const releaseReservationOnce = async () => {

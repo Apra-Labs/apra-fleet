@@ -155,9 +155,12 @@ export function formatNotificationBody(decision, { dashboardUrl } = {}) {
         '',
         'How to answer:',
     ];
-    if (decision.decisionBeadId) lines.push(`- bd human respond ${decision.decisionBeadId} "<chosen option id and any instructions>"`);
-    else lines.push('- the decision bead could not be filed; record the decision in the work bead notes and re-run the sprint');
-    if (dashboardUrl) lines.push(`- or answer in the sprint dashboard: ${dashboardUrl}`);
+    if (decision.decisionBeadId) {
+        lines.push(`- bd human respond ${decision.decisionBeadId} "<chosen option id and any instructions>", then press Resume in the sprint dashboard (a run paused for a decision touches no member, so it does not see a bd answer until it is resumed)`);
+    } else {
+        lines.push('- the decision bead could not be filed; record the decision in the work bead notes and re-run the sprint');
+    }
+    if (dashboardUrl) lines.push(`- or answer in the sprint dashboard (resumes the run at once): ${dashboardUrl}`);
     return lines.join('\n');
 }
 
