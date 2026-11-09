@@ -124,16 +124,19 @@ export function guardKeywordTop(
   const present = new Set(order);
   const guarded = new Set(keywordTop.slice(0, keep).filter(id => present.has(id)));
   if (guarded.size === 0) return order;
-  const result = [...order];
-  const outside = result.map((id, i) => ({ id, i })).filter(x => x.i >= within && guarded.has(x.id)).map(x => x.id);
-  for (const id of outside) {
-    let slot = -1;
-    for (let i = Math.min(within, result.length) - 1; i >= 0; i--) {
-      if (!guarded.has(result[i])) { slot = i; break; }
-    }
-    if (slot < 0) break;
-    result.splice(result.indexOf(id), 1);
-    result.splice(slot, 0, id);
+  const win = Math.min(within, order.length);
+  const outside = order.slice(win).filter(id => guarded.has(id));
+  if (outside.length === 0) return order;
+  // Evict the lowest-ranked non-guarded ids of the window, one per outside id.
+  const evict = new Set<string>();
+  for (let i = win - 1; i >= 0 && evict.size < outside.length; i--) {
+    if (!guarded.has(order[i])) evict.add(order[i]);
   }
-  return result;
+  if (evict.size === 0) return order;
+  const moved = outside.slice(0, evict.size);
+  const movedSet = new Set(moved);
+  const head = order.slice(0, win).filter(id => !evict.has(id));
+  const rest = order.slice(win).filter(id => !movedSet.has(id));
+  const evicted = order.slice(0, win).filter(id => evict.has(id));
+  return [...head, ...moved, ...evicted, ...rest];
 }
