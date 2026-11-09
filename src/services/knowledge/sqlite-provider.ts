@@ -31,7 +31,7 @@ import {
   type EmbedderLike, type EmbedderSource, type EmbedQueueStatus,
 } from './embedding/embed-queue.js';
 import { CodeLinkStore, normalizeFileRef, type CodeLinkResolver, type CodeLinksStatus, type ResolvedCodeLink } from './code-links.js';
-import { hybridOrder, ranksFromOrder, ranksFromScores, reciprocalRankFusion, trustPrior, type RankedList } from './hybrid-rank.js';
+import { guardKeywordTop, hybridOrder, ranksFromOrder, ranksFromScores, reciprocalRankFusion, trustPrior, type RankedList } from './hybrid-rank.js';
 import { getSessionEngineOrigin } from '../tool-scope.js';
 import { validateFilePaths } from './path-validation.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
@@ -1950,7 +1950,9 @@ export class SqliteProvider implements MemoryProvider {
       const r = rowById.get(id)!;
       return trustPrior({ confidence: r.confidence as string, use_count: Number(r.use_count ?? 0), stale: Number(r.stale ?? 0) === 1 });
     }, lists[0] ? [...lists[0].ranks.keys()] : []);
-    const guarded = order;
+    const guarded = keywordRows
+      ? guardKeywordTop(order, keywordRows.map(r => r.id as string))
+      : order;
     return guarded.slice(0, limit).map(id => rowById.get(id)!);
   }
 

@@ -100,3 +100,40 @@ export function hybridOrder(
     || (seen.get(a) ?? Number.MAX_SAFE_INTEGER) - (seen.get(b) ?? Number.MAX_SAFE_INTEGER)
     || a.localeCompare(b));
 }
+
+/** D2f additive rule: how many keyword-list head ids are guaranteed a place... */
+export const KEYWORD_GUARD_KEEP = 5;
+/** ...within this many leading positions of the final order (the pushed block size). */
+export const KEYWORD_GUARD_WITHIN = 8;
+
+/**
+ * Keyword top-N guard (D2f additive rule). Every id in the first `keep`
+ * entries of `keywordTop` that is present in `order` is guaranteed a position
+ * within the first `within` of the result. A guarded id sitting below that is
+ * moved to the lowest position inside the window held by a non-guarded id; the
+ * ids from there down shift one place. All other relative order is preserved,
+ * and when every guarded id is already inside the window the input order is
+ * returned unchanged. Pure; does not mutate its inputs.
+ */
+export function guardKeywordTop(
+  order: string[],
+  keywordTop: string[],
+  keep = KEYWORD_GUARD_KEEP,
+  within = KEYWORD_GUARD_WITHIN,
+): string[] {
+  const present = new Set(order);
+  const guarded = new Set(keywordTop.slice(0, keep).filter(id => present.has(id)));
+  if (guarded.size === 0) return order;
+  const result = [...order];
+  const outside = result.map((id, i) => ({ id, i })).filter(x => x.i >= within && guarded.has(x.id)).map(x => x.id);
+  for (const id of outside) {
+    let slot = -1;
+    for (let i = Math.min(within, result.length) - 1; i >= 0; i--) {
+      if (!guarded.has(result[i])) { slot = i; break; }
+    }
+    if (slot < 0) break;
+    result.splice(result.indexOf(id), 1);
+    result.splice(slot, 0, id);
+  }
+  return result;
+}
