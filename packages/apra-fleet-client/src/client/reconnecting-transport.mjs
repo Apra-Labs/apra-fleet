@@ -96,7 +96,10 @@ export class ReconnectingHttpTransport extends EventEmitter {
             this.stale = true;
             this.emit('close');
         });
-        if (old) { try { old.stop(); } catch { /* ignore */ } }
+        // Release the replaced session on the server too (HTTP DELETE, best
+        // effort): stop() alone would leave it open there for good when the
+        // old connection died while the server stayed up.
+        if (old) releaseTransport(old);
     }
 
     /** Serialised: concurrent senders share one re-probe/reconnect. */
@@ -125,6 +128,10 @@ export class ReconnectingHttpTransport extends EventEmitter {
         }
     }
 
+    /**
+     * Local-only teardown: aborts the streams but leaves the server session
+     * open until the server evicts it. Use close() when done with the transport.
+     */
     stop() {
         this.stopped = true;
         if (this.inner) {
@@ -134,4 +141,29 @@ export class ReconnectingHttpTransport extends EventEmitter {
             t.stop();
         }
     }
+
+    /** Release the server session (HTTP DELETE, best effort), then stop. */
+    async close() {
+        this.stopped = true;
+        if (this.reconnecting) {
+            try { await this.reconnecting; } catch { /* nothing to release */ }
+        }
+        if (this.inner) {
+            const t = this.inner;
+            t.once('close', () => this.emit('close'));
+            if (typeof t.close === 'function') await t.close();
+            else t.stop();
+        }
+    }
+}
+
+/** Fire-and-forget release of a replaced inner transport. */
+function releaseTransport(t) {
+    try {
+        if (typeof t.close === 'function') {
+            Promise.resolve(t.close()).catch(() => { /* best effort */ });
+        } else {
+            t.stop();
+        }
+    } catch { /* ignore */ }
 }

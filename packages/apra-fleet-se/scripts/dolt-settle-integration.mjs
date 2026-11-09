@@ -522,7 +522,7 @@ async function main() {
             }
         }
     } finally {
-        try { transport.stop(); } catch { /* best-effort */ }
+        try { await transport.close(); } catch { /* best-effort */ }
     }
 
     log('\n--- design doc Part 4 rows (paste verbatim) ---');

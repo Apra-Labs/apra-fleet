@@ -147,7 +147,9 @@ export async function listFleetMembers(deps = {}) {
         logError('[fleet-members] failed to list fleet members:', err);
         return markFleetMembersUnavailable({ members: [] }, `failed to list fleet members: ${errorText(err)}`);
     } finally {
-        try { transport.stop(); } catch { /* best-effort teardown */ }
+        // close(), not stop(): stop() only aborts local streams and leaves the
+        // server session (and its McpServer) open.
+        try { await transport.close(); } catch { /* best-effort teardown */ }
     }
 }
 
@@ -216,7 +218,9 @@ export async function executeFleetCommand(opts = {}) {
         logError(`[fleet-members] execute_command failed on member '${member}':`, err);
         return { ok: false, error: err && err.message ? err.message : String(err) };
     } finally {
-        try { transport.stop(); } catch { /* best-effort teardown */ }
+        // close(), not stop(): stop() only aborts local streams and leaves the
+        // server session (and its McpServer) open.
+        try { await transport.close(); } catch { /* best-effort teardown */ }
     }
 }
 
@@ -257,7 +261,9 @@ async function callFleetMemberTool(toolName, invoke, { resolveConnection, logger
         logError(`[fleet-members] ${toolName} failed:`, err);
         return { ok: false, unavailable: true, error: errorText(err) };
     } finally {
-        try { transport.stop(); } catch { /* best-effort teardown */ }
+        // close(), not stop(): stop() only aborts local streams and leaves the
+        // server session (and its McpServer) open.
+        try { await transport.close(); } catch { /* best-effort teardown */ }
     }
 }
 

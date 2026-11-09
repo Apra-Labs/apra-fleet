@@ -20,9 +20,17 @@ const cleanups = [];
 function fakeServer(name, port = 0) {
     const sessions = new Set();
     const received = [];
+    const deleted = [];
     const sockets = new Set();
     let n = 0;
     const server = http.createServer((req, res) => {
+        if (req.method === 'DELETE') {
+            const sid = req.headers['mcp-session-id'];
+            deleted.push(sid);
+            res.writeHead(sessions.delete(sid) ? 200 : 404);
+            res.end();
+            return;
+        }
         if (req.method === 'GET') {
             if (!sessions.has(req.headers['mcp-session-id'])) { res.writeHead(404); res.end(); return; }
             res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -51,7 +59,7 @@ function fakeServer(name, port = 0) {
     const kill = () => new Promise((r) => { for (const s of sockets) s.destroy(); server.close(() => r()); });
     cleanups.push(kill);
     return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({
-        name, received, sessions,
+        name, received, sessions, deleted,
         url: `http://127.0.0.1:${server.address().port}/mcp`,
         port: server.address().port,
         kill,
@@ -158,6 +166,42 @@ describe('ReconnectingHttpTransport', () => {
         await assert.rejects(client.request('tools/list', {}, { timeoutMs: 20000 }));
         assert.strictEqual(relocations, 1);
         t.stop();
+    });
+
+    test('close() releases the server session (HTTP DELETE); stop() does not', async () => {
+        const a = await fakeServer('A');
+        const { t: t1 } = await connect(a.url, async () => a.url);
+        const sid1 = t1.sessionId;
+        t1.stop();
+        await new Promise((r) => setTimeout(r, 50));
+        assert.deepStrictEqual(a.deleted, [], 'stop() is local only');
+        assert.ok(a.sessions.has(sid1));
+
+        const { t: t2 } = await connect(a.url, async () => a.url);
+        const sid2 = t2.sessionId;
+        await t2.close();
+        assert.deepStrictEqual(a.deleted, [sid2]);
+        assert.strictEqual(a.sessions.has(sid2), false);
+        await a.kill();
+    });
+
+    test('a connection replaced while its server is still up has its session released', async () => {
+        const a = await fakeServer('A');
+        let relocations = 0;
+        const { t, client } = await connect(a.url, async () => { relocations++; return a.url; });
+        const oldSid = t.sessionId;
+        // The connection is marked stale (e.g. its GET stream gave up) while
+        // the server itself stays up: the next send opens a new session.
+        t.stale = true;
+        assert.deepStrictEqual(await client.request('tools/list', {}, { timeoutMs: 5000 }), { from: 'A' });
+        assert.strictEqual(relocations, 1);
+        assert.notStrictEqual(t.sessionId, oldSid);
+        for (let i = 0; i < 100 && !a.deleted.includes(oldSid); i++) await new Promise((r) => setTimeout(r, 20));
+        assert.ok(a.deleted.includes(oldSid), 'replaced session got an HTTP DELETE');
+        assert.strictEqual(a.sessions.has(oldSid), false, 'replaced session released on the server');
+        assert.strictEqual(a.sessions.has(t.sessionId), true, 'current session kept');
+        await t.close();
+        await a.kill();
     });
 
     test('relocation failure (e.g. auto-start loop guard) propagates to the caller', async () => {
