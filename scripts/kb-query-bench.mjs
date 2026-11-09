@@ -10,7 +10,22 @@
 //   - single queries (query text, file/symbol anchors, error_text on a third);
 //   - bursts of 6 concurrent situation queries, the shape of one fleet-sprint
 //     knowledgeFor call (one kb_query per bead/file situation, issued together);
-// and prints p50/p95/p99 for both.
+// and prints p50/p95/p99 for both. These two make up the SHORT-QUERY lane:
+// 3-7 words (6-14 in bursts) from an invented 3000-word pool, so its p95 holds
+// for short queries only.
+//
+// ENGINE-SITUATION lane: real engine situations are 450-800 chars of real
+// English ('about to work on: <title>. <description>. Done when:
+// <acceptance>'). The lane builds them through the real fleet-sprint
+// roleHints() (packages/apra-fleet-se/fleet-sprint/kb-hints.mjs, doer role)
+// from real text -- titles and summaries of the recall eval entries
+// (tests/fixtures/kb-recall-eval) -- keeps those of 450-800 chars, and issues
+// them with the anchors / error_text roleHints derives, as single queries and
+// as bursts of 6 (reported whole and per query). So that real words have
+// realistic keyword posting lists, the KB holds the eval entries themselves
+// and about half of the synthetic entries are written in the eval entries'
+// real vocabulary (the rest keep the invented pool). Text output and --json
+// (key engine_situation) report the lane next to the short-query lane.
 //
 // Vectors: query vectors come from the REAL default model when it is available
 // locally (APRA_KB_BENCH_MODELS_DIR, a models folder holding it, e.g. the
@@ -31,7 +46,8 @@
 // difference exits 4.
 //
 // Runs against the BUILT server (dist/): run `npm run build` first.
-// Usage: node scripts/kb-query-bench.mjs [--entries 5000] [--queries 300] [--bursts 60] [--breakdown] [--json]
+// Usage: node scripts/kb-query-bench.mjs [--entries 5000] [--queries 300] [--bursts 60]
+//          [--situations 120] [--situation-bursts 30] [--breakdown] [--json]
 // --breakdown also times each ranked list alone (the others switched off).
 // Writes nothing outside its temp folder (removed at exit).
 
@@ -52,6 +68,10 @@ function arg(name, def) {
 const N_ENTRIES = arg('entries', 5000);
 const N_QUERIES = arg('queries', 300);
 const N_BURSTS = arg('bursts', 60);
+const N_SITUATIONS = arg('situations', 120);
+const N_SITUATION_BURSTS = arg('situation-bursts', 30);
+const SITUATION_MIN_CHARS = 450;
+const SITUATION_MAX_CHARS = 800;
 const BURST_SIZE = 6; // fleet-sprint KB_MAX_SITUATION_QUERIES
 const REQUIRE_MODEL = process.env.APRA_KB_BENCH_REQUIRE_MODEL === '1';
 const WARMUP = 10;
@@ -77,6 +97,14 @@ const { ModelStore } = await import(pathToFileURL(path.join(DIST, 'services', 'k
 const { BUILTIN_EMBEDDING_PROFILES, DEFAULT_EMBEDDING_PROFILE } =
   await import(pathToFileURL(path.join(DIST, 'services', 'knowledge', 'embedding', 'profiles.js')).href);
 const { importBibleEntries } = await import(pathToFileURL(path.join(DIST, 'services', 'knowledge', 'bible-import.js')).href);
+// The engine's own situation builder (plain ESM, no build step).
+const { roleHints } = await import(pathToFileURL(path.join(ROOT, 'packages', 'apra-fleet-se', 'fleet-sprint', 'kb-hints.mjs')).href);
+
+// Real text: the recall eval entries (titles, summaries, files, symbols).
+const EVAL_DIR = path.join(ROOT, 'tests', 'fixtures', 'kb-recall-eval');
+const readEval = (f) => JSON.parse(fs.readFileSync(path.join(EVAL_DIR, f), 'utf-8'));
+const EVAL_ENTRIES = [...readEval('bible-snapshot.json').entries, ...readEval('extra-entries.json').entries];
+const REAL_VOCAB = [...new Set(EVAL_ENTRIES.flatMap((e) => `${e.title} ${e.summary ?? ''}`.match(/[A-Za-z][A-Za-z_]{2,}/g) ?? []))];
 
 // -- deterministic PRNG and vocabulary --------------------------------------
 let seed = 0x9e3779b9;
@@ -92,21 +120,39 @@ const SYL = ['ka', 'lo', 'mi', 'ner', 'tos', 'vel', 'ra', 'quin', 'dar', 'sel', 
 const VOCAB = Array.from({ length: 3000 }, () => Array.from({ length: between(2, 4) }, () => pick(SYL)).join(''));
 const COMMON = ['the', 'a', 'when', 'after', 'before', 'because', 'fails', 'returns', 'writes', 'reads', 'cache', 'index', 'member', 'session', 'token', 'retry', 'timeout', 'error', 'config', 'build'];
 const words = (n) => Array.from({ length: n }, () => (rnd() < 0.3 ? pick(COMMON) : pick(VOCAB))).join(' ');
+const realWords = (n) => Array.from({ length: n }, () => pick(REAL_VOCAB)).join(' ');
 const FILES = Array.from({ length: 600 }, (_, i) => `src/${pick(VOCAB)}/${pick(VOCAB)}-${i}.ts`);
 const SYMBOLS = Array.from({ length: 1500 }, () => `${pick(VOCAB)[0].toUpperCase()}${pick(VOCAB)}.${pick(VOCAB)}`);
 const ERRORS = Array.from({ length: 300 }, () => `E${between(100, 999)} ${words(between(4, 8))}`);
 
 // Sized like the bible entries (see the header).
+// The first entries are the eval entries themselves (real text); of the
+// rest, odd ones use the real vocabulary, even ones the invented pool.
 function entry(i) {
-  const paragraphs = Array.from({ length: between(0, 2) }, () => words(between(40, 120)) + '.');
+  if (i < EVAL_ENTRIES.length) {
+    const e = EVAL_ENTRIES[i];
+    return {
+      type: e.type ?? 'knowledge',
+      title: e.title,
+      summary: e.summary ?? e.title,
+      content: e.summary ?? e.title,
+      source_files: e.source_files ?? [],
+      symbols: e.symbols ?? [],
+      confidence: 'INFERRED',
+      source: 'bench',
+      author: 'kb-query-bench',
+    };
+  }
+  const w = i % 2 === 1 ? realWords : words;
+  const paragraphs = Array.from({ length: between(0, 2) }, () => w(between(40, 120)) + '.');
   return {
     type: pick(['learning', 'knowledge', 'runbook']),
-    title: `${words(between(7, 13))} ${i}`,
-    summary: words(between(20, 60)) + '.',
-    content: paragraphs.length ? paragraphs.join('\n\n') : words(between(10, 25)) + '.',
+    title: `${w(between(7, 13))} ${i}`,
+    summary: w(between(20, 60)) + '.',
+    content: paragraphs.length ? paragraphs.join('\n\n') : w(between(10, 25)) + '.',
     source_files: Array.from({ length: between(1, 5) }, () => pick(FILES)),
     symbols: Array.from({ length: between(0, 6) }, () => pick(SYMBOLS)),
-    recall_cues: Array.from({ length: between(3, 8) }, () => words(between(2, 5))),
+    recall_cues: Array.from({ length: between(3, 8) }, () => w(between(2, 5))),
     error_signatures: rnd() < 0.05 ? [pick(ERRORS)] : [],
     confidence: rnd() < 0.6 ? 'INFERRED' : 'UNVERIFIED',
     source: 'bench',
@@ -201,6 +247,43 @@ function pct(sorted, p) {
   return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)];
 }
 
+/**
+ * Engine-shaped situations: a doer bead built from one eval entry (title,
+ * summary as description) and another's summary as acceptance, run through
+ * the real roleHints(); kept when 450-800 chars. Each yields the kb_query the
+ * engine issues for it (query, anchors, error_text). Distinct texts, so every
+ * query pays its own embedding.
+ */
+function engineSituations(count) {
+  const out = [];
+  const seen = new Set();
+  const n = EVAL_ENTRIES.length;
+  for (let tries = 0; out.length < count && tries < count * 50; tries++) {
+    const a = EVAL_ENTRIES[Math.floor(rnd() * n)];
+    const b = EVAL_ENTRIES[Math.floor(rnd() * n)];
+    if (a === b) continue;
+    const bead = { title: a.title, description: a.summary ?? '', acceptance_criteria: b.summary ?? '' };
+    const sit = roleHints('doer', { beadTitles: [bead] }).situations.find((x) => x.kind === 'bead');
+    if (!sit || seen.has(sit.situation)) continue;
+    if (sit.situation.length < SITUATION_MIN_CHARS || sit.situation.length > SITUATION_MAX_CHARS) continue;
+    seen.add(sit.situation);
+    out.push({
+      query: sit.situation,
+      anchor_files: sit.files,
+      anchor_symbols: sit.symbols,
+      ...(sit.errorText ? { error_text: sit.errorText } : {}),
+    });
+  }
+  if (out.length < count) throw new Error(`only ${out.length}/${count} engine situations of ${SITUATION_MIN_CHARS}-${SITUATION_MAX_CHARS} chars could be built`);
+  return out;
+}
+
+const stats = (sorted) => ({
+  p50_ms: Number(pct(sorted, 50).toFixed(1)),
+  p95_ms: Number(pct(sorted, 95).toFixed(1)),
+  max_ms: Number(sorted[sorted.length - 1].toFixed(1)),
+});
+
 try {
   const provider = new SqliteProvider(path.join(tmp, 'kb.sqlite'));
   await provider.init();
@@ -262,6 +345,43 @@ try {
   }
   burstTimes.sort((a, b) => a - b);
 
+  // Engine-situation lane: singles, then bursts of BURST_SIZE (fresh texts).
+  const QOPTS = { limit: LIMIT, l1_only: true, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] };
+  const sitSingles = engineSituations(N_SITUATIONS + WARMUP);
+  const sitBurstQs = engineSituations((N_SITUATION_BURSTS + 2) * BURST_SIZE);
+  const sitLens = [...sitSingles, ...sitBurstQs].map((q) => q.query.length).sort((a, b) => a - b);
+  const sitTimes = [];
+  for (const [i, q] of sitSingles.entries()) {
+    const s = performance.now();
+    await provider.query({ ...q, ...QOPTS });
+    if (i >= WARMUP) sitTimes.push(performance.now() - s);
+  }
+  sitTimes.sort((a, b) => a - b);
+  const sitBurstTimes = [];
+  for (let b = 0; b < N_SITUATION_BURSTS + 2; b++) {
+    const burst = sitBurstQs.slice(b * BURST_SIZE, (b + 1) * BURST_SIZE);
+    const s = performance.now();
+    await Promise.all(burst.map((q) => provider.query({ ...q, ...QOPTS })));
+    if (b >= 2) sitBurstTimes.push(performance.now() - s);
+  }
+  sitBurstTimes.sort((a, b) => a - b);
+  const sitBurstWhole = stats(sitBurstTimes);
+  const engineSituation = {
+    source: 'roleHints(doer) situations from tests/fixtures/kb-recall-eval titles/summaries',
+    chars: { min: sitLens[0], p50: pct(sitLens, 50), max: sitLens[sitLens.length - 1] },
+    single: { queries: sitTimes.length, ...stats(sitTimes) },
+    burst: {
+      size: BURST_SIZE,
+      bursts: sitBurstTimes.length,
+      whole: sitBurstWhole,
+      per_query: {
+        p50_ms: Number((sitBurstWhole.p50_ms / BURST_SIZE).toFixed(1)),
+        p95_ms: Number((sitBurstWhole.p95_ms / BURST_SIZE).toFixed(1)),
+        max_ms: Number((sitBurstWhole.max_ms / BURST_SIZE).toFixed(1)),
+      },
+    },
+  };
+
   // --breakdown: the same queries with all but one list switched off.
   const breakdown = {};
   if (process.argv.includes('--breakdown')) {
@@ -300,6 +420,7 @@ try {
       p99_ms: Number(pct(burstTimes, 99).toFixed(1)),
       max_ms: Number(burstTimes[burstTimes.length - 1].toFixed(1)),
     },
+    engine_situation: engineSituation,
     ...(floor ? { floor_check: floor } : {}),
     build_capture_s: Number((tCapture / 1000).toFixed(1)),
     build_embed_s: Number((tEmbed / 1000).toFixed(1)),
@@ -311,9 +432,15 @@ try {
   else {
     console.log(`[kb-query-bench] ${result.entries} entries, ${result.vectors} vectors (${result.vectors_per_entry}/entry), ${result.queries} hybrid queries`);
     console.log(`[kb-query-bench] mode: ${result.mode}`);
+    console.log(`[kb-query-bench] short-query lane (3-7 invented words; 6-14 in bursts):`);
     console.log(`[kb-query-bench] single query: p50=${result.p50_ms} ms p95=${result.p95_ms} ms p99=${result.p99_ms} ms max=${result.max_ms} ms (avg ${result.avg_results} results)`);
     const bu = result.burst;
     console.log(`[kb-query-bench] burst of ${bu.size} concurrent queries (${bu.bursts} bursts): p50=${bu.p50_ms} ms p95=${bu.p95_ms} ms p99=${bu.p99_ms} ms max=${bu.max_ms} ms`);
+    const es = result.engine_situation;
+    console.log(`[kb-query-bench] engine-situation lane (real roleHints situations, ${es.chars.min}-${es.chars.max} chars, p50 ${es.chars.p50}):`);
+    console.log(`[kb-query-bench]   single situation (${es.single.queries} queries): p50=${es.single.p50_ms} ms p95=${es.single.p95_ms} ms max=${es.single.max_ms} ms`);
+    console.log(`[kb-query-bench]   burst of ${es.burst.size} situations (${es.burst.bursts} bursts): whole p50=${es.burst.whole.p50_ms} ms p95=${es.burst.whole.p95_ms} ms max=${es.burst.whole.max_ms} ms; ` +
+      `per query p50=${es.burst.per_query.p50_ms} ms p95=${es.burst.per_query.p95_ms} ms max=${es.burst.per_query.max_ms} ms`);
     if (floor) {
       const zero = floor.results.filter((r) => r.rows === 0).length;
       const same = floor.results.filter((r) => r.same_as_keyword).length;
