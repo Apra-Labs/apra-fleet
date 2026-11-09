@@ -111,6 +111,21 @@ export class SeWindowsCommands {
   }
 
   /**
+   * PowerShell twin of SePosixCommands.readCredentialHelperUsername: runs the
+   * helper and passes ONLY its `username=` line through, member-side, so the
+   * `password=` (token) line never leaves the member.
+   * @param {string} label
+   * @returns {{ command: string, descriptor: string }}
+   */
+  readCredentialHelperUsername(label) {
+    if (!/^[A-Za-z0-9._-]+$/.test(String(label))) {
+      throw new Error(`Refusing to build a credential username-read command for unsafe VCS credential label '${label}' (allowed: letters, digits, '.', '_', '-').`);
+    }
+    const descriptor = this.credentialHelperPath(label);
+    return { command: this.wrapForMember(`${this.invoke(descriptor)} | Where-Object { $_ -like 'username=*' }`), descriptor };
+  }
+
+  /**
    * Escape a SQL string so it survives as ONE double-quoted argument in
    * PowerShell. A backtick is PowerShell's escape character: a literal
    * backtick is a doubled backtick, a literal quote is `` `" ``, and a
@@ -190,6 +205,18 @@ export class SeWindowsCommands {
   fileExistsProbe(relPath) {
     const p = assertSafeRelativePath(relPath, 'file path');
     return this.wrapForMember(`if (Test-Path -LiteralPath '${p}') { Write-Output '${FILE_PROBE_PRESENT}' } else { Write-Output '${FILE_PROBE_ABSENT}' }`);
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.gitLsRemoteProbe: sets
+   * GIT_TERMINAL_PROMPT=0 and GCM_INTERACTIVE=never in this one-shot
+   * process's environment (the envelope is a fresh powershell, so nothing
+   * persists), then `git ls-remote origin HEAD` with no credential.helper
+   * override. The envelope's $LASTEXITCODE check surfaces git's exit code.
+   * @returns {string}
+   */
+  gitLsRemoteProbe() {
+    return this.wrapForMember("$env:GIT_TERMINAL_PROMPT='0'; $env:GCM_INTERACTIVE='never'; git ls-remote origin HEAD");
   }
 
   /**

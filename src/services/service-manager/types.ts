@@ -61,12 +61,29 @@ export interface ServiceStatus {
  */
 export type RegisterResult = 'created' | 'reused' | 'run-key';
 
+/**
+ * Why a stop is happening. 'install' = install --force is stopping the service
+ * and owns all operator guidance (it clears the stopped marker and prints the
+ * legacy-task guidance once itself); default = a user-facing apra-fleet stop.
+ */
+export interface StopOptions {
+  reason?: 'install';
+}
+
 export interface ServiceManager {
   register(binaryPath: string, args: string[], logPath: string): Promise<RegisterResult | void>;
   unregister(): Promise<void>;
   start(): Promise<void>;
   /** Resolves false when the server was left running (pid not verifiable as apra-fleet). */
-  stop(): Promise<boolean | void>;
+  stop(opts?: StopOptions): Promise<boolean | void>;
   query(): Promise<ServiceStatus>;
   isInstalled(): Promise<boolean>;
+  /**
+   * Windows only: the legacy-task upgrade guidance when the installed task is a
+   * legacy (e.g. elevated) one that install had to reuse, else null. Lets install
+   * print it instead of a start hint that would hit the same refusal.
+   */
+  legacyGuidance?(): string | null;
+  /** Windows only: true once register() already printed the legacy-task guidance in this process, so install must not print it again. */
+  legacyGuidanceShown?(): boolean;
 }

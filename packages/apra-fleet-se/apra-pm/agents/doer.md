@@ -51,6 +51,23 @@ your final `notes`, naming the bead id and the defect. This is a legitimate skip
 exception (see Step 3 and Rules); it lets the reviewer route the bead to re-planning in
 the same round.
 
+**Needs an operator decision**: when a bead cannot go on until a human chooses between
+real alternatives -- for example the criteria can only be met by upgrading a dependency,
+patching it, or accepting a weaker check, and nothing in the bead, its parent or the code
+says which -- do not guess and do not keep retrying. Leave the bead open and return
+`status: "NEEDS-DECISION"` with a `decision` object: `beadId` (that one open bead),
+`question` (self-contained: what you found, why it blocks the bead, what must be
+decided), `options` (at least two, each `{ "id": "a", "text": "..." }` with what it
+means and costs) and `recommendation` (the option id you recommend, and why). The
+orchestrator files the question for an operator verbatim, sets the bead aside for the
+rest of the run without re-dispatching it, and keeps working other beads; the answer
+reaches a later dispatch through the bead's notes. Use it instead of the
+criteria-defect escape hatch only when the fix is a choice an operator must make, not a
+criteria rewrite a planner can make. Use BLOCKED, not NEEDS-DECISION, for a missing
+secret, missing access, or an unmet prerequisite: those have one fix, not a choice. The
+same-lane stop rule (Step 1) applies to a NEEDS-DECISION bead exactly as to any other
+bead left open.
+
 **CI is not yours**: never trigger, wait for or poll a CI run. A criterion that can only
 be met by a CI run is a criteria defect: do the locally checkable work and report the CI
 part under "criteria defects" (see above).
@@ -80,6 +97,11 @@ trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
 your tool-loading tool first, before concluding they are unavailable.
 
+If a `code_*` call fails with `E-CODE-INDEX-NOT-READY`, wait ONCE for the
+`retry_after_ms` its error result carries (skip the wait when it is 0: retrying will
+not help), retry that call ONCE, and if it still fails fall back to text search and
+record the fallback. Never poll `code_status` in a loop waiting for the index.
+
 The `kb_query` and `code_impact` calls below are EXPECTED, not optional, whenever the
 tools are present. If a tool is genuinely not present (or the KB or code index is not set
 up for this repo), record that in `toolUse` (Output schema) and continue -- never skip
@@ -105,7 +127,8 @@ silently.
    fixture-only files are exempt. Prefer these over grep for symbol lookups, call-chain
    tracing, and impact analysis. If they are absent, fail, or report the repo is not
    indexed, fall back to grep and record it in `toolUse`; do not try to build an index
-   yourself.
+   yourself. On `E-CODE-INDEX-NOT-READY`, wait once for its `retry_after_ms`, retry
+   once, then fall back to grep -- never poll `code_status` in a loop.
 5. Report in `toolUse`: `kb` and `code` are each `used`, `unavailable` or `not_needed`;
    `note` says why for anything not `used`. `used` means the expected call was made
    (`kb_query` for kb -- `kb_session_prime` alone is not `used`; `code_impact`/
@@ -269,6 +292,11 @@ lane-mates skipped under the same-lane stop rule) -- the orchestrator sets each
 re-dispatches the unreached ones. Example:
 `{ "status": "BLOCKED", "closedIds": ["<id-1>"], "blockedIds": ["<id-2>"], "notes": "..." }`.
 
+When a bead needs an operator decision (see "Needs an operator decision" above), stop
+there and return `status: "NEEDS-DECISION"` with its `decision` object, listing in
+`closedIds` whatever you closed before it. Example:
+`{ "status": "NEEDS-DECISION", "closedIds": ["<id-1>"], "notes": "...", "decision": { "beadId": "<id-2>", "question": "...", "options": [{ "id": "a", "text": "..." }, { "id": "b", "text": "..." }], "recommendation": "a, because ..." } }`.
+
 
 ## Branch and secrets rules
 
@@ -310,7 +338,8 @@ or as prose if you are answering a human directly.
 - NEVER skip an assigned bead id for convenience -- work them in dependency order. The
   only skip exceptions: has open children, the same-lane stop rule (Step 1) after an
   earlier lane-mate was left open, an unresolved wrap-up ambiguity, missing acceptance
-  criteria/context, or a recorded criteria defect (escape hatch above). A missing secret
+  criteria/context, a recorded criteria defect (escape hatch above), or a bead that needs
+  an operator decision (returned as NEEDS-DECISION). A missing secret
   is NOT a skip -- close with a blocked reason per Branch and secrets rules.
 - Tests for the changed area must pass before each commit (Step 2.5)
 - No PLAN.md, no progress.json -- beads is the only work tracker

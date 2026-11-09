@@ -18,6 +18,7 @@ vi.mock('../../src/utils/log-helpers.js', () => ({
 
 import { computeFileHash, computeFileHashBatch, checkStaleness } from '../../src/services/knowledge/kb-service.js';
 import type { KBEntry } from '../../src/services/knowledge/types.js';
+import { gitExecutable } from '../../src/os/git-executable.js';
 
 // Compute the git blob hash the same way git does: "blob <size>\0<content>"
 function gitBlobHash(data: Buffer): string {
@@ -136,7 +137,7 @@ describe('computeFileHashBatch', () => {
     // Exactly one git subprocess call for all 3 files
     expect(mockExecFile).toHaveBeenCalledTimes(1);
     const callArgs = mockExecFile.mock.calls[0] as unknown[];
-    expect(callArgs[0]).toBe('git');
+    expect(callArgs[0]).toBe(gitExecutable());
     expect((callArgs[1] as string[])[0]).toBe('hash-object');
 
     expect(Object.keys(result)).toHaveLength(3);

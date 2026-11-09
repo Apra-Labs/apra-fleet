@@ -272,13 +272,32 @@ work over SSH, with passwords collected out-of-band (never typed into the chat).
 One member is enough to start, and a single-member sprint avoids the multi-clone
 topology questions entirely. You will also want git credentials provisioned for
 the member so it can push the branch and open the PR -- apra-fleet's
-`provision_vcs_auth` supports **GitHub**, Bitbucket, and **Azure DevOps** (org URL
+`provision_vcs_auth` supports **GitHub**, Bitbucket (an API token stored as the
+FIXED, non-configurable fleet secret `bitbucket_api_token`; no email needed, git
+uses the fixed user `x-bitbucket-api-token-auth`), and **Azure DevOps** (org URL
 + PAT), so a GitHub- or AzDevOps-hosted git repo is fully supported. For a
 GitHub repo, opening the PR needs a GitHub App configured on the fleet
 (`setup_git_app`, see
 [GitHub App setup](https://github.com/Apra-Labs/apra-fleet/blob/main/docs/github-app-setup.md)):
 with only a PAT the sprint pushes the branch but logs `[Publish PR Skipped]
 ... GitHub App not configured` and opens no PR.
+
+For a Bitbucket member, the sprint's VCS preflight checks the exact credential
+Publish PR will use -- the fleet's `bitbucket`-labelled git credential helper --
+and not only `git ls-remote` (which another helper on the host, such as a
+system credential manager, can answer for a broken fleet helper). It runs a
+REST call (`GET .../pullrequests?pagelen=1`) with that credential and checks
+that the helper's username line is `x-bitbucket-api-token-auth`. A failure is
+reported once, at preflight time, as an `ERROR vcs_credential_probe_failed`
+line that names the cause (for an HTTP refusal: the credential type and the
+required/granted scopes Bitbucket reported) and the exact
+`provision_vcs_auth member_name=... provider=bitbucket workspace=...
+api_token={{secret.bitbucket_api_token}}` command to fix it. A remote member gets
+one automatic re-provision followed by a re-probe. A local member is never
+re-provisioned automatically, because that rewrites the host's global
+bitbucket.org git credential helper. Run the command yourself. The sprint keeps
+going without stopping at launch: no PR is opened, and the final status reports
+the skipped PR.
 
 ### 2.5 Scale sideways: one member per sprint, several sprints at once
 
@@ -564,3 +583,11 @@ queries and `bd memories` search behavior. The supervisor and
 sprint screenshots are unretouched captures of a running supervisor. Claims about
 what agents refuse to do (improvising deploys, inventing scope, self-granting
 permissions) are taken from the role contracts verbatim.*
+
+## Network exposure
+
+The supervisor and the viewer bind loopback (`127.0.0.1`) by default, so the
+dashboard and API are reachable only from the same machine. Binding another
+interface requires passing an explicit host option; it is never implied.
+Clients on the same machine, including `localhost` URLs, still connect
+normally.

@@ -27,10 +27,16 @@ describe('WindowsCommands.getCleanEnv', () => {
 
     const env = getCleanEnv(new WindowsCommands());
 
-    expect(env).toEqual({ Path: 'C:\\Windows' });
+    // GOMAXPROCS=1 is the Windows bd/dolt default added when the env has none (go-concurrency.ts).
+    expect(env).toEqual({ Path: 'C:\\Windows', GOMAXPROCS: '1' });
     expect(mockExecFileSync).toHaveBeenCalledTimes(1);
     const [file, args, opts] = mockExecFileSync.mock.calls[0] as [string, string[], { timeout?: number }];
-    expect(file).toBe('powershell.exe');
+    // Absolute on win32 (never searched in the cwd); the name is unchanged elsewhere.
+    if (process.platform === 'win32') {
+      expect(file).toMatch(/^[A-Za-z]:\\.*\\WindowsPowerShell\\v1\.0\\powershell\.exe$/i);
+    } else {
+      expect(file).toBe('powershell.exe');
+    }
     expect(args.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-EncodedCommand']);
     const decoded = Buffer.from(args[3], 'base64').toString('utf16le');
     expect(decoded).toContain("[Environment]::GetEnvironmentVariables('Machine')");

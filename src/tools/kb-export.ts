@@ -13,6 +13,7 @@ import { filterProjectBibleCandidates } from '../services/knowledge/bible-basis-
 import { extractBibleDemotions, standingAgainstTombstone, type BibleTombstone } from '../services/knowledge/bible-import.js';
 import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import type { KBEntry } from '../services/knowledge/types.js';
+import { gitExecutable } from '../os/git-executable.js';
 
 // T3.4 (F8b, D8): export half of the shareable, diffable team bible. Writes
 // all CONFIRMED, non-superseded, non-stale project entries to
@@ -213,11 +214,11 @@ export function readBibleDocument(outPath: string): CanonicalBibleDocument | nul
  * caller decides whether that is fatal. Never pushes.
  */
 export function commitBiblePath(repoPath: string, outPath: string, message: string): void {
-  execFileSync('git', ['add', outPath], {
+  execFileSync(gitExecutable(), ['add', outPath], {
     cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
   });
   execFileSync(
-    'git',
+    gitExecutable(),
     ['-c', 'user.name=pm-kb', '-c', 'user.email=kb@pm.local', 'commit', '-m', message, '--', outPath],
     { cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
   );
@@ -260,7 +261,7 @@ function entriesUnchanged(outPath: string, nextEntriesJson: string): boolean {
 function gitOrNull(repoPath: string, args: string[]): string | null {
   if (!isGitRepo(repoPath)) return null;
   try {
-    const out = execFileSync('git', args, {
+    const out = execFileSync(gitExecutable(), args, {
       cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
     return out.length > 0 ? out : null;
@@ -393,7 +394,7 @@ export function isGitRepo(repoPath: string): boolean {
 // is a no-op, so there is nothing to commit. Any output (modified, or a
 // brand-new untracked file on the very first export) means it changed.
 export function bibleContentChanged(repoPath: string, outPath: string): boolean {
-  const status = execFileSync('git', ['status', '--porcelain', '--', outPath], {
+  const status = execFileSync(gitExecutable(), ['status', '--porcelain', '--', outPath], {
     cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
   });
   return status.trim().length > 0;

@@ -78,6 +78,7 @@
 
 import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
 import { buildFinalVerdictPrompt } from '../prompts.mjs';
+import { resolveFinalReviewMergeBase } from '../git-topology.mjs';
 import { applyGuardedReopens, parseIdWithReasonEntry } from '../beads-transitions.mjs';
 import {
     validateNewTask, buildFallbackNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
@@ -163,6 +164,10 @@ export async function runFinalReviewPhase({
     computeChildFloor,
     createChildBeadWithAllocatedId,
     sanitizePrText,
+    // (member) => Promise<sha>: the review diff base (merge-base of a freshly
+    // fetched origin/<base> and the branch) on that member. Injected so this
+    // phase issues no fleet command of its own; it throws on failure.
+    reviewMergeBaseFor,
 }) {
     phase(`Final Review C${finalCycleLabel}`);
 
@@ -268,11 +273,23 @@ export async function runFinalReviewPhase({
     // dispatching the reviewer persona over the whole sprint -- so its policy
     // routes to getMemberForRole('reviewer'), unlike the per-round reviewer
     // which takes the pool head.
+    // The diff range the final reviewer must use, computed on its own member.
+    // A failure throws and fails Final Review loudly: never a fallback to the
+    // member's (possibly stale) local base branch.
+    if (typeof reviewMergeBaseFor !== 'function') {
+        throw new Error('runFinalReviewPhase requires reviewMergeBaseFor (the review diff base resolver).');
+    }
+    // Retried once; a second failure ends the run loudly with a relaunch hint
+    // (the sprint's work is already on the remote branch).
+    const finalMergeBaseSha = await resolveFinalReviewMergeBase(reviewMergeBaseFor, {
+        member: getMemberForRole('reviewer'), branch: validated.branch, baseBranch: validated.baseBranch, log,
+    });
     const finalReviewOutcome = await dispatchRole(dispatchCtx, 'final-review', {
         prompt: buildFinalVerdictPrompt({
             targetIssues,
             branch: validated.branch,
             baseBranch: validated.baseBranch,
+            mergeBaseSha: finalMergeBaseSha,
             goal: validated.goal,
             cyclesRun: finalCycleLabel,
             closedCount: finalClosedCount,
@@ -294,7 +311,9 @@ export async function runFinalReviewPhase({
                 })
                 : undefined,
         }),
-        resumePrompt: 'Continue your final review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. Weigh the remaining evidence and return your final PASS/FAIL verdict now (with newTasks findings if FAIL).',
+        resumePrompt: 'Continue your final review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. ' +
+            `The diff range is ${finalMergeBaseSha}..${validated.branch} (use exactly this range for git diff and git log). ` +
+            'Weigh the remaining evidence and return your final PASS/FAIL verdict now (with newTasks findings if FAIL).',
         roleLabel: 'Final Review',
         label: 'Final Review',
         resumeLabel: `Final Review (resume, max_turns=${TURN_BASES.FINAL_REVIEW_MAX_TURNS * 2})`,

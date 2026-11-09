@@ -287,6 +287,23 @@
  */
 
 /**
+ * Remote KB credential health, `kbHealth.credential` in fleet_status json
+ * output (one compact `kb credential:` line in compact output). Present only
+ * when the KB config selects the http provider; this host only. Never carries
+ * the token value, nor any JWT claim other than exp.
+ * @typedef {Object} FleetStatusKbCredential
+ * @property {"secret" | "literal"} kind - "secret": token_ref names a fleet secret looked up per request; "literal": a stored literal token
+ * @property {string} url - Remote KB URL
+ * @property {string} [secretName] - kind "secret": the fleet secret's name
+ * @property {"ok" | "missing" | "expired" | "unreadable"} [resolves] - kind "secret": metadata lookup result (an expired record is kept); "unreadable" when the credential store cannot be read or the value cannot be decrypted
+ * @property {string | null} [lastWritten] - kind "secret": the secret record's created_at; null when missing or the store is unreadable
+ * @property {string | null} [tokenExpiry] - kind "secret": JWT exp decoded locally (ISO time); null for a non-JWT or unresolved value
+ * @property {string | null} lastSuccessfulCall - Last KB call accepted by the remote server in this server process; null when none yet
+ * @property {string | null} lastRejectedCall - Last KB call rejected with HTTP 401 in this server process; null when none yet
+ * @property {string} [hint] - kind "literal": the token cannot be refreshed; how to switch to {{secret.NAME}}
+ */
+
+/**
  * @typedef {Object} SendFilesOptions
  * @property {string[]} local_paths - Array of local file paths to upload
  * @property {string} [dest_subdir] - Destination subdirectory relative to work_folder on the member
@@ -519,12 +536,14 @@
  *   with the value escaped for the interior of a single-quoted string, with no quotes of its
  *   own, for interpolating the token into a larger already-quoted value (e.g. an Authorization
  *   header) where a bare, self-quoting substitution cannot compose.
- *   For a provider that authenticates with basic auth (user:token, e.g. Bitbucket) two further
- *   OPTIONAL placeholders substitute the credential helper's username under exactly the same two
- *   dialects: {{vcs_username}}, referenced BARE -- already escaped AND quoted for that member's
- *   shell; and {{vcs_username_inline}}, referenced INSIDE your own single quotes (e.g.
- *   -u '{{vcs_username_inline}}:{{vcs_token_inline}}') -- escaped for the interior of a
- *   single-quoted string, with no quotes of its own. A username placeholder may not appear on
+ *   Bitbucket REST uses the token as a Bearer value
+ *   (-H 'Authorization: Bearer {{vcs_token_inline}}'), with no username and no email.
+ *   Two further OPTIONAL placeholders substitute the credential helper's git username under
+ *   exactly the same two dialects (for Bitbucket always x-bitbucket-api-token-auth, a git-only
+ *   username, never a REST login): {{vcs_username}}, referenced BARE -- already escaped AND
+ *   quoted for that member's shell; and {{vcs_username_inline}}, referenced INSIDE your own
+ *   single quotes -- escaped for the interior of a single-quoted string, with no quotes of its
+ *   own. A username placeholder may not appear on
  *   its own: a token placeholder is still required, or the call is refused with
  *   reason "placeholder_missing". If the command references a username placeholder and the
  *   helper prints no username= line, the call fails with reason "username_empty" and dispatches
@@ -549,7 +568,7 @@
  * @property {string} stdout - Command stdout, with every occurrence of the credential redacted.
  * @property {string} stderr - Command stderr, with every occurrence of the credential redacted.
  * @property {number} tokenRedactions - How many times credential material had to be redacted out
- *   of stdout+stderr -- the token, plus the basic-auth username when the command substituted one.
+ *   of stdout+stderr -- the token, plus the helper git username when the command substituted one.
  *   Normally 0; nonzero means the command echoed its own credential back.
  * @property {string|null} credentialLabel - Credential label used, or null for the unlabelled helper.
  * @property {string|null} memberId - Registry id of the resolved member, or null.
@@ -592,8 +611,10 @@
  * @property {"ok" | "deployed_unverified" | "deployed_verification_skipped" |
  *   "member_not_found" | "member_offline" | "secret_variable_not_found" |
  *   "secret_variable_denied" | "secret_variable_expired" | "oob_cancelled" |
- *   "credential_assembly_unsupported" | "credential_assembly_failed" | "deploy_threw" |
- *   "deploy_failed"} reason - Machine-readable outcome code. Branch on this, never on the text.
+ *   "credential_missing" | "credential_assembly_unsupported" | "credential_assembly_failed" |
+ *   "deploy_threw" | "deploy_failed"} reason - Machine-readable outcome code. Branch on this,
+ *   never on the text. "credential_missing": non_interactive was set and the secret field is
+ *   absent (message names it; nothing was prompted).
  * @property {string} provider - The VCS provider requested.
  * @property {string} credentialLabel - Credential label the helper was deployed under
  *   (defaults to the provider name).
@@ -603,6 +624,10 @@
  *   instead of scraping an "expiresAt:" line out of the summary text.
  * @property {boolean} verified - True only when testConnectivity() actually ran AND succeeded.
  * @property {boolean} verificationSkipped - True when the connectivity check was not performed.
+ * @property {string|null} verificationReason - The provider's machine-readable verification
+ *   cause naming which channel failed, when it reports one (Bitbucket: "ok",
+ *   "rest_unauthorized", "rest_failed", "git_auth_failed", "git_failed"); null when the
+ *   provider reports none or the check was skipped.
  * @property {Record<string, string>|null} metadata - The provider's own deploy metadata,
  *   filtered through a server-side key allowlist before it reaches this field (an unrecognised
  *   key is dropped, never passed through). Providers additionally mask the token value here to
@@ -626,6 +651,9 @@
  * @property {string} [member_name] - Friendly name of the member
  * @property {"github" | "bitbucket" | "azure-devops"} provider - VCS provider to configure
  * @property {string} [label] - Credential label (slug, e.g. "work-github"). Defaults to provider name.
+ * @property {boolean} [non_interactive] - When true, never prompt out of band: a missing secret
+ *   field (api_token / pat / token) returns ok=false with reason "credential_missing" naming the
+ *   field. Required non-secret fields are validated before any prompt in both modes. Default false.
  * @property {string} [scope_url] - Git credential scope URL (e.g. "https://github.com/my-org").
  *   Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass
  *   "https://ORG.visualstudio.com" so the PAT is bound to the host the member pushes to.
@@ -633,13 +661,18 @@
  *   configured app) or pat (personal access token)
  * @property {string} [token] - Personal access token (GitHub PAT or Azure DevOps PAT).
  *   Supports {{secret.NAME}} token -- resolved from the credential store server-side before use.
- * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [git_access] - GitHub App access
+ * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [git_access] - GitHub App mode
+ *   only: what the token may do. Use "push+pr" to create pull requests and dispatch workflows (see
+ *   docs/api-reference.md for every level). GitHub App access
  *   level override
  * @property {string[]} [repos] - GitHub App repository list override
- * @property {string} [email] - Bitbucket account email
- * @property {string} [api_token] - Bitbucket API token. Supports {{secret.NAME}} token --
- *   resolved from the credential store server-side before use.
- * @property {string} [workspace] - Bitbucket workspace slug
+ * @property {string} [email] - OPTIONAL Bitbucket account email. Ignored for authentication
+ *   (git uses the fixed token username x-bitbucket-api-token-auth, REST uses a Bearer token);
+ *   kept only as metadata if given.
+ * @property {string} [api_token] - Bitbucket API token (required for bitbucket). Store it as the
+ *   fleet secret bitbucket_api_token and pass {{secret.bitbucket_api_token}} -- resolved from
+ *   the credential store server-side before use.
+ * @property {string} [workspace] - Bitbucket workspace slug (required for bitbucket).
  * @property {string} [org_url] - Azure DevOps organization URL (e.g. https://dev.azure.com/myorg,
  *   or the legacy https://myorg.visualstudio.com)
  * @property {string} [pat] - Azure DevOps personal access token. Supports {{secret.NAME}}
@@ -912,7 +945,7 @@ export function assertNoRemovedKbScopeKeys(tool, options) {
     const err = new Error(
         `E-SCOPE-KEY-REMOVED: ${tool} no longer accepts ${present.map((k) => `'${k}'`).join(', ')} ` +
         '(removed in the KB redesign); the call was not sent. Remediation: drop it -- every kb_* call acts on the ' +
-        "calling session's own KB (a member session's registered work folder; a FULL session's fleet server working folder).",
+        "calling session's own KB (a member session's registered work folder; a FULL session's first MCP client root inside a git repository with an origin remote, or the fleet server working folder when the client offers no roots).",
     );
     err.code = 'E-SCOPE-KEY-REMOVED';
     throw err;
@@ -1084,7 +1117,10 @@ export class ApraFleet {
     }
 
     /**
-     * Get status of all fleet members.
+     * Get status of all fleet members. With format "json" the result's
+     * kbHealth.credential is a {@link FleetStatusKbCredential} when the KB
+     * config selects the http provider, and kbHealth.toolProfileWarning is a
+     * string when the configured KB tool profile is invalid.
      * @param {FleetStatusOptions} [options]
      */
     async fleetStatus(options = {}) {
@@ -1233,9 +1269,10 @@ export class ApraFleet {
      * command, and redacts the value from the returned stdout/stderr. The
      * plaintext appears in no field of the result.
      *
-     * For basic-auth providers (user:token, e.g. Bitbucket) the optional
-     * {{vcs_username}} / {{vcs_username_inline}} pair substitutes the
-     * credential helper's username under the same two dialects, and is
+     * Bitbucket REST takes the token as a Bearer value (no username, no
+     * email). The optional {{vcs_username}} / {{vcs_username_inline}} pair
+     * substitutes the credential helper's git username (for Bitbucket always
+     * x-bitbucket-api-token-auth) under the same two dialects, and is
      * redacted on the same footing as the token. A username placeholder
      * never stands alone -- the command must still carry a token one.
      *
@@ -1343,6 +1380,29 @@ export class ApraFleet {
     }
 
     /**
+     * Send a message to a connected member session. member_id is a member
+     * UUID, or "orchestrator" for the operator's own channel-capable
+     * orchestrating session (operator notifications). With probe: true the
+     * server sends nothing and only reports whether a session holds the
+     * target ({ probe: true, member_id, connected, channel_capable }).
+     * @param {{ member_id: string, content: string, reply_to?: string, probe?: boolean }} options
+     */
+    async sendMessage(options) {
+        return this.mcpClient.callTool('send_message', options);
+    }
+
+    /**
+     * Read-only check of a message target: send_message with probe: true.
+     * Sends nothing. The result text is JSON
+     * { probe: true, member_id, connected, channel_capable }; only a
+     * channel_capable session can receive a message.
+     * @param {string} memberId a member UUID or "orchestrator"
+     */
+    async probeMessageTarget(memberId) {
+        return this.mcpClient.callTool('send_message', { member_id: memberId, content: '', probe: true });
+    }
+
+    /**
      * Send an email. Pass provider config inline (provider, from, and for
      * SMTP: host, port, user, secure). Secrets resolve from the credential
      * store (sendgrid_api_key / smtp_password).
@@ -1365,8 +1425,11 @@ export class ApraFleet {
 
     /**
      * code_reindex -- rebuild the code index of the calling session's own repo
-     * (a member session's work folder, otherwise the fleet server's folder;
-     * there is no repo argument). Starts gitnexus analyze detached with its
+     * (a member session's work folder, otherwise
+     * the first MCP client root (roots/list) inside a git repository with an origin remote, or the server working folder when the client offers no roots;
+     * there is no repo argument). Starts gitnexus analyze detached, always as
+     * a full rebuild (--force; an incremental analyze can corrupt unchanged
+     * symbol rows), with its
      * output captured to <data>/code-index/<slug>/analyze.log and returns
      * after the first tick. Extract the JSON with parseToolJson(): `outcome`
      * is 'started' | 'up-to-date' | 'starting' | 'already-running' |

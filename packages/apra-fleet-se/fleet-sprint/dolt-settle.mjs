@@ -57,6 +57,7 @@
 
 import { DoltDivergedError, DoltSyncError, DoltBinaryUnavailableError } from './errors.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
+import { bdSyncCommandFor } from './bd-sync-command.mjs';
 
 /** Must equal src/cli/dolt-install.ts's DOLT_VERSION byte-for-byte -- a
  *  drift-guard test (dolt-settle.test.mjs) asserts this against that file's
@@ -1022,11 +1023,11 @@ export async function settleDoltConflicts(member, opts = {}) {
             pid = null;
         }
 
-        const pull = await command('bd dolt pull', { member_name: member, silent: true, failSoft: true, label: `settle: post-resolve D-pull for '${member}'` });
+        const pull = await command(bdSyncCommandFor('bd dolt pull', { os: platform, shell }), { member_name: member, silent: true, failSoft: true, label: `settle: post-resolve D-pull for '${member}'` });
         if (pull && pull.ok === false) {
             throw new DoltDivergedError(`[Dolt Settle] post-resolve pull still failed for member '${member}': ${pull.error}`, { member, doltOutput: pull.error, operation: 'settle-pull' });
         }
-        const push = await command('bd dolt push', { member_name: member, silent: true, failSoft: true, label: `settle: post-resolve D-push for '${member}'` });
+        const push = await command(bdSyncCommandFor('bd dolt push', { os: platform, shell }), { member_name: member, silent: true, failSoft: true, label: `settle: post-resolve D-push for '${member}'` });
         if (push && push.ok === false) {
             throw new DoltDivergedError(`[Dolt Settle] resolved every conflict but the republishing push was still rejected for member '${member}': ${push.error}`, { member, doltOutput: push.error, operation: 'settle-push' });
         }

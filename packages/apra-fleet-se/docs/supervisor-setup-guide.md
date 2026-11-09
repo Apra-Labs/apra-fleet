@@ -231,6 +231,29 @@ No `roleMap.backlog`: the supervisor injects its own backlog member (Step
 launching, checking status, and killing a sprint is exactly what
 `docs/supervisor-api.md` describes.
 
+### Receiving decision messages (optional)
+
+When a role needs an operator decision, the sprint pauses and sends a message
+to the session named by `decision_notify.message_member` (the `decisionNotify`
+launch field), by default `orchestrator`. The fleet server gives that id to
+the newest operator session that can receive channel messages: a Claude Code
+session connected to the fleet server and launched with
+
+```bash
+claude --dangerously-load-development-channels
+```
+
+A session launched without that flag connects normally but cannot receive
+these messages. To send them somewhere else, set
+`"decisionNotify": {"message_member": "<connected session id>"}` on the launch
+instead. At launch the sprint checks, once and without sending anything,
+whether a channel-capable session holds the target (the `send_message` tool's
+`probe` mode). If none does, the sprint log has ONE line naming both remedies
+and each later decision adds one short line; if the check itself fails, one
+line says so. The launch is never blocked. You can always answer from the
+dashboard's decision banner, or with `bd human respond <decision bead>
+"<answer>"` (picked up within 5 minutes).
+
 ## Recap: what lives where
 
 | Folder | Contains | Used for |
@@ -243,3 +266,33 @@ launching, checking status, and killing a sprint is exactly what
 The supervisor *process* runs the installed `.mjs` source with your system
 Node.js (it is not bundled into the `apra-fleet` binary); its project
 folder is separate and is the one its backlog member works in.
+
+## Upgrade notes: the request guard
+
+Copy these into the release notes. They describe the supervisor's request
+guard (see `supervisor-api.md`, "Mutating requests") and the sprint result
+contract.
+
+1. **POSTs without a JSON content type now get `415`.** Every non-GET/HEAD/
+   OPTIONS request must send `Content-Type: application/json`; form,
+   multipart and `text/plain` bodies are refused. Fix: add the header
+   `Content-Type: application/json` to the client (for curl: `-H "Content-Type: application/json"`
+   and a JSON `-d` body, even `{}`). The `415` body names this header.
+2. **A supervisor bound to `0.0.0.0` and reached by a DNS name now answers
+   `403` to every method, GETs included**, unless that name is allowed.
+   The `Host` header is checked on every request as a DNS-rebinding defence;
+   loopback names, IP literals and the supervisor's own non-wildcard `--host`
+   are always admitted. Fix: start the supervisor with `--allowed-host <name>`
+   (repeatable or comma-separated) or set `FLEET_SUPERVISOR_ALLOWED_HOSTS=<name>`,
+   or reach it by IP address. The `403` body names both. A token sent to a
+   per-sprint child viewer is refused with a message saying the viewer accepts
+   no token: send the request through the supervisor, or without the
+   `Authorization` / `X-Fleet-Token` header.
+3. **The sprint result contract gains `success-with-warnings`.** A sprint whose
+   work passed but whose PR was not opened (for example a VCS auth failure)
+   ends as a success with a `warnings` list instead of a failure. API
+   consumers see it as `resultStatus` (`success` or `success-with-warnings`)
+   and `warnings` on `GET /api/sprints/:id`, in the terminal state's `result`,
+   and in the `finished` history event. Fix: treat `success-with-warnings`
+   as success when branching on `resultStatus`, and surface `warnings` to the
+   operator; code that only accepted `success` should accept both.

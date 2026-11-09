@@ -11,8 +11,8 @@ stored in the member's `tags` array.
 | Project | VCS | Tag | Required Skills |
 |---------|-----|-----|----------------|
 | Any | GitHub | Any | None (gh CLI sufficient) |
-| Any | Bitbucket | devops | `bitbucket-devops` |
-| Any | Bitbucket | code-review | `bitbucket-devops` |
+| Any | Bitbucket | devops | `bitbucket` |
+| Any | Bitbucket | code-review | `bitbucket` |
 | Any | Bitbucket | development | None |
 | Any | Bitbucket | testing | None |
 | Any | Bitbucket | debugging | None |
@@ -26,7 +26,7 @@ stored in the member's `tags` array.
 
 | Skill | Purpose |
 |-------|---------|
-| `bitbucket-devops` | Bitbucket API: create/merge PRs, manage pipelines, review code |
+| `bitbucket` | Bitbucket API: create/merge PRs, manage pipelines, review code (agent-marketplace plugin) |
 | `aprapipes-devops` | ApraPipes-specific build, test, deployment |
 | `azdevops-devops` | Azure DevOps API operations (planned) |
 | `lvsm-log-analyzer-skill` | SiteManager log analysis for AVMS/BBNVR devices |

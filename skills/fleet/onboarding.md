@@ -64,7 +64,7 @@ Add to the member's status file:
 - VCS: Bitbucket (kumaakh/apra-lic-mgr)
 - Roles: development, code-review
 - Auth: Bitbucket API token (verified)
-- Skills: bitbucket-devops (installed)
+- Skills: bitbucket (installed)
 ```
 
 ## Pre-loading credentials before dispatch

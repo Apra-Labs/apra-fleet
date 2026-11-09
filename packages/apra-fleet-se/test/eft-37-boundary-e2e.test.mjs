@@ -92,7 +92,7 @@ function httpGetFull(port, urlPath) {
 
 function httpPost(port, urlPath) {
     return new Promise((resolve, reject) => {
-        const req = http.request({ host: '127.0.0.1', port, path: urlPath, method: 'POST' }, (res) => {
+        const req = http.request({ host: '127.0.0.1', port, path: urlPath, method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
             let data = '';
             res.on('data', (chunk) => { data += chunk; });
             res.on('end', () => resolve({ statusCode: res.statusCode, body: data }));

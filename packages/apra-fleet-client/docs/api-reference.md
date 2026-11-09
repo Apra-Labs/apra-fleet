@@ -150,6 +150,19 @@ abort support on top of a transport.
 - **`async listTools(opts = {})`** -- `request('tools/list', {}, opts)`;
   resolves `{ tools: [{ name, ... }] }`. On a MEMBER session
   (`?member=<uuid>`) this is exactly the member allowlist.
+  On a FULL (non-member) session the `kb_*` tools listed follow the
+  install-wide KB tool profile, read when the session registers its tools
+  (so a change shows after a reconnect): `full` (default, every `kb_*`
+  tool), `developer` (`kb_session_prime`, `kb_query`, `kb_context`,
+  `kb_capture`, `kb_feedback`) or `custom` (an explicit list). Non-kb tools
+  are never filtered and member sessions ignore the profile. The profile is
+  set with `kb_setup` inputs `tool_profile` (`full` | `developer` |
+  `custom`) and `tool_profile_tools` (the custom `kb_*` names; an unknown
+  name is refused with an error naming it, and nothing is written), or with
+  `apra-fleet kb profile <full|developer|custom a,b>`. It is a usability
+  control, not a security boundary. `developer` hides tools the PM skills
+  `kb-review`, `kb-reconcile` and `knowledge-agent` need; switch back with
+  `apra-fleet kb profile full` and reconnect before running them.
 
 ### `connectFleetMember(memberId, deps)` (`server-resolution.mjs`)
 
@@ -372,6 +385,26 @@ Calls `fleet_status` -- status of all fleet members.
 
 KB health (`kbHealth` in JSON) covers every project KB scope on the server plus the global KB, one entry per scope -- it never depends on the server's working directory.
 
+When the configured KB tool profile is invalid, `kbHealth.toolProfileWarning`
+(a string, absent otherwise; compact: the same text on its own line) names the
+bad value and what to do, also when no member is registered. Sessions then get
+every `kb_*` tool.
+
+When the KB config selects the http provider, `kbHealth.credential`
+(`FleetStatusKbCredential`; compact: one `kb credential:` line) reports the
+remote KB credential for this host -- one block, shared by every scope the
+http provider serves. For a named secret (`kind: "secret"`): `secretName`,
+`resolves` (`ok` / `missing` / `expired`, from metadata; an expired record is
+never deleted; `unreadable` when the credential store cannot be read or the
+value cannot be decrypted -- the line is still shown, with `lastWritten` kept
+if only the decrypt failed), `lastWritten` (the secret's `created_at`), `tokenExpiry` (the
+`exp` of a JWT value decoded locally, else `null`), and `lastSuccessfulCall` /
+`lastRejectedCall` (this server process; `null`, shown as `never`, until the
+first call). A literal-token config (`kind: "literal"`) carries the call times
+and a `hint` that the token cannot be refreshed and how to switch to
+`{{secret.NAME}}`. A sqlite config has no `credential`. The token value and
+any JWT claim other than `exp` never appear.
+
 #### `memberDetail(options)`
 
 Calls `member_detail` -- detailed status for one member: connectivity,
@@ -528,13 +561,30 @@ local OAuth session to the member instead. `api_key` supports a
 #### `provisionVcsAuth(options: ProvisionVcsAuthOptions)`
 
 Calls `provision_vcs_auth` -- configures git-host auth (GitHub App token or
-PAT, Bitbucket API token, or Azure DevOps PAT) on a member. `provider`
+PAT, Bitbucket API token, or Azure DevOps PAT) on a member, so it can clone,
+push, create pull requests, dispatch workflows and re-run CI jobs. `git_access`
+applies to GitHub App mode only and decides which of these the token may do:
+
+- `read` (read: contents, metadata): clone and fetch only.
+- `push` (write: contents, workflows; read: metadata): clone and push, including workflow files; cannot create pull requests or dispatch workflows.
+- `push+pr` (write: contents, pull_requests, workflows, actions; read: metadata): clone, push, create pull requests, dispatch workflows and re-run CI jobs.
+- `admin` (write: contents, administration, actions, workflows; read: metadata): clone, push, change repository settings, dispatch workflows and re-run CI jobs; cannot create pull requests.
+- `issues` (write: issues, pull_requests, discussions; read: metadata): manage issues and discussions and create pull requests from existing branches; cannot clone private code, push or dispatch workflows.
+- `full` (write: contents, administration, issues, pull_requests, actions, discussions, workflows; read: metadata): all of the above.
+
+`provider`
 (`"github" | "bitbucket" | "azure-devops"`) is required; the rest are
 optional and provider-specific: `member_id`, `member_name`, `label`,
 `scope_url`, `github_mode` (`"github-app" | "pat"`), `token`, `git_access`,
-`repos`, `email`, `api_token`, `workspace`, `org_url`, `pat`, and
-`pat_expires_at`. Every secret-bearing field supports a `{{secret.NAME}}`
-token. `pat_expires_at` must be parseable by `Date.parse` -- the server
+`repos`, `email`, `api_token`, `workspace`, `org_url`, `pat`,
+`pat_expires_at` and `non_interactive`. Every secret-bearing field supports a
+`{{secret.NAME}}` token. For Bitbucket, `api_token` and `workspace` are
+required and `email` is optional and ignored for authentication. Required
+non-secret fields (Bitbucket `workspace`, Azure DevOps `org_url`) are
+validated before any out-of-band prompt; a missing one returns reason
+`credential_assembly_failed` naming the field. With `non_interactive: true`
+a missing secret field is never prompted for: the call returns `ok: false`,
+reason `credential_missing`, and `structuredContent.message` names the field. `pat_expires_at` must be parseable by `Date.parse` -- the server
 rejects an unparseable value rather than storing it, because a `NaN` expiry
 silences the near-expiry warning and makes the credential-cleanup timer
 fall back to its default.
@@ -542,7 +592,9 @@ fall back to its default.
 #### kb_* scope keys
 
 Every `kb_*` call acts on the calling session's own KB (a member session's
-registered work folder; a FULL session's fleet server working folder). The
+registered work folder; a FULL session's first MCP client root inside a git
+repository with an origin remote, or the fleet server working folder when the
+client offers no roots). The
 pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are removed:
 the server refuses a call carrying any of them with `E-SCOPE-KEY-REMOVED`,
 and `kbExport` / `kbBibleCommit` / `kbDemote` refuse them client-side with the same code
@@ -558,6 +610,16 @@ session's `kb_query` / `kb_session_prime` / `kb_stats`), `E-MEMBER-VIEW-REMOTE`
 (a remote member's checkout bible is unreachable; the same three read tools)
 and `E-BIBLE-BASIS-NOT-GIT` (`kb_export` / `kb_bible_commit` in a folder that is
 not a git work tree).
+
+`E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_harvest`, `kb_invalidate`,
+`kb_query`, `kb_context` and `kb_session_prime` when the remote (HTTP) KB takes
+its token from a named fleet secret (`kb_setup` token `{{secret.NAME}}`) and that
+secret is missing, expired, or still rejected (HTTP 401) after one re-read and
+retry. The message names the secret and the reason, never the value. A capture
+or invalidate is queued offline first and sent once the secret is accepted; a
+member session's CONFIRMED read comes from its checkout bible and is unaffected.
+Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
+restart.
 
 `kb_import` in a member session without the kb_maintainer grant fails with
 `E-KB-MAINTAINER-REQUIRED` and imports nothing when: it names an explicit
@@ -701,6 +763,25 @@ union -- a user-authored deny rule is never dropped; only fleet-derived
 Calls `setup_ssh_key` -- converts a remote member from password to SSH key
 authentication. Options: `member_id?`, `member_name?`.
 
+#### `sendMessage(options)`
+
+Calls `send_message` -- pushes a message to a connected member session.
+Options: `member_id` (required, the target session's member id, or
+`"orchestrator"` for the operator's own channel-capable orchestrating session
+-- the newest such session connected to the server), `content` (required),
+`reply_to?`, `probe?`. A target that is not connected is reported in the
+result JSON (`{ "error": "member not connected or no MCP session" }`), not
+thrown. With `probe: true` nothing is sent; the result JSON reports whether a
+session holds the target: `{ "probe": true, "member_id", "connected",
+"channel_capable" }`. Only a `channel_capable` session can receive a message
+(for `"orchestrator"`: a Claude Code session launched with
+`--dangerously-load-development-channels`).
+
+#### `probeMessageTarget(memberId)`
+
+Shorthand for `sendMessage({ member_id: memberId, content: '', probe: true })`:
+a read-only check that sends nothing.
+
 #### `sendEmail(options: SendEmailOptions)`
 
 Calls `send_email`. Provider config is passed inline; secrets resolve
@@ -727,8 +808,8 @@ changes metadata without re-entering the secret.
 #### `codeReindex()` / `codeStatus()`
 
 Calls `code_reindex` / `code_status` -- index maintenance for the calling
-session's own repo (a member session's registered work folder, otherwise the
-fleet server's folder; neither takes arguments). `codeReindex()` starts a
+session's own repo (a member session's registered work folder, otherwise
+the first MCP client root (roots/list) inside a git repository with an origin remote, or the server working folder when the client offers no roots; neither takes arguments). `codeReindex()` starts a
 detached `gitnexus analyze`, captures its output to
 `<data>/code-index/<slug>/analyze.log`, and returns after the first tick; its
 `outcome` is `started`, `up-to-date`, `starting`, `already-running` or
@@ -755,10 +836,21 @@ folder whose index is `missing`, `interrupted` or `inconsistent` requests a
 background build automatically (unless `autoReindex.enabled` is false in the
 code-intelligence config.json) and fails with `E-CODE-INDEX-NOT-READY` saying
 so; an answer during which the index changed is discarded with the same error.
+That error's text ends with `[retry_after_ms=N retry_will_help=B build=X state=Y ...]`
+(plus `progress: phase=... elapsed_ms=... line_count=... last_line='...'` while an
+analyze runs), and the result's `structuredContent` holds the same fields. Wait
+`retry_after_ms` once, retry once, then fall back; 0 means retrying will not help.
 A `code_impact` / `code_context` answer whose resolved symbol is not the one
 requested carries `resolution_mismatch` (`{ requested, resolved: { name, id,
 filePath } }`) and `confidence: 'LOW'`, and an impact `risk` is moved to
-`unverified_risk` with `risk: 'UNKNOWN'`. Extract both with `parseToolJson()`.
+`unverified_risk` with `risk: 'UNKNOWN'`. A not-found answer from an index whose
+node ids are not unique (an incremental analyze corrupted it) carries
+`index_integrity` (`{ corrupt: true, damaged_rows, rebuild }`, where `rebuild` is
+`{ started: true }` or `{ started: false, reason, detail? }`, plus `pause` when
+`reason` is `paused`) and `confidence: 'LOW'`,
+plus a warning text. A flagged "not found" does NOT prove the symbol is absent:
+use a text search, and retry once `codeStatus()` reports the index ready.
+Extract all of these with `parseToolJson()`.
 
 #### `doltPushMutex(options)`
 

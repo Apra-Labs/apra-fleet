@@ -101,7 +101,7 @@ beforeEach(async () => {
 afterEach(() => {
   provider.close();
   vi.restoreAllMocks();
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
 describe('the maintainer bible drops superseded and invalidated entries; kb_export stays additive', () => {

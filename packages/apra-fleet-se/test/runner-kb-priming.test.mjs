@@ -364,7 +364,7 @@ describe('KB priming reaches the agent (audit 2026-08-11)', () => {
         const prompt = buildReviewerPrompt({
             beadIds: ['x-1'],
             acceptanceCriteriaJson: '{}',
-            baseBranch: 'main',
+            baseBranch: 'main', mergeBaseSha: 'abcdef0123456789abcdef0123456789abcdef01',
             branch: 'feat/x',
             kbKnowledge: [ENTRY],
             kbCandidates: [{ id: 'cand1', title: 'A candidate', summary: 's', source_files: ['a.ts'] }],

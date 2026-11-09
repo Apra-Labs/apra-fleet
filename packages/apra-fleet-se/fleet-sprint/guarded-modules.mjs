@@ -418,6 +418,18 @@ export const GUARDED_MODULES = [
     // Per-dispatch kb_* and code_* accounting: reads session_stats through the
     // injected memberCall around each dispatch. No command() or agent() site.
     'dispatch-accounting.mjs',
+    // NEEDS-DECISION recording: member_name-bearing command() sites (the
+    // decision bead create and the work-bead note, each staged through
+    // stageCommandBodyMemberSide), no agent(), no push of its own (callers
+    // D-push through gitSync).
+    'decisions.mjs',
+    // The NEEDS-DECISION wait: member_name-bearing command() sites (the
+    // decision-bead poll reads, bd human respond, the work-bead note), no
+    // agent(); its beads pull/push go through injected gitSync callbacks.
+    'decision-wait.mjs',
+    // Operator notification for a pending decision: no command() or agent()
+    // site (sends through the injected fleet client), zero baseline.
+    'decision-notify.mjs',
     // The per-member sprint-init probe: kb_*/code_* calls through the injected
     // memberCall, member_detail on the orchestrator session, and ONE
     // member-bound command channel (fleetApi.executeCommand, command strings
@@ -519,6 +531,20 @@ export const GUARD_REGISTRATION_EXEMPT = {
         'deliberately emits `$HOME`, `$env:USERPROFILE`, `$env:TEMP` and `$( )` because it IS the ' +
         'OS-branched command surface the shell-command invariant tells everyone else to route ' +
         'through; scanning it would report its entire reason for existing as violations.',
+    // beads-lock-probe.mjs: the per-OS/shell builder of the beads
+    // lock-holder probe (a POSIX script with `$( )` and a PowerShell script
+    // with `$_`), the same kind of OS-branched command surface.
+    'beads-lock-probe.mjs':
+        'deliberately emits `$( )` (POSIX) and `$_` (PowerShell) because it IS the OS-branched ' +
+        'builder of the beads lock-holder probe; scanning it would report its entire reason for ' +
+        'existing as violations.',
+    // bd-sync-command.mjs: the per-OS/shell builder of the bd sync command
+    // string (the Windows GOMAXPROCS assignment), the same kind of
+    // OS-branched command surface as the shell builders above.
+    'bd-sync-command.mjs':
+        'deliberately emits the PowerShell `$env:GOMAXPROCS=` assignment because it IS the ' +
+        'OS-branched builder of the bd sync command string; scanning it would report its entire ' +
+        'reason for existing as violations.',
     // dolt-sync.mjs -- reason reused verbatim from the same header (do not
     // re-derive it).
     'dolt-sync.mjs':

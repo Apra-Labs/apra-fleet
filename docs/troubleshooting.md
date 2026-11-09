@@ -274,6 +274,62 @@ Fix in the product:
   process-creation limit in the surfaced error and strips the misleading
   credential hint lines. The failure is still classified as a transient spawn
   outage and retried as before.
+- Go concurrency is bounded for bd/dolt started by fleet on Windows members.
+  dolt (a Go program) starts one git process per remote chunk at once, and
+  enough concurrent `CreateProcess` calls fail with this error even with a
+  small env block. Fleet sets `GOMAXPROCS=1` ONLY when it is not already set
+  (an operator value is never overridden) -- rule in src/os/go-concurrency.ts:
+  - local Windows members: the child env built by `getCleanEnv()` /
+    `WindowsGitBashCommands.cleanExec()`;
+  - remote Windows members: the agent launch command and the
+    `execute_command` wrapper, as a PowerShell or Git Bash statement chosen
+    per member shell. So `bd dolt pull/push` run by a dispatched agent, the
+    groomer, or `execute_command` inherits it. Linux/macOS members are
+    unchanged.
+  The default applies to the WHOLE fleet-started session on a Windows member,
+  not only to the bd/dolt process. Any Go program a dispatched agent runs there
+  (`go build`, `go test`, other Go tools) also runs with `GOMAXPROCS=1`, so it
+  is effectively serialized to one OS thread and can be slower than expected.
+
+  Override it by setting `GOMAXPROCS` yourself; fleet never replaces a value
+  that is already set. Set it as a Windows user environment variable on the
+  member (for example `[Environment]::SetEnvironmentVariable('GOMAXPROCS', '4', 'User')`),
+  then:
+
+  - Remote Windows member (PowerShell or Git Bash shell): the member picks it
+    up on the next SSH connection. The fleet server reuses an open connection
+    until it has been idle for 5 minutes, so wait that long or restart the
+    fleet server.
+  - Local Windows member, PowerShell shell: restart the fleet server
+    (`apra-fleet stop`, then `apra-fleet start`). The server reads the
+    machine and user environment once and caches it for its lifetime.
+  - Local Windows member, Git Bash shell: restart the fleet server too.
+    Commands run as a non-interactive `bash -c` with the server's own process
+    environment, so `~/.bashrc` is not read. The server sees the new user
+    variable only when it starts from a fresh environment (the service, or
+    `apra-fleet start` from a terminal opened after the change).
+
+  For one command only, set it in the command itself; the default is applied
+  before the command runs, so this needs no restart: `$env:GOMAXPROCS = '4';
+  go test ./...` (PowerShell) or `GOMAXPROCS=4 go test ./...` (Git Bash).
+
+  Trade-off: a raised value re-exposes `bd dolt pull/push` to the Windows
+  process-creation limit above, because dolt may start several git processes
+  at once. Keep `1` if sync fails with this error; raise it only when Go build
+  and test speed matters more than sync reliability on that member.
+
+  Upstream issue: https://github.com/gastownhall/beads/issues/7082
+
+Your own terminal (not started by fleet): fleet cannot set the env of a shell
+you opened yourself, so set the same default before running `bd dolt
+pull`/`bd dolt push` there:
+
+- PowerShell (this session): `$env:GOMAXPROCS = '1'`
+- PowerShell (persist for your user, new shells): `[Environment]::SetEnvironmentVariable('GOMAXPROCS', '1', 'User')`
+- cmd.exe: `set GOMAXPROCS=1` (persist: `setx GOMAXPROCS 1`)
+- Git Bash: `export GOMAXPROCS=1` (persist: add it to `~/.bashrc`)
+
+If you already set `GOMAXPROCS` to another value on purpose, fleet keeps it.
 
 **`bd init` errors "already initialized" on a second run**
 
@@ -296,6 +352,28 @@ Line Tools (`xcode-select --install` / reinstall), or build against a Node
 version known to match the installed CLT, or update `node-gyp` itself. Check
 the npm debug log path printed in the failure output for the exact compiler
 error before assuming this is the cause.
+
+### ssh2 runs without native crypto (silent pure-JS cipher fallback)
+
+**Symptom:** `npm ci` exits 0 but ssh2's optional addon `sshcrypto.node` was
+not built (no compiler / python / make). ssh2 then silently uses its pure-JS
+ciphers: SSH still works but is slower, and timing-sensitive tests such as
+`tests/sftp-subsystem-refusal.test.ts` can behave differently.
+
+**How to tell if native crypto is active (source/dev installs):**
+`node scripts/check-ssh2-native.mjs` exits 0 and prints the binding path when
+active; it exits 1 and names `sshcrypto.node` plus the fix when not. Fix:
+install build tools and run `npm rebuild ssh2` (or re-run `npm ci`). CI runs
+this check in the node_modules cache action before saving the cache, so a tree
+without the binding fails the job and is never cached.
+
+**Decision: apra-fleet does NOT warn at startup.** What was checked: the
+shipped single-executable binary is bundled by `scripts/build-sea.mjs` with
+`loader: { '.node': 'empty' }`, so `sshcrypto.node` is never part of the
+shipped binary and ssh2 always uses the JS cipher there. A startup warning
+would fire for every shipped install and carry no actionable remedy (users
+cannot rebuild a SEA binary), so it would be noise. The check is therefore a
+contributor/CI guard only, not a runtime feature. Users who install the npm package (`npm i -g @apralabs/apra-fleet`) can run `node <global-prefix>/lib/node_modules/@apralabs/apra-fleet/node_modules/ssh2/lib/protocol/crypto/build/Release/sshcrypto.node` presence check (file exists = native active); the same rebuild remedy applies.
 
 ## Stuck agents
 

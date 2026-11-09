@@ -36,10 +36,12 @@ choice but to throw away their local `.beads/` and re-clone.
 
 ## Prerequisites (do not skip)
 
-1. **All members have pushed.** Confirm every active member has run
-   `bd dolt push` and has no unpushed local mutations. Anything not pushed
-   before the flatten is permanently lost (not merged, not recoverable) --
-   there is no scoped export/replay step in this procedure.
+1. **No clone holds unpushed work.** In every clone, run
+   `bd diff remotes/origin/main main --json`. Anything not on the remote
+   before the flatten is permanently lost. Push it if the push can finish
+   (see "Pushes that never finish"); otherwise save the diff and replay those
+   changes by hand after the flatten. Interactive sessions write beads too, so
+   ask every session to stop first.
 2. **All members are "in the know."** Notify every operator/member owner
    before starting: after this runs, their next beads operation may fail or
    show stale/wrong data until they re-bootstrap. Do not run this silently
@@ -48,6 +50,14 @@ choice but to throw away their local `.beads/` and re-clone.
 3. **No sprint is actively mutating beads.** Check `GET /api/sprints` on the
    supervisor(s); an in-flight sprint pushing/pulling beads during the
    flatten will hit the unrelated-history failure mid-run.
+4. **Nothing else syncs the source clone.** Stop the supervisor
+   (`POST /api/shutdown`): it pulls beads about once a minute even with no
+   sprint running. Restart it after the procedure, from the same folder.
+5. **No credential mints during the run.** A new mint can revoke the token the
+   reset push is using. Refresh the source clone's credential right before
+   step 5, and ask every other session to hold off.
+6. **Take a backup.** With writers stopped, copy `.beads` and record the
+   `bd status` counts.
 
 ## Procedure
 
@@ -91,7 +101,15 @@ Run from any single clone with dolt push access to the shared remote
    bd prune --older-than 14d --force
    ```
 
-3. **Flatten the history to reclaim storage:**
+   Do not push between the prune and the flatten: that uploads the old
+   history in full.
+
+3. **Preview the flatten:**
+   ```bash
+   bd flatten --dry-run
+   ```
+
+4. **Flatten the history to reclaim storage:**
    ```bash
    bd flatten --force
    ```
@@ -101,27 +119,54 @@ Run from any single clone with dolt push access to the shared remote
    minutes on a multi-gigabyte store. This step is irreversible -- no
    Dolt time-travel after this point.
 
-4. **Push:**
+5. **Replace the remote's data:**
    ```bash
-   bd dolt push
+   bd dolt remote reset-data origin --yes
    ```
+   Not a plain `bd dolt push`: that re-points the refs but deletes nothing, so
+   the remote keeps the full old store. On a git remote this deletes
+   `refs/dolt/data` and then force-pushes, so the remote has no data until the
+   push ends. If the push fails, the source clone is intact: re-run the command.
 
-5. **Verify:**
+6. **Verify:**
    ```bash
    bd status
    ```
+   (`bd doctor` is not supported in embedded mode.)
    Confirm issue counts look sane (open/closed totals match expectations
-   from the pre-prune dry-run).
+   from the pre-prune dry-run). Then measure the remote's data size (below).
+
+## Pushes that never finish
+
+A push to a git remote can resend the whole data tree for a tiny change: Dolt
+writes a parentless manifest commit when it prunes table files, and after 64
+parented commits. `bd dolt push` shows no output during the upload, and the
+engine kills a silent step after `DOLT_STEP_TIMEOUT_S` (600s), so a tree too
+large to upload in that time never lands: each retry restarts from zero while
+holding the push mutex, until the sprint gives up.
+Symptom: repeated "timed out ... of inactivity" on D-push, and sprints waiting
+on the mutex. The live tree must fit well inside 600s at the member's upload
+speed; if it no longer does, run this procedure. Measure it from a clone:
+```bash
+git fetch origin refs/dolt/data
+git ls-tree -r -l FETCH_HEAD | awk '{s+=$4} END {print s}'
+```
 
 ## Recovering every other clone
 
 This is the mandatory follow-up step on **every other fleet member and
 checkout** (dev checkouts, deploy checkouts, the orchestrator folder, any
-local scratch clones) -- there is no automated version of this today:
+local scratch clones) -- there is no automated version of this today.
+
+First, in each clone, run `bd export` and compare it with the source's
+pre-flatten export: a write that landed after the prerequisite check is lost
+when `.beads` is replaced. Note what differs. Then run the commands below, and
+replay those changes, plus anything saved in prerequisite 1, on the new clone:
 
 ```bash
 mv .beads .beads.bak-$(date +%s)
 bd bootstrap --yes
+git checkout -- .beads/issues.jsonl   # if tracked: it moved with .beads
 bd status   # confirm issue counts match the freshly-flattened remote
 ```
 
@@ -129,10 +174,12 @@ On Windows/PowerShell:
 ```powershell
 Rename-Item .beads ".beads.bak-$(Get-Date -UFormat %s)"
 bd bootstrap --yes
+git checkout -- .beads/issues.jsonl
 bd status
 ```
 
-Once every clone reports matching counts, delete the `.beads.bak-*`
+Restart the supervisor once the source clone is verified. Once every clone
+reports matching counts, delete the `.beads.bak-*`
 backups.
 
 ## Notes for next time

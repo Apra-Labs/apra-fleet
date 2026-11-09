@@ -256,7 +256,7 @@ credential `label` and `scope_url`, and a per-provider credential group:
 
 - **GitHub**: `github_mode` (`github-app` | `pat`), `token`, and the
   `git_access` / `repos` overrides for the GitHub App path.
-- **Bitbucket**: `email`, `api_token`, `workspace`.
+- **Bitbucket**: `api_token`, `workspace`. No email is needed; git uses the fixed username `x-bitbucket-api-token-auth`. Store the token under the FIXED secret name `bitbucket_api_token` (not configurable, no fallback).
 - **Azure DevOps**: `org_url`, `pat`, `pat_expires_at`.
 
 Secret-bearing fields accept a `{{secret.NAME}}` token, resolved from the
@@ -376,3 +376,62 @@ secret the tool exists to protect.
 4. **Auto-refresh** -- check token expiry before git operations, refresh if needed
 5. **Multi-host backends** -- GitHub, Bitbucket, and Azure DevOps adapters behind the same `provision_vcs_auth` interface (`src/services/vcs/`); GitLab is not implemented
 6. **Member config** -- `git_access` and `git_repos` fields on `register_member` / `update_member`
+
+## Bitbucket and credential-handling invariants
+
+- **Fixed identity.** Bitbucket auth is an API token only. The deployed git
+  helper always uses the username `x-bitbucket-api-token-auth`; REST calls
+  (including the fleet-sprint PR create/find/update builders) use
+  `Authorization: Bearer` with no username. `email` is optional metadata.
+  The secret name is fixed at `bitbucket_api_token`.
+- **Two-channel verification.** A deploy is `verified` only if both an
+  authenticated REST read of the origin repository and a non-interactive
+  `git ls-remote` succeed. Each channel fails with its own named reason. On
+  POSIX the token is piped to curl (`-H @-`), so it is not on curl's argv;
+  on Windows the GET runs in-process (`Invoke-WebRequest`). In both cases
+  the whole command string, token included, is briefly on the argv of the
+  outer `bash -c` / `powershell` process that runs it for the length of the
+  request -- the same exposure as the credential-helper write itself.
+- **Host recognition.** `bitbucket.org` and `ssh.bitbucket.org` are both
+  recognised as Bitbucket (anchored matches) for detection and repo parsing.
+- **Validate before asking.** Non-secret required fields are validated before
+  any out-of-band secret prompt. `non_interactive: true` turns a missing
+  secret into a typed `credential_missing` result instead of a prompt;
+  fleet-sprint always sets it. The headless fallback never offers a member
+  name as a secret name.
+- **Probe before provisioning.** For members whose credential cannot be
+  re-minted (Bitbucket, Azure DevOps) and for local members, the sprint
+  preflight probes the existing credential with a non-interactive
+  `git ls-remote` (prompts disabled), caches the result per member per run,
+  and logs one typed error. A local member of such a provider shares the
+  host's credentials and is never provisioned or self-healed by the sprint;
+  if member_detail cannot say whether a member is local, nothing is
+  provisioned (typed error `vcs_member_lookup_failed`). GitHub App members,
+  local or not, keep the mint-and-refresh path. Azure DevOps members take the
+  same probe-first path: they are no longer re-provisioned on every bracket,
+  so a PAT rotated in the credential store is picked up only once the old one
+  fails its probe -- re-run `provision_vcs_auth` to deploy it sooner.
+- **Upgrading from 0.4.4.**
+  - Secret name: the secret is `bitbucket_api_token`. Users who followed the
+    older skill doc stored it as `bitbucket_token`; store it again under
+    `bitbucket_api_token` (`credential_store_set name=bitbucket_api_token`),
+    or provisioning fails with a typed error naming the missing entry.
+  - Remote members with an HTTPS origin: the first sprint after the upgrade
+    probes the old helper (email username), the probe fails, and the member
+    is re-provisioned once with the fixed username. With an SSH origin the
+    probe passes and the helper is left as is; REST still works because it
+    uses only the token.
+  - Local members: never rewritten automatically. Re-provision each one by
+    hand, once: `provision_vcs_auth member_name=MEMBER provider=bitbucket
+    workspace=WORKSPACE api_token={{secret.bitbucket_api_token}}`.
+- **Redaction on every path.** `provision_vcs_auth` masks the token in its
+  raw, URL-encoded, base64 `user:token` and quote-escaped forms, plus
+  Authorization values and GitHub token literals, in both the text and the
+  structured message of every result. Known limitation: the generic
+  Basic/Bearer pattern also masks plain prose such as "HTTP Basic".
+- **PR relaunch is idempotent.** With find-before-create, the open PR for the
+  branch is looked up first and updated via PUT; no second PR is created. The
+  PR URL is logged on open and update.
+- **Failure vocabulary.** A transient read failure is distinguished from an
+  absent credential; remedy text follows the target remote's provider; 410 and
+  403 responses carry hints; a no-op self-heal does not retry.

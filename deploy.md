@@ -114,7 +114,7 @@ your deploy; do not clear it yourself -- report it in `notes` so the
 orchestrator/operator can release it against the supervisor:
 
 ```bash
-curl -s -X POST http://localhost:8787/api/reservations/<sprintId>/force-release
+curl -s -X POST http://localhost:8787/api/reservations/<sprintId>/force-release -H "Content-Type: application/json"
 ```
 
 Same route the dashboard's Stop/Restart controls use. Force-release does not
@@ -176,6 +176,25 @@ node scripts/deploy-install.mjs
 # Windows: plain background launch dies with the SSH channel -- use a real
 #          detached child process (e.g. Invoke-CimMethod Win32_Process Create)
 #          running: apra-fleet.exe run --transport http >> fleet.log 2>&1
+# Windows launch method -- why WMI (Win32_Process Create) stays:
+#   It is the only documented method that survives the SSH channel closing
+#   AND needs no interactive logon. Start-Process from an SSH session joins
+#   the sshd job and dies with the channel; `start`'s scheduled task (and any
+#   /IT task) silently no-ops without an interactive logon.
+#   Desktop-heap hypothesis (2026-11-02 diagnosis): a WMI-created process runs
+#   on a non-interactive window station whose desktop heap (third SharedSection
+#   value, 768 KB by default) is shared by every console child it starts, so
+#   many concurrent bd/dolt/git children can exhaust it ("Not enough memory
+#   resources"). The product now bounds that fan-out instead: bd/dolt started
+#   by fleet on Windows get GOMAXPROCS=1 unless already set; this applies to
+#   the whole fleet-started session, so Go builds and tests there are also
+#   serialized, and the member's own GOMAXPROCS overrides it (see
+#   docs/troubleshooting.md, "Not enough memory resources"). If the error
+#   persists while a user IS logged on interactively, launch the server from
+#   that interactive session instead (a PowerShell window there:
+#   Start-Process apra-fleet.exe -ArgumentList 'run','--transport','http'
+#   -WindowStyle Hidden), which runs on the interactive desktop with the
+#   larger heap -- or raise the non-interactive SharedSection value.
 # Then poll fleet.log / port 7523 to confirm it actually came up.
 ```
 

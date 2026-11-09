@@ -77,6 +77,7 @@ describe('createVcsAuthSelfHealCallback', () => {
             github_mode: 'github-app',
             git_access: 'push',
             repos: ['acme/widgets'],
+            non_interactive: true,
         });
         assert.ok(logs.some((l) => /self-heal/.test(l) && /fleet-mac/.test(l)), `expected a self-heal log entry, got: ${JSON.stringify(logs)}`);
         assert.ok(logs.some((l) => /credentials re-provisioned for member/.test(l)), `expected a self-heal success log entry, got: ${JSON.stringify(logs)}`);
@@ -185,6 +186,7 @@ describe('createVcsAuthSelfHealCallback', () => {
             // opens an out-of-band operator prompt mid-sprint.
             workspace: 'acme',
             api_token: '{{secret.bitbucket_api_token}}',
+            non_interactive: true,
         });
         assert.ok(!('github_mode' in provisionCall.args), `expected no github_mode field for a non-GitHub provider, got: ${JSON.stringify(provisionCall.args)}`);
         assert.ok(

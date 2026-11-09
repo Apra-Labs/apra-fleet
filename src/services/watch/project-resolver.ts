@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import type { Agent } from '../../types.js';
+import { gitExecutable } from '../../os/git-executable.js';
 
 /**
  * A member paired with the project/feature context needed to group it.
@@ -30,7 +31,7 @@ export interface ProjectGroup {
 /** Run a git command in a folder, returning trimmed stdout or null on any error. */
 function git(folder: string, args: string[]): string | null {
   try {
-    const out = execFileSync('git', ['-C', folder, ...args], {
+    const out = execFileSync(gitExecutable(), ['-C', folder, ...args], {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],

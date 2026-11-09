@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { RegisterResult, ServiceManager, ServiceStatus } from './types.js';
+import type { RegisterResult, ServiceManager, ServiceStatus, StopOptions } from './types.js';
 import { WINDOWS_TASK_NAME, SERVICE_ENV_MARKER } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 import { clearServiceStartFailures } from '../service-start-guard.js';
@@ -460,6 +460,7 @@ export function encodeTaskXml(xml: string): Buffer {
 
 export class WindowsServiceManager implements ServiceManager {
   private reusedExistingTask = false;
+  private legacyReported = false;
   private readonly runReg: RegRunner;
   private readonly env: Record<string, string | undefined>;
   private readonly now: () => Date;
@@ -572,6 +573,7 @@ export class WindowsServiceManager implements ServiceManager {
       if (!problems.includes('elevated')) problems.push('elevated');
       const guidance = legacyTaskGuidance(problems);
       console.warn(indent(guidance));
+      this.legacyReported = true;
       // A detached install (apra-fleet update) has no console: persist it
       // for the next service verb (already shown when this one is
       // interactive), and leave it in the service log.
@@ -632,6 +634,17 @@ export class WindowsServiceManager implements ServiceManager {
     } catch {
       return [];
     }
+  }
+
+  /** See ServiceManager.legacyGuidanceShown. */
+  legacyGuidanceShown(): boolean { return this.legacyReported; }
+
+  /** See ServiceManager.legacyGuidance: a reused legacy task refused /run because it cannot be replaced from here. */
+  legacyGuidance(): string | null {
+    const problems = this.installedLegacyProblems();
+    if (problems.length === 0) return null;
+    if (!problems.includes('elevated')) problems.push('elevated');
+    return legacyTaskGuidance(problems);
   }
 
   private legacyProblemsOf(raw: Buffer | string): LegacyTaskProblem[] {
@@ -705,7 +718,7 @@ export class WindowsServiceManager implements ServiceManager {
     this.spawnDetached('schtasks', ['/run', '/tn', WINDOWS_TASK_NAME]);
   }
 
-  async stop(): Promise<boolean> {
+  async stop(opts?: StopOptions): Promise<boolean> {
     // Disable FIRST: the task's repeating trigger would otherwise relaunch the
     // server within one interval, undoing a deliberate stop. start/install
     // re-enable it.
@@ -714,18 +727,22 @@ export class WindowsServiceManager implements ServiceManager {
         this.runSchtasks(['/change', '/tn', WINDOWS_TASK_NAME, '/disable']);
       } catch (err) {
         console.warn(`Could not disable the ${WINDOWS_TASK_NAME} task (${(err as Error).message.trim()}).`);
-        const problems = this.installedLegacyProblems();
-        if (problems.length > 0) {
-          // Disabling was just refused, whatever the XML says.
-          if (!problems.includes('elevated')) problems.push('elevated');
-          console.warn(legacyTaskGuidance(problems));
+        // install --force owns the guidance (printed once by install) and
+        // clears the stopped marker, so both lines would be wrong or doubled.
+        if (opts?.reason !== 'install') {
+          const problems = this.installedLegacyProblems();
+          if (problems.length > 0) {
+            // Disabling was just refused, whatever the XML says.
+            if (!problems.includes('elevated')) problems.push('elevated');
+            console.warn(legacyTaskGuidance(problems));
+          }
+          // The stopped-by-user marker (written by apra-fleet stop) makes every
+          // service launch exit without starting the server.
+          console.warn(
+            "A stop made with 'apra-fleet stop' still holds: until 'apra-fleet start', every launch of the task " +
+            'exits without starting the server.',
+          );
         }
-        // The stopped-by-user marker (written by apra-fleet stop) makes every
-        // service launch exit without starting the server.
-        console.warn(
-          "A stop made with 'apra-fleet stop' still holds: until 'apra-fleet start', every launch of the task " +
-          'exits without starting the server.',
-        );
       }
     }
     return gracefulStopByServerJson((pid) => {

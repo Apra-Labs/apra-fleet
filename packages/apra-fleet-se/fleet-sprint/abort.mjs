@@ -588,6 +588,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         // A set-aside stall (StalledSprintError) carries the run's set-aside
         // records; rendered as the "Set aside this run" section.
         setAside: error && Array.isArray(error.setAside) ? error.setAside : [],
+        waited: error && Array.isArray(error.waited) ? error.waited : [],
         previousBody,
     });
     const prBody = buildAbortBody();

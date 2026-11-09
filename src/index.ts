@@ -58,6 +58,7 @@ Usage:
   apra-fleet kb reject-directive <id>                  Reject a proposal or retire an active directive
   apra-fleet kb add-directive "<text>" [--symbols a,b] Create an already-active directive (human-only)
   apra-fleet kb commit [--repo <path>] [--global]      Re-export + auto-commit the canonical bible (manual/recovery)
+  apra-fleet kb profile [full|developer|custom <a,b>]  Show or set the KB tool profile for interactive sessions
   apra-fleet join <member-jwt> [--hub-url <url>]  Activate a device using a member JWT obtained out-of-band from fleet-dashboard
   apra-fleet spoke <origin-member-id>        Run as an outbound hub-connected spoke; requires apra-fleet join first
   apra-fleet --version        Print version
@@ -135,7 +136,7 @@ Usage:
   import('./commands/kb-server.js')
     .then(async m => {
       const opts = m.parseKbServerArgs(process.argv.slice(3));
-      await m.startKbServer(opts.port, opts.generateToken, opts.dbPath);
+      await m.startKbServer(opts.port, opts.generateToken, opts.dbPath, opts.tokenFile);
     })
     .catch(err => { logError('cli', `kb-server failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'kb') {
@@ -170,6 +171,12 @@ Usage:
       .then(m => m.runKbCommit(process.argv.slice(4)))
       .then(code => process.exit(code))
       .catch(err => { logError('cli', `kb commit failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'profile') {
+    // GitHub #759: show/set the install-wide KB tool profile. Required because
+    // the developer profile hides kb_setup from interactive sessions.
+    import('./cli/kb-profile.js')
+      .then(m => process.exit(m.runKbProfile(process.argv.slice(4))))
+      .catch(err => { logError('cli', `kb profile failed: ${err.message}`); process.exit(1); });
   } else if (subCmd === 'import') {
     // T2.2 (F4, D3): post-merge entry point for absorbing a merged bible into
     // the local KB. Thin wrapper over the same kbImport the MCP tool uses.

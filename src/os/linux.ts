@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
-import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId } from './os-commands.js';
+import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 
 // The member's own fleet bin dir (<home>/.apra-fleet/bin: the member-install
@@ -377,6 +377,17 @@ export class LinuxCommands implements OsCommands {
   gitRemoteOrigin(folder: string): string {
     const f = escapeDoubleQuoted(folder);
     return `git -C "${f}" remote get-url origin 2>/dev/null || git -C "${f}" config --get remote.origin.url 2>/dev/null || true`;
+  }
+
+  gitLsRemoteNonInteractive(url: string): string {
+    return `GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git ls-remote ${escapeShellArg(url)} HEAD && echo ${GIT_LS_REMOTE_OK_MARKER}`;
+  }
+
+  httpGetStatusWithBearer(url: string, token: string): string {
+    // printf is a shell builtin (sh/dash/bash/zsh), so the token is not on
+    // curl's argv; curl reads the header from stdin (-H @-). It is still on
+    // the outer `bash -c` argv that runs this string (see os-commands.ts).
+    return `printf 'Authorization: Bearer %s\\n' ${escapeShellArg(token)} | curl -sS -o /dev/null -w '%{http_code}' -H @- ${escapeShellArg(url)}`;
   }
 
   // --- Process management ---

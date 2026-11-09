@@ -43,6 +43,10 @@ this pair as "member identifier" rather than repeating it.
 `credential_store_update`, `credential_store_delete`.
 
 **Messaging:** `send_email`, `send_message`, `report_status`, `respond_to_message`.
+`send_message` with `probe: true` sends nothing and reports whether a session
+holds the target (`connected`) and can receive channel messages
+(`channel_capable`; for `orchestrator`, a Claude Code session launched with
+`--dangerously-load-development-channels`).
 
 **Code intelligence:** `code_graph`, `code_impact`, `code_query`, `code_context`,
 `code_map`, `code_flow`, `code_tests`.
@@ -438,6 +442,42 @@ The correct env var name is automatically determined from the member's
 | AGY | `ANTIGRAVITY_API_KEY` |
 | OpenCode | none (auth is handled by the OpenCode CLI itself) |
 
+### `provision_vcs_auth`
+
+Deploys a VCS credential (GitHub App/PAT, Bitbucket API token, Azure DevOps
+PAT) onto a member as a git credential helper, then verifies it. The result's
+`structuredContent.reason` is `ok`, `deployed_unverified` or
+`deployed_verification_skipped` when the credential was deployed, and
+`structuredContent.verificationReason` names the failing verification channel
+when the provider reports one.
+
+**Out-of-band collection:** required non-secret fields (Bitbucket
+`workspace`, Azure DevOps `org_url`) are validated first; a missing one
+returns `credential_assembly_failed` naming the field, without prompting.
+When the secret field (`api_token` / `pat` / `token`) is absent the server
+asks the operator for it out of band -- unless `non_interactive: true`, in
+which case it returns `ok: false`, reason `credential_missing`, with the
+field named in `structuredContent.message`. With no terminal available, the
+fallback text tells the operator to store the value as a named secret
+(`apra-fleet secret --set NAME --persist`) and pass `{{secret.NAME}}`.
+
+**Bitbucket parameters** (`provider: "bitbucket"`):
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `api_token` | string | yes | Bitbucket API token. Store it as the fleet secret `bitbucket_api_token` (a FIXED name: not configurable, no fallback) and pass `{{secret.bitbucket_api_token}}` |
+| `workspace` | string | yes | Bitbucket workspace slug |
+| `email` | string | no | Ignored for authentication; kept only as metadata if given |
+
+The deployed helper always uses the fixed git username
+`x-bitbucket-api-token-auth` (never an email). Re-provisioning a member whose
+helper still carries an email username (0.4.4) rewrites it. Verification runs
+two channels against the member's `origin` remote: an authenticated REST
+`GET /2.0/repositories/<workspace>/<repo>` with `Authorization: Bearer`
+(`rest_unauthorized` on 401/403, `rest_failed` otherwise), then a
+non-interactive `git ls-remote` through the deployed helper (`git_auth_failed`
+or `git_failed`). `verified` is true only when both pass.
+
 ### `setup_ssh_key`
 
 Generates an SSH key pair and migrates a remote member from password-based SSH
@@ -517,7 +557,7 @@ Provides a quick summary table of all fleet members.
 
 **Fleet-wide sections (independent of the server's working directory):** the fleet server is one long-lived process serving every project, so `fleet_status` never derives a project or repo from its own cwd.
 
-- **KB health** enumerates every KB scope on disk (`<data dir>/knowledge/<project-slug>/kb.sqlite`) and reports one line per non-empty project scope, labeled `kb[<slug>]`, plus `kb[global]`; empty scopes are collapsed into one `kb: empty scope(s): ...` line. JSON: `kbHealth: { projectProvider, scopes: [{ scope, totals, stale, flagged, superseded, retrieval, promote_ratio, bible }], global, errors, totalEntries }`. Bible drift needs a repo checkout, so it is computed only for the scope of `repo_path`; other scopes report `bible: { computable: false, reason }`.
+- **KB health** enumerates every KB scope on disk (`<data dir>/knowledge/<project-slug>/kb.sqlite`) and reports one line per non-empty project scope, labeled `kb[<slug>]`, plus `kb[global]`; empty scopes are collapsed into one `kb: empty scope(s): ...` line. JSON: `kbHealth: { projectProvider, scopes: [{ scope, totals, stale, flagged, superseded, retrieval, promote_ratio, bible }], global, errors, totalEntries }`. Bible drift needs a repo checkout, so it is computed only for the scope of `repo_path`; other scopes report `bible: { computable: false, reason }`. When the configured KB tool profile is invalid, a line names the bad value and the fix (JSON: optional `kbHealth.toolProfileWarning`), also when no member is registered.
 - **Code intelligence** indexes are per repo (`<repo>/.gitnexus`). Without `repo_path` the line reads `code-intel: per-repo index; ...` (JSON: `{ present: false, computable: false, reason }`); the 30-day top-symbols telemetry is fleet-wide and always shown.
 
 ### `session_stats`

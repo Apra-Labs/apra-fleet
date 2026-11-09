@@ -80,6 +80,25 @@ describe('listFleetMembers (apra-fleet-eft.4.8.7)', () => {
         assert.equal(stopMock.mock.callCount(), 1);
     });
 
+    test('display content item before the JSON item is skipped without a parse error (empty registry)', async (t) => {
+        t.mock.method(StreamableHttpTransport.prototype, 'start', async () => {});
+        t.mock.method(StreamableHttpTransport.prototype, 'stop', function stop() { /* no-op stub */ });
+        t.mock.method(ApraFleet.prototype, 'listMembers', async () => ({
+            content: [
+                { type: 'text', text: '<apra-fleet-display>hello</apra-fleet-display>', annotations: { audience: ['user'] } },
+                { type: 'text', text: JSON.stringify({ total: 0, members: [] }) },
+            ],
+        }));
+        const errors = [];
+        const result = await listFleetMembers({
+            resolveConnection: async () => ({ mode: 'http', url: 'http://127.0.0.1:9451/mcp' }),
+            logger: { error: (...a) => errors.push(a) },
+        });
+        assert.deepEqual(result, { members: [] });
+        assert.equal(errors.length, 0);
+        assert.equal(Object.keys(result).length, 1);
+    });
+
     test('branch 4a: a transport start failure resolves to { members: [] } while still best-effort calling transport.stop()', async (t) => {
         t.mock.method(StreamableHttpTransport.prototype, 'start', async () => {
             throw new Error('simulated transport start failure (no real network)');

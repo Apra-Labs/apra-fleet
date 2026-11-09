@@ -1,7 +1,12 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { RootsListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { FULL_TOOL_SCOPE, isToolInScope, runWithSessionMember, scopeHasKbMaintainer, scopeIsEngineOrigin, scopeMemberId, type ToolScope } from './tool-scope.js';
 import { recordMemberToolCall } from './member-call-counts.js';
 import { assertNoRemovedKbScopeKeys } from './knowledge/kb-removed-scope-keys.js';
+import { SessionRootsCache } from './session-roots.js';
+import { readKbToolProfileFromDisk } from './knowledge/kb-config.js';
+import { FULL_KB_TOOL_PROFILE, kbToolAllowedByProfile, type KbToolProfile } from './kb-tool-profile.js';
+import { logWarn } from '../utils/log-helpers.js';
 
 export type { ToolScope } from './tool-scope.js';
 
@@ -10,26 +15,79 @@ export type { ToolScope } from './tool-scope.js';
  * through the scope gate: an out-of-scope tool is simply never registered
  * (deny by omission -- absent from tools/list, unknown when called). Every
  * other property is forwarded to the real server unchanged.
+ *
+ * MEMBER scope: the member allowlists (isToolInScope); the KB tool profile is
+ * never consulted. FULL scope: every tool, except that kb_* tools outside the
+ * install-wide KB tool profile (src/services/kb-tool-profile.ts) are not
+ * registered. With the full profile (the default) the base server is returned
+ * unchanged.
  */
 function scopeGatedServer(base: McpServer, scope: ToolScope): McpServer {
-  if (scope.kind === 'full') return base;
+  let allowed: (name: string) => boolean;
+  if (scope.kind === 'full') {
+    const profile = fullSessionKbToolProfile();
+    if (profile.name === 'full') return base;
+    allowed = (name) => kbToolAllowedByProfile(name, profile);
+  } else {
+    allowed = (name) => isToolInScope(name, scope);
+  }
   return new Proxy(base, {
     get(target, prop, receiver) {
       if (prop === 'tool') {
         return (name: string, ...rest: unknown[]) => {
-          if (!isToolInScope(name, scope)) return undefined;
+          if (!allowed(name)) return undefined;
           return (target.tool as (...args: unknown[]) => unknown).call(target, name, ...rest);
         };
       }
       if (prop === 'registerTool') {
         return (name: string, ...rest: unknown[]) => {
-          if (!isToolInScope(name, scope)) return undefined;
+          if (!allowed(name)) return undefined;
           return (target.registerTool as (...args: unknown[]) => unknown).call(target, name, ...rest);
         };
       }
       return Reflect.get(target, prop, receiver);
     },
   });
+}
+
+/**
+ * The KB tool profile a FULL session registers under, read when the session
+ * registers its tools (so a change takes effect on reconnect). An unreadable
+ * or invalid profile setting falls back to full with a logged warning rather
+ * than breaking every session, and fleet_status names the problem
+ * (kbToolProfileWarning): kb_setup and `apra-fleet kb profile` refuse an invalid
+ * profile on write, so only a hand edit can get here.
+ */
+function fullSessionKbToolProfile(): KbToolProfile {
+  try {
+    return readKbToolProfileFromDisk();
+  } catch (err) {
+    logWarn('kb_tool_profile', `${(err as Error).message}; serving every kb_* tool (profile full)`);
+    return FULL_KB_TOOL_PROFILE;
+  }
+}
+
+/**
+ * The per-session client-roots cache for a FULL session: asks for roots only
+ * when the client declared the roots capability, and drops the cache on
+ * notifications/roots/list_changed. Minimal test doubles without an
+ * underlying Server get a cache that never reports roots.
+ */
+function createRootsCache(baseServer: McpServer): SessionRootsCache {
+  const inner = (baseServer as { server?: McpServer['server'] }).server;
+  const cache = new SessionRootsCache(() => {
+    try {
+      return !!inner?.getClientCapabilities?.()?.roots;
+    } catch {
+      return false;
+    }
+  });
+  try {
+    inner?.setNotificationHandler?.(RootsListChangedNotificationSchema, async () => { cache.invalidate(); });
+  } catch {
+    // a double without notification support: roots are fetched once per session
+  }
+  return cache;
 }
 
 /**
@@ -44,6 +102,10 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   // Whether this member session carries the engine's kb_maintainer grant;
   // handlers read it via getSessionKbMaintainer() (src/services/tool-scope.ts).
   const kbMaintainer = scopeHasKbMaintainer(scope);
+  // FULL session: kb_*/code_* scope comes from the client's MCP roots
+  // (src/services/session-roots.ts, src/services/knowledge/kb-self.ts). A
+  // MEMBER session never reads roots -- its scope is its registered work folder.
+  const rootsCache = sessionMemberId === undefined ? createRootsCache(baseServer) : undefined;
   // Load onboarding functions
   const { getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingNudge, getWelcomeBackPreamble } = await import('./onboarding.js');
 
@@ -159,7 +221,26 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
       const scopedExtra = extra === undefined && sessionMemberId === undefined
         ? undefined
         : { ...(extra ?? {}), sessionMemberId };
-      const raw = await runWithSessionMember(sessionMemberId, () => handler(input, scopedExtra), { kbMaintainer });
+      const roots = rootsCache && (toolName.startsWith('kb_') || toolName.startsWith('code_'))
+        ? await rootsCache.get(extra?.sendRequest?.bind(extra))
+        : undefined;
+      let raw: Awaited<ReturnType<typeof handler>>;
+      try {
+        raw = await runWithSessionMember(sessionMemberId, () => handler(input, scopedExtra), { kbMaintainer, roots });
+      } catch (err) {
+        // A thrown error carrying machine-readable detail (structuredContent,
+        // e.g. E-CODE-INDEX-NOT-READY's retry_after_ms and build progress)
+        // becomes a one-line isError text that repeats it (toolText: a client
+        // may pass its model only the text of an error result), plus that
+        // detail as the result's structuredContent. Any other error is left to
+        // the SDK unchanged.
+        const sc = err instanceof Error ? (err as { structuredContent?: unknown }).structuredContent : undefined;
+        if (err instanceof Error && sc && typeof sc === 'object' && !Array.isArray(sc)) {
+          const toolText = (err as { toolText?: unknown }).toolText;
+          return { content: [{ type: 'text' as const, text: typeof toolText === 'string' ? toolText : err.message }], isError: true, structuredContent: sc as Record<string, unknown> };
+        }
+        throw err;
+      }
       const result = typeof raw === 'string' ? raw : raw.text;
       const structuredContent = typeof raw === 'string' ? undefined : raw.structuredContent;
       const isJson = isJsonResponse(result);
@@ -217,9 +298,9 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   server.tool('provision_llm_auth', "Authenticate a fleet member so it can run prompts. With api_key, deploys that API key or Claude Code OAuth token (routed by prefix). Without api_key, re-deploys a credential already stored for the member, else copies your current login session; force_oauth_copy: true copies your login anyway and clears the stored credential. Run this before execute_prompt if the member reports no authentication. Note: a copied OAuth session is shared and its refresh token is rotated across every holder, so a refresh on one machine can invalidate the copies elsewhere; prefer an API key for unattended members.", provisionAuthSchema.shape, wrapTool('provision_llm_auth', (input) => provisionAuth(input as any)));
   server.tool('setup_ssh_key', 'Generate an SSH key pair and migrate a member from password to key-based authentication.', setupSSHKeySchema.shape, wrapTool('setup_ssh_key', (input) => setupSSHKey(input as any)));
   server.tool('setup_git_app', "One-time setup: register a GitHub App for git token minting. Requires a GitHub App ID, private key (.pem) file path, and installation ID. The app must already be created and installed, with the repository permissions each git_access level needs (see docs/github-app-setup.md; push+pr needs Metadata, Contents, Workflows, Pull requests, Actions) -- a mint requesting a permission the App lacks fails.", setupGitAppSchema.shape, wrapTool('setup_git_app', (input) => setupGitApp(input as any)));
-  server.tool('provision_vcs_auth', 'Set up git access credentials on a member. Supports GitHub, Bitbucket, and Azure DevOps. Tests connectivity after setup.', provisionVcsAuthSchema.shape, wrapTool('provision_vcs_auth', (input) => provisionVcsAuth(input as any)));
+  server.tool('provision_vcs_auth', 'Set up git access credentials on a member so it can clone, push, create pull requests, dispatch workflows and re-run CI jobs. Supports GitHub, Bitbucket, and Azure DevOps. On GitHub with a GitHub App, git_access decides which of these the member may do: push+pr covers create pull requests and dispatch workflows. Tests connectivity after setup.', provisionVcsAuthSchema.shape, wrapTool('provision_vcs_auth', (input) => provisionVcsAuth(input as any)));
   server.tool('revoke_vcs_auth', 'Remove VCS credentials from a member. Specify the provider (github, bitbucket, or azure-devops) to revoke.', revokeVcsAuthSchema.shape, wrapTool('revoke_vcs_auth', (input) => revokeVcsAuth(input as any)));
-  server.tool('vcs_credential_exec', 'Run a credential-requiring git/VCS command on a member WITHOUT ever learning the credential. Put one of two literal placeholders where the token belongs: {{vcs_token}}, referenced BARE (never inside your own quotes) -- the server substitutes it already escaped AND quoted for that member\'s shell; or {{vcs_token_inline}}, referenced INSIDE your own single quotes (e.g. an Authorization header value) -- the server substitutes it escaped for the interior of a single-quoted string, with no quotes of its own. Using {{vcs_token}} inside your own quotes double-escapes it; use {{vcs_token_inline}} there instead. Both may appear in the same command. For a provider needing basic auth (user:token, e.g. Bitbucket), the matching {{vcs_username}} and {{vcs_username_inline}} placeholders substitute the credential helper\'s username under the same two dialects -- optional, and never on their own: a token placeholder is still required. The server dispatches the command and redacts both values from the returned stdout/stderr. Use this instead of reading a token back out of a credential helper.', vcsCredentialExecSchema.shape, wrapTool('vcs_credential_exec', (input) => vcsCredentialExec(input as any)));
+  server.tool('vcs_credential_exec', 'Run a credential-requiring git/VCS command on a member WITHOUT ever learning the credential. Put one of two literal placeholders where the token belongs: {{vcs_token}}, referenced BARE (never inside your own quotes) -- the server substitutes it already escaped AND quoted for that member\'s shell; or {{vcs_token_inline}}, referenced INSIDE your own single quotes (e.g. an Authorization header value) -- the server substitutes it escaped for the interior of a single-quoted string, with no quotes of its own. Using {{vcs_token}} inside your own quotes double-escapes it; use {{vcs_token_inline}} there instead. Both may appear in the same command. Bitbucket REST uses the token as a Bearer value (-H \'Authorization: Bearer {{vcs_token_inline}}\'), with no username and no email. The optional {{vcs_username}} and {{vcs_username_inline}} placeholders substitute the credential helper\'s git username under the same two dialects (for Bitbucket always x-bitbucket-api-token-auth, a git-only username, never a REST login) -- never on their own: a token placeholder is still required. The server dispatches the command and redacts both values from the returned stdout/stderr. Use this instead of reading a token back out of a credential helper.', vcsCredentialExecSchema.shape, wrapTool('vcs_credential_exec', (input) => vcsCredentialExec(input as any)));
 
   // Status & Monitoring
   server.tool('fleet_status', 'Get status of all fleet members. Use json format for structured data.', fleetStatusSchema.shape, wrapTool('fleet_status', (input) => fleetStatus(input as any)));
@@ -252,7 +333,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   server.tool('send_email', 'Send an email. Pass provider config inline (provider, from, and for SMTP: host, port, user, secure). Secrets (API keys, passwords) are resolved from the credential store -- store them first with credential_store_set (names: "sendgrid_api_key" for SendGrid, "smtp_password" for SMTP). Returns JSON with messageId on success or error on failure.', sendEmailSchema.shape, wrapTool('send_email', (input, extra) => sendEmail(input as any, extra)));
 
   // Interactive Session Messaging
-  server.tool('send_message', 'Send a task message to a connected interactive member session via SSE. Returns the message ID.', sendMessageSchema.shape, wrapTool('send_message', (input) => sendMessage(input as any)));
+  server.tool('send_message', 'Send a task message to a connected interactive member session via SSE. Returns the message ID. With probe: true, sends nothing and only reports whether a session holds the target and can receive channel messages (connected, channel_capable).', sendMessageSchema.shape, wrapTool('send_message', (input) => sendMessage(input as any)));
   server.tool('report_status', 'Called by a connected interactive member session (not the orchestrator) to report it is done responding to a send_message notification and available again ("online") or still connected but not actively engaged ("idle"). Closes the busy->online/idle status loop send_message opens.', reportStatusSchema.shape, wrapTool('report_status', (input, extra) => reportStatus(input as any, extra)));
   server.tool('respond_to_message', 'Called by a connected interactive member session to respond to a prompt delivered via execute_prompt or send_message. Pass reply_to as the msgid from the original notification\'s meta. If execute_prompt is waiting on this reply_to, its call resolves with this content; otherwise this is a no-op response with a clear "no pending call" result.', respondToMessageSchema.shape, wrapTool('respond_to_message', (input) => respondToMessage(input as any)));
 
@@ -339,7 +420,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   server.tool('kb_import', 'Import a merged bible (.fleet/kb-canonical.json) into the warm local KB -- the post-merge write path (the prime-time cold-seed is output-only). Reads the repo-resolved bible, or an explicit --path file. Each entry routes through the AUDN choke point (duplicate -> skipped, refinement -> linked, contradiction -> flagged); non-directive entries KEEP their bible confidence (the bible is a git-reviewed, human-merged artifact), stamped source="import"; type="user-directive" entries are FORCED to pending proposals (never active -- a bible cannot smuggle an active directive). Idempotent (re-import of the same bible adds nothing). Runs a freshness sweep after import so entries whose basis does not match this worktree are staled. Accepts every bible shape: a legacy bare JSON array and the v2/v3 {version, provenance:{commit, branch, entry_count}, entries} envelope. A v3 entry\'s source_file_hashes (repo-relative path -> hash, covering every cited file) is stored as its basis exactly -- local files are never re-hashed for it; an entry without a valid carried map (any v1/v2 entry) gets a LOCAL freshness-only basis hashed from this worktree, so it still goes stale when a cited file changes; that local basis is never exported and never admits the entry to kb_export or kb_bible_commit, so neither re-publishes it until it is recaptured. Entries with no source_files, or citing files absent from this worktree, are REJECTED (an entry with no checkable basis can never be staled, so nothing could falsify it) -- re-importing a legacy bible deliberately drops those. Returns {imported, skipped, linked, flagged, rejected, sweep:{checked, staled, unstaled}}. Pass skip_sweep: true to skip the post-import freshness sweep -- the sweep re-judges EVERY entry against the given worktree, which is right for a deliberate audit but wrong for a routine warm-the-KB import (it mass-stales entries merely because unrelated files moved on, which in turn empties the promotion candidates kb_list returns). `path` names only the bible file to read, never which KB is written. TRUST BOUNDARY: importing the repo-resolved bible as committed is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust, equivalent in power to kb_promote, so a MEMBER session without the kb_maintainer grant is refused an explicit path (other than its own .fleet/kb-canonical.json) with E-KB-MAINTAINER-REQUIRED and nothing is imported; without path (or naming its own bible) it imports the COMMITTED .fleet/kb-canonical.json at HEAD, never the member-writable work-tree file, and the response adds bible_source:"HEAD" and worktree_ignored (true when uncommitted work-tree content was not imported); with no committed copy, or when that committed bible was never written or imported by the maintainer side, it fails with E-KB-MAINTAINER-REQUIRED and nothing is imported. Pass ref (a plain git ref name, e.g. refs/remotes/origin/main) to read the bible as committed at that ref instead of the file on disk, in any session: the bytes are verified against the git blob id in-process, bible_source reports the ref, a ref without the bible fails with E-BIBLE-NOT-FOUND, and a kb_maintainer or FULL session records that verified blob as trusted (the engine seeds trust this way from the base branch, never from a work tree). Directives are quarantined either way; activation stays CLI-only.' + KB_SELF_NOTE, kbImportSchema.shape, wrapTool('kb_import', (input) => kbImport(input as any)));
   server.tool('kb_resolve_contradiction', 'Resolve a KB contradiction pair: {winnerId, loserId, evidence}. The SINGLE write path for reconcile resolutions (used by kb_reconcile_prefilter and the reconciler agent alike). Winner ends confidence=CONFIRMED with the evidence note appended and both flag fields cleared (flagged_for_review + contradiction_of); stale is cleared ONLY if the D2 un-stale predicate holds on the post-flag-clear row (so a downvoted or invalidated winner still stays retired -- it wins the contradiction, not its reputation). Loser ends superseded_at=now + stale=1 + flag cleared, never deleted. REFUSES (throws, writes nothing) when either id is missing, either entry is already superseded, the ids do not form a genuinely linked contradiction pair, or the pair involves an ACTIVE user-directive.' + KB_SELF_NOTE, kbResolveContradictionSchema.shape, wrapTool('kb_resolve_contradiction', (input) => kbResolveContradiction(input as any)));
   server.tool('kb_reconcile_prefilter', 'Mechanical hash-basis prefilter over all flagged contradiction pairs (including stale members -- see flaggedPairs liveness contract). Re-hashes both sides of each pair against the CURRENT worktree: exactly one side fully matching wins mechanically via kb_resolve_contradiction (evidence "hash-basis match on merged worktree"); both match, both mismatch, or an empty/missing basis on either side leaves the pair for the reconciler agent. Pairs involving an ACTIVE user-directive are never touched. Returns {pairs, resolved, left_for_agent, skipped_directive}. Run after kb_import + kb_freshness_sweep, before dispatching the reconciler agent. It mints CONFIRMED, so a MEMBER session is served it only with the kb_maintainer grant (like kb_resolve_contradiction).' + KB_SELF_NOTE, kbReconcilePrefilterSchema.shape, wrapTool('kb_reconcile_prefilter', (input) => kbReconcilePrefilter(input as any)));
-  server.tool('kb_setup', 'Set up KB: install git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo.' + KB_SELF_NOTE, kbSetupSchema.shape, wrapTool('kb_setup', (input) => kbSetup(input as any)));
+  server.tool('kb_setup', 'Set up KB: install git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo. Also sets the install-wide KB tool profile (tool_profile: full, developer or custom) that decides which kb_* tools interactive non-member sessions list; member sessions are unaffected and a change takes effect on reconnect.' + KB_SELF_NOTE, kbSetupSchema.shape, wrapTool('kb_setup', (input) => kbSetup(input as any)));
   server.tool('kb_export', 'Export CONFIRMED, non-superseded, non-stale KB entries to a canonical bible file (stable field set, deterministic id order, ASCII-safe). scope="project" (default): reads the project KB and ADDITIVELY merges into <repo>/.fleet/kb-canonical.json. Only entries whose cited source_files each have a recorded per-file hash that matches the file at the repo\'s HEAD commit qualify (an empty or missing basis, or a cited file absent at HEAD, excludes the entry; uncommitted edits never change the verdict; a folder that is not a git work tree is refused, never hashed from disk). Entries already in the bible are never removed or rewritten (the existing bible entry wins on an id clash); only qualifying new ids are added, and when none qualify the file is left untouched and nothing is committed. exported is the entry count of the resulting bible. scope="global" is unchanged: it exports the full GLOBAL set with no basis filter. scope="global": reads the GLOBAL KB, writes <repo>/.fleet/kb-canonical-global.json (in practice the apra-fleet platform repo, committed there so the installer can distribute it to every project on the machine -- D8/F9). Run after kb_promote so the canonical set stays current. F6a: the tool itself auto-commits the bible file (pathspec-only, identity pm-kb) when the repo is a git repo and the content changed -- this is code, not agent discretion, so no manual git step is needed, and this applies to the global file too. Non-fatal on any git failure; push is not automatic. Writes the v3 format: {version:3, provenance:{commit, branch, entry_count}, entries:[...]} plus, when the bible carries any, an optional top-level demotions:[{id, at, reason}] of tombstones; each project entry it adds carries source_file_hashes, its stored per-file hash basis (repo-relative path -> hash; never re-hashed at write time). Refuses (throws, file untouched) to write a bible holding a duplicate id. scope="project" HONOURS those tombstones: a tombstoned id is NOT re-added, unless the local row was promoted AFTER the tombstone at -- judged on when it was promoted, as its bible recorded it, never on the local import time (the same rule kb_import applies), in which case the entry is re-added and its tombstone cleared in the same write. provenance.branch is the target base branch (the branch the entries merge into) and provenance.commit the base commit the entries were verified against (a commit, not a timestamp, so re-exports stay diff-free when nothing changed): pass baseBranch and baseCommit to state them explicitly; when omitted they default to the export folder HEAD branch and commit. An export whose entry set is unchanged rewrites nothing. Auto-commit defaults to ON (USER DIRECTIVE 2026-08-11 -- an export left uncommitted is knowledge nobody else ever sees): set FLEET_DIR/knowledge/config.json { bible: { autoCommit: false } } to opt out. A malformed config disables it.' + KB_SELF_NOTE, kbExportSchema.shape, wrapTool('kb_export', (input) => kbExport(input as any)));
   server.tool('kb_bible_commit', 'Commit one round of confirmed entries to the bible: { ids, baseBranch, baseCommit, demoted_ids? }. Merges exactly the given ids from this repository\'s KB into <repo>/.fleet/kb-canonical.json at ENTRY level -- only the given ids are added or replaced; every entry already in the file is kept unless this KB holds it as superseded or invalidated, and an entry in the file but not in the KB (or CONFIRMED and current, or merely stale) is never dropped -- in kb_export\'s stable serialization (v3 envelope, id order, ASCII-safe; each merged entry carries its stored source_file_hashes basis). provenance.branch is baseBranch (the sprint\'s target base branch) and provenance.commit is baseCommit (the base commit the entries were verified against), never the working folder HEAD. Then makes a local commit scoped to that one path (identity pm-kb). It NEVER pushes. Re-running with the same ids after resetting to a newer HEAD re-merges at entry level, so a rejected push can be retried with no manual merge. Ids that are unknown, stale, superseded, or not CONFIRMED are SKIPPED (never an error) and reported in skipped with reason not_confirmed_or_unknown. A CONFIRMED id is admitted only if it passes the same basis rule kb_export (scope=project) applies: every cited source file has a recorded per-file hash that matches that file\'s content at the repo\'s HEAD commit (an empty or missing basis, a cited file with no basis key, a file absent or changed at HEAD, or a path that is not repo-relative excludes it; uncommitted edits never change the verdict; a folder that is not a git work tree is refused, never hashed from disk); such an id is SKIPPED with reason basis_mismatch, logged, and any entry already in the bible for it is left unchanged. A CONFIRMED id that cites no source file has no checkable basis and is SKIPPED with its own reason no_source_files (never basis_mismatch), also leaving any existing bible entry unchanged. demoted_ids (optional) records DEMOTIONS EXPLICITLY: each id must name a local entry that carries a demoted_at and is now below CONFIRMED (i.e. kb_demote ran on it); any other id -- unknown, never demoted, or since re-promoted to CONFIRMED -- is SKIPPED with reason not_demoted_or_unknown and nothing changes for it. An admitted id is REMOVED from entries and upserted into the bible\'s OPTIONAL top-level demotions array as a tombstone {id, at, reason} carrying the LOCAL row\'s demoted_at as at and reason "demoted" (and does the same, every call, for each bible entry this KB holds as demoted, unless that entry was promoted after the local demotion), so another clone applies the demotion explicitly instead of inferring it from an absence (a clone legitimately holds CONFIRMED entries that were never exported). Tombstones already in the file are PRESERVED by a later commit carrying unrelated ids, and re-committing a tombstoned id through ids after a re-promotion restores its entry and CLEARS its tombstone. provenance.entry_count counts entries only -- a tombstone is not an entry. At every call (also with no ids) each bible entry this KB holds as superseded or invalidated is REMOVED and reported in removed as {id, reason} (reason superseded or invalidated); the commit message lists each removal. kb_export never removes entries. Also at every call, each bible entry with no source_file_hashes (carried over from a v1/v2 bible) that this KB holds under the same id, citing the same source files, with a stored basis that passes the same basis rule at HEAD gains that stored basis as its source_file_hashes (only that field changes; an entry that does not qualify is kept unchanged, never dropped); backfilled reports how many, and the commit message names the count. Nothing merged, nothing removed, nothing demotable and nothing backfilled, or an unchanged entry and tombstone set: no write and no commit. Refuses (throws, file untouched) when the existing bible file is unreadable or holds a duplicate id, or when the local commit fails. Returns {path, merged, demoted, skipped, removed, entry_count, backfilled, committed}.' + KB_SELF_NOTE, kbBibleCommitSchema.shape, wrapTool('kb_bible_commit', (input) => kbBibleCommit(input as any)));
   server.tool('kb_stats', 'Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, canonical-bible presence/drift, and optional per-symbol coverage. Never bumps use_count/last_accessed (kb_list pattern). Bible drift is visibility for the machine that owns the KB -- CI cannot see the local kb.sqlite, so there is no CI gate on it. In a MEMBER session the counts describe the member\'s checkout bible.' + KB_SELF_NOTE, kbStatsSchema.shape, wrapTool('kb_stats', (input) => kbStats(input as any)));

@@ -177,6 +177,25 @@ export class SePosixCommands {
   }
 
   /**
+   * Run the same credential helper but let ONLY its `username=` line leave
+   * the member: the filter runs member-side, so the `password=` (token) line
+   * never reaches the orchestrator's output. Used by the VCS preflight to
+   * check which git username the fleet helper actually carries. The label is
+   * validated (unlike readCredentialHelper's back-compat POSIX form): this is
+   * a new surface with no byte-identical history to keep. grep exits 1 when
+   * there is no username= line; the caller treats that as "no username".
+   * @param {string} label
+   * @returns {{ command: string, descriptor: string }}
+   */
+  readCredentialHelperUsername(label) {
+    if (!/^[A-Za-z0-9._-]+$/.test(String(label))) {
+      throw new Error(`Refusing to build a credential username-read command for unsafe VCS credential label '${label}' (allowed: letters, digits, '.', '_', '-').`);
+    }
+    const descriptor = this.credentialHelperPath(label);
+    return { command: this.wrapForMember(`${this.invoke(descriptor)} | grep '^username='`), descriptor };
+  }
+
+  /**
    * Escape a SQL string so it survives as ONE double-quoted argument in the
    * member's shell. Backticks and `$` are the dangerous characters: bash
    * treats a backtick inside double quotes as command substitution, so both
@@ -246,6 +265,21 @@ export class SePosixCommands {
   fileExistsProbe(relPath) {
     const p = assertSafeRelativePath(relPath, 'file path');
     return this.wrapForMember(`if [ -e '${p}' ]; then echo ${FILE_PROBE_PRESENT}; else echo ${FILE_PROBE_ABSENT}; fi`);
+  }
+
+  /**
+   * Non-interactive read-only probe of the credential ALREADY in place for
+   * the member's `origin` remote: `git ls-remote origin HEAD` with
+   * GIT_TERMINAL_PROMPT=0 (git never asks on a terminal) and
+   * GCM_INTERACTIVE=never (Git Credential Manager never opens a dialog). No
+   * credential.helper override -- the point is to test whatever helper the
+   * member already uses. Exit 0 = the remote answered with that credential.
+   * Env is set as a per-command prefix, so nothing leaks into later commands.
+   * Caller: vcs-auth.mjs createVcsAuthPreflightCallback (probe-first branch).
+   * @returns {string}
+   */
+  gitLsRemoteProbe() {
+    return this.wrapForMember('GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git ls-remote origin HEAD');
   }
 
   /**

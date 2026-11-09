@@ -791,7 +791,7 @@ describe('buildReviewerPrompt: demotion candidates', () => {
     const BASE = {
         beadIds: ['apra-fleet-aaa'],
         acceptanceCriteriaJson: '[]',
-        baseBranch: 'main',
+        baseBranch: 'main', mergeBaseSha: 'abcdef0123456789abcdef0123456789abcdef01',
         branch: 'feat/thing',
         goal: 'P1',
     };

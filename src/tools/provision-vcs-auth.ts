@@ -8,14 +8,16 @@ import { credentialResolve } from '../services/credential-store.js';
 import { collectOobApiKey } from '../services/auth-socket.js';
 import { decryptPassword } from '../utils/crypto.js';
 import { githubProvider } from '../services/vcs/github.js';
+import { mapAccessLevel } from '../services/github-app.js';
 import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import { scheduleCredentialCleanup, cancelCredentialCleanup } from '../services/credential-cleanup.js';
 import { PROVIDER_HOSTS } from '../services/vcs/constants.js';
 import { logLine, logWarn } from '../utils/log-helpers.js';
+import { redactKnownSecrets } from '../utils/redact-known-secrets.js';
 import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import type { Agent } from '../types.js';
-import type { VcsProviderService } from '../services/vcs/types.js';
+import type { VcsProviderService, VcsDeployResult } from '../services/vcs/types.js';
 
 /**
  * The three distinct {{secret.NAME}} resolution failures. Previously all three
@@ -40,6 +42,29 @@ function resolveSecretField(value: string, callingMember: string): { resolved: s
   }
   return { resolved, legacyNames };
 }
+
+/** What each GitHub App git_access level lets a member do, in plain words (grants: mapAccessLevel). */
+export const GIT_ACCESS_ACTIONS = {
+  read: 'clone and fetch only',
+  push: 'clone and push, including workflow files; cannot create pull requests or dispatch workflows',
+  'push+pr': 'clone, push, create pull requests, dispatch workflows and re-run CI jobs',
+  admin: 'clone, push, change repository settings, dispatch workflows and re-run CI jobs; cannot create pull requests',
+  issues: 'manage issues and discussions and create pull requests from existing branches; cannot clone private code, push or dispatch workflows',
+  full: 'clone, push, create pull requests, dispatch workflows, re-run CI jobs, manage issues and discussions, and change repository settings',
+} as const;
+
+/** The GitHub permissions a level requests, read from mapAccessLevel so the text cannot drift from it. */
+export function gitAccessGrants(level: string): string {
+  const permissions = Object.entries(mapAccessLevel(level));
+  const named = (value: string) => permissions.filter(([, v]) => v === value).map(([name]) => name).join(', ');
+  return [`write: ${named('write')}`, `read: ${named('read')}`].filter((part) => !part.endsWith(': ')).join('; ');
+}
+
+const GIT_ACCESS_DESCRIPTION =
+  'GitHub App mode only (ignored for a GitHub PAT, Bitbucket and Azure DevOps, whose token grants what it was created with). ' +
+  "The level the minted token gets, overriding the member's configured one. Pick push+pr to create pull requests or dispatch workflows. Levels: " +
+  Object.entries(GIT_ACCESS_ACTIONS).map(([level, actions]) => `${level} (${gitAccessGrants(level)}): ${actions}.`).join(' ') +
+  ' The GitHub App itself must hold these permissions, or minting fails.';
 
 const providers: Record<string, VcsProviderService> = {
   'github': githubProvider,
@@ -89,18 +114,19 @@ export const provisionVcsAuthSchema = z.object({
   ...memberIdentifier,
   provider: z.enum(['github', 'bitbucket', 'azure-devops']).describe('VCS provider to configure'),
   label: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional().describe('Credential label (slug, e.g. "work-github"). Defaults to provider name. Enables multiple credentials per provider.'),
+  non_interactive: z.boolean().optional().describe('When true, never prompt out of band: a missing secret field (api_token / pat / token) returns ok=false with reason credential_missing naming the field. Use from automation that has no operator at a terminal. Default false.'),
   scope_url: z.string().optional().describe('Git credential scope URL (e.g. "https://github.com/my-org"). Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass "https://ORG.visualstudio.com" so the PAT is bound to the host the member actually pushes to.'),
 
   // GitHub fields
   github_mode: z.enum(['github-app', 'pat']).optional().describe('GitHub auth mode: github-app (mint via configured app) or pat (personal access token)'),
   token: z.string().optional().describe('Personal access token (GitHub PAT or Azure DevOps PAT). Supports {{secret.NAME}} token -- value is resolved from the credential store before use.'),
-  git_access: z.enum(['read', 'push', 'push+pr', 'admin', 'issues', 'full']).optional().describe('GitHub App access level override'),
+  git_access: z.enum(['read', 'push', 'push+pr', 'admin', 'issues', 'full']).optional().describe(GIT_ACCESS_DESCRIPTION),
   repos: z.array(z.string()).optional().describe('GitHub App repository list override'),
 
   // Bitbucket fields
-  email: z.string().optional().describe('Bitbucket account email'),
-  api_token: z.string().optional().describe('Bitbucket API token. Supports {{secret.NAME}} token -- value is resolved from the credential store before use.'),
-  workspace: z.string().optional().describe('Bitbucket workspace slug'),
+  email: z.string().optional().describe('OPTIONAL Bitbucket account email. Ignored for authentication (git uses the fixed token username x-bitbucket-api-token-auth, REST uses a Bearer token); kept only as metadata if given.'),
+  api_token: z.string().optional().describe('Bitbucket API token (required for bitbucket). Store it as the fleet secret bitbucket_api_token and pass {{secret.bitbucket_api_token}} -- the value is resolved from the credential store before use.'),
+  workspace: z.string().optional().describe('Bitbucket workspace slug (required for bitbucket). Verification GETs the member origin repository in this workspace over REST, then runs git ls-remote against the origin.'),
 
   // Azure DevOps fields
   org_url: z.string().optional().describe('Azure DevOps organization URL (e.g. https://dev.azure.com/myorg, or the legacy https://myorg.visualstudio.com)'),
@@ -153,6 +179,8 @@ export type ProvisionVcsAuthReason =
   | 'secret_variable_expired'
   /** Out-of-band credential collection was cancelled or returned nothing. */
   | 'oob_cancelled'
+  /** non_interactive was set and the secret field is absent; nothing was prompted. */
+  | 'credential_missing'
   /** The resolved provider implements no buildCredentials hook (a wiring bug). */
   | 'credential_assembly_unsupported'
   /** The provider rejected the supplied fields (e.g. a required field is absent). */
@@ -183,6 +211,13 @@ interface ProvisionVcsAuthFields {
   /** True when testConnectivity() reported it did not perform the check. */
   verificationSkipped: boolean;
   /**
+   * The provider's machine-readable verification cause when it reports one
+   * (Bitbucket: 'ok', 'rest_unauthorized', 'rest_failed', 'git_auth_failed',
+   * 'git_failed'), naming which channel failed; null when the provider
+   * reports none or no check ran.
+   */
+  verificationReason: string | null;
+  /**
    * The provider's own deploy metadata, filtered through
    * filterProviderMetadata()'s PROVIDER_METADATA_KEY_ALLOWLIST before it
    * reaches this field (the same filter also gates the rendered `text`).
@@ -206,9 +241,11 @@ interface ProvisionVcsAuthFields {
    * an ok result. Previously this text only ever reached the caller inside
    * `text`, so a structured-content-only caller saw nothing but the bare
    * `reason` code (e.g. 'deploy_failed') and lost the actual cause. Derived
-   * from the same sanitized strings already rendered into `text` -- never a
-   * new source of information -- so it carries no plaintext secret that
-   * wasn't already caller-visible.
+   * from the same text rendered into `text`, after the known credential
+   * values in play (raw, URL-encoded, base64 user:token, quote-escaped) and
+   * any Authorization header value have been replaced with **** by
+   * redactKnownSecrets(). Provider/OS error text is NOT otherwise sanitized,
+   * which is why every result goes through that redaction.
    */
   message: string | null;
 }
@@ -237,10 +274,18 @@ function stripResultMarker(text: string): string {
 
 export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<ProvisionVcsAuthResult> {
   const label = input.label ?? input.provider;
+  // Secret values in play (resolved token/api_token/pat, OOB-collected value).
+  // Every result built below is redacted against this list so a provider or OS
+  // error that echoes the credential never reaches `text`, `message` or a log.
+  const knownSecrets: string[] = [];
+  const knownUsernames = ['x-bitbucket-api-token-auth', 'x-access-token', 'git', 'oauth2'];
+  if (input.email) knownUsernames.push(input.email);
+  const redact = (t: string): string => redactKnownSecrets(t, knownSecrets, knownUsernames);
   const vcsResult = (
-    text: string,
+    rawText: string,
     fields: Partial<ProvisionVcsAuthFields> & { reason: ProvisionVcsAuthReason },
   ): ProvisionVcsAuthResult => {
+    const text = redact(rawText);
     const ok = fields.ok ?? VCS_OK_REASONS.includes(fields.reason);
     return {
       text,
@@ -253,11 +298,12 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
         expiresAt: fields.expiresAt ?? null,
         verified: fields.verified ?? false,
         verificationSkipped: fields.verificationSkipped ?? false,
+        verificationReason: fields.verificationReason ?? null,
         metadata: fields.metadata ?? null,
         expiryWarning: fields.expiryWarning ?? null,
         memberId: fields.memberId ?? null,
         memberName: fields.memberName ?? null,
-        message: fields.message ?? (ok ? null : stripResultMarker(text)),
+        message: fields.message != null ? redact(fields.message) : (ok ? null : stripResultMarker(text)),
       },
     };
   };
@@ -283,6 +329,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
       const r = resolveSecretField(resolvedInput[field]!, agent.friendlyName);
       if ('error' in r) return vcsResult(`[FAIL] ${r.error}`, { ...who, reason: r.code });
       resolvedInput[field] = r.resolved;
+      if (r.resolved) knownSecrets.push(r.resolved);
       legacyNames.push(...r.legacyNames);
     }
   }
@@ -297,8 +344,21 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   // Order is unchanged: {{secret.NAME}} resolution first, then OOB collection
   // (an OOB-collected secret is deliberately NOT re-run through
   // resolveSecretField), then credential assembly.
+  //
+  // Every required NON-secret field is validated first, so a call that would
+  // fail credential assembly anyway never prompts the operator for a secret.
+  const nonSecretError = service.validateNonSecretFields?.(resolvedInput) ?? null;
+  if (nonSecretError) {
+    return vcsResult(`[FAIL] ${nonSecretError}`, { ...who, reason: 'credential_assembly_failed' });
+  }
   const missing = service.missingCredential;
   if (missing && missing.isMissing(resolvedInput)) {
+    if (input.non_interactive) {
+      return vcsResult(
+        `[FAIL] The "${missing.field}" field is missing and non_interactive is set, so it was not prompted for. Pass it (e.g. as {{secret.NAME}}).`,
+        { ...who, reason: 'credential_missing' },
+      );
+    }
     const oob = await collectOobApiKey(agent.friendlyName, 'provision_vcs_auth', {
       prompt: missing.promptFor(agent.friendlyName),
     });
@@ -306,6 +366,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
       return vcsResult(oob.fallback ?? 'Error: OOB operation cancelled.', { ...who, reason: 'oob_cancelled' });
     }
     resolvedInput[missing.field] = decryptPassword(oob.password!);
+    knownSecrets.push(resolvedInput[missing.field] as string);
   }
 
   // buildCredentials is still optional on VcsProviderService while the seam is
@@ -421,9 +482,9 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   scheduleCredentialCleanup(agent.id, deployResult.metadata?.expiresAt);
 
   // Best-effort connectivity test
-  let connectivity;
+  let connectivity: VcsDeployResult;
   try {
-    connectivity = await service.testConnectivity(agent, exec, scopeUrl);
+    connectivity = await service.testConnectivity(agent, exec, scopeUrl, creds);
   } catch {
     connectivity = { success: false, message: 'connectivity test threw' };
   }
@@ -480,6 +541,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
       expiresAt: deployResult.metadata?.expiresAt ?? null,
       verified: !connectivity.skipped && connectivity.success === true,
       verificationSkipped: connectivity.skipped === true,
+      verificationReason: connectivity.skipped ? null : (connectivity.reason ?? null),
       metadata: filteredMetadata,
       expiryWarning: expiryWarning ?? null,
     },

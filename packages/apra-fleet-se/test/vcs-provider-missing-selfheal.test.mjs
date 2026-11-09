@@ -43,6 +43,9 @@ const remoteCommandFor = (url) => async (cmd) => {
             ? { ok: false, output: '', error: 'not a git repository' }
             : { ok: true, output: url, error: null };
     }
+    // apra-fleet-d1pk.3: azure-devops/bitbucket members are probed first;
+    // fail the probe so these (remote) members still reach provisioning.
+    if (cmd.includes('git ls-remote origin')) return { ok: false, output: '', error: 'fatal: Authentication failed' };
     return { ok: true, output: '', error: null };
 };
 
@@ -76,6 +79,7 @@ describe('provisionVcsAuthForMember: VCS-provider fallback for a member with non
             github_mode: 'github-app',
             git_access: 'push',
             repos: ['acme/widgets'],
+            non_interactive: true,
         });
         assert.ok(
             logs.some((l) => /had no registered VCS provider; detected 'github' from its git remote/.test(l)),

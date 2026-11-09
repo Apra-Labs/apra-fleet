@@ -223,7 +223,7 @@ afterEach(() => {
   providerB.close();
   resetMemberBibleViews();
   vi.restoreAllMocks();
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
 describe('a demotion crosses clones through the committed bible', () => {

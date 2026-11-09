@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { fleetEvents, FleetEventMap } from './event-bus.js';
 import { getOrCreateKey, type JwtClaims } from './jwt.js';
 import { getTokenIssuer, localWorkspaceId } from './token-issuer.js';
-import { sessionRegistry } from './session-registry.js';
+import { sessionRegistry, ORCHESTRATOR_SESSION_ID } from './session-registry.js';
 import { FULL_TOOL_SCOPE, memberToolScope, type ToolScope } from './tool-scope.js';
 import { getAgent, findAgentByName } from './registry.js';
 import { DEFAULT_HOST, resolveServerPort } from '../paths.js';
@@ -189,6 +189,23 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
   const memberSecretPath = options.memberSecretPath ?? memberAccessSecretPath();
   getOrCreateMemberAccessSecret(memberSecretPath);
   const startedAt = Date.now();
+  // Open channel-capable FULL-scope sessions (the operator's own orchestrating
+  // sessions), oldest first. The newest holds ORCHESTRATOR_SESSION_ID in the
+  // session registry; when it closes, the id moves to the newest still open.
+  const orchestratorSessions: Array<{ sid: string; workspaceId: string; server: McpServer }> = [];
+  function registerOrchestrator(entry: { sid: string; workspaceId: string; server: McpServer }): void {
+    sessionRegistry.register({
+      member_id: ORCHESTRATOR_SESSION_ID,
+      workspace_id: entry.workspaceId,
+      role: 'orchestrator',
+      work_folder: '',
+      server: entry.server,
+      sessionId: entry.sid,
+      status: 'online',
+      channelCapable: true,
+    });
+    logLine('session', `registered orchestrator session as member_id=${ORCHESTRATOR_SESSION_ID} workspace_id=${entry.workspaceId} sid=${shortSid(entry.sid)}`);
+  }
 
   // LOW-1: Track event listener references for cleanup in close()
   const eventCleanups: Array<() => void> = [];
@@ -506,6 +523,14 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 channelCapable,
               });
               logLine('session', `registered member member_id=${fallbackMemberId} workspace_id=${sessionWorkspaceId} via URL param sid=${shortSid(sid)} channelCapable=${channelCapable}`);
+            } else if (channelCapable) {
+              // No member identity + claude/channel declared: the operator's
+              // own orchestrating session. Make it addressable by send_message
+              // under the stable ORCHESTRATOR_SESSION_ID (newest wins), so a
+              // sprint's needs-decision message can reach it.
+              const entry = { sid, workspaceId: sessionWorkspaceId, server: sessionServer };
+              orchestratorSessions.push(entry);
+              registerOrchestrator(entry);
             }
           },
           onsessionclosed: (sid) => {
@@ -538,6 +563,20 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 logLine('session', `unregistered member member_id=${fallbackMemberId} sid=${shortSid(sid)}`);
               } else {
                 logLine('session', `skipped stale unregister member_id=${fallbackMemberId} sid=${shortSid(sid)} (superseded by sid=${shortSid(current?.sessionId)})`);
+              }
+            } else if (channelCapable) {
+              const idx = orchestratorSessions.findIndex((o) => o.sid === sid);
+              if (idx !== -1) orchestratorSessions.splice(idx, 1);
+              const current = sessionRegistry.get(sessionWorkspaceId, ORCHESTRATOR_SESSION_ID);
+              if (current?.sessionId === sid) {
+                // Hand the id to the newest orchestrating session still open
+                // in this workspace, else drop it.
+                const next = [...orchestratorSessions].reverse().find((o) => o.workspaceId === sessionWorkspaceId);
+                if (next) registerOrchestrator(next);
+                else {
+                  sessionRegistry.unregister(sessionWorkspaceId, ORCHESTRATOR_SESSION_ID);
+                  logLine('session', `unregistered orchestrator session sid=${shortSid(sid)}`);
+                }
               }
             }
           },
@@ -651,6 +690,13 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         (session.server as any).server?.close().catch(() => {});
       }
       sessions.clear();
+      // Drop an orchestrator registry entry that points at one of this
+      // transport's sessions: its server is closed and can never answer.
+      for (const o of orchestratorSessions.splice(0)) {
+        if (sessionRegistry.get(o.workspaceId, ORCHESTRATOR_SESSION_ID)?.sessionId === o.sid) {
+          sessionRegistry.unregister(o.workspaceId, ORCHESTRATOR_SESSION_ID);
+        }
+      }
       return new Promise((resolve, reject) => {
         httpServer.close((err) => (err ? reject(err) : resolve()));
       });

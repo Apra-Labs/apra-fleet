@@ -315,6 +315,25 @@ describe('status and stop with a legacy task installed', () => {
     expect(text).toMatch(/A stop made with 'apra-fleet stop' still holds/);
   });
 
+  it('stop called by install --force prints neither the guidance nor the sticky-stop sentence (install owns the guidance), but still stops', async () => {
+    const mgr = new WindowsServiceManager(queryRunner(LEGACY_XML), WRAPPER, { runReg: vi.fn() });
+    expect(await mgr.stop({ reason: 'install' })).toBe(true);
+    expect(mockGracefulStop).toHaveBeenCalled();
+    const text = warn.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(text).toMatch(/Could not disable the ApraFleet task/);
+    expect(text).not.toContain('schtasks /delete');
+    expect(text).not.toMatch(/still holds/);
+    expect(text.split('no automatic revive after a crash').length - 1).toBe(0);
+  });
+
+  it('apra-fleet stop (no reason) keeps the guidance exactly once plus the sticky-stop sentence', async () => {
+    const mgr = new WindowsServiceManager(queryRunner(LEGACY_XML), WRAPPER, { runReg: vi.fn() });
+    await mgr.stop();
+    const text = warn.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(text.split('schtasks /delete /tn ApraFleet /f').length - 1).toBe(1);
+    expect(text.split("A stop made with 'apra-fleet stop' still holds").length - 1).toBe(1);
+  });
+
   it('stop on a current task that cannot be disabled keeps the plain warning', async () => {
     const mgr = new WindowsServiceManager(queryRunner(CURRENT_QUERIED_XML), WRAPPER, { runReg: vi.fn() });
     await mgr.stop();
@@ -334,6 +353,39 @@ describe('status and stop with a legacy task installed', () => {
     expect(st.notice).not.toMatch(/elevated|schtasks/);
     expect(legacyTaskGuidance(['no-revive'])).not.toMatch(/elevated|schtasks \/delete/);
     expect(legacyTaskFix(['no-revive', 'elevated'])).toContain('schtasks /delete /tn ApraFleet /f');
+  });
+});
+
+describe('WindowsServiceManager.legacyGuidance (reused task refused /run)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+  });
+  const mgrFor = (xml: string | Error) => new WindowsServiceManager(
+    vi.fn((args: string[]) => {
+      if (args.includes('/xml')) { if (xml instanceof Error) throw xml; return xml; }
+      return '';
+    }), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false });
+
+  it('a legacy task yields the elevated schtasks /delete + install --force guidance', () => {
+    const g = mgrFor(LEGACY_XML).legacyGuidance();
+    expect(g).toBe(legacyTaskGuidance(['no-revive', 'visible-console', 'elevated']));
+    expect(g).toContain('schtasks /delete /tn ApraFleet /f');
+    expect(g).toContain('apra-fleet install --force');
+  });
+
+  it('adds the elevated problem even when the XML alone looks user-owned', () => {
+    const userOwnedOld = CURRENT_QUERIED_XML.replace(/<Repetition>[\s\S]*?<\/Repetition>/, '');
+    const g = mgrFor(userOwnedOld).legacyGuidance();
+    expect(g).toContain('schtasks /delete /tn ApraFleet /f');
+  });
+
+  it('a current task returns null', () => {
+    expect(mgrFor(CURRENT_QUERIED_XML).legacyGuidance()).toBeNull();
+  });
+
+  it('an unreadable task returns null', () => {
+    expect(mgrFor(new Error('ERROR: The system cannot find the file specified.')).legacyGuidance()).toBeNull();
   });
 });
 

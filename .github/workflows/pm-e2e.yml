@@ -39,10 +39,10 @@ jobs:
     name: 'pm e2e - ${{ inputs.suite }}'
     env:
       GEMINI_CLI_TRUST_WORKSPACE: "true"
-      # Single source of truth for the beads version the e2e requires. bd 1.1.0 = remote-migrate
-      # schema v53; the toy repo's remote Dolt is migrated to match. Referenced by both the
-      # version-gate step and the opencode CLI-install step below.
-      BEADS_REQ: "1.1.0"
+      # Single source of truth for the beads version the e2e requires: the installer's pin
+      # (BEADS_VERSION in src/cli/beads-pin.ts; tests/apra-pm-beads-pin.test.ts fails on drift).
+      # Referenced by both the version-gate step and the opencode CLI-install step below.
+      BEADS_REQ: "1.3.0"
     runs-on: ${{ inputs.runner != '' && inputs.runner || 'self-hosted' }}
     timeout-minutes: 120
     steps:
@@ -86,7 +86,7 @@ jobs:
       # no clobbering the runner's global bd.
       # Job-local best-effort net for Linux/macOS runners (mostly the GitHub-hosted opencode
       # provider). Skipped on Windows on purpose: the only Windows runner is self-hosted
-      # (fleet-win11) and is npm-managed & already pinned to the required version, and the
+      # (fleet-win11) and its npm-managed bd is not checked or upgraded by this step, and the
       # release tarball below is not published for Windows -- guessing an asset name here
       # would break the job rather than protect it.
       - name: Ensure beads >= required version

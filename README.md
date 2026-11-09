@@ -18,6 +18,7 @@ workforce -- on any machine, anywhere, using every LLM provider at once.
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/Apra-Labs/apra-fleet/releases)
 [![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Apra-Labs/apra-fleet)
+[![Security: A - Skills Directory](https://www.skillsdirectory.com/api/skills/apra-labs-apra-fleet/badge)](https://www.skillsdirectory.com/skills/apra-labs-apra-fleet)
 
 [Quick Start](#quick-start-5-minutes) - [Live Demo](#watch-a-fleet-work) - [How It Works](#how-it-works) - [fleet-sprint Getting Started Guide](docs/fleet-sprint-getting-started.md) - [Website](https://apra-labs.github.io/apra-fleet)
 
@@ -84,6 +85,11 @@ It is not a toy. It builds apra-fleet itself:
 - Every sprint's raw child stdout/stderr is captured to a per-sprint log
   and linked from the dashboard, so a run's output is traceable even if it
   crashes before reporting anything back
+- Asks a human when it must: a doer or reviewer that needs an operator
+  decision files a decision bead, the run pauses (not stalls), you are
+  notified once by message and email, and your answer on the dashboard or
+  via `bd human respond` resumes it
+  ([details](docs/fleet-sprint-set-aside.md))
 
 A fleet that has run in production:
 
@@ -253,6 +259,9 @@ no separate "server mode" build. A config with no remote, or any config the
 reader cannot parse, always falls back to the local SQLite provider -- see
 [Client-side provider selection](docs/knowledge-layer-design.md#client-side-provider-selection)
 for the exact selection rule and its fallback-construction invariant.
+`--token {{secret.NAME}}` stores a reference to a refreshable fleet secret instead of a token, so an
+expiring server token can be rotated with `apra-fleet secret --set NAME --persist -y` and no restart (see
+[Named credentials](docs/knowledge-layer.md#named-credentials-and-refreshers)).
 `--request_timeout_ms <ms>` (1000-120000, default 5000) sets the socket idle
 timeout for each request to the remote KB server. It is not a per-request
 deadline: a call can wait up to about twice the value while queued offline
@@ -266,6 +275,18 @@ that server. `kb_setup` only places the git post-commit hook (in the calling
 session's own repo, including linked worktrees and custom `core.hooksPath`);
 it does not scope the config. On a shared fleet server, treat
 `kb_setup --remote` as a change for all of its users.
+
+**KB tool profiles.** `apra-fleet kb profile developer` (or `kb_setup` with
+`tool_profile`) trims the `kb_*` tools an interactive (non-member) session
+lists to `kb_session_prime`, `kb_query`, `kb_context`, `kb_capture` and
+`kb_feedback`; `custom <a,b>` lists exactly the named `kb_*` tools and `full`
+(the default) lists them all. The profile is install-wide, applies to FULL
+sessions only (member sessions and sprint roles are unaffected), and takes
+effect when a session reconnects. It is a usability control, not a security
+boundary. `developer` hides `kb_setup` and the tools the PM skills `kb-review`,
+`kb-reconcile` and `knowledge-agent` need, so get back with
+`apra-fleet kb profile full` (and reconnect) before running those. See
+[KB tool profiles](docs/knowledge-layer.md#5-kb-tool-profiles-which-kb_-tools-interactive-sessions-see).
 
 Every KB tool call is scoped to the calling session's own repo -- a fleet
 server handling many members across many repos never lets one repo's
@@ -498,6 +519,7 @@ third-party verticals.
 | The PM skill (doer-reviewer sprints, `/pm` commands) | [docs/pm-skill-overview.md](docs/pm-skill-overview.md) |
 | FAQ | [docs/FAQ.md](docs/FAQ.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Supervisor/viewer request guard | [docs/supervisor-request-guard.md](docs/supervisor-request-guard.md) |
 | Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
 | Live member activity (`apra-fleet watch`, `logging.previewChars`) | [docs/features/watch.md](docs/features/watch.md) |
 | Secret variables and passwords | [docs/secret-variables.md](docs/secret-variables.md) - [docs/features/oob-auth.md](docs/features/oob-auth.md) |

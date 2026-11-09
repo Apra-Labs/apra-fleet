@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, capabilities, PR_DESCRIPTION_MAX_LENGTH } from '../fleet-sprint/vcs-module.mjs';
+import { BitbucketVCS } from '../fleet-sprint/vcs-providers/index.mjs';
 
 // =============================================================================
 // apra-fleet-qeq1.3 -- Bitbucket create-pull-request builder GOLDEN tests.
@@ -26,7 +27,6 @@ import { buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, capabil
 
 const REPO_REF = Object.freeze({ workspace: 'kumaakh', repo: 'apra-analytics' });
 const TOKEN = 'BB-TOKEN-abc123';
-const USERNAME = 'bituser@example.com';
 const REDACTED = '***REDACTED***';
 const API_BASE = 'https://api.bitbucket.org/2.0/repositories/kumaakh/apra-analytics';
 
@@ -46,26 +46,27 @@ const PR_PARAMS = Object.freeze({
     title: "Sprint's PR",
     body: 'Body line',
     token: TOKEN,
-    username: USERNAME,
 });
 
 const POSIX_CREATE_PR = "curl -sS -X POST"
-    + ` -u '${USERNAME}:BB-TOKEN-abc123'`
+    + " -H 'Authorization: Bearer BB-TOKEN-abc123'"
     + " -H 'Content-Type: application/json'"
     + " -H 'Accept: application/json'"
     + " -d '{\"title\":\"Sprint'\\''s PR\",\"source\":{\"branch\":{\"name\":\"auto-sprint/feat-x\"}},\"destination\":{\"branch\":{\"name\":\"main\"}},\"description\":\"Body line\"}'"
     + " -w '\n%{http_code}'"
+    + ' -D -'
     + ` ${API_BASE}/pullrequests`;
 
 const WINDOWS_CREATE_PR = "curl.exe -sS -X POST"
-    + ` -u '${USERNAME}:BB-TOKEN-abc123'`
+    + " -H 'Authorization: Bearer BB-TOKEN-abc123'"
     + " -H 'Content-Type: application/json'"
     + " -H 'Accept: application/json'"
     + " -d '{\\\"title\\\":\\\"Sprint''s\\u0020PR\\\",\\\"source\\\":{\\\"branch\\\":{\\\"name\\\":\\\"auto-sprint/feat-x\\\"}},\\\"destination\\\":{\\\"branch\\\":{\\\"name\\\":\\\"main\\\"}},\\\"description\\\":\\\"Body\\u0020line\\\"}'"
     + " -w '\n%{http_code}'"
+    + ' -D -'
     + ` ${API_BASE}/pullrequests`;
 
-test('bitbucket create-pull-request: exact POSIX curl command (endpoint, source/destination branch shape, basic auth with username:token)', () => {
+test('bitbucket create-pull-request: exact POSIX curl command (endpoint, source/destination branch shape, Bearer auth, no -u)', () => {
     const built = buildCreatePrCommand({ ...PR_PARAMS, os: 'linux' });
     assert.equal(built.provider, 'bitbucket');
     assert.equal(built.action, 'create-pull-request');
@@ -84,11 +85,12 @@ test('bitbucket create-pull-request: an omitted body emits NO description key at
     assert.equal(
         built.command,
         "curl -sS -X POST"
-        + ` -u '${USERNAME}:BB-TOKEN-abc123'`
+        + " -H 'Authorization: Bearer BB-TOKEN-abc123'"
         + " -H 'Content-Type: application/json'"
         + " -H 'Accept: application/json'"
         + " -d '{\"title\":\"Sprint'\\''s PR\",\"source\":{\"branch\":{\"name\":\"auto-sprint/feat-x\"}},\"destination\":{\"branch\":{\"name\":\"main\"}}}'"
         + " -w '\n%{http_code}'"
+        + ' -D -'
         + ` ${API_BASE}/pullrequests`,
     );
 });
@@ -119,15 +121,13 @@ test('bitbucket create-pull-request: logSafeCommand carries the redaction marker
     for (const os of ['linux', 'windows']) {
         const built = buildCreatePrCommand({ ...PR_PARAMS, os });
         assert.ok(built.command.includes(TOKEN), 'the dispatched command must carry the real token');
-        assert.ok(built.command.includes(USERNAME), 'the dispatched command must carry the real username');
+        assert.ok(!/ -u /.test(built.command), 'no -u flag');
         assert.ok(built.logSafeCommand.includes(REDACTED), `logSafeCommand must carry ${REDACTED}`);
         assert.ok(!built.logSafeCommand.includes(TOKEN), 'logSafeCommand must not contain the token');
-        assert.ok(!built.logSafeCommand.includes(USERNAME), 'logSafeCommand must not contain the username');
         // Everything EXCEPT command, serialized whole: catches either
         // credential half smuggled into any present or future field.
         const withoutCommand = JSON.stringify({ ...built, command: undefined });
         assert.ok(!withoutCommand.includes(TOKEN), `the token leaked into a non-command field: ${withoutCommand}`);
-        assert.ok(!withoutCommand.includes(USERNAME), `the username leaked into a non-command field: ${withoutCommand}`);
     }
 });
 
@@ -138,12 +138,11 @@ test('bitbucket create-pull-request: a missing token is a typed ERROR, never a c
     );
 });
 
-test('bitbucket create-pull-request: a missing username is a typed ERROR, never a silently empty -u argument', () => {
-    for (const username of ['', undefined, null, '   ']) {
-        assert.throws(
-            () => buildCreatePrCommand({ ...PR_PARAMS, username }),
-            (err) => /^ERROR: VCSModule: bitbucket "create-pull-request" needs a username/.test(err.message),
-        );
+test('bitbucket create-pull-request: building without a username succeeds and emits Bearer, never -u', () => {
+    for (const os of ['linux', 'windows']) {
+        const built = buildCreatePrCommand({ ...PR_PARAMS, os });
+        assert.ok(built.command.includes(`Authorization: Bearer ${TOKEN}`), built.command);
+        assert.ok(!/ -u /.test(built.command), built.command);
     }
 });
 
@@ -187,7 +186,7 @@ test('bitbucket create-pull-request: interpret declares 2xx success + probeExist
 // -----------------------------------------------------------------------------
 
 const FIND_PARAMS = Object.freeze({
-    provider: 'bitbucket', repoRef: REPO_REF, base: 'main', head: 'auto-sprint/feat-x', token: TOKEN, username: USERNAME,
+    provider: 'bitbucket', repoRef: REPO_REF, base: 'main', head: 'auto-sprint/feat-x', token: TOKEN,
 });
 
 test('bitbucket find-pull-request: GET open PRs filtered by source+destination branch, BBQL fully percent-encoded (no literal double quote reaches the shell)', () => {
@@ -195,13 +194,13 @@ test('bitbucket find-pull-request: GET open PRs filtered by source+destination b
         const built = buildFindPrCommand({ ...FIND_PARAMS, os });
         assert.equal(built.action, 'find-pull-request');
         assert.match(built.command, os === 'linux' ? /^curl -sS -X GET / : /^curl\.exe -sS -X GET /);
-        assert.ok(built.command.includes(`-u '${USERNAME}:${TOKEN}'`), built.command);
+        assert.ok(built.command.includes(`-H 'Authorization: Bearer ${TOKEN}'`) && !/ -u /.test(built.command), built.command);
         const expectedUrl = `${API_BASE}/pullrequests?state=OPEN&q=`
             + encodeURIComponent('source.branch.name="auto-sprint/feat-x" AND destination.branch.name="main"')
             + '&fields=' + encodeURIComponent('values.id,values.title,values.description,values.summary.raw,values.links.html.href,values.source.repository.full_name');
         assert.ok(built.command.endsWith(` '${expectedUrl}'`), `unexpected URL: ${built.command}`);
         assert.ok(!built.command.includes('"'), `no literal double quote may reach the member shell: ${built.command}`);
-        assert.ok(!built.logSafeCommand.includes(TOKEN) && !built.logSafeCommand.includes(USERNAME), built.logSafeCommand);
+        assert.ok(!built.logSafeCommand.includes(TOKEN), built.logSafeCommand);
     }
 });
 
@@ -222,9 +221,16 @@ test('bitbucket find-pull-request: mapResponse reads values[] -> { id, title, bo
     assert.deepEqual(built.mapResponse(null), []);
 });
 
-test('bitbucket find/update: a missing username is a typed ERROR (HTTP Basic needs both halves)', () => {
-    assert.throws(() => buildFindPrCommand({ ...FIND_PARAMS, username: '' }), /bitbucket "find-pull-request" needs a username/);
-    assert.throws(() => buildUpdatePrCommand({ ...FIND_PARAMS, pull_request_id: 3, title: 't', username: '' }), /bitbucket "update-pull-request" needs a username/);
+test('bitbucket find/update: Bearer auth, no -u, build succeeds without a username (posix and powershell)', () => {
+    for (const os of ['linux', 'windows']) {
+        const find = buildFindPrCommand({ ...FIND_PARAMS, os });
+        const upd = buildUpdatePrCommand({ ...FIND_PARAMS, pull_request_id: 3, title: 't', os });
+        for (const built of [find, upd]) {
+            assert.ok(built.command.includes(`Authorization: Bearer ${TOKEN}`), built.command);
+            assert.ok(!/ -u /.test(built.command), built.command);
+            assert.ok(built.logSafeCommand.includes(REDACTED) && !built.logSafeCommand.includes(TOKEN), built.logSafeCommand);
+        }
+    }
 });
 
 test('bitbucket update-pull-request: PUT (not PATCH) to /pullrequests/{id} with title + description, body cap applied', () => {
@@ -233,11 +239,12 @@ test('bitbucket update-pull-request: PUT (not PATCH) to /pullrequests/{id} with 
     assert.equal(
         built.command,
         "curl -sS -X PUT"
-        + ` -u '${USERNAME}:${TOKEN}'`
+        + ` -H 'Authorization: Bearer ${TOKEN}'`
         + " -H 'Content-Type: application/json'"
         + " -H 'Accept: application/json'"
         + " -d '{\"title\":\"new title\",\"description\":\"new body\"}'"
         + " -w '\n%{http_code}'"
+        + ' -D -'
         + ` ${API_BASE}/pullrequests/12`,
     );
     assert.throws(() => buildUpdatePrCommand({ ...FIND_PARAMS, pull_request_id: '12; rm', title: 't', os: 'linux' }), /a numeric "pull_request_id"/);
@@ -293,4 +300,30 @@ test('capabilities: a bitbucket.org remote now reports canOpenPullRequest:true (
     for (const url of ['https://bitbucket.org/kumaakh/apra-analytics.git', 'git@bitbucket.org:kumaakh/apra-analytics.git']) {
         assert.deepEqual(capabilities(url), { hasRemote: true, canOpenPullRequest: true, host: 'bitbucket.org' }, url);
     }
+});
+
+// -----------------------------------------------------------------------------
+// Provisioning args and remedy text: no email anywhere (Bearer API token).
+// -----------------------------------------------------------------------------
+
+test('bitbucket buildProvisionArgs: push access supplies workspace + api_token placeholder; no email in args or note', () => {
+    const out = BitbucketVCS.buildProvisionArgs({
+        base: { member_name: 'm1', provider: 'bitbucket', git_access: 'push' },
+        repoRef: { workspace: 'kumaakh', repo: 'apra-analytics' },
+        availableSecrets: ['bitbucket_api_token'],
+    });
+    assert.equal(out.args.workspace, 'kumaakh');
+    assert.equal(out.args.api_token, '{{secret.bitbucket_api_token}}');
+    assert.ok(!('email' in out.args), JSON.stringify(out.args));
+    assert.ok(!/email/i.test(JSON.stringify(out.args)), JSON.stringify(out.args));
+    assert.ok(!/email/i.test(out.note ?? ''), out.note);
+});
+
+test('bitbucket AUTH_REMEDY_HINT: names bitbucket_api_token, no email', () => {
+    const hint = BitbucketVCS.authRemedy.hint;
+    assert.ok(hint.includes('bitbucket_api_token'));
+    assert.ok(!/email/i.test(hint), hint);
+    assert.ok(hint.includes('ssh.bitbucket.org'));
+    assert.ok(hint.includes('git@ssh.bitbucket.org:WORKSPACE/REPO.git'));
+    assert.ok(!/d{4}-d{2}-d{2}/.test(hint), hint);
 });

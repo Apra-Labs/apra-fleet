@@ -115,6 +115,8 @@ function harness({ demotionCandidates, promotionCandidates = async () => [] } = 
         computeChildFloor: async () => 0,
         createChildBeadWithAllocatedId: async () => ({}),
         sanitizePrText: (s) => String(s || ''),
+        // The review diff base the engine resolves on the reviewer member.
+        reviewMergeBaseFor: async () => 'abcdef0123456789abcdef0123456789abcdef01',
     };
 
     return { state, prompts, demotionCalls, logs };

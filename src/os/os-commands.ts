@@ -5,6 +5,9 @@ import type { Agent } from '../types.js';
 export { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId };
 export type { ProviderAdapter };
 
+/** The line gitLsRemoteNonInteractive() prints after a successful ls-remote. */
+export const GIT_LS_REMOTE_OK_MARKER = 'FLEET_GIT_LS_REMOTE_OK';
+
 /**
  * apra-fleet-lmtg.2: fork descriptor threaded through buildAgentPromptCommand
  * so both POSIX and Windows builders can emit a provider's fork invocation
@@ -160,6 +163,31 @@ export interface OsCommands {
    * git builds that predate `remote get-url`.
    */
   gitRemoteOrigin(folder: string): string;
+
+  /**
+   * `git ls-remote <url> HEAD` that can never block on a prompt: terminal
+   * prompts and Git Credential Manager's interactive UI are both disabled
+   * for this one command (GIT_TERMINAL_PROMPT=0, GCM_INTERACTIVE=never), so
+   * a missing or rejected credential fails fast instead of hanging. On
+   * success the output ends with the line GIT_LS_REMOTE_OK_MARKER; a caller
+   * must treat its absence (or a throw) as a failure. `url` must already be
+   * validated by the caller -- it is quoted, not trusted.
+   */
+  gitLsRemoteNonInteractive(url: string): string;
+
+  /**
+   * Authenticated HTTPS GET of `url` with `Authorization: Bearer <token>`.
+   * Prints ONLY the numeric HTTP status code (e.g. 200, 401) -- never the
+   * response body and never the token. On POSIX the header is fed to curl on
+   * stdin from the shell's builtin printf, so the token is not on curl's
+   * argv; on PowerShell the request runs in-process (no child argv). The
+   * command string itself carries the token, so it IS on the argv of the
+   * outer `bash -c` / powershell process that runs it, for the length of the
+   * request -- the same exposure as gitCredentialHelperWrite. A transport
+   * failure prints a non-numeric line or exits non-zero. Only ever run
+   * server-side via strategy.execCommand.
+   */
+  httpGetStatusWithBearer(url: string, token: string): string;
 
   // --- GPU activity ---
   gpuProcessCheck(): string;  // outputs "busy"|"idle", exits 2 if nvidia-smi not available

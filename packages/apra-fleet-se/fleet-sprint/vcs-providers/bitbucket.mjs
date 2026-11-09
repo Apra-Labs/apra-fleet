@@ -64,7 +64,7 @@ const AUTH_EXPIRED = [
  *  Kept character-for-character in step with
  *  src/utils/vcs-provider-detect.ts's BITBUCKET_HOST_RE -- the two halves of
  *  the same decision must never disagree about who owns a host. */
-const HOST_RE = /^(?:www\.|altssh\.)?bitbucket\.org$/i;
+const HOST_RE = /^(?:www\.|altssh\.|ssh\.)?bitbucket\.org$/i;
 
 function matchesHost(host) {
     return typeof host === 'string' && HOST_RE.test(host.trim());
@@ -126,6 +126,7 @@ function makeRef(workspace, repo) {
  *   git@bitbucket.org:WORKSPACE/REPO[.git]
  *   https://[user@]bitbucket.org/WORKSPACE/REPO[.git][/]
  *   ssh://git@altssh.bitbucket.org[:22]/WORKSPACE/REPO[.git]
+ *   git@ssh.bitbucket.org:WORKSPACE/REPO[.git] and ssh://git@ssh.bitbucket.org/WORKSPACE/REPO[.git]
  *
  * NEVER throws and NEVER partially guesses: anything that is not one of the
  * shapes above -- including a non-Bitbucket host and a lookalike like
@@ -153,7 +154,7 @@ function parseRepoRef(remoteUrl) {
 /** The remote shape parseRepoRef() expects, quoted into every
  *  operator-facing remedy this module produces -- the modern form an
  *  operator copies out of Bitbucket's "Clone" dialog. */
-const REPO_REF_HINT = 'git@bitbucket.org:WORKSPACE/REPO.git or https://bitbucket.org/WORKSPACE/REPO.git';
+const REPO_REF_HINT = 'git@bitbucket.org:WORKSPACE/REPO.git, git@ssh.bitbucket.org:WORKSPACE/REPO.git or https://bitbucket.org/WORKSPACE/REPO.git';
 
 // ---------------------------------------------------------------------------
 // Provisioning (apra-fleet-qeq1.9)
@@ -163,31 +164,20 @@ const REPO_REF_HINT = 'git@bitbucket.org:WORKSPACE/REPO.git or https://bitbucket
 // answer differently. The shared caller's default argument shape
 // (`git_access` + a `repos` allowlist) is GitHub-App vocabulary; Bitbucket
 // has no App/installation model, so provision_vcs_auth's Bitbucket path
-// instead requires THREE fields -- `email`, `api_token` and `workspace` (see
-// src/services/vcs/bitbucket.ts's buildCredentials) -- none of which the
+// instead requires TWO fields -- `api_token` and `workspace` (see
+// src/services/vcs/bitbucket.ts's buildCredentials) -- neither of which the
 // default shape sends. Sending the default shape dispatches a call with no
 // `api_token` at all, which trips that path's `missingCredential` hook and
 // opens an OUT-OF-BAND operator prompt in the middle of an unattended
 // sprint. Every branch below exists to make that unreachable.
 //
-// What the orchestrator CAN supply, and what it cannot:
-//   workspace   YES -- parseRepoRef() above derives it from the member's own
-//               remote, so it is free.
-//   api_token   YES, as a `{{secret.NAME}}` PLACEHOLDER, never a value:
-//               provision_vcs_auth resolves that placeholder hub-side for the
-//               `token`/`api_token`/`pat` fields. Same secret transport
-//               ./azure-devops.mjs documents at length; the orchestrator
-//               process never holds, logs or transports the plaintext.
-//   email       NO. It is the Atlassian account identity that OWNS the API
-//               token (it becomes the git-credential-helper username, and
-//               the HTTP Basic username the REST builder below sends). It is
-//               NOT persisted on the member record (src/types.ts keeps only
-//               vcsProvider/expiry/label/scopeUrl), credential_store_list
-//               returns NAMES ONLY -- never values -- and the
-//               `{{secret.NAME}}` placeholder is NOT resolved for `email`,
-//               which is passed through verbatim. A placeholder there would
-//               therefore be DEPLOYED as a literal username and fail
-//               silently, which is strictly worse than not sending one.
+// What the orchestrator CAN supply (everything required):
+//   workspace   parseRepoRef() above derives it from the member's own remote.
+//   api_token   as a `{{secret.NAME}}` PLACEHOLDER, never a value:
+//               provision_vcs_auth resolves that placeholder hub-side.
+//               Same secret transport ./azure-devops.mjs documents; the
+//               orchestrator process never holds, logs or transports the
+//               plaintext.
 //
 // Hence the split:
 //
@@ -199,17 +189,15 @@ const REPO_REF_HINT = 'git@bitbucket.org:WORKSPACE/REPO.git or https://bitbucket
 //       -- and cannot be re-assembled here anyway, so the step is both
 //       impossible and unnecessary. Skipping it leaves the operator-deployed
 //       credential in place, which is exactly what the PR dispatch goes on to
-//       read server-side (vcs_credential_exec's {{vcs_username_inline}}/
-//       {{vcs_token_inline}} pair). Without this the PR is never even
+//       read server-side (vcs_credential_exec's {{vcs_token_inline}}
+//       placeholder). Without this the PR is never even
 //       attempted: the re-provision runs FIRST and its failure short-circuits
 //       the whole call.
 //
 //   any other git_access (the shared preflight / reactive self-heal paths) ->
-//       send the fullest argument set this side can honestly build. That call
-//       still fails server-side when no `email` was configured, but it fails
-//       as a typed `[FAIL]` with the assembly error naming the missing field
-//       -- never as an out-of-band prompt -- and the `authRemedy` hint below
-//       tells the operator exactly how to deploy the credential out of band.
+//       send the complete argument set (workspace + api_token placeholder);
+//       a missing secret is a typed error naming the credential-store entry,
+//       never an out-of-band prompt.
 //
 // A remote whose workspace cannot be derived is a typed `error` on every
 // path: that is a real, actionable misconfiguration, not something to guess
@@ -232,19 +220,36 @@ const DEFAULT_API_TOKEN_SECRET = 'bitbucket_api_token';
  *  their own. Names the ONLY fix: deploy the credential out of band, because
  *  the fleet cannot assemble one. No secret VALUE appears here or anywhere
  *  else -- the token is always a credential-store name or a placeholder. */
-const AUTH_REMEDY_HINT =
-    'Bitbucket credentials cannot be minted or re-assembled by the fleet: '
-    + 'provision_vcs_auth needs an "email" (the Atlassian account that owns the '
-    + 'API token) alongside the token, and only the token half can be passed '
-    + 'as a secret placeholder -- the email is never derivable from the member '
-    + 'record. Deploy or refresh the credential out of band, once per member: '
-    + 'create an Atlassian API token at '
+/** The fixed git username provision_vcs_auth writes into a Bitbucket
+ *  helper (src/services/vcs/bitbucket.ts BITBUCKET_TOKEN_USERNAME). Any
+ *  other username line means the helper was written by something else (an
+ *  older fleet, a hand edit, an unresolved placeholder) and git over HTTPS
+ *  with an API token will not authenticate with it. */
+const TOKEN_USERNAME = 'x-bitbucket-api-token-auth';
+
+/** The four scopes an Atlassian API token needs for everything the sprint
+ *  does against Bitbucket (clone/push, find/create/update a PR). */
+const REQUIRED_TOKEN_SCOPES = 'read:repository:bitbucket, write:repository:bitbucket, '
+    + 'read:pullrequest:bitbucket and write:pullrequest:bitbucket';
+
+/** The actionable one-liner, worded for a member/workspace when known. */
+function provisionCommandLine(member, workspace) {
+    return `provision_vcs_auth member_name=${member || 'MEMBER'} provider=bitbucket `
+        + `workspace=${workspace || 'WORKSPACE'} api_token={{secret.${DEFAULT_API_TOKEN_SECRET}}}`;
+}
+
+/** Long-form background for the remedy -- everything after the one-line fix.
+ *  Kept separate so a context-aware remedy (credentialRemedy below) can lead
+ *  with its own member-specific fix line and still carry the same detail. */
+const AUTH_REMEDY_DETAIL =
+    'Bitbucket credentials cannot be minted by the fleet: an operator creates '
+    + 'an Atlassian API token at '
     + 'https://id.atlassian.com/manage-profile/security/api-tokens ("Create API '
     + 'token with scopes", app Bitbucket, scopes read:repository:bitbucket, '
     + 'write:repository:bitbucket, read:pullrequest:bitbucket and '
-    + 'write:pullrequest:bitbucket), store it with '
-    + `credential_store_set name=${DEFAULT_API_TOKEN_SECRET}, then run provision_vcs_auth `
-    + 'member_name=MEMBER provider=bitbucket email=ATLASSIAN_ACCOUNT_EMAIL '
+    + 'write:pullrequest:bitbucket), stores it with '
+    + `credential_store_set name=${DEFAULT_API_TOKEN_SECRET}, then runs provision_vcs_auth `
+    + 'member_name=MEMBER provider=bitbucket '
     + `workspace=WORKSPACE api_token={{secret.${DEFAULT_API_TOKEN_SECRET}}}. `
     + 'Bitbucket app passwords are deprecated: replace an existing one with an '
     + 'API token the same way. Two cautions: (1) a member holds ONE VCS '
@@ -253,9 +258,78 @@ const AUTH_REMEDY_HINT =
     + '-- use a backlog member dedicated to Bitbucket; (2) on a LOCAL member '
     + 'provision_vcs_auth rewrites the host\'s own global bitbucket.org git '
     + 'credential helper, which can break the operator\'s HTTPS git -- provision '
-    + 'a non-local member, or keep the local member on SSH. Without a deployed '
+    + 'a non-local member, or keep the local member on SSH (Atlassian is moving '
+    + 'git-over-SSH to ssh.bitbucket.org: use '
+    + 'git@ssh.bitbucket.org:WORKSPACE/REPO.git for SSH remotes). A LOCAL member '
+    + 'provisioned by fleet 0.4.4 still has a helper with the old account-login '
+    + 'username; the sprint never re-provisions a local member, so it fails its '
+    + 'credential probe until it is re-provisioned by hand, once: '
+    + 'provision_vcs_auth member_name=MEMBER provider=bitbucket workspace=WORKSPACE '
+    + `api_token={{secret.${DEFAULT_API_TOKEN_SECRET}}} (this rewrites the host's `
+    + 'global bitbucket.org helper to the fixed username x-bitbucket-api-token-auth). '
+    + 'Without a deployed '
     + 'credential the sprint still completes: no PR is opened and target '
     + 'issues are closed directly on PASS.';
+
+/** The generic remedy (no member/workspace/store knowledge): the actionable
+ *  line FIRST, then the background. */
+const AUTH_REMEDY_HINT = 'Fix: store an Atlassian API token with '
+    + `credential_store_set name=${DEFAULT_API_TOKEN_SECRET}, then run `
+    + `${provisionCommandLine()}. ${AUTH_REMEDY_DETAIL}`;
+
+/**
+ * The remedy for a Bitbucket credential that was refused, worded for what
+ * the caller actually knows. Leads with ONE actionable line:
+ *   - the credential store HAS `bitbucket_api_token` -> re-provision the
+ *     member from it (exact provision_vcs_auth line). Never tells the
+ *     operator to create a new token: the token they need is already stored,
+ *     and the deployed helper is what is wrong (e.g. a repository access
+ *     token or a stale username written by something other than the fleet).
+ *   - no such entry (or the store could not be read) -> store a token, then
+ *     the same provision line, followed by the long creation guidance.
+ * `local` true/false/undefined words the host-helper caution for a local,
+ * remote or unknown member type. ASCII only; secrets appear only as the
+ * {{secret.NAME}} placeholder.
+ *
+ * @param {{ availableSecrets?: string[]|null, memberName?: string,
+ *           workspace?: string, repoRef?: { workspace?: string }|null,
+ *           repo?: string, local?: boolean }} [ctx]
+ * @returns {string}
+ */
+function credentialRemedy(ctx = {}) {
+    const member = ctx.memberName || 'MEMBER';
+    const workspace = workspaceFromCtx(ctx) || 'WORKSPACE';
+    const line = provisionCommandLine(member, workspace);
+    const helperNote = ctx.local === true
+        ? ' (this member is LOCAL: that command rewrites the host\'s global bitbucket.org git credential helper)'
+        : ctx.local === false
+            ? ''
+            : ' (on a LOCAL member that command rewrites the host\'s global bitbucket.org git credential helper)';
+    const stored = Array.isArray(ctx.availableSecrets) && ctx.availableSecrets.includes(DEFAULT_API_TOKEN_SECRET);
+    if (stored) {
+        return `Fix: re-provision member '${member}' from the stored ${DEFAULT_API_TOKEN_SECRET}: ${line}${helperNote}. `
+            + `That entry must carry ${REQUIRED_TOKEN_SCOPES}; if the refused credential IS that stored entry, `
+            + `update the ${DEFAULT_API_TOKEN_SECRET} entry (credential_store_set) to a token with those scopes before re-provisioning.`;
+    }
+    const why = Array.isArray(ctx.availableSecrets)
+        ? `the credential store has no ${DEFAULT_API_TOKEN_SECRET} entry`
+        : `the credential store could not be read to look for ${DEFAULT_API_TOKEN_SECRET}`;
+    return `Fix: ${why}; store an Atlassian API token with credential_store_set name=${DEFAULT_API_TOKEN_SECRET}, `
+        + `then run ${line}${helperNote}. ${AUTH_REMEDY_DETAIL}`;
+}
+
+function workspaceFromCtx(ctx) {
+    if (ctx && typeof ctx.workspace === 'string' && ctx.workspace.trim()) return ctx.workspace.trim();
+    if (ctx && ctx.repoRef && typeof ctx.repoRef.workspace === 'string' && ctx.repoRef.workspace.trim()) return ctx.repoRef.workspace.trim();
+    if (ctx && typeof ctx.repo === 'string' && ctx.repo.includes('/')) return ctx.repo.split('/')[0].trim();
+    return '';
+}
+
+function repoFromCtx(ctx) {
+    if (ctx && ctx.repoRef && typeof ctx.repoRef.repo === 'string' && ctx.repoRef.repo.trim()) return ctx.repoRef.repo.trim();
+    if (ctx && typeof ctx.repo === 'string' && ctx.repo.includes('/')) return ctx.repo.split('/').slice(1).join('/').trim();
+    return '';
+}
 
 const authRemedy = Object.freeze({
     // An API token is created by a human against an Atlassian identity;
@@ -265,6 +339,115 @@ const authRemedy = Object.freeze({
     serverSideReMintable: false,
     hint: AUTH_REMEDY_HINT,
 });
+
+/** Printable-ASCII, length-capped copy of a value read off a response (a
+ *  header or a body field): it is quoted into an operator-facing log line. */
+function asciiField(value, max = 200) {
+    return String(value == null ? '' : value).replace(/[^\x20-\x7e]+/g, ' ').trim().slice(0, max);
+}
+
+/** Case-insensitive header lookup over the `{ lowercased-name: value }` map
+ *  parseVcsCurlOutput builds from curl's `-D -` dump. */
+function headerValue(headers, name) {
+    if (!headers || typeof headers !== 'object') return '';
+    const key = Object.keys(headers).find((k) => k.toLowerCase() === name);
+    return key ? asciiField(headers[key]) : '';
+}
+
+/** Bitbucket's error.detail.required / .granted: an array of scope names
+ *  (or, defensively, a comma/space separated string). */
+function scopeList(value) {
+    const raw = Array.isArray(value) ? value : (typeof value === 'string' ? value.split(/[\s,]+/) : []);
+    return raw.map((s) => asciiField(s, 80)).filter(Boolean).slice(0, 20);
+}
+
+/**
+ * The credential-and-scope facts Bitbucket returns with a refusal, read off
+ * the X-Credential-Type / X-OAuth-Scopes response headers and the body's
+ * error.detail.{required,granted}. Every field is '' / [] when absent.
+ */
+function refusalFacts(ctx) {
+    const detail = ctx && ctx.body && ctx.body.error && typeof ctx.body.error === 'object' ? ctx.body.error.detail : null;
+    return {
+        type: headerValue(ctx && ctx.headers, 'x-credential-type'),
+        oauthScopes: headerValue(ctx && ctx.headers, 'x-oauth-scopes'),
+        required: scopeList(detail && typeof detail === 'object' ? detail.required : null),
+        granted: scopeList(detail && typeof detail === 'object' ? detail.granted : null),
+    };
+}
+
+/** Diagnosis text for a 401/403/404 refusal. Says "API token" ONLY when the
+ *  response says the credential IS one (X-Credential-Type api_token); an
+ *  absent header is worded as an unknown credential type, never assumed. */
+function describeRefusal(status, ctx) {
+    const facts = refusalFacts(ctx);
+    const subject = facts.type === 'api_token'
+        ? 'the Bitbucket API token (X-Credential-Type api_token)'
+        : facts.type
+            ? `the Bitbucket credential of type ${facts.type} (X-Credential-Type)`
+            : 'the Bitbucket credential (type unknown: the response carried no X-Credential-Type header)';
+    const notDeployed = facts.type && facts.type !== 'api_token'
+        ? `; a ${facts.type} is not the Atlassian API token provision_vcs_auth deploys, so the helper was written by something else`
+        : '';
+    const scopes = [
+        facts.required.length ? `required: ${facts.required.join(', ')}` : '',
+        facts.granted.length ? `granted: ${facts.granted.join(', ')}` : '',
+        facts.oauthScopes ? `X-OAuth-Scopes: ${facts.oauthScopes}` : '',
+    ].filter(Boolean).join('; ');
+    const scopeTail = scopes ? ` (${scopes})` : '';
+    const ws = workspaceFromCtx(ctx);
+    const repo = repoFromCtx(ctx);
+    const target = ws && repo ? `repository ${ws}/${repo}` : 'the repository';
+    if (status === 401) {
+        return `${subject} was rejected (HTTP 401): it is expired, revoked or not a valid Bitbucket credential${scopeTail}${notDeployed}.`;
+    }
+    if (status === 404) {
+        return `${subject} cannot see ${target} (HTTP 404): it was issued for a different repository or workspace, or has no read access to this one${scopeTail}${notDeployed}.`;
+    }
+    // 403
+    const needs = facts.required.length || facts.type ? '' : `; an API token needs ${REQUIRED_TOKEN_SCOPES}`;
+    return `${subject} is missing a required scope (HTTP 403)${scopeTail}${notDeployed}${needs}.`;
+}
+
+/**
+ * Explain a Bitbucket REST HTTP failure the way an operator can act on it --
+ * the OPTIONAL `httpFailureHint` provider hook (see ./index.mjs).
+ *
+ * Two call shapes:
+ *   httpFailureHint(status)  legacy: returns a diagnosis string ('' when the
+ *       status has none). No headers, so the credential type is unknown.
+ *   httpFailureHint({ status, body, headers, availableSecrets, memberName,
+ *       workspace|repoRef|repo, local })  returns { hint, remedy }:
+ *       `hint` diagnoses the refusal from the response itself (credential
+ *       type from X-Credential-Type, error.detail.required/granted,
+ *       X-OAuth-Scopes); `remedy` is the member-specific fix
+ *       (credentialRemedy above) that REPLACES the generic authRemedy.hint
+ *       for this failure. Both '' for a status with nothing to say.
+ *
+ * 410: Atlassian retired app passwords (CHANGE-3222). 401/403/404: a refused
+ * credential (see describeRefusal). Anything else: nothing. No header value
+ * or body field is quoted except as sanitized ASCII, and none of them can
+ * carry the request's Authorization header (curl's `-D -` dumps RESPONSE
+ * headers only).
+ *
+ * @param {number|null|undefined|object} statusOrCtx
+ * @returns {string|{ hint: string, remedy: string }}
+ */
+function httpFailureHint(statusOrCtx) {
+    const withCtx = statusOrCtx !== null && typeof statusOrCtx === 'object';
+    const ctx = withCtx ? statusOrCtx : { status: statusOrCtx };
+    const { status } = ctx;
+    let hint = '';
+    if (status === 410) {
+        hint = 'Bitbucket app passwords have been retired (Atlassian CHANGE-3222); '
+            + 'replace the app password with an Atlassian API token stored as '
+            + `${DEFAULT_API_TOKEN_SECRET}.`;
+    } else if (status === 403 || (withCtx && (status === 401 || status === 404))) {
+        hint = describeRefusal(status, ctx);
+    }
+    if (!withCtx) return hint;
+    return { hint, remedy: hint ? credentialRemedy(ctx) : '' };
+}
 
 /**
  * Build the provision_vcs_auth arguments for a Bitbucket member -- the
@@ -317,7 +500,7 @@ function buildProvisionArgs(ctx) {
             // unreachable from this path.
             api_token: `{{secret.${name}}}`,
         },
-        note: `member '${base.member_name}' is on Bitbucket: the fleet can supply workspace '${workspace}' and the '${name}' credential-store token, but not the Atlassian account email provision_vcs_auth also requires -- if this call reports a missing "email" field, deploy the credential out of band instead. ${AUTH_REMEDY_HINT}`,
+        note: `member '${base.member_name}' is on Bitbucket: providing workspace '${workspace}' and the '${name}' credential-store token placeholder.`,
     };
 }
 
@@ -343,22 +526,24 @@ function buildProvisionArgs(ctx) {
 //   title/body  PR title and description.
 //   token     the Atlassian API token. REQUIRED -- assertToken() throws
 //             the shared typed ERROR.
-//   username  REQUIRED, unlike Azure DevOps/GitHub: Bitbucket's REST API
-//             takes HTTP Basic as 'username:token' (a bare ':token' is
-//             rejected), which is the entire reason the bb-cred lane
-//             (src/tools/vcs-credential-exec.ts's {{vcs_username}}/
-//             {{vcs_username_inline}} placeholder pair) exists -- see the
-//             PLANNER DECISION note on the epic apra-fleet-qeq1.
 //   os/shell  same meaning and same resolution as azure-devops.mjs documents.
 //
-// AUTH: `-u '<username>:<token>'`. Both halves appear in `command` ONLY;
-// `logSafeCommand` is built by the SAME closure with REDACTED substituted for
-// both, so no field other than `command` can carry either credential half.
+// AUTH: `-H 'Authorization: Bearer <token>'` -- no username, no email. The
+// token appears in `command` ONLY; `logSafeCommand` is built by the SAME
+// closure with REDACTED substituted, so no other field can carry it.
 
 /** Same fixed marker github.mjs/azure-devops.mjs use, so a log scrubber/
  *  assertion looking for a redacted VCS command matches identically across
  *  providers. */
 const REDACTED = '***REDACTED***';
+
+/** curl's `-D -`: dump the RESPONSE header block to stdout ahead of the body,
+ *  so a refusal's X-Credential-Type / X-OAuth-Scopes reach
+ *  parseVcsCurlOutput (vcs-auth.mjs) alongside the body and the `-w` status
+ *  line. A bare `-` is inert in POSIX sh, Git-for-Windows bash and
+ *  PowerShell alike, and works for curl and curl.exe. Response headers only:
+ *  the request's Authorization header is never written back. */
+const DUMP_RESPONSE_HEADERS = '-D -';
 
 /** Merge a `repoRef` object with any explicit workspace/repo overrides and
  *  require both. Throws the typed ERROR (quoting REPO_REF_HINT) rather than
@@ -388,29 +573,15 @@ function repoApiBase({ workspace, repo }) {
     return `https://api.bitbucket.org/2.0/repositories/${encodeURIComponent(workspace)}/${encodeURIComponent(repo)}`;
 }
 
-/** Require a non-empty username for HTTP Basic auth -- a bare ':token' Basic
- *  header is silently rejected by Bitbucket's API rather than raising a
- *  clear error, so this must fail at BUILD time, never send that half-built
- *  form. Mirrors assertToken()'s shape/wording, scoped to this provider
- *  since Bitbucket is the only one that requires a username. */
-function assertUsername(username, action) {
-    const value = String(username ?? '').trim();
-    if (!value) {
-        throw new Error(`ERROR: VCSModule: bitbucket "${action}" needs a username for HTTP Basic auth (-u '<username>:<token>') -- pass the member's provisioned Bitbucket username/email.`);
-    }
-    return value;
-}
-
 /**
  * Build the Bitbucket REST "create pull request" curl command.
  * POST https://api.bitbucket.org/2.0/repositories/{workspace}/{repo}/pullrequests
  * -- see https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/#api-repositories-workspace-repo-slug-pullrequests-post
  */
 function buildBitbucketCreatePrCommand(params) {
-    const { base, head, title, body, token, username, os, shell } = params || {};
+    const { base, head, title, body, token, os, shell } = params || {};
     const coords = assertRepoCoords(params, 'create-pull-request');
     const safeToken = assertToken(token);
-    const safeUsername = assertUsername(username, 'create-pull-request');
     if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a create-pull-request command.');
     if (!head) throw new Error('ERROR: VCSModule: "head" branch is required to build a create-pull-request command.');
     if (!title) throw new Error('ERROR: VCSModule: "title" is required to build a create-pull-request command.');
@@ -424,21 +595,22 @@ function buildBitbucketCreatePrCommand(params) {
     const payloadJson = JSON.stringify(payload);
     const url = `${repoApiBase(coords)}/pullrequests`;
 
-    const buildCurl = (authUsername, authToken) => [
+    const buildCurl = (authToken) => [
         `${curlBinary(os)} -sS -X POST`,
-        `-u ${shQuote(`${authUsername}:${authToken}`, os, shell)}`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('Accept: application/json', os, shell)}`,
         `-d ${shQuoteJson(payloadJson, os, shell)}`,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        DUMP_RESPONSE_HEADERS,
         url,
     ].join(' ');
 
     return {
         provider: 'bitbucket',
         action: 'create-pull-request',
-        command: buildCurl(safeUsername, safeToken),
-        logSafeCommand: buildCurl(REDACTED, REDACTED),
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
         // Interpretation contract, same field NAMES github.mjs/
         // azure-devops.mjs use so a consumer reads it generically:
         //   - 2xx           -> success
@@ -473,10 +645,9 @@ function bbqlString(value) {
  * native-exe arguments); the URL carries '&', so it is quoted.
  */
 function buildBitbucketFindPrCommand(params) {
-    const { base, head, token, username, os, shell } = params || {};
+    const { base, head, token, os, shell } = params || {};
     const coords = assertRepoCoords(params, 'find-pull-request');
     const safeToken = assertToken(token);
-    const safeUsername = assertUsername(username, 'find-pull-request');
     if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a find-pull-request command.');
     if (!head) throw new Error('ERROR: VCSModule: "head" branch is required to build a find-pull-request command.');
     const bbql = `source.branch.name=${bbqlString(head)} AND destination.branch.name=${bbqlString(base)}`;
@@ -491,19 +662,20 @@ function buildBitbucketFindPrCommand(params) {
     const url = `${repoApiBase(coords)}/pullrequests?state=OPEN&q=${encodeURIComponent(bbql)}&fields=${encodeURIComponent(fields)}`;
     const ownFullName = `${coords.workspace}/${coords.repo}`.toLowerCase();
 
-    const buildCurl = (authUsername, authToken) => [
+    const buildCurl = (authToken) => [
         `${curlBinary(os)} -sS -X GET`,
-        `-u ${shQuote(`${authUsername}:${authToken}`, os, shell)}`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
         `-H ${shQuote('Accept: application/json', os, shell)}`,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        DUMP_RESPONSE_HEADERS,
         shQuote(url, os, shell),
     ].join(' ');
 
     return {
         provider: 'bitbucket',
         action: 'find-pull-request',
-        command: buildCurl(safeUsername, safeToken),
-        logSafeCommand: buildCurl(REDACTED, REDACTED),
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
         interpret: { successStatusRange: [200, 299] },
         /** 2xx body ({ values: [...] }) -> [{ id, title, body, url }]. */
         // A PR from a FORK with the same branch name is not this sprint's PR:
@@ -529,10 +701,9 @@ function buildBitbucketFindPrCommand(params) {
  * https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/#api-repositories-workspace-repo-slug-pullrequests-pull-request-id-put
  */
 function buildBitbucketUpdatePrCommand(params) {
-    const { pull_request_id: pullRequestId, title, body, token, username, os, shell } = params || {};
+    const { pull_request_id: pullRequestId, title, body, token, os, shell } = params || {};
     const coords = assertRepoCoords(params, 'update-pull-request');
     const safeToken = assertToken(token);
-    const safeUsername = assertUsername(username, 'update-pull-request');
     const id = String(pullRequestId ?? '').trim();
     if (!/^\d+$/.test(id)) throw new Error('ERROR: VCSModule: a numeric "pull_request_id" is required to build an update-pull-request command.');
     if (!title) throw new Error('ERROR: VCSModule: "title" is required to build an update-pull-request command.');
@@ -542,25 +713,73 @@ function buildBitbucketUpdatePrCommand(params) {
     const payloadJson = JSON.stringify(payload);
     const url = `${repoApiBase(coords)}/pullrequests/${id}`;
 
-    const buildCurl = (authUsername, authToken) => [
+    const buildCurl = (authToken) => [
         `${curlBinary(os)} -sS -X PUT`,
-        `-u ${shQuote(`${authUsername}:${authToken}`, os, shell)}`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('Accept: application/json', os, shell)}`,
         `-d ${shQuoteJson(payloadJson, os, shell)}`,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        DUMP_RESPONSE_HEADERS,
         url,
     ].join(' ');
 
     return {
         provider: 'bitbucket',
         action: 'update-pull-request',
-        command: buildCurl(safeUsername, safeToken),
-        logSafeCommand: buildCurl(REDACTED, REDACTED),
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
         interpret: { successStatusRange: [200, 299] },
         mapResponse: (respBody) => mapBitbucketPull(respBody),
     };
 }
+
+/**
+ * Build the preflight's REST credential probe: GET
+ * .../repositories/{workspace}/{repo}/pullrequests?pagelen=1 -- the
+ * cheapest call that needs exactly what Publish PR will need (repository
+ * visibility plus read:pullrequest), sent with the SAME labelled credential
+ * the PR path reads (the caller passes the {{vcs_token_inline}} placeholder
+ * and dispatches through vcs_credential_exec). `git ls-remote` alone cannot
+ * prove this: it goes through the host's whole git credential helper chain,
+ * where another helper can answer for a fleet helper that is broken.
+ * Same Bearer auth, -D - header capture and -w status line as the PR
+ * builders, so a refusal parses into the same { status, body, headers }
+ * httpFailureHint diagnoses.
+ */
+function buildBitbucketCredentialProbeCommand(params) {
+    const { token, os, shell } = params || {};
+    const coords = assertRepoCoords(params, 'credential-probe');
+    const safeToken = assertToken(token);
+    const url = `${repoApiBase(coords)}/pullrequests?pagelen=1`;
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X GET`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/json', os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        DUMP_RESPONSE_HEADERS,
+        shQuote(url, os, shell),
+    ].join(' ');
+    return {
+        provider: 'bitbucket',
+        action: 'credential-probe',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        interpret: { successStatusRange: [200, 299] },
+    };
+}
+
+/** The OPTIONAL `credentialProbe` descriptor field (see ./index.mjs): what
+ *  the VCS preflight checks on the labelled credential, beyond git ls-remote.
+ *    build             the REST probe command builder above
+ *    expectedUsername  the only username= line a fleet-deployed helper has
+ *    remedy(ctx)       the member-specific fix, worded by credential store
+ *                      contents (credentialRemedy above) */
+const credentialProbe = Object.freeze({
+    build: buildBitbucketCredentialProbeCommand,
+    expectedUsername: TOKEN_USERNAME,
+    remedy: credentialRemedy,
+});
 
 // ---------------------------------------------------------------------------
 // Pull-request RESPONSE mapping (apra-fleet-qeq1.3)
@@ -624,6 +843,7 @@ export const BitbucketVCS = Object.freeze({
     rules: Object.freeze({
         [K.AUTH_EXPIRED]: AUTH_EXPIRED,
     }),
+    httpFailureHint,
     matchesHost,
     capabilitiesForHost,
     // remote-URL -> { workspace, repo, canonical }, mirroring
@@ -636,6 +856,11 @@ export const BitbucketVCS = Object.freeze({
     // apra-fleet-qeq1.9: API tokens are never minted server-side -- see
     // above.
     authRemedy,
+    // Preflight checks the labelled PR credential itself (REST probe +
+    // username line), not only git ls-remote -- see credentialProbe above.
+    credentialProbe,
+    // Create is not an upsert: look the open PR up first and update it.
+    findBeforeCreate: true,
     defaultAuthMode: null,
     // create/find/update pull-request builders; capabilitiesForHost lets the
     // Publish PR phase dispatch them via VCSModule.capabilities().

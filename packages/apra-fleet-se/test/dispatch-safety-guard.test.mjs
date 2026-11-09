@@ -578,7 +578,10 @@ const DOLT_SYNC_PATH = path.join(__dirname, '../fleet-sprint/dolt-sync.mjs');
 // refs/dolt/data`, and readUnpushedDoltChanges()'s `bd vc status --json` and
 // `bd diff remotes/origin/<branch> <branch> --json` -- each passes
 // member_name: member.
-const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 7;
+// 7 -> 8 (lock-holder watchdog): probeLockHolders()'s beads lock-holder probe,
+// run on the same member while a silent sync attempt is still in flight --
+// passes member_name: member.
+const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 8;
 
 test('every command() call site in dolt-sync.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(DOLT_SYNC_PATH);
@@ -634,7 +637,19 @@ const VCS_AUTH_PATH = path.join(__dirname, '../fleet-sprint/vcs-auth.mjs');
 // `git rev-list --count` (commits-ahead-of-base check) and `git diff --name-only`
 // (workflow-path diff) call sites, both carrying member_name -- raising the
 // count to 3.
-const EXPECTED_VCS_AUTH_COMMAND_COUNT = 3;
+//
+// raiseVcsPrForMember's own `git remote get-url origin` read (added with the
+// Bitbucket PR follow-ups) made it 4 without this count being raised, and
+// apra-fleet-d1pk.3 added two more in createVcsAuthPreflightCallback's
+// probe-first branch: the unregistered-provider remote read and the
+// non-interactive `git ls-remote origin` credential probe, both carrying
+// member_name -- 6.
+//
+// The Bitbucket labelled-credential probe (checkLabelledCredential inside
+// createVcsAuthPreflightCallback) added two more, both carrying member_name:
+// its own origin read (to derive the REST probe's repository) and the
+// member-side username= line read of the labelled helper -- 8.
+const EXPECTED_VCS_AUTH_COMMAND_COUNT = 8;
 
 test('every command() call site in vcs-auth.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(VCS_AUTH_PATH);
@@ -1256,7 +1271,8 @@ test('every command() call site in member-provisioning.mjs passes member_name or
 // createChildBeadWithAllocatedId, verifyDoerStreakClosed and
 // claimBeadsBatched.
 //
-// Its baseline is EIGHT: createChildBeadWithAllocatedId owns THREE
+// Its baseline is NINE: createDecisionBead owns ONE (the NEEDS-DECISION
+// decision bead's `bd create --body-file`), createChildBeadWithAllocatedId owns THREE
 // (the explicit-id path's `bd show <childId> --json` collision probe, the
 // `bd create --body-file`, and the explicit-id path's `bd update --parent`
 // link), adoptLandedChild owns TWO (the post-failure `bd show` re-probe and
@@ -1270,7 +1286,7 @@ test('every command() call site in member-provisioning.mjs passes member_name or
 // helper, which is exactly what a zero baseline turns red.
 // =============================================================================
 const BEADS_CHILDREN_PATH = path.join(__dirname, '../fleet-sprint/beads-children.mjs');
-const EXPECTED_BEADS_CHILDREN_COMMAND_COUNT = 8;
+const EXPECTED_BEADS_CHILDREN_COMMAND_COUNT = 9;
 
 test('every command() call site in beads-children.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(BEADS_CHILDREN_PATH);

@@ -93,10 +93,10 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    // Non-vacuous: 55 of the 99 committed fixtures carry a `response` (the
-    // other 44 record a thrown refusal). Update this count, and the 99 in
+    // Non-vacuous: 56 of the 100 committed fixtures carry a `response` (the
+    // other 44 record a thrown refusal). Update this count, and the 100 in
     // tests/memory-contract-roundtrip.test.ts, whenever the corpus changes.
-    expect(keys.length).toBe(55); // 55 response fixtures of 99 committed (44 are thrown refusals)
+    expect(keys.length).toBe(56); // 56 response fixtures of 100 committed (44 are thrown refusals)
     expect(failures).toEqual([]);
   });
 
@@ -123,7 +123,7 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    expect(keys.length).toBe(55); // 55 response fixtures of 99 committed (44 are thrown refusals)
+    expect(keys.length).toBe(56); // 56 response fixtures of 100 committed (44 are thrown refusals)
     expect(failures).toEqual([]);
   });
 

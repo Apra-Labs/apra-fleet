@@ -302,6 +302,8 @@ function makeSettleFixture({
     },
 } = {}) {
     const state = {
+        // Every republish `bd dolt pull`/`bd dolt push` string, as issued.
+        syncCommands: [],
         conflicts: conflictTables,
         resolvedTables: [],
         resolveFlags: [],  // every { table, flag } DOLT_CONFLICTS_RESOLVE actually issued
@@ -426,9 +428,11 @@ function makeSettleFixture({
             return { ok: true, output: '', error: null };
         }
 
-        // Step 6: republish.
-        if (cmd === 'bd dolt pull') return { ok: true, output: '', error: null };
-        if (cmd === 'bd dolt push') {
+        // Step 6: republish. Matched on the suffix: on a Windows member the
+        // string carries a GOMAXPROCS assignment ahead of bd.
+        if (cmd.endsWith('bd dolt pull')) { state.syncCommands.push(cmd); return { ok: true, output: '', error: null }; }
+        if (cmd.endsWith('bd dolt push')) {
+            state.syncCommands.push(cmd);
             pushCalled = true;
             check(serverKilledBeforePush === true, 'bd dolt push must only run AFTER the ephemeral server has been torn down');
             return pushOk ? { ok: true, output: '', error: null } : { ok: false, output: '', error: 'updates were rejected' };
@@ -451,6 +455,8 @@ test('settleDoltConflicts: resolves a single-row issues conflict end to end, tea
     check(state.merged, 'DOLT_MERGE must have been called');
     check(state.committed, 'DOLT_COMMIT must have been called');
     assert.deepEqual(state.resolvedTables, ['issues']);
+    // A Windows (PowerShell) member republishes with a bounded GOMAXPROCS.
+    assert.deepEqual(state.syncCommands, ["$env:GOMAXPROCS='1'; bd dolt pull", "$env:GOMAXPROCS='1'; bd dolt push"]);
 });
 
 test('settleDoltConflicts: resolves multiple conflicted tables with no allowlist (total, not gated)', async () => {
@@ -809,8 +815,8 @@ function makeMinimalTeardownFixture() {
             if (/SELECT COUNT\(\*\) AS n FROM dolt_conflicts/.test(text)) return { ok: true, output: '{}\n\n{"rows": [{"n":0}]}\n', error: null };
             return { ok: true, output: '', error: null };
         }
-        if (cmd === 'bd dolt pull') return { ok: true, output: '', error: null };
-        if (cmd === 'bd dolt push') return { ok: true, output: '', error: null };
+        if (cmd.endsWith('bd dolt pull')) return { ok: true, output: '', error: null };
+        if (cmd.endsWith('bd dolt push')) return { ok: true, output: '', error: null };
         return { ok: true, output: '', error: null };
     };
     return { command, calls, findKillCall: () => calls.find((c) => decodeIfWrapped(c).text.includes('Stop-Process -Id 7070')) };
@@ -900,8 +906,8 @@ test('nodeEval: a POSIX (linux) target also takes the unescaped branch, matching
             if (/SELECT COUNT\(\*\) AS n FROM dolt_conflicts/.test(cmd)) return { ok: true, output: '{}\n\n{"rows": [{"n":0}]}\n', error: null };
             return { ok: true, output: '', error: null };
         }
-        if (cmd === 'bd dolt pull') return { ok: true, output: '', error: null };
-        if (cmd === 'bd dolt push') return { ok: true, output: '', error: null };
+        if (cmd.endsWith('bd dolt pull')) return { ok: true, output: '', error: null };
+        if (cmd.endsWith('bd dolt push')) return { ok: true, output: '', error: null };
         return { ok: true, output: '', error: null };
     };
     const result = await settleDoltConflicts('m-linux-probe', { command, platform: 'linux' });

@@ -132,7 +132,7 @@ describe('buildReviewerPrompt: promotion candidates (apra-fleet-0ef)', () => {
     const BASE = {
         beadIds: ['apra-fleet-aaa'],
         acceptanceCriteriaJson: '[]',
-        baseBranch: 'main',
+        baseBranch: 'main', mergeBaseSha: 'abcdef0123456789abcdef0123456789abcdef01',
         branch: 'feat/thing',
         goal: 'P1',
     };
