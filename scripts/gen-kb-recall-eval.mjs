@@ -34,7 +34,9 @@ import { REAL } from './kb-recall-queries-real.mjs';
 import { leakage, LEAKAGE_CAP } from './kb-recall-leakage.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-const outDir = path.join(root, 'tests/fixtures/kb-recall-eval');
+const outDir = process.env.APRA_KB_EVAL_FIXTURE_DIR
+  ? path.resolve(process.env.APRA_KB_EVAL_FIXTURE_DIR) // test hook: write to a scratch copy
+  : path.join(root, 'tests/fixtures/kb-recall-eval');
 fs.mkdirSync(outDir, { recursive: true });
 
 /** JSON with every non-ASCII char escaped (the repo is ASCII-only). */
@@ -149,6 +151,9 @@ REAL.forEach((r, i) => {
   });
 });
 for (const e of confirmed) {
+  // The push+pr entry has its own owner-notes query below; once harvest lands it in
+  // the bible it must not also need an authored one.
+  if (e.id === MISS_ENTRY_ID) continue;
   const key = e.id.slice(0, 8);
   const query = AUTHORED[key];
   if (!query) throw new Error(`no authored query for ${e.id} (${e.title})`);
