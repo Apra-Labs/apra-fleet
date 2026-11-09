@@ -16,6 +16,11 @@ export const DEFAULT_PORT = parseInt(process.env.APRA_FLEET_PORT ?? '', 10) || R
  *  (written by `install --member`, see src/cli/install-guard.ts). */
 export const MEMBER_INSTALL_MARKER_FILE = 'member-install.json';
 
+/** Name of the full-install port record inside an install's data dir
+ *  (written by a non-member `install`, see src/cli/install-guard.ts). Kept
+ *  apart from the member marker, whose presence means member mode elsewhere. */
+export const FULL_INSTALL_PORT_FILE = 'full-install.json';
+
 /** A usable TCP port number, or undefined. */
 export function validPort(v: unknown): number | undefined {
   const n = typeof v === 'string' && /^\d+$/.test(v.trim()) ? Number(v.trim()) : v;
@@ -39,13 +44,28 @@ export function recordedMemberInstallPort(
 }
 
 /**
+ * The port the last full install in `dataDir` recorded (APRA_FLEET_PORT at
+ * install time), or undefined when none/unreadable. Call-time read.
+ */
+export function recordedFullInstallPort(
+  dataDir: string = process.env.APRA_FLEET_DATA_DIR ?? path.join(os.homedir(), '.apra-fleet', 'data'),
+): number | undefined {
+  try {
+    const raw = fs.readFileSync(path.join(dataDir, FULL_INSTALL_PORT_FILE), 'utf8');
+    return validPort((JSON.parse(raw) as { port?: unknown }).port);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The port THIS process's server binds (and start/install check): an explicit
  * APRA_FLEET_PORT, else the port this data dir's member install recorded,
- * else the built-in default. Resolved at call time, so a service launch with
+ * else the port its last full install recorded, else the built-in default. Resolved at call time, so a service launch with
  * no environment of its own still listens on the member install's port.
  */
 export function resolveServerPort(): number {
-  return validPort(process.env.APRA_FLEET_PORT ?? '') ?? recordedMemberInstallPort() ?? RAW_DEFAULT_PORT;
+  return validPort(process.env.APRA_FLEET_PORT ?? '') ?? recordedMemberInstallPort() ?? recordedFullInstallPort() ?? RAW_DEFAULT_PORT;
 }
 
 /**

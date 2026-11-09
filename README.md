@@ -85,6 +85,11 @@ It is not a toy. It builds apra-fleet itself:
 - Every sprint's raw child stdout/stderr is captured to a per-sprint log
   and linked from the dashboard, so a run's output is traceable even if it
   crashes before reporting anything back
+- Asks a human when it must: a doer or reviewer that needs an operator
+  decision files a decision bead, the run pauses (not stalls), you are
+  notified once by message and email, and your answer on the dashboard or
+  via `bd human respond` resumes it
+  ([details](docs/fleet-sprint-set-aside.md))
 
 A fleet that has run in production:
 
@@ -268,6 +273,18 @@ that server. `kb_setup` only places the git post-commit hook (in the calling
 session's own repo, including linked worktrees and custom `core.hooksPath`);
 it does not scope the config. On a shared fleet server, treat
 `kb_setup --remote` as a change for all of its users.
+
+**KB tool profiles.** `apra-fleet kb profile developer` (or `kb_setup` with
+`tool_profile`) trims the `kb_*` tools an interactive (non-member) session
+lists to `kb_session_prime`, `kb_query`, `kb_context`, `kb_capture` and
+`kb_feedback`; `custom <a,b>` lists exactly the named `kb_*` tools and `full`
+(the default) lists them all. The profile is install-wide, applies to FULL
+sessions only (member sessions and sprint roles are unaffected), and takes
+effect when a session reconnects. It is a usability control, not a security
+boundary. `developer` hides `kb_setup` and the tools the PM skills `kb-review`,
+`kb-reconcile` and `knowledge-agent` need, so get back with
+`apra-fleet kb profile full` (and reconnect) before running those. See
+[KB tool profiles](docs/knowledge-layer.md#5-kb-tool-profiles-which-kb_-tools-interactive-sessions-see).
 
 Every KB tool call is scoped to the calling session's own repo -- a fleet
 server handling many members across many repos never lets one repo's
@@ -500,6 +517,7 @@ third-party verticals.
 | The PM skill (doer-reviewer sprints, `/pm` commands) | [docs/pm-skill-overview.md](docs/pm-skill-overview.md) |
 | FAQ | [docs/FAQ.md](docs/FAQ.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Supervisor/viewer request guard | [docs/supervisor-request-guard.md](docs/supervisor-request-guard.md) |
 | Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
 | Live member activity (`apra-fleet watch`, `logging.previewChars`) | [docs/features/watch.md](docs/features/watch.md) |
 | Secret variables and passwords | [docs/secret-variables.md](docs/secret-variables.md) - [docs/features/oob-auth.md](docs/features/oob-auth.md) |

@@ -292,12 +292,22 @@ const KB_RESPONSE_BODIES = {
     coverage: z.unknown().optional(),
     bible: z.unknown(),
   }),
-  kb_feedback: z.object({
-    id: z.string(),
-    stale: z.boolean(),
-    flagged_for_review: z.boolean(),
-    confidence: z.string(),
-  }),
+  // Applied form: the entry's resulting state (sqlite, or the remote HTTP KB
+  // server's answer, returned as is). Queued form: a remote HTTP KB was
+  // unreachable, so the feedback waits in the offline queue -- no state is
+  // reported and no confidence is invented (spec.md section 2.2).
+  kb_feedback: z.union([
+    z.object({
+      id: z.string(),
+      stale: z.boolean(),
+      flagged_for_review: z.boolean(),
+      confidence: z.string(),
+    }),
+    z.object({
+      id: z.string(),
+      queued: z.literal(true),
+    }),
+  ]),
 };
 
 const CODE_TOOLS = [

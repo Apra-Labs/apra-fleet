@@ -5,10 +5,13 @@
 //
 //   MEMBER session (?member=<uuid> or a member JWT) -- the member's registered
 //     work folder (getSessionMemberId() from the tool-scope lane).
-//   FULL session (no member identity) -- the server's own working folder.
+//   FULL session (no member identity) -- the MCP client's roots (roots/list,
+//     cached per session by src/services/session-roots.ts): the first offered
+//     root that is a git repository with an origin remote wins. The server's
+//     own working folder is used only when the client offers no roots.
 //
-// An HTTP server cannot see a client's cwd, so there is no separate (self) for
-// local non-member callers: they get the server's folder.
+// An HTTP server cannot see a client's cwd, so a FULL session whose client
+// offers no roots gets the server's folder.
 //
 // KB identity comes from the resolved folder's origin remote, so a folder that
 // is missing, is not a git repository, or has no origin remote is refused with
@@ -23,7 +26,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { getSessionMemberId } from '../tool-scope.js';
+import { getSelfMemoSlot, getSessionMemberId, getSessionRoots, type SessionRoots } from '../tool-scope.js';
 import { getAgent } from '../registry.js';
 import type { Agent } from '../../types.js';
 import { knownRepoRemoteUrl } from '../member-remote-url.js';
@@ -63,14 +66,22 @@ function whose(memberLabel: string | undefined): string {
   return memberLabel ? `member '${memberLabel}' work folder` : 'server working folder';
 }
 
-// A FULL session (no member identity) resolves to the fleet SERVER's working
-// folder, never the client's: an HTTP server cannot see a client's cwd. A
-// caller hitting a self error there usually expected its own directory, so the
-// error names that cause and both fixes explicitly.
-const FULL_SESSION_CAUSE =
-  "This is a FULL session (no member identity), so its KB is the fleet server's own working folder, not the calling client's directory";
+// A FULL session (no member identity) resolves from the MCP client's roots
+// when the client offers any (see resolveSelfSession), else from the fleet
+// SERVER's working folder -- never the client's cwd, which an HTTP server
+// cannot see. A caller hitting a self error on the server-folder path usually
+// expected its own directory, so the error names that cause (including
+// whether the client offered roots) and every fix explicitly.
+function fullSessionCause(): string {
+  return "This is a FULL session (no member identity) and the client offered no MCP roots, so its scope is the fleet server's own working folder, not the calling client's directory";
+}
 const FULL_SESSION_FIX =
-  'Restart the fleet server with its working folder set to the repository whose KB you want, or call from a member session (?member=<id>) of a member registered on that repository.';
+  "Open the client in the repository (a client that offers MCP roots is scoped to its first root inside a git repository with an origin remote), restart the fleet server with its working folder set to that repository, or call from a member session (?member=<id>) of a member registered on it.";
+
+function listForError(items: readonly string[]): string {
+  const shown = items.slice(0, 5).map(i => `'${i}'`).join(', ');
+  return items.length > 5 ? `${shown}, and ${items.length - 5} more` : shown;
+}
 
 function noWorkFolder(folder: string, memberLabel?: string): KbSelfError {
   return new KbSelfError(
@@ -83,11 +94,11 @@ function noWorkFolder(folder: string, memberLabel?: string): KbSelfError {
   );
 }
 
-function gitOut(folder: string, args: string[]): string | null {
+function gitOut(folder: string, args: string[], opts: { ceiling?: boolean } = {}): string | null {
   // Same ceiling as resolveProjectSlug: the folder itself must be the repo, so a
   // temp folder that merely sits inside some other checkout is not mistaken
   // for that checkout.
-  const env = { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(folder) };
+  const env = opts.ceiling === false ? process.env : { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(folder) };
   try {
     return execFileSync(gitExecutable(), args, {
       cwd: folder, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
@@ -113,7 +124,7 @@ export function validateSelfRepoFolder(folder: string, memberLabel?: string): vo
       folder,
       memberLabel
         ? `The ${whose(memberLabel)} '${folder}' is not a git repository.`
-        : `${FULL_SESSION_CAUSE}; '${folder}' is not a git repository.`,
+        : `${fullSessionCause()}; '${folder}' is not a git repository.`,
       memberLabel
         ? `Run 'git init' (or clone the project) in '${folder}' and add an origin remote.`
         : `${FULL_SESSION_FIX} Or make '${folder}' itself a git repository with an origin remote.`,
@@ -131,7 +142,7 @@ export function validateSelfFolder(folder: string, memberLabel?: string): KbAnch
       folder,
       memberLabel
         ? `The ${whose(memberLabel)} '${folder}' has no origin remote, so it has no KB identity.`
-        : `${FULL_SESSION_CAUSE}; '${folder}' has no origin remote, so it has no KB identity.`,
+        : `${fullSessionCause()}; '${folder}' has no origin remote, so it has no KB identity.`,
       memberLabel
         ? `Run 'git remote add origin <url>' in '${folder}'.`
         : `${FULL_SESSION_FIX} Or run 'git remote add origin <url>' in '${folder}'.`,
@@ -146,21 +157,136 @@ export interface SelfSession {
   memberId?: string;
   /** Member friendly name (or id) used in error text; undefined for FULL. */
   memberLabel?: string;
-  /** The member's registered work folder, or the server working folder. */
+  /**
+   * The member's registered work folder; for a FULL session the selected
+   * client root, else the server working folder.
+   */
   folder: string;
   /** The registered member (MEMBER session only). */
   agent?: Agent;
+  /**
+   * FULL session only: where `folder` came from -- 'root' (the top level of
+   * the git repository an MCP client root sits in, already verified) or 'cwd'
+   * (the server working folder, not yet validated).
+   */
+  source?: 'root' | 'cwd';
+  /**
+   * FULL session only, with source 'root': true when NO offered root is in a
+   * git repository with an origin remote and `folder` is the first offered
+   * git repository instead. code_* tools may use it (they need no origin);
+   * kb_* tools refuse it (resolveSelfAnchor), so kb and code never resolve to
+   * two different repositories.
+   */
+  rootWithoutOrigin?: boolean;
+  /** FULL session only: the client roots this resolution saw. */
+  roots?: SessionRoots;
+}
+
+function hasOriginRemote(folder: string): boolean {
+  return !!gitOut(folder, ['remote', 'get-url', 'origin']);
+}
+
+/**
+ * The top level of the git repository a client root sits in, or null when it
+ * is in none. Unlike a member's registered work folder, a root is wherever the
+ * client was opened, often a subfolder, so there is no ceiling here. A root
+ * that already is the top level keeps its spelling (git answers with resolved
+ * symlinks, short names expanded and forward slashes), so it names the same
+ * index and KB folder as before.
+ */
+function rootRepoTopLevel(root: string): string | null {
+  const top = gitOut(root, ['rev-parse', '--show-toplevel'], { ceiling: false });
+  if (!top) return null;
+  try {
+    if (fs.realpathSync.native(root) === fs.realpathSync.native(top)) return root;
+  } catch { /* fall through to git's answer */ }
+  return path.resolve(top);
+}
+
+/**
+ * FULL session (self) selection (owner decision: client roots first, server
+ * working folder only when the client offers no roots). A root inside a git
+ * repository stands for that repository's top level, so a client opened in a
+ * subfolder scopes to the repository:
+ *
+ *   1. The first offered root in a git repository with an origin remote.
+ *   2. Extension for code_* only: when roots are offered and none has an
+ *      origin, the first offered root in a git repository
+ *      (rootWithoutOrigin: kb_* refuses it).
+ *   3. No roots offered (no roots capability or an empty list): the server
+ *      working folder.
+ *
+ * Everything else is refused, never answered from the server folder: it may be
+ * an unrelated repository, and the caller could not tell.
+ *   - Asking the client failed: E-SELF-NO-WORKFOLDER naming the failure; the
+ *     next call asks again.
+ *   - No offered root is a folder on this host (a remote client's path, a
+ *     deleted folder, a non-file URI): E-SELF-NO-WORKFOLDER.
+ *   - Roots on this host but none in a git repository: E-SELF-NOT-A-REPO.
+ */
+function selectFullSessionFolder(): SelfSession {
+  const roots = getSessionRoots();
+  if (roots?.fetchError !== undefined) {
+    throw new KbSelfError(
+      'E-SELF-NO-WORKFOLDER',
+      '',
+      `This is a FULL session (no member identity) and asking the client for its MCP roots failed (${roots.fetchError}), so the session's scope is unknown; the call was not run and the server's working folder was not used in its place.`,
+      'Retry the same call: each call asks the client again. If it keeps failing, restart the client or check that it answers roots/list.',
+    );
+  }
+  if (!roots || roots.offered.length === 0) {
+    return { folder: process.cwd(), source: 'cwd', ...(roots ? { roots } : {}) };
+  }
+  if (roots.folders.length === 0) {
+    throw new KbSelfError(
+      'E-SELF-NO-WORKFOLDER',
+      roots.offered[0],
+      `This is a FULL session (no member identity) and the client offered MCP roots, but none of them (${listForError(roots.offered)}) is a folder on this host, so the session has no KB or code scope; the server's working folder was not used in its place.`,
+      'Open the client on this host in a git repository with an origin remote, or call from a member session (?member=<id>) of a member registered on that folder.',
+    );
+  }
+  let firstRepo: string | undefined;
+  for (const root of roots.folders) {
+    const folder = rootRepoTopLevel(root);
+    if (folder === null) continue;
+    if (hasOriginRemote(folder)) return { folder, source: 'root', roots };
+    if (firstRepo === undefined) firstRepo = folder;
+  }
+  if (firstRepo !== undefined) return { folder: firstRepo, source: 'root', rootWithoutOrigin: true, roots };
+  throw new KbSelfError(
+    'E-SELF-NOT-A-REPO',
+    roots.folders[0],
+    `This is a FULL session (no member identity) and the client offered MCP roots, but none of them (${listForError(roots.folders)}) is in a git repository, so the session has no KB or code scope.`,
+    `Open the client in a git repository with an origin remote (or add one as a root), or run 'git init' and 'git remote add origin <url>' in '${roots.folders[0]}'.`,
+  );
 }
 
 /**
  * Resolve WHICH folder the calling session means by (self): a MEMBER session's
- * registered work folder, a FULL session's server working folder. A MEMBER
- * session whose member is unregistered or has no work folder is refused with
- * E-SELF-NO-WORKFOLDER -- it never falls back to the server folder.
+ * registered work folder; a FULL session's selected client root, else the
+ * server working folder (selectFullSessionFolder). A MEMBER session whose
+ * member is unregistered or has no work folder is refused with
+ * E-SELF-NO-WORKFOLDER -- it never falls back to the server folder, and never
+ * reads client roots.
+ *
+ * Inside a tool call the FULL selection is memoized for the rest of that call,
+ * so kb (self) and code (self) share one answer and cannot diverge.
  */
 export function resolveSelfSession(): SelfSession {
   const memberId = getSessionMemberId();
-  if (memberId === undefined) return { folder: process.cwd() };
+  if (memberId === undefined) {
+    const memo = getSelfMemoSlot();
+    if (!memo) return selectFullSessionFolder();
+    if (memo.error !== undefined) throw memo.error;
+    if (memo.value !== undefined) return memo.value as SelfSession;
+    try {
+      memo.value = selectFullSessionFolder();
+      return memo.value as SelfSession;
+    } catch (e) {
+      memo.error = e;
+      throw e;
+    }
+  }
   const agent = getAgent(memberId);
   const label = agent?.friendlyName ?? memberId;
   const folder = agent?.workFolder ?? '';
@@ -175,7 +301,17 @@ export function resolveSelfSession(): SelfSession {
 export function resolveSelfAnchor(): KbAnchor {
   const self = resolveSelfSession();
   const { agent, folder, memberLabel: label, memberId } = self;
-  if (!agent) return validateSelfFolder(folder);
+  if (!agent) {
+    if (self.rootWithoutOrigin) {
+      throw new KbSelfError(
+        'E-SELF-NO-REMOTE',
+        folder,
+        `This is a FULL session (no member identity) and none of the client's MCP roots (${listForError(self.roots?.folders ?? [folder])}) is in a git repository with an origin remote, so the session has no KB identity (code tools use the first offered git repository, '${folder}').`,
+        `Run 'git remote add origin <url>' in '${folder}', or open the client in a repository that has an origin remote.`,
+      );
+    }
+    return validateSelfFolder(folder);
+  }
   if (agent.agentType !== 'local') {
     // The work folder lives on another host: git cannot be shelled out there,
     // so the KB identity is the member's single known origin remote.
@@ -408,4 +544,4 @@ export function mergeSplitById<T extends { id: string }>(
 
 /** Appended to every kb_* tool description so callers know there is no scope argument. */
 export const KB_SELF_NOTE =
-  ' Scope: always the calling session\'s own KB -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument (the removed repo_path, repo and repo_remote_url keys fail with E-SCOPE-KEY-REMOVED). Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).';
+  ' Scope: always the calling session\'s own KB -- a member session uses its registered work folder; any other session uses the first MCP client root (roots/list) inside a git repository with an origin remote, as that repository\'s top level, or the fleet server\'s working folder when the client offers no roots; there is no repo/path scope argument (the removed repo_path, repo and repo_remote_url keys fail with E-SCOPE-KEY-REMOVED). Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).';

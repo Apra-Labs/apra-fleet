@@ -11,12 +11,14 @@ code_graph, code_impact, code_query, and code_context tools.
    the repo path.
 3. Run via `execute_command` (wrap in background Agent per fleet rules):
    ```
-   npx gitnexus analyze --index-only --embeddings
+   npx gitnexus analyze --index-only --force --embeddings
    ```
    - `run_from`: project repo root
-   - `timeout_s`: 300 (indexing large repos can take a minute)
+   - `timeout_s`: 900 (a full build of a large repo can take several minutes)
    - `--index-only` keeps the repo work tree clean: without it gitnexus
      writes an AGENTS.md/CLAUDE.md block and skills folders into the repo.
+   - `--force` is required: an incremental analyze can corrupt the index, so
+     symbols that exist answer "not found".
 4. Report the result: nodes indexed, edges, flows (gitnexus prints this on
    completion). If gitnexus is not installed, it will be fetched automatically
    via npx.
@@ -31,9 +33,8 @@ code_graph, code_impact, code_query, and code_context tools.
 - One-time cost: the first `--embeddings` run on a machine downloads the
   model (~87 MB) from HuggingFace and caches it at `~/.cache/huggingface`;
   every run after that is offline.
-- Embeddings are OFF by default and PRESERVED across a plain `analyze`
-  (only `--drop-embeddings` removes them), so passing `--embeddings` here is
-  additive and safe to run repeatedly.
+- Embeddings are OFF by default, and passing `--embeddings` here is safe to
+  run repeatedly.
 - win32 caveat: on Windows, LadybugDB's VECTOR index is unavailable, so
   semantic search falls back to an exact scan (capped at 10000 chunks) --
   this still works, it is just brute-force rather than an ANN index. Not a
@@ -44,15 +45,14 @@ code_graph, code_impact, code_query, and code_context tools.
 
 - **Automatically inside `/pm init`** -- runs as the final step of project initialization.
   The worktree must exist before indexing (gitnexus needs files on disk to analyze).
-- **Automatically at VERIFY checkpoints** -- checkpoints re-run npx gitnexus analyze --index-only to keep
-  mid-sprint symbols visible to later phases (incremental via fileHashes in .gitnexus/meta.json,
-  takes seconds).
+- **Automatically at VERIFY checkpoints** -- checkpoints re-run npx gitnexus analyze --index-only --force to keep
+  mid-sprint symbols visible to later phases (a full rebuild, minutes on a large repo).
 - After a large merge or rebase that changes many files
 - When `kb_session_prime` returns many stale entries
 - Any time the user asks to re-index (run `/pm index` explicitly)
 
 ## Notes
 
-- Indexing is per-repo and persists on disk -- subsequent runs are incremental.
+- Indexing is per-repo and persists on disk. Always pass `--force`: never run an incremental analyze.
 - The index is used by the gitnexus provider behind code_graph/impact/query/context.
 - Fleet members never call gitnexus directly -- they use the fleet tools.

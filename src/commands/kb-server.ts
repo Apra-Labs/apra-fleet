@@ -8,6 +8,7 @@ import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
 import { HttpKbProvider } from '../services/knowledge/http-provider.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
+import { validateAuthor } from '../tools/kb-feedback.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
 import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import type { KBEntry, KBEntryInput, Confidence } from '../services/knowledge/types.js';
@@ -388,6 +389,36 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
 
         const result = await provider.prime(opts);
         return jsonResponse(res, 200, result as unknown as Record<string, unknown>);
+      }
+
+      // POST /api/kb/feedback -- same author validation and response shape as
+      // the kb_feedback tool; confidence is never changed.
+      if (pathname === '/api/kb/feedback' && method === 'POST') {
+        const body = await readBody(req);
+        const input = JSON.parse(body) as { id?: unknown; reason?: unknown; role?: unknown };
+        if (typeof input.id !== 'string' || input.id.length === 0 ||
+            typeof input.reason !== 'string' || input.reason.length === 0) {
+          return jsonResponse(res, 400, { error: 'id and reason must be non-empty strings', code: 'BAD_REQUEST' });
+        }
+        if (!isSqliteProject(provider)) {
+          return jsonResponse(res, 500, { error: 'Internal server error', code: 'INTERNAL_ERROR' });
+        }
+        const author = validateAuthor(typeof input.role === 'string' ? input.role : undefined);
+        let entry;
+        try {
+          entry = await provider.feedback(input.id, input.reason, author);
+        } catch (err) {
+          if (err instanceof Error && err.message.startsWith('Entry not found')) {
+            return jsonResponse(res, 404, { error: err.message, code: 'ENTRY_NOT_FOUND' });
+          }
+          throw err;
+        }
+        return jsonResponse(res, 200, {
+          id: entry.id,
+          stale: entry.stale,
+          flagged_for_review: entry.flagged_for_review,
+          confidence: entry.confidence,
+        });
       }
 
       return jsonResponse(res, 404, { error: 'Not found', code: 'NOT_FOUND' });

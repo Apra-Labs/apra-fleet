@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execSync, execFileSync } from 'node:child_process';
-import { runInstall, _setSeaOverride, _setManifestOverride, _setFleetSeProbes, _resetFleetSeProbes } from '../src/cli/install.js';
-import { detectRunningFleetSe, fleetSeRefusalText, INSTALLED_SERVE_SCRIPT, type FleetSeProbes } from '../src/cli/fleet-se-guard.js';
+import { runInstall, _setSeaOverride, _setManifestOverride, _setFleetSeProbes, _resetFleetSeProbes, _setLiveServerProbe } from '../src/cli/install.js';
+import { detectRunningFleetSe, fleetSeRefusalText, fleetSeRerunArgs, INSTALLED_SERVE_SCRIPT, type FleetSeProbes } from '../src/cli/fleet-se-guard.js';
 
 // Upgrading under a running fleet-sprint supervisor/sprint breaks them with
 // HTTP 401 (old process, no member access secret). install must refuse before
@@ -134,8 +134,8 @@ describe('fleetSeRefusalText', () => {
     expect(text).toContain('fleet-sprint supervisor: pid 500, http://localhost:8787');
     expect(text).toContain('sprint sprint-1: pid 700');
     expect(text).toContain('fleet-sprint run: pid 800 (lock file /l/x.lock)');
-    expect(text).toContain('curl.exe -X POST http://localhost:8787/api/sprints/sprint-1/stop');
-    expect(text).toContain('curl.exe -X POST http://localhost:8787/api/shutdown');
+    expect(text).toContain('curl.exe -X POST http://localhost:8787/api/sprints/sprint-1/stop -H "Content-Type: application/json"');
+    expect(text).toContain('curl.exe -X POST http://localhost:8787/api/shutdown -H "Content-Type: application/json"');
     expect(text).toContain('C:\\inst.exe install --force\n');
     expect(text).toContain('C:\\inst.exe install --force --ignore-running-sprints');
     expect(text).toContain('Restart the supervisor');
@@ -175,6 +175,39 @@ describe('fleetSeRefusalText', () => {
   });
 });
 
+describe('fleetSeRerunArgs (step-3 rerun line)', () => {
+  it('plain install with a live server gets --force', () => {
+    expect(fleetSeRerunArgs([], true)).toEqual(['--force']);
+    expect(fleetSeRerunArgs(['--llm', 'claude'], true)).toEqual(['--llm', 'claude', '--force']);
+  });
+  it('already --force: no duplicate flag', () => {
+    expect(fleetSeRerunArgs(['--force', '--llm', 'claude'], true)).toEqual(['--force', '--llm', 'claude']);
+  });
+  it('no live server: unchanged', () => {
+    expect(fleetSeRerunArgs([], false)).toEqual([]);
+    expect(fleetSeRerunArgs(['--llm', 'claude'], false)).toEqual(['--llm', 'claude']);
+  });
+});
+
+describe('fleetSeRefusalText step 1 and a lingering 0.4.3 sprint', () => {
+  const text = fleetSeRefusalText(
+    { supervisor: { pid: 500, port: 8787 }, sprints: [{ pid: 700, sprintId: 'sprint-1' }] },
+    { platform: 'linux', rerunLines: ['x install'], ignoreLines: ['x install --ignore-running-sprints'] },
+  );
+  it('tells the user a stopped older sprint keeps its dashboard child, and lock, for up to 300 seconds', () => {
+    expect(text).toContain('0.4.3 and earlier');
+    expect(text).toContain('up to 300 seconds');
+    expect(text).toContain('holds its lock');
+    expect(/^[\x00-\x7F]*$/.test(text)).toBe(true);
+    expect(text).not.toMatch(/apra-fleet-[a-z0-9]{3,4}(?![a-z0-9-])/);
+  });
+  it('is not printed when no sprint is listed', () => {
+    const none = fleetSeRefusalText({ supervisor: { pid: 500, port: 8787 }, sprints: [] },
+      { platform: 'linux', rerunLines: ['x install'], ignoreLines: [] });
+    expect(none).not.toContain('300 seconds');
+  });
+});
+
 describe('runInstall running fleet-sprint guard', () => {
   let errorSpy: ReturnType<typeof vi.spyOn>;
   let exitSpy: ReturnType<typeof vi.spyOn>;
@@ -190,6 +223,7 @@ describe('runInstall running fleet-sprint guard', () => {
     vi.mocked(os.homedir).mockReturnValue('/mock/home');
     vi.mocked(fs.existsSync).mockReturnValue(false);
     _setSeaOverride(true);
+    _setLiveServerProbe(() => false);
     _setManifestOverride(BASE_MANIFEST as any);
     process.env.APRA_FLEET_ENABLE_FLEET_SE_GUARD = '1';
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -204,6 +238,7 @@ describe('runInstall running fleet-sprint guard', () => {
     _setSeaOverride(null);
     _setManifestOverride(null);
     _resetFleetSeProbes();
+    _setLiveServerProbe(null);
     delete process.env.APRA_FLEET_ENABLE_FLEET_SE_GUARD;
     vi.restoreAllMocks();
   });
@@ -225,6 +260,19 @@ describe('runInstall running fleet-sprint guard', () => {
     expect(fs.copyFileSync).not.toHaveBeenCalled();
     // Persisted for a detached install (apra-fleet update) that has no console.
     expect(vi.mocked(fs.writeFileSync).mock.calls.some(c => String(c[0]).endsWith('service-notice.json'))).toBe(true);
+  });
+
+  it.each([
+    [[], true, true],
+    [['--force'], true, true],
+    [[], false, false],
+  ])('the printed rerun line for %j (live server %s) %s --force', async (args, live, wantForce) => {
+    _setLiveServerProbe(() => live as boolean);
+    _setFleetSeProbes(running());
+    await expect(runInstall(args as string[])).rejects.toThrow('process.exit(1)');
+    const lines = errors().split('  3. Upgrade:')[1].split('  4.')[0].split('\n').filter(l => l.trim());
+    expect(lines.length).toBeGreaterThan(0);
+    for (const l of lines) expect((l.match(/--force/g) ?? []).length).toBe(wantForce ? 1 : 0);
   });
 
   it('--ignore-running-sprints proceeds past the guard without probing', async () => {

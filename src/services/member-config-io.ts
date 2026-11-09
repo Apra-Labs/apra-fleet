@@ -19,7 +19,7 @@ import type { MemberShell } from '../os/os-commands.js';
 import type { MemberMcpSyncContext } from '../providers/provider.js';
 import { isPosixShell } from '../utils/agent-helpers.js';
 import { escapePowerShellArgInner } from '../utils/shell-escape.js';
-import { BUILTIN_DEFAULT_PORT, DEFAULT_PORT } from '../paths.js';
+import { BUILTIN_DEFAULT_PORT, resolveServerPort } from '../paths.js';
 import { MEMBER_ALLOWED_TOOLS, MEMBER_DENIED_TOOLS } from './member-tool-allowlist.js';
 
 export type MemberExecFn = (command: string, timeoutMs?: number) => Promise<SSHExecResult>;
@@ -35,8 +35,9 @@ const FS_OP_TIMEOUT_MS = 15000;
  * The URL a member session uses to reach the fleet MCP server on its OWN
  * machine. `?member=<uuid>` identifies the session as that member, which is
  * what reduces the served tool list to the member allowlist. A local member
- * shares this process's server, so it follows this process's port (honoring
- * an APRA_FLEET_PORT sandbox); a remote member talks to its OWN install, on
+ * shares this process's server, so it follows the port that server binds
+ * (resolveServerPort: an APRA_FLEET_PORT sandbox, else the recorded install
+ * port); a remote member talks to its OWN install, on
  * the port that install records in its member-install marker
  * (agent.memberMcpPort, resolved on the member by the fleetMcp probe), or the
  * built-in default when it recorded none (the probe reports that in fleetMcp
@@ -44,7 +45,9 @@ const FS_OP_TIMEOUT_MS = 15000;
  * get their own server, never the other user's.
  */
 export function memberMcpUrl(agent: Pick<Agent, 'id' | 'agentType' | 'memberMcpPort'>): string {
-  const port = agent.agentType === 'local' ? DEFAULT_PORT : (agent.memberMcpPort ?? BUILTIN_DEFAULT_PORT);
+  // Local: the port this server binds (env, else the recorded member/full
+  // install port, else the default) -- the same source http-transport uses.
+  const port = agent.agentType === 'local' ? resolveServerPort() : (agent.memberMcpPort ?? BUILTIN_DEFAULT_PORT);
   return `http://localhost:${port}/mcp?member=${encodeURIComponent(agent.id)}`;
 }
 

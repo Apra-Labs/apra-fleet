@@ -196,6 +196,7 @@ test('vcs-bitbucket-publish-e2e: buildCreatePrCommand - URL, method, body and Be
         "-H 'Accept: application/json'",
         `-d '${expectedPayload}'`,
         "-w '\n%{http_code}'",
+        '-D -',
         'https://api.bitbucket.org/2.0/repositories/kumaakh/apra-analytics/pullrequests',
     ].join(' ');
 

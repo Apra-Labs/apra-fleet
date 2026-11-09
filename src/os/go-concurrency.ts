@@ -9,6 +9,9 @@
  * evidenced mitigation (upstream: https://github.com/gastownhall/beads/issues/7082;
  * precedent: scripts/rekey-beads-memories.mjs). See docs/troubleshooting.md
  * ("Not enough memory resources").
+ * Side effect: the default covers the whole fleet-started Windows session, so
+ * Go builds and tests run there are serialized too; override via the member's
+ * own GOMAXPROCS (see that docs section).
  *
  * THE RULE (one place): a Windows child env / Windows member shell gets
  * GOMAXPROCS=GO_MAXPROCS_WINDOWS_DEFAULT ONLY when GOMAXPROCS is not already

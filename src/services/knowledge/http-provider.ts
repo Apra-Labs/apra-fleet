@@ -28,8 +28,10 @@ import { recordKbHttpSuccess, recordKbHttpRejected } from './kb-http-auth-state.
 import {
   REPOSITORY_HEADER,
   REPOSITORY_COMMIT_HEADER,
+  REPOSITORY_BRANCH_HEADER,
   COMMIT_SHA,
   isValidRepositoryValue,
+  isValidBranchValue,
   type RepositoryIdentity,
 } from './repository-header.js';
 
@@ -55,9 +57,10 @@ export interface HttpKbProviderOptions {
    */
   projectSlug?: string;
   /**
-   * The repository every request is about, sent as the X-Repository and
-   * X-Repository-Commit headers. Filled only from fleet's resolved KB anchor
-   * (kb-providers.ts), never from tool input. Absent: neither header is sent.
+   * The repository every request is about, sent as the X-Repository,
+   * X-Repository-Commit and X-Repository-Branch headers. Filled only from
+   * fleet's resolved KB anchor (kb-providers.ts), never from tool input.
+   * Absent: none of these headers is sent.
    */
   repository?: RepositoryIdentity;
 }
@@ -77,7 +80,7 @@ export type KbHttpAuthReason = 'missing' | 'expired' | 'rejected' | 'unreadable'
  * that secret is missing, expired, unreadable, or was rejected by the server
  * (HTTP 401) on the request and on one retry after re-reading it. The message
  * names the secret and the reason, never the value. `queued` is true when the
- * operation (a capture or invalidate) was kept in the offline queue and will
+ * operation (a capture, invalidate or feedback) was kept in the offline queue and will
  * be sent once the secret is accepted.
  */
 export class KbHttpAuthError extends Error {
@@ -124,7 +127,18 @@ function redactToken(text: string, token: string): string {
 
 type QueuedOperation =
   | { op: 'capture'; input: KBEntryInput }
-  | { op: 'invalidate'; files: string[] };
+  | { op: 'invalidate'; files: string[] }
+  | { op: 'feedback'; id: string; reason: string; role: string };
+
+/**
+ * What HttpKbProvider.feedback returns: the remote server's response body as
+ * is, or -- when the server could not be reached -- a marker that the
+ * feedback was kept in the offline queue. The queued form carries no
+ * confidence/stale fields: the client never invents them.
+ */
+export type HttpKbFeedbackResult =
+  | Record<string, unknown>
+  | { id: string; queued: true };
 
 function isConnectionError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
@@ -302,8 +316,8 @@ export class HttpKbProvider implements MemoryProvider {
     this.beforeExitHandler = () => {
       if (this.offlineQueue.length > 0) {
         process.stderr.write(
-          `[KB] WARNING: offline queue has ${this.offlineQueue.length} unsaved captures. ` +
-          `Reconnect to the KB server and run kb_harvest to recover from the session transcript.\n`
+          `[KB] WARNING: offline queue has ${this.offlineQueue.length} unsaved operations (captures, invalidations, feedback). ` +
+          `They never reached the KB server and the queue is lost when this process exits. Repeat them once the KB server is reachable.\n`
         );
       }
     };
@@ -349,8 +363,9 @@ export class HttpKbProvider implements MemoryProvider {
     this.offlineQueue.push(op);
   }
 
-  // The repository headers for one request. The commit is best effort: an
-  // unreadable or malformed sha omits the header, never fails the request.
+  // The repository headers for one request. The commit and branch are best
+  // effort: an unreadable, throwing or malformed value omits that header and
+  // never fails the request.
   private repositoryHeaders(): Record<string, string> {
     if (!this.repository) return {};
     const headers: Record<string, string> = { [REPOSITORY_HEADER]: this.repository.remote };
@@ -361,6 +376,13 @@ export class HttpKbProvider implements MemoryProvider {
       commit = undefined;
     }
     if (commit && COMMIT_SHA.test(commit)) headers[REPOSITORY_COMMIT_HEADER] = commit;
+    let branch: string | undefined;
+    try {
+      branch = this.repository.branchOf?.();
+    } catch {
+      branch = undefined;
+    }
+    if (typeof branch === 'string' && isValidBranchValue(branch)) headers[REPOSITORY_BRANCH_HEADER] = branch;
     return headers;
   }
 
@@ -412,7 +434,8 @@ export class HttpKbProvider implements MemoryProvider {
     const secretName = typeof this.tokenSource === 'string' ? undefined : this.tokenSource.secretName;
     const attempts = secretName === undefined ? 1 : 2;
     // Computed once, after the first secret lookup succeeds: a missing secret
-    // fails before the commit is read, and the 401 retry sends the same commit.
+    // fails before the commit and branch are read, and the 401 retry sends the
+    // same commit and branch.
     let repoHeaders: Record<string, string> | undefined;
     for (let attempt = 1; ; attempt++) {
       const token = this.resolveToken();
@@ -534,6 +557,8 @@ export class HttpKbProvider implements MemoryProvider {
           await this.request('POST', '/api/kb/capture', op.input);
         } else if (op.op === 'invalidate') {
           await this.request('POST', '/api/kb/invalidate', { files: op.files });
+        } else if (op.op === 'feedback') {
+          await this.request('POST', '/api/kb/feedback', { id: op.id, reason: op.reason, role: op.role });
         }
         this.offlineQueue.shift();
       } catch (err) {
@@ -652,6 +677,34 @@ export class HttpKbProvider implements MemoryProvider {
       }
       if (isAuthError(err)) {
         this.enqueue({ op: 'invalidate', files });
+        throw err.asQueued();
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * kb_feedback over the remote KB: POST /api/kb/feedback with the
+   * memory-contract v1 kb_feedback request body {id, reason, role} (role
+   * carries the already-validated author). The server owns the entry, so the
+   * server decides stale/flagged; this method returns its response as is and
+   * never writes or invents confidence, and never touches the fallback store.
+   * Server unreachable: the feedback is queued offline (replayed in order with
+   * queued captures/invalidates) and a { id, queued: true } result returned.
+   * E-KB-HTTP-AUTH: queued too, and the error is rethrown as queued.
+   */
+  async feedback(id: string, reason: string, author: string): Promise<HttpKbFeedbackResult> {
+    await this.tryFlushQueue();
+    const body = { id, reason, role: author };
+    try {
+      return await this.request<Record<string, unknown>>('POST', '/api/kb/feedback', body);
+    } catch (err) {
+      if (isConnectionError(err)) {
+        this.enqueue({ op: 'feedback', ...body });
+        return { id, queued: true };
+      }
+      if (isAuthError(err)) {
+        this.enqueue({ op: 'feedback', ...body });
         throw err.asQueued();
       }
       throw err;

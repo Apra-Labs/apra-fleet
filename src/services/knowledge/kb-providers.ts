@@ -143,7 +143,8 @@ function kbConfigFingerprint(): string {
  *
  * It also passes the resolved repository (repoPath's origin remote and HEAD,
  * or the remote member's remoteUrl), which HttpKbProvider sends as the
- * X-Repository / X-Repository-Commit headers so a shared remote KB can keep
+ * X-Repository / X-Repository-Commit / X-Repository-Branch headers (commit and
+ * branch only for a local folder) so a shared remote KB can keep
  * repositories apart. It comes only from the resolved anchor, never tool input.
  */
 async function selectProjectProvider(

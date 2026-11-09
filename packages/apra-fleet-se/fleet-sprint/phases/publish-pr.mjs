@@ -77,7 +77,7 @@ import { buildSprintPrBody, buildSprintPrTitle } from '../pr-body.mjs';
  * issue(s) directly when the verdict passed.
  *
  * @param {object} state Explicit phase state; see this file's header.
- * @returns {Promise<{ pushed: boolean }>} Whether the sprint branch actually
+ * @returns {Promise<{ pushed: boolean, prSkipped?: { reason: string, message: string } }>} Whether the sprint branch actually
  *   reached the remote. runner.js folds this straight into runSprintCycle's
  *   return value -- it never overrides the sprint's own computed verdict.
  */
@@ -213,6 +213,11 @@ export async function runPublishPrPhase({
     // verdict actually passed. A FAIL verdict must never be masked by closing
     // the issue anyway; it still ends the sprint 'failed' via the return value
     // below, same as the PR path. `why` names the no-PR cause in the log.
+    // Typed marker (field `prSkipped`) for a push that succeeded but whose PR
+    // was not raised because of a VCS auth failure (the credentialAbsent branch
+    // closes targets directly by design and stays unmarked); runner.js folds it
+    // into the run result (verdict untouched) and the final summary line.
+    let prSkipped = null;
     const closeTargetsDirectly = async (why) => {
         if (finalVerdictResult.verdict === 'PASS') {
             for (const id of targetIssues) {
@@ -344,6 +349,7 @@ export async function runPublishPrPhase({
                     // outcome (see ../abort.mjs). The branch is already pushed; only
                     // the PR itself is skipped.
                     log(`[Publish PR Skipped] could not raise a PR for branch '${validated.branch}' -> '${validated.baseBranch}' (branch is pushed) due to an unrecoverable VCS auth failure: ${prResult.error}`);
+                    prSkipped = { reason: 'auth-failure', message: 'PR not opened: VCS auth failure' };
                 } else {
                     throw new CommandError(
                         `[Publish PR Failed] VCSModule create-pull-request failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prResult.error}`,
@@ -360,5 +366,5 @@ export async function runPublishPrPhase({
         }
     }
 
-    return { pushed: true };
+    return prSkipped ? { pushed: true, prSkipped } : { pushed: true };
 }

@@ -114,7 +114,7 @@ your deploy; do not clear it yourself -- report it in `notes` so the
 orchestrator/operator can release it against the supervisor:
 
 ```bash
-curl -s -X POST http://localhost:8787/api/reservations/<sprintId>/force-release
+curl -s -X POST http://localhost:8787/api/reservations/<sprintId>/force-release -H "Content-Type: application/json"
 ```
 
 Same route the dashboard's Stop/Restart controls use. Force-release does not
@@ -186,7 +186,9 @@ node scripts/deploy-install.mjs
 #   value, 768 KB by default) is shared by every console child it starts, so
 #   many concurrent bd/dolt/git children can exhaust it ("Not enough memory
 #   resources"). The product now bounds that fan-out instead: bd/dolt started
-#   by fleet on Windows get GOMAXPROCS=1 unless already set (see
+#   by fleet on Windows get GOMAXPROCS=1 unless already set; this applies to
+#   the whole fleet-started session, so Go builds and tests there are also
+#   serialized, and the member's own GOMAXPROCS overrides it (see
 #   docs/troubleshooting.md, "Not enough memory resources"). If the error
 #   persists while a user IS logged on interactively, launch the server from
 #   that interactive session instead (a PowerShell window there:

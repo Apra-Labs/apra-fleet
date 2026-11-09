@@ -17,8 +17,9 @@
  *     spawn can run directly (.EXE / .COM). A git.cmd / git.bat shim cannot be
  *     spawned without a shell (Node refuses it with EINVAL), so it is never
  *     returned; Git for Windows puts cmd\git.exe on PATH.
- * The result is cached for the process. A missing git throws GitNotFoundError,
- * one clear error naming PATH, instead of a confusing failure in whichever
+ * The PATH-only search itself lives in windows-executable.ts (shared with the
+ * Windows shells the fleet server starts). The result is cached for the
+ * process. A missing git throws GitNotFoundError, one clear error naming PATH, instead of a confusing failure in whichever
  * caller ran first. A failed lookup is not cached, so installing git later
  * starts working without a restart.
  *
@@ -30,14 +31,14 @@
  * providers) run on the member through its own shell and are not spawns by
  * the fleet server's own process.
  */
-import fs from 'node:fs';
-import path from 'node:path';
+import {
+  defaultIsFile,
+  envValue,
+  searchWindowsPath,
+  type WindowsExecutableDeps,
+} from './windows-executable.js';
 
 export const GIT_NOT_FOUND_CODE = 'E-GIT-NOT-FOUND';
-
-/** Extensions a shell-less CreateProcess spawn can execute directly. */
-const SPAWNABLE_EXTS = new Set(['.EXE', '.COM']);
-const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD';
 
 export class GitNotFoundError extends Error {
   readonly code = GIT_NOT_FOUND_CODE;
@@ -52,30 +53,8 @@ export class GitNotFoundError extends Error {
   }
 }
 
-export interface GitResolveDeps {
-  platform: NodeJS.Platform;
-  /** The PATH value (on Windows the env key may be spelled Path). */
-  pathValue: string | undefined;
-  pathext: string | undefined;
-  /** True when p is an existing regular file. */
-  isFile: (p: string) => boolean;
-}
-
-/** Look up an env var case-insensitively (Windows env keys are case-insensitive). */
-function envValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
-  if (env[name] !== undefined) return env[name];
-  const upper = name.toUpperCase();
-  const key = Object.keys(env).find((k) => k.toUpperCase() === upper);
-  return key === undefined ? undefined : env[key];
-}
-
-function defaultIsFile(p: string): boolean {
-  try {
-    return fs.statSync(p).isFile();
-  } catch {
-    return false;
-  }
-}
+/** git has no preferred location: only the PATH fields of the shared deps apply. */
+export type GitResolveDeps = Pick<WindowsExecutableDeps, 'platform' | 'pathValue' | 'pathext' | 'isFile'>;
 
 export function defaultGitResolveDeps(): GitResolveDeps {
   return {
@@ -86,32 +65,14 @@ export function defaultGitResolveDeps(): GitResolveDeps {
   };
 }
 
-/** An absolute Windows directory: drive-letter rooted (C:\...) or UNC (\\server\share). */
-function isAbsoluteWindowsDir(dir: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(dir) || /^[\\/]{2}[^\\/]/.test(dir);
-}
-
 /**
  * Pure resolution (no cache). Returns 'git' on non-Windows platforms; on win32
  * returns an absolute path from a PATH entry or throws GitNotFoundError.
  */
 export function resolveGitExecutable(deps: GitResolveDeps): string {
   if (deps.platform !== 'win32') return 'git';
-  const exts = (deps.pathext && deps.pathext.trim() ? deps.pathext : DEFAULT_PATHEXT)
-    .split(';')
-    .map((e) => e.trim().toUpperCase())
-    .filter((e) => SPAWNABLE_EXTS.has(e));
-  const extOrder = exts.length > 0 ? [...new Set(exts)] : ['.EXE'];
-  const searched: string[] = [];
-  for (const raw of (deps.pathValue ?? '').split(';')) {
-    const dir = raw.trim().replace(/^"(.*)"$/, '$1').trim();
-    if (!dir || !isAbsoluteWindowsDir(dir)) continue;
-    searched.push(dir);
-    for (const ext of extOrder) {
-      const candidate = path.win32.join(dir, 'git' + ext.toLowerCase());
-      if (deps.isFile(candidate)) return candidate;
-    }
-  }
+  const { found, searched } = searchWindowsPath('git', deps);
+  if (found !== undefined) return found;
   throw new GitNotFoundError(searched);
 }
 

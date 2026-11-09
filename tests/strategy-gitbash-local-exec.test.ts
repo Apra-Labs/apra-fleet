@@ -137,48 +137,59 @@ describe('resolveGitBashPath candidate list (apra-fleet-7dir.7)', () => {
     expect(result).not.toBe('bash.exe');
   });
 
-  it('with no candidate present and a real MSYS bash.exe on PATH, resolution verifies the uname and returns bash.exe', () => {
+  // The PATH fallback searches ONLY absolute PATH entries of the injected env
+  // (never the cwd, which for LocalStrategy is the member work folder) and
+  // probes uname through that absolute path.
+  const MSYS_DIR = 'C:\\Program Files\\Git\\usr\\bin';
+  const MSYS_BASH = `${MSYS_DIR}\\bash.exe`;
+  const WSL_BASH = 'C:\\Windows\\System32\\bash.exe';
+
+  it('with no candidate present and a real MSYS bash.exe on PATH, resolution verifies the uname through the absolute PATH path and returns that absolute path -- never the bare string bash.exe', () => {
+    const probed: string[] = [];
     const result = resolveGitBashPath({
-      env: {},
+      env: { Path: `relative\\dir;;"${MSYS_DIR}"` },
       exists: () => false,
-      probeUname: () => 'MINGW64_NT-10.0-19045\n',
+      isFile: (p) => p.toLowerCase() === MSYS_BASH.toLowerCase(),
+      probeUname: (bashPath) => { probed.push(bashPath); return 'MINGW64_NT-10.0-19045\n'; },
     });
-    expect(result).toBe('bash.exe');
+    expect(result).toBe(MSYS_BASH);
+    expect(result).not.toBe('bash.exe');
+    expect(probed).toEqual([MSYS_BASH]);
   });
 
   it('with no candidate present and PATH bash.exe proving to be the WSL launcher (uname reports Linux), resolution throws naming the candidates tried -- it never silently returns bash.exe', () => {
-    expect(() =>
-      resolveGitBashPath({
-        env: { LOCALAPPDATA: 'C:\\Users\\bella\\AppData\\Local' },
-        exists: () => false,
-        probeUname: () => 'Linux\n',
-      }),
-    ).toThrow(/No Git-for-Windows bash\.exe found/);
+    const deps = {
+      env: { LOCALAPPDATA: 'C:\\Users\\bella\\AppData\\Local', PATH: 'C:\\Windows\\System32' },
+      exists: () => false,
+      isFile: (p: string) => p.toLowerCase() === WSL_BASH.toLowerCase(),
+      probeUname: () => 'Linux\n',
+    };
+    expect(() => resolveGitBashPath(deps)).toThrow(/No Git-for-Windows bash\.exe found/);
 
     try {
-      resolveGitBashPath({
-        env: { LOCALAPPDATA: 'C:\\Users\\bella\\AppData\\Local' },
-        exists: () => false,
-        probeUname: () => 'Linux\n',
-      });
+      resolveGitBashPath(deps);
     } catch (err: any) {
       // Names every candidate it tried, including the machine-wide ones and
-      // the user-scope LOCALAPPDATA one.
+      // the user-scope LOCALAPPDATA one, plus the rejected PATH bash.exe.
       for (const candidate of GIT_BASH_MACHINE_CANDIDATES) {
         expect(err.message).toContain(candidate);
       }
       expect(err.message).toContain('Programs\\Git\\bin\\bash.exe');
+      expect(err.message).toContain(WSL_BASH);
     }
   });
 
-  it('with no candidate present and no bash.exe resolvable on PATH at all, resolution throws naming the candidates tried', () => {
+  it('with no candidate present and no bash.exe in any absolute PATH entry, resolution throws naming the candidates tried and never probes a bare name', () => {
+    const probed: string[] = [];
     expect(() =>
       resolveGitBashPath({
-        env: {},
+        env: { PATH: '.;relative' },
         exists: () => false,
-        probeUname: () => undefined,
+        isFile: () => true,
+        probeUname: (bashPath) => { probed.push(bashPath); return 'MINGW64_NT\n'; },
       }),
     ).toThrow(/No Git-for-Windows bash\.exe found/);
+    expect(probed).toEqual([]);
   });
 
   it('reverting the fix (bare OS-PATH fallback with no MSYS verification) would return the ambiguous bare string -- this pins the fix', () => {
@@ -189,7 +200,12 @@ describe('resolveGitBashPath candidate list (apra-fleet-7dir.7)', () => {
     // would fail.
     let threw = false;
     try {
-      resolveGitBashPath({ env: {}, exists: () => false, probeUname: () => 'Linux\n' });
+      resolveGitBashPath({
+        env: { PATH: 'C:\\Windows\\System32' },
+        exists: () => false,
+        isFile: (p) => p.toLowerCase() === WSL_BASH.toLowerCase(),
+        probeUname: () => 'Linux\n',
+      });
     } catch {
       threw = true;
     }

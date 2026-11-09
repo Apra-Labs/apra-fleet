@@ -590,7 +590,7 @@ Selection rule:
 
 Because `project` is typed as the `MemoryProvider` interface (not
 `SqliteProvider`) to allow this widening, any call site that needs
-`SqliteProvider`-only capabilities (list, feedback, freshness sweep,
+`SqliteProvider`-only capabilities (list, freshness sweep,
 reconcile/resolve-contradiction, the DirectiveProvider methods, capture's
 second options argument) must narrow explicitly and fail loudly, rather than
 casting, when the resolved provider is remote. `requireSqliteProject` is that
@@ -598,16 +598,26 @@ narrowing point: it throws naming the caller when the project provider is an
 `HttpKbProvider`, so those operations refuse cleanly instead of behaving
 unpredictably against a remote provider that does not support them.
 
-There are nine such call sites, with two distinct behaviours. Eight fail fast
+There are eight such call sites, with two distinct behaviours. Seven fail fast
 through `requireSqliteProject`: `kb_list` (except a MEMBER mixed-tier list,
-whose own half `HttpKbProvider.list` serves from the KB server), `kb_feedback`,
+whose own half `HttpKbProvider.list` serves from the KB server),
 `kb_freshness_sweep`, `kb_reconcile_prefilter`, `kb_resolve_contradiction`,
 `kb_import`, `kb_export` (project scope), and the `kb directives` CLI.
-`kb_stats` is the ninth and deliberately DEGRADES instead: it asks the type
+`kb_stats` is the eighth and deliberately DEGRADES instead: it asks the type
 question with the non-throwing `isSqliteProject` guard and, over a remote
 provider, reports its bible block as `{ computable: false, reason }` rather
 than failing the whole stats call. It must not catch `requireSqliteProject`'s
 throw as a type test, since that would also swallow any unrelated error.
+
+`kb_feedback` is NOT one of these call sites: both providers serve it
+(GitHub #761). Over a remote KB, `HttpKbProvider.feedback` POSTs
+`{id, reason, role}` (the memory-contract v1 `kb_feedback` request body) to
+`/api/kb/feedback` with the same auth and `X-Repository*` headers as every
+other route, and the tool returns the server's response as is. While the
+server is unreachable the feedback joins the offline queue (replayed in order
+with queued captures and invalidates) and the tool answers
+`{id, queued: true}`. The client never writes or invents `confidence` and
+never writes the local fallback store; the server owns the entry's state.
 
 **Known gap left open:** the `kb_stats` "bible" response is now a union of
 the sqlite and remote-provider shapes, and not every consumer has been audited

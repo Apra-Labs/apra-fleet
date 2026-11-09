@@ -147,7 +147,7 @@ describe('maybeScheduleReindex()', () => {
     // On win32 spawn runs through cmd.exe (shell: true), where an unquoted `>=`
     // is a redirection, so the version-range spec is double-quoted there.
     const spec = process.platform === 'win32' ? '"gitnexus@>=1.6.5"' : 'gitnexus@>=1.6.5';
-    expect(args).toEqual(['-y', spec, 'analyze', '--index-only']);
+    expect(args).toEqual(['-y', spec, 'analyze', '--index-only', '--force']);
     expect(options.cwd).toBe('/repo/path');
     // win32: non-detached so the cmd.exe tree shares one hidden console.
     expect(options.detached).toBe(process.platform !== 'win32');

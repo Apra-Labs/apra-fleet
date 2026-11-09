@@ -44,6 +44,11 @@ trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
 your tool-loading tool first, before concluding they are unavailable.
 
+If a `code_*` call fails with `E-CODE-INDEX-NOT-READY`, wait ONCE for the
+`retry_after_ms` its error result carries (skip the wait when it is 0: retrying will
+not help), retry that call ONCE, and if it still fails fall back to text search and
+record the fallback. Never poll `code_status` in a loop waiting for the index.
+
 The `code_impact` and `kb_query` calls below are EXPECTED, not optional, whenever the
 tools are present. If a tool is genuinely not present (or the KB or code index is not set
 up for this repo), record that in `toolUse` (Output schema) and continue -- never skip
@@ -58,7 +63,9 @@ silently.
    exempt -- and `code_context`/`code_graph`/`code_query` to trace callers before
    accepting a signature or behaviour change -- prefer them over grep for structural
    questions. If they are absent, fail, or report the repo is not indexed, fall back to
-   reading the diff and grep and record it in `toolUse`; do not build an index.
+   reading the diff and grep and record it in `toolUse`; do not build an index. On
+   `E-CODE-INDEX-NOT-READY`, wait once for its `retry_after_ms`, retry once, then fall
+   back -- never poll `code_status` in a loop.
 3. Call `kb_query` at least once per review, on the changed files' topics, to check the
    doer's claims and the diff against what the KB already records, and to dedupe your
    captures (item 4). This is for verification only; promotion candidates still come
@@ -95,6 +102,10 @@ Each prints a JSON object of key -> full value (plus a `schema_version` entry). 
 search also matches value text, so apply only entries whose KEY contains `+all+` or `+reviewer+`.
 
 ## Step 1 -- Context recovery
+
+If your dispatch prompt gives a diff range (`<commit-sha>..<branch>`), use exactly that
+range wherever `<base-branch>..<branch>` appears below, for every `git diff` and
+`git log`. Never diff against a local base branch in that case: it may be stale.
 
 ```bash
 git log --oneline <base-branch>..<branch>
@@ -233,7 +244,7 @@ judgement.
 Return your structured output ONLY. You never call `bd update`, `bd close`, `bd create`,
 or any other beads mutation yourself -- the orchestrator reads your structured output and
 applies the reopen/create transitions:
-- `verdict`: "APPROVED" or "CHANGES_NEEDED"
+- `verdict`: "APPROVED", "CHANGES_NEEDED" or "NEEDS-DECISION"
 - `notes`: specific findings with file and line references where possible
 - `reopenIds`: array of beads task IDs that need rework (empty array if none)
 - `replanIds`: optional array of ids among `reopenIds` whose ACCEPTANCE CRITERIA are
@@ -260,6 +271,19 @@ applies the reopen/create transitions:
 **CHANGES_NEEDED**: list every task that needs rework in `reopenIds` -- do NOT reopen it
 yourself. The orchestrator runs `bd update <id> --status=open` for each ID in `reopenIds`.
 Notes must be specific: "auth_test.ts line 42: no test for expired token path".
+
+**NEEDS-DECISION**: when a bead under review can be neither approved nor sent back for
+rework until a human chooses between real alternatives (for example two acceptable
+designs with different costs, or criteria that can only be met by an option the bead
+does not authorize), return `verdict: "NEEDS-DECISION"` with a `decision` object:
+`beadId` (the one bead the decision is about, from the beads you were asked to review),
+`question` (self-contained: what you found and what must be decided), `options` (at
+least two, each `{ "id": "a", "text": "..." }`) and `recommendation` (the option id you
+recommend, and why). The orchestrator reopens that bead if needed, files the question
+for an operator verbatim and sets the bead aside for the rest of the run; any other
+`reopenIds` and `newTasks` on the same verdict are still applied. Do not use it for
+ordinary rework (CHANGES_NEEDED) or for defective criteria a planner can rewrite
+(`replanIds`).
 
 ## Output schema
 

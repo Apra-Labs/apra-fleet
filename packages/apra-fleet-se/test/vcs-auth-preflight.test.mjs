@@ -263,9 +263,14 @@ describe('createVcsAuthPreflightCallback', () => {
         const callTool = async (name, args) => {
             if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'bitbucket' }) }] };
             calls.push({ name, args });
+            // The labelled-credential REST probe answers 200 (only git
+            // ls-remote fails below), so the REMOTE member still reaches its
+            // one provisioning attempt and the re-probe after it passes.
+            if (name === 'vcs_credential_exec') return { content: [{ text: '[OK]' }], structuredContent: { ok: true, reason: 'ok', exitCode: 0, stdout: '{"values":[]}\n200', stderr: '' } };
             return provisionedWithExpiry(farFutureExpiry());
         };
         const bitbucketCommand = async (cmd) => {
+            if (cmd.includes("grep '^username='")) return { ok: true, output: 'username=x-bitbucket-api-token-auth', error: null };
             if (cmd === 'git remote get-url origin') {
                 return { ok: true, output: 'https://bitbucket.org/acme/widgets.git', error: null };
             }
@@ -290,7 +295,15 @@ describe('createVcsAuthPreflightCallback', () => {
         // call -- is unchanged, and is asserted below in its new form rather
         // than loosened. Kept in step with the structurally identical
         // self-heal twin in test/vcs-auth-self-heal.test.mjs.
-        assert.deepEqual(calls.map((c) => c.name), ['credential_store_list', 'provision_vcs_auth']);
+        // The Bitbucket preflight also probes the provider-LABELLED
+        // credential (REST through vcs_credential_exec) before and after the
+        // provisioning attempt -- under the 'bitbucket' label, never a
+        // github one.
+        assert.deepEqual(calls.map((c) => c.name), ['credential_store_list', 'vcs_credential_exec', 'credential_store_list', 'provision_vcs_auth', 'vcs_credential_exec']);
+        for (const exec of calls.filter((c) => c.name === 'vcs_credential_exec')) {
+            assert.equal(exec.args.label, 'bitbucket');
+            assert.ok(!exec.args.command.includes('github'), exec.args.command);
+        }
         const provisionCall = calls.find((c) => c.name === 'provision_vcs_auth');
         assert.deepEqual(provisionCall.args, {
             member_name: 'bb-member',

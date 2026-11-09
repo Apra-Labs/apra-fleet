@@ -163,6 +163,15 @@ export async function detectRunningFleetSe(probes: FleetSeProbes = realFleetSePr
   return { supervisor, sprints: [...sprints.values()], warnings };
 }
 
+/**
+ * The args of the step-3 rerun line. When a live apra-fleet server is recorded
+ * the rerun must carry --force (once), or the running-server check refuses the
+ * copied command again; with no live server the args are unchanged.
+ */
+export function fleetSeRerunArgs(args: string[], liveServer: boolean): string[] {
+  return liveServer && !args.includes('--force') ? [...args, '--force'] : args;
+}
+
 /** The refusal printed when fleet-se work is running. */
 export function fleetSeRefusalText(found: RunningFleetSe, opts: {
   platform: NodeJS.Platform; rerunLines: string[]; ignoreLines: string[];
@@ -171,6 +180,10 @@ export function fleetSeRefusalText(found: RunningFleetSe, opts: {
 }): string {
   const serveScript = opts.serveScript ?? INSTALLED_SERVE_SCRIPT;
   const curl = opts.platform === 'win32' ? 'curl.exe' : 'curl';
+  // The supervisor refuses a mutating request without a JSON content type
+  // (cross-site request guard); the double-quoted header works unchanged in
+  // cmd.exe, PowerShell and POSIX shells.
+  const jsonHeader = '-H "Content-Type: application/json"';
   const sup = found.supervisor;
   const base = sup ? `http://localhost:${sup.port}` : `http://localhost:${DEFAULT_SUPERVISOR_PORT}`;
   const running: string[] = [];
@@ -183,18 +196,21 @@ export function fleetSeRefusalText(found: RunningFleetSe, opts: {
   if (found.sprints.length > 0) {
     steps.push('  1. Stop the running sprints or let them finish.');
     for (const s of found.sprints) {
-      if (sup && s.sprintId) steps.push(`       ${curl} -X POST ${base}/api/sprints/${s.sprintId}/stop`);
+      if (sup && s.sprintId) steps.push(`       ${curl} -X POST ${base}/api/sprints/${s.sprintId}/stop ${jsonHeader}`);
     }
     if (found.sprints.some(s => !(sup && s.sprintId))) {
       steps.push('     A sprint started directly (apra-fleet workflow fleet-sprint) is stopped with Ctrl-C in its');
       steps.push('     console, or by ending its pid shown above. If that pid is not a fleet-sprint (a stale');
       steps.push('     lock whose pid was reused), delete the lock file instead.');
     }
+    steps.push('     A sprint stopped by an older fleet (0.4.3 and earlier) keeps its dashboard child alive for');
+    steps.push('     up to 300 seconds and holds its lock meanwhile, so this check keeps refusing until that');
+    steps.push('     child exits: wait up to 5 minutes and re-run, or end the pid shown above.');
   } else {
     steps.push('  1. No sprint is running.');
   }
   steps.push(sup
-    ? `  2. Stop the supervisor:\n       ${curl} -X POST ${base}/api/shutdown`
+    ? `  2. Stop the supervisor:\n       ${curl} -X POST ${base}/api/shutdown ${jsonHeader}`
     : '  2. No supervisor is running.');
   steps.push('  3. Upgrade:');
   for (const l of opts.rerunLines) steps.push(`       ${l}`);

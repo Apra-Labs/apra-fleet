@@ -270,6 +270,10 @@ function buildTranscriptFleetApi(tempDir, epicBead, dispatchLog) {
                 return mockCmdResult(0, 'https://github.com/mock-org/mock-repo.git', '');
             }
 
+            // Review diff base: the engine needs a commit SHA back.
+            if (/^git merge-base origin\/\S+ \S+\s*$/.test(opts.command)) {
+                return mockCmdResult(0, 'c0ffee0000000000000000000000000000c0ffee', '');
+            }
             if (/^(git|gh)\s/.test(opts.command)) {
                 return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
             }

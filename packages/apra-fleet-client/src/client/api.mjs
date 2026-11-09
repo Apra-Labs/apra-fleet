@@ -661,7 +661,9 @@
  *   configured app) or pat (personal access token)
  * @property {string} [token] - Personal access token (GitHub PAT or Azure DevOps PAT).
  *   Supports {{secret.NAME}} token -- resolved from the credential store server-side before use.
- * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [git_access] - GitHub App access
+ * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [git_access] - GitHub App mode
+ *   only: what the token may do. Use "push+pr" to create pull requests and dispatch workflows (see
+ *   docs/api-reference.md for every level). GitHub App access
  *   level override
  * @property {string[]} [repos] - GitHub App repository list override
  * @property {string} [email] - OPTIONAL Bitbucket account email. Ignored for authentication
@@ -943,7 +945,7 @@ export function assertNoRemovedKbScopeKeys(tool, options) {
     const err = new Error(
         `E-SCOPE-KEY-REMOVED: ${tool} no longer accepts ${present.map((k) => `'${k}'`).join(', ')} ` +
         '(removed in the KB redesign); the call was not sent. Remediation: drop it -- every kb_* call acts on the ' +
-        "calling session's own KB (a member session's registered work folder; a FULL session's fleet server working folder).",
+        "calling session's own KB (a member session's registered work folder; a FULL session's first MCP client root inside a git repository with an origin remote, or the fleet server working folder when the client offers no roots).",
     );
     err.code = 'E-SCOPE-KEY-REMOVED';
     throw err;
@@ -1117,7 +1119,8 @@ export class ApraFleet {
     /**
      * Get status of all fleet members. With format "json" the result's
      * kbHealth.credential is a {@link FleetStatusKbCredential} when the KB
-     * config selects the http provider.
+     * config selects the http provider, and kbHealth.toolProfileWarning is a
+     * string when the configured KB tool profile is invalid.
      * @param {FleetStatusOptions} [options]
      */
     async fleetStatus(options = {}) {
@@ -1382,6 +1385,29 @@ export class ApraFleet {
     }
 
     /**
+     * Send a message to a connected member session. member_id is a member
+     * UUID, or "orchestrator" for the operator's own channel-capable
+     * orchestrating session (operator notifications). With probe: true the
+     * server sends nothing and only reports whether a session holds the
+     * target ({ probe: true, member_id, connected, channel_capable }).
+     * @param {{ member_id: string, content: string, reply_to?: string, probe?: boolean }} options
+     */
+    async sendMessage(options) {
+        return this.mcpClient.callTool('send_message', options);
+    }
+
+    /**
+     * Read-only check of a message target: send_message with probe: true.
+     * Sends nothing. The result text is JSON
+     * { probe: true, member_id, connected, channel_capable }; only a
+     * channel_capable session can receive a message.
+     * @param {string} memberId a member UUID or "orchestrator"
+     */
+    async probeMessageTarget(memberId) {
+        return this.mcpClient.callTool('send_message', { member_id: memberId, content: '', probe: true });
+    }
+
+    /**
      * Send an email. Pass provider config inline (provider, from, and for
      * SMTP: host, port, user, secure). Secrets resolve from the credential
      * store (sendgrid_api_key / smtp_password).
@@ -1404,8 +1430,11 @@ export class ApraFleet {
 
     /**
      * code_reindex -- rebuild the code index of the calling session's own repo
-     * (a member session's work folder, otherwise the fleet server's folder;
-     * there is no repo argument). Starts gitnexus analyze detached with its
+     * (a member session's work folder, otherwise
+     * the first MCP client root (roots/list) inside a git repository with an origin remote, or the server working folder when the client offers no roots;
+     * there is no repo argument). Starts gitnexus analyze detached, always as
+     * a full rebuild (--force; an incremental analyze can corrupt unchanged
+     * symbol rows), with its
      * output captured to <data>/code-index/<slug>/analyze.log and returns
      * after the first tick. Extract the JSON with parseToolJson(): `outcome`
      * is 'started' | 'up-to-date' | 'starting' | 'already-running' |
