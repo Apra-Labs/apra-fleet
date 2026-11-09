@@ -1005,7 +1005,10 @@ async function main() {
     const onLaunchSigint = () => {
         sprintReservation.releaseAll()
             .catch((err) => console.error('[member-reservation] release-on-SIGINT failed:', err))
-            .finally(() => process.exit(130));
+            .finally(async () => {
+                await closeFleetTransport();
+                process.exit(130);
+            });
     };
     process.once('SIGINT', onLaunchSigint);
     const topology = await reserveThenAlign({ sprintReservation, align: () => prepareLaunchTopology({
@@ -1189,7 +1192,10 @@ async function main() {
     const onSigint = () => {
         releaseReservationOnce()
             .catch((err) => console.error('[member-reservation] release-on-SIGINT failed:', err))
-            .finally(() => process.exit(130));
+            .finally(async () => {
+                await closeFleetTransport();
+                process.exit(130);
+            });
     };
     process.removeListener('SIGINT', onLaunchSigint);
     process.once('SIGINT', onSigint);

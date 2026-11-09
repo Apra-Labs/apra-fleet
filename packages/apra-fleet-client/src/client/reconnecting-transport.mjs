@@ -78,7 +78,8 @@ export class ReconnectingHttpTransport extends EventEmitter {
         await t.start();
         t.off('error', onInitError);
         if (initError || !t.sessionId) {
-            try { t.stop(); } catch { /* ignore */ }
+            // close() also releases a session the server already issued.
+            releaseTransport(t);
             throw initError || new Error(`Could not open an MCP session at ${url}`);
         }
         const old = this.inner;

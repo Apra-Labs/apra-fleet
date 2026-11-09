@@ -1035,7 +1035,10 @@ HTTP headers or child-process spawn options).
   `execute_prompt`/`execute_command` whose response stream died) is rejected
   and never re-sent; the next request reconnects. A replaced connection's
   server session is released (HTTP DELETE, best effort). `close()` releases
-  the current session and stops; `stop()` is local only.
+  the current session and stops; `stop()` is local only. Releasing a session
+  cancels any tool call still running on it, including the member process of
+  an `execute_prompt`/`execute_command`; the server does the same when it
+  evicts a session abandoned mid-call.
 - `isNeverDeliveredError(err)` -- the predicate behind that retry rule.
   `StreamableHttpTransport` send errors now carry `.status`.
 
