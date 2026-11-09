@@ -22,7 +22,7 @@ import { leakage, LEAKAGE_CAP } from '../../scripts/kb-recall-leakage.mjs';
 // that cannot load fails instead of skipping).
 
 const MISS_QUERY_ID = 'real-miss-resource-not-accessible';
-const MISS_ENTRY_ID = 'eval-real-memory-vcs-auth-explicit-access';
+const MISS_ENTRY_ID = '4f54d973-5627-49c3-903a-466695892a45';
 let ctx: Awaited<ReturnType<typeof loadEvalProvider>>;
 const reports: EvalReport[] = [];
 

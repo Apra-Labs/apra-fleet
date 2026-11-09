@@ -1,20 +1,19 @@
 {
   "entries": [
     {
-      "id": "eval-real-memory-vcs-auth-explicit-access",
-      "type": "learning",
-      "title": "Manual provision_vcs_auth needs git_access push+pr to create PRs or dispatch workflows",
-      "summary": "Manual provision_vcs_auth (github-app) must pass repos as full Apra-Labs/<repo> names and git_access: push for pushing, push+pr to create PRs or dispatch workflows.",
-      "content": "Manual provision_vcs_auth (github-app) must pass repos as full Apra-Labs/<repo> names and git_access: push for pushing, push+pr to create PRs or dispatch workflows. gh \"Resource not accessible by integration\" means re-mint with push+pr; no owner login needed. Members provisioned only by sprint preflight have no stored access level and fail with deploy_failed otherwise. The [FAIL] reason is only in the tool text content, not the JSON.",
+      "id": "4f54d973-5627-49c3-903a-466695892a45",
+      "type": "runbook",
+      "title": "gh 'Resource not accessible by integration' means re-mint provision_vcs_auth with git_access push+pr",
+      "summary": "When gh or git reports 'Resource not accessible by integration', the GitHub App token lacks the needed access. Re-mint with provision_vcs_auth using git_access push+pr (push alone cannot create PRs or dispatch workflows) and repos as full owner/repo names.",
+      "content": "error_signature: \"Resource not accessible by integration\" (gh / GitHub API 403). Cause: the GitHub App installation token minted by provision_vcs_auth was granted too little access (e.g. git_access push or read). push cannot create PRs or dispatch workflows. Fix: re-run provision_vcs_auth (github-app) with git_access: \"push+pr\" and repos passed as full owner/repo names (e.g. Apra-Labs/apra-fleet). Members provisioned only by sprint preflight have no stored access level and may fail with deploy_failed until re-minted. Evidence: GIT_ACCESS_DESCRIPTION and git_access enum (read, push, push+pr, admin, issues, full) in src/tools/provision-vcs-auth.ts.",
       "symbols": [
         "provisionVcsAuth"
       ],
       "source_files": [
-        "src/tools/provision-vcs-auth.ts",
-        "packages/apra-fleet-se/fleet-sprint/vcs-providers/github.mjs"
+        "src/tools/provision-vcs-auth.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-11-05T00:00:00.000Z"
+      "updated_at": "2026-11-09T16:39:19.026Z"
     }
   ]
 }

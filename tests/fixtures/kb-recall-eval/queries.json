@@ -1663,10 +1663,10 @@
       "query": "agent session on a member fails to open a change request after login provisioning: Resource not accessible by integration",
       "error_text": "Resource not accessible by integration",
       "expected": [
-        "eval-real-memory-vcs-auth-explicit-access"
+        "4f54d973-5627-49c3-903a-466695892a45"
       ],
       "source": "owner-notes",
-      "provenance": "owner-reported recall miss; the target is the recorded operator memory on VCS auth access levels, verbatim"
+      "provenance": "owner-reported recall miss; the target is the real KB runbook entry on the push+pr access level"
     }
   ]
 }

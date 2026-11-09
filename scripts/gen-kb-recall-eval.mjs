@@ -11,6 +11,7 @@
 // Usage:
 //   node scripts/gen-kb-recall-eval.mjs                 # reuse entry-content.json
 //   node scripts/gen-kb-recall-eval.mjs --kb-db <kb.sqlite>
+//   node scripts/gen-kb-recall-eval.mjs --keep-snapshot   # do not refresh bible-snapshot.json
 //     refresh entry-content.json from a maintainer's per-repo KB database
 //     (<data dir>/knowledge/<repo slug>/kb.sqlite): for every bible entry
 //     whose stored content is longer than its summary, the content with the
@@ -43,7 +44,8 @@ function writeJson(file, value) {
 }
 
 // The eval reads this pinned snapshot, not the live bible; regenerating refreshes it.
-fs.copyFileSync(path.join(root, '.fleet/kb-canonical.json'), path.join(outDir, 'bible-snapshot.json'));
+// --keep-snapshot regenerates from the already-pinned snapshot without refreshing it.
+if (!process.argv.includes('--keep-snapshot')) fs.copyFileSync(path.join(root, '.fleet/kb-canonical.json'), path.join(outDir, 'bible-snapshot.json'));
 const bible = JSON.parse(fs.readFileSync(path.join(outDir, 'bible-snapshot.json'), 'utf-8'));
 const byPrefix = new Map(bible.entries.map(e => [e.id.slice(0, 8), e]));
 
@@ -70,20 +72,22 @@ if (kbDbArg !== -1) {
 }
 const realContent = fs.existsSync(contentFile) ? JSON.parse(fs.readFileSync(contentFile, 'utf-8')).content : {};
 
-// ---- push+pr entry (a recorded operator memory, verbatim) -----------------
-const MISS_ENTRY_ID = 'eval-real-memory-vcs-auth-explicit-access';
-const PUSH_PR_MEMORY = 'Manual provision_vcs_auth (github-app) must pass repos as full Apra-Labs/<repo> names and git_access: push for pushing, push+pr to create PRs or dispatch workflows. gh "Resource not accessible by integration" means re-mint with push+pr; no owner login needed. Members provisioned only by sprint preflight have no stored access level and fail with deploy_failed otherwise. The [FAIL] reason is only in the tool text content, not the JSON.';
-const extraEntries = [{
+// ---- push+pr entry (the real KB runbook entry, exported from the KB) -------
+// Carried in extra-entries.json until harvest commits it to the bible; once its
+// id is in .fleet/kb-canonical.json it is NOT added again (no duplicate id).
+const MISS_ENTRY_ID = '4f54d973-5627-49c3-903a-466695892a45';
+const PUSH_PR_ENTRY = {
   id: MISS_ENTRY_ID,
-  type: 'learning',
-  title: 'Manual provision_vcs_auth needs git_access push+pr to create PRs or dispatch workflows',
-  summary: 'Manual provision_vcs_auth (github-app) must pass repos as full Apra-Labs/<repo> names and git_access: push for pushing, push+pr to create PRs or dispatch workflows.',
-  content: PUSH_PR_MEMORY,
+  type: 'runbook',
+  title: "gh 'Resource not accessible by integration' means re-mint provision_vcs_auth with git_access push+pr",
+  summary: "When gh or git reports 'Resource not accessible by integration', the GitHub App token lacks the needed access. Re-mint with provision_vcs_auth using git_access push+pr (push alone cannot create PRs or dispatch workflows) and repos as full owner/repo names.",
+  content: 'error_signature: "Resource not accessible by integration" (gh / GitHub API 403). Cause: the GitHub App installation token minted by provision_vcs_auth was granted too little access (e.g. git_access push or read). push cannot create PRs or dispatch workflows. Fix: re-run provision_vcs_auth (github-app) with git_access: "push+pr" and repos passed as full owner/repo names (e.g. Apra-Labs/apra-fleet). Members provisioned only by sprint preflight have no stored access level and may fail with deploy_failed until re-minted. Evidence: GIT_ACCESS_DESCRIPTION and git_access enum (read, push, push+pr, admin, issues, full) in src/tools/provision-vcs-auth.ts.',
   symbols: ['provisionVcsAuth'],
-  source_files: ['src/tools/provision-vcs-auth.ts', 'packages/apra-fleet-se/fleet-sprint/vcs-providers/github.mjs'],
+  source_files: ['src/tools/provision-vcs-auth.ts'],
   confidence: 'CONFIRMED',
-  updated_at: '2026-11-05T00:00:00.000Z',
-}];
+  updated_at: '2026-11-09T16:39:19.026Z',
+};
+const extraEntries = bible.entries.some(e => e.id === MISS_ENTRY_ID) ? [] : [PUSH_PR_ENTRY];
 
 // ---- derived recall_cues / error_signatures -------------------------------
 /** "SqliteProvider.hybridRows" -> "sqlite provider hybrid rows"; "kb-index.ts" -> "kb index". */
@@ -162,7 +166,7 @@ queries.push({
   error_text: 'Resource not accessible by integration',
   expected: [MISS_ENTRY_ID],
   source: 'owner-notes',
-  provenance: 'owner-reported recall miss; the target is the recorded operator memory on VCS auth access levels, verbatim',
+  provenance: 'owner-reported recall miss; the target is the real KB runbook entry on the push+pr access level',
 });
 
 writeJson('queries.json', { version: 3, queries });
