@@ -17,11 +17,13 @@ import { hashedBagOfWords } from '../helpers/fake-embedder.js';
 // per-model floor of the default model (same real-like embedder as
 // kb-semantic-floor.test.ts: shared BASELINE direction).
 //
-// Falsifiability: checked by temporarily restoring the old
-// `semanticText = [queryText, errorText]` in SqliteProvider.hybridRows
-// (queryText falls back to fts_terms): the prime and fts_terms tests then
-// fail (extra semantic-only rows). The control below shows opts.query text
-// does reach the semantic list, so the test is not vacuous.
+// Falsifiability: checked by temporarily restoring the old semantic text
+// (capEmbedText(queryText, ...) instead of opts.query in SqliteProvider.hybridRows;
+// queryText falls back to fts_terms). With that mutation these fail: the prime
+// test (extra semantic-only rows), the fts_terms test (keyword-hit part gains
+// rows and the 0-keyword part goes 0 -> 2 rows) and the use_count test. The
+// control passes in both states: it shows opts.query text does reach the
+// semantic list, so the tests are not vacuous.
 //
 // Isolation: every file lives under one mkdtemp dir removed in afterAll.
 
@@ -52,8 +54,12 @@ const ALL_TIERS = ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] as const;
 // Judge-shaped identifier bag. The dotted symbols AND-join in FTS, so an
 // entry carrying only the second half is invisible to keyword search but
 // shares embedding tokens with the bag.
-const HINT_SYMBOLS = ['Dispatch.isNonRetryableDispatchError', 'Delivery.secret_delivery_unavailable'];
-const HINT_MODULES = ['ERROR_NOT_ENOUGH_MEMORY'];
+const HINT_SYMBOLS = ['Router.isNonRetryableDispatchError', 'Gateway.secret_delivery_unavailable'];
+const HINT_MODULES = ['Windows.ERROR_NOT_ENOUGH_MEMORY'];
+// Keyword-invisible: the unknown 'nowhere' token is AND-joined into every
+// term (and no title/symbol holds these raw identifiers, so trigram misses
+// too): 0 keyword rows; the content-only entries still share identifiers.
+const ZERO_KEYWORD_TERMS = ['Nowhere.secret_delivery_unavailable', 'Nowhere.ERROR_NOT_ENOUGH_MEMORY'];
 
 let tmp: string;
 let n = 0;
@@ -67,11 +73,14 @@ beforeEach(async () => {
   await p.init();
   const entries = [
     // Keyword-visible (exact dotted match).
-    { title: 'Dispatch.isNonRetryableDispatchError classification', summary: 'Dispatch.isNonRetryableDispatchError decides retry', symbols: ['Dispatch.isNonRetryableDispatchError'] },
+    { title: 'Router.isNonRetryableDispatchError classification', summary: 'Router.isNonRetryableDispatchError decides retry', symbols: ['Router.isNonRetryableDispatchError'] },
     { title: 'Dispatch.isNonRetryableError classification', summary: 'Dispatch.isNonRetryableError decides retry', symbols: ['Dispatch.isNonRetryableError'] },
-    // Semantic-only candidates: share identifier tokens, not the FTS AND terms.
-    { title: 'isNonRetryableDispatchError retry notes', summary: 'isNonRetryableDispatchError secret_delivery_unavailable ERROR_NOT_ENOUGH_MEMORY', symbols: ['Other.thing'] },
-    { title: 'secret_delivery_unavailable handling', summary: 'secret_delivery_unavailable isNonRetryableDispatchError retry', symbols: ['Other.other'] },
+    // Semantic-only candidates: they share many identifier tokens with the bag
+    // but each hint term (tokens AND-joined within a term, OR across terms)
+    // carries a namespace token (router / gateway / windows) absent here, so
+    // keyword search cannot return them; ONLY a semantic list can.
+    { title: 'Retry notes alpha', summary: 'retry notes alpha', content: 'isNonRetryableDispatchError secret_delivery_unavailable ERROR_NOT_ENOUGH_MEMORY retry', symbols: ['Other.thing'] },
+    { title: 'Retry notes beta', summary: 'retry notes beta', content: 'secret_delivery_unavailable isNonRetryableDispatchError ERROR_NOT_ENOUGH_MEMORY notes', symbols: ['Other.other'] },
     // Semantic-only for the single-symbol hint below: lacks the "Dispatch" half of the FTS AND.
     // The identifier sits only in content (not title/summary/symbols), which
     // neither the keyword nor the trigram index covers but the embedding sees.
@@ -115,11 +124,11 @@ describe('fts_terms never feed the semantic list (D2f additive)', () => {
   it('a fts_terms-only read is identical with and without the embedder (rows found, and 0 stays 0)', async () => {
     const terms = [...HINT_SYMBOLS, ...HINT_MODULES];
     const withKeywordHits = await queryIds({ fts_terms: terms });
-    const noKeywordHits = await queryIds({ fts_terms: ['Nope.never_seen_anywhere', 'isNonRetryableDispatchError_x'] });
+    const noKeywordHits = await queryIds({ fts_terms: ZERO_KEYWORD_TERMS });
     expect(noKeywordHits).toEqual([]);
     await attach();
     expect(await queryIds({ fts_terms: terms })).toEqual(withKeywordHits);
-    expect(await queryIds({ fts_terms: ['Nope.never_seen_anywhere', 'isNonRetryableDispatchError_x'] })).toEqual([]);
+    expect(await queryIds({ fts_terms: ZERO_KEYWORD_TERMS })).toEqual([]);
   });
 
   it('use_count is not bumped for rows only a semantic list would have added', async () => {
