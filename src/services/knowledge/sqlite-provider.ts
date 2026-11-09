@@ -1805,6 +1805,12 @@ export class SqliteProvider implements MemoryProvider {
    * list and there were no anchors or error_text, the result is the plain
    * keyword result (empty for a nonsense query or an unknown fts_terms
    * symbol), so loading a model changes nothing for such a caller.
+   *
+   * D2f additive rules: (1) the semantic text is built from opts.query and
+   * error_text only, never fts_terms, so a read carrying only fts_terms
+   * returns null/keyword rows exactly as without a model; (2) every id in the
+   * keyword list's top 5 is guaranteed a place in the first 8 of the final
+   * order (guardKeywordTop in hybrid-rank.ts).
    */
   private async hybridRows(
     opts: QueryOptions,
@@ -1817,7 +1823,10 @@ export class SqliteProvider implements MemoryProvider {
     const errorText = opts.error_text?.trim() ?? '';
     const files = (opts.anchor_files ?? []).map(normalizeFileRef).filter(Boolean);
     const symbols = (opts.anchor_symbols ?? []).map(x => x.trim()).filter(Boolean);
-    const semanticText = [queryText, errorText].filter(Boolean).join('\n');
+    // The embedded text never includes fts_terms (an identifier bag from
+    // kb_session_prime or a plain symbol read): only the caller's own query
+    // text and error_text are paraphrase-like enough to embed.
+    const semanticText = [opts.query?.trim() ?? '', errorText].filter(Boolean).join('\n');
 
     const useError = errorText !== '' && !off.has('error');
     const useAnchor = (files.length > 0 || symbols.length > 0) && !off.has('anchor');
@@ -1941,7 +1950,8 @@ export class SqliteProvider implements MemoryProvider {
       const r = rowById.get(id)!;
       return trustPrior({ confidence: r.confidence as string, use_count: Number(r.use_count ?? 0), stale: Number(r.stale ?? 0) === 1 });
     }, lists[0] ? [...lists[0].ranks.keys()] : []);
-    return order.slice(0, limit).map(id => rowById.get(id)!);
+    const guarded = order;
+    return guarded.slice(0, limit).map(id => rowById.get(id)!);
   }
 
   async context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean, ownerTag?: string): Promise<FileContextResult[]> {

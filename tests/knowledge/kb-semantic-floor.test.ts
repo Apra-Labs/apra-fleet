@@ -132,7 +132,8 @@ describe('semantic similarity floor', () => {
     expect(await queryIds({ fts_terms: [UNKNOWN_SYMBOL] })).toEqual([]);
     await attach();
     expect(await queryIds({ fts_terms: [UNKNOWN_SYMBOL] })).toEqual([]);
-    expect((await queryIds({ fts_terms: [UNKNOWN_SYMBOL], semantic_floor: Number.NEGATIVE_INFINITY })).length).toBeGreaterThan(0);
+    // fts_terms are never embedded, so even the floor-off override adds no semantic rows.
+    expect(await queryIds({ fts_terms: [UNKNOWN_SYMBOL], semantic_floor: Number.NEGATIVE_INFINITY })).toEqual([]);
   });
 
   it('kb_session_prime with an unknown hint symbol returns the same as before embeddings', async () => {
