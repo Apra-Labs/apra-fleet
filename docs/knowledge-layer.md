@@ -1083,6 +1083,29 @@ in the background; queries only ever compare vectors of the active model.
   anchor lists only. A remote member's view gets no code-link resolver (its
   checkout and code index are not on this host): anchors there come from the
   entries' own `source_files`/`symbols` only.
+- **Semantic text is additive and bounded.** The text embedded for a query is
+  built only from the caller's `query` and `error_text`; `fts_terms` (identifier
+  bags) feed the keyword list only, so they cannot dilute the semantic signal.
+  Embedded query text is capped at 200 characters, cut at a sentence or word
+  boundary. The keyword match ORs at most 32 distinct terms; `fts_terms` are
+  never truncated, and the legacy FTS path is bounded only when a query exceeds
+  the limit.
+- **Keyword top-5 guard.** After RRF fusion, `guardKeywordTop`
+  (`hybrid-rank.ts`) guarantees the keyword list's top 5 hits sit within the
+  first 8 rows, so semantic neighbours cannot push exact keyword matches out of
+  the window the engine injects. The guard is a fixed 8-row window applied
+  before the `limit` slice: a caller with `limit` below 8 (member default is 6)
+  can still lose a guarded hit placed at slot 7 or 8. The switch to turn it off
+  (`QueryOptions.disable_keyword_guard`) exists for evaluation only and is
+  deliberately not exposed in the tool schema or `/api/kb/query`. On the real
+  42-query set R@8 with the guard is at least as high as without for all three
+  models; on the larger authored set it dips slightly for the two smaller
+  arctic models.
+- **Recall evaluation.** The recall eval reports R@8 alongside the other
+  cut-offs and targets real, existing KB entries (never invented ids). Its
+  fixture generator is idempotent: rerunning it reproduces the committed
+  fixtures byte for byte. The query bench has an engine-situation lane built
+  with the real role hints, which is the shape of the engine's actual queries.
 - **Benchmark scope.** The bench's p95 uses a fake query embedder; a real
   model adds roughly 150 ms for query embedding on a low-end laptop CPU.
 - **Downgrades.** Downgrading leaves an empty legacy FTS table behind;
