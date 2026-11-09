@@ -247,6 +247,9 @@ export interface QueryOptions {
   // INTERNAL ONLY (eval floor sweep): override the active model's semantic
   // similarity floor. Not on kbQuerySchema or the HTTP route.
   semantic_floor?: number;
+  // INTERNAL ONLY (eval before/after comparison): skip the keyword top-5
+  // guard (guardKeywordTop) in hybridRows. Not on kbQuerySchema or the HTTP route.
+  disable_keyword_guard?: boolean;
 }
 
 export interface KBResult {

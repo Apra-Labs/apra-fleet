@@ -1992,7 +1992,7 @@ export class SqliteProvider implements MemoryProvider {
       const r = rowById.get(id)!;
       return trustPrior({ confidence: r.confidence as string, use_count: Number(r.use_count ?? 0), stale: Number(r.stale ?? 0) === 1 });
     }, lists[0] ? [...lists[0].ranks.keys()] : []);
-    const guarded = keywordRows
+    const guarded = keywordRows && !opts.disable_keyword_guard
       ? guardKeywordTop(order, keywordRows.map(r => r.id as string))
       : order;
     return guarded.slice(0, limit).map(id => rowById.get(id)!);

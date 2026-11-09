@@ -4,8 +4,9 @@ import {
   DEFAULT_CONFIGS, loadQueries, loadEvalEntries, loadEvalProvider, runEval, formatReport,
   recallAtK, meanReciprocalRank, firstHitRank, missingExpectedIds, writeReportFile, type EvalReport,
   keywordConfig, modelConfigs, MODEL_PROFILES, MODEL_EMBED_TIMEOUT_MS, modelsRequired, formatTable,
-  semanticFloorSweep, formatFloorSweep, NONSENSE_QUERIES,
+  semanticFloorSweep, formatFloorSweep, NONSENSE_QUERIES, guardOffConfigs,
 } from '../helpers/kb-recall-eval.js';
+import { kbQuerySchema } from '../../src/tools/kb-query.js';
 import { BUILTIN_EMBEDDING_PROFILES } from '../../src/services/knowledge/embedding/profiles.js';
 // @ts-expect-error plain .mjs shared with scripts/gen-kb-recall-eval.mjs
 import { leakage, LEAKAGE_CAP } from '../../scripts/kb-recall-leakage.mjs';
@@ -53,6 +54,36 @@ describe('recall metrics', () => {
 
   it('a hit beyond rank 5 does not count', () => {
     expect(firstHitRank(['1', '2', '3', '4', '5', 'a'], ['a'])).toBeNull();
+  });
+});
+
+describe('R@8 and the keyword top-5 guard comparison', () => {
+  it('reports R@8 next to R@5 and MRR for every source and overall, and R@8 >= R@5', () => {
+    const r = reports[0];
+    expect(Number.isFinite(r.recallAt8)).toBe(true);
+    expect(r.recallAt8).toBeGreaterThanOrEqual(r.recallAt5);
+    for (const src of ['real', 'authored']) {
+      expect(r.bySource[src].recallAt8).toBeGreaterThanOrEqual(r.bySource[src].recallAt5);
+    }
+    expect(formatReport(r)).toContain('R@8=');
+    expect(formatTable(reports, 'real')).toContain('| R@8 |');
+  });
+
+  it('the guard-off switch is internal: not on the kb_query tool schema', () => {
+    expect(Object.keys(kbQuerySchema.shape)).not.toContain('disable_keyword_guard');
+    expect(kbQuerySchema.safeParse({ query: 'x', disable_keyword_guard: true }).success).toBe(true);
+    const parsed = kbQuerySchema.parse({ query: 'x', disable_keyword_guard: true }) as Record<string, unknown>;
+    expect(parsed.disable_keyword_guard).toBeUndefined();
+  });
+
+  it('real-set hybrid R@8 with the guard is not lower than with it off (APRA_KB_EVAL_GUARD_OFF=1, models present)', () => {
+    for (const off of guardOffConfigs()) {
+      const on = reports.find(x => x.config === off.name.replace('hybrid, guard off', 'hybrid'));
+      const offR = reports.find(x => x.config === off.name);
+      if (!on || !offR || on.skipped !== undefined || offR.skipped !== undefined) continue;
+      console.log(`[kb-recall-eval] guard comparison ${off.name}: real R@5 ${on.bySource.real.recallAt5.toFixed(4)} vs ${offR.bySource.real.recallAt5.toFixed(4)}, R@8 ${on.bySource.real.recallAt8.toFixed(4)} vs ${offR.bySource.real.recallAt8.toFixed(4)}`);
+      expect(on.bySource.real.recallAt8).toBeGreaterThanOrEqual(offR.bySource.real.recallAt8);
+    }
   });
 });
 

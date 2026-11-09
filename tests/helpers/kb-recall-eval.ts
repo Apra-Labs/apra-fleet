@@ -27,6 +27,8 @@ export const EVAL_DIR = path.resolve(__dirname, '../fixtures/kb-recall-eval');
 // promotion cannot turn the coverage check red.
 export const BIBLE_PATH = path.resolve(__dirname, '../fixtures/kb-recall-eval/bible-snapshot.json');
 export const RECALL_K = 5;
+/** Second cut-off reported next to recall@5: the guard window (KEYWORD_GUARD_WITHIN). */
+export const RECALL_K8 = 8;
 
 /**
  * error_text marks an error-text query: the harness passes it as the kb_query
@@ -50,13 +52,14 @@ export interface EvalConfig {
 }
 
 /** Same provider read as kb_query's L1 (CONFIRMED-only default). */
-async function rankWith(provider: SqliteProvider, q: EvalQuery, opts: { errorText: boolean; semantic: boolean }): Promise<string[]> {
+async function rankWith(provider: SqliteProvider, q: EvalQuery, opts: { errorText: boolean; semantic: boolean; keywordGuard?: boolean }): Promise<string[]> {
   const r = await provider.query({
     query: q.query,
     ...(opts.errorText && q.error_text ? { error_text: q.error_text } : {}),
     limit: 20,
     confidence: ['CONFIRMED'],
     ...(opts.semantic ? {} : { disable_lists: ['semantic' as const] }),
+    ...(opts.keywordGuard === false ? { disable_keyword_guard: true } : {}),
   });
   return r.results.map(e => e.id);
 }
@@ -111,7 +114,7 @@ export const MODEL_EMBED_TIMEOUT_MS = 15 * 60 * 1000;
  * the reason, when the model cannot be loaded (offline, not downloaded,
  * failed load); never fails npm test for that.
  */
-export function modelConfig(profileName: string, label = 'hybrid'): EvalConfig {
+export function modelConfig(profileName: string, label = 'hybrid', opts: { keywordGuard?: boolean } = {}): EvalConfig {
   return {
     name: `${label} (${profileName})`,
     async setup(provider) {
@@ -128,7 +131,7 @@ export function modelConfig(profileName: string, label = 'hybrid'): EvalConfig {
         provider.attachEmbedder(null);
         return { skip: `embedding the eval KB with ${profileName} did not finish in time` };
       }
-      return (q) => rankWith(provider, q, { errorText: true, semantic: true });
+      return (q) => rankWith(provider, q, { errorText: true, semantic: true, keywordGuard: opts.keywordGuard });
     },
     teardown(provider) {
       provider.attachEmbedder(null);
@@ -146,7 +149,18 @@ export const modelConfigs: EvalConfig[] = MODEL_PROFILES.map(p => modelConfig(p)
 export const hybridConfig: EvalConfig = modelConfigs[0];
 
 /** Keyword-only first (always runs), then hybrid with each built-in model. */
-export const DEFAULT_CONFIGS: EvalConfig[] = [keywordConfig, ...modelConfigs];
+export const DEFAULT_CONFIGS: EvalConfig[] = [keywordConfig, ...modelConfigs, ...guardOffConfigs()];
+
+/**
+ * Hybrid configs with the keyword top-5 guard switched off (internal
+ * disable_keyword_guard), for the guard before/after comparison. Opt in with
+ * APRA_KB_EVAL_GUARD_OFF=1: each one re-embeds the eval KB, so they stay out
+ * of the default run.
+ */
+export function guardOffConfigs(): EvalConfig[] {
+  if (process.env.APRA_KB_EVAL_GUARD_OFF !== '1') return [];
+  return MODEL_PROFILES.map(p => modelConfig(p, 'hybrid, guard off', { keywordGuard: false }));
+}
 
 /** Nightly real-model lane: a model config that skips is a failure, not a note. */
 export function modelsRequired(): boolean {
@@ -182,16 +196,17 @@ export function meanReciprocalRank(ranks: Array<number | null>): number {
   return ranks.reduce<number>((s, r) => s + (r === null ? 0 : 1 / r), 0) / ranks.length;
 }
 
-export interface SetMetrics { queries: number; recallAt5: number; mrr: number }
+export interface SetMetrics { queries: number; recallAt5: number; recallAt8: number; mrr: number }
 
 export interface EvalReport {
   config: string;
   queries: number;
   recallAt5: number;
+  recallAt8: number;
   mrr: number;
   /** The same metrics restricted to each query source present (real, authored, owner-notes). */
   bySource: Record<string, SetMetrics>;
-  perQuery: Array<{ id: string; rank: number | null }>;
+  perQuery: Array<{ id: string; rank: number | null; rank8: number | null }>;
   /** Set when the config could not run (e.g. model unavailable); metrics are then 0. */
   skipped?: string;
 }
@@ -213,18 +228,22 @@ export async function loadEvalProvider(): Promise<{ provider: SqliteProvider; di
 export async function runEval(config: EvalConfig, provider: SqliteProvider, queries: EvalQuery[]): Promise<EvalReport> {
   const rank = await config.setup(provider);
   if ('skip' in rank) {
-    return { config: config.name, queries: queries.length, recallAt5: 0, mrr: 0, bySource: {}, perQuery: [], skipped: rank.skip };
+    return { config: config.name, queries: queries.length, recallAt5: 0, recallAt8: 0, mrr: 0, bySource: {}, perQuery: [], skipped: rank.skip };
   }
   try {
     const perQuery: EvalReport['perQuery'] = [];
-    for (const q of queries) perQuery.push({ id: q.id, rank: firstHitRank(await rank(q), q.expected) });
+    for (const q of queries) {
+      const ranked = await rank(q);
+      perQuery.push({ id: q.id, rank: firstHitRank(ranked, q.expected), rank8: firstHitRank(ranked, q.expected, RECALL_K8) });
+    }
     const ranks = perQuery.map(p => p.rank);
     const bySource: Record<string, SetMetrics> = {};
     for (const src of new Set(queries.map(q => q.source))) {
       const r = perQuery.filter((_, i) => queries[i].source === src).map(p => p.rank);
-      bySource[src] = { queries: r.length, recallAt5: recallAtK(r), mrr: meanReciprocalRank(r) };
+      const r8 = perQuery.filter((_, i) => queries[i].source === src).map(p => p.rank8);
+      bySource[src] = { queries: r.length, recallAt5: recallAtK(r), recallAt8: recallAtK(r8), mrr: meanReciprocalRank(r) };
     }
-    return { config: config.name, queries: queries.length, recallAt5: recallAtK(ranks), mrr: meanReciprocalRank(ranks), bySource, perQuery };
+    return { config: config.name, queries: queries.length, recallAt5: recallAtK(ranks), recallAt8: recallAtK(perQuery.map(p => p.rank8)), mrr: meanReciprocalRank(ranks), bySource, perQuery };
   } finally {
     await config.teardown?.(provider);
   }
@@ -232,9 +251,9 @@ export async function runEval(config: EvalConfig, provider: SqliteProvider, quer
 
 export function formatReport(r: EvalReport): string {
   if (r.skipped !== undefined) return `[kb-recall-eval] config="${r.config}" SKIPPED: ${r.skipped}`;
-  const lines = [`[kb-recall-eval] config="${r.config}" queries=${r.queries} recall@5=${r.recallAt5.toFixed(4)} MRR=${r.mrr.toFixed(4)}`];
+  const lines = [`[kb-recall-eval] config="${r.config}" queries=${r.queries} recall@5=${r.recallAt5.toFixed(4)} R@8=${r.recallAt8.toFixed(4)} MRR=${r.mrr.toFixed(4)}`];
   for (const [src, m] of Object.entries(r.bySource)) {
-    lines.push(`[kb-recall-eval]   ${src}: queries=${m.queries} recall@5=${m.recallAt5.toFixed(4)} MRR=${m.mrr.toFixed(4)}`);
+    lines.push(`[kb-recall-eval]   ${src}: queries=${m.queries} recall@5=${m.recallAt5.toFixed(4)} R@8=${m.recallAt8.toFixed(4)} MRR=${m.mrr.toFixed(4)}`);
   }
   return lines.join('\n');
 }
@@ -245,11 +264,11 @@ export function formatReport(r: EvalReport): string {
  */
 export function formatTable(reports: EvalReport[], source: string): string {
   const rows = reports.map(r => {
-    if (r.skipped !== undefined) return `| ${r.config} | - | - | - | skipped: ${r.skipped.replace(/\|/g, '/')} |`;
+    if (r.skipped !== undefined) return `| ${r.config} | - | - | - | - | skipped: ${r.skipped.replace(/\|/g, '/')} |`;
     const m = r.bySource[source];
-    return m ? `| ${r.config} | ${m.queries} | ${m.recallAt5.toFixed(4)} | ${m.mrr.toFixed(4)} | |` : `| ${r.config} | 0 | - | - | |`;
+    return m ? `| ${r.config} | ${m.queries} | ${m.recallAt5.toFixed(4)} | ${m.recallAt8.toFixed(4)} | ${m.mrr.toFixed(4)} | |` : `| ${r.config} | 0 | - | - | |`;
   });
-  return [`KB recall eval -- ${source} queries`, '', '| config | queries | recall@5 | MRR | note |', '|---|---|---|---|---|', ...rows].join('\n');
+  return [`KB recall eval -- ${source} queries`, '', '| config | queries | recall@5 | R@8 | MRR | note |', '|---|---|---|---|---|---|', ...rows].join('\n');
 }
 
 /** Labelled expected ids that are not present in the eval KB (a missing label can never hit). */
@@ -332,16 +351,19 @@ export async function semanticFloorSweep(
   for (const floor of floors) {
     restore();
     const ranks: Record<string, Array<number | null>> = { real: [], authored: [] };
+    const ranks8: Record<string, Array<number | null>> = { real: [], authored: [] };
     for (const q of queries) {
       if (!(q.source in ranks)) continue;
-      ranks[q.source].push(firstHitRank(await ids({ query: q.query, ...(q.error_text ? { error_text: q.error_text } : {}) }, floor), q.expected));
+      const got = await ids({ query: q.query, ...(q.error_text ? { error_text: q.error_text } : {}) }, floor);
+      ranks[q.source].push(firstHitRank(got, q.expected));
+      ranks8[q.source].push(firstHitRank(got, q.expected, RECALL_K8));
     }
     let nonsenseChanged = 0;
     for (const [i, n] of NONSENSE_QUERIES.entries()) {
       if (JSON.stringify(await ids(n, floor)) !== JSON.stringify(keywordOnly[i])) nonsenseChanged++;
     }
-    const m = (r: Array<number | null>): SetMetrics => ({ queries: r.length, recallAt5: recallAtK(r), mrr: meanReciprocalRank(r) });
-    out.push({ floor, real: m(ranks.real), authored: m(ranks.authored), nonsenseChanged });
+    const m = (r: Array<number | null>, r8: Array<number | null>): SetMetrics => ({ queries: r.length, recallAt5: recallAtK(r), recallAt8: recallAtK(r8), mrr: meanReciprocalRank(r) });
+    out.push({ floor, real: m(ranks.real, ranks8.real), authored: m(ranks.authored, ranks8.authored), nonsenseChanged });
   }
   restore();
   db?.close();
