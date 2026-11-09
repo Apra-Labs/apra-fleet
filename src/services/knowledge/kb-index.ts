@@ -55,7 +55,7 @@ import {
   KB_NORMALIZER_VERSION,
   normalizeForIndex,
   normalizeQueryTermList,
-  normalizeQueryTerms,
+  normalizeTokens,
 } from './kb-normalize.js';
 
 /** Bumped when the keyword-index table layout changes. */
@@ -82,6 +82,14 @@ const REBUILD_STALE_MS = 30_000;
 const TRIGRAM_MIN_LEN = 4;
 const MAX_TRIGRAM_TERMS = 12;
 const MAX_LIKE_TERMS = 16;
+/**
+ * Most distinct normalized terms a free-text keyword search ORs together.
+ * A long query (an engine situation of 450-800 chars) otherwise ORs 100+
+ * terms and costs unbounded SQL; the earliest terms (the title words of a
+ * situation) are kept. A query with fewer distinct terms is unaffected, and
+ * discrete-term (fts_terms) searches are never bounded.
+ */
+export const MAX_QUERY_KEYWORD_TERMS = 32;
 
 /**
  * The legacy external-content FTS and its triggers, exactly as 0.4.4 creates
@@ -147,6 +155,14 @@ function rawTokens(s: KeywordSearch): string[] {
   return src.normalize('NFKC').match(/[\p{L}\p{M}\p{N}_]+/gu) ?? [];
 }
 
+/**
+ * The distinct normalized terms a free-text query searches for, earliest
+ * first, bounded by MAX_QUERY_KEYWORD_TERMS.
+ */
+export function boundedQueryTerms(query: string): string[] {
+  return Array.from(new Set(normalizeTokens(query))).slice(0, MAX_QUERY_KEYWORD_TERMS);
+}
+
 /** FTS5 MATCH for the trigram table: identifier-ish raw tokens, quoted, OR-joined. */
 export function trigramMatch(s: KeywordSearch): string {
   const seen = new Set<string>();
@@ -160,7 +176,7 @@ export function trigramMatch(s: KeywordSearch): string {
 
 /** FTS5 MATCH for the normalized keyword table. */
 export function keywordMatch(s: KeywordSearch): string {
-  return s.terms?.length ? normalizeQueryTermList(s.terms) : normalizeQueryTerms(s.query ?? '');
+  return s.terms?.length ? normalizeQueryTermList(s.terms) : orJoinFtsTerms(boundedQueryTerms(s.query ?? ''));
 }
 
 export class KbKeywordIndex {
@@ -661,7 +677,12 @@ export class KbKeywordIndex {
     // Not ready (rebuild running): legacy index when present, else LIKE.
     const raw = rawTokens(s);
     if (!column && this.legacyFtsExists()) {
-      const legacy = s.terms?.length ? orJoinFtsTerms(s.terms) : orJoinFtsTerms(raw);
+      // A free-text query with more distinct tokens than the bound keeps its
+      // earliest distinct ones; a shorter query is passed exactly as before.
+      const distinct = Array.from(new Set(raw));
+      const legacy = s.terms?.length
+        ? orJoinFtsTerms(s.terms)
+        : orJoinFtsTerms(distinct.length > MAX_QUERY_KEYWORD_TERMS ? distinct.slice(0, MAX_QUERY_KEYWORD_TERMS) : raw);
       if (!legacy) return [];
       try {
         return db.prepare(`

@@ -197,6 +197,43 @@ async function withinQueryEmbedDeadline(
   }
 }
 
+/**
+ * Most characters of the query text a read sends to the embedder. Engine
+ * situations ('about to work on: <title>. <description>. Done when: ...')
+ * run to 450-800 chars; embedding them whole roughly doubles the hybrid
+ * query cost while the title / first sentence carries most of the meaning.
+ * A query at or under the cap is embedded unchanged.
+ */
+export const QUERY_EMBED_MAX_CHARS = 200;
+
+/** Same bound for the error_text part of the embedded text. */
+export const ERROR_EMBED_MAX_CHARS = 200;
+
+/**
+ * Leading part of `text` of at most `max` chars, cut at a sentence end when
+ * one falls in the second half of the window, else at the last word
+ * boundary -- never mid-word (a single word longer than `max` is the only
+ * case that is hard-cut). Text at or under `max` is returned unchanged.
+ */
+export function capEmbedText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const window = text.slice(0, max + 1);
+  let sentenceEnd = -1;
+  const re = /[.!?](?=\s)|\n/g;
+  for (let m = re.exec(window); m; m = re.exec(window)) {
+    if (m.index < max) sentenceEnd = m.index + 1;
+  }
+  if (sentenceEnd >= Math.floor(max / 2)) return text.slice(0, sentenceEnd).trimEnd();
+  // window[max] is the char just past the cap: whitespace there means the
+  // cut at max lands on a word boundary.
+  let cut = -1;
+  for (let i = max; i > 0; i--) {
+    if (/\s/.test(window[i])) { cut = i; break; }
+  }
+  if (cut <= 0) return text.slice(0, max);
+  return text.slice(0, cut).trimEnd();
+}
+
 export class SqliteProvider implements MemoryProvider {
   private db: DatabaseSync | null = null;
   private readonly keywordIndex = new KbKeywordIndex(() => this.db);
@@ -1825,8 +1862,13 @@ export class SqliteProvider implements MemoryProvider {
     const symbols = (opts.anchor_symbols ?? []).map(x => x.trim()).filter(Boolean);
     // The embedded text never includes fts_terms (an identifier bag from
     // kb_session_prime or a plain symbol read): only the caller's own query
-    // text and error_text are paraphrase-like enough to embed.
-    const semanticText = [opts.query?.trim() ?? '', errorText].filter(Boolean).join('\n');
+    // text and error_text are paraphrase-like enough to embed. Each part is
+    // capped (QUERY_EMBED_MAX_CHARS / ERROR_EMBED_MAX_CHARS) to its leading
+    // sentence(s), so a long engine situation costs a bounded embed.
+    const semanticText = [
+      capEmbedText(opts.query?.trim() ?? '', QUERY_EMBED_MAX_CHARS),
+      capEmbedText(errorText, ERROR_EMBED_MAX_CHARS),
+    ].filter(Boolean).join('\n');
 
     const useError = errorText !== '' && !off.has('error');
     const useAnchor = (files.length > 0 || symbols.length > 0) && !off.has('anchor');
