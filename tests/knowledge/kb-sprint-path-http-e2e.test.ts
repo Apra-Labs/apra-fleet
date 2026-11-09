@@ -138,12 +138,8 @@ function respond(method: string, pathname: string, params: URLSearchParams, body
     return [200, { id: entry.id, previous_confidence: previous, new_confidence: 'CONFIRMED' }];
   }
   if (method === 'GET' && pathname === '/api/kb/list') {
-    // The member owner-tag lookup (no-bump read).
-    const tag = params.get('tag');
-    const results = [...stored.values()]
-      .filter(tierFilter(params.get('confidence')))
-      .filter(e => tag === null || (Array.isArray(e.tags) && (e.tags as string[]).includes(tag)));
-    return [200, { results, total: results.length }];
+    // Hosted MemorEYES declares list unsupported: the sprint path must not need it.
+    return [501, { title: 'Method not supported', status: 501, code: 'E-METHOD-UNSUPPORTED', detail: 'list is not served by this deployment.' }];
   }
   if (method === 'GET' && pathname === '/api/kb/query') {
     const results = [...stored.values()].filter(tierFilter(params.get('confidence')));
@@ -323,6 +319,8 @@ describe('sprint KB path over http: capture, promote and recall all reach the KB
     expect(confirmedPrimeAt).toBeGreaterThan(promoteAt);
     expect(requests.find(r => r.path === '/api/kb/promote')!.body?.reason).toBe(REASON);
     expect(requests.every(r => r.response && !(r.response as { error?: string }).error)).toBe(true);
+    // Candidates, promote and recall never read the list route (hosted: 501).
+    expect(requests.filter(r => r.path === '/api/kb/list')).toEqual([]);
 
     // 2. Nothing fell back to the local store: the per-repo SQLite DB holds no
     // row for the id or the title, and the provider's offline queue is empty.

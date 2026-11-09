@@ -1122,16 +1122,14 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
   }, 'E-KB-HTTP-UNSUPPORTED'));
 }
 
-// Member own-scope over an http project KB, checked fleet-side on the
-// entries' tags: the stand-in's only entry belongs to another member.
+// Member own-scope over an http project KB: the stand-in's only entry belongs
+// to another member. kb_promote is sent by id and the server's 404 refusal is
+// surfaced as not found; a member read keeps only entries carrying its tag.
 {
   const reason = 'Attempting to promote an entry another member captured.';
   await withSession('HTTP_A', () => recordRefusal('kb_promote', 'refusal-http-not-own', {
     id: HTTP_FOREIGN_ENTRY_ID, reason,
   }, 'E-ENTRY-NOT-FOUND'));
-  await withSession('HTTP_UNTAGGED', () => recordRefusal('kb_promote', 'refusal-kb-http-unsupported', {
-    id: HTTP_FOREIGN_ENTRY_ID, reason,
-  }, 'E-KB-HTTP-UNSUPPORTED'));
   await withSession('HTTP_A', () => recordHappy('kb_query', 'http-own-scope', {
     query: 'widget batching', confidence: ['INFERRED'],
   }));

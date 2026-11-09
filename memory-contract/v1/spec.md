@@ -200,11 +200,12 @@ CONFIRMED/INFERRED ones. Filtering happens after the server's `limit`, so such a
 read can return fewer entries than asked for. `kb_capture` tags the
 stored entry `member:<caller uuid>`; `kb_promote`, `kb_demote` and
 `kb_invalidate` act only on entries carrying that tag and report any other id as not found, changing
-nothing. Under the http project provider a MEMBER `kb_promote` first looks the
-caller's own entries up on the server (`tag` = `member:<caller uuid>`) and sends
-the promote only when the id is among them; any other id is `E-ENTRY-NOT-FOUND`
-with nothing sent, and a server that returns entries without tags is refused
-with `E-KB-HTTP-UNSUPPORTED` (ownership cannot be decided). `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
+nothing. Under the http project provider `kb_promote` is sent by id with no
+lookup first, and fleet does not check the member tag: the KB server decides
+which ids the caller may promote and refuses an unknown, superseded or
+out-of-scope id itself. A 404 is `E-ENTRY-NOT-FOUND`, thrown as
+`Entry not found: <id>` followed by the server's answer; any other refusal is
+thrown with its HTTP status and the server's title/code/detail. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
 `{discarded, not_found, already_discarded}`. In a member session without the
 kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the

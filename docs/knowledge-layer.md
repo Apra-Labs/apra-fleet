@@ -722,7 +722,7 @@ Another server can stand in for `kb-server` by serving the same routes:
 |---|---|
 | `POST /api/kb/capture` | kb_capture |
 | `GET /api/kb/query` (`query`, `type`, `tag`, `limit`, `l1_only`, `confidence`, `exclude_disputed`, `include_stale`, `include_superseded`, `flagged_only`, `fts_terms`, `ids`) | kb_query, and the member own-scope lookup (`tag=member:<uuid>`); entries must carry their `tags`. `flagged_only=true` lists only contradiction-flagged entries. `fts_terms` is a JSON array of strings (URL-encoded, e.g. `fts_terms=["Gearwheel","ratio"]`) OR-joined as one FTS match (kb_session_prime's neighbour query). `ids` is a JSON array of entry ids for an exact-id lookup (kb_query's L2 fetch; kb_query keeps only the requested ids). A `fts_terms` or `ids` value that is not a JSON array of strings answers 400 `BAD_REQUEST` |
-| `GET /api/kb/list` (`tag`, `confidence`, `type`, `module`, `symbol`, `exclude_disputed`, `include_stale`, `limit`; no-bump read, entries carry their `tags`) | kb_list, and the member own-scope ownership check. A 404 from it surfaces as `E-KB-HTTP-UNSUPPORTED` |
+| `GET /api/kb/list` (`tag`, `confidence`, `type`, `module`, `symbol`, `exclude_disputed`, `include_stale`, `limit`; no-bump read, entries carry their `tags`) | kb_list, and the member own-scope filter of `kb_context` and `kb_session_prime` reads (never `kb_promote`). A 404 from it surfaces as `E-KB-HTTP-UNSUPPORTED` |
 | `GET /api/kb/context` (`files` comma-separated, required; `confidence` comma-separated; `exclude_disputed`; `tag`) | kb_context. `tag=member:<uuid>` is the member own-scope: each file's newest entry is chosen among the entries carrying that tag, not the newest overall |
 | `POST /api/kb/prime` | kb_session_prime |
 | `POST /api/kb/invalidate` (`{files}`) | kb_invalidate with files |
@@ -974,7 +974,7 @@ Every method in the `MemoryProvider` interface is classified as one of:
 | discard | unsupported | Throws E-KB-HTTP-UNSUPPORTED (id-level discard not supported). Use kb_invalidate with files instead. |
 | getLinked | local-fallback | Retrieves linked entries from the local fallback store, or from the offline store once a read of the same provider view fell back to it (the checkout bible for a MEMBER CONFIRMED read). |
 | prime | remote | Retrieves primed context from server. On connection error, falls back to the offline store, as for query. Its cold-seed `touch` is then skipped, so an offline MEMBER prime writes nothing to the per-repo DB. |
-| promote | remote | POST /api/kb/promote with `{id, reason}`. No local fallback and no offline queue on connection error (the id only exists on the server): a connection error rejects naming the server URL. A refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's title/code. |
+| promote | remote | POST /api/kb/promote with `{id, reason}`. No local fallback and no offline queue on connection error (the id only exists on the server): a connection error rejects naming the server URL. Sent by id with no list lookup first: the server refuses an unknown, superseded or out-of-scope id itself. A 404 rejects as `Entry not found: <id>` followed by the server's answer; any other refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's text and code. |
 | feedback | remote | POST /api/kb/feedback with `{id, reason, role}`; returns the server response unchanged. On connection error (or E-KB-HTTP-AUTH) queued offline with captures and invalidates. |
 | demote | unsupported | Throws: the remote has no demote route, and demoting the local fallback store would snapshot the wrong tree. Nothing is changed. |
 | sync | unsupported | Returns {synced: false} (no remote sync over http). |
@@ -1013,9 +1013,15 @@ Design notes:
 #### Promote and member recall under HTTP
 
 - `kb_promote` stays gated to the `kb_maintainer` grant but no longer needs a
-  SQLite project: under http it calls the provider's `promote` directly. A
-  member's owner tag is checked fleet-side first, through the server's no-bump
-  `/api/kb/list` route, so a member can promote only its own captures.
+  SQLite project: under http it calls the provider's `promote` directly, by
+  id, with no list lookup first (hosted MemorEYES does not serve
+  `GET /api/kb/list`). Fleet does not check the member's owner tag for it: the
+  KB server decides which ids a caller may promote and refuses an unknown,
+  superseded or out-of-scope id itself. A 404 surfaces as
+  `Entry not found: <id>` with the server's answer; any other refusal carries
+  its HTTP status and the server's text and code. Against the bundled
+  `kb-server`, which has no per-member scope, a member can promote any id that
+  server holds.
 - Member reads of every tier (`kb_query`, `kb_session_prime`, `kb_context`) are
   routed to the http provider (`serverRecall` in
   `src/services/knowledge/kb-self.ts`), because the server, not a local store,
@@ -1089,13 +1095,12 @@ install starts reading and writing the server immediately. Verify the flow
 works before scaling to production.
 
 **Authentication**: only `Authorization: Bearer <token>` is sent in HTTP
-headers; the token is the sole credential the server sees. Member own-scope is
-enforced by fleet, not by the server: a MEMBER kb_promote first reads the
-caller's own entries (tag member:<uuid>) and sends the promote only for one of
-them (another id is not found, nothing sent), and MEMBER reads of INFERRED or
-UNVERIFIED keep only entries carrying that tag. This needs the server to return
-each entry's tags: when it does not, the promote is refused with
-E-KB-HTTP-UNSUPPORTED and untagged entries are dropped from those reads.
+headers; the token is the sole credential the server sees. Member own-scope
+for reads is enforced by fleet: MEMBER reads of INFERRED or UNVERIFIED keep
+only entries carrying the caller's tag (member:<uuid>), which needs the server
+to return each entry's tags (untagged entries are dropped from those reads).
+A MEMBER kb_promote is sent by id with no lookup first; which ids the caller
+may promote is the server's decision, and its refusal is surfaced.
 
 **Capabilities over HTTP**: see the [MemoryProvider operations](#memoryprovider-operations)
 table above. In summary:

@@ -1,15 +1,18 @@
 // A minimal KB server stand-in for the http-backed fixture sessions.
 //
 // It answers only GET <variant>/api/kb/query and GET <variant>/api/kb/list (the
-// no-bump read the member owner-tag lookup uses), with one INFERRED entry that
-// belongs to a member none of the fixture sessions are. Two variants, chosen
-// by the URL path prefix the session's KB config points at:
+// no-bump read the member own-scope read filter uses), with one INFERRED entry
+// that belongs to a member none of the fixture sessions are, and POST
+// <variant>/api/kb/promote, which refuses every id with 404: the one entry it
+// holds is outside every fixture session's scope. The refusal body has the
+// shape MemorEYES's PromoteRefusalRule answers an id it does not serve with
+// (problem+json title/status/detail/code plus the flat `error` string).
+// Variants, chosen by the URL path prefix the session's KB config points at:
 //   /tagged    the entry carries its tags (owner tag of another member)
-//   /untagged  the same entry with no tags field (ownership undecidable)
 //   /other-project  a server for a different project: every request is a 409
 //              PROJECT_MISMATCH, exactly as kb-server answers a client slug it
 //              does not serve
-// Every other request (on the first two variants) is a 404: a recorded case that reaches any other route
+// Every other request (on the tagged variant) is a 404: a recorded case that reaches any other route
 // fails loudly instead of recording a stand-in's invented answer.
 //
 // Node builtins only, like the rest of this directory's harness code.
@@ -20,7 +23,7 @@ export const HTTP_FOREIGN_ENTRY_ID = '9d4e7a10-3b2c-4f5e-8a61-2c7d0e9b4f13';
 export const HTTP_FOREIGN_OWNER_TAG = 'member:contract-http-foreign-owner';
 /** The 'other-project' variant's URL as recorded in fixtures (the live port is ephemeral). */
 export const HTTP_STAND_IN_RECORDED_OTHER_URL = 'http://127.0.0.1:0/other-project';
-export const HTTP_STAND_IN_VARIANTS = ['tagged', 'untagged', 'other-project'];
+export const HTTP_STAND_IN_VARIANTS = ['tagged', 'other-project'];
 
 function foreignEntry(withTags) {
   const entry = {
@@ -39,7 +42,7 @@ function foreignEntry(withTags) {
   return withTags ? { ...entry, tags: [HTTP_FOREIGN_OWNER_TAG] } : entry;
 }
 
-function handle(req, res) {
+function handle(req, res, body) {
   const url = new URL(req.url ?? '/', 'http://stand-in');
   const [, variant, ...rest] = url.pathname.split('/');
   const route = `/${rest.join('/')}`;
@@ -56,6 +59,12 @@ function handle(req, res) {
     });
     return;
   }
+  if (req.method === 'POST' && route === '/api/kb/promote' && HTTP_STAND_IN_VARIANTS.includes(variant)) {
+    const id = typeof body?.id === 'string' ? body.id : '';
+    const detail = `No entry exists with id '${id}'.`;
+    send(404, { title: 'Entry not found', status: 404, detail, code: 'E-ENTRY-NOT-FOUND', error: `Entry not found: ${detail}` });
+    return;
+  }
   if (req.method === 'GET' && (route === '/api/kb/query' || route === '/api/kb/list') && HTTP_STAND_IN_VARIANTS.includes(variant)) {
     const results = [foreignEntry(variant === 'tagged')];
     send(200, { results, total: results.length });
@@ -70,8 +79,13 @@ function handle(req, res) {
  */
 export async function startKbHttpStandIn() {
   const server = http.createServer((req, res) => {
-    req.resume();
-    req.on('end', () => handle(req, res));
+    let raw = '';
+    req.on('data', (chunk) => { raw += chunk.toString(); });
+    req.on('end', () => {
+      let body = null;
+      try { body = raw ? JSON.parse(raw) : null; } catch { body = null; }
+      handle(req, res, body);
+    });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();

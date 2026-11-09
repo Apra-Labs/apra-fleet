@@ -227,7 +227,7 @@ describe('kb-server promote and tag filter', () => {
     }
   });
 
-  it('HttpKbProvider against this server: member own-scope promote works for the owner and is not-found for anyone else', async () => {
+  it('HttpKbProvider against this server: promote is sent by id and the server decides (unknown id is not found, a known id promotes)', async () => {
     const owner = `member:${crypto.randomUUID()}`;
     const id = await captureTagged([owner]);
     const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-http-provider-'));
@@ -236,12 +236,15 @@ describe('kb-server promote and tag filter', () => {
       { projectSlug: SERVER_PROJECT },
     );
     try {
-      await expect(provider.promote(id, PROMOTE_REASON, { ownerTag: `member:${crypto.randomUUID()}` }))
-        .rejects.toThrow(`Entry not found: ${id}`);
+      const unknown = `unknown-${crypto.randomUUID()}`;
+      await expect(provider.promote(unknown, PROMOTE_REASON, { ownerTag: owner }))
+        .rejects.toThrow(new RegExp(`^Entry not found: ${unknown} \\(the KB server answered HTTP 404: `));
       const stillInferred = await request('GET', `/api/kb/query?tag=${encodeURIComponent(owner)}&confidence=INFERRED`);
       expect(stillInferred.body.results.map((e: { id: string }) => e.id)).toEqual([id]);
 
-      await expect(provider.promote(id, PROMOTE_REASON, { ownerTag: owner }))
+      // No fleet-side owner-tag gate: this server has no per-member scope, so
+      // a known id promotes whatever ownerTag the caller carries.
+      await expect(provider.promote(id, PROMOTE_REASON, { ownerTag: `member:${crypto.randomUUID()}` }))
         .resolves.toEqual({ id, confidence_before: 'INFERRED', confidence_after: 'CONFIRMED' });
     } finally {
       provider.dispose();
@@ -347,7 +350,7 @@ describe('kb-server refuses a client for another project on every route', () => 
 });
 
 describe('HttpKbProvider list against a server without GET /api/kb/list', () => {
-  it('surfaces the 404 as E-KB-HTTP-UNSUPPORTED, for kb_list and for the member own-scope lookup', async () => {
+  it('surfaces the 404 as E-KB-HTTP-UNSUPPORTED for kb_list; promote never reads the list route', async () => {
     const seen: string[] = [];
     const server = http.createServer((req, res) => {
       seen.push(`${req.method} ${(req.url ?? '').split('?')[0]}`);
@@ -364,13 +367,16 @@ describe('HttpKbProvider list against a server without GET /api/kb/list', () => 
       for (const call of [
         () => provider.list({ confidence: ['CONFIRMED'] } as any),
         () => provider.list({ owner_tag: 'member:x' } as any),
-        () => provider.promote('x', 'a reason long enough to pass the floor', { ownerTag: 'member:x' }),
       ]) {
         const err = await call().then(() => null, (e: unknown) => e as Error);
         expect(err).toBeInstanceOf(KbHttpUnsupportedError);
         expect((err as Error).message).toMatch(/^E-KB-HTTP-UNSUPPORTED: .*\/api\/kb\/list/);
       }
-      expect(seen).toEqual(['GET /api/kb/list', 'GET /api/kb/list', 'GET /api/kb/list']);
+      // A member promote goes straight to POST /api/kb/promote; this server's
+      // 404 there is the entry's not-found, not a missing route.
+      await expect(provider.promote('x', 'a reason long enough to pass the floor', { ownerTag: 'member:x' }))
+        .rejects.toThrow(/^Entry not found: x \(the KB server answered HTTP 404: not found \[NOT_FOUND\]\)$/);
+      expect(seen).toEqual(['GET /api/kb/list', 'GET /api/kb/list', 'POST /api/kb/promote']);
     } finally {
       provider.dispose();
       fallback.close();

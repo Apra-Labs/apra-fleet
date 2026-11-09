@@ -613,9 +613,7 @@ not a git work tree).
 
 Under the http KB provider (`kb_setup provider http`), two more codes from the
 same file can be thrown: `E-KB-HTTP-UNSUPPORTED` (an operation the http
-provider cannot serve: `kb_invalidate` with `ids`, or a member `kb_promote`
-whose ownership check got entries without tags from the server; nothing is
-changed) and `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
+provider cannot serve: `kb_invalidate` with `ids`; nothing is changed) and `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
 different project; nothing is read or written).
 
 `E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_harvest`, `kb_invalidate`,

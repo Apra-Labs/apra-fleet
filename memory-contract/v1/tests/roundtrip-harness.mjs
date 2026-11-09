@@ -237,12 +237,10 @@ export const ENVIRONMENT = {
     FULL_A: { kind: 'full', repo: 'A' },
     // A kb_maintainer member session over an http project KB (kbHttp names the
     // stand-in variant): records kb_bible_commit's bible_skipped, kb_invalidate
-    // ids' E-KB-HTTP-UNSUPPORTED, and member own-scope over http (another
-    // member's entry is not found for kb_promote and absent from kb_query).
+    // ids' E-KB-HTTP-UNSUPPORTED, and member own-scope over http (the server
+    // refuses a promote of another member's entry as not found, and that entry
+    // is absent from kb_query).
     HTTP_A: { member: 'contract-http-a', kind: 'local', repo: 'HTTP', kbMaintainer: true, kbHttp: 'tagged' },
-    // The same over a server that returns entries without tags: member own-scope
-    // cannot be decided, so a member kb_promote is refused with a typed code.
-    HTTP_UNTAGGED: { member: 'contract-http-untagged', kind: 'local', repo: 'HTTP', kbMaintainer: true, kbHttp: 'untagged' },
     // The same over a server for a DIFFERENT project (409 PROJECT_MISMATCH on
     // every route): a read is refused with E-KB-HTTP-PROJECT-MISMATCH.
     HTTP_MISMATCH: { member: 'contract-http-mismatch', kind: 'local', repo: 'HTTP', kbMaintainer: true, kbHttp: 'other-project' },
@@ -639,12 +637,11 @@ export const SCENARIO = [
   // committed) and kb_invalidate {ids} is refused with a typed code.
   { tool: 'kb_bible_commit', case: 'http-skip', assertParsed: assertBibleSkipped },
   { tool: 'kb_invalidate', case: 'refusal-kb-http-unsupported' },
-  // Member own-scope over an http project KB, enforced fleet-side on the
-  // entries' tags: another member's entry is not found for kb_promote and
-  // absent from an INFERRED kb_query; a server that returns no tags refuses
-  // the promote with a typed code.
+  // Member own-scope over an http project KB: kb_promote is sent by id and
+  // the server's refusal of an entry outside the caller's scope surfaces as
+  // not found; another member's entry is absent from an INFERRED kb_query
+  // (fleet filters member reads on the entries' tags).
   { tool: 'kb_promote', case: 'refusal-http-not-own' },
-  { tool: 'kb_promote', case: 'refusal-kb-http-unsupported' },
   { tool: 'kb_query', case: 'http-own-scope', assertParsed: assertNoForeignEntry },
   // A server for another project is reachable but wrong: a read is refused,
   // never answered from the local store.

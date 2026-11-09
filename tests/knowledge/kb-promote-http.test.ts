@@ -19,9 +19,10 @@ import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../
 
 // Promote over an http project KB, at provider and kb_promote tool level.
 // Real local http.Server stand-in (stateful: it only promotes ids it has been
-// told about, and keeps each entry's tags for the member own-scope lookup),
+// told about, and refuses ids marked out of scope the way MemorEYES does),
 // real HttpKbProvider and SqliteProvider, real member sessions.
-// No mocks of code under test.
+// No mocks of code under test. Its GET /api/kb/list answers 501, as hosted
+// MemorEYES does: promote must never depend on the list route.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TOKEN_ENV_VAR = 'APRA_FLEET_TEST_KB_HTTP_TOKEN';
@@ -53,10 +54,12 @@ let port = 0;
 let token: string;
 let scratch: string;
 const requests: RecordedRequest[] = [];
-// id -> tags, as captured. The query route answers the owner-tag lookup.
+// id -> tags, as captured.
 const serverEntries = new Map<string, string[]>();
 const serverIds = { add: (id: string, tags: string[] = []) => { serverEntries.set(id, tags); } };
-let omitTagsInQuery = false;
+// Ids the server holds but refuses to promote for this caller (out of its
+// scope), answered with the problem+json MemorEYES sends for one.
+const outOfScopeIds = new Set<string>();
 // When set, the promote route answers 200 with a reply missing the contract fields.
 let malformedPromoteReply = false;
 let refusalOverride: { status: number; body: Record<string, unknown> | string } | null = null;
@@ -76,6 +79,14 @@ function startServer(listenPort: number): Promise<void> {
           return;
         }
         const id = String(body?.id);
+        if (outOfScopeIds.has(id)) {
+          const detail = `No entry exists with id '${id}'.`;
+          res.writeHead(404, { 'Content-Type': 'application/problem+json' });
+          res.end(JSON.stringify({
+            title: 'Entry not found', status: 404, detail, code: 'E-ENTRY-NOT-FOUND', error: `Entry not found: ${detail}`,
+          }));
+          return;
+        }
         if (!serverEntries.has(id)) {
           res.writeHead(404, { 'Content-Type': 'application/problem+json' });
           res.end(JSON.stringify({ title: 'Entry not found', status: 404, code: 'KB-NOT-FOUND', detail: id }));
@@ -93,13 +104,12 @@ function startServer(listenPort: number): Promise<void> {
         res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id, audn_decision: 'add' }));
       } else if (req.url?.startsWith('/api/kb/list') && req.method === 'GET') {
-        // The owner-tag lookup reads the no-bump list route.
-        const tag = new URL(req.url, 'http://stand-in').searchParams.get('tag');
-        const results = [...serverEntries]
-          .filter(([, tags]) => tag === null || tags.includes(tag))
-          .map(([id, tags]) => (omitTagsInQuery ? { id, confidence: 'INFERRED' } : { id, tags, confidence: 'INFERRED' }));
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ results, total: results.length }));
+        // Hosted MemorEYES declares list unsupported (ExtendedKbRoutes.List).
+        res.writeHead(501, { 'Content-Type': 'application/problem+json' });
+        res.end(JSON.stringify({
+          title: 'Method not supported', status: 501, code: 'E-METHOD-UNSUPPORTED',
+          detail: 'list (X-1) is a low-risk pure read not served by this deployment.',
+        }));
       } else {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'not found' }));
@@ -159,7 +169,7 @@ afterEach(() => {
   resetKbProviders();
   requests.length = 0;
   serverEntries.clear();
-  omitTagsInQuery = false;
+  outOfScopeIds.clear();
   refusalOverride = null;
   malformedPromoteReply = false;
 });
@@ -209,7 +219,10 @@ describe('HttpKbProvider.promote', () => {
   it('3. surfaces status plus title/code for refusals; fallback unchanged', async () => {
     const { provider, rows } = await httpProject();
     const before = rows();
-    await expect(provider.promote('unknown-id', REASON)).rejects.toThrow(/404.*Entry not found.*KB-NOT-FOUND/);
+    const notFound = await provider.promote('unknown-id', REASON).then(() => null, (e: NodeJS.ErrnoException) => e);
+    expect(notFound).toBeInstanceOf(Error);
+    expect(notFound!.message).toMatch(/^Entry not found: unknown-id \(the KB server answered HTTP 404: .*Entry not found.*KB-NOT-FOUND/);
+    expect(notFound!.code).toBe('HTTP_404');
 
     refusalOverride = { status: 409, body: { title: 'Entry superseded', status: 409, code: 'KB-SUPERSEDED' } };
     await expect(provider.promote('any-id', REASON)).rejects.toThrow(/409.*Entry superseded.*KB-SUPERSEDED/);
@@ -266,46 +279,70 @@ function captureInput(title: string) {
 }
 
 describe('kb_promote in a MEMBER session', () => {
-  it('5. over http keeps own-scope: own capture promotes, another member gets not-found and nothing is sent', async () => {
+  it('5. over http sends the promote by id: no list lookup, the own capture promotes with one POST', async () => {
     const origin = `https://example.test/kb-promote-member-http-${RUN}.git`;
     const folderA = makeCheckout('member-http-a', origin);
-    const folderB = makeCheckout('member-http-b', origin);
     const a = makeTestLocalAgent({ friendlyName: `kb-promote-http-a-${RUN}`, workFolder: folderA });
-    const b = makeTestLocalAgent({ friendlyName: `kb-promote-http-b-${RUN}`, workFolder: folderB });
     addAgent(a);
-    addAgent(b);
     await configureHttp(folderA);
 
     const captured = JSON.parse(await runWithSessionMember(a.id, () => kbCapture(captureInput('member a http entry'))));
     expect(serverEntries.get(captured.id)).toContain(`member:${a.id}`);
 
     requests.length = 0;
-    await expect(runWithSessionMember(b.id, () => kbPromote({ id: captured.id, reason: REASON })))
-      .rejects.toThrow(`Entry not found: ${captured.id}`);
-    expect(requests.filter(r => r.url === '/api/kb/promote')).toHaveLength(0);
-
     const out = await runWithSessionMember(a.id, () => kbPromote({ id: captured.id, reason: REASON }));
     expect(JSON.parse(out)).toEqual({
       id: captured.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED',
     });
+    expect(requests.filter(r => r.url.startsWith('/api/kb/list'))).toHaveLength(0);
     const promote = requests.filter(r => r.url === '/api/kb/promote');
     expect(promote).toHaveLength(1);
     expect(promote[0].body).toEqual({ id: captured.id, reason: REASON });
   });
 
-  it('8. over http refuses with E-KB-HTTP-UNSUPPORTED when the server returns entries without tags', async () => {
-    const origin = `https://example.test/kb-promote-member-notags-${RUN}.git`;
-    const folder = makeCheckout('member-http-notags', origin);
-    const agent = makeTestLocalAgent({ friendlyName: `kb-promote-notags-${RUN}`, workFolder: folder });
+  it('8. over http an id the server refuses as out of scope is not found, carrying the server status, text and code', async () => {
+    const origin = `https://example.test/kb-promote-member-scope-${RUN}.git`;
+    const folderA = makeCheckout('member-scope-a', origin);
+    const folderB = makeCheckout('member-scope-b', origin);
+    const a = makeTestLocalAgent({ friendlyName: `kb-promote-scope-a-${RUN}`, workFolder: folderA });
+    const b = makeTestLocalAgent({ friendlyName: `kb-promote-scope-b-${RUN}`, workFolder: folderB });
+    addAgent(a);
+    addAgent(b);
+    await configureHttp(folderA);
+    const captured = JSON.parse(await runWithSessionMember(a.id, () => kbCapture(captureInput('member a scoped entry'))));
+    outOfScopeIds.add(captured.id);
+
+    requests.length = 0;
+    const err = await runWithSessionMember(b.id, () => kbPromote({ id: captured.id, reason: REASON }))
+      .then(() => null, (e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toBe(
+      `Entry not found: ${captured.id} (the KB server answered HTTP 404: Entry not found: No entry exists with id '${captured.id}'. [E-ENTRY-NOT-FOUND])`,
+    );
+    expect(requests.filter(r => r.url.startsWith('/api/kb/list'))).toHaveLength(0);
+    expect(requests.filter(r => r.url === '/api/kb/promote')).toHaveLength(1);
+  });
+
+  it('10. over http a non-404 refusal (problem+json with error and code) surfaces status, text and code', async () => {
+    const origin = `https://example.test/kb-promote-member-superseded-${RUN}.git`;
+    const folder = makeCheckout('member-superseded', origin);
+    const agent = makeTestLocalAgent({ friendlyName: `kb-promote-superseded-${RUN}`, workFolder: folder });
     addAgent(agent);
     await configureHttp(folder);
-    const captured = JSON.parse(await runWithSessionMember(agent.id, () => kbCapture(captureInput('untagged entry'))));
-    omitTagsInQuery = true;
+    const captured = JSON.parse(await runWithSessionMember(agent.id, () => kbCapture(captureInput('superseded entry'))));
+    refusalOverride = {
+      status: 422,
+      body: {
+        title: 'Entry superseded', status: 422, code: 'E-PROMOTE-SUPERSEDED',
+        detail: 'A superseded entry cannot be promoted.', error: 'Entry superseded: A superseded entry cannot be promoted.',
+      },
+    };
 
     requests.length = 0;
     await expect(runWithSessionMember(agent.id, () => kbPromote({ id: captured.id, reason: REASON })))
-      .rejects.toThrow(/^E-KB-HTTP-UNSUPPORTED: member own-scope/);
-    expect(requests.filter(r => r.url === '/api/kb/promote')).toHaveLength(0);
+      .rejects.toThrow('HTTP 422: Entry superseded: A superseded entry cannot be promoted. [E-PROMOTE-SUPERSEDED]');
+    expect(requests.filter(r => r.url.startsWith('/api/kb/list'))).toHaveLength(0);
+    expect(requests.filter(r => r.url === '/api/kb/promote')).toHaveLength(1);
   });
 
   it('6. over SQLite keeps own-scope: own id promotes, another member id is not found', async () => {

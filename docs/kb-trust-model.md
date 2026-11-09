@@ -69,7 +69,9 @@ already follow applies: in a MEMBER session, `kb_capture` tags every stored
 entry `member:<caller uuid>`, and `kb_demote` (like `kb_promote` and
 `kb_invalidate`) acts only on entries carrying the caller's own tag -- any
 other id is reported not found, exactly like an unknown id, so an entry's mere
-existence is never disclosed to a session that does not own it. The
+existence is never disclosed to a session that does not own it. (Over an http
+project KB, `kb_promote` leaves this to the KB server: fleet sends the id with
+no lookup first and surfaces the server's refusal.) The
 consequence worth stating explicitly: a row that reached this clone through
 `kb_import` (the project bible) carries NO member tag at all, because the
 bible is not scoped to any one contributor. So inside a MEMBER session, only

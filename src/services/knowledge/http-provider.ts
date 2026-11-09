@@ -183,7 +183,13 @@ function describeErrorBody(data: string): string {
   }
   if (parsed === null || typeof parsed !== 'object') return boundErrorText(data);
   const body = parsed as Record<string, unknown>;
-  if (typeof body.error === 'string') return boundErrorText(body.error);
+  if (typeof body.error === 'string') {
+    // A problem+json body that also carries `error` (MemorEYES sends both)
+    // keeps its taxonomy `code` in the text too.
+    const code = typeof body.code === 'string' && body.code.length > 0 && !body.error.includes(body.code)
+      ? ` [${body.code}]` : '';
+    return boundErrorText(body.error + code);
+  }
   const parts = [body.title, body.code, body.detail]
     .filter((v): v is string => typeof v === 'string' && v.length > 0);
   return boundErrorText(parts.length > 0 ? parts.join(' - ') : data);
@@ -224,6 +230,18 @@ function projectMismatchOf(data: string): { server: string; client: string } | n
   } catch {
     return null;
   }
+}
+
+/**
+ * A promote the server answered 404: the same "Entry not found: <id>" the
+ * SQLite provider throws, followed by the server's own answer (whose text
+ * already carries the status and the problem+json title/code/detail). The
+ * HTTP_404 code is kept.
+ */
+function entryNotFoundOnServer(id: string, err: NodeJS.ErrnoException): NodeJS.ErrnoException {
+  const notFound = new Error(`Entry not found: ${id} (the KB server answered ${err.message})`) as NodeJS.ErrnoException;
+  notFound.code = err.code;
+  return notFound;
 }
 
 /** True when the entry carries `tag`; an entry without a tags array is never owned. */
@@ -780,9 +798,12 @@ export class HttpKbProvider implements MemoryProvider {
 
   // Remote-only: the id exists on the server, so a connection error is
   // surfaced instead of falling back to the local store or queueing.
-  // opts.ownerTag (MEMBER own-scope): the entry must carry that tag, checked
-  // fleet-side before the promote is sent; any other id is the same
-  // not-found the SQLite provider gives.
+  // Promote by id, with no list lookup first: the server refuses an unknown,
+  // superseded or out-of-scope id itself, and that refusal is surfaced (a 404
+  // as the same "Entry not found: <id>" the SQLite provider throws, any other
+  // status with the server's own title/code/detail). opts.ownerTag (MEMBER
+  // own-scope) is not checked here: which entries a caller may promote is the
+  // server's scope decision, not a fleet-side tag check.
   async promote(
     id: string,
     reason?: string,
@@ -792,9 +813,11 @@ export class HttpKbProvider implements MemoryProvider {
     if (reason !== undefined) body.reason = reason;
     let result: Record<string, unknown>;
     try {
-      if (opts?.ownerTag) await this.requireOwnedEntry(id, opts.ownerTag);
       result = await this.request<Record<string, unknown>>('POST', '/api/kb/promote', body);
     } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'HTTP_404') {
+        throw entryNotFoundOnServer(id, err as NodeJS.ErrnoException);
+      }
       if (isConnectionError(err)) {
         throw new Error(
           `kb_promote failed: KB server at ${this.displayUrl} is unreachable (${(err as Error).message}); `
@@ -857,7 +880,7 @@ export class HttpKbProvider implements MemoryProvider {
     if (entries.some(e => !Array.isArray((e as { tags?: unknown }).tags))) {
       throw new KbHttpUnsupportedError(
         'member own-scope (the server returned entries without tags)',
-        'nothing was promoted or read',
+        'nothing was read',
         'use a KB server that returns entry tags, or a local SQLite KB (kb_setup provider sqlite).',
       );
     }
@@ -866,11 +889,6 @@ export class HttpKbProvider implements MemoryProvider {
 
   private async ownedIds(ownerTag: string): Promise<Set<string>> {
     return new Set((await this.ownedEntries(ownerTag)).map(e => e.id));
-  }
-
-  private async requireOwnedEntry(id: string, ownerTag: string): Promise<void> {
-    const owned = await this.ownedIds(ownerTag);
-    if (!owned.has(id)) throw new Error(`Entry not found: ${id}`);
   }
 
   /**

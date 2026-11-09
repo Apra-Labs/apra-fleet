@@ -7,7 +7,7 @@
     "reason": "Attempting to promote an entry another member captured."
   },
   "error": {
-    "message": "Entry not found: 9d4e7a10-3b2c-4f5e-8a61-2c7d0e9b4f13",
+    "message": "Entry not found: 9d4e7a10-3b2c-4f5e-8a61-2c7d0e9b4f13 (the KB server answered HTTP 404: Entry not found: No entry exists with id '9d4e7a10-3b2c-4f5e-8a61-2c7d0e9b4f13'. [E-ENTRY-NOT-FOUND])",
     "thrown": true
   },
   "expected_error_code": "E-ENTRY-NOT-FOUND",
