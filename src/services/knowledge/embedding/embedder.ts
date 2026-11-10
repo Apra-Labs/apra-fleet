@@ -64,6 +64,7 @@ export { WASM_SEA_ASSET, EMBED_WORKER_SEA_ASSET, loadOrtWasmBinary, EmbedWorkerL
 export type EmbedderState =
   | { state: 'idle'; modelId: string; revision: string }
   | { state: 'loading'; modelId: string; revision: string }
+  | { state: 'downloading'; modelId: string; revision: string }
   | { state: 'ready'; modelId: string; revision: string; dims: number }
   | { state: 'disabled' }
   | { state: 'failed'; modelId?: string; revision?: string; reason: string };
@@ -137,7 +138,14 @@ export class Embedder {
       : { state: 'idle', modelId: opts.choice.profile.modelId, revision: opts.choice.profile.revision };
   }
 
-  get state(): EmbedderState { return this.current; }
+  /** Loading is reported as downloading while the model store is fetching the model's files. */
+  get state(): EmbedderState {
+    const cur = this.current;
+    if (cur.state === 'loading' && this.choice.kind === 'enabled' && this.store.isDownloading?.(this.choice.profile)) {
+      return { state: 'downloading', modelId: cur.modelId, revision: cur.revision };
+    }
+    return cur;
+  }
 
   /** The active profile, or null when embedding is disabled. */
   get profile(): EmbeddingProfile | null {

@@ -203,14 +203,14 @@ describe('fleet_status KB section reports the embedding state', () => {
     _setEmbedderForTest(e);
     const health = (await kbHealthSummary({ knowledgeDir: noKb() }))!;
     expect(health.embedding).toMatchObject({ state: 'failed', modelId: REPO, revision: REV, reason: expect.stringMatching(/HTTP 503/) });
-    expect(kbHealthCompactLines(health)).toMatch(new RegExp(`kb embedding: ${REPO}@${REV} failed: .*HTTP 503`));
+    expect(kbHealthCompactLines(health)).toMatch(/semantic search off: model download failed: .*HTTP 503/);
   });
 
   it("disabled with embedding.model 'none' (read from the KB config file)", async () => {
     writeKbConfig({ embedding: { model: 'none' } });
     const health = (await kbHealthSummary({ knowledgeDir: noKb() }))!;
-    expect(health.embedding).toEqual({ state: 'disabled' });
-    expect(kbHealthCompactLines(health)).toContain('kb embedding: disabled');
+    expect(health.embedding).toMatchObject({ state: 'disabled', reason: expect.any(String), fix: expect.stringContaining('apra-fleet kb embedding') });
+    expect(kbHealthCompactLines(health)).toContain('semantic search off: embedding.model is none');
   });
 
   it('ready with model id@revision once a working model has loaded', async () => {

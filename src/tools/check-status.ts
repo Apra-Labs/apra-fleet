@@ -28,6 +28,7 @@ import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
 import { readKbConfigFromDisk, kbToolProfileWarning, type KbConfigResult } from '../services/knowledge/kb-config.js';
 import { getKbHttpAuthState } from '../services/knowledge/kb-http-auth-state.js';
 import { getEmbeddingState, type EmbedderState } from '../services/knowledge/embedding/embedder.js';
+import { embeddingNotice } from '../services/knowledge/embedding/embedding-notice.js';
 import { lookupServerSecret, lookupServerSecretMeta } from '../services/credential-store.js';
 import { gitExecutable } from '../os/git-executable.js';
 
@@ -551,7 +552,7 @@ export interface KbHealth {
    * disabled ('none'), or failed with the reason. Semantic search is off
    * unless ready; keyword and anchor search never depend on it.
    */
-  embedding?: EmbedderState;
+  embedding?: EmbedderState & { reason?: string; fix?: string };
   /** Present only when the configured KB tool profile is invalid: names the bad value and what to do. */
   toolProfileWarning?: string;
   /** Every project scope found on disk (including `default`, the non-git scope), sorted by slug. */
@@ -725,9 +726,11 @@ function safeCredentialHealth(config: KbConfigResult): KbHttpCredentialHealth | 
 }
 
 /** The embedding state, never loading a model; undefined only if reading it failed unexpectedly. */
-function safeEmbeddingState(): EmbedderState | undefined {
+function safeEmbeddingState(): (EmbedderState & { reason?: string; fix?: string }) | undefined {
   try {
-    return getEmbeddingState();
+    const state = getEmbeddingState();
+    const notice = embeddingNotice(state);
+    return notice ? { ...state, reason: notice.reason, fix: notice.fix } : state;
   } catch {
     return undefined;
   }
@@ -871,17 +874,17 @@ export function kbCredentialCompactLine(c: KbHttpCredentialHealth): string {
 
 /** Render the one compact line for the local embedding model. */
 export function kbEmbeddingCompactLine(e: EmbedderState): string {
+  const notice = embeddingNotice(e);
+  if (notice) return notice.line;
   switch (e.state) {
-    case 'disabled':
-      return 'kb embedding: disabled (embedding.model none; keyword and anchor search only)';
-    case 'failed':
-      return `kb embedding: ${e.modelId ? `${e.modelId}@${e.revision} ` : ''}failed: ${e.reason} (keyword and anchor search only)`;
     case 'ready':
       return `kb embedding: ${e.modelId}@${e.revision} ready (${e.dims} dims)`;
     case 'loading':
       return `kb embedding: ${e.modelId}@${e.revision} loading`;
     case 'idle':
       return `kb embedding: ${e.modelId}@${e.revision} not loaded yet (downloads and loads on first use)`;
+    default:
+      return '';
   }
 }
 
@@ -932,12 +935,14 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
     // A KB tool profile matters without members too, so a bad one is reported
     // here; otherwise this short form stays as it is, with no KB section.
     const toolProfileWarning = kbToolProfileWarning();
+    // An embedding model that is downloading, failed or off is shown here too.
+    const embeddingLine = embeddingNotice(safeEmbeddingState())?.line;
     if (format === 'json') {
-      const kbHealth = toolProfileWarning ? await kbHealthSummary() : null;
+      const kbHealth = toolProfileWarning || embeddingLine ? await kbHealthSummary() : null;
       return JSON.stringify({ version: serverVersion, summary: { total: 0, online: 0, offline: 0 }, members: [], ...(kbHealth ? { kbHealth } : {}) });
     }
     const noMembers = 'No members registered. Use register_member to add one.';
-    return toolProfileWarning ? `${noMembers}\n${toolProfileWarning}` : noMembers;
+    return [noMembers, embeddingLine, toolProfileWarning].filter((l): l is string => !!l).join('\n');
   }
 
   // Query all members in parallel

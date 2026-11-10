@@ -258,6 +258,8 @@ export class ModelStore {
   private readonly releaseBaseUrl: string | null;
   /** One promise per model folder: in flight, or settled ready. Failures are dropped so a later call may retry. */
   private readonly pending = new Map<string, Promise<ModelState>>();
+  /** Model folders with a file download in flight right now (progress signal for the embedder state). */
+  private readonly downloading = new Map<string, number>();
 
   constructor(opts: ModelStoreOptions = {}) {
     this.modelsDir = opts.modelsDir ?? path.join(FLEET_DIR, 'models');
@@ -285,6 +287,11 @@ export class ModelStore {
       url: (repo, revision, filePath) => `${hub}/${repo}/resolve/${encodeURIComponent(revision)}/${filePath}`,
     });
     return out;
+  }
+
+  /** True while a file of this profile's model is being fetched (not while verifying or opening it). */
+  isDownloading(profile: EmbeddingProfile): boolean {
+    return (this.downloading.get(this.modelDir(profile)) ?? 0) > 0;
   }
 
   /** Folder a profile's files live in (the local folder itself for a local profile). */
@@ -381,7 +388,13 @@ export class ModelStore {
               continue;
             }
             try {
-              await this.downloadWatched(url, target);
+              this.downloading.set(dir, (this.downloading.get(dir) ?? 0) + 1);
+              try {
+                await this.downloadWatched(url, target);
+              } finally {
+                const left = (this.downloading.get(dir) ?? 1) - 1;
+                if (left > 0) this.downloading.set(dir, left); else this.downloading.delete(dir);
+              }
             } catch (err) {
               const why = errMessage(err);
               dead.set(source.label, why);
