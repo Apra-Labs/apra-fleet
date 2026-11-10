@@ -24,11 +24,17 @@ const selector = () => fakeMaintainerSelector({
     maintainerOf: { [REPO]: MAINT },
 });
 
-/** A fake memberCall recording the target member of every kb_* call. */
+/**
+ * A fake memberCall recording the target member of every kb_* call.
+ * query: null makes every kb_query a tool error (unanswered): the only case
+ * in which knowledgeFor falls back to kb_session_prime, since an answered
+ * empty result after the relevance cutoff is final.
+ */
 function fakeKb({ query = [], related = [], prime = [] } = {}) {
     const calls = [];
     const memberCall = async (member, name, args) => {
         calls.push({ member: member.name, name, args });
+        if (name === 'kb_query' && query === null) return { isError: true, content: [{ text: 'kb_query unavailable' }] };
         if (name === 'kb_query') return { content: [{ text: JSON.stringify({ l1_results: query, related_claims: related }) }] };
         if (name === 'kb_session_prime') return { content: [{ text: JSON.stringify({ top_entries: prime }) }] };
         return {};
@@ -140,7 +146,7 @@ describe('per-role KB hints (b4g.19.1)', () => {
             for (const t of want.terms) assert.ok(h.terms.includes(t), `${role} terms ${JSON.stringify(h.terms)} must include ${t}`);
             assert.deepEqual(h.hintModules, want.modules);
             // ...and the query/prime call actually carries them.
-            const kb = fakeKb({ query: [] , prime: [entry('p1', 'primed')] });
+            const kb = fakeKb({ query: null, prime: [entry('p1', 'primed')] });
             const inj = injection({ kb });
             const memberFor = { planner: 'plan-1', 'plan-reviewer': 'pr-1', doer: 'doer-1', reviewer: 'rev-1', deployer: 'dep-1', 'integ-test-runner': 'it-1', 'regression-test-runner': 'rt-1', harvester: 'hv-1' }[role];
             await inj.blockFor({ role, member: memberFor, context: ctx });
@@ -152,7 +158,7 @@ describe('per-role KB hints (b4g.19.1)', () => {
             for (const t of want.terms) assert.ok(queryText.includes(t), `${role}: queries ${queryText} carry ${t}`);
             if (want.modules.length) {
                 const p = kb.calls.find((c) => c.name === 'kb_session_prime');
-                assert.ok(p, `${role}: the hint-ranked prime runs when the query finds nothing`);
+                assert.ok(p, `${role}: the hint-ranked prime runs when the query cannot be answered`);
                 assert.deepEqual(p.args.hint_modules, want.modules);
             }
         });
@@ -210,7 +216,7 @@ describe('KNOWLEDGE BANK block shape (b4g.19.2)', () => {
         const viaQuery = await injection({ kb: fakeKb({ query: [entry('q1', 'from query')] }) })
             .blockFor({ role: 'doer', member: 'doer-1', context: { beadTitles: [{ title: 'topic words' }] } });
         assert.match(viaQuery[0], /kb_query --top_entries/);
-        const viaPrime = await injection({ kb: fakeKb({ query: [], prime: [entry('p1', 'from prime')] }) })
+        const viaPrime = await injection({ kb: fakeKb({ query: null, prime: [entry('p1', 'from prime')] }) })
             .blockFor({ role: 'doer', member: 'doer-1', context: { beadTitles: [{ title: 'topic words' }], laneFiles: ['src/a.mjs'] } });
         assert.match(viaPrime[0], /kb_session_prime --top_entries/);
         assert.ok(!viaPrime[0].includes('kb_query --top_entries'));
@@ -310,7 +316,7 @@ describe('engine-supplied hint sources and priority-tier goals (b4g.19.1)', () =
     });
 
     test('deployer dispatch: deploy targets read by the engine reach kb_query and kb_session_prime', async () => {
-        const kb = fakeKb({ query: [], prime: [entry('p1', 'primed')] });
+        const kb = fakeKb({ query: null, prime: [entry('p1', 'primed')] });
         const seen = [];
         const inj = injection({ kb, deployTargets: async (m, role) => { seen.push([m, role]); return ['deploy/staging.yml']; } });
         await inj.blockFor({ role: 'deployer', member: 'dep-1', context: { beadTitles: ['Ship it'] } });

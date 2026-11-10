@@ -1,0 +1,117 @@
+{
+  "note": "Per bead: the bible entries (tests/fixtures/kb-recall-eval/bible-bare-live.json) judged relevant to a doer working that bead. Labelling method: docs/kb-recall-measurements.md, Relevance cutoff on the push path.",
+  "relevant": {
+    "apra-fleet-d0n0.4": [
+      "4f54d973-5627-49c3-903a-466695892a45",
+      "ea12b9e0-b515-42ee-afa2-e0911513fb07"
+    ],
+    "apra-fleet-d0n0.5": [
+      "ea12b9e0-b515-42ee-afa2-e0911513fb07",
+      "af351ced-8562-477e-8122-1baddba46817",
+      "6baf7369-d6e5-413e-ba86-76ea6b2483de",
+      "ab967e3e-4b21-4143-8cf0-6d43065535d9"
+    ],
+    "apra-fleet-d0n0.3": [
+      "af351ced-8562-477e-8122-1baddba46817",
+      "87f501b6-48cb-462b-b112-1ca0a294dca0",
+      "6baf7369-d6e5-413e-ba86-76ea6b2483de"
+    ],
+    "apra-fleet-d0n0.2": [
+      "ab967e3e-4b21-4143-8cf0-6d43065535d9",
+      "af351ced-8562-477e-8122-1baddba46817",
+      "699d8ebd-a323-4e4b-a27d-ca9a5d1677f7",
+      "6baf7369-d6e5-413e-ba86-76ea6b2483de"
+    ],
+    "apra-fleet-d0n0.1": [
+      "af351ced-8562-477e-8122-1baddba46817"
+    ],
+    "apra-fleet-d0n0.1.2": [
+      "6baf7369-d6e5-413e-ba86-76ea6b2483de",
+      "af351ced-8562-477e-8122-1baddba46817",
+      "ab967e3e-4b21-4143-8cf0-6d43065535d9"
+    ],
+    "apra-fleet-d0n0.2.3": [
+      "699d8ebd-a323-4e4b-a27d-ca9a5d1677f7"
+    ],
+    "apra-fleet-d0n0.2.2": [
+      "af351ced-8562-477e-8122-1baddba46817",
+      "699d8ebd-a323-4e4b-a27d-ca9a5d1677f7",
+      "33a725a7-b4ac-4c81-8499-fcdddd7fd237"
+    ],
+    "apra-fleet-d0n0.2.1": [
+      "af351ced-8562-477e-8122-1baddba46817",
+      "6baf7369-d6e5-413e-ba86-76ea6b2483de",
+      "45a64b2d-bf11-4967-8b69-d63e25332825",
+      "ab967e3e-4b21-4143-8cf0-6d43065535d9",
+      "699d8ebd-a323-4e4b-a27d-ca9a5d1677f7",
+      "9b49976a-e24b-45fb-b25c-6a604cb16be7"
+    ],
+    "apra-fleet-d0n0.3.2": [
+      "ea12b9e0-b515-42ee-afa2-e0911513fb07",
+      "af351ced-8562-477e-8122-1baddba46817"
+    ],
+    "apra-fleet-d0n0.3.1": [
+      "af351ced-8562-477e-8122-1baddba46817",
+      "ea12b9e0-b515-42ee-afa2-e0911513fb07",
+      "6baf7369-d6e5-413e-ba86-76ea6b2483de"
+    ],
+    "apra-fleet-d0n0.1.1": [
+      "af351ced-8562-477e-8122-1baddba46817",
+      "6baf7369-d6e5-413e-ba86-76ea6b2483de",
+      "ab967e3e-4b21-4143-8cf0-6d43065535d9"
+    ],
+    "apra-fleet-m6pz.14": [
+      "9db85b59-1883-43cf-8357-717914e3c8b9",
+      "0f9d099d-5415-4305-a0f8-fe1ecf05fc64",
+      "a82bffe3-a078-44cf-a91d-4aae1e4a0095",
+      "af9ecaf3-fc46-44b2-bf75-456446e2fc99"
+    ],
+    "apra-fleet-m6pz.15": [
+      "55c80cc0-609c-499d-bca4-1fa4d4889e46"
+    ],
+    "apra-fleet-m6pz.15.2": [
+      "55c80cc0-609c-499d-bca4-1fa4d4889e46"
+    ],
+    "apra-fleet-m6pz.15.1": [
+      "55c80cc0-609c-499d-bca4-1fa4d4889e46"
+    ],
+    "apra-fleet-m6pz.12": [],
+    "apra-fleet-m6pz.17": [
+      "55c80cc0-609c-499d-bca4-1fa4d4889e46"
+    ],
+    "apra-fleet-m6pz.13": [
+      "55c80cc0-609c-499d-bca4-1fa4d4889e46",
+      "0dd36c44-87bd-4743-952c-ba90f5c85c3c"
+    ],
+    "apra-fleet-m6pz.16": [
+      "a82bffe3-a078-44cf-a91d-4aae1e4a0095"
+    ],
+    "apra-fleet-m6pz.14.2": [
+      "0f9d099d-5415-4305-a0f8-fe1ecf05fc64",
+      "af9ecaf3-fc46-44b2-bf75-456446e2fc99",
+      "19197697-8273-4c51-9d9e-ecffe39d2dc7",
+      "9db85b59-1883-43cf-8357-717914e3c8b9",
+      "5b0c0a37-6e58-4854-b1f4-b672ca0a6080",
+      "deeaaf96-ce12-4249-834c-f7562dda6013"
+    ],
+    "apra-fleet-m6pz.14.1": [
+      "9db85b59-1883-43cf-8357-717914e3c8b9",
+      "0f9d099d-5415-4305-a0f8-fe1ecf05fc64",
+      "af9ecaf3-fc46-44b2-bf75-456446e2fc99",
+      "a82bffe3-a078-44cf-a91d-4aae1e4a0095",
+      "f3a5a58e-1d41-4ddd-8705-2b4e1985deab"
+    ],
+    "apra-fleet-m6pz.11": [
+      "a098caf8-263f-4b72-b5a7-55fc3d290a07",
+      "0f9d099d-5415-4305-a0f8-fe1ecf05fc64",
+      "f76a103e-797e-4606-b224-bc130e8243e0",
+      "a82bffe3-a078-44cf-a91d-4aae1e4a0095"
+    ],
+    "apra-fleet-m6pz.8.2": [
+      "0f9d099d-5415-4305-a0f8-fe1ecf05fc64",
+      "af9ecaf3-fc46-44b2-bf75-456446e2fc99",
+      "deeaaf96-ce12-4249-834c-f7562dda6013",
+      "5b0c0a37-6e58-4854-b1f4-b672ca0a6080"
+    ]
+  }
+}

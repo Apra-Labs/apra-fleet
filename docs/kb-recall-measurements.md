@@ -350,6 +350,129 @@ The real models were downloaded once with the eval's
 there with `APRA_KB_EVAL_MODELS_DIR`. The guard options use the internal
 `keyword_guard` query option (not on the kb_query tool schema).
 
+## Relevance cutoff on the push path
+
+### The finding
+
+A judge found that only about 2 of the 8 rows in a pushed KNOWLEDGE BANK
+block were relevant: the engine push path (`knowledgeFor`, fleet-sprint
+`kb.mjs`) always filled the block to 8, because keyword results have no
+score cutoff.
+
+### Data set and labelling method
+
+- **beads**: the 24 most recently closed task/bug beads with a description
+  over 200 characters, excluding this cutoff's own lane, pinned on
+  2026-11-10 (`tests/fixtures/kb-push-eval/beads.json`). Each is one doer
+  dispatch: the real `roleHints('doer', { beadTitles: [bead] })` situation,
+  read through the real `knowledgeFor` (`tests/helpers/kb-push-path.ts`
+  answers its kb_query calls from a SqliteProvider with the options
+  `src/tools/kb-query.ts` builds: limit 8, CONFIRMED, exclude_disputed,
+  files/symbols as anchors, expand_related).
+- **bible**: the bare bible (`tests/fixtures/kb-recall-eval/bible-bare-live.json`,
+  the real `.fleet/kb-canonical.json` of 2026-11-10, plus the one extra
+  entry).
+- **model**: snowflake-arctic-embed-xs (the default), and no model.
+- **labels** (`tests/fixtures/kb-push-eval/labels.json`): for each bead,
+  every row that appeared in the first 12 positions of its hybrid order (and
+  every row the cutoff later admitted from deeper) was judged by reading the
+  bead's title and description against the entry's title and summary. A row
+  is **relevant** when the entry is about the component or behaviour the
+  bead changes, or states a constraint a doer working that bead would need;
+  it is **irrelevant** when it shares only vocabulary or a file. Labelled
+  once, before the cutoff was chosen; the 4 rows the chosen cutoff admitted
+  from beyond position 12 were labelled afterwards by the same rule (1
+  relevant). 65 relevant labels over 24 beads; one bead (child-id
+  allocator) has no relevant entry in the bible.
+
+### Measurement
+
+Rows of the 24 pushed blocks (192 = 24 x 8 before):
+
+| push path | model | relevant | irrelevant | relevant per block | irrelevant per block | relevant share | empty blocks |
+|---|---|---|---|---|---|---|---|
+| before (no cutoff) | arctic-embed-xs | 55 | 137 | 2.29 | 5.71 | 0.286 | 0 |
+| **after (relevant_only)** | arctic-embed-xs | **41** | **49** | 1.71 | **2.04** | **0.456** | 0 |
+| before (no cutoff) | none | 55 | 137 | 2.29 | 5.71 | 0.286 | 0 |
+| after (relevant_only) | none | 41 | 55 | 1.71 | 2.29 | 0.427 | 0 |
+
+The share of relevant rows in a block rises from 0.286 to 0.456 and the
+irrelevant rows per block fall from 5.71 to 2.04. The count of relevant rows
+per block falls (2.29 -> 1.71): a cutoff only removes rows, and refilling
+from deeper ranks finds few relevant ones. "Relevant rows per block rise" is
+read as the relevant share of each block (the judge's "2 of 8").
+
+### Choosing the cutoff
+
+Per-row signals were recorded for the same blocks (keyword bm25 score and
+rank, cosine similarity with the default model, anchor overlap). Similarity
+did not separate relevant from irrelevant rows (0.55-0.75 for both), nor did
+anchor overlap (precision 0.38). The keyword score did, both absolute and
+against the query's best. The absolute part is divided by ln(rows in the
+keyword index): a term held by a fixed few entries has an idf that grows
+with ln(N), so the division keeps the threshold's meaning as the KB grows.
+
+Each rule ranks a window of 30 rows, keeps the passing ones and trims to 8
+(as implemented). "desc-signal expected in block" is the recall eval's 139
+description-signal situations (the expected entry in the block), on the
+enriched eval KB and on the bare bible, default model:
+
+| rule: keyword relevance >= min, score >= ratio x best | push relevant | push irrelevant | push relevant share | push empty | desc-signal expected in block (enriched) | (bare) |
+|---|---|---|---|---|---|---|
+| no cutoff | 55 | 137 | 0.286 | 0 | 127/139 | 128/139 |
+| min 2, ratio 0 | 53 | 131 | 0.288 | 0 | 127/139 | 127/139 |
+| min 2, ratio 0.5 | 45 | 88 | 0.338 | 0 | 125/139 | 125/139 |
+| min 2.5, ratio 0 | 48 | 74 | 0.393 | 0 | 122/139 | 117/139 |
+| **min 2.5, ratio 0.5 (chosen)** | **41** | **49** | **0.456** | 0 | **121/139** | **116/139** |
+| min 2.75, ratio 0.5 | 38 | 37 | 0.507 | 2 | 111/139 | 109/139 |
+| min 3, ratio 0.5 | 36 | 30 | 0.545 | 2 | 106/139 | 104/139 |
+| min 3.25, ratio 0.5 | 33 | 21 | 0.611 | 3 | 101/139 | 98/139 |
+| min 3.5, ratio 0.5 | 29 | 15 | 0.659 | 6 | 95/139 | 94/139 |
+
+**Choice: min 2.5, ratio 0.5** (`RELEVANCE_MIN_KEYWORD_SCORE`,
+`RELEVANCE_TOP_RATIO`, `src/services/knowledge/hybrid-rank.ts`). It removes
+64% of the irrelevant pushed rows and keeps 95% (enriched) and 91% (bare)
+of the recall eval's expected entries that were in the block. Stricter
+rules cut more noise, but from 2.75 on each step loses about one expected
+recall-eval entry for every irrelevant push row it removes.
+
+### Rule (kb_query relevant_only)
+
+- Rank a window of max(3 x limit, 30) rows as usual (hybrid or keyword).
+- Keep a row when its keyword bm25 score s (negative, lower is better)
+  satisfies |s| / ln(N) >= 2.5, N = rows in the keyword index, AND
+  s >= 0.5 x the best score among the window, or when its
+  error_signatures match the read's error_text.
+- Trim to the limit. The result may be empty.
+- Semantic and anchor matches order the kept rows but never admit one, so
+  the kept set does not depend on the model: with no model the cutoff
+  keeps the same kind of rows (table above).
+- While the keyword index is rebuilding there is no comparable score and
+  the rows are returned uncut.
+- Opt-in: kb_query without relevant_only returns exactly what it did. The
+  engine sends it on every push-path kb_query; an answered empty result is
+  final (no kb_session_prime fallback, which would push rows nobody judged
+  relevant); kb_session_prime is still the fallback when no kb_query could
+  be answered.
+
+### Cost on short queries
+
+The 42 real recorded queries (short agent queries) are explicit kb_query
+calls and never use the cutoff. Measured anyway, at limit 8 with the
+default model: the expected entry stays in the result for 37/42 (bare) and
+38/42 (enriched), against 42/42 and 41/42 uncut. The cutoff is tuned for
+engine situations (a title, a description and acceptance text, bounded to
+32 keyword terms), not for short queries.
+
+### How to reproduce
+
+```
+APRA_KB_EVAL_MODELS_DIR=<models folder> npx vitest run tests/knowledge/kb-push-relevance-cutoff.test.ts
+```
+
+prints the push-path before/after lines (no model always; the default model
+when it is available, else SKIPPED).
+
 ## Regression guards in the recall eval
 
 `tests/knowledge/kb-recall-eval.test.ts` (run by `npm test`) enforces these

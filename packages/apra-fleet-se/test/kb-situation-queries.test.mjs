@@ -61,7 +61,7 @@ describe('knowledgeFor: per-situation queries', () => {
     });
 
     test('direct hits come before via:kb-graph related claims', async () => {
-        const { client } = harness((_a, n) => ok([entry(`d${n}`)], [entry(`r${n}`)]));
+        const { client } = harness((_a, n) => ok([entry('d' + n)], [entry('r' + n)]));
         const { entries } = await client.knowledgeFor('doer-1', hints([bead(1), bead(2)]));
         assert.deepEqual(entries.map((e) => e.id), ['d0', 'd1', 'r0', 'r1']);
         assert.equal(entries[2].via, 'kb-graph');
@@ -92,12 +92,32 @@ describe('knowledgeFor: per-situation queries', () => {
         assert.deepEqual(qs.slice(0, 3).map((c) => c.args.query), ['situation 1', 'situation 2', 'situation 3']);
     });
 
-    test('every query returning nothing falls back to kb_session_prime', async () => {
+    test('every query answered with nothing relevant: no entries, and no kb_session_prime fallback', async () => {
         const { client, calls } = harness(() => ok([]));
-        const { entries, source } = await client.knowledgeFor('doer-1', hints([bead(1)], { hintSymbols: ['s'] }));
+        const { entries, source } = await client.knowledgeFor('doer-1', hints([bead(1), bead(2)], { hintSymbols: ['s'] }));
+        assert.deepEqual(entries, []);
+        assert.equal(source, 'query');
+        assert.ok(!calls.some((c) => c.name === 'kb_session_prime'));
+    });
+
+    test('every query unanswered (rejected or thrown) falls back to kb_session_prime', async () => {
+        const { client, calls } = harness((_args, i) => {
+            if (i === 0) return { isError: true, content: [{ text: 'boom' }] };
+            throw new Error('unreachable');
+        });
+        const { entries, source } = await client.knowledgeFor('doer-1', hints([bead(1), bead(2)], { hintSymbols: ['s'] }));
         assert.equal(source, 'prime');
         assert.deepEqual(entries.map((e) => e.id), ['prime-1']);
         assert.ok(calls.some((c) => c.name === 'kb_session_prime'));
+    });
+
+    test('every kb_query asks for the relevance cutoff (relevant_only)', async () => {
+        const { client, calls } = harness(() => ok([entry('a')]));
+        await client.knowledgeFor('doer-1', hints([bead(1)]));
+        await client.knowledgeFor('doer-1', ['alpha', 'beta']);
+        const qs = calls.filter((c) => c.name === 'kb_query');
+        assert.equal(qs.length, 2);
+        for (const q of qs) assert.equal(q.args.relevant_only, true);
     });
 
     test('legacy hints (bare term list) still issue one joined kb_query without files/symbols', async () => {

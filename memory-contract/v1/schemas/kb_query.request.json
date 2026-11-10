@@ -83,6 +83,10 @@
           "minLength": 1,
           "description": "Optional error message you hit. Matched against the error_signatures of entries and added to the semantic search text, so an entry that explains this error is returned."
         },
+        "relevant_only": {
+          "type": "boolean",
+          "description": "Optional. Return only rows with strong keyword evidence for this query: a row is kept when its keyword match is strong both for the size of the KB and against the best keyword match of the query, or when its error_signatures match error_text. Semantic and file/symbol matches still order the kept rows but never admit a row on their own. Fewer rows, possibly none. Meant for context pushed without being asked for. Default false: results unchanged. Local SQLite KB only; an HTTP KB backend ignores it."
+        },
         "repo_path": {
           "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
         },

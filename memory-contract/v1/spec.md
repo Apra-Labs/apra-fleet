@@ -1433,6 +1433,22 @@ the inputs and the fixed bible-then-own merge order is unchanged. Test hook:
 the `kb_query` `happy-hybrid` fixture and
 `tests/knowledge/kb-query-hybrid.test.ts`.
 
+**RELEVANCE CUTOFF.** The default branch accepts one more OPTIONAL input,
+`relevant_only` (boolean, default false). A request without it, or with it
+false, MUST return exactly what it returned before it existed (same rows,
+same order, no new field). With it true, an implementation that supports it
+(the SQLite provider) ranks a window of max(3 x limit, 30) rows as usual,
+keeps only the rows whose keyword match is strong -- bm25 score / ln(rows in
+the keyword index) >= 2.5 AND at least half the best keyword score among the
+window -- or whose `error_signatures` match `error_text`, then trims to
+`limit`. Semantic and anchor matches still order the kept rows but never
+admit a row on their own, so the kept set does not depend on whether an
+embedding model is loaded. The result may be empty. While the keyword index
+is being rebuilt there is no comparable score and the rows are returned
+uncut. An implementation that does not support it MUST accept and ignore it.
+Measurements: `docs/kb-recall-measurements.md`. Test hook:
+`tests/knowledge/kb-push-relevance-cutoff.test.ts`.
+
 **THE TEST HOOK.** The selector guard and both response shapes are checked
 by the round-trip harness at the request/happy-path level
 (`tests/roundtrip-harness.mjs`'s `kb_query` `happy` and

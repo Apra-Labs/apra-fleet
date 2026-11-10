@@ -658,6 +658,36 @@ export class KbKeywordIndex {
   }
 
   /**
+   * bm25 keyword scores (KW_BM25, negative, lower is better) of the given
+   * entry ids for a search, plus the number of rows in the keyword index (the
+   * N bm25's idf is computed from). An id the search does not match has no
+   * score. Null when the normalized index is not ready (a rebuild is running):
+   * there is then no comparable score to give.
+   */
+  keywordScores(s: KeywordSearch, ids: string[]): { scores: Map<string, number>; docs: number } | null {
+    if (!this.isReady()) return null;
+    this.drain();
+    const db = this.db();
+    const docs = Number((db.prepare('SELECT COUNT(*) AS n FROM entries_kw').get() as { n: number }).n);
+    const scores = new Map<string, number>();
+    const kw = keywordMatch(s);
+    const wanted = Array.from(new Set(ids));
+    if (!kw || wanted.length === 0) return { scores, docs };
+    // bm25() is only usable in a direct full-text query: score in its own
+    // MATERIALIZED CTE, then join the wanted ids back to it.
+    for (let i = 0; i < wanted.length; i += 500) {
+      const chunk = wanted.slice(i, i + 500);
+      const rows = db.prepare(`
+        WITH kw AS MATERIALIZED (SELECT rowid AS rid, ${KW_BM25} AS s FROM entries_kw WHERE entries_kw MATCH ?)
+        SELECT e.id AS id, kw.s AS s FROM kw CROSS JOIN entries e ON e.rowid = kw.rid
+        WHERE e.id IN (${chunk.map(() => '?').join(',')})
+      `).all(kw, ...chunk) as { id: string; s: number }[];
+      for (const r of rows) scores.set(r.id, Number(r.s));
+    }
+    return { scores, docs };
+  }
+
+  /**
    * Keyword search over entries. `conditions` are SQL predicates over alias
    * `e` (ANDed), `params` their bind values. Returns entry rows in rank order.
    * Never throws for a malformed query: an unusable query returns [].

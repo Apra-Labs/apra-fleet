@@ -68,6 +68,10 @@ export const kbQuerySchema = z.object({
     .describe('Optional symbol names you are working on. Entries naming these symbols, or linked one code-graph hop from them, rank higher.'),
   error_text: z.string().min(1).optional()
     .describe('Optional error message you hit. Matched against the error_signatures of entries and added to the semantic search text, so an entry that explains this error is returned.'),
+  // Relevance cutoff for pushed context (the sprint engine). Opt-in and
+  // default-off: a call without it returns exactly what it always did.
+  relevant_only: z.boolean().optional()
+    .describe('Optional. Return only rows with strong keyword evidence for this query: a row is kept when its keyword match is strong both for the size of the KB and against the best keyword match of the query, or when its error_signatures match error_text. Semantic and file/symbol matches still order the kept rows but never admit a row on their own. Fewer rows, possibly none. Meant for context pushed without being asked for. Default false: results unchanged. Local SQLite KB only; an HTTP KB backend ignores it.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
   // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
   ...KB_REMOVED_SCOPE_KEYS_SHAPE,
@@ -92,12 +96,14 @@ function passesTrustFilter(
 
 type L1Opts = Parameters<MemoryProvider['query']>[0] & { limit: number };
 
-// The hybrid inputs as provider QueryOptions (absent keys stay absent).
-function hybridOpts(input: KbQueryInput): Pick<L1Opts, 'anchor_files' | 'anchor_symbols' | 'error_text'> {
+// The hybrid inputs (and the relevant_only cutoff) as provider QueryOptions
+// (absent keys stay absent).
+function hybridOpts(input: KbQueryInput): Pick<L1Opts, 'anchor_files' | 'anchor_symbols' | 'error_text' | 'relevant_only'> {
   return {
     ...(input.files?.length ? { anchor_files: input.files } : {}),
     ...(input.symbols?.length ? { anchor_symbols: input.symbols } : {}),
     ...(input.error_text ? { error_text: input.error_text } : {}),
+    ...(input.relevant_only === true ? { relevant_only: true } : {}),
   };
 }
 

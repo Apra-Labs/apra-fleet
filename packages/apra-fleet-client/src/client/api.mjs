@@ -811,6 +811,10 @@
  *   against entries' error_signatures and added to the semantic query text.
  *   files/symbols/error_text are used by the local SQLite KB only; an HTTP KB
  *   backend ignores them.
+ * @property {boolean} [relevant_only] - Optional, default false: keep only rows with
+ *   strong keyword evidence for the query (strong for the KB's size and at least half
+ *   the query's best keyword match) or an error_signatures match for error_text.
+ *   Fewer rows, possibly none; meant for pushed context. Local SQLite KB only.
  */
 
 /**
@@ -1432,7 +1436,8 @@ export class ApraFleet {
      * Search the calling session's KB (kb_query). Result JSON is
      * {l1_results, l2_expanded, related_claims?}, or {flagged_entries, total,
      * note} with flagged_only; extract with parseToolJson(). The optional
-     * files / symbols / error_text inputs are additive hybrid-ranking hints.
+     * files / symbols / error_text inputs are additive hybrid-ranking hints;
+     * relevant_only: true cuts rows without strong keyword evidence.
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
      * @param {KbQueryOptions} options
