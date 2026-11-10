@@ -64,13 +64,6 @@ describe('error registry', () => {
     expect(classifyError(Object.assign(new Error('x'), { code: 'ENOENT' }))).toEqual({ code: 'E-UNTYPED', reason: null });
     expect(classifyError('a thrown string')).toEqual({ code: 'E-UNTYPED', reason: null });
   });
-
-  it('counts one error object once, however many catch sites see it', () => {
-    const err = typed('E-X');
-    recordToolError('m-1', 't', err);
-    recordToolError('m-1', 't', err);
-    expect(queryErrorEntries({ member: 'm-1', sinceSeconds: 60 }).total).toBe(1);
-  });
 });
 
 describe('query_errors tool', () => {

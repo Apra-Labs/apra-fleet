@@ -38,8 +38,6 @@ interface StoredEntry extends Omit<ErrorEntry, 'at'> { atMs: number }
 
 let entries: StoredEntry[] = [];
 let clock: () => number = () => Date.now();
-// Errors already recorded, so one error seen at two catch sites counts once.
-let recorded = new WeakSet<object>();
 
 /** The code and reason recorded for a thrown value. Never reads the message. */
 export function classifyError(err: unknown): { code: string; reason: string | null } {
@@ -63,10 +61,6 @@ function prune(now: number): void {
 /** Record one failed tool call. Never throws. */
 export function recordToolError(member: string | undefined | null, tool: string, err: unknown): void {
   try {
-    if (err !== null && typeof err === 'object') {
-      if (recorded.has(err)) return;
-      recorded.add(err);
-    }
     const now = clock();
     const { code, reason } = classifyError(err);
     entries.push({ atMs: now, member: member ?? null, source: 'tool-call', tool, code, reason });
@@ -113,6 +107,5 @@ export function queryErrorEntries(q: ErrorQuery): ErrorQueryResult {
 /** Test-only: empty the registry and optionally replace its clock. */
 export function __resetErrorRegistry(now?: () => number): void {
   entries = [];
-  recorded = new WeakSet<object>();
   clock = now ?? (() => Date.now());
 }
