@@ -39,6 +39,15 @@
  * - The default download (fetchDownload) honours HTTPS_PROXY, HTTP_PROXY and
  *   NO_PROXY (and their lowercase spellings) through undici's
  *   EnvHttpProxyAgent; plain fetch() ignores them.
+ * - Sources, in order, for a built-in profile: the model folder itself (files
+ *   already present and verified), then the apra-fleet GitHub release asset
+ *   (modelReleaseAssetName in profiles.ts), then Hugging Face (HF_ENDPOINT
+ *   honoured). Each file falls through to the next source on any failure of
+ *   the previous one (unreachable, HTTP error, stall, sha256 mismatch); a
+ *   source that failed to deliver a file is not asked for the later files of
+ *   the same attempt. When every source fails the reason names each source
+ *   tried and why it failed. Every file is sha256-verified whatever its
+ *   source. Custom hub models (no pinned hashes) come from Hugging Face only.
  * - Files already on disk are re-verified once per process.
  * - A local folder (air-gapped installs) is used as-is: no download, no hash.
  *
@@ -52,7 +61,8 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { EnvHttpProxyAgent, fetch as undiciFetch } from 'undici';
 import { FLEET_DIR } from '../../../paths.js';
-import { ONNX_FILE_FOR_DTYPE, type EmbeddingModelChoice, type EmbeddingProfile } from './profiles.js';
+import { serverVersion } from '../../../version.js';
+import { ONNX_FILE_FOR_DTYPE, modelReleaseAssetName, type EmbeddingModelChoice, type EmbeddingProfile } from './profiles.js';
 
 export type ModelState =
   | { state: 'ready'; profile: EmbeddingProfile; dir: string }
@@ -85,10 +95,54 @@ export interface ModelStoreOptions {
   hubEndpoint?: string;
   /** Fail a download when no bytes arrive for this long; default MODEL_DOWNLOAD_STALL_MS. */
   stallTimeoutMs?: number;
+  /**
+   * Base URL of the GitHub release holding the built-in model files (asset
+   * names appended after a '/'); null or '' turns the release source off.
+   * Default: defaultModelReleaseBaseUrl().
+   */
+  releaseBaseUrl?: string | null;
 }
 
 /** Default stall timeout: a download with no bytes for this long has failed. */
 export const MODEL_DOWNLOAD_STALL_MS = 60 * 1000;
+
+/** Env var overriding the model release base URL ('off', 'none' or empty turns the release source off). */
+export const MODEL_RELEASE_URL_ENV = 'APRA_FLEET_MODEL_RELEASE_URL';
+
+/** GitHub repository whose releases carry the built-in model files (same repo as member-fleet-install.ts RELEASE_REPO). */
+export const MODEL_RELEASE_REPO = 'Apra-Labs/apra-fleet';
+
+/**
+ * Where the release source looks for model files.
+ *
+ * Choice: the release of the RUNNING build's version tag
+ * (https://github.com/Apra-Labs/apra-fleet/releases/download/<serverVersion>/),
+ * not a fixed model-assets release. The release workflow attaches the pinned
+ * default-model files to every release it publishes -- stable v<x.y.z> tags
+ * and the v<x.y.z>_<sha6> prereleases alike, whose tag is exactly the version
+ * the binary reports -- so an installed build always finds the files its own
+ * profiles.ts pins, with no separate release to create or keep in step with
+ * profile changes. A local dev build's version names no published release:
+ * the request 404s and the download falls through to Hugging Face.
+ *
+ * APRA_FLEET_MODEL_RELEASE_URL overrides it (tests point it at a local
+ * server; 'off', 'none' or '' turns the release source off).
+ */
+export function defaultModelReleaseBaseUrl(env: NodeJS.ProcessEnv = process.env, version: string = serverVersion): string | null {
+  const override = env[MODEL_RELEASE_URL_ENV];
+  if (override !== undefined) {
+    const v = override.trim();
+    if (v === '' || v === 'off' || v === 'none') return null;
+    return v.replace(/\/+$/, '');
+  }
+  return `https://github.com/${MODEL_RELEASE_REPO}/releases/download/${encodeURIComponent(version)}`;
+}
+
+/** One place a model file can be downloaded from. */
+interface DownloadSource {
+  label: string;
+  url: (repo: string, revision: string, filePath: string) => string;
+}
 
 function sizeOf(file: string): number {
   try { return fs.statSync(file).size; } catch { return 0; }
@@ -180,11 +234,28 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Rename a complete, verified staging folder to dir; an existing dir is moved
+ * aside first and restored if the rename fails, then removed.
+ */
+function swapIntoPlace(staging: string, dir: string): void {
+  const old = fs.existsSync(dir) ? `${dir}.old-${process.pid}-${randomUUID().slice(0, 8)}` : null;
+  if (old) fs.renameSync(dir, old);
+  try {
+    fs.renameSync(staging, dir);
+  } catch (err) {
+    if (old) fs.renameSync(old, dir);
+    throw err;
+  }
+  if (old) fs.rmSync(old, { recursive: true, force: true });
+}
+
 export class ModelStore {
   readonly modelsDir: string;
   private readonly download: ModelDownloadFn;
   private readonly hubEndpoint: string;
   private readonly stallMs: number;
+  private readonly releaseBaseUrl: string | null;
   /** One promise per model folder: in flight, or settled ready. Failures are dropped so a later call may retry. */
   private readonly pending = new Map<string, Promise<ModelState>>();
 
@@ -193,6 +264,27 @@ export class ModelStore {
     this.download = opts.download ?? fetchDownload;
     this.hubEndpoint = (opts.hubEndpoint ?? process.env.HF_ENDPOINT ?? 'https://huggingface.co').replace(/\/+$/, '');
     this.stallMs = opts.stallTimeoutMs ?? MODEL_DOWNLOAD_STALL_MS;
+    const rel = opts.releaseBaseUrl === undefined ? defaultModelReleaseBaseUrl() : opts.releaseBaseUrl;
+    this.releaseBaseUrl = rel ? rel.replace(/\/+$/, '') : null;
+  }
+
+  /** Download sources for a profile, in the order they are tried. */
+  private sourcesFor(profile: EmbeddingProfile): DownloadSource[] {
+    const out: DownloadSource[] = [];
+    const pinned = profile.source.kind === 'hub' && profile.source.files.every((f) => typeof f.sha256 === 'string' && f.sha256 !== '');
+    const release = this.releaseBaseUrl;
+    if (profile.builtin && pinned && release) {
+      out.push({
+        label: 'GitHub release',
+        url: (repo, revision, filePath) => `${release}/${modelReleaseAssetName(repo, revision, filePath)}`,
+      });
+    }
+    const hub = this.hubEndpoint;
+    out.push({
+      label: 'Hugging Face',
+      url: (repo, revision, filePath) => `${hub}/${repo}/resolve/${encodeURIComponent(revision)}/${filePath}`,
+    });
+    return out;
   }
 
   /** Folder a profile's files live in (the local folder itself for a local profile). */
@@ -258,28 +350,9 @@ export class ModelStore {
     const resumeDir = this.claimResumeDir(parent, base);
     const lockFile = path.join(parent, `${base}.partial.lock`);
 
-    // Stall watchdog: fails the download only when no bytes arrive for stallMs.
-    const stallSecs = this.stallMs / 1000;
-    const stallReason = `stalled: no data received for ${stallSecs} s (model download stall timeout)`;
-    const stall = new AbortController();
-    let onStall!: (err: Error) => void;
-    const stallHit = new Promise<never>((_, reject) => { onStall = reject; });
-    stallHit.catch(() => { /* observed via the race below */ });
-    let watched: string | null = null;
-    let watchedSize = 0;
-    let lastActivity = Date.now();
-    const markActivity = () => { lastActivity = Date.now(); };
-    const timer = setInterval(() => {
-      if (watched === null || stall.signal.aborted) return;
-      const size = sizeOf(watched);
-      if (size !== watchedSize) { watchedSize = size; markActivity(); }
-      if (Date.now() - lastActivity >= this.stallMs) {
-        const err = new Error(stallReason);
-        stall.abort(err);
-        onStall(err);
-      }
-    }, Math.max(10, Math.min(1000, Math.floor(this.stallMs / 4))));
-    timer.unref?.();
+    const sources = this.sourcesFor(profile);
+    /** Sources that already failed a file this attempt, with why: not asked again. */
+    const dead = new Map<string, string>();
 
     let current = '';
     try {
@@ -298,42 +371,49 @@ export class ModelStore {
         const done = resumeDir !== null && file.sha256 !== undefined && file.sha256 !== ''
           && fs.existsSync(target) && (await sha256OfFile(target)) === file.sha256;
         if (!done) {
-          if (stall.signal.aborted) throw new Error(stallReason);
-          const url = `${this.hubEndpoint}/${src.repo}/resolve/${encodeURIComponent(src.revision)}/${file.path}`;
-          watched = target;
-          watchedSize = sizeOf(target);
-          markActivity();
-          try {
-            await Promise.race([this.download(url, target, stall.signal, markActivity), stallHit]);
-          } catch (err) {
-            throw new Error(stall.signal.aborted ? stallReason : errMessage(err));
-          } finally {
-            watched = null;
-          }
-          if (file.sha256) {
-            const actual = await sha256OfFile(target);
-            if (actual !== file.sha256) {
-              fs.rmSync(target, { force: true });
-              return {
-                state: 'failed',
-                profile,
-                reason: `sha256 mismatch for ${src.repo}@${src.revision}/${file.path}: expected ${file.sha256}, got ${actual}; file removed`,
-              };
+          const failures: string[] = [];
+          let fetched = false;
+          for (const source of sources) {
+            const url = source.url(src.repo, src.revision, file.path);
+            const earlier = dead.get(source.label);
+            if (earlier !== undefined) {
+              failures.push(`${source.label} (${url}): not tried, it failed an earlier file: ${earlier}`);
+              continue;
             }
+            try {
+              await this.downloadWatched(url, target);
+            } catch (err) {
+              const why = errMessage(err);
+              dead.set(source.label, why);
+              failures.push(`${source.label} (${url}): ${why}`);
+              if (sources.length === 1) throw new Error(why);
+              continue;
+            }
+            if (file.sha256) {
+              const actual = await sha256OfFile(target);
+              if (actual !== file.sha256) {
+                fs.rmSync(target, { force: true });
+                const why = `sha256 mismatch for ${src.repo}@${src.revision}/${file.path}: expected ${file.sha256}, got ${actual}; file removed`;
+                if (sources.length === 1) return { state: 'failed', profile, reason: why };
+                failures.push(`${source.label} (${url}): ${why}`);
+                continue;
+              }
+            }
+            fetched = true;
+            break;
+          }
+          if (!fetched) {
+            return {
+              state: 'failed',
+              profile,
+              reason: `download of ${src.repo}@${src.revision}/${file.path} failed from every source: ${failures.join('; ')}`,
+            };
           }
         }
         if (target !== staged) fs.copyFileSync(target, staged);
       }
       // Complete and verified: swap the staging folder into place.
-      const old = fs.existsSync(dir) ? `${dir}.old-${process.pid}-${randomUUID().slice(0, 8)}` : null;
-      if (old) fs.renameSync(dir, old);
-      try {
-        fs.renameSync(staging, dir);
-      } catch (err) {
-        if (old) fs.renameSync(old, dir);
-        throw err;
-      }
-      if (old) fs.rmSync(old, { recursive: true, force: true });
+      swapIntoPlace(staging, dir);
       if (resumeDir) fs.rmSync(resumeDir, { recursive: true, force: true });
       return { state: 'ready', profile, dir };
     } catch (err) {
@@ -343,9 +423,105 @@ export class ModelStore {
         reason: `download of ${src.repo}@${src.revision}/${current} failed: ${errMessage(err)}`,
       };
     } finally {
-      clearInterval(timer);
       fs.rmSync(staging, { recursive: true, force: true });
       if (resumeDir) fs.rmSync(lockFile, { force: true });
+    }
+  }
+
+  /**
+   * Download url to target under a stall watchdog of its own (one per
+   * attempt, so a stalled source does not abort the next source's attempt):
+   * fails only when no bytes arrive for stallMs, with a reason naming the
+   * stall. Rejects on any failure.
+   */
+  private async downloadWatched(url: string, target: string): Promise<void> {
+    const stallSecs = this.stallMs / 1000;
+    const stallReason = `stalled: no data received for ${stallSecs} s (model download stall timeout)`;
+    const stall = new AbortController();
+    let onStall!: (err: Error) => void;
+    const stallHit = new Promise<never>((_, reject) => { onStall = reject; });
+    stallHit.catch(() => { /* observed via the race below */ });
+    let watchedSize = sizeOf(target);
+    let lastActivity = Date.now();
+    const markActivity = () => { lastActivity = Date.now(); };
+    const timer = setInterval(() => {
+      if (stall.signal.aborted) return;
+      const size = sizeOf(target);
+      if (size !== watchedSize) { watchedSize = size; markActivity(); }
+      if (Date.now() - lastActivity >= this.stallMs) {
+        const err = new Error(stallReason);
+        stall.abort(err);
+        onStall(err);
+      }
+    }, Math.max(10, Math.min(1000, Math.floor(this.stallMs / 4))));
+    timer.unref?.();
+    try {
+      await Promise.race([this.download(url, target, stall.signal, markActivity), stallHit]);
+    } catch (err) {
+      throw new Error(stall.signal.aborted ? stallReason : errMessage(err));
+    } finally {
+      clearInterval(timer);
+    }
+  }
+
+  /**
+   * Place a built-in profile's files from somewhere other than a download
+   * (apra-fleet kb model import): populate(staging) writes files into a
+   * fresh staging folder beside the model folder (hub layout); every file of
+   * the profile must then be present there and match its pinned sha256, or
+   * nothing is placed. A complete, verified set is renamed into place at
+   * modelDir(profile) -- the same atomic swap a download ends with -- so a
+   * later ensure() finds it ready without a request. Never throws for a bad
+   * input: the result names the missing or mismatched file.
+   */
+  async importModel(
+    profile: EmbeddingProfile,
+    populate: (staging: string) => Promise<void>,
+  ): Promise<{ ok: true; dir: string } | { ok: false; reason: string }> {
+    const src = profile.source;
+    if (src.kind !== 'hub' || !profile.builtin) {
+      return { ok: false, reason: `${profile.name} is not a built-in model with pinned file hashes` };
+    }
+    const dir = this.modelDir(profile);
+    const parent = path.dirname(dir);
+    const base = path.basename(dir);
+    fs.mkdirSync(parent, { recursive: true });
+    this.removeAbandonedStaging(parent, base);
+    const staging = path.join(parent, `${base}.part-${process.pid}-${randomUUID().slice(0, 8)}`);
+    fs.mkdirSync(staging, { recursive: true });
+    try {
+      await populate(staging);
+      for (const file of src.files) {
+        const at = path.join(staging, ...file.path.split('/'));
+        if (!fs.existsSync(at) || !fs.statSync(at).isFile()) {
+          return { ok: false, reason: `missing file ${file.path} (model ${src.repo}@${src.revision}); nothing was placed` };
+        }
+        if (!file.sha256) {
+          return { ok: false, reason: `no pinned sha256 for ${file.path}; nothing was placed` };
+        }
+        const actual = await sha256OfFile(at);
+        if (actual !== file.sha256) {
+          return {
+            ok: false,
+            reason: `sha256 mismatch for ${file.path} (model ${src.repo}@${src.revision}): expected ${file.sha256}, got ${actual}; nothing was placed`,
+          };
+        }
+      }
+      swapIntoPlace(staging, dir);
+      // A resume folder of an earlier download is no longer needed.
+      const lockFile = path.join(parent, `${base}.partial.lock`);
+      let holder = 0;
+      try { holder = Number(fs.readFileSync(lockFile, 'utf-8').trim()); } catch { /* no lock */ }
+      if (!pidAlive(holder)) {
+        fs.rmSync(path.join(parent, `${base}.partial`), { recursive: true, force: true });
+        fs.rmSync(lockFile, { force: true });
+      }
+      this.pending.delete(dir);
+      return { ok: true, dir };
+    } catch (err) {
+      return { ok: false, reason: `${errMessage(err)}; nothing was placed` };
+    } finally {
+      fs.rmSync(staging, { recursive: true, force: true });
     }
   }
 

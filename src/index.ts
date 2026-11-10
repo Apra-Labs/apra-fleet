@@ -60,6 +60,7 @@ Usage:
   apra-fleet kb commit [--repo <path>] [--global]      Re-export + auto-commit the canonical bible (manual/recovery)
   apra-fleet kb profile [full|developer|custom <a,b>]  Show or set the KB tool profile for interactive sessions
   apra-fleet kb embedding [none|<model name>]         Show or set the KB semantic search model (none = off)
+  apra-fleet kb model import <folder|archive> [--model <name>]  Install a built-in KB model offline (sha256-verified)
   apra-fleet join <member-jwt> [--hub-url <url>]  Activate a device using a member JWT obtained out-of-band from fleet-dashboard
   apra-fleet spoke <origin-member-id>        Run as an outbound hub-connected spoke; requires apra-fleet join first
   apra-fleet --version        Print version
@@ -193,6 +194,13 @@ Usage:
       .then(m => m.runKbImport(process.argv.slice(4)))
       .then(code => process.exit(code))
       .catch(err => { logError('cli', `kb import failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'model') {
+    // Offline model install: verify a folder or archive against the built-in
+    // profile's pinned sha256 and place it where the model store looks.
+    import('./cli/kb-model-import.js')
+      .then(m => m.runKbModel(process.argv.slice(4)))
+      .then(code => process.exit(code))
+      .catch(err => { logError('cli', `kb model failed: ${err.message}`); process.exit(1); });
   } else if (subCmd === 'embed-check') {
     // Diagnostic: embed one text through the KB embed worker (SEA-safe check).
     import('./cli/kb-embed-check.js')

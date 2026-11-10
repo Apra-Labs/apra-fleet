@@ -35,6 +35,10 @@ process.env.NODE_ENV = 'test';
 // closed local port so any download a test does trigger fails at once.
 process.env.APRA_FLEET_KB_EMBED = 'off';
 process.env.HF_ENDPOINT = 'http://127.0.0.1:9';
+// The GitHub release model source (tried before the hub for built-in models)
+// is off for the suite; tests of that source set releaseBaseUrl or this
+// variable to a local server.
+process.env.APRA_FLEET_MODEL_RELEASE_URL = 'off';
 // install's post-start /health wait: off unless a test opts in
 // (_setServiceHealthWaitOverride) -- no test may wait on a real server.
 process.env.APRA_FLEET_INSTALL_HEALTH_TIMEOUT_MS ??= '0';
