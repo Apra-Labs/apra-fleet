@@ -29,10 +29,10 @@ describe('member tool allowlist', () => {
     expect([...REGISTERED_TOOL_NAMES].sort()).toEqual([...registered].sort());
   });
 
-  it('contains every registered code_* tool, the non-minting kb_* tools, and version, report_status and session_stats', () => {
+  it('contains every registered code_* tool, the non-minting kb_* tools, and version, report_status, session_stats and query_errors', () => {
     const code = registered.filter(t => t.startsWith('code_'));
     expect(code.length).toBeGreaterThan(0);
-    for (const t of [...code, 'version', 'report_status', 'session_stats']) expect(MEMBER_ALLOWED_TOOLS).toContain(t);
+    for (const t of [...code, 'version', 'report_status', 'session_stats', 'query_errors']) expect(MEMBER_ALLOWED_TOOLS).toContain(t);
     for (const t of ['kb_capture', 'kb_query', 'kb_list', 'kb_session_prime', 'kb_stats', 'kb_import', 'kb_bible_commit']) {
       expect(MEMBER_ALLOWED_TOOLS).toContain(t);
     }
