@@ -475,8 +475,9 @@ when it is available, else SKIPPED).
 
 ## Regression guards in the recall eval
 
-`tests/knowledge/kb-recall-eval.test.ts` (run by `npm test`) enforces these
-numbers:
+`tests/knowledge/kb-recall-eval.test.ts` and
+`tests/knowledge/kb-push-relevance-cutoff.test.ts` (both run by `npm test`)
+enforce these numbers:
 
 | guard | asserted | tolerance | runs |
 |---|---|---|---|
@@ -487,6 +488,11 @@ numbers:
 | description-signal situations: embedded part carries the whole signal | all 139 | none | always |
 | description-signal keyword + anchor MRR | >= 0.6667 | 0.01 | always |
 | description-signal hybrid MRR, default model | >= 0.7477 and > 0.612 | 0.01 | when the model is available, else SKIPPED |
+| push-path cutoff: no pushed row below the cutoff (keyword score read independently) | every row of the 24 blocks | none | always (no model) |
+| push-path cutoff: relevant / irrelevant rows of the 24 blocks | >= 41 / <= 55, share above the uncut 0.286 | none | always (no model) |
+| same, default model | >= 41 / <= 49 | none | when the model is available, else SKIPPED |
+| a situation with nothing relevant | empty block, no kb_session_prime fallback | none | always |
+| kb_query without relevant_only (42 real queries, two argument shapes) | same ids, same order as the pre-cutoff code | none | always (no embedder, and a deterministic one) |
 
 Each was checked to fail with its fix reverted:
 
@@ -494,3 +500,7 @@ Each was checked to fail with its fix reverted:
 - a fixed guard window of 8: 181 of 182 queries lose a hit;
 - the old situation format: 0 of 139 situations embed their signal, and
   keyword + anchor MRR is 0.4512.
+- the cutoff removed (relevantRows not applied): a pushed row with keyword
+  relevance 1.49 comes back, the share stays at 0.286 and the nothing-relevant
+  block fills to 8;
+- the cutoff applied to every read: the explicit-caller snapshots differ.
