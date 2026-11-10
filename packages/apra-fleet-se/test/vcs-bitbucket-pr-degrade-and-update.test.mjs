@@ -198,7 +198,7 @@ describe('(c) auth failures on a skip-provisioned provider', () => {
     test('a 401 on create is reported once with the API-token remedy -- no pointless re-provision + retry', async () => {
         const bb = fakeBitbucket({ postStatus: 401 });
         const { result, logs } = await publish({ bb, runId: 'run-401', member: 'bb-401' });
-        assert.deepEqual(result, { pushed: true });
+        assert.deepEqual(result, { pushed: true, prSkipped: { reason: 'auth-failure', message: 'PR not opened: VCS auth failure' } });
         assert.deepEqual(bb.calls, ['GET', 'POST']);
         assert.deepEqual(bb.provisionCalls, []);
         const skipped = logs.find((m) => m.startsWith('[Publish PR Skipped]'));
@@ -428,5 +428,23 @@ describe('(36mo) push+pr auth failure: no no-op self-heal', () => {
         const { logs } = await publish({ bb, runId: 'run-noheal', member: 'bb-noheal' });
         assert.equal(bb.execCommands.filter((c) => /^curl -sS -X POST/.test(c)).length, 1);
         assert.ok(!logs.some((m) => /self-heal completed/.test(m)), JSON.stringify(logs));
+    });
+});
+
+describe('PR skipped for a VCS auth failure is visible in the run result', () => {
+    test('authFailure outcome -> prSkipped marker with reason; verdict is not touched', async () => {
+        const bb = fakeBitbucket({ postStatus: 401 });
+        const { result } = await publish({ bb, verdict: 'PASS', runId: 'run-skip-marker', member: 'bb-skip-marker' });
+        assert.equal(result.pushed, true);
+        assert.equal(result.prSkipped.reason, 'auth-failure');
+        assert.match(result.prSkipped.message, /PR not opened: VCS auth failure/);
+        assert.ok(!('verdict' in result), 'publish phase must never carry or override the verdict');
+    });
+
+    test('successful PR outcome -> no prSkipped marker', async () => {
+        const bb = fakeBitbucket();
+        const { result } = await publish({ bb, runId: 'run-no-skip', member: 'bb-no-skip' });
+        assert.deepEqual(result, { pushed: true });
+        assert.ok(!('prSkipped' in result));
     });
 });

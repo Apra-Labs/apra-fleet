@@ -264,7 +264,7 @@ export async function getJson(url, timeoutMs = 2000) {
 
 async function postJson(url, timeoutMs = 2000) {
   try {
-    const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(timeoutMs) });
     return res.ok;
   } catch {
     return false;

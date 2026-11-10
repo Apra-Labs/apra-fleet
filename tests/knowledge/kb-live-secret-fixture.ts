@@ -107,7 +107,7 @@ export interface StubKbServer {
   close(): Promise<void>;
 }
 
-/** A local KB HTTP server answering capture/query/context/invalidate/prime, 401 for a token `accept` refuses. */
+/** A local KB HTTP server answering capture/query/context/invalidate/prime/feedback, 401 for a token `accept` refuses. */
 export function startStubKbServer(): Promise<StubKbServer> {
   const stub = { requests: [] as SeenRequest[], accept: (_token: string) => true } as StubKbServer;
   let captures = 0;
@@ -130,6 +130,7 @@ export function startStubKbServer(): Promise<StubKbServer> {
         '/api/kb/query': { results: [], total: 0, l1_only: false },
         '/api/kb/context': { results: [] },
         '/api/kb/invalidate': { invalidated: 0 },
+        '/api/kb/feedback': { id: 'srv-feedback', stale: true, flagged_for_review: true },
       };
       const body = bodies[pathname];
       res.writeHead(body ? 200 : 404);

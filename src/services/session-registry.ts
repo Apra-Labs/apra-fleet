@@ -2,6 +2,20 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export type SessionStatus = 'online' | 'busy' | 'idle';
 
+/**
+ * Stable registry id of the operator's own orchestrating session.
+ *
+ * A session with no member identity (no member JWT, no ?member=) is the local
+ * orchestrator/PM session. When such a session declares the `claude/channel`
+ * capability at initialize -- i.e. it can actually receive channel pushes --
+ * http-transport registers it under this id in the local workspace, so
+ * send_message({ member_id: 'orchestrator' }) reaches it. With several such
+ * sessions open, the most recently connected one holds the id; when it closes
+ * the id moves back to the most recent one still open. Member ids are UUIDs,
+ * so this id cannot collide with a member entry.
+ */
+export const ORCHESTRATOR_SESSION_ID = 'orchestrator';
+
 export interface SessionState {
   member_id: string;
   /** HARD security boundary -- every session belongs to exactly one workspace.

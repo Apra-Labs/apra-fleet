@@ -48,7 +48,8 @@
 //
 // GUARD COVERAGE: registered as 'phases/develop.mjs' in ../guarded-modules.mjs.
 // It carries NO command() call site of its own -- every bd read/write it needs
-// goes through an injected runner helper or a gitSync bracket -- plus the two
+// goes through an injected runner helper or a gitSync bracket (the
+// NEEDS-DECISION writes run in ../decisions.mjs, inside one) -- plus the two
 // dispatchRole call sites for the streak-assignment and doer ladders.
 // =============================================================================
 
@@ -67,6 +68,7 @@ import { policyFor } from '../role-policies.mjs';
 import { CLAIMED_ELSEWHERE_REASON } from '../orphan-reclaim.mjs';
 import { openBlocksDependents } from '../beads-scope.mjs';
 import { classifyBlockedReport } from '../set-aside.mjs';
+import { NEEDS_DECISION, validateDecisionRequest, recordPendingDecision } from '../decisions.mjs';
 
 /**
  * Runs ONE Develop round: streak grouping, per-doer worklist packing, and the
@@ -237,10 +239,11 @@ export async function runDevelopPhase({
         if (blockedIds.length === 0) return;
         const where = { cycle, round: devRounds };
         // The doer's own notes are carried verbatim (whitespace-collapsed,
-        // capped) so the stall report says what to fix; they are reported,
-        // never parsed.
-        const rawNotes = typeof report.notes === 'string' ? report.notes.replace(/\s+/g, ' ').trim() : '';
-        const doerNotes = rawNotes.length > 300 ? `${rawNotes.slice(0, 297)}...` : rawNotes;
+        // never shortened) so the stall report says what to fix; they are
+        // reported, never parsed. They used to be capped at 300 characters,
+        // which cut an operator-facing request to a few words in the stall
+        // abort text.
+        const doerNotes = typeof report.notes === 'string' ? report.notes.replace(/\s+/g, ' ').trim() : '';
         const doerReason = `doer on member '${doerMember}' reported BLOCKED on streak [${streakIds.join(', ')}]` +
             (doerNotes ? `: ${doerNotes}` : '');
 
@@ -305,6 +308,42 @@ export async function runDevelopPhase({
             `other open bead(s) of streak [${streakIds.join(', ')}] return to the ready pool. Entries: ` +
             JSON.stringify(Object.fromEntries([...fresh, ...freshDependents].map((id) => [id, doctorBlockedIds.get(id)])))
         );
+    };
+
+    // Records a doer NEEDS-DECISION report (../decisions.mjs): the named
+    // bead -- which must still be open in this streak -- gets a decision bead
+    // labelled for a human, an appended note with the full request, an entry
+    // on sprintState.pendingDecisions, and is set aside (kind
+    // 'needs-decision') with its open blocks-edge dependents, so it is never
+    // re-dispatched in this run while the decision is pending. Other open
+    // beads of the streak are not set aside: lower-order lane-mates return
+    // to the pool and higher-order ones are held by lane order. Returns true
+    // when the bead was set aside.
+    const recordDoerNeedsDecision = async ({ report, unclosedIds, streakIds, doerMember }) => {
+        const checked = validateDecisionRequest(report.decision);
+        if (!checked.ok) {
+            log(`Doer streak [${streakIds.join(', ')}] reported NEEDS-DECISION with an unusable decision (${checked.reason}) -- nothing is set aside; the open beads stay eligible for the next round.`);
+            return false;
+        }
+        const decision = checked.decision;
+        if (!unclosedIds.includes(decision.beadId)) {
+            log(`Doer streak [${streakIds.join(', ')}] reported NEEDS-DECISION on '${decision.beadId}', which is not open in this streak -- nothing is set aside.`);
+            return false;
+        }
+        let scopeBeads = [];
+        if (typeof bdListScoped === 'function') {
+            const closedNow = new Set(streakIds.filter((id) => !unclosedIds.includes(id)));
+            scopeBeads = (await bdListScoped('')).map((b) => (b && closedNow.has(b.id) ? { ...b, status: 'closed' } : b));
+        }
+        await gitSync.withOpenSyncBracket(() => recordPendingDecision({
+            sprintState, decision,
+            raisedBy: `doer on member '${doerMember}'`,
+            cycle, round: devRounds, command, member: backlogMember, scopeBeads, log,
+        }));
+        // The engine just mutated beads (decision bead, note) in its own
+        // clone: D-push so the operator and every member see them.
+        await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
+        return true;
     };
 
     // --- Streak grouping ------------------------------------------
@@ -927,12 +966,17 @@ export async function runDevelopPhase({
 
         // The doer RETURNED (its session ended) but left bead(s) open: a
         // BLOCKED report, or a success-looking report the bd read disproves.
-        const leftOpenReason = report && report.status === 'BLOCKED' ? 'blocked' : 'left-open';
+        const leftOpenReason = report && report.status === 'BLOCKED'
+            ? 'blocked'
+            : (report && report.status === NEEDS_DECISION ? 'needs-decision' : 'left-open');
         if (unclosedIds.length > 0) {
             log(`Doer streak [${actualBeadIds.join(', ')}] reported status '${report ? report.status : 'unknown'}' but bead(s) still open: ${unclosedIds.join(', ')} -- treating streak as FAILED.`);
         }
         if (leftOpenReason === 'blocked' && unclosedIds.length > 0) {
             await recordDoerBlocked({ report, unclosedIds, streakIds: actualBeadIds, doerMember });
+        }
+        if (leftOpenReason === 'needs-decision' && unclosedIds.length > 0) {
+            await recordDoerNeedsDecision({ report, unclosedIds, streakIds: actualBeadIds, doerMember });
         }
 
         if (batchStreaks) {

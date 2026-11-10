@@ -15,7 +15,7 @@ export function isSqliteProject(provider: MemoryProvider): provider is SqlitePro
 /**
  * Narrows a project KB provider to SqliteProvider, for call sites that use
  * SqliteProvider-only capabilities not part of the MemoryProvider interface
- * (list, feedback, freshnessSweep, reconcilePrefilter, resolveContradiction,
+ * (list, freshnessSweep, reconcilePrefilter, resolveContradiction,
  * hasEntry, the DirectiveProvider methods, and capture's second CaptureOpts
  * argument).
  *

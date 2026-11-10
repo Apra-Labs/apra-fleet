@@ -15,7 +15,8 @@ import {
     createFleetHttpTransport,
     getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
-import { beadsExtension, kbCodeIntelExtension } from '../fleet-sprint/viewer-extensions.mjs';
+import { beadsExtension, kbCodeIntelExtension, decisionsExtension } from '../fleet-sprint/viewer-extensions.mjs';
+import { DECISION_PAUSE_SOURCE } from '../fleet-sprint/decision-wait.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
 import { prepareLaunchTopology, toAlignCommandResult } from '../fleet-sprint/member-align.mjs';
@@ -163,6 +164,9 @@ export function buildOptionsSpec() {
         // env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted (direct launch):
         // the runner takes the expectation from the backlog member.
         'expect-beads': { type: 'string' },
+        // Operator-notification config for a pending decision (JSON; env
+        // fallback FLEET_SPRINT_DECISION_NOTIFY). See decision-notify.mjs.
+        'decision-notify': { type: 'string' },
         budget: { type: 'string' },
         // Stabilization Issue 32: per-dispatch time budget in seconds
         // (timeout_s == max_total_s at every dispatch; integ ceiling 2x).
@@ -219,6 +223,12 @@ Options:
                                 the supervisor; env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted: the
                                 backlog member's own 'bd where' becomes the expectation and every
                                 other member must match it. A mismatch aborts before any bd mutation.
+      --decision-notify <json>  Where to notify the operator of a pending decision, as JSON
+                                ({"message_member","email":{provider,from,to,host,port,user,secure},
+                                "dashboard_url","timeout_s"}); env fallback FLEET_SPRINT_DECISION_NOTIFY.
+                                Credentials stay in the fleet credential store. message_member
+                                defaults to "orchestrator" (the operator's channel-capable
+                                session); a channel with no target is logged once at launch.
       --budget <usd>            USD ceiling for this run's total estimated spend. Optional;
                                 omitted (the default) means unlimited, identical to prior behavior.
       --dispatch-timeout-s <s>  Per-dispatch time budget in seconds (default 9000). The hard ceiling
@@ -353,7 +363,7 @@ export async function resolveRoleMapWithWarnings(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, ciGate }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, ciGate, decisionNotify }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -388,6 +398,7 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // The raw --expect-beads JSON, forwarded verbatim; runner.js's
     // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
     if (expectBeads !== undefined) args.expect_beads = expectBeads;
+    if (decisionNotify !== undefined) args.decision_notify = decisionNotify;
     // --ci-gate is not wired (apra-fleet-dv8i); ci_gate is never forwarded.
     // if (ciGate !== undefined) args.ci_gate = ciGate;
     return args;
@@ -632,6 +643,46 @@ export async function reReserveOnResume({ sprintReservation, resyncMember, reque
     }
 }
 
+// Reservation handling across a cooperative pause/resume, by pause source.
+// A pause hands every member reservation back (so another sprint may use the
+// members while this one is parked) and the matching resume re-acquires them
+// owner-checked and resyncs each one -- EXCEPT the paused-awaiting-decision
+// pause (source 'needs_decision', fleet-sprint/decision-wait.mjs): that run is
+// waiting on an operator, not on a member, and may wait hours, so it keeps
+// every reservation (no other sprint can take a member meanwhile) and touches
+// no member; its resume then has nothing to re-acquire or resync. The source
+// comes from the 'pause:requested' payload ('paused' carries none). The
+// re-reserve runs only for a pause whose 'paused' handler actually released.
+// Exported so the per-source behaviour is unit-testable without a live engine.
+export function wirePauseReservations({ workflow, releaseForPause, reReserve, log = () => {} }) {
+    let pauseSource = null;
+    let released = false;
+    workflow.on('pause:requested', (payload) => {
+        pauseSource = payload && payload.source ? payload.source : null;
+    });
+    workflow.on('paused', () => {
+        if (pauseSource === DECISION_PAUSE_SOURCE) {
+            log('[member-reservation] paused awaiting an operator decision: keeping every member reservation for the wait.');
+            return;
+        }
+        released = true;
+        // Started synchronously in the 'paused' event, as before; best-effort
+        // (a release hiccup must never fail a pause).
+        const failed = (err) => console.error('[member-reservation] release-on-pause failed:', err && err.message ? err.message : err);
+        try {
+            Promise.resolve(releaseForPause()).catch(failed);
+        } catch (err) {
+            failed(err);
+        }
+    });
+    workflow.setPreResumeHook(async (reason) => {
+        if (!released) return undefined;
+        const result = await reReserve(reason);
+        released = false;
+        return result;
+    });
+}
+
 async function main() {
     const { values } = parseCliArgs(process.argv.slice(2));
 
@@ -791,6 +842,9 @@ async function main() {
     // is retried once only when it provably never reached the server.
     const transport = createFleetHttpTransport(connection, { dirname: __dirname, exists: existsSync });
     await transport.start();
+    // Every exit below releases the server session first: stop() alone leaves
+    // it (and its McpServer) open on the fleet server until idle eviction.
+    const closeFleetTransport = () => transport.close().catch(() => { /* best effort */ });
     const mcpClient = new McpClient(transport);
 
     const fleetApi = new ApraFleet(mcpClient);
@@ -813,14 +867,14 @@ async function main() {
         const result = resolveMemberValidation({ rawMembers, registeredNames, allowMissingMembers });
         if (!result.ok) {
             console.error(result.message);
-            transport.stop();
+            await closeFleetTransport();
             process.exit(1);
         }
         if (result.message) console.warn(result.message);
         validMembers = result.validMembers;
     } catch (err) {
         console.error(`Error: Failed to list fleet members: ${err.message}`);
-        transport.stop();
+        await closeFleetTransport();
         process.exit(1);
     }
 
@@ -865,7 +919,7 @@ async function main() {
     });
     if (!issueCheck.ok) {
         console.error(issueCheck.message);
-        transport.stop();
+        await closeFleetTransport();
         process.exit(1);
     }
 
@@ -951,7 +1005,10 @@ async function main() {
     const onLaunchSigint = () => {
         sprintReservation.releaseAll()
             .catch((err) => console.error('[member-reservation] release-on-SIGINT failed:', err))
-            .finally(() => process.exit(130));
+            .finally(async () => {
+                await closeFleetTransport();
+                process.exit(130);
+            });
     };
     process.once('SIGINT', onLaunchSigint);
     const topology = await reserveThenAlign({ sprintReservation, align: () => prepareLaunchTopology({
@@ -967,7 +1024,7 @@ async function main() {
     }) });
     if (!topology.ok) {
         console.error(`Error: ${topology.message}`);
-        transport.stop();
+        await closeFleetTransport();
         process.exit(1);
     }
     if (!topology.singleMember) {
@@ -993,7 +1050,7 @@ async function main() {
         name: 'Fleet-Sprint',
         // kbCodeIntelExtension: its own tab (per-member, per-dispatch kb_* and
         // code_* call counts), separate from the Tasks tab.
-        dashboardExtensions: [beadsExtension, kbCodeIntelExtension],
+        dashboardExtensions: [beadsExtension, kbCodeIntelExtension, decisionsExtension],
         // apra-fleet-eft.37.1/37.2: the core viewer now speaks opts.runId
         // (opts.sprintId is a deprecated BOUNDARY-COMPAT alias -- never use
         // it from here).
@@ -1037,8 +1094,8 @@ async function main() {
             console.error(`Error: ${message}`);
             sprintReservation.releaseAll()
                 .catch((err) => console.error('[member-reservation] release on viewer failure failed:', err && err.message ? err.message : err))
-                .finally(() => {
-                    transport.stop();
+                .finally(async () => {
+                    await closeFleetTransport();
                     process.exit(1);
                 });
         },
@@ -1083,10 +1140,6 @@ async function main() {
         const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
         return commandResultToSoftGit(res);
     };
-    workflow.on('paused', () => {
-        sprintReservation.releaseForPause().catch((err) =>
-            console.error('[member-reservation] release-on-pause failed:', err && err.message ? err.message : err));
-    });
     // (apra-fleet-p2to.1.3) The re-reserve + per-member resync is registered as
     // an AWAITABLE pre-resume hook, not a fire-and-forget 'resumed' listener.
     // requestResume() drains this hook as a hard barrier -- while the run is
@@ -1104,19 +1157,25 @@ async function main() {
     // sees exactly which members block the resume. requestPause() is still
     // passed for the exported helper's standalone contract; here it is a no-op
     // because the run has not yet been unpaused.
-    workflow.setPreResumeHook(() => reReserveOnResume({
-        sprintReservation,
-        resyncMember: (member) => resyncReacquiredMember({
-            member,
-            branch: branchName,
-            baseBranch,
-            runGit: (cmd) => runGitSoft(cmd, member),
-            doltPull: (m) => runCommand('bd dolt pull', m),
-            log: (msg) => console.log(msg),
+    // A decision pause keeps its reservations (see wirePauseReservations).
+    wirePauseReservations({
+        workflow,
+        releaseForPause: () => sprintReservation.releaseForPause(),
+        log: (msg) => console.log(msg),
+        reReserve: () => reReserveOnResume({
+            sprintReservation,
+            resyncMember: (member) => resyncReacquiredMember({
+                member,
+                branch: branchName,
+                baseBranch,
+                runGit: (cmd) => runGitSoft(cmd, member),
+                doltPull: (m) => runCommand('bd dolt pull', m),
+                log: (msg) => console.log(msg),
+            }),
+            requestPause: (reason) => workflow.requestPause(reason),
+            log: (msg) => console.error(msg),
         }),
-        requestPause: (reason) => workflow.requestPause(reason),
-        log: (msg) => console.error(msg),
-    }));
+    });
 
     let reservationReleased = false;
     const releaseReservationOnce = async () => {
@@ -1133,7 +1192,10 @@ async function main() {
     const onSigint = () => {
         releaseReservationOnce()
             .catch((err) => console.error('[member-reservation] release-on-SIGINT failed:', err))
-            .finally(() => process.exit(130));
+            .finally(async () => {
+                await closeFleetTransport();
+                process.exit(130);
+            });
     };
     process.removeListener('SIGINT', onLaunchSigint);
     process.once('SIGINT', onSigint);
@@ -1158,6 +1220,7 @@ async function main() {
                 serviceUrl,
                 runId: effectiveRunId,
                 expectBeads,
+                decisionNotify: (values['decision-notify'] || process.env.FLEET_SPRINT_DECISION_NOTIFY || '').trim() || undefined,
                 skipRegression: Boolean(values['skip-regression']),
                 // ciGate: values['ci-gate'],  -- not wired (apra-fleet-dv8i)
             }),
@@ -1174,7 +1237,7 @@ async function main() {
         await releaseReservationOnce();
         console.log('Sprint finished:', res);
         server.close();
-        transport.stop();
+        await closeFleetTransport();
         process.exit(0);
     } catch (err) {
         process.removeListener('SIGINT', onSigint);
@@ -1207,7 +1270,7 @@ async function main() {
             });
         }
         server.close();
-        transport.stop();
+        await closeFleetTransport();
         process.exit(process.exitCode || 1);
     }
 }

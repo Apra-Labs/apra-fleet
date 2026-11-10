@@ -83,7 +83,7 @@ members run PowerShell, not POSIX.
 ### Graceful (preferred)
 
 ```bash
-curl -s -X POST http://localhost:8787/api/shutdown
+curl -s -X POST http://localhost:8787/api/shutdown -H "Content-Type: application/json"
 ```
 Returns `{"status":"shutting-down"}` immediately; the process then finishes
 tearing down every seam (ledger, watchdog, dashboard, etc) and exits on its
@@ -379,7 +379,7 @@ Sprint-scoped dashboard (per-role activity, bead DAG, cost, PR link):
 ## 4. Kill a sprint
 
 ```bash
-curl -s -X POST http://localhost:8787/api/sprints/<sprintId>/stop
+curl -s -X POST http://localhost:8787/api/sprints/<sprintId>/stop -H "Content-Type: application/json"
 ```
 
 ## Relaunch gate

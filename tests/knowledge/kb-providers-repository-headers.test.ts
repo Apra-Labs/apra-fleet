@@ -20,7 +20,7 @@ const KB_CONFIG_DIR = path.join(FLEET_DIR, 'knowledge');
 const KB_CONFIG_PATH = path.join(KB_CONFIG_DIR, 'config.json');
 const FAKE_TOKEN = 'NOT_A_REAL_KEY';
 
-const seen: Array<{ repository?: string; commit?: string }> = [];
+const seen: Array<{ repository?: string; commit?: string; branch?: string; branchRaw: string[] }> = [];
 let server: http.Server;
 let serverUrl: string;
 const tempDirs: string[] = [];
@@ -53,12 +53,18 @@ function writeHttpConfig(): void {
   );
 }
 
-async function headersOf(provider: unknown): Promise<{ repository?: string; commit?: string }> {
+async function requestOf(provider: unknown): Promise<(typeof seen)[number]> {
   expect(provider).toBeInstanceOf(HttpKbProvider);
   seen.length = 0;
-  await (provider as HttpKbProvider).query({ query: 'x' });
+  const result = await (provider as HttpKbProvider).query({ query: 'x' });
+  expect(result).toBeDefined();
   expect(seen).toHaveLength(1);
   return seen[0];
+}
+
+async function headersOf(provider: unknown): Promise<{ repository?: string; commit?: string }> {
+  const { repository, commit } = await requestOf(provider);
+  return { repository, commit };
 }
 
 beforeAll(async () => {
@@ -68,6 +74,8 @@ beforeAll(async () => {
       seen.push({
         repository: req.headers['x-repository'] as string | undefined,
         commit: req.headers['x-repository-commit'] as string | undefined,
+        branch: req.headers['x-repository-branch'] as string | undefined,
+        branchRaw: req.rawHeaders.filter(h => h.toLowerCase() === 'x-repository-branch'),
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ results: [], total: 0, l1_only: false }));
@@ -173,5 +181,71 @@ describe('getKbProviders passes the resolved repository to the HTTP provider', (
     expect(providers.project).not.toBeInstanceOf(HttpKbProvider);
     await providers.project.query({ query: 'x' });
     expect(seen).toHaveLength(0);
+  });
+});
+
+describe('getKbProviders: X-Repository-Branch from a real local git folder', () => {
+  it('a local folder on branch b sends X-Repository-Branch: b next to X-Repository and X-Repository-Commit', async () => {
+    writeHttpConfig();
+    const repo = makeRepo('https://github.com/example/branch-local.git');
+    git(repo.dir, ['checkout', '-q', '-b', 'feature/b']);
+
+    const request = await requestOf((await getKbProviders(repo.dir)).project);
+
+    expect(request.repository).toBe('github.com/example/branch-local');
+    expect(request.commit).toBe(repo.head);
+    expect(request.branch).toBe('feature/b');
+    expect(request.branchRaw).toHaveLength(1);
+  });
+
+  it('a detached HEAD sends no X-Repository-Branch and the request still succeeds', async () => {
+    writeHttpConfig();
+    const repo = makeRepo('https://github.com/example/branch-detached.git');
+    git(repo.dir, ['checkout', '-q', '--detach']);
+
+    const request = await requestOf((await getKbProviders(repo.dir)).project);
+
+    expect(request.repository).toBe('github.com/example/branch-detached');
+    expect(request.commit).toBe(repo.head);
+    expect(request.branch).toBeUndefined();
+    expect(request.branchRaw).toHaveLength(0);
+  });
+
+  it('a remote member anchor (remoteUrl set) sends no X-Repository-Branch, even over a local repo on a branch', async () => {
+    writeHttpConfig();
+    const repo = makeRepo('https://github.com/example/branch-remote-local.git');
+    git(repo.dir, ['checkout', '-q', '-b', 'not-sent']);
+
+    const request = await requestOf(
+      (await getKbProviders(repo.dir, 'ssh://git@github.com/example/branch-remote-member.git')).project,
+    );
+
+    expect(request.repository).toBe('github.com/example/branch-remote-member');
+    expect(request.commit).toBeUndefined();
+    expect(request.branch).toBeUndefined();
+    expect(request.branchRaw).toHaveLength(0);
+  });
+
+  it('a non-ASCII branch name is sent percent-encoded as UTF-8', async () => {
+    writeHttpConfig();
+    const repo = makeRepo('https://github.com/example/branch-utf8.git');
+    git(repo.dir, ['checkout', '-q', '-b', 'caf\u00e9-\u65e5']);
+
+    const request = await requestOf((await getKbProviders(repo.dir)).project);
+
+    expect(request.branch).toBe('caf%C3%A9-%E6%97%A5');
+  });
+
+  it('a branch name over 255 characters after encoding is omitted; the request still succeeds', async () => {
+    writeHttpConfig();
+    const repo = makeRepo('https://github.com/example/branch-long.git');
+    // 101 characters / 201 bytes for git, 601 characters once percent-encoded.
+    git(repo.dir, ['checkout', '-q', '-b', `b${'\u00e9'.repeat(100)}`]);
+
+    const request = await requestOf((await getKbProviders(repo.dir)).project);
+
+    expect(request.repository).toBe('github.com/example/branch-long');
+    expect(request.commit).toBe(repo.head);
+    expect(request.branch).toBeUndefined();
   });
 });

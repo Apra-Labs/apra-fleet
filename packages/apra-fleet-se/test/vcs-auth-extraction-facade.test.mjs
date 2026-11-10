@@ -116,6 +116,10 @@ const MOVED_PRIVATE_SYMBOLS = [
     // The local-member guard's fail-closed path (added after the move).
     'VCS_MEMBER_LOOKUP_FAILED',
     'assertNotLocalNonReMintable',
+    // Masks a credentialed origin's userinfo before it is quoted in a log
+    // line. Added after the move; vcs-auth.mjs-only, never exported by
+    // runner.js.
+    'redactUrlUserinfo',
 ];
 
 const declaresTopLevel = (src, name) =>

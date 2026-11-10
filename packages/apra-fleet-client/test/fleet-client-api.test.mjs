@@ -3,6 +3,26 @@ import assert from 'node:assert';
 import { ApraFleet } from '../src/client/api.mjs';
 
 describe('ApraFleet', () => {
+    test('sendMessage forwards to the send_message tool', async () => {
+        let calledName, calledArgs;
+        const mockClient = { async callTool(name, args) { calledName = name; calledArgs = args; return { ok: true }; } };
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_id: 'm-1', content: 'hello', reply_to: 'r-1' };
+        const result = await fleet.sendMessage(options);
+        assert.strictEqual(calledName, 'send_message');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { ok: true });
+    });
+
+    test('probeMessageTarget calls send_message in probe mode with no content', async () => {
+        let calledName, calledArgs;
+        const mockClient = { async callTool(name, args) { calledName = name; calledArgs = args; return { ok: true }; } };
+        const fleet = new ApraFleet(mockClient);
+        await fleet.probeMessageTarget('orchestrator');
+        assert.strictEqual(calledName, 'send_message');
+        assert.deepStrictEqual(calledArgs, { member_id: 'orchestrator', content: '', probe: true });
+    });
+
     test('executePrompt', async () => {
         let calledName, calledArgs;
         const mockClient = {

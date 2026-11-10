@@ -82,7 +82,7 @@ The rules are the same for a remote and a local member, and for live and static 
   - `execute_command`: the word check in [Network policy](#network-policy), before a live secret's helper runs.
   - The KB: every KB call is refused, for every caller, because every KB call sends the token over the network. Nothing is sent. `kb_setup` refuses a `deny` secret, so a config cannot be set up that fails on every call.
 
-The KB's refusal is `E-KB-HTTP-AUTH`, reason `policy-deny` or `member-not-allowed`. A capture or invalidate refused this way is not queued: the caller gets the error, and retries once the policy allows it. See [Named credentials](knowledge-layer.md#named-credentials-and-refreshers).
+The KB's refusal is `E-KB-HTTP-AUTH`, reason `policy-deny` or `member-not-allowed`. A capture, invalidate or feedback refused this way is not queued: the caller gets the error, and retries once the policy allows it. See [Named credentials](knowledge-layer.md#named-credentials-and-refreshers).
 
 ### Session and persistent
 

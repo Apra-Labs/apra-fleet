@@ -693,7 +693,7 @@
         {
           "$anchor": "E-KB-HTTP-AUTH",
           "code": "E-KB-HTTP-AUTH",
-          "meaning": "The remote (HTTP) KB provider takes its bearer token from a named fleet credential ({{secret.NAME}} token_ref), and that secret is missing, expired or unreadable, or its own policy refuses the call: network_policy deny for any caller (reason policy-deny), or allowedMembers not naming the calling member session, by the friendly name that fleet server has registered for it (reason member-not-allowed; a session with no member identity has no member to check). No request is sent and a live secret's script does not run in those cases. It is also raised when the KB server rejected it with HTTP 401 on the request and again on one retry after re-reading the secret. When NAME is a live secret, it is also raised when its script fails or is inside its retry backoff after a failure (reason live-secret-failed; no request is sent), and when the server answers 401 again after one retry with a freshly minted token (reason rejected). The message names the credential and the reason (missing / expired / unreadable / rejected / live-secret-failed / policy-deny / member-not-allowed), never the value. A capture or invalidate is kept in the offline queue first (the message says so) and is sent once the secret is accepted; the queue is not drained or dropped while the failure lasts. A write refused by policy-deny or member-not-allowed is not queued: the refusal is thrown and the write is gone, so it cannot go out later under another session. Reads do not fall back to the local store. A literal-token config never raises this code: its 401 keeps the plain HTTP error it always had.",
+          "meaning": "The remote (HTTP) KB provider takes its bearer token from a named fleet credential ({{secret.NAME}} token_ref), and that secret is missing, expired or unreadable, or its own policy refuses the call: network_policy deny for any caller (reason policy-deny), or allowedMembers not naming the calling member session, by the friendly name that fleet server has registered for it (reason member-not-allowed; a session with no member identity has no member to check). No request is sent and a live secret's script does not run in those cases. It is also raised when the KB server rejected it with HTTP 401 on the request and again on one retry after re-reading the secret. When NAME is a live secret, it is also raised when its script fails or is inside its retry backoff after a failure (reason live-secret-failed; no request is sent), and when the server answers 401 again after one retry with a freshly minted token (reason rejected). The message names the credential and the reason (missing / expired / unreadable / rejected / live-secret-failed / policy-deny / member-not-allowed), never the value. A capture, invalidate or feedback is kept in the offline queue first (the message says so) and is sent once the secret is accepted; the queue is not drained or dropped while the failure lasts. A write refused by policy-deny or member-not-allowed is not queued: the refusal is thrown and the write is gone, so it cannot go out later under another session. Reads do not fall back to the local store. A literal-token config never raises this code: its 401 keeps the plain HTTP error it always had.",
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
             { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
@@ -701,7 +701,8 @@
             { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "provider" },
             { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
             { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
-            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" }
+            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
           ],
           "source": "src/services/knowledge/http-provider.ts (KbHttpAuthError, HttpKbProvider.request / resolveToken / liveToken)",
           "surfaced": "thrown",
@@ -767,7 +768,7 @@
       "name": "E-STATS-UNSUPPORTED",
       "outcome": "A provider that cannot compute stats returns {supported: false, reason} instead of throwing.",
       "where": "src/services/knowledge/http-provider.ts:284-287 (design D4)",
-      "reason_no_code": "A documented not-supported result is part of the response schema. Note HttpKbProvider is dead code in this tree (INVENTORY.md 4.4 F-10), so no tool call reaches this branch today."
+      "reason_no_code": "A documented not-supported result is part of the response schema. HttpKbProvider.stats answers this way when the KB config selects provider http."
     },
     {
       "name": "E-BIBLE-READ-DEGRADED",

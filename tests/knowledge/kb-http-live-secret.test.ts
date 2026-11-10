@@ -200,6 +200,18 @@ describe('HttpKbProvider with a credential helper', () => {
     expect(stub.requests.map(r => [helperRunOf(r.token, PREFIX), r.authorized])).toEqual([[1, false], [2, true]]);
   });
 
+  it('kb_feedback goes the same way: a 401 re-mints once and the retry succeeds; a second 401 queues it', async () => {
+    stub.accept = (token) => helperRunOf(token, PREFIX) >= 2;
+    await provider.feedback('e1', 'wrong in practice', 'doer');
+    expect(helper.runs()).toHaveLength(2);
+    expect(stub.requests.map(r => [r.path, helperRunOf(r.token, PREFIX), r.authorized]))
+      .toEqual([['/api/kb/feedback', 1, false], ['/api/kb/feedback', 2, true]]);
+    stub.accept = () => false;
+    const err = await expectAuthError(provider.feedback('e2', 'wrong again', 'doer'), 'rejected');
+    expect(err.queued).toBe(true);
+    expect(provider.offlineQueue).toEqual([{ op: 'feedback', id: 'e2', reason: 'wrong again', role: 'doer' }]);
+  });
+
   it('a second 401 raises E-KB-HTTP-AUTH after exactly one helper re-run', async () => {
     stub.accept = () => false;
     const err = await expectAuthError(provider.query({ query: 'gear' }), 'rejected');

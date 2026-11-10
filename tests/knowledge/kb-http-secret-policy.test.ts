@@ -189,6 +189,26 @@ describe('deny', () => {
     expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/capture']);
   });
 
+  it('a refused feedback is not queued either, static and live, with no request or script run', async () => {
+    credentialUpdate(STATIC, { network_policy: 'deny' });
+    credentialUpdate(LIVE, { network_policy: 'deny' });
+    const staticErr = await authError(provider.feedback('e1', 'wrong in practice', 'doer'), 'policy-deny', STATIC);
+    const liveErr = await authError(liveProvider.feedback('e1', 'wrong in practice', 'doer'), 'policy-deny', LIVE);
+    expect([staticErr.queued, liveErr.queued]).toEqual([false, false]);
+    expect(staticErr.message).not.toContain('queued');
+    expect(provider.offlineQueue).toHaveLength(0);
+    expect(liveProvider.offlineQueue).toHaveLength(0);
+    expect(helper.runs()).toEqual([]);
+    expect(stub.requests).toEqual([]);
+    credentialUpdate(STATIC, { network_policy: 'allow' });
+    credentialUpdate(LIVE, { network_policy: 'allow' });
+    await provider.feedback('e2', 'next', 'doer');
+    await liveProvider.feedback('e3', 'next', 'doer');
+    expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/feedback', '/api/kb/feedback']);
+    expect(stub.requests[0].token).toBe(VALUE);
+    expect(stub.requests[1].token).toContain(PREFIX);
+  }, 30_000);
+
   it('a write queued before the refusal stays queued through it, and goes once allowed', async () => {
     credentialDelete(STATIC);
     await authError(provider.capture(entry('from an outage of the secret')), 'missing', STATIC).then((e) => expect(e.queued).toBe(true));
@@ -281,6 +301,15 @@ describe('allowedMembers', () => {
     const err = await asMember(other.id, () => authError(provider.capture(entry('from outsider')), 'member-not-allowed', STATIC));
     expect(err.queued).toBe(false);
     await asMember(other.id, () => authError(provider.invalidate(['src/gear.ts']), 'member-not-allowed', STATIC));
+    expect(provider.offlineQueue).toHaveLength(0);
+    await asMember(member.id, () => provider.capture(entry('from member')));
+    expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/capture']);
+  });
+
+  it('a member refused here has its feedback dropped, not sent by the next session on this provider', async () => {
+    credentialUpdate(STATIC, { members: member.friendlyName });
+    const err = await asMember(other.id, () => authError(provider.feedback('e1', 'from outsider', 'doer'), 'member-not-allowed', STATIC));
+    expect(err.queued).toBe(false);
     expect(provider.offlineQueue).toHaveLength(0);
     await asMember(member.id, () => provider.capture(entry('from member')));
     expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/capture']);
