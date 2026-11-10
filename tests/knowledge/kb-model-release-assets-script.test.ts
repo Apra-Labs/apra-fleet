@@ -3,13 +3,15 @@
  * reads its asset list from profiles.ts, and its --dry-run output names
  * exactly the assets the model store's release source requests, with their
  * pinned sha256. The workflow YAML still parses and wires the script into
- * both the release and the prerelease job.
+ * both the release and the prerelease job, and a failed model fetch there
+ * warns and attaches no model files instead of failing the job.
  */
 import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import net from 'node:net';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { parse as parseYaml } from 'yaml';
 import {
   BUILTIN_EMBEDDING_PROFILES,
@@ -92,4 +94,48 @@ describe('ci.yml wiring', () => {
     const prereleaseRuns = doc.jobs.prerelease.steps.map((s) => s.run ?? '').join('\n');
     expect(prereleaseRuns).toMatch(/for m in kbmodel-\*; do .*FILES="\$FILES \$m"/);
   });
+});
+
+describe('ci.yml model fetch is non-fatal', () => {
+  const doc = parseYaml(fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf-8')) as {
+    jobs: Record<string, { steps: Array<{ run?: string }> }>;
+  };
+
+  /** A port nothing listens on (bound, then released). */
+  async function closedPort(): Promise<number> {
+    const srv = net.createServer();
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    const port = (srv.address() as net.AddressInfo).port;
+    await new Promise<void>((r) => srv.close(() => r()));
+    return port;
+  }
+
+  // The step's own shell text, run by bash as the runner would (POSIX only:
+  // the release and prerelease jobs run on Linux).
+  it.skipIf(process.platform === 'win32').each(['release', 'prerelease'])(
+    '%s job: Hugging Face unreachable -> the step succeeds, warns, and leaves no kbmodel-* file',
+    async (job) => {
+      const step = doc.jobs[job].steps.find((s) => (s.run ?? '').includes('scripts/model-release-assets.mjs'));
+      expect(step?.run).toBeDefined();
+      const out = /--out (\S+)/.exec(step!.run!)?.[1] ?? '';
+      expect(out).not.toBe('');
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-model-ci-step-'));
+      try {
+        // A stale file from an earlier partial fetch must not be attached either.
+        fs.mkdirSync(path.join(tmp, out), { recursive: true });
+        fs.writeFileSync(path.join(tmp, out, 'kbmodel-stale'), 'x');
+        const script = step!.run!.replaceAll('scripts/model-release-assets.mjs', JSON.stringify(SCRIPT));
+        const res = spawnSync('bash', ['-e', '-c', script], {
+          cwd: tmp,
+          encoding: 'utf-8',
+          env: { ...process.env, HF_ENDPOINT: `http://127.0.0.1:${await closedPort()}` },
+        });
+        expect(res.status, res.stderr).toBe(0);
+        expect(res.stdout).toContain('::warning::could not fetch the KB model files');
+        expect(fs.readdirSync(path.join(tmp, out)).filter((n) => n.startsWith('kbmodel-'))).toEqual([]);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    },
+  );
 });

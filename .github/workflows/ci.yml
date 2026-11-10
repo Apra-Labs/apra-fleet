@@ -628,8 +628,12 @@ jobs:
           # Release source of the KB model store: it asks this release (the
           # running build's version tag) for these asset names before Hugging
           # Face. Names and sha256 come from profiles.ts; each file is verified.
-          node --experimental-strip-types scripts/model-release-assets.mjs --out release-models
-          ls -l release-models
+          # Non-fatal: without them clients fall back to Hugging Face.
+          if ! node --experimental-strip-types scripts/model-release-assets.mjs --out release-models; then
+            echo "::warning::could not fetch the KB model files; this release ships without them (clients fall back to Hugging Face)"
+            rm -f release-models/kbmodel-*
+          fi
+          ls -l release-models || true
 
       - name: Read the previous stable release
         id: prev
@@ -712,8 +716,12 @@ jobs:
         run: |
           # Release source of the KB model store (see the release job): the
           # prerelease tag is the build version too, so it carries them as well.
-          node --experimental-strip-types scripts/model-release-assets.mjs --out prerelease
-          ls -l prerelease/kbmodel-*
+          # Non-fatal: without them clients fall back to Hugging Face.
+          if ! node --experimental-strip-types scripts/model-release-assets.mjs --out prerelease; then
+            echo "::warning::could not fetch the KB model files; this prerelease ships without them (clients fall back to Hugging Face)"
+            rm -f prerelease/kbmodel-*
+          fi
+          ls -l prerelease/kbmodel-* 2>/dev/null || true
 
       # No token in this step's environment: it runs the built binary.
       - name: Read the build version from the linux binary
