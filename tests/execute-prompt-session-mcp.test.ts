@@ -23,7 +23,7 @@ import {
   memberSecretHeaders,
 } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
-import { executePrompt, provisionedRemoteAgents } from '../src/tools/execute-prompt.js';
+import { executePrompt, provisionedRemoteAgents, __setMemberErrorQueryDeps } from '../src/tools/execute-prompt.js';
 import { FLEET_DIR, DEFAULT_PORT, BUILTIN_DEFAULT_PORT } from '../src/paths.js';
 import { resetCliVersionCache } from '../src/services/session-mcp-config.js';
 import type { SSHExecResult } from '../src/types.js';
@@ -95,8 +95,12 @@ describe('execute_prompt: per-session member MCP config', () => {
     vi.useFakeTimers();
     provisionedRemoteAgents.clear();
     resetCliVersionCache();
+    // The post-dispatch toolErrors query is not part of the dispatch's own
+    // command sequence asserted here (see execute-prompt-tool-errors.test.ts).
+    __setMemberErrorQueryDeps({ exec: async () => ({ stdout: '', stderr: '', code: 1 }), resolveHome: async () => null });
   });
   afterEach(() => {
+    __setMemberErrorQueryDeps(null);
     restoreRegistry();
     vi.useRealTimers();
     vi.restoreAllMocks();

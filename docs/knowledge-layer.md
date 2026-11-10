@@ -279,7 +279,7 @@ wording test must all describe this scope together.
 A member session sees a reduced tool list. The allowlist lives in one
 dependency-free module (`src/services/member-tool-allowlist.ts`) and is an
 explicit list (`MEMBER_BASE_TOOLS`), not a `kb_`/`code_` prefix rule: every
-`code_*` tool, `version`, `report_status`, `session_stats`, and the `kb_*`
+`code_*` tool, `version`, `report_status`, `session_stats`, `query_errors`, and the `kb_*`
 tools that do not mint CONFIRMED or administer the KB. A newly registered
 `kb_`/`code_` tool is NOT member-visible until it is added there on purpose.
 Enforcement is deny-by-omission: the tool registry's proxy simply does not

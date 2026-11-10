@@ -37,7 +37,7 @@ this pair as "member identifier" rather than repeating it.
 `provision_vcs_auth`, `revoke_vcs_auth`, `vcs_credential_exec`.
 
 **Status and maintenance:** `fleet_status`, `fleet_snapshot`, `member_detail`, `session_stats`,
-`update_llm_cli`, `shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
+`query_errors`, `update_llm_cli`, `shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
 
 **Credential store:** `credential_store_set`, `credential_store_list`,
 `credential_store_update`, `credential_store_delete`. For defaults and re-setting, see
@@ -328,6 +328,8 @@ is rejected for them and `execute_command` should be used instead.
 
 **Output:** `structuredContent.response` carries the agent's reply text; `structuredContent.usage` carries token counts when available; `structuredContent.sessionId` carries the session ID if one was returned, including on failure outcomes (max turns, auth, server, overloaded, non-zero exit, empty response, dispatch failed) so callers can resume that session.
 
+**Tool errors:** once a dispatch ran, `structuredContent.toolErrors` lists the fleet tool calls that failed inside the agent's conversation (which only the LLM CLI saw). It is read from the member's error registry (see [`query_errors`](#query_errors)) for the last `sinceSeconds` seconds, the call's elapsed time, so clock differences do not matter: in-process for a local member, over SSH (`apra-fleet call ... query_errors`) for a remote member, bounded by what is left of `max_total_s`. Shape: `{ available: true, sinceSeconds, total, entries }`, or `{ available: false, sinceSeconds, detail }` when the errors could not be read (an older member install without `query_errors`, an unverified install, an SSH failure, no time left) -- never an empty list then. It is an FYI: execute_prompt takes no action on it, and a failed read never fails the dispatch. Interactive-session deliveries and results without `structuredContent` carry no `toolErrors`.
+
 **Error handling:**
 - If the prompt fails due to an authentication issue, returns actionable guidance (`provision_llm_auth`) instead of raw error output.
 - Automatically retries once with a 5-second backoff on transient server errors.
@@ -582,6 +584,33 @@ from sessions opened with `origin=engine` (the engine's `memberCall` and the
 `apra-fleet call` verb) are not counted, and non-member sessions are never
 counted. fleet-sprint reads it before and after every dispatch to report calls
 per member per dispatch; see [knowledge-layer.md](knowledge-layer.md).
+
+### `query_errors`
+
+A member's recorded tool-call errors on THIS server. Every fleet server records
+each error a tool call throws (src/services/error-registry.ts) as
+`{ at, member, source, tool, code, reason }`: `code` is the error's typed `E-*`
+code, or `E-UNTYPED` for anything else thrown; `reason` is the typed error's
+short reason token (for example `E-KB-HTTP-AUTH`'s `expired`), else null. The
+call's arguments and the error's message text are never recorded. `[FAIL]`
+result text is not an error here. The registry is in memory, holds about 1,000
+entries or 24 hours, and reads never clear it. Member-allowed, so the
+orchestrator can read a remote member's registry through `apra-fleet call`;
+execute_prompt does that for its `toolErrors`.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `member` | string | yes | Member uuid. On a member session it must be the calling member (another is refused with `E-FORBIDDEN`) |
+| `since_seconds` | integer | yes | Errors recorded in the last this many seconds, by this server's clock |
+| `code` | string | no | Only entries with this code |
+| `tool` | string | no | Only entries for this tool |
+| `limit` | integer | no | Most recent entries to return, 1-1000 (default 100) |
+
+**Returns** JSON `{ member, since_seconds, total, entries }` -- `entries` oldest
+first, `total` the match count before `limit`. Errors from a non-member session
+are recorded with `member: null` and are not returned by this tool.
 
 ### `member_detail`
 

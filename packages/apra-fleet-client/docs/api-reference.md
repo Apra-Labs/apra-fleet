@@ -341,6 +341,12 @@ file is written without the key and the dispatch logs a WARN naming the cause.
 | `timeoutMs` | `number?` | Client-side request timeout override (ms); not sent to the server. |
 | `signal` | `AbortSignal?` | Cancels the client-side wait only; cannot cancel a job already accepted by the server. |
 
+Once a dispatch ran, the result's `structuredContent.toolErrors` (a
+`ToolErrorsReport`: `{available: true, sinceSeconds, total, entries}` or
+`{available: false, sinceSeconds, detail}`) lists the fleet tool calls that
+failed during it -- an FYI, never a failure of the dispatch. See execute_prompt
+in docs/mcp-tools.md.
+
 #### `executeCommand(options: ExecuteCommandOptions)`
 
 Calls `execute_command` -- runs a shell command on a member. Same
@@ -434,6 +440,25 @@ Other `{{secret.NAME}}` fields refuse a live secret. `credentialStoreSet`,
 `kind: "live"`. A secret bound to a live secret stays when it expires, and
 `credentialStoreUpdate` refuses it until it has a new value. `credentialStoreSet`
 refuses a session value (`persist: false`) for a bound name. A live secret's network policy is checked before its script runs.
+
+#### `queryErrors(options: QueryErrorsOptions)`
+
+Calls `query_errors` -- a member's recorded tool-call errors on the server in
+the last `since_seconds` seconds; a member session reads only its own member.
+Extract the JSON with `parseToolJson()`: a `QueryErrorsResult`
+`{member, since_seconds, total, entries}` of `ErrorEntry`
+`{at, member, source, tool, code, reason}`. Fields and registry bounds:
+`query_errors` in docs/mcp-tools.md. `QueryErrorsOptions`, `QueryErrorsResult`,
+`ErrorEntry` and `ToolErrorsReport` are pinned against the server by
+`test/client-server-typedef-parity.test.mjs`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `member` | `string` | Member uuid. |
+| `since_seconds` | `number` | Window in seconds, by the server's clock. |
+| `code` | `string?` | Only entries with this code. |
+| `tool` | `string?` | Only entries for this tool. |
+| `limit` | `number?` | Most recent entries to return (default 100, max 1000). |
 
 #### `memberDetail(options)`
 
