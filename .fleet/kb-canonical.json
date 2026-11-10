@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "c1a438e81c81f0966e60d04ae98a7eb00d3c7d06",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 184
+    "entry_count": 185
   },
   "entries": [
     {
@@ -1335,6 +1335,31 @@
         "src/cli/install.ts": "f2318e7720dda708523636118beb3efc6827a703",
         "src/services/service-manager/windows.ts": "73148adab209e6031f0e0c050fb1f9e45bd3e219",
         "src/services/service-notice.ts": "50ca5f5a7c11291cb3d047f8135abe8fc15a0778"
+      }
+    },
+    {
+      "id": "4c77d3ad-2bc3-4f5e-8fc2-7004597ed2cb",
+      "type": "knowledge",
+      "title": "model-release-assets.mjs imports profiles.ts as TypeScript source via type stripping",
+      "summary": "scripts/model-release-assets.mjs loads src/services/knowledge/embedding/profiles.ts with node --experimental-strip-types (no build), so profiles.ts must keep no imports and only erasable TypeScript syntax; the release and prerelease CI jobs run it.",
+      "symbols": [
+        "assetPlan",
+        "loadProfiles",
+        "modelReleaseAssets"
+      ],
+      "source_files": [
+        "scripts/model-release-assets.mjs",
+        "src/services/knowledge/embedding/profiles.ts",
+        ".github/workflows/ci.yml",
+        "tests/knowledge/kb-model-release-assets-script.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T10:32:06.023Z",
+      "source_file_hashes": {
+        ".github/workflows/ci.yml": "8c0f8582d96635eee48957e6990458ef1c25b306",
+        "scripts/model-release-assets.mjs": "c78c54488a6d5f7f3fed46026dee021d7ef573dd",
+        "src/services/knowledge/embedding/profiles.ts": "3807650103aa377e0efe848aa2934c1466e741f9",
+        "tests/knowledge/kb-model-release-assets-script.test.ts": "efee2995f197a0830de1da42a89ffc0e37926fc1"
       }
     },
     {
