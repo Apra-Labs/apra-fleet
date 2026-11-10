@@ -257,17 +257,24 @@ describe('D. probe-first preflight for non-re-mintable members (Bitbucket)', () 
     const BITBUCKET_HINT = getVcsProvider('bitbucket').authRemedy.hint;
     const isProbe = (cmd) => cmd.includes('git ls-remote origin');
 
-    function makeProbeSync({ record, probe, store = ['bitbucket_api_token'], provisionResult = provisioned(null), remote = BB_REMOTE }) {
+    // The labelled-credential checks a Bitbucket preflight also runs: the
+    // REST probe through vcs_credential_exec (default: 200) and the helper's
+    // username= line (default: the fixed token username).
+    const REST_OK = { content: [{ text: '[OK]' }], structuredContent: { ok: true, reason: 'ok', exitCode: 0, stdout: '{"values":[]}\n200', stderr: '' } };
+    const USER_OK = { ok: true, output: 'username=x-bitbucket-api-token-auth', error: null };
+
+    function makeProbeSync({ record, probe, store = ['bitbucket_api_token'], provisionResult = provisioned(null), remote = BB_REMOTE, rest = REST_OK, user = USER_OK }) {
         const tools = [];
         const callTool = async (name, args) => {
             tools.push({ name, args });
             if (name === 'member_detail') return { content: [{ text: JSON.stringify(record) }] };
             if (name === 'credential_store_list') return { content: [{ text: JSON.stringify(store.map((n) => ({ name: n }))) }] };
+            if (name === 'vcs_credential_exec') return rest;
             return provisionResult;
         };
         const logs = [];
         const log = (m) => logs.push(m);
-        const { command, calls } = makeCommandMock({ 'git ls-remote origin': [probe], 'git remote get-url origin': [remote] });
+        const { command, calls } = makeCommandMock({ 'git ls-remote origin': [probe], 'git remote get-url origin': [remote], "grep '^username='": [user] });
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command, log });
         const gitSync = createGitSync({
             brackets: createSyncBrackets({ setPauseGuard: () => {} }),
@@ -349,7 +356,8 @@ describe('D. probe-first preflight for non-re-mintable members (Bitbucket)', () 
         // The command mock's key match cannot see inside the encoding, so
         // every non-matching command (the probe included) answers OK.
         await ensureVcsAuthFresh('win-backlog');
-        const issued = calls.map((c) => c.cmd).filter((c) => c.startsWith('powershell -EncodedCommand '));
+        // (The labelled helper's username read is a second encoded command.)
+        const issued = calls.map((c) => c.cmd).filter((c) => c.startsWith('powershell -EncodedCommand ') && decode(c).includes('git ls-remote'));
         assert.equal(issued.length, 1, `expected one PowerShell probe, got: ${JSON.stringify(calls.map((c) => c.cmd))}`);
         assert.equal(decode(issued[0]), ps);
     });

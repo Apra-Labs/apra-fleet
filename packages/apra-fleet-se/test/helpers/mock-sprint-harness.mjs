@@ -553,6 +553,12 @@ export function defaultMockCallTool({ executeCommand } = {}) {
         if (name === 'vcs_credential_exec') {
             return mockVcsCredentialExec(toolArgs, executeCommand);
         }
+        // The launch-time decision-notify check (send_message probe mode):
+        // answer as a working setup -- a channel-capable session holds the
+        // target -- so a mock sprint's launch log carries no warning.
+        if (name === 'send_message' && toolArgs && toolArgs.probe) {
+            return { content: [{ text: JSON.stringify({ probe: true, member_id: toolArgs.member_id, connected: true, channel_capable: true }) }] };
+        }
         return { content: [{ text: `[OK] mock ${name}` }] };
     };
 }
@@ -1207,6 +1213,15 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
 
     const api = {
         executeCommand: async (opts) => {
+            // Same as the real fleet client (McpClient.request): a request
+            // whose signal is already aborted -- the run was stopped with
+            // requestStop() -- is rejected with code 'ABORTED' before it is
+            // sent, which the workflow turns into a CancelledError.
+            if (opts && opts.signal && opts.signal.aborted) {
+                const aborted = new Error(`Request "execute_command" aborted before a response was received.`);
+                aborted.code = 'ABORTED';
+                throw aborted;
+            }
             commandLog.push(opts.command);
             if (onCommand) {
                 const injected = await onCommand({ command: opts.command, member_name: opts.member_name });
@@ -2154,6 +2169,11 @@ export async function runDevelopLoopScenario(tag, {
     // by plain taskSpecs (e.g. a permanently-blocked bead for the A5
     // goal-priority exit-condition scenarios below).
     beforeSprint,
+    // Optional hook invoked with (workflow, {tempDir, runCmd, epicBead, tasks})
+    // once the scenario's FleetWorkflow exists and BEFORE the sprint runs, so a
+    // scenario can react to its lifecycle events ('pause:requested', 'paused',
+    // 'resumed') -- e.g. answer a pending decision, or requestStop() mid-pause.
+    onWorkflow,
     // deploy.md / integ-test-playbook.md are NOT written by setupMinimal();
     // set true to write them (enabling the Deploy/Integ phases).
     withRunbooks = false,
@@ -2205,6 +2225,9 @@ export async function runDevelopLoopScenario(tag, {
     // `mockFleetApi.executeCommand` once it exists. Takes priority over a
     // plain `callTool` when both are supplied.
     callToolFactory,
+    // Optional `args.decision_notify` (decision-notify.mjs): where the operator
+    // is told about a pending decision.
+    decisionNotify,
     // apra-fleet-eft.79: optional passthroughs for the multi-streak worklist
     // args (validateArgs: doer_worklist_mode 'resume'|'batch',
     // resume_model_switch boolean, worklist_effort_budget positive number) --
@@ -2338,6 +2361,7 @@ export async function runDevelopLoopScenario(tag, {
         // a terminal error was actually PERSISTED to sprint state, not just
         // logged.
         workflow.on('state', (e) => states.push(e));
+        if (onWorkflow) await onWorkflow(workflow, { tempDir, runCmd, epicBead, tasks });
         const engine = new WorkflowEngine(workflow);
         const scriptPath = path.join(__dirname, '../../fleet-sprint/runner.js');
 
@@ -2366,6 +2390,7 @@ export async function runDevelopLoopScenario(tag, {
                 ...(roleMapWarnings !== undefined ? { roleMapWarnings } : {}),
                 ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
                 ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
+                ...(decisionNotify !== undefined ? { decision_notify: decisionNotify } : {}),
             }, true);
         } catch (err) {
             error = err;

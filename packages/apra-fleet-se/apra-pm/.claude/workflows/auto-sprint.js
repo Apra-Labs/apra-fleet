@@ -1462,11 +1462,61 @@ const REVIEW_SCHEMA = {
       "type": "string",
       "enum": [
         "APPROVED",
-        "CHANGES_NEEDED"
+        "CHANGES_NEEDED",
+        "NEEDS-DECISION"
       ]
     },
     "notes": {
       "type": "string"
+    },
+    "decision": {
+      "type": "object",
+      "description": "REQUIRED when verdict is \"NEEDS-DECISION\", otherwise omit. The decision only a human operator can make before the named bead can go on. The orchestrator files it for an operator verbatim (never truncated), sets the bead aside for the rest of the run without re-dispatching it, and keeps working other ready beads. Use it only for a real choice between alternatives you cannot settle from the bead, its parent or the code -- not for a missing secret or an unmet prerequisite (BLOCKED), and not for an ordinary failure.",
+      "required": [
+        "beadId",
+        "question",
+        "options",
+        "recommendation"
+      ],
+      "properties": {
+        "beadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The one bead under review that cannot be approved or sent back for rework until the decision is made. The orchestrator reopens it if it is closed and sets it aside."
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The full question, self-contained: what was found, why it blocks the bead, and what must be decided. An operator reads only this and the options."
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "description": "At least two concrete alternatives, each with a short stable id (for example \"a\", \"b\") and its full text: what it means and what it costs.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The option id you recommend, followed by why."
+        }
+      }
     },
     "reopenIds": {
       "type": "array",
@@ -1871,7 +1921,26 @@ const REVIEW_SCHEMA = {
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "NEEDS-DECISION"
+          }
+        },
+        "required": [
+          "verdict"
+        ]
+      },
+      "then": {
+        "required": [
+          "decision"
+        ]
+      }
+    }
+  ]
 };
 const PLAN_REVIEW_SCHEMA = {
   "$schema": "http://json-schema.org/draft-07/schema#",
@@ -2073,7 +2142,8 @@ const DOER_STATUS_SCHEMA = {
       "type": "string",
       "enum": [
         "VERIFY",
-        "BLOCKED"
+        "BLOCKED",
+        "NEEDS-DECISION"
       ]
     },
     "closedIds": {
@@ -2084,6 +2154,55 @@ const DOER_STATUS_SCHEMA = {
     },
     "notes": {
       "type": "string"
+    },
+    "decision": {
+      "type": "object",
+      "description": "REQUIRED when status is \"NEEDS-DECISION\", otherwise omit. The decision only a human operator can make before the named bead can go on. The orchestrator files it for an operator verbatim (never truncated), sets the bead aside for the rest of the run without re-dispatching it, and keeps working other ready beads. Use it only for a real choice between alternatives you cannot settle from the bead, its parent or the code -- not for a missing secret or an unmet prerequisite (BLOCKED), and not for an ordinary failure.",
+      "required": [
+        "beadId",
+        "question",
+        "options",
+        "recommendation"
+      ],
+      "properties": {
+        "beadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The one open bead id that cannot go on until the decision is made."
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The full question, self-contained: what was found, why it blocks the bead, and what must be decided. An operator reads only this and the options."
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "description": "At least two concrete alternatives, each with a short stable id (for example \"a\", \"b\") and its full text: what it means and what it costs.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The option id you recommend, followed by why."
+        }
+      }
     },
     "blockedIds": {
       "type": "array",
@@ -2387,7 +2506,26 @@ const DOER_STATUS_SCHEMA = {
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "NEEDS-DECISION"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "decision"
+        ]
+      }
+    }
+  ]
 };
 const DEPLOYER_SCHEMA = {
   "$schema": "http://json-schema.org/draft-07/schema#",

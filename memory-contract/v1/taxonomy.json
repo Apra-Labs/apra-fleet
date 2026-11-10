@@ -710,7 +710,7 @@
         {
           "$anchor": "E-KB-HTTP-AUTH",
           "code": "E-KB-HTTP-AUTH",
-          "meaning": "The remote (HTTP) KB provider takes its bearer token from a named fleet secret ({{secret.NAME}} token_ref), and that secret is missing, expired or unreadable (no request is sent), or the KB server rejected it with HTTP 401 on the request and again on one retry after re-reading the secret. The message names the secret and the reason (missing / expired / unreadable / rejected), never the value. A capture or invalidate is kept in the offline queue first (the message says so) and is sent once the secret is accepted; the queue is not drained or dropped while the failure lasts. Reads do not fall back to the local store. A literal-token config never raises this code: its 401 keeps the plain HTTP error it always had.",
+          "meaning": "The remote (HTTP) KB provider takes its bearer token from a named fleet secret ({{secret.NAME}} token_ref), and that secret is missing, expired or unreadable (no request is sent), or the KB server rejected it with HTTP 401 on the request and again on one retry after re-reading the secret. The message names the secret and the reason (missing / expired / unreadable / rejected), never the value. A capture, invalidate or feedback is kept in the offline queue first (the message says so) and is sent once the secret is accepted; the queue is not drained or dropped while the failure lasts. Reads do not fall back to the local store. A literal-token config never raises this code: its 401 keeps the plain HTTP error it always had.",
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
             { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
@@ -718,7 +718,8 @@
             { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "provider" },
             { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
             { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
-            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" }
+            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
           ],
           "source": "src/services/knowledge/http-provider.ts (KbHttpAuthError, HttpKbProvider.request / resolveToken)",
           "surfaced": "thrown",
@@ -784,7 +785,7 @@
       "name": "E-STATS-UNSUPPORTED",
       "outcome": "A provider that cannot compute stats returns {supported: false, reason} instead of throwing.",
       "where": "src/services/knowledge/http-provider.ts:284-287 (design D4)",
-      "reason_no_code": "A documented not-supported result is part of the response schema. Note HttpKbProvider is dead code in this tree (INVENTORY.md 4.4 F-10), so no tool call reaches this branch today."
+      "reason_no_code": "A documented not-supported result is part of the response schema. HttpKbProvider.stats answers this way when the KB config selects provider http."
     },
     {
       "name": "E-USAGE-UNSUPPORTED",

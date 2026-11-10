@@ -1183,8 +1183,9 @@ export class ApraFleet {
     /**
      * Get status of all fleet members. With format "json" the result's
      * kbHealth.credential is a {@link FleetStatusKbCredential} when the KB
-     * config selects the http provider, and kbHealth.embedding is a
-     * {@link FleetStatusKbEmbedding}.
+     * config selects the http provider, kbHealth.embedding is a
+     * {@link FleetStatusKbEmbedding}, and kbHealth.toolProfileWarning is a
+     * string when the configured KB tool profile is invalid.
      * @param {FleetStatusOptions} [options]
      */
     async fleetStatus(options = {}) {
@@ -1480,6 +1481,29 @@ export class ApraFleet {
      */
     async setupSshKey(options) {
         return this.mcpClient.callTool('setup_ssh_key', options);
+    }
+
+    /**
+     * Send a message to a connected member session. member_id is a member
+     * UUID, or "orchestrator" for the operator's own channel-capable
+     * orchestrating session (operator notifications). With probe: true the
+     * server sends nothing and only reports whether a session holds the
+     * target ({ probe: true, member_id, connected, channel_capable }).
+     * @param {{ member_id: string, content: string, reply_to?: string, probe?: boolean }} options
+     */
+    async sendMessage(options) {
+        return this.mcpClient.callTool('send_message', options);
+    }
+
+    /**
+     * Read-only check of a message target: send_message with probe: true.
+     * Sends nothing. The result text is JSON
+     * { probe: true, member_id, connected, channel_capable }; only a
+     * channel_capable session can receive a message.
+     * @param {string} memberId a member UUID or "orchestrator"
+     */
+    async probeMessageTarget(memberId) {
+        return this.mcpClient.callTool('send_message', { member_id: memberId, content: '', probe: true });
     }
 
     /**

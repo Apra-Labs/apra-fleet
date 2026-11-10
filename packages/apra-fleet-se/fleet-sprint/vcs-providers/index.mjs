@@ -184,6 +184,57 @@
  *                                                // not yet implemented" (fails
  *                                                // closed with a typed ERROR:,
  *                                                // never a silently wrong command)
+ *     httpFailureHint: (statusOrCtx) => string|{ hint, remedy }  // OPTIONAL;
+ *                                         //   REST failure explanation.
+ *                                         //   Called with a bare status
+ *                                         //   (legacy; returns a diagnosis
+ *                                         //   string, '' for none) or with
+ *                                         //   { status, body, headers,
+ *                                         //   availableSecrets, memberName,
+ *                                         //   repoRef, repo, local? } --
+ *                                         //   headers are the RESPONSE
+ *                                         //   headers (lowercased names) a
+ *                                         //   builder captured with curl
+ *                                         //   `-D -`; availableSecrets is
+ *                                         //   the credential-store name list
+ *                                         //   (null when unreadable). The
+ *                                         //   ctx form returns { hint,
+ *                                         //   remedy }: `hint` diagnoses the
+ *                                         //   failure from the response, and
+ *                                         //   a non-empty `remedy` REPLACES
+ *                                         //   authRemedy.hint for this one
+ *                                         //   failure (lead with the one-line
+ *                                         //   fix). Providers that ignore the
+ *                                         //   ctx keep working: a string
+ *                                         //   answer is used as the hint and
+ *                                         //   the generic remedy stays.
+ *     credentialProbe: {                  // OPTIONAL; preflight credential
+ *       build: (params) => { command,     //   probe axis, only consulted for
+ *         logSafeCommand, interpret },    //   a non-re-mintable provider
+ *       expectedUsername?: string,        //   (authRemedy.serverSideReMintable
+ *       remedy?: (ctx) => string          //   === false). With it, the VCS
+ *     }                                   //   preflight (vcs-auth.mjs
+ *                                         //   createVcsAuthPreflightCallback)
+ *                                         //   runs git ls-remote AND `build`'s
+ *                                         //   REST command through
+ *                                         //   vcs_credential_exec with the
+ *                                         //   provider label (params: repoRef,
+ *                                         //   token = the {{vcs_token_inline}}
+ *                                         //   placeholder, os, shell) -- the
+ *                                         //   exact credential Publish PR
+ *                                         //   reads -- and, when
+ *                                         //   expectedUsername is set, checks
+ *                                         //   the helper's username= line
+ *                                         //   (read member-side, token line
+ *                                         //   never printed). ok only if all
+ *                                         //   pass. A REST refusal is worded
+ *                                         //   via httpFailureHint(ctx);
+ *                                         //   `remedy(ctx)` (ctx:
+ *                                         //   availableSecrets, memberName,
+ *                                         //   repoRef, local) words the fix
+ *                                         //   for every other failure. Omit it
+ *                                         //   and the preflight probes with
+ *                                         //   git ls-remote only, as before.
  *     findBeforeCreate: boolean,          // OPTIONAL; create is not an upsert.
  *                                         //   raiseVcsPrForMember runs
  *                                         //   find-pull-request first and
@@ -400,6 +451,24 @@ export function registerVcsProvider(impl) {
         }
         if (typeof remedy.hint !== 'string' || !remedy.hint.trim()) {
             throw new Error(`ERROR: VCSModule: provider "${impl.name}" has an \`authRemedy\` with no non-empty string \`hint\`.`); // shell-guard-allow: escaped backtick is markdown-style inline-code formatting in a thrown developer-facing Error message, never a shell command string -- shell-command-guard flags any literal backtick in any JS string, not just dispatched command-string arguments.
+        }
+    }
+    // The preflight credential-probe axis. OPTIONAL, validated up front for
+    // the same reason as the hooks above: a malformed probe must fail at
+    // registration, not inside a sprint preflight that never throws.
+    if (impl.httpFailureHint != null && typeof impl.httpFailureHint !== 'function') {
+        throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function httpFailureHint.`);
+    }
+    if (impl.credentialProbe != null) {
+        const probe = impl.credentialProbe;
+        if (typeof probe !== 'object' || typeof probe.build !== 'function') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a credentialProbe with no build function.`);
+        }
+        if (probe.expectedUsername != null && (typeof probe.expectedUsername !== 'string' || !probe.expectedUsername.trim())) {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a credentialProbe with a non-string or empty expectedUsername.`);
+        }
+        if (probe.remedy != null && typeof probe.remedy !== 'function') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a credentialProbe with a non-function remedy.`);
         }
     }
     // The permission-scope axis. OPTIONAL (omitting it means "this provider

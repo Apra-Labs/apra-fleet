@@ -51,6 +51,23 @@ your final `notes`, naming the bead id and the defect. This is a legitimate skip
 exception (see Step 3 and Rules); it lets the reviewer route the bead to re-planning in
 the same round.
 
+**Needs an operator decision**: when a bead cannot go on until a human chooses between
+real alternatives -- for example the criteria can only be met by upgrading a dependency,
+patching it, or accepting a weaker check, and nothing in the bead, its parent or the code
+says which -- do not guess and do not keep retrying. Leave the bead open and return
+`status: "NEEDS-DECISION"` with a `decision` object: `beadId` (that one open bead),
+`question` (self-contained: what you found, why it blocks the bead, what must be
+decided), `options` (at least two, each `{ "id": "a", "text": "..." }` with what it
+means and costs) and `recommendation` (the option id you recommend, and why). The
+orchestrator files the question for an operator verbatim, sets the bead aside for the
+rest of the run without re-dispatching it, and keeps working other beads; the answer
+reaches a later dispatch through the bead's notes. Use it instead of the
+criteria-defect escape hatch only when the fix is a choice an operator must make, not a
+criteria rewrite a planner can make. Use BLOCKED, not NEEDS-DECISION, for a missing
+secret, missing access, or an unmet prerequisite: those have one fix, not a choice. The
+same-lane stop rule (Step 1) applies to a NEEDS-DECISION bead exactly as to any other
+bead left open.
+
 **CI is not yours**: never trigger, wait for or poll a CI run. A criterion that can only
 be met by a CI run is a criteria defect: do the locally checkable work and report the CI
 part under "criteria defects" (see above).
@@ -289,6 +306,11 @@ lane-mates skipped under the same-lane stop rule) -- the orchestrator sets each
 re-dispatches the unreached ones. Example:
 `{ "status": "BLOCKED", "closedIds": ["<id-1>"], "blockedIds": ["<id-2>"], "notes": "..." }`.
 
+When a bead needs an operator decision (see "Needs an operator decision" above), stop
+there and return `status: "NEEDS-DECISION"` with its `decision` object, listing in
+`closedIds` whatever you closed before it. Example:
+`{ "status": "NEEDS-DECISION", "closedIds": ["<id-1>"], "notes": "...", "decision": { "beadId": "<id-2>", "question": "...", "options": [{ "id": "a", "text": "..." }, { "id": "b", "text": "..." }], "recommendation": "a, because ..." } }`.
+
 
 ## Branch and secrets rules
 
@@ -340,7 +362,8 @@ or as prose if you are answering a human directly.
 - NEVER skip an assigned bead id for convenience -- work them in dependency order. The
   only skip exceptions: has open children, the same-lane stop rule (Step 1) after an
   earlier lane-mate was left open, an unresolved wrap-up ambiguity, missing acceptance
-  criteria/context, or a recorded criteria defect (escape hatch above). A missing secret
+  criteria/context, a recorded criteria defect (escape hatch above), or a bead that needs
+  an operator decision (returned as NEEDS-DECISION). A missing secret
   is NOT a skip -- close with a blocked reason per Branch and secrets rules.
 - Tests for the changed area must pass before each commit (Step 2.5)
 - No PLAN.md, no progress.json -- beads is the only work tracker

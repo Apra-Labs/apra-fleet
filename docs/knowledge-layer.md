@@ -674,8 +674,8 @@ every 30 minutes or less), so one failed run still leaves a valid token.
 **Failure behaviour.** When the secret is missing, expired or unreadable, or
 the server answers 401 twice (the request, then one retry after re-reading the
 secret), the KB call fails with `E-KB-HTTP-AUTH` naming the secret and the
-reason. Captures and invalidates are queued offline and sent once the secret
-is accepted; the queue is kept, not dropped. Member reads of CONFIRMED entries
+reason. Captures, invalidates and feedback are queued offline and sent once
+the secret is accepted; the queue is kept, not dropped. Member reads of CONFIRMED entries
 are still served from the checkout bible. After a refresh nothing needs
 restarting.
 
@@ -780,6 +780,58 @@ step and does not create the directory. The hook itself calls a repo-relative
 outside the apra-fleet source tree. Hash-based freshness is the mechanism to
 rely on.)
 
+### 5. KB tool profiles (which kb_* tools interactive sessions see)
+
+An interactive session that only reads and captures does not need every
+`kb_*` tool in its tool list. The install-wide KB tool profile trims that
+list:
+
+| Profile | `kb_*` tools a FULL session lists |
+|---|---|
+| `full` (default; also what no setting means) | every `kb_*` tool |
+| `developer` | `kb_session_prime`, `kb_query`, `kb_context`, `kb_capture`, `kb_feedback` |
+| `custom` | exactly the registered `kb_*` names you list |
+
+Set it with the CLI or with `kb_setup`:
+
+```
+apra-fleet kb profile developer
+apra-fleet kb profile custom kb_query,kb_capture,kb_setup
+apra-fleet kb profile            # print the current profile
+apra-fleet kb profile full       # back to every kb_* tool
+```
+
+`kb_setup` takes `tool_profile` (`full` | `developer` | `custom`) and, for
+`custom`, `tool_profile_tools`; a profile-only call needs no
+provider/remote/token and leaves those settings as they were. Both are stored
+in `knowledge/config.json` as `tool_profile` / `tool_profile_tools`. An
+unknown `custom` name is refused with an error naming it and listing the
+valid names, and nothing is written.
+
+- **Install-wide.** One setting per fleet install, like the provider config.
+- **FULL sessions only.** Member sessions and every sprint role keep their
+  own allowlists (including the engine's kb_maintainer session and its
+  `kb_promote` / `kb_resolve_contradiction` / `kb_demote`), whatever the
+  profile. Non-kb tools, `code_*` included, are never filtered.
+- **Takes effect on reconnect.** The profile is read when a session
+  registers its tools; an open session keeps its list until it reconnects.
+- **Not a security boundary.** It is a usability control: a hidden tool is
+  just not listed, and any local process can change the profile back.
+- **PM skills need more than `developer` lists.** `kb-review` needs `kb_list`
+  and `kb_promote`, `kb-reconcile` also needs `kb_import`, `kb_export`,
+  `kb_resolve_contradiction`, `kb_reconcile_prefilter` and
+  `kb_freshness_sweep`, and `knowledge-agent` needs `kb_harvest`. All of these
+  are hidden under `developer` and the skills then fail with "tool not found".
+  Before running one, switch back with `apra-fleet kb profile full` and
+  reconnect. An entry flagged with `kb_feedback` stays unresolved until then.
+- **Getting back.** `developer` hides `kb_setup`, so use the CLI:
+  `apra-fleet kb profile full`.
+- **A hand-edited invalid profile.** The session gets every `kb_*` tool, and
+  `fleet_status` shows a line (`kbHealth.toolProfileWarning` in JSON) naming
+  the bad value and the fix; the server log has it too. If `config.json` itself
+  cannot be parsed, fix it by hand: `apra-fleet kb profile` refuses to write
+  over it, because a rewrite would lose the remote url and token.
+
 ---
 
 ## Usage Guide
@@ -875,6 +927,15 @@ All data is local. No token. `kb_sync` is a no-op.
 Run `kb_setup` with `remote` and `token` to write this. Do not write
 `token_encrypted` by hand.
 
+With the http provider, `kb_feedback` is sent to the server as
+`POST /api/kb/feedback` with body `{id, reason, role}` and returns the
+server's answer unchanged; the client never sets confidence. While the server
+is unreachable the feedback is queued offline with captures and invalidates
+and the tool answers `{id, queued: true}`. The bundled `kb-server` command
+serves that route: it validates the role like the tool does, marks the entry
+stale and flagged without touching confidence, and answers an unknown id with
+HTTP 404 and code `ENTRY_NOT_FOUND`.
+
 With a named secret the config holds a reference instead of a ciphertext:
 
 ```json
@@ -903,13 +964,20 @@ Write it with `kb_setup ... token={{secret.KB_TOKEN}}`; see
   credentials, no trailing `.git`; Azure DevOps remotes folded to
   `dev.azure.com/<org>/<project>/_git/<repo>`) and `X-Repository-Commit` (the
   local folder's HEAD sha, omitted when it cannot be read, e.g. for a remote
-  member's folder). A shared server can use them to keep repositories apart; a
+  member's folder) and `X-Repository-Branch` (the local folder's checked-out
+  branch from `git symbolic-ref --quiet HEAD` with `refs/heads/` stripped,
+  characters outside printable ASCII percent-encoded as UTF-8; omitted on a
+  detached HEAD, when HEAD is not under `refs/heads/`, for a remote member's
+  folder, when git fails or times out, or when the encoded
+  value is longer than 255 characters). Commit and branch are each cached for
+  5 seconds, so a branch switch shows within that time. A shared server can use them to keep repositories apart; a
   server may ignore them. No local path is ever sent, and nothing goes in the
   URL. A remote whose host does not parse as a hostname sends no header at all.
   The commit is best effort: a queued write replayed later carries the HEAD at
   replay time, not at capture time. With a named-secret token the secret is
-  looked up first, so a missing secret fails before the commit is read; the
-  one 401 retry re-reads the secret but resends the same repository headers,
+  looked up first, so a missing secret fails before the commit or branch is
+  read; the one 401 retry re-reads the secret but resends the same repository
+  headers (same commit and branch),
   and a replayed queued write gets both the current secret and its provider's
   repository headers.
 
@@ -1214,13 +1282,16 @@ feedback-downvoted, and invalidated entries stay retired by design -- see
 
 **Symptom**: at process exit you see:
 ```
-[KB] WARNING: offline queue has N unsaved captures. Reconnect to the KB server and run kb_harvest to recover from the session transcript.
+[KB] WARNING: offline queue has N unsaved operations (captures, invalidations, feedback). They never reached the KB server and the queue is lost when this process exits. Repeat them once the KB server is reachable.
 ```
 
-**Cause**: the HTTP KB server was unreachable while captures were made. The
+**Cause**: the HTTP KB server was unreachable while captures, invalidations or feedback were made. The
 queue is in-memory and not persisted.
 
-**Recovery**: start the KB server, then run:
+**Recovery**: start the KB server and repeat the lost calls. Invalidations and
+feedback can only be repeated: `kb_harvest` extracts learnings from a session
+transcript and cannot restore them. For captures, on an install whose KB tool
+profile lists it, you can also run:
 ```
 kb_harvest with session_output="<paste session transcript>"
 ```

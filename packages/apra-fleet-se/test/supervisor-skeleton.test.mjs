@@ -22,7 +22,7 @@ function request(port, method, path, body) {
         const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
         const req = http.request(
             { host: '127.0.0.1', port, method, path,
-              headers: payload ? { 'content-type': 'application/json', 'content-length': payload.length } : {} },
+              headers: payload ? { 'content-type': 'application/json', 'content-length': payload.length } : (method === 'GET' ? {} : { 'content-type': 'application/json' }) },
             (res) => {
                 const chunks = [];
                 res.on('data', (c) => chunks.push(c));

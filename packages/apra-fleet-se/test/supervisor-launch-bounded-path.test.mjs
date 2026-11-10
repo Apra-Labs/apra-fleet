@@ -39,6 +39,7 @@ const okFs = { mkdirSync() {}, openSync: () => 11, closeSync() {} };
 
 const mockReq = (method, url, body) => ({
     method, url,
+    headers: { 'content-type': 'application/json' },
     on(ev, cb) {
         if (ev === 'data') cb(Buffer.from(JSON.stringify(body)));
         if (ev === 'end') cb();

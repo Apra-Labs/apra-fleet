@@ -69,6 +69,7 @@ import { applyGuardedReopens, foldReplanIds, ensureRedBranchFixTask, isInGoalPri
 import {
     validateNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
 } from '../abort.mjs';
+import { applyReviewerDecision, reviewerReopenEntries } from '../decisions.mjs';
 
 /**
  * The bead ids a round's Review covers: the union of every streak outcome's
@@ -120,6 +121,9 @@ export async function runReviewPhase({
     // The git/beads sync bracket this phase's post-mutation D-push goes
     // through.
     gitSync,
+    // Per-sprint resolved state (../sprint-state.mjs): a NEEDS-DECISION
+    // verdict records its pending decision and set-aside here.
+    sprintState,
     // Per-cycle state. `replanIds`, `replannedThisCycle`, `perBeadFeedback` and
     // `rejectedNewTasks` are mutated in place (see header).
     replanIds,
@@ -222,7 +226,8 @@ export async function runReviewPhase({
     // reopened (out of scope, or simply absent from reopenIds) can
     // never short-circuit the loop.
     const reopenedIds = new Set(await applyGuardedReopens({
-        entries: verdict.reopenIds,
+        // reopenIds, plus a NEEDS-DECISION bead (../decisions.mjs).
+        entries: reviewerReopenEntries(verdict, assignedBeadIds),
         bdListScoped, goalMax, goal: validated.goal, log, command,
         member: backlogMember,
         workedOnIds,
@@ -240,6 +245,15 @@ export async function runReviewPhase({
             perBeadFeedback.set(id, verdict.notes);
         },
     }));
+    // A NEEDS-DECISION verdict: record the decision for an operator and set
+    // the named bead aside -- see ../decisions.mjs. A closed bead was
+    // reopened just above, through the same guarded reopen call
+    // (reviewerReopenEntries).
+    await applyReviewerDecision({
+        verdict, scopeIds: assignedBeadIds, reopenedIds, sprintState, command,
+        member: backlogMember, bdListScoped, cycle, round: devRounds,
+        site: `Review C${cycle} R${devRounds}`, log,
+    });
     // Fold this round's reviewer `replanIds` (absent/undefined on
     // verdicts that do not use it, so a no-op then) into the cycle's
     // running union, consulted at the top of the next iteration's

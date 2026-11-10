@@ -111,6 +111,21 @@ export class SeWindowsCommands {
   }
 
   /**
+   * PowerShell twin of SePosixCommands.readCredentialHelperUsername: runs the
+   * helper and passes ONLY its `username=` line through, member-side, so the
+   * `password=` (token) line never leaves the member.
+   * @param {string} label
+   * @returns {{ command: string, descriptor: string }}
+   */
+  readCredentialHelperUsername(label) {
+    if (!/^[A-Za-z0-9._-]+$/.test(String(label))) {
+      throw new Error(`Refusing to build a credential username-read command for unsafe VCS credential label '${label}' (allowed: letters, digits, '.', '_', '-').`);
+    }
+    const descriptor = this.credentialHelperPath(label);
+    return { command: this.wrapForMember(`${this.invoke(descriptor)} | Where-Object { $_ -like 'username=*' }`), descriptor };
+  }
+
+  /**
    * Escape a SQL string so it survives as ONE double-quoted argument in
    * PowerShell. A backtick is PowerShell's escape character: a literal
    * backtick is a doubled backtick, a literal quote is `` `" ``, and a

@@ -154,6 +154,15 @@ export async function resolveSettleShellWith({ fleetApi, member, log = () => {} 
  * (member-init-probe.mjs MemberInitRecord): verified status, fleetMcp, tool
  * presence, CONFIRMED count and code index state. Filled once at sprint init
  * and read by the KNOWLEDGE BANK injection and the viewer.
+ *
+ * `pendingDecisions` holds every NEEDS-DECISION request a doer or reviewer
+ * raised this run and that is still unanswered: Map decisionId -> {
+ * decisionId, beadId, question, options: [{ id, text }], recommendation,
+ * decisionBeadId, raisedBy, cycle, round, notification: {} }, all text kept
+ * whole. Attached lazily by decisions.mjs recordPendingDecision (the same
+ * lazily-attached, sprint-lifetime pattern as `doctorBlockedIds`; this module
+ * deliberately constructs no Map), which also sets the bead aside on
+ * `doctorBlockedIds` (kind 'needs-decision').
  */
 export function createSprintState({ callTool, log = () => {}, createFleetApi } = {}) {
     const active = typeof callTool === 'function';

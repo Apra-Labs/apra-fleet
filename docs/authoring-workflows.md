@@ -139,9 +139,12 @@ HTTP would double-initialize). Prefer this for new workflow code:
 ```js
 import { connectFleet } from '@apralabs/apra-fleet-client/server-resolution';
 
-const { mcpClient, fleetApi, mode } = await connectFleet({ env: process.env });
+const { mcpClient, fleetApi, mode, transport } = await connectFleet({ env: process.env });
 
 // fleetApi is an ApraFleet(mcpClient) wrapper; mcpClient.request(...) also works directly.
+
+// When done: release the server session (stop() alone leaves it open).
+await transport.close();
 ```
 
 A workflow that never needs the fleet server (like `hello-world`) can skip
@@ -178,6 +181,9 @@ if (resolution.mode === 'stdio') {
 }
 
 // mcpClient.request(...) / an ApraFleet(mcpClient) wrapper from here on.
+
+// When done: release the server session (stop() alone leaves it open).
+await transport.close();
 ```
 
 ## 6. Importing the shared engine/client

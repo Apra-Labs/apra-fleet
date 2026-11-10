@@ -11,6 +11,17 @@ info:
     the companion doc packages/apra-fleet-se/docs/supervisor-api.md for the
     operational semantics (relaunch gate, member-overlap guard, ledger vs
     history, "terminal" meaning) that OpenAPI cannot capture precisely.
+
+    Every non-GET route requires `Content-Type: application/json` (else 415)
+    and a same-origin request -- no Origin header, or an Origin equal to the
+    supervisor's own -- unless it carries the token configured via
+    FLEET_SUPERVISOR_TOKEN (`Authorization: Bearer <token>` or
+    `X-Fleet-Token: <token>`); a cross-site Origin/Sec-Fetch-Site without a
+    valid token, or an invalid token, is 403. Every request (GET included)
+    whose Host header names something other than a loopback name, an IP
+    literal, the bind host or a --allowed-host / FLEET_SUPERVISOR_ALLOWED_HOSTS
+    entry is 403 (DNS-rebinding defence). See supervisor-api.md,
+    "Mutating requests".
   version: "1.0.0"
 servers:
   - url: http://127.0.0.1:8787
@@ -490,6 +501,13 @@ paths:
                         type: array
                         items: { $ref: "#/components/schemas/HistoryEvent" }
                       latest: { $ref: "#/components/schemas/HistoryEvent" }
+                      resultStatus:
+                        type: string
+                        description: present for a finished sprint; success or success-with-warnings (branch pushed, PR skipped for a VCS auth failure). Treat both as success.
+                      warnings:
+                        type: array
+                        items: { type: string }
+                        description: present when non-empty; the reasons behind success-with-warnings
         "404":
           description: no sprint with this id is live or in history
           content:

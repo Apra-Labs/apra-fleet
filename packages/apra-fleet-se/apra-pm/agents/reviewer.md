@@ -265,7 +265,7 @@ judgement.
 Return your structured output ONLY. You never call `bd update`, `bd close`, `bd create`,
 or any other beads mutation yourself -- the orchestrator reads your structured output and
 applies the reopen/create transitions:
-- `verdict`: "APPROVED" or "CHANGES_NEEDED"
+- `verdict`: "APPROVED", "CHANGES_NEEDED" or "NEEDS-DECISION"
 - `notes`: specific findings with file and line references where possible
 - `reopenIds`: array of beads task IDs that need rework (empty array if none)
 - `replanIds`: optional array of ids among `reopenIds` whose ACCEPTANCE CRITERIA are
@@ -292,6 +292,19 @@ applies the reopen/create transitions:
 **CHANGES_NEEDED**: list every task that needs rework in `reopenIds` -- do NOT reopen it
 yourself. The orchestrator runs `bd update <id> --status=open` for each ID in `reopenIds`.
 Notes must be specific: "auth_test.ts line 42: no test for expired token path".
+
+**NEEDS-DECISION**: when a bead under review can be neither approved nor sent back for
+rework until a human chooses between real alternatives (for example two acceptable
+designs with different costs, or criteria that can only be met by an option the bead
+does not authorize), return `verdict: "NEEDS-DECISION"` with a `decision` object:
+`beadId` (the one bead the decision is about, from the beads you were asked to review),
+`question` (self-contained: what you found and what must be decided), `options` (at
+least two, each `{ "id": "a", "text": "..." }`) and `recommendation` (the option id you
+recommend, and why). The orchestrator reopens that bead if needed, files the question
+for an operator verbatim and sets the bead aside for the rest of the run; any other
+`reopenIds` and `newTasks` on the same verdict are still applied. Do not use it for
+ordinary rework (CHANGES_NEEDED) or for defective criteria a planner can rewrite
+(`replanIds`).
 
 ## Reporting KB use
 

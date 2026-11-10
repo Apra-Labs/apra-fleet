@@ -37,6 +37,8 @@ Spawns a child process and speaks newline-delimited JSON over its stdin/stdout.
   null).
 - **`stop()`** -- kills the child process (`SIGTERM` via `.kill()`) and
   clears the internal process handle. Safe to call even if not started.
+- **`async close()`** -- same as `stop()`, so every transport can be ended
+  with `close()`.
 
 Incoming stdout data is buffered and split on `\r?\n`; each complete line is
 `JSON.parse`d and emitted as `'message'`. A line that fails to parse is
@@ -78,7 +80,10 @@ send client-to-server messages.
   session stays alive.
 - **`async close()`** -- best-effort HTTP `DELETE` of the session
   (`mcp-session-id`, 5 s bound) so the server releases the McpServer and any
-  member registry entry, then `stop()`. Use for short-lived sessions.
+  member registry entry, then `stop()`. Always end a transport with
+  `close()`. A session left open by `stop()` holds an McpServer on the
+  fleet server until the server evicts it as idle (no open request for
+  `APRA_FLEET_SESSION_IDLE_MS`, default 30 min).
 
 Both fetches go through `undici`'s own `fetch` with a dedicated `Agent`
 (`headersTimeout: 0`, `bodyTimeout: 0`, `keepAliveTimeout: 4000`) rather
@@ -150,6 +155,19 @@ abort support on top of a transport.
 - **`async listTools(opts = {})`** -- `request('tools/list', {}, opts)`;
   resolves `{ tools: [{ name, ... }] }`. On a MEMBER session
   (`?member=<uuid>`) this is exactly the member allowlist.
+  On a FULL (non-member) session the `kb_*` tools listed follow the
+  install-wide KB tool profile, read when the session registers its tools
+  (so a change shows after a reconnect): `full` (default, every `kb_*`
+  tool), `developer` (`kb_session_prime`, `kb_query`, `kb_context`,
+  `kb_capture`, `kb_feedback`) or `custom` (an explicit list). Non-kb tools
+  are never filtered and member sessions ignore the profile. The profile is
+  set with `kb_setup` inputs `tool_profile` (`full` | `developer` |
+  `custom`) and `tool_profile_tools` (the custom `kb_*` names; an unknown
+  name is refused with an error naming it, and nothing is written), or with
+  `apra-fleet kb profile <full|developer|custom a,b>`. It is a usability
+  control, not a security boundary. `developer` hides tools the PM skills
+  `kb-review`, `kb-reconcile` and `knowledge-agent` need; switch back with
+  `apra-fleet kb profile full` and reconnect before running them.
 
 ### `connectFleetMember(memberId, deps)` (`server-resolution.mjs`)
 
@@ -383,6 +401,11 @@ line). Each half degrades on its own: an unreadable bible nulls `entries`
 (`entriesError`), an unreadable or missing host database nulls `drift`
 (`driftReason`). Without `repo_path` both are null with the
 "pass repo_path" reason and the compact output shows no bible line.
+
+When the configured KB tool profile is invalid, `kbHealth.toolProfileWarning`
+(a string, absent otherwise; compact: the same text on its own line) names the
+bad value and what to do, also when no member is registered. Sessions then get
+every `kb_*` tool.
 
 When the KB config selects the http provider, `kbHealth.credential`
 (`FleetStatusKbCredential`; compact: one `kb credential:` line) reports the
@@ -811,6 +834,25 @@ union -- a user-authored deny rule is never dropped; only fleet-derived
 Calls `setup_ssh_key` -- converts a remote member from password to SSH key
 authentication. Options: `member_id?`, `member_name?`.
 
+#### `sendMessage(options)`
+
+Calls `send_message` -- pushes a message to a connected member session.
+Options: `member_id` (required, the target session's member id, or
+`"orchestrator"` for the operator's own channel-capable orchestrating session
+-- the newest such session connected to the server), `content` (required),
+`reply_to?`, `probe?`. A target that is not connected is reported in the
+result JSON (`{ "error": "member not connected or no MCP session" }`), not
+thrown. With `probe: true` nothing is sent; the result JSON reports whether a
+session holds the target: `{ "probe": true, "member_id", "connected",
+"channel_capable" }`. Only a `channel_capable` session can receive a message
+(for `"orchestrator"`: a Claude Code session launched with
+`--dangerously-load-development-channels`).
+
+#### `probeMessageTarget(memberId)`
+
+Shorthand for `sendMessage({ member_id: memberId, content: '', probe: true })`:
+a read-only check that sends nothing.
+
 #### `sendEmail(options: SendEmailOptions)`
 
 Calls `send_email`. Provider config is passed inline; secrets resolve
@@ -1057,7 +1099,12 @@ HTTP headers or child-process spawn options).
   `APRA_FLEET_TRANSPORT=http`; unresponsive -> error) and retries that request
   once. A request that may have reached the server (e.g. an in-flight
   `execute_prompt`/`execute_command` whose response stream died) is rejected
-  and never re-sent; the next request reconnects.
+  and never re-sent; the next request reconnects. A replaced connection's
+  server session is released (HTTP DELETE, best effort). `close()` releases
+  the current session and stops; `stop()` is local only. Releasing a session
+  cancels any tool call still running on it, including the member process of
+  an `execute_prompt`/`execute_command`; the server does the same when it
+  evicts a session abandoned mid-call.
 - `isNeverDeliveredError(err)` -- the predicate behind that retry rule.
   `StreamableHttpTransport` send errors now carry `.status`.
 

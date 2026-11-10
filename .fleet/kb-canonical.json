@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 163
+    "entry_count": 178
   },
   "entries": [
     {
@@ -174,6 +174,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:26.644Z"
+    },
+    {
+      "id": "0f9d099d-5415-4305-a0f8-fe1ecf05fc64",
+      "type": "knowledge",
+      "title": "recordDecisionAnswer only queues; mid-run answers apply inside a runner sync bracket",
+      "summary": "recordDecisionAnswer returns {status:'recorded'} without awaiting resume or pushing; the runner applies queued answers at the top of each cycle inside a withOpenSyncBracket via applyRecordedAnswers.",
+      "symbols": [
+        "recordDecisionAnswer",
+        "applyRecordedAnswers",
+        "applyRecordedDecisionAnswers"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T11:26:44.969Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs": "100e5775d8b1a6da9cba507c8260925595ec6add",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "cfb66d795c72d41ff513e67cb077e9b8e3c5a9f1"
+      }
     },
     {
       "id": "101692b0-d5e6-4a32-8d6e-e8595ddc39f0",
@@ -394,6 +415,31 @@
       }
     },
     {
+      "id": "1a9e0a10-395b-412f-a5ff-1360ae529877",
+      "type": "knowledge",
+      "title": "bd create is only allowed in beads-children.mjs; its command() count is pinned",
+      "summary": "explicit-id-create-guard fails any bd create outside beads-children.mjs, and dispatch-safety-guard.test pins that module's command() count (now 9). New bead-creation paths must add a helper there and bump the pin.",
+      "symbols": [
+        "createDecisionBead",
+        "EXPECTED_BEADS_CHILDREN_COMMAND_COUNT",
+        "checkExplicitIdCreateModules"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/explicit-id-create-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-children.mjs",
+        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs",
+        "packages/apra-fleet-se/test/sprint-state.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T06:18:12.388Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-children.mjs": "dd5bf8c5d072a622e7a5c355d1235a70f64f2c81",
+        "packages/apra-fleet-se/fleet-sprint/explicit-id-create-guard.mjs": "2f23987c7b2c75f47feff528258ba0a2a8455ced",
+        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs": "cbdca634f5c5dc0f8f640f114761fa3ab117992e",
+        "packages/apra-fleet-se/test/sprint-state.test.mjs": "bd1629a4797d638aac29a21828f67918cae4fdf7"
+      }
+    },
+    {
       "id": "1b2df6eb-33c9-4deb-8253-2a553183fcfe",
       "type": "learning",
       "title": "Repo pre-commit hook rejects PowerShell backtick escapes in JS sources",
@@ -597,6 +643,34 @@
       "updated_at": "2026-09-25T22:26:33.419Z"
     },
     {
+      "id": "26cf5a7e-4d90-467b-b358-e51fca33c78c",
+      "type": "knowledge",
+      "title": "Bitbucket preflight checks the labelled PR credential via a credentialProbe provider hook",
+      "summary": "For a provider exposing credentialProbe, createVcsAuthPreflightCallback runs git ls-remote plus a REST probe via vcs_credential_exec under the provider label and a member-side username= line read; verdict ok only if all pass.",
+      "symbols": [
+        "createVcsAuthPreflightCallback",
+        "checkLabelledCredential",
+        "credentialProbe",
+        "readCredentialHelperUsername"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/index.mjs",
+        "packages/apra-fleet-se/fleet-sprint/se-posix.mjs",
+        "packages/apra-fleet-se/fleet-sprint/se-windows.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T06:41:01.399Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/se-posix.mjs": "d7927b860c9a8070036e97057cce946dc6c5eebb",
+        "packages/apra-fleet-se/fleet-sprint/se-windows.mjs": "7abbee311d9856f62c98ac00e87af7a9017bbdc7",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "4276b8301bf882b9709e295893904595f2bff86c",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "e812ec5afad19e11b2739690991035342855fe02",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/index.mjs": "b90e97ee49cdba5ded5877d17d88351984fe409b"
+      }
+    },
+    {
       "id": "2b244307-8635-4406-904f-6a2290d54490",
       "type": "learning",
       "title": "check-generic-boundary tokenizer treats slash-star inside a template literal as a comment",
@@ -744,6 +818,28 @@
         "packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json": "58fffe7c86aa875100bc8b66769c43a462cc3111",
         "packages/apra-fleet-se/apra-pm/test/auto-sprint-schemas-drift.test.mjs": "eaca88fa5ff10f41b4acd11099776d9e78415b0e",
         "packages/apra-fleet-se/test/golden-transcript.test.mjs": "9ec222f8856aa6a5935b49d144ae6caf2fd05ee9"
+      }
+    },
+    {
+      "id": "33755a95-9855-49cf-90da-22e36bb6f33e",
+      "type": "learning",
+      "title": "Stale gitignored dist/agents/schemas fails root npm test via the se staleness guard",
+      "summary": "npm run build does not refresh dist/agents/schemas. When the apra-pm source schemas change after a dist-pm run, the apra-fleet-se contracts-schema-dist-staleness-guard test fails root npm test with DRIFTED entries, even on a branch that touches no schema. npm run dist-pm fixes it.",
+      "symbols": [
+        "DIST_BUNDLED_SCHEMAS_DIR",
+        "PACKAGE_LOCAL_SCHEMAS_DIR"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs",
+        "scripts/run-all-tests.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T06:44:28.049Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs": "4c07b8ed157d0d89186c903466ba757be2c48ba6",
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs": "1db1ddf04d24ac369fb510e69d39af9406640bbe",
+        "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637"
       }
     },
     {
@@ -1058,6 +1154,30 @@
       "updated_at": "2026-10-06T12:01:02.130Z"
     },
     {
+      "id": "48835120-c2d2-4e23-985e-0dddce9c68be",
+      "type": "knowledge",
+      "title": "httpFailureHint ctx form returns { hint, remedy } and the remedy replaces authRemedy.hint",
+      "summary": "raiseVcsPrForMember passes { status, body, headers, availableSecrets, memberName, repoRef, repo } to a provider's httpFailureHint; a string answer is a legacy hint, an object's non-empty remedy replaces the generic authRemedy.hint.",
+      "symbols": [
+        "httpFailureHint",
+        "parseVcsCurlOutput",
+        "raiseVcsPrForMember",
+        "credentialRemedy"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs",
+        "packages/apra-fleet-se/test/vcs-bitbucket-403-diagnosis.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T06:40:58.999Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "4276b8301bf882b9709e295893904595f2bff86c",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "e812ec5afad19e11b2739690991035342855fe02",
+        "packages/apra-fleet-se/test/vcs-bitbucket-403-diagnosis.test.mjs": "79d7365dc332472a64287c82ef1bac14f32edf21"
+      }
+    },
+    {
       "id": "48e12361-051f-4d38-9cf0-ca955eca4fdc",
       "type": "knowledge",
       "title": "Member mixed-tier kb_session_prime primes each half separately, then merges",
@@ -1243,6 +1363,35 @@
       "updated_at": "2026-09-29T06:13:14.812Z"
     },
     {
+      "id": "55c80cc0-609c-499d-bca4-1fa4d4889e46",
+      "type": "knowledge",
+      "title": "Supervisor and child viewer validate Host on every request (DNS-rebinding defence)",
+      "summary": "request-guard.mjs checkRequestHost admits only loopback names, IP literals, the non-wildcard bind host, or allowedHosts entries; both servers run it on every method before the Origin/JSON check, and a token never waives it.",
+      "symbols": [
+        "checkRequestHost",
+        "checkMutatingRequest",
+        "parseAllowedHosts",
+        "normalizeHostName",
+        "SUPERVISOR_ALLOWED_HOSTS_ENV"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/viewer/request-guard.mjs",
+        "packages/apra-fleet-se/src/supervisor/server.mjs",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs",
+        "packages/apra-fleet-se/bin/serve.mjs",
+        "packages/apra-fleet-se/test/supervisor-csrf-guard.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T10:56:25.181Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/bin/serve.mjs": "9f5f5ed40c249a83ee3d9682bc0a9e2686ef6fe6",
+        "packages/apra-fleet-se/src/supervisor/server.mjs": "dbf29794be7e911d74ca0406e011491469d9ffd2",
+        "packages/apra-fleet-se/test/supervisor-csrf-guard.test.mjs": "3e0e41677274ac685d61218451e4ff40d2ce09a5",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs": "40a249163390fa53bb1bc336418433a5792f83ea",
+        "packages/apra-fleet-workflow/src/viewer/request-guard.mjs": "7ec63f0bc021035080ea03d03f64f7ba0ec3bf75"
+      }
+    },
+    {
       "id": "5793efdd-bbd2-4446-b8ac-86e4dc581b9c",
       "type": "learning",
       "title": "kb_bible_commit commits a bible that differs from HEAD at call start",
@@ -1321,6 +1470,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.708Z"
+    },
+    {
+      "id": "602e5074-1727-414a-ae5d-1dc07a9b3698",
+      "type": "knowledge",
+      "title": "Viewer extensions can render a header banner visible on every tab via extension-banner-<id>",
+      "summary": "The live viewer's HTML_TEMPLATE puts one hidden div#extension-banner-<ext.id> per dashboard extension outside every tab panel; the extension's own js fills and shows it. The decisions extension uses it for pending decisions.",
+      "symbols": [
+        "HTML_TEMPLATE",
+        "createDecisionsExtension",
+        "renderDecisionsBannerHtml",
+        "parseDocument"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/viewer/index.mjs",
+        "packages/apra-fleet-se/fleet-sprint/viewer-extensions.mjs",
+        "packages/apra-fleet-se/test/helpers/mini-dom.mjs",
+        "packages/apra-fleet-se/test/viewer-decisions-header-banner-dom.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T09:57:16.041Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/viewer-extensions.mjs": "024cab503db74f0efe7c0e711d79b90dfb6aead5",
+        "packages/apra-fleet-se/test/helpers/mini-dom.mjs": "b24188395cc9337fa9babdc182b3f272fb1fd8a4",
+        "packages/apra-fleet-se/test/viewer-decisions-header-banner-dom.test.mjs": "a92ec7d3f896c3c8a613b2df509b1bfcd11133b1",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs": "61849fc5b49537780c598e50aa36afdb568e5120"
+      }
     },
     {
       "id": "64bedb7a-8a2d-46ba-9586-6254a88f6dcd",
@@ -1899,6 +2074,21 @@
       }
     },
     {
+      "id": "8be9cb68-4270-4a68-bd98-1f7e6ca74d47",
+      "type": "learning",
+      "title": "Root npm test can be narrowed to specific vitest files via APRA_TEST_SUITES_JSON",
+      "summary": "scripts/run-all-tests.mjs replaces its default suite list with the JSON in APRA_TEST_SUITES_JSON, so a doer can run chosen test files through the bounded npm test runner instead of calling vitest directly.",
+      "symbols": [],
+      "source_files": [
+        "scripts/run-all-tests.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T06:24:10.073Z",
+      "source_file_hashes": {
+        "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637"
+      }
+    },
+    {
       "id": "8e76e27c-13eb-40bd-bd9f-65473ee3833b",
       "type": "learning",
       "title": "KB capture paths must not write the fleet log in tests: hermetic guards snapshot FLEET_DIR/logs",
@@ -2132,6 +2322,29 @@
       }
     },
     {
+      "id": "9db85b59-1883-43cf-8357-717914e3c8b9",
+      "type": "knowledge",
+      "title": "The needs_decision pause keeps member reservations; only a pause that released re-reserves on resume",
+      "summary": "cli.mjs wirePauseReservations reads the pause source from 'pause:requested' (the 'paused' event carries none). For source needs_decision it skips releaseForPause, and the pre-resume hook runs re-reserve and resync only after a pause that actually released.",
+      "symbols": [
+        "wirePauseReservations",
+        "reReserveOnResume",
+        "DECISION_PAUSE_SOURCE"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/bin/cli.mjs",
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs",
+        "packages/apra-fleet-se/test/cli-decision-pause-keeps-reservations.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T10:56:22.781Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/bin/cli.mjs": "4518b0b43e5a46ca599db84eb4a7ef6911140027",
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs": "3e92e65adff97cc499eccb1de83a6efc4483c7ab",
+        "packages/apra-fleet-se/test/cli-decision-pause-keeps-reservations.test.mjs": "0f160dc4078b021b9af3a0e5995b092ce93b8029"
+      }
+    },
+    {
       "id": "a05ff689-9610-4624-ac2f-301d91e83846",
       "type": "knowledge",
       "title": "exec-bd helpers resolve bd through the npm Windows shim; shell:true paths remain on Windows",
@@ -2294,6 +2507,27 @@
       }
     },
     {
+      "id": "a82bffe3-a078-44cf-a91d-4aae1e4a0095",
+      "type": "knowledge",
+      "title": "Pending decisions reach the supervisor via the decisions summary and a generic extension action route",
+      "summary": "decision-wait publishes the 'decisions' namespace; its extension summarize() puts the full pending list in state.summary, and answers go through POST /extensions/:id/actions/:actionId.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/viewer-extensions.mjs",
+        "packages/apra-fleet-se/src/supervisor/api.mjs",
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T07:33:19.610Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs": "e3cd9febf0d13dcdaac610859def051d8d0c0d86",
+        "packages/apra-fleet-se/fleet-sprint/viewer-extensions.mjs": "23495a3465b50733210cde0f90e170cb1134762e",
+        "packages/apra-fleet-se/src/supervisor/api.mjs": "00b5ffb6c77cf66f3d2775aa5e86d02ed79069c2",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs": "040715fdd4a6ad18504dbb68dba67fa9a2c3053a"
+      }
+    },
+    {
       "id": "a888b84b-d7a0-47ad-9318-2f062770cf2f",
       "type": "learning",
       "title": "ASCII-only gate scans test fixtures too; write emoji markers as escapes",
@@ -2380,6 +2614,30 @@
         "src/services/knowledge/hybrid-rank.ts": "31e0d6893e87cf4344baf26c89a77f25947b86db",
         "src/services/knowledge/sqlite-provider.ts": "1df93b09d7eed6873399f072259f672f4a42954f",
         "src/services/knowledge/types.ts": "74b69e36b091e7eae8cd72068b5ef3cbb80d9892"
+      }
+    },
+    {
+      "id": "af9ecaf3-fc46-44b2-bf75-456446e2fc99",
+      "type": "learning",
+      "title": "Detect an open sync bracket in a mock sprint through workflow._pauseGuard()",
+      "summary": "git-sync.mjs registers setPauseGuard(() => openSyncBracketCount === 0), so in a mock-sprint test a false return from workflow._pauseGuard() at command time means a sync bracket is open; this is how a test proves runner writes run inside withOpenSyncBracket.",
+      "symbols": [
+        "createSyncBrackets",
+        "setPauseGuard",
+        "_pauseGuard",
+        "openSyncBracketCount"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-se/test/decision-answer-sync-bracket.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T11:51:38.276Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "0c97d9ee4e6c1e854f1240134b9ee4bddb329abf",
+        "packages/apra-fleet-se/test/decision-answer-sync-bracket.test.mjs": "1cd7c44598ef8fba15416b48e872a2f7a9263a3c",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs": "7e5eb559093799e8e8d0923636eb27fb9d83c0ab"
       }
     },
     {
@@ -2493,6 +2751,23 @@
       "updated_at": "2026-10-06T09:41:38.971Z"
     },
     {
+      "id": "bfcfe1fe-571d-4f3a-a0ce-04fedcd7a088",
+      "type": "learning",
+      "title": "APRA_TEST_SUITES_JSON narrowing leaks into run-all-tests-suite-enumeration test",
+      "summary": "Running the full vitest suite through scripts/run-all-tests.mjs with APRA_TEST_SUITES_JSON set makes tests/run-all-tests-suite-enumeration.test.ts fail, because it imports the real script, which reads the inherited env var.",
+      "symbols": [],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "tests/run-all-tests-suite-enumeration.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T07:14:05.528Z",
+      "source_file_hashes": {
+        "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637",
+        "tests/run-all-tests-suite-enumeration.test.ts": "6b869932251561145575443ff2d70652ba73b787"
+      }
+    },
+    {
       "id": "c2899616-0cb1-41e8-b229-76e291a0cd81",
       "type": "learning",
       "title": "SqliteProvider freshness verdicts must be suppressed, not re-hashed, when the repo anchor is unreachable",
@@ -2552,6 +2827,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T10:23:39.272Z"
+    },
+    {
+      "id": "c72f090a-334f-4c0a-8b8b-a2fedfa7b81b",
+      "type": "learning",
+      "title": "A profile change via kb_setup or the CLI shows only after the MCP session reconnects",
+      "summary": "The KB tool profile is read in scopeGatedServer once per session, when registerAllTools runs. An open session keeps its tool list after kb_setup or apra-fleet kb profile changes knowledge/config.json, so a test or user must reconnect to see the new list.",
+      "symbols": [
+        "scopeGatedServer",
+        "fullSessionKbToolProfile",
+        "readKbToolProfileFromDisk",
+        "runKbProfile"
+      ],
+      "source_files": [
+        "src/services/tool-registry.ts",
+        "src/cli/kb-profile.ts",
+        "tests/kb-tool-profile-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T07:26:57.942Z",
+      "source_file_hashes": {
+        "src/cli/kb-profile.ts": "2ae2abf6f3c4a62e3ca10f3013fedcd43103bb24",
+        "src/services/tool-registry.ts": "05e3d5e04b949b3bfefef7693c230e59da947f02",
+        "tests/kb-tool-profile-e2e.test.ts": "949f75c916529d89cd7b80d5433042449935d31a"
+      }
     },
     {
       "id": "caac0e77-a378-4f1e-bb9e-141c8e82e19a",
@@ -3162,6 +3461,29 @@
       "updated_at": "2026-10-06T17:05:07.548Z"
     },
     {
+      "id": "f3a5a58e-1d41-4ddd-8705-2b4e1985deab",
+      "type": "learning",
+      "title": "Mock-timer callbacks lose the workflow run's async context, so ctx.stopSignal() and command()'s implicit signal are undefined there",
+      "summary": "With node:test mock timers, a setTimeout callback fires from t.mock.timers.tick() in the test's context, not the run's, so the run's AsyncLocalStorage store is gone: stopSignal() and command()'s implicit signal are undefined.",
+      "symbols": [
+        "holdUntilReleased",
+        "_currentSignal",
+        "stopSignal"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-se/test/decision-wait-long-wait.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-08T13:09:07.086Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs": "81d80292d1610b12376416e4e51fd54c49195835",
+        "packages/apra-fleet-se/test/decision-wait-long-wait.test.mjs": "b8dc5918339c0e11495c1fcddbcd7fae46607314",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs": "7dda9487de73744a7b6cf234bd87bca2dc662b3c"
+      }
+    },
+    {
       "id": "f40ed9c2-9dd5-4b32-a216-db902c79ddb2",
       "type": "knowledge",
       "title": "Server-to-client MCP requests should ride the tool call's own request context",
@@ -3182,6 +3504,38 @@
         "src/services/session-roots.ts": "b27a9b1df28aad228dbec60ab57984f142eb024e",
         "src/services/tool-registry.ts": "eb1b91bac7395927dd12548734bccb86e7ae1de3",
         "tests/kb-code-scope-roots.test.ts": "494812934178a85b8196995e32a3df9991af9253"
+      }
+    },
+    {
+      "id": "f43cd51c-c59e-4938-baed-8b6afc2b10f3",
+      "type": "knowledge",
+      "title": "KB tool profile filters kb_* tools only in FULL sessions via scopeGatedServer",
+      "summary": "The install-wide KB tool profile (knowledge/config.json tool_profile/tool_profile_tools) is read in scopeGatedServer when a FULL session registers its tools; member scope never consults it, and an invalid on-disk profile falls back to full with a warning.",
+      "symbols": [
+        "scopeGatedServer",
+        "readKbToolProfileFromDisk",
+        "kbToolAllowedByProfile",
+        "makeKbToolProfile",
+        "writeKbToolProfile",
+        "runKbProfile"
+      ],
+      "source_files": [
+        "src/services/kb-tool-profile.ts",
+        "src/services/knowledge/kb-config.ts",
+        "src/services/tool-registry.ts",
+        "src/tools/kb-setup.ts",
+        "src/cli/kb-profile.ts",
+        "tests/kb-tool-profile-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T07:14:03.165Z",
+      "source_file_hashes": {
+        "src/cli/kb-profile.ts": "2ae2abf6f3c4a62e3ca10f3013fedcd43103bb24",
+        "src/services/kb-tool-profile.ts": "302b2e9ef0633dfd8e2a1c5ffa4ee0d52ab4fb35",
+        "src/services/knowledge/kb-config.ts": "5571d65b6d096d7742527c16649dbfff17faf51c",
+        "src/services/tool-registry.ts": "05e3d5e04b949b3bfefef7693c230e59da947f02",
+        "src/tools/kb-setup.ts": "eaa0fe1fc385cafbf2c3f9b14c9e5b7159dc86fe",
+        "tests/kb-tool-profile-e2e.test.ts": "949f75c916529d89cd7b80d5433042449935d31a"
       }
     },
     {

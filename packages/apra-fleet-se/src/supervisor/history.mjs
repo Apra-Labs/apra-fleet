@@ -147,6 +147,11 @@ function cloneEvent(e) {
         // same optional/null-default convention as the fields above.
         terminalReason: e.terminalReason === undefined ? null : e.terminalReason,
         verdict: e.verdict === undefined ? null : e.verdict,
+        // Only meaningful for a FINISHED event: the run's own result status
+        // (e.g. 'success-with-warnings' when the PR was skipped for a VCS auth
+        // failure) and its warnings, so they survive the reservation release.
+        resultStatus: e.resultStatus === undefined ? null : e.resultStatus,
+        warnings: Array.isArray(e.warnings) ? [...e.warnings] : [],
     };
 }
 
@@ -233,7 +238,7 @@ export function createHistory(deps = {}) {
         /**
          * Append one terminal event and persist atomically. The in-memory log is
          * committed only after the disk write succeeds.
-         * @param {{ sprintId: string, event: string, reason?: string, by?: string|null, members?: string[], issueRoots?: string[], at?: string, exitCode?: number|null, signal?: string|null, logPath?: string|null, terminalReason?: string|null, verdict?: string|null }} entry
+         * @param {{ sprintId: string, event: string, reason?: string, by?: string|null, members?: string[], issueRoots?: string[], at?: string, exitCode?: number|null, signal?: string|null, logPath?: string|null, terminalReason?: string|null, verdict?: string|null, resultStatus?: string|null, warnings?: string[] }} entry
          * @returns {Promise<object>} a clone of the stored event
          */
         async record(entry) {
@@ -256,6 +261,8 @@ export function createHistory(deps = {}) {
                 logPath: entry.logPath,
                 terminalReason: entry.terminalReason,
                 verdict: entry.verdict,
+                resultStatus: entry.resultStatus,
+                warnings: entry.warnings,
             });
             const run = txChain.then(async () => {
                 const next = [...events, stored];

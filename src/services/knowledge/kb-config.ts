@@ -4,6 +4,7 @@ import { FLEET_DIR } from '../../paths.js';
 import { decryptPassword } from '../../utils/crypto.js';
 import { logWarn } from '../../utils/log-helpers.js';
 import { findSecretTokens } from '../secret-token.js';
+import { FULL_KB_TOOL_PROFILE, makeKbToolProfile, type KbToolProfile } from '../kb-tool-profile.js';
 
 /** Bounds and default for request_timeout_ms, shared by kb_setup (write) and the reader. */
 export const MIN_REQUEST_TIMEOUT_MS = 1000;
@@ -45,6 +46,14 @@ export interface KbConfigFile {
   bible?: { autoCommit?: boolean };
   /** embedding.model: a built-in profile name, a custom-model object, or 'none' (see embedding/profiles.ts). */
   embedding?: { model?: unknown };
+  /**
+   * Install-wide KB tool profile for FULL sessions (src/services/kb-tool-profile.ts):
+   * "full" (default when absent), "developer", or "custom" with the kb_* names
+   * in tool_profile_tools. Read by readKbToolProfileFromDisk.
+   */
+  tool_profile?: 'full' | 'developer' | 'custom';
+  /** The kb_* tool names a "custom" tool_profile serves; ignored otherwise. */
+  tool_profile_tools?: string[];
   [key: string]: unknown;
 }
 
@@ -76,6 +85,95 @@ export function readEmbeddingModelSetting(): unknown {
     return undefined;
   }
   return (embedding as { model?: unknown }).model;
+}
+
+/**
+ * The KB config file cannot be read or parsed, as opposed to holding a bad
+ * value. The way out is a hand edit: anything that rewrites the file would
+ * lose what it holds (url, token_ref, ...). The message never quotes the file:
+ * a JSON parser's message can repeat part of it, including the encrypted token.
+ */
+export class KbConfigUnreadableError extends Error {
+  constructor(problem: string) {
+    super(`KB config at ${KB_CONFIG_PATH} ${problem}`);
+    this.name = 'KbConfigUnreadableError';
+  }
+}
+
+/** What to do about a KbConfigUnreadableError. */
+export const KB_CONFIG_HAND_FIX = 'Fix that file by hand (other settings in it, such as the remote url and token, are still there).';
+
+/** Parse the KB config, or throw KbConfigUnreadableError. Undefined when the file is absent. */
+function parseKbConfigFile(): unknown {
+  if (!fs.existsSync(KB_CONFIG_PATH)) return undefined;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(KB_CONFIG_PATH, 'utf-8');
+  } catch (err) {
+    throw new KbConfigUnreadableError(`cannot be read (${(err as NodeJS.ErrnoException).code ?? 'unknown error'})`);
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new KbConfigUnreadableError('is not valid JSON');
+  }
+}
+
+/**
+ * The KB config as an object to merge into and write back: {} when absent.
+ * Throws KbConfigUnreadableError when the file cannot be read, is not valid
+ * JSON or is not a JSON object, so a writer never overwrites what it could not
+ * parse.
+ */
+export function readKbConfigForMerge(): KbConfigFile {
+  const parsed = parseKbConfigFile();
+  if (parsed === undefined) return {};
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new KbConfigUnreadableError('is not a JSON object');
+  }
+  return parsed as KbConfigFile;
+}
+
+/**
+ * Read the install-wide KB tool profile from the KB config.
+ *
+ * - Absent file, or no tool_profile key -> full, silently (the stock path is
+ *   never broken by this reader; it does not look at provider/token keys).
+ * - A known profile -> that profile; "custom" validates tool_profile_tools
+ *   against the registered kb_* tool names.
+ * - An unreadable or malformed file throws KbConfigUnreadableError; an unknown
+ *   profile name or an invalid custom list throws an Error naming this config
+ *   path and the problem (for a custom list: the unknown names and the valid
+ *   ones).
+ */
+export function readKbToolProfileFromDisk(): KbToolProfile {
+  const parsed = parseKbConfigFile();
+  if (parsed === undefined || parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return FULL_KB_TOOL_PROFILE;
+  const config = parsed as KbConfigFile;
+  if (config.tool_profile === undefined) return FULL_KB_TOOL_PROFILE;
+  try {
+    return makeKbToolProfile(config.tool_profile, config.tool_profile_tools);
+  } catch (err) {
+    throw new Error(`KB config at ${KB_CONFIG_PATH}: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * The line fleet_status shows when the configured KB tool profile is invalid,
+ * or undefined when it is fine. An invalid profile never stops anything: FULL
+ * sessions fall back to every kb_* tool (tool-registry.ts), and this line is
+ * how a user or agent learns the setting they made is not applied. Never throws.
+ */
+export function kbToolProfileWarning(): string | undefined {
+  try {
+    readKbToolProfileFromDisk();
+    return undefined;
+  } catch (err) {
+    const fix = err instanceof KbConfigUnreadableError
+      ? KB_CONFIG_HAND_FIX
+      : 'Set a valid one with: apra-fleet kb profile <full | developer | custom tool1,tool2>.';
+    return `KB tool profile not applied, serving every kb_* tool. ${(err as Error).message}. ${fix} Reconnect to pick up the change.`;
+  }
 }
 
 /**

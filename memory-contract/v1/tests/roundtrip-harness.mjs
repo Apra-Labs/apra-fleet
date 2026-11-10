@@ -920,9 +920,18 @@ function assertProviderIdentity(provider) {
   }
 }
 
+/**
+ * Committed fixtures SCENARIO does not replay, each with the reason and where
+ * its response is proven instead. The scenario runs against a provider with a
+ * reachable store, so it cannot produce a response that needs an unreachable one.
+ */
+export const FIXTURES_OUTSIDE_SCENARIO = new Map([
+  ['kb_feedback/happy-queued-offline', 'needs an unreachable HTTP KB server; tests/knowledge/kb-feedback-http.test.ts compares it with the real tool response'],
+]);
+
 function coverageFailures(rosterTools) {
   const failures = [];
-  const onDisk = new Set(listFixtureKeys());
+  const onDisk = new Set([...listFixtureKeys()].filter((key) => !FIXTURES_OUTSIDE_SCENARIO.has(key)));
   const inScenario = new Set(SCENARIO.map((s) => `${s.tool}/${s.case}`));
 
   for (const key of onDisk) {
