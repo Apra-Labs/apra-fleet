@@ -41,6 +41,9 @@ const resolveMemberSrc = readFileSync(path.join(repoRoot, 'src', 'utils', 'resol
 const memberDetailSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-detail.ts'), 'utf8');
 const sessionStatsSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'session-stats.ts'), 'utf8');
 const memberCallCountsSrc = readFileSync(path.join(repoRoot, 'src', 'services', 'member-call-counts.ts'), 'utf8');
+const queryErrorsSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'query-errors.ts'), 'utf8');
+const errorRegistrySrc = readFileSync(path.join(repoRoot, 'src', 'services', 'error-registry.ts'), 'utf8');
+const memberErrorQuerySrc = readFileSync(path.join(repoRoot, 'src', 'services', 'member-error-query.ts'), 'utf8');
 const kbExportSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-export.ts'), 'utf8');
 const typesSrc = readFileSync(path.join(repoRoot, 'src', 'types.ts'), 'utf8');
 const kbBibleCommitSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-bible-commit.ts'), 'utf8');
@@ -277,5 +280,27 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         const typedefFields = extractTypedefProperties(apiMjsSrc, 'SessionStatsResult');
         assert.ok(resultFields.has('since') && resultFields.has('kb') && resultFields.has('code'), 'sanity: MemberCallStats should declare since, kb, code');
         assertFieldParity('SessionStatsResult vs MemberCallStats', resultFields, typedefFields);
+    });
+
+    test('QueryErrorsOptions matches queryErrorsSchema field-for-field', () => {
+        const block = extractBlock(queryErrorsSrc, 'export const queryErrorsSchema = z.object({', '\n});');
+        const schemaFields = extractTopLevelKeys(block, 2);
+        assert.ok(schemaFields.has('member') && schemaFields.has('since_seconds'), 'sanity: queryErrorsSchema should declare member, since_seconds');
+        assertFieldParity('QueryErrorsOptions vs queryErrorsSchema', schemaFields, extractTypedefProperties(apiMjsSrc, 'QueryErrorsOptions'));
+    });
+
+    test('QueryErrorsResult, ErrorEntry and ToolErrorsReport match the server shapes', () => {
+        const props = (src, start) => new Set([...extractBlock(src, start, '\n}').matchAll(/^ {2}([a-zA-Z_]\w*)\??:/gm)].map((m) => m[1]));
+        const result = props(queryErrorsSrc, 'export interface QueryErrorsResult {');
+        assert.ok(result.has('entries'), 'sanity: QueryErrorsResult should declare entries');
+        assertFieldParity('QueryErrorsResult vs src/tools/query-errors.ts', result, extractTypedefProperties(apiMjsSrc, 'QueryErrorsResult'));
+        const entry = props(errorRegistrySrc, 'export interface ErrorEntry {');
+        assert.ok(entry.has('code') && entry.has('reason'), 'sanity: ErrorEntry should declare code, reason');
+        assertFieldParity('ErrorEntry vs src/services/error-registry.ts', entry, extractTypedefProperties(apiMjsSrc, 'ErrorEntry'));
+        // ToolErrorsReport is a union type alias: its fields are every key of either arm.
+        const union = extractBlock(memberErrorQuerySrc, 'export type ToolErrorsReport =', ';\n');
+        const report = new Set([...union.matchAll(/([a-zA-Z_]\w*)\??:/g)].map((m) => m[1]));
+        assert.ok(report.has('available') && report.has('detail'), 'sanity: ToolErrorsReport should declare available, detail');
+        assertFieldParity('ToolErrorsReport vs src/services/member-error-query.ts', report, extractTypedefProperties(apiMjsSrc, 'ToolErrorsReport'));
     });
 });

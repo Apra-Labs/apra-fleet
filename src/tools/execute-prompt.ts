@@ -49,6 +49,7 @@ import { isMaxTurnsResponse } from '../providers/provider.js';
 import { preflightCheck } from '../services/preflight-check.js';
 import { ensureAgyProject } from '../services/agy-project.js';
 import { sessionMcpInjectionAvailable, sessionMcpConfigPath, sessionMcpConfigIsPerDispatch, writeSessionMcpConfig, resolveSessionMcpAlwaysLoad } from '../services/session-mcp-config.js';
+import { queryMemberToolErrors, defaultMemberErrorQueryDeps, type MemberErrorQueryDeps, type ToolErrorsReport } from '../services/member-error-query.js';
 
 
 /**
@@ -127,6 +128,14 @@ export interface ExecutePromptStructured {
    *  failure that ran out of budget during setup (cloud start, before the
    *  first attempt). Absent on every other result. */
   dispatched?: false;
+  /** FYI, set when a dispatch ran: every error the member's fleet server
+   *  recorded for this member in the last sinceSeconds seconds (this call's
+   *  elapsed time plus a few seconds of slack) -- the dispatched agent's tool
+   *  calls, but also the engine's own calls as that member and any concurrent
+   *  session of it. available:false, with detail, when
+   *  they could not be read (e.g. an older member install without
+   *  query_errors) -- never an empty list then. No action is taken on them. */
+  toolErrors?: ToolErrorsReport;
   [key: string]: unknown;
 }
 
@@ -634,7 +643,95 @@ async function executePromptInteractive(
   }
 }
 
+/** Wall-clock bound on the post-dispatch query_errors read from a remote member. */
+export const TOOL_ERRORS_QUERY_TIMEOUT_MS = 20_000;
+/** Below this much of max_total_s left, the remote query is skipped (reported unavailable). */
+const TOOL_ERRORS_MIN_BUDGET_MS = 2_000;
+/** Mirrors the client's TIMEOUT_GRACE_MS (packages/apra-fleet-client deriveTimeoutMs). */
+const CLIENT_DEADLINE_GRACE_MS = 30_000;
+/**
+ * Seconds added to the start of the toolErrors window: the member computes
+ * "the last N seconds" only after the home probe, SSH connect and its binary
+ * start, so an error in the call's first moments would otherwise fall out.
+ */
+export const TOOL_ERRORS_WINDOW_SLACK_S = 5;
+
+let errorQueryDeps: MemberErrorQueryDeps | null = null;
+
+/** Test-only: replace how toolErrors are read from a member. Pass null to restore. */
+export function __setMemberErrorQueryDeps(deps: MemberErrorQueryDeps | null): void {
+  errorQueryDeps = deps;
+}
+
+/** Set by the dispatch body once a prompt is sent to the member. */
+interface DispatchTrack { agent?: Agent }
+
+/**
+ * The member's tool-call errors for the window this call ran, as an FYI on
+ * the result. Never throws and never fails the dispatch: a remote query that
+ * cannot run in time is reported as unavailable.
+ *
+ * Time bound for a remote member, so the read never pushes a finished
+ * dispatch past a caller's deadline:
+ * - max_total_s set: the read gets what is left of it (skipped under 2 s).
+ * - timeout_s only: it is an inactivity timeout, not a total, so it bounds
+ *   nothing by itself. But apra-fleet-client derives its request deadline
+ *   from it (timeout_s + 30 s grace), so while that deadline may still be
+ *   pending -- elapsed within [timeout_s - 2 s, timeout_s + 30 s] -- the read
+ *   is skipped. Before that window a 20 s read ends well inside it; after it
+ *   such a client has already given up.
+ */
+async function toolErrorsAfterDispatch(agent: Agent, startedAt: number, limits: { maxTotalS?: number; timeoutS?: number }, signal: AbortSignal | undefined): Promise<ToolErrorsReport> {
+  const elapsedMs = Date.now() - startedAt;
+  const sinceSeconds = Math.ceil(elapsedMs / 1000) + TOOL_ERRORS_WINDOW_SLACK_S;
+  const skip = (detail: string): ToolErrorsReport => ({ available: false, sinceSeconds, detail });
+  try {
+    let timeoutMs = TOOL_ERRORS_QUERY_TIMEOUT_MS;
+    if (agent.agentType !== 'local') {
+      if (signal?.aborted) return skip('the call was cancelled before the errors were read');
+      if (limits.maxTotalS !== undefined) {
+        const left = limits.maxTotalS * 1000 - elapsedMs;
+        if (left < TOOL_ERRORS_MIN_BUDGET_MS) return skip('max_total_s left no time to read the member errors');
+        timeoutMs = Math.min(timeoutMs, left);
+      } else if (limits.timeoutS !== undefined) {
+        const clientDeadlineMs = limits.timeoutS * 1000;
+        if (elapsedMs >= clientDeadlineMs - TOOL_ERRORS_MIN_BUDGET_MS && elapsedMs <= clientDeadlineMs + CLIENT_DEADLINE_GRACE_MS) {
+          return skip('a client deadline derived from timeout_s may be about to expire, so the member errors were not read');
+        }
+      }
+    }
+    return await queryMemberToolErrors(agent, sinceSeconds, { timeoutMs, signal }, errorQueryDeps ?? defaultMemberErrorQueryDeps());
+  } catch (err) {
+    return skip(`could not read the member errors: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Attach toolErrors to a finished call's result -- only when a dispatch ran
+ * (`dispatchedAgent` set) and the result already carries structuredContent:
+ * adding structuredContent where there was none would change what MCP
+ * callers read. Otherwise returns `result` untouched and never reads.
+ * Exported for tests.
+ */
+export async function withToolErrors(
+  result: string | ExecutePromptResult,
+  dispatchedAgent: Agent | undefined,
+  read: (agent: Agent) => Promise<ToolErrorsReport>,
+): Promise<string | ExecutePromptResult> {
+  if (!dispatchedAgent || typeof result === 'string' || !result.structuredContent) return result;
+  const toolErrors = await read(dispatchedAgent);
+  return { ...result, structuredContent: { ...result.structuredContent, toolErrors } };
+}
+
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string | ExecutePromptResult> {
+  const startedAt = Date.now();
+  const track: DispatchTrack = {};
+  const result = await runExecutePrompt(input, extra, track);
+  return withToolErrors(result, track.agent, agent =>
+    toolErrorsAfterDispatch(agent, startedAt, { maxTotalS: input.max_total_s, timeoutS: input.timeout_s }, extra?.signal));
+}
+
+async function runExecutePrompt(input: ExecutePromptInput, extra: any, track: DispatchTrack): Promise<string | ExecutePromptResult> {
   // GitHub #563: max_total_s is measured from HERE, handler entry -- cloud
   // readiness, preflight and agent provisioning are all charged to it, since
   // the client's own deadline (max_total_s + a fixed grace) starts at the call.
@@ -1622,6 +1719,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // per attempt, so it never affects the resume-cost-delta decision.
   let lastAttemptContinues: string | undefined;
   const dispatchAttempt = async (cmd: string, attemptTimeoutMs: number, attemptMaxTotalMs: number | undefined) => {
+    track.agent = agent;
     lastAttempt = { timeoutMs: attemptTimeoutMs, maxTotalMs: attemptMaxTotalMs };
     lastAttemptContinues = cmd === claudeCmd
       ? (forkDescriptor ? forkDescriptor.sourceSessionId : (resuming ? resumeTargetId : undefined))

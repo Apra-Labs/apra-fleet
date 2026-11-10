@@ -37,7 +37,7 @@ this pair as "member identifier" rather than repeating it.
 `provision_vcs_auth`, `revoke_vcs_auth`, `vcs_credential_exec`.
 
 **Status and maintenance:** `fleet_status`, `fleet_snapshot`, `member_detail`, `session_stats`,
-`update_llm_cli`, `shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
+`query_errors`, `update_llm_cli`, `shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
 
 **Credential store:** `credential_store_set`, `credential_store_list`,
 `credential_store_update`, `credential_store_delete`. For defaults and re-setting, see
@@ -328,6 +328,8 @@ is rejected for them and `execute_command` should be used instead.
 
 **Output:** `structuredContent.response` carries the agent's reply text; `structuredContent.usage` carries token counts when available; `structuredContent.sessionId` carries the session ID if one was returned, including on failure outcomes (max turns, auth, server, overloaded, non-zero exit, empty response, dispatch failed) so callers can resume that session.
 
+**Tool errors:** once a dispatch ran, `structuredContent.toolErrors` carries every error the member's fleet server recorded for that member (see [`query_errors`](#query_errors)) in the last `sinceSeconds` seconds: the call's elapsed time, rounded up, plus 5 seconds of slack for the read's own start-up. That includes the dispatched agent's failed tool calls (which only the LLM CLI saw), but also the engine's own calls made as that member (for example fleet-sprint's KB work and `apra-fleet call` sessions) and any other session of that member running at the same time; entries do not say which. The window is relative, so clock differences do not matter. It is read in-process for a local member and over SSH (`apra-fleet call ... query_errors`) for a remote member, within one 20-second wall-clock bound that covers the whole read. A remote read is skipped while a caller's deadline may be about to expire: when under 2 seconds of `max_total_s` is left, or, with only `timeout_s` (an inactivity timeout, not a total), while the elapsed time is between `timeout_s` - 2 s and `timeout_s` + 30 s, where apra-fleet-client's deadline derived from `timeout_s` may still be pending. Shape: `{ available: true, sinceSeconds, total, entries }`, or `{ available: false, sinceSeconds, detail }` when the errors could not be read (an older member install without `query_errors`, an unverified install, an SSH failure or timeout, a skipped read, a cancelled call) -- never an empty list then. An empty list can still miss errors that happened: the member's fleet server restarted after the dispatch (the registry is in memory), or the agent reached fleet through an MCP entry not scoped to the member, so its errors were recorded with `member: null`. It is an FYI: execute_prompt takes no action on it, and a failed read never fails the dispatch. Calls where no dispatch ran (rejected before it, e.g. `busy`), interactive-session deliveries and results without `structuredContent` carry no `toolErrors`.
+
 **Error handling:**
 - If the prompt fails due to an authentication issue, returns actionable guidance (`provision_llm_auth`) instead of raw error output.
 - Automatically retries once with a 5-second backoff on transient server errors.
@@ -582,6 +584,34 @@ from sessions opened with `origin=engine` (the engine's `memberCall` and the
 `apra-fleet call` verb) are not counted, and non-member sessions are never
 counted. fleet-sprint reads it before and after every dispatch to report calls
 per member per dispatch; see [knowledge-layer.md](knowledge-layer.md).
+
+### `query_errors`
+
+A member's recorded tool-call errors on THIS server. Every fleet server records
+each error a tool call throws (src/services/error-registry.ts) as
+`{ at, member, source, tool, code, reason }`: `code` is the error's typed `E-*`
+code, or `E-UNTYPED` for anything else thrown; `reason` is the typed error's
+short reason token (for example `E-KB-HTTP-AUTH`'s `expired`; always an enum or
+constant of the error class, never caller data), else null. The
+call's arguments and the error's message text are never recorded. `[FAIL]`
+result text is not an error here. The registry is in memory, holds about 1,000
+entries or 24 hours, and reads never clear it. Member-allowed, so the
+orchestrator can read a remote member's registry through `apra-fleet call`;
+execute_prompt does that for its `toolErrors`.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `member` | string | yes | Member uuid. On a member session it must be the calling member (another is refused with `E-FORBIDDEN`) |
+| `since_seconds` | integer | yes | Errors recorded in the last this many seconds, by this server's clock |
+| `code` | string | no | Only entries with this code |
+| `tool` | string | no | Only entries for this tool |
+| `limit` | integer | no | Most recent entries to return, 1-1000 (default 100) |
+
+**Returns** JSON `{ member, since_seconds, total, entries }` -- `entries` oldest
+first, `total` the match count before `limit`. Errors from a non-member session
+are recorded with `member: null` and are not returned by this tool.
 
 ### `member_detail`
 
