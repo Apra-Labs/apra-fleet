@@ -167,6 +167,9 @@
  *   losing context to a fresh one. The server also records it as a known session. Absent when
  *   the provider supplied none.
  * @property {ExecutePromptUsage} [usage]
+ * @property {ToolErrorsReport} [toolErrors] - Present once a dispatch ran: the errors the
+ *   member's error registry holds for that member in the dispatch window. An FYI;
+ *   execute_prompt takes no action on it.
  */
 
 /**
@@ -243,6 +246,50 @@
  * @property {number} code - code_* calls counted
  * @property {number} total - kb + code
  * @property {Object<string, number>} tools - Per-tool counts (tools called at least once)
+ */
+
+/**
+ * @typedef {Object} QueryErrorsOptions
+ * @property {string} member - Member uuid whose errors to read; on a member session it must be the calling member
+ * @property {number} since_seconds - Window: errors recorded in the last this many seconds, by the server's clock
+ * @property {string} [code] - Only entries with this code, e.g. 'E-KB-HTTP-AUTH'
+ * @property {string} [tool] - Only entries for this tool name
+ * @property {number} [limit] - Most recent entries to return (default 100, max 1000)
+ */
+
+/**
+ * One recorded tool-call error. Never carries the call's arguments or message text.
+ * @typedef {Object} ErrorEntry
+ * @property {string} at - ISO time it was recorded (that server's clock)
+ * @property {string|null} member - Member uuid of the calling session; null for a non-member session
+ * @property {'tool-call'} source
+ * @property {string} tool
+ * @property {string} code - The typed E-* code, or 'E-UNTYPED' for any other thrown error
+ * @property {string|null} reason - The typed error's short reason token (e.g. 'expired'), an
+ *   enum or constant of the error class, never caller data; else null
+ */
+
+/**
+ * @typedef {Object} QueryErrorsResult
+ * @property {string} member
+ * @property {number} since_seconds
+ * @property {number} total - Matches before `limit` was applied
+ * @property {ErrorEntry[]} entries - Oldest first; the most recent `limit` when more matched
+ */
+
+/**
+ * execute_prompt's `toolErrors`: every error the member's server recorded for that member
+ * during the dispatch window -- the agent's tool calls, but also the engine's own calls as
+ * that member and concurrent sessions of it. `available: false` (with `detail`) when they
+ * could not be read -- e.g. an older member install without query_errors, or the read was
+ * skipped near a caller deadline -- never an empty list then. Full rules: execute_prompt
+ * in docs/mcp-tools.md.
+ * @typedef {Object} ToolErrorsReport
+ * @property {boolean} available
+ * @property {number} sinceSeconds - The window queried: this call's elapsed seconds plus a few seconds of slack
+ * @property {number} [total] - Present when available
+ * @property {ErrorEntry[]} [entries] - Present when available
+ * @property {string} [detail] - Present when not available: why
  */
 
 /**
@@ -1573,6 +1620,17 @@ export class ApraFleet {
      */
     async sessionStats(options = {}) {
         return this.mcpClient.callTool('session_stats', options);
+    }
+
+    /**
+     * query_errors -- a member's recorded tool-call errors on this server in
+     * the last `since_seconds` seconds. A member session may read only its own
+     * member. Extract the JSON with parseToolJson(): a QueryErrorsResult.
+     *
+     * @param {QueryErrorsOptions} options
+     */
+    async queryErrors(options) {
+        return this.mcpClient.callTool('query_errors', options);
     }
 
     /**

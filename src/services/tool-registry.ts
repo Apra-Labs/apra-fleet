@@ -7,6 +7,7 @@ import { SessionRootsCache } from './session-roots.js';
 import { readKbToolProfileFromDisk } from './knowledge/kb-config.js';
 import { FULL_KB_TOOL_PROFILE, kbToolAllowedByProfile, type KbToolProfile } from './kb-tool-profile.js';
 import { logWarn } from '../utils/log-helpers.js';
+import { recordToolError } from './error-registry.js';
 
 export type { ToolScope } from './tool-scope.js';
 
@@ -148,6 +149,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   const { reportStatusSchema, reportStatus } = await import('../tools/report-status.js');
   const { respondToMessageSchema, respondToMessage } = await import('../tools/respond-to-message.js');
   const { sessionStatsSchema, sessionStats } = await import('../tools/session-stats.js');
+  const { queryErrorsSchema, queryErrors } = await import('../tools/query-errors.js');
   const { handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, handleCodeReindex, handleCodeStatus, codeReindexSchema, codeStatusSchema, codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema, codeMapSchema, codeFlowSchema, codeTestsSchema, resolveCodeSelf, CODE_SELF_NOTE } = await import('../tools/code-intelligence.js');
   const { enrichContextWithKb } = await import('../tools/code-intelligence-kb-enrich.js');
   const { recordUsage } = await import('../tools/code-intelligence-telemetry.js');
@@ -203,7 +205,24 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   // { text, structuredContent } to give programmatic callers (e.g.
   // FleetWorkflow.command()) a machine-readable channel alongside the
   // human/LLM-facing text -- see ExecuteCommandResult in tools/execute-command.ts.
+  //
+  // Every error a call throws -- including the removed-scope-key refusal
+  // before the handler -- is recorded in the error registry
+  // (src/services/error-registry.ts) and then rethrown or returned exactly as
+  // before, so the MCP result never changes.
   function wrapTool(toolName: string, handler: (input: any, extra?: any) => Promise<string | { text: string; structuredContent?: Record<string, unknown> }>) {
+    const run = wrapToolBody(toolName, handler);
+    return async (input: any, extra?: any) => {
+      try {
+        return await run(input, extra);
+      } catch (err) {
+        recordToolError(sessionMemberId, toolName, err);
+        throw err;
+      }
+    };
+  }
+
+  function wrapToolBody(toolName: string, handler: (input: any, extra?: any) => Promise<string | { text: string; structuredContent?: Record<string, unknown> }>) {
     return async (input: any, extra?: any) => {
       // Per-member kb_/code_ call counts (session_stats). Counted on entry, so
       // a call that fails still counts as a call. Engine-origin and FULL
@@ -237,6 +256,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
         // the SDK unchanged.
         const sc = err instanceof Error ? (err as { structuredContent?: unknown }).structuredContent : undefined;
         if (err instanceof Error && sc && typeof sc === 'object' && !Array.isArray(sc)) {
+          recordToolError(sessionMemberId, toolName, err);
           const toolText = (err as { toolText?: unknown }).toolText;
           return { content: [{ type: 'text' as const, text: typeof toolText === 'string' ? toolText : err.message }], isError: true, structuredContent: sc as Record<string, unknown> };
         }
@@ -314,6 +334,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   server.tool('shutdown_server', 'Gracefully shut down the MCP server. Run /mcp afterwards to start a fresh instance with the latest code.', shutdownServerSchema.shape, wrapTool('shutdown_server', () => shutdownServer()));
   server.tool('version', 'Returns the installed apra-fleet server version', versionSchema.shape, wrapTool('version', () => version()));
   server.tool('session_stats', "Return a member's kb_* and code_* tool call counts on this server (aggregated across the member's sessions, engine-origin sessions excluded) plus the time counting started. On a member session it reports the calling member.", sessionStatsSchema.shape, wrapTool('session_stats', (input) => sessionStats(input as any)));
+  server.tool('query_errors', "Return this server's recorded tool-call errors for one member in the last since_seconds seconds, as JSON {member, since_seconds, total, entries}. Each entry is {at, member, source, tool, code, reason}: a typed E-* code (E-UNTYPED for any other thrown error), never the call's arguments or message text. The registry is in memory (about 1000 entries or 24 hours) and reads never clear it. On a member session only the calling member may be read.", queryErrorsSchema.shape, wrapTool('query_errors', (input) => queryErrors(input as any)));
 
   // Permissions
   server.tool('compose_permissions', 'Set up and deliver the right permissions to a member for their role or tags. Automatically tailors permissions to the project type. Pass tags (e.g. ["doer","gpu"]) to layer custom tag profiles additively on top of the base role; a doer/reviewer tag sets the primary mode and wins over role. Use grant to add specific permissions mid-sprint without a full recompose. Use dry_run to read the composed allow list without writing anything.', composePermissionsSchema.shape, wrapTool('compose_permissions', (input) => composePermissions(input as any)));

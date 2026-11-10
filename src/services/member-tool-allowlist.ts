@@ -57,6 +57,7 @@ export const REGISTERED_TOOL_NAMES: readonly string[] = Object.freeze([
   'kb_list', 'kb_harvest', 'kb_promote', 'kb_demote', 'kb_freshness_sweep', 'kb_import',
   'kb_resolve_contradiction', 'kb_reconcile_prefilter', 'kb_setup', 'kb_export',
   'kb_stats', 'kb_feedback', 'kb_bible_commit',
+  'query_errors',
 ]);
 
 /**
@@ -77,6 +78,9 @@ export const MEMBER_BASE_TOOLS: readonly string[] = Object.freeze([
   'kb_capture', 'kb_invalidate', 'kb_context', 'kb_session_prime', 'kb_query',
   'kb_list', 'kb_harvest', 'kb_freshness_sweep', 'kb_import',
   'kb_stats', 'kb_feedback', 'kb_bible_commit',
+  // query_errors: so the orchestrator can read a remote member's own
+  // registry through `apra-fleet call` (a member session reads only itself).
+  'query_errors',
 ]);
 
 /**
