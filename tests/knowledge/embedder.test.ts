@@ -71,7 +71,7 @@ describe('Embedder failure handling', () => {
     _setEmbedderForTest(e);
     const health = await kbHealthSummary({ knowledgeDir: path.join(tmp, 'no-kb') });
     expect(health!.embedding).toMatchObject({ state: 'failed', reason: expect.stringMatching(/wasm backend exploded/) });
-    expect(kbHealthCompactLines(health!)).toMatch(/semantic search off: model download failed: load failed: wasm backend exploded -- run apra-fleet kb model import/);
+    expect(kbHealthCompactLines(health!)).toMatch(/semantic search off: model failed to load: load failed: wasm backend exploded -- run apra-fleet kb model import/);
   });
 
   it("'none' -> disabled: no load attempted, null vectors, fleet_status shows disabled", async () => {
