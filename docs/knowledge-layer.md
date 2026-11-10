@@ -734,8 +734,9 @@ orchestrator before anything is minted or sent.
      `not-member-install` otherwise, naming the `update_member` remedy);
   2. resolves the secret on the orchestrator, minting if needed;
   3. stores the token on the member as an ordinary static secret with its expiry,
-     `allow` and all members, through
-     `apra-fleet secret --set NAME --persist --expires-at <time> -y`. The value is
+     through `apra-fleet secret --set NAME --persist --expires-at <time> -y`. A new
+     record there is `allow` and all members; a record that already exists keeps
+     its own policy fields, as for any re-set. The value is
      staged in an owner-only file, piped in and removed in the same command, never
      on a command line;
   4. runs `apra-fleet kb-setup --remote <url> --token-ref NAME` on the member, which

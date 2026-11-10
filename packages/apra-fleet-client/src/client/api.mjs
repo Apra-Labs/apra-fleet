@@ -694,7 +694,7 @@
  * `{ok: false, code: "E-PROVISION-AUTH", reason, message}`. reason is one of member-not-found,
  * unknown-kind, bad-input, secret-not-found, secret-unreadable, secret-expired,
  * member-not-allowed, policy-deny, mint-failed, member-unreachable, install-too-old,
- * not-member-install, kb-not-configured, kb-other-remote, not-available, delivery-failed,
+ * not-member-install, kb-not-configured, kb-other-remote, delivery-failed,
  * kb-setup-failed.
  * kb-setup-failed means the secret was stored on the member but its KB was not set up to use it.
  * No field carries a value. Mirrors src/tools/provision-kb-auth.ts.

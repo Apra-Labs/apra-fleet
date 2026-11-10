@@ -138,8 +138,11 @@ async function provision(extra = {}) {
 
 async function main() {
   step(1, `KB test server on port ${port}, token from ${tokenFile}`);
+  // Its own data dir: the test server never reads or writes the orchestrator's.
+  const serverData = path.join(tmp, 'kb-server-data');
+  fs.mkdirSync(serverData);
   kbServer = spawn(fleetCmd, shellArgs(['kb-server', '--port', String(port), '--token-file', tokenFile, '--db', path.join(tmp, 'kb.sqlite')]),
-    { stdio: ['ignore', 'ignore', 'pipe'], shell: viaShell });
+    { stdio: ['ignore', 'ignore', 'pipe'], shell: viaShell, env: { ...process.env, APRA_FLEET_DATA_DIR: serverData } });
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('kb-server did not start in 20 s')), 20_000);
     kbServer.stderr.on('data', (d) => { if (String(d).includes('listening')) { clearTimeout(timer); resolve(); } });
@@ -149,7 +152,8 @@ async function main() {
 
   step(2, 'connect to the orchestrator fleet server');
   const { connectFleet } = await import(pathToFileURL(path.join(repo, 'packages', 'apra-fleet-client', 'src', 'client', 'server-resolution.mjs')).href);
-  client = await connectFleet();
+  // http forced: attach to the running server only, never start one or fall back to stdio.
+  client = await connectFleet({ env: { ...process.env, APRA_FLEET_TRANSPORT: 'http' } });
   const version = await tool('version', {});
   info(`server: ${version.text.split('\n')[0]}`);
   const tools = await client.mcpClient.listTools();

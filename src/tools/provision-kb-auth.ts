@@ -13,6 +13,7 @@ export type ProvisionKbAuthInput = z.infer<typeof provisionKbAuthSchema>;
 
 /** A refusal or failure, as a tool error result. Names only, never a value. */
 export class ProvisionKbAuthToolError extends Error {
+  readonly code = 'E-PROVISION-AUTH';
   readonly structuredContent: { ok: false; code: 'E-PROVISION-AUTH'; reason: ProvisionKindFailure; message: string };
   constructor(err: ProvisionAuthError) {
     super(`E-PROVISION-AUTH: ${err.reason}: ${err.message}`);

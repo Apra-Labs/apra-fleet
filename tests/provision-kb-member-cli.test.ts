@@ -6,8 +6,9 @@
  * Plus the E-KB-HTTP-AUTH remediation on a member install. Requires `npm run build`.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import http from 'node:http';
+import net from 'node:net';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,6 +26,8 @@ let dataDir: string;
 let server: http.Server | null;
 let serverToken: string;
 let requests: Array<{ url?: string; auth?: string }>;
+/** What the stub answers a request with the right token. */
+let acceptedStatus: number;
 const savedDataDir = process.env.APRA_FLEET_DATA_DIR;
 
 // Each test spawns several CLI processes (about 1 s each, more under load).
@@ -53,7 +56,7 @@ async function startKb(): Promise<string> {
   server = http.createServer((req, res) => {
     requests.push({ url: req.url, auth: req.headers.authorization });
     const ok = req.headers.authorization === `Bearer ${serverToken}`;
-    res.writeHead(ok ? 200 : 401, { 'Content-Type': 'application/json' });
+    res.writeHead(ok ? acceptedStatus : 401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(ok ? { l1_results: [], l2_expanded: [] } : { error: 'Invalid token', code: 'UNAUTHORIZED' }));
   });
   await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
@@ -71,6 +74,7 @@ beforeEach(() => {
   process.env.APRA_FLEET_DATA_DIR = dataDir;
   server = null;
   serverToken = TOKEN;
+  acceptedStatus = 200;
   requests = [];
 });
 
@@ -95,6 +99,7 @@ describe('secret --set --expires-at (real CLI)', () => {
 
   it('none clears a stored expiry', async () => {
     await setSecret(TOKEN, '--expires-at', new Date(Date.now() + 3_600_000).toISOString());
+    expect(record()?.expiresAt).toBeDefined();
     expect((await setSecret(TOKEN, '--expires-at', 'none')).code).toBe(0);
     expect(record()?.expiresAt).toBeUndefined();
   });
@@ -107,6 +112,7 @@ describe('secret --set --expires-at (real CLI)', () => {
     }
     const noPersist = await cli(['secret', '--set', NAME, '--expires-at', 'none', '-y'], `${TOKEN}\n`);
     expect(noPersist.code).toBe(1);
+    expect(noPersist.stderr).toContain('--expires-at needs --persist');
     expect(record()).toBeUndefined();
   });
 });
@@ -212,6 +218,40 @@ describe('kb-setup (real CLI)', () => {
     fs.writeFileSync(kbConfigPath(), JSON.stringify({ provider: 'http', url, token_ref: `{{secret.${NAME}}}` }));
     expect((await cli(['kb-setup', '--remote', url, '--token-ref', NAME])).code).toBe(1);
     expect(requests).toHaveLength(0);
+  });
+
+  it('a server that accepts the token but has no KB route (a wrong --remote) is unverified, not verified', async () => {
+    const url = await startKb();
+    acceptedStatus = 404;
+    await setSecret();
+    expect(lastJson(await cli(['kb-setup', '--remote', url, '--token-ref', NAME])).verification).toBe('unverified');
+  });
+
+  it('against the real kb-server (--token-file): verified, then rejected once its token changes', async () => {
+    const tokenFile = path.join(sandbox, 'kb.token');
+    fs.writeFileSync(tokenFile, TOKEN);
+    const probe = net.createServer();
+    await new Promise<void>((r) => probe.listen(0, '127.0.0.1', r));
+    const port = (probe.address() as AddressInfo).port;
+    await new Promise<void>((r) => probe.close(() => r()));
+    const serverData = path.join(sandbox, 'kb-server-data');
+    fs.mkdirSync(serverData);
+    const kb = spawn(process.execPath, [CLI, 'kb-server', '--port', String(port), '--token-file', tokenFile, '--db', path.join(sandbox, 'kb.sqlite')],
+      { env: { ...process.env, APRA_FLEET_DATA_DIR: serverData }, stdio: ['ignore', 'ignore', 'pipe'] });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        kb.stderr!.on('data', (d) => { if (String(d).includes('listening')) resolve(); });
+        kb.on('exit', (code) => reject(new Error(`kb-server exited ${code}`)));
+      });
+      const url = `http://127.0.0.1:${port}`;
+      await setSecret();
+      expect(lastJson(await cli(['kb-setup', '--remote', url, '--token-ref', NAME]))).toEqual({ kbSetup: 'written', verification: 'verified' });
+      fs.writeFileSync(tokenFile, `${TOKEN}-rotated`);
+      await new Promise((r) => setTimeout(r, 600));
+      expect(lastJson(await cli(['kb-setup', '--remote', url, '--token-ref', NAME]))).toEqual({ kbSetup: 'unchanged', verification: 'rejected' });
+    } finally {
+      kb.kill();
+    }
   });
 
   it('a missing secret is refused', async () => {

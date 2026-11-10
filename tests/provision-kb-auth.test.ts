@@ -99,6 +99,8 @@ function addRemote(over: Partial<Agent> = {}): Agent {
 async function refused(p: Promise<unknown>): Promise<ProvisionKbAuthToolError> {
   const err = await p.then(() => { throw new Error('expected a refusal'); }, (e: unknown) => e);
   expect(err).toBeInstanceOf(ProvisionKbAuthToolError);
+  // The typed code an error registry records it by.
+  expect((err as ProvisionKbAuthToolError).code).toBe('E-PROVISION-AUTH');
   return err as ProvisionKbAuthToolError;
 }
 
@@ -243,10 +245,11 @@ describe('provision_kb_auth, remote member: the install', () => {
 describe('provision_kb_auth, remote member: kb-setup and verification', () => {
   it('kb-setup gets the remote and the secret name, quoted for the member shell', async () => {
     const s = live('setup');
-    const m = addRemote({ os: 'windows' });
     const odd = "https://kb.example.test/a'b;$(x)";
-    await provisionKbAuth({ member_id: m.id, secret: s.name, remote: odd });
+    await provisionKbAuth({ member_id: addRemote({ os: 'windows' }).id, secret: s.name, remote: odd });
     expect(setups()[0].text).toContain(`& 'C:\\Users\\u\\.apra-fleet\\bin\\apra-fleet.exe' 'kb-setup' '--remote' 'https://kb.example.test/a''b;$(x)' '--token-ref' '${s.name}'`);
+    await provisionKbAuth({ member_id: addRemote({ os: 'linux' }).id, secret: s.name, remote: odd });
+    expect(setups()[1].text).toContain(`'/home/u/.apra-fleet/bin/apra-fleet' 'kb-setup' '--remote' 'https://kb.example.test/a'\\''b;$(x)' '--token-ref' '${s.name}'`);
   });
 
   it('a kb-setup failure after the push fails the call and says the pushed secret stays on the member', async () => {
@@ -388,7 +391,8 @@ describe('the client wrapper names every failure reason the server can give', ()
     const api = fs.readFileSync(path.join(__dirname, '..', 'packages', 'apra-fleet-client', 'src', 'client', 'api.mjs'), 'utf8');
     const typedef = api.slice(api.indexOf('@typedef {Object} ProvisionKbAuthStructured'), api.indexOf('@typedef {Object} ProvisionVcsAuthOptions'));
     expect(PROVISION_HANDLER_FAILURES.length).toBeGreaterThan(0);
-    for (const reason of PROVISION_HANDLER_FAILURES) expect(typedef).toMatch(new RegExp(`\\b${reason}\\b`));
+    // not-available is for a kind with no delivery yet; kb has one.
+    for (const reason of PROVISION_HANDLER_FAILURES.filter((r) => r !== 'not-available')) expect(typedef).toMatch(new RegExp(`\\b${reason}\\b`));
     expect(api).toMatch(/async provisionKbAuth\(options\) \{\s+return this\.mcpClient\.callTool\('provision_kb_auth', options\);/);
   });
 });

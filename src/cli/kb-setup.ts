@@ -35,14 +35,15 @@ const defaultIo: Io = {
   error: (msg) => console.error(msg),
 };
 
-/** What one KB call says about the token. Any HTTP answer other than 401/403/5xx means the token was accepted. */
+/**
+ * What a failed KB call says about the token. Only a successful answer verifies
+ * it: any other status (a 404 from a wrong --remote, say) is unverified.
+ */
 export function classifyVerifyError(err: unknown): KbSetupVerification {
   if (err instanceof KbHttpAuthError) return err.reason === 'rejected' ? 'rejected' : 'unverified';
   if (isConnectionError(err)) return 'unreachable';
   const code = (err as { code?: unknown } | null)?.code;
-  const status = typeof code === 'string' && /^HTTP_\d{3}$/.test(code) ? Number(code.slice(5)) : undefined;
-  if (status === 401 || status === 403) return 'rejected';
-  if (status !== undefined && status >= 400 && status < 500) return 'verified';
+  if (code === 'HTTP_401' || code === 'HTTP_403') return 'rejected';
   return 'unverified';
 }
 
