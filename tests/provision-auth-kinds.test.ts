@@ -2,7 +2,7 @@
  * provision_auth(kind, ...), provisionAuthForKind: policy before any mint, the
  * rejected drop, and no handler text or value in the result, errors or log. The
  * store and the scripts are real; the delivery is a stub handler (the kb delivery
- * comes with provision_kb_auth).
+ * itself is tested in provision-kb-auth.test.ts).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -173,6 +173,7 @@ describe('provisionAuthForKind: a live and a static secret', () => {
       secret: s.name,
       expiresAt: expiryOf(1),
       verification: { status: 'verified' },
+      memberChange: null,
     });
     expect(delivered).toEqual([{ value: tokenOf(1), expiresAt: expiryOf(1), agentType: 'remote', host: 'old.example.test', params: { remote: REMOTE } }]);
     expect(s.runs()).toBe(1);
@@ -292,8 +293,8 @@ describe('provisionAuthForKind: prepare', () => {
 
   it('a failing prepare runs no script and delivers nothing', async () => {
     const s = live('prepfail');
-    stub.kb.prepare = async () => { throw new ProvisionHandlerError('not-available'); };
-    expectRefused(await failure(provision(s.name)), 'not-available');
+    stub.kb.prepare = async () => { throw new ProvisionHandlerError('member-unreachable'); };
+    expectRefused(await failure(provision(s.name)), 'member-unreachable');
     expect(s.runs()).toBe(0);
     expect(delivered).toEqual([]);
   });
@@ -540,10 +541,10 @@ describe('provisionAuthForKind: no handler text or value in the result, errors o
 
   it('a handler reason carries no text: a known one gets its fixed text, an unknown one is delivery-failed', async () => {
     const name = staticSecret('reasononly');
-    stub.kb.deliver = async () => { throw new ProvisionHandlerError('not-available'); };
+    stub.kb.deliver = async () => { throw new ProvisionHandlerError('member-unreachable'); };
     const known = await failure(provision(name));
-    expectRefused(known, 'not-available');
-    expect(known.message).toContain('this kind cannot deliver to a member yet');
+    expectRefused(known, 'member-unreachable');
+    expect(known.message).toContain('the member could not be reached or started');
     stub.kb.deliver = async ({ value }) => { throw new ProvisionHandlerError(`${HANDLER_TEXT} ${value}` as never); };
     const unknown = await failure(provision(name));
     expectRefused(unknown, 'delivery-failed');
@@ -605,14 +606,7 @@ describe('provisionAuthForKind: the kind table', () => {
     }
   });
 
-  it('kb delivery is not available yet, and says so before any mint', async () => {
-    const s = live('kbnotyet');
-    const err = await failure(provisionAuthForKind({ kind: 'kb', member_id: remote.id, secret: s.name, remote: REMOTE }));
-    expectRefused(err, 'not-available');
-    expect(s.runs()).toBe(0);
-  });
-
-  it('kb applies policy first: deny wins over not available', async () => {
+  it('kb applies policy first: deny is refused before the kind checks the member', async () => {
     const s = live('kbdeny', { policy: 'deny' });
     expectRefused(await failure(provisionAuthForKind({ kind: 'kb', member_id: local.id, secret: s.name, remote: REMOTE })), 'policy-deny');
   });

@@ -601,6 +601,21 @@ Calls `provision_llm_auth` -- puts LLM auth on a member. Options:
 local OAuth session to the member instead. `api_key` supports a
 `{{secret.NAME}}` token, resolved from the credential store server-side.
 
+#### `provisionKbAuth(options: ProvisionKbAuthOptions)`
+
+Calls `provision_kb_auth` -- gives a member the KB token from a secret on the
+orchestrator. Options: `member_id?`, `member_name?`, `secret` (the secret NAME,
+static or live), `remote` (the KB URL as the member reaches it) and `reason?`
+(`"rejected"` after the KB server refused the token, so a live secret mints a new
+one first). A remote member gets the token as a static secret with its expiry, its
+KB pointed at it and one KB call to check it; a local member gets nothing pushed,
+and the orchestrator's shared KB config must already name this remote and secret.
+`structuredContent` is `{ok, member, kind, secret, expiresAt, verification, memberChange}`; a
+refusal is an error result whose `structuredContent.reason` names it
+(`ProvisionKbAuthStructured` lists them). No field carries the token. The steps
+and failure reasons are in the
+[KB guide](../../../docs/knowledge-layer.md#remote-members-provision_kb_auth).
+
 #### `provisionVcsAuth(options: ProvisionVcsAuthOptions)`
 
 Calls `provision_vcs_auth` -- configures git-host auth (GitHub App token or
@@ -662,7 +677,8 @@ retry. The message names the secret and the reason, never the value. A capture,
 invalidate or feedback is queued offline first and sent once the secret is accepted; a
 member session's CONFIRMED read comes from its checkout bible and is unaffected.
 Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
-restart. When NAME is a live secret (`apra-fleet secret --live NAME ...`), the
+restart. On a remote member's own install the secret is renewed from the
+orchestrator with `provisionKbAuth`, and the message says so. When NAME is a live secret (`apra-fleet secret --live NAME ...`), the
 code is also raised (reason `live-secret-failed`) when its script fails or is
 inside its retry backoff, and (reason `rejected`) when the server still answers
 401 after one fresh mint; fix the script's environment on the server host (e.g.

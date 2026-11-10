@@ -101,8 +101,12 @@ is not reached through `requireSqliteProject`. Over a remote KB,
 `{id, reason, role}` to `/api/kb/feedback` and `kb_feedback` returns the
 server's response as is; while the server is unreachable the feedback is kept
 in the offline queue (replayed in order with queued captures and invalidates)
-and the tool answers `{id, queued: true}`. Either way the client never writes
-or invents `confidence` (`methods.json` X-2 `providers_note`).
+and the tool answers `{id, queued: true}`. When the token's secret fails
+(`E-KB-HTTP-AUTH`) the feedback is queued the same way and the call raises the
+error marked as queued, except a refusal by the secret's own policy
+(`policy-deny`, `member-not-allowed`), which is raised and not queued (section
+3.3a). Either way the client never writes or invents `confidence` (`methods.json`
+X-2 `providers_note`).
 
 ### 2.3 `CodeIntelligenceProvider` interface methods (`methods.json` ids C-1..C-9)
 

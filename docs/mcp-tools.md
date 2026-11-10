@@ -34,7 +34,7 @@ this pair as "member identifier" rather than repeating it.
 **Execution:** `execute_prompt`, `execute_command`, `stop_prompt`, `monitor_task`.
 
 **Authentication and git:** `provision_llm_auth`, `setup_ssh_key`, `setup_git_app`,
-`provision_vcs_auth`, `revoke_vcs_auth`, `vcs_credential_exec`.
+`provision_vcs_auth`, `revoke_vcs_auth`, `vcs_credential_exec`, `provision_kb_auth`.
 
 **Status and maintenance:** `fleet_status`, `fleet_snapshot`, `member_detail`, `session_stats`,
 `query_errors`, `update_llm_cli`, `shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
@@ -484,6 +484,25 @@ two channels against the member's `origin` remote: an authenticated REST
 (`rest_unauthorized` on 401/403, `rest_failed` otherwise), then a
 non-interactive `git ls-remote` through the deployed helper (`git_auth_failed`
 or `git_failed`). `verified` is true only when both pass.
+
+### `provision_kb_auth`
+
+Gives a member the KB token from a static or live secret on the orchestrator.
+What it does for a local and a remote member, and its failure reasons, are in
+[Remote members: provision_kb_auth](knowledge-layer.md#remote-members-provision_kb_auth).
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| member identifier | string | yes | `member_id` or `member_name` |
+| `secret` | string | yes | The secret NAME on the orchestrator (not a value or placeholder) |
+| `remote` | string | yes | KB server URL, http(s), as the member reaches it |
+| `reason` | `"rejected"` | no | The KB server refused the token: a live secret mints a new one before the push |
+
+`structuredContent` is `{ok, member, kind, secret, expiresAt, verification, memberChange}`; act
+on `ok` and `verification`. A refusal is an error result whose
+`structuredContent.reason` names it. No field carries the token.
 
 ### `setup_ssh_key`
 

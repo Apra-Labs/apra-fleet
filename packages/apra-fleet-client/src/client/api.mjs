@@ -714,6 +714,46 @@
  */
 
 /**
+ * @typedef {Object} ProvisionKbAuthOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {string} secret - NAME of a static or live secret on the orchestrator that holds or
+ *   mints the KB token (not a value, not a placeholder). Must not be deny and must be shared with
+ *   the member.
+ * @property {string} remote - KB server URL, http(s), as the member reaches it. For a local member
+ *   it must be the remote the orchestrator KB config already names.
+ * @property {"rejected"} [reason] - The KB server refused the token this secret last gave out: a
+ *   cached live token is dropped and a new one minted before the push.
+ */
+
+/**
+ * @typedef {Object} ProvisionKbAuthStructured
+ * @property {boolean} ok - True when the token reached the member and was verified.
+ * @property {{id: string, name: string}} member - The member provisioned.
+ * @property {"kb"} kind - Always "kb".
+ * @property {string} secret - The secret name.
+ * @property {string|null} expiresAt - The token expiry pushed with it, or null for none.
+ * @property {{status: "verified"} | {status: "failed", reason: "rejected" | "unreachable" |
+ *   "not-configured" | "unverified", detail: string}} verification - Outcome of the one KB
+ *   call on the member (remote) or the resolve on the orchestrator (local, no KB call).
+ * @property {{reason: "kb-config-created" | "kb-config-replaced-sqlite" |
+ *   "kb-config-replaced-remote" | "kb-config-replaced-token" | "kb-config-replaced-unreadable",
+ *   detail: string} | null} memberChange - What the member's KB config was before this call
+ *   wrote it, or null when it already named this remote and secret. Kept when verification
+ *   failed: the new config stays.
+ *
+ * A refusal or failure is an error result instead (isError), whose structuredContent is
+ * `{ok: false, code: "E-PROVISION-AUTH", reason, message, expiresAt?}`. reason is one of
+ * member-not-found, unknown-kind, bad-input, secret-not-found, secret-unreadable,
+ * secret-expired, member-not-allowed, policy-deny, mint-failed, relay-unsupported,
+ * member-unreachable, install-too-old, not-member-install, kb-not-configured, kb-other-remote,
+ * secret-file-unavailable, delivery-failed, kb-setup-failed.
+ * kb-setup-failed means the secret was stored on the member but its KB was not set up to use it;
+ * expiresAt is then the expiry of that stored copy.
+ * No field carries a value. Mirrors src/tools/provision-kb-auth.ts.
+ */
+
+/**
  * @typedef {Object} ProvisionVcsAuthOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -1324,6 +1364,21 @@ export class ApraFleet {
      */
     async provisionVcsAuth(options) {
         return this.mcpClient.callTool('provision_vcs_auth', options);
+    }
+
+    /**
+     * Give a member the KB token from a secret on the orchestrator (provision_kb_auth).
+     * A remote member gets it as a static secret with its expiry, its KB pointed at it
+     * and one KB call to check it; a local member gets nothing pushed and the shared KB
+     * config checked. Branch on `structuredContent.ok` and `.verification`; a refusal is
+     * an error result whose `structuredContent.reason` names it.
+     *
+     * @param {ProvisionKbAuthOptions} options
+     * @returns {Promise<{ content: Array<{type: string, text: string}>,
+     *   structuredContent: ProvisionKbAuthStructured }>}
+     */
+    async provisionKbAuth(options) {
+        return this.mcpClient.callTool('provision_kb_auth', options);
     }
 
     /**

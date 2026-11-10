@@ -200,6 +200,15 @@ function checkTokenRef(input: KbSetupInput, provider: 'sqlite' | 'http'): TokenR
 }
 
 /**
+ * Throws, as kb_setup does, unless secret `name` can be an http KB token here: it
+ * exists (or is a live secret), has not expired, and is not deny. For the
+ * `apra-fleet kb-setup` CLI verb, which checks it before deciding whether to write.
+ */
+export function assertKbTokenSecretUsable(name: string): void {
+  checkTokenRef({ token: formatSecretToken(name) }, 'http');
+}
+
+/**
  * The config kb_setup merges into. Absent -> empty. Malformed (bad JSON, or
  * not a JSON object) -> empty plus a warning: kb_setup is the tool an operator
  * runs to REPAIR the KB config, so an unreadable file must not make it throw.
@@ -287,7 +296,8 @@ function writeConfig(config: KbConfigFile): void {
   fs.chmodSync(KB_CONFIG_PATH, KB_CONFIG_FILE_MODE);
 }
 
-export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<string> {
+/** `hook: false` writes the config only, for a caller with no repository of its own (the kb-setup CLI verb). */
+export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor, opts: { hook?: boolean } = {}): Promise<string> {
   const steps: string[] = [];
   // Validate before any side effect, so a bad remote or timeout installs no
   // hook and leaves any existing config untouched.
@@ -306,11 +316,15 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<s
   // A folder that cannot carry a KB identity skips the hook with the typed
   // reason; the provider config below is machine-wide and is still written.
   let repoPath: string | null = null;
-  try {
-    repoPath = resolveKbAnchor(anchor).folder;
-  } catch (err) {
-    if (!(err instanceof KbSelfError)) throw err;
-    steps.push('Skipped git hook: ' + err.message);
+  if (opts.hook === false) {
+    steps.push('Skipped git hook: not requested');
+  } else {
+    try {
+      repoPath = resolveKbAnchor(anchor).folder;
+    } catch (err) {
+      if (!(err instanceof KbSelfError)) throw err;
+      steps.push('Skipped git hook: ' + err.message);
+    }
   }
   if (repoPath !== null) {
     if (fs.existsSync(path.join(repoPath, '.git'))) {
