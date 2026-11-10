@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "c1a438e81c81f0966e60d04ae98a7eb00d3c7d06",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 185
+    "entry_count": 186
   },
   "entries": [
     {
@@ -2999,6 +2999,30 @@
         "src/cli/kb-profile.ts": "2ae2abf6f3c4a62e3ca10f3013fedcd43103bb24",
         "src/services/tool-registry.ts": "05e3d5e04b949b3bfefef7693c230e59da947f02",
         "tests/kb-tool-profile-e2e.test.ts": "949f75c916529d89cd7b80d5433042449935d31a"
+      }
+    },
+    {
+      "id": "ca9c428d-e0ce-4c43-80c0-1f72571ab097",
+      "type": "knowledge",
+      "title": "fleet_status zero-member short form still shows the embedding notice and kbHealth",
+      "summary": "With no members registered, fleetStatus prints the embedding notice line (downloading, failed, off) and returns kbHealth in JSON when a notice or a tool-profile warning exists; only a healthy state gives the bare 'No members registered' form.",
+      "symbols": [
+        "fleetStatus",
+        "embeddingNotice",
+        "safeEmbeddingState",
+        "kbHealthSummary"
+      ],
+      "source_files": [
+        "src/tools/check-status.ts",
+        "src/services/knowledge/embedding/embedding-notice.ts",
+        "tests/fleet-status-embedding-state-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T11:42:47.223Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/embedding-notice.ts": "0af8f56e6b51e812c6c5c3c0d35c08d353f850bd",
+        "src/tools/check-status.ts": "a7744b7d324a5848c15028b381acbd0d82eb7f90",
+        "tests/fleet-status-embedding-state-e2e.test.ts": "34ab09f0d0ab91723a7b2cf2a8b9bc0c17751ceb"
       }
     },
     {
