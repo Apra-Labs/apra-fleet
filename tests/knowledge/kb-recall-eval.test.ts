@@ -4,8 +4,10 @@ import {
   DEFAULT_CONFIGS, loadQueries, loadEvalEntries, loadEvalProvider, runEval, formatReport,
   recallAtK, meanReciprocalRank, firstHitRank, missingExpectedIds, writeReportFile, type EvalReport,
   keywordConfig, modelConfigs, MODEL_PROFILES, MODEL_EMBED_TIMEOUT_MS, modelsRequired, formatTable,
-  semanticFloorSweep, formatFloorSweep, NONSENSE_QUERIES, guardOffConfigs,
+  semanticFloorSweep, formatFloorSweep, NONSENSE_QUERIES, guardOffConfigs, loadBareBibleEntries,
 } from '../helpers/kb-recall-eval.js';
+import { runKeywordAblation, ABLATION_VARIANTS } from '../helpers/kb-keyword-ablation.js';
+import { buildV044Kb } from '../helpers/v044-kb-build.js';
 import { kbQuerySchema } from '../../src/tools/kb-query.js';
 import { BUILTIN_EMBEDDING_PROFILES } from '../../src/services/knowledge/embedding/profiles.js';
 // @ts-expect-error plain .mjs shared with scripts/gen-kb-recall-eval.mjs
@@ -261,11 +263,88 @@ describe('KB recall eval set', () => {
   });
 });
 
+// The BARE bible (bible-bare-live.json, no enrichment): what a fresh clone's
+// keyword search ranks, and the set where keyword MRR had fallen below 0.4.4
+// (docs/kb-recall-measurements.md). The ablation re-implements the keyword
+// read with each factor switchable; its production variant must equal the
+// provider's own result, so the table measures the real code path.
+describe('bare bible keyword ranking against 0.4.4', () => {
+  let bare: Awaited<ReturnType<typeof loadEvalProvider>>;
+  let bareReport: EvalReport;
+  let ablation: Map<string, Record<string, string[]>>;
+  const dbFile = () => path.join(bare.dir, 'kb.sqlite');
+
+  beforeAll(async () => {
+    bare = await loadEvalProvider(loadBareBibleEntries());
+    bareReport = await runEval(keywordConfig, bare.provider, loadQueries());
+    ablation = runKeywordAblation(dbFile(), loadQueries(), ABLATION_VARIANTS.filter(v => v.v044 || !v.weights));
+    console.log(`[kb-recall-eval] bare bible ${formatReport(bareReport).replace('[kb-recall-eval] ', '')}`);
+  }, 120_000);
+  afterAll(() => bare?.cleanup());
+
+  it('imports the bare bible with no rejects and every labelled id present', () => {
+    expect(bare.counts.rejected).toBe(0);
+    expect(missingExpectedIds(bare.provider, loadQueries())).toEqual([]);
+  });
+
+  it('the ablation production variant reproduces the provider keyword-only order exactly', async () => {
+    const mine = ablation.get('current (production weights)')!;
+    for (const q of loadQueries()) {
+      const got = (await bare.provider.query({ query: q.query, limit: 20, confidence: ['CONFIRMED'], disable_lists: ['semantic'] })).results.map(e => e.id);
+      expect(mine[q.id], q.id).toEqual(got);
+    }
+  });
+
+  it('prints keyword-only next to the 0.4.4 keyword read (real and authored)', () => {
+    const v044 = ablation.get('0.4.4 keyword read')!;
+    for (const src of ['real', 'authored']) {
+      const qs = loadQueries().filter(q => q.source === src);
+      const old = meanReciprocalRank(qs.map(q => firstHitRank(v044[q.id], q.expected)));
+      console.log(`[kb-recall-eval] bare bible ${src}: keyword-only MRR ${bareReport.bySource[src].mrr.toFixed(4)}, 0.4.4 keyword read MRR ${old.toFixed(4)}`);
+    }
+  });
+
+  // Manual measurement (APRA_KB_EVAL_ABLATION=1): the full single-factor
+  // table on the bare and the enriched eval KB, and a cross-check of the
+  // 0.4.4 port against the REAL 0.4.4 SqliteProvider built from the v0.4.4
+  // tag (skipped loudly when the tag is not available).
+  it('ablation table (APRA_KB_EVAL_ABLATION=1)', async () => {
+    if (process.env.APRA_KB_EVAL_ABLATION !== '1') {
+      console.log('[kb-recall-eval] ablation table SKIPPED: set APRA_KB_EVAL_ABLATION=1 to print it');
+      return;
+    }
+    const queries = loadQueries();
+    const sets: Array<[string, string]> = [['bare bible', dbFile()], ['enriched eval KB', path.join(ctx.dir, 'kb.sqlite')]];
+    const lines = ['| variant | ' + sets.map(([n]) => `${n} real MRR | ${n} authored MRR`).join(' | ') + ' |', '|---|' + sets.map(() => '---|---|').join('')];
+    const all = sets.map(([, f]) => runKeywordAblation(f, queries, ABLATION_VARIANTS));
+    for (const v of ABLATION_VARIANTS) {
+      const cells = all.flatMap(res => ['real', 'authored'].map(src => {
+        const qs = queries.filter(q => q.source === src);
+        return meanReciprocalRank(qs.map(q => firstHitRank(res.get(v.name)![q.id], q.expected))).toFixed(4);
+      }));
+      lines.push(`| ${v.name} | ${cells.join(' | ')} |`);
+    }
+    console.log(['KB keyword ablation (MRR@5)', '', ...lines].join('\n'));
+
+    const real044 = await buildV044Kb(bare.dir);
+    if (!real044.ok) {
+      console.log(`[kb-recall-eval] 0.4.4 cross-check SKIPPED: ${real044.reason}`);
+      return;
+    }
+    const out = real044.run(dbFile(), bare.dir, queries.map(q => ({ op: 'query' as const, query: q.query })));
+    const port = all[0].get('0.4.4 keyword read')!;
+    queries.forEach((q, i) => {
+      const ids = (out[i] as { ids: string[] }).ids;
+      expect(port[q.id].slice(0, 5), `0.4.4 port differs on ${q.id}`).toEqual(ids.slice(0, 5));
+    });
+  }, 300_000);
+});
+
 // Keyword-only regression floors, set below the measured baselines.
-// Authored set (139 queries): measured recall@5 0.9137, MRR 0.8288.
+// Authored set (139 queries): measured recall@5 0.9137, MRR 0.8348.
 const FLOOR_RECALL = 0.85;
 const FLOOR_MRR = 0.75;
-// Real set (42 recorded queries): measured recall@5 1.0000, MRR 0.9083.
+// Real set (42 recorded queries): measured recall@5 0.9762, MRR 0.9167.
 const FLOOR_REAL_RECALL = 0.95;
 const FLOOR_REAL_MRR = 0.85;
 

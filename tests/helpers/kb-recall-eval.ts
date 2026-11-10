@@ -26,6 +26,17 @@ export const EVAL_DIR = path.resolve(__dirname, '../fixtures/kb-recall-eval');
 // scripts/gen-kb-recall-eval.mjs together with the queries), so a routine bible
 // promotion cannot turn the coverage check red.
 export const BIBLE_PATH = path.resolve(__dirname, '../fixtures/kb-recall-eval/bible-snapshot.json');
+/**
+ * The BARE bible: a pinned copy of .fleet/kb-canonical.json as committed on
+ * 2026-11-10 (178 entries; title, summary, symbols and source_files only --
+ * no content, recall_cues or error_signatures), loaded WITHOUT the
+ * enrichment overlay. This is what a fresh clone's keyword search actually
+ * ranks, and the set the keyword MRR regression against 0.4.4 was found and
+ * fixed on (docs/kb-recall-measurements.md). Not refreshed by
+ * scripts/gen-kb-recall-eval.mjs: re-pin it only together with the
+ * measurements doc and the bare-bible floor in kb-recall-eval.test.ts.
+ */
+export const BARE_BIBLE_PATH = path.resolve(__dirname, '../fixtures/kb-recall-eval/bible-bare-live.json');
 export const RECALL_K = 5;
 /** Second cut-off reported next to recall@5: the guard window (KEYWORD_GUARD_WITHIN). */
 export const RECALL_K8 = 8;
@@ -179,6 +190,13 @@ export function loadEvalEntries(): unknown[] {
   return [...bible, ...extra].map(e => ({ ...e, ...(enrichment[e.id as string] ?? {}) }));
 }
 
+/** The bare bible (BARE_BIBLE_PATH) plus the extra entries, with no enrichment overlay. */
+export function loadBareBibleEntries(): unknown[] {
+  const bible = JSON.parse(fs.readFileSync(BARE_BIBLE_PATH, 'utf-8')).entries as Array<Record<string, unknown>>;
+  const extra = JSON.parse(fs.readFileSync(path.join(EVAL_DIR, 'extra-entries.json'), 'utf-8')).entries as Array<Record<string, unknown>>;
+  return [...bible, ...extra];
+}
+
 /** 1-based rank of the first expected id within the top `k`, or null. */
 export function firstHitRank(ranked: string[], expected: string[], k = RECALL_K): number | null {
   const idx = ranked.slice(0, k).findIndex(id => expected.includes(id));
@@ -213,11 +231,11 @@ export interface EvalReport {
 
 export interface EvalImportCounts { imported: number; skipped: number; linked: number; rejected: number }
 
-export async function loadEvalProvider(): Promise<{ provider: SqliteProvider; dir: string; counts: EvalImportCounts; cleanup: () => void }> {
+export async function loadEvalProvider(entries: unknown[] = loadEvalEntries()): Promise<{ provider: SqliteProvider; dir: string; counts: EvalImportCounts; cleanup: () => void }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-recall-eval-'));
   const provider = new SqliteProvider(path.join(dir, 'kb.sqlite'));
   await provider.init();
-  const res = await importBibleEntries(provider, loadEvalEntries(), { verbatim: true });
+  const res = await importBibleEntries(provider, entries, { verbatim: true });
   const counts: EvalImportCounts = { imported: res.imported, skipped: res.skipped, linked: res.linked, rejected: res.rejected };
   return {
     provider, dir, counts,

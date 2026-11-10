@@ -70,8 +70,18 @@ export const KB_KEYWORD_INDEX_VERSION =
 export const KW_COLUMNS = [
   'title', 'summary', 'content', 'tags', 'symbols', 'source_files', 'recall_cues', 'error_signatures',
 ] as const;
+/**
+ * Measured, not guessed (docs/kb-recall-measurements.md). The earlier weights
+ * (title 5, summary 3, symbols / source_files / recall_cues 4) cost keyword
+ * MRR on a bare bible: a normalized path or identifier splits into generic
+ * parts (src, servic, knowledg, kb, provid) that most queries contain, and a
+ * weight-4 hit on such a part lifted entries that merely touch a file over the
+ * entry the query was about. source_files is now weighted like body text and
+ * symbols at the title's weight. Weights are applied at query time only (bm25
+ * arguments), so changing them needs no index rebuild.
+ */
 export const KW_WEIGHTS: Record<(typeof KW_COLUMNS)[number], number> = {
-  title: 5, summary: 3, content: 1, tags: 1, symbols: 4, source_files: 4, recall_cues: 4, error_signatures: 4,
+  title: 2, summary: 1, content: 1, tags: 1, symbols: 2, source_files: 1, recall_cues: 1, error_signatures: 4,
 };
 export const KW_BM25 = `bm25(entries_kw, ${KW_COLUMNS.map(c => KW_WEIGHTS[c]).join(', ')})`;
 export const TRI_BM25 = 'bm25(entries_tri, 5, 4, 4)';
