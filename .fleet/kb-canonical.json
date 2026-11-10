@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "c1a438e81c81f0966e60d04ae98a7eb00d3c7d06",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 186
+    "entry_count": 187
   },
   "entries": [
     {
@@ -2220,6 +2220,30 @@
       "source_file_hashes": {
         "src/tools/kb-query.ts": "18fce224bba6e9a4eb46bbee8863e2353d78f5a8",
         "tests/knowledge/kb-member-query-defaults.test.ts": "2279d4299fe75dd998c843b59f7248066f82d88b"
+      }
+    },
+    {
+      "id": "8b0ead48-b5b6-4eba-9bf8-d2344d640f33",
+      "type": "knowledge",
+      "title": "A fresh SqliteProvider keyword index is ready at once; imported rows queue and drain on read",
+      "summary": "KbKeywordIndex.init rebuilds synchronously when the entries table is empty, so a new kb.sqlite (or a ':memory:' member bible view) is ready before any import; imported rows go to kb_index_pending and are drained by the next read. The background rebuild only happens when an existing populated DB is at an older index version.",
+      "symbols": [
+        "KbKeywordIndex.init",
+        "KbKeywordIndex.isReady",
+        "KbKeywordIndex.keywordScores",
+        "SqliteProvider.relevantRows"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-index.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/member-bible-view.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T12:29:07.661Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-index.ts": "7ddc4d1c79afaf6d64a446cd24c965adc479113e",
+        "src/services/knowledge/member-bible-view.ts": "194b5c060008ab62fee6db1376bbff19c6d4f582",
+        "src/services/knowledge/sqlite-provider.ts": "84ccfb88f93d7e1c37c1829649672c942bf28329"
       }
     },
     {
