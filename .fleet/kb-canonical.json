@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "c1a438e81c81f0966e60d04ae98a7eb00d3c7d06",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 182
+    "entry_count": 184
   },
   "entries": [
     {
@@ -117,6 +117,36 @@
       "source_file_hashes": {
         "src/services/knowledge/sqlite-provider.ts": "be02241973f3d1e354942d16bf189966221407c2",
         "src/tools/kb-export.ts": "216aeabdcbd26c4a30b2bdbb9264575e0c58a05b"
+      }
+    },
+    {
+      "id": "0d9cd4e7-0642-4e24-a562-945f8acb9ff7",
+      "type": "knowledge",
+      "title": "A KB config change reaches a running server through a stat gate in getEmbedder",
+      "summary": "getEmbedder re-reads embedding.model only when the KB config file's mtime(ns)/size/inode signature changes, and switches the process embedder; tests that inject an embedder via _setEmbedderForTest are pinned and never re-read.",
+      "symbols": [
+        "getEmbedder",
+        "switchEmbedder",
+        "Embedder.retire",
+        "readEmbeddingModelSettingChecked",
+        "writeKbEmbeddingModel",
+        "_setEmbedderForTest"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/embedder.ts",
+        "src/services/knowledge/kb-config.ts",
+        "src/services/knowledge/embedding/embed-queue.ts",
+        "src/tools/kb-setup.ts",
+        "tests/knowledge/kb-embedding-cli.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T10:04:24.575Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/embed-queue.ts": "1680d36d1054ab3680dd313506cd76500a2ce871",
+        "src/services/knowledge/embedding/embedder.ts": "c935470c12d4b7a10a28bdd2aaaab259feb9992a",
+        "src/services/knowledge/kb-config.ts": "af9be1ff4882fd9611d7867cd697c8886e5b09d2",
+        "src/tools/kb-setup.ts": "164182835f0631c21e93d87c508cf2b788bd7895",
+        "tests/knowledge/kb-embedding-cli.test.ts": "529bebe733f148749075080817c4616198913155"
       }
     },
     {
@@ -918,6 +948,29 @@
       "source_file_hashes": {
         "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs": "0d4587ee66b94998aa300aaf476b4faa8620f96a",
         "packages/apra-fleet-se/test/backlog-role-no-orchestrator-identifiers.test.mjs": "02cc51c5452af602a3bd6d620be27558de4fdc5f"
+      }
+    },
+    {
+      "id": "3ac9f54d-6d87-4ecd-8c3b-3f0e57763519",
+      "type": "learning",
+      "title": "Count hub requests to prove a spawned fleet server never tried to load a model",
+      "summary": "In a real-server e2e test, point HF_ENDPOINT at a local HTTP server that counts requests and 404s; an enabled embedder trying to load downloads from it, so an unchanged count across kb_query + fleet_status proves no load attempt.",
+      "symbols": [
+        "ModelStore",
+        "fleetStatus",
+        "kbHealthSummary"
+      ],
+      "source_files": [
+        "tests/knowledge/kb-embedding-switch-live-server-e2e.test.ts",
+        "src/services/knowledge/embedding/model-store.ts",
+        "tests/setup.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T10:04:26.927Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/model-store.ts": "9ceb51cf2ca096064d71442b325d25420179c2b8",
+        "tests/knowledge/kb-embedding-switch-live-server-e2e.test.ts": "516e2ff6535b255869a55b679991d8ca560075df",
+        "tests/setup.ts": "64b0099ea61c3c885cff14c7bf80cce876eceb2a"
       }
     },
     {
