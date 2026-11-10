@@ -14,7 +14,7 @@ knows how to:
    `execute_command`, `list_members`, `fleet_status`, `member_detail`,
    `get_member_model_pricing`, `send_files`, `receive_files`,
    `register_member`, `update_member`, `remove_member`, `provision_llm_auth`,
-   `provision_vcs_auth`, `compose_permissions`, `setup_ssh_key`,
+   `provision_vcs_auth`, `provision_kb_auth`, `compose_permissions`, `setup_ssh_key`,
    `send_email`, `credential_store_set`/`_list`/`_delete`/`_update`,
    `dolt_push_mutex`, `child_id_allocator`, `shutdown_server`) as a typed,
    promise-based JavaScript API instead of raw `tools/call` payloads.

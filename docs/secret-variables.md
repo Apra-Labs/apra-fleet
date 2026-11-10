@@ -48,6 +48,8 @@ To change the policy or members without entering a new value, use `credential_st
 
 Example: re-setting a secret that expires tomorrow keeps tomorrow's expiry. Re-setting one that expired yesterday gives a value with no expiry, because keeping the old date would make the new value expired at once.
 
+`apra-fleet secret --set NAME --persist --expires-at <time> -y` sets an absolute expiry instead, whatever was stored: an ISO 8601 time with a zone (`Z` or `+hh:mm`), in the future. `--expires-at none` clears it. This is how `provision_kb_auth` stores a token on a remote member.
+
 An expired secret that is not bound to a live secret is removed at server start or when it is next read. After that its name is new, so the new-secret defaults apply.
 
 ### Network policy

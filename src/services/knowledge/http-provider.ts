@@ -28,6 +28,7 @@ import { getAgent } from '../registry.js';
 import { getSessionMemberId } from '../tool-scope.js';
 import { LiveSecretError } from '../live-secret-runner.js';
 import { recordKbHttpSuccess, recordKbHttpRejected } from './kb-http-auth-state.js';
+import { hasMemberInstallMarker } from '../../cli/install-guard.js';
 import {
   REPOSITORY_HEADER,
   REPOSITORY_COMMIT_HEADER,
@@ -78,6 +79,17 @@ export function liveSecretRemediation(name: string): string {
 }
 
 /**
+ * The remediation when the secret's value is at fault. On a remote member's own
+ * install (it has the member-install marker) the value is pushed by the
+ * orchestrator, so setting it by hand there is not the fix.
+ */
+function secretValueRemediation(name: string): string {
+  return hasMemberInstallMarker()
+    ? `none on this machine: secret ${name} is renewed from the orchestrator, which pushes a new value with provision_kb_auth. Report this error to the orchestrator; the next KB call after the push uses the new value, with no restart.`
+    : `apra-fleet secret --set ${name} --persist -y (the next KB call uses the new value; no restart needed)`;
+}
+
+/**
  * E-KB-HTTP-AUTH: the remote KB's token comes from a named fleet secret and
  * that secret is missing, expired, unreadable, refused by its own policy (deny,
  * or not shared with the calling member), or was rejected by the server
@@ -95,7 +107,7 @@ export class KbHttpAuthError extends Error {
   /** The problem sentence, without the code prefix and remediation. */
   readonly problem: string;
   constructor(secretName: string, reason: KbHttpAuthReason, problem: string, queued = false, remediation?: string) {
-    remediation ??= `apra-fleet secret --set ${secretName} --persist -y (the next KB call uses the new value; no restart needed)`;
+    remediation ??= secretValueRemediation(secretName);
     const queuedNote = queued
       ? ' The operation was queued offline and is sent once the secret is accepted.'
       : '';
@@ -151,7 +163,7 @@ export type HttpKbFeedbackResult =
   | Record<string, unknown>
   | { id: string; queued: true };
 
-function isConnectionError(err: unknown): boolean {
+export function isConnectionError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const code = (err as NodeJS.ErrnoException).code;
   return (
@@ -488,6 +500,15 @@ export class HttpKbProvider implements MemoryProvider {
 
   async init(): Promise<void> {
     await this.fallback.init();
+  }
+
+  /**
+   * One authenticated request that never falls back to the local store and never
+   * queues: the check `apra-fleet kb-setup` runs after setting up a member. Throws
+   * what a KB call would (E-KB-HTTP-AUTH, HTTP_<status>, a connection error).
+   */
+  async verifyAuth(): Promise<void> {
+    await this.request<unknown>('GET', '/api/kb/query', undefined, { limit: '1' });
   }
 
   async capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }> {

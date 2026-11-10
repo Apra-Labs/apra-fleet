@@ -2,7 +2,7 @@
  * provision_auth(kind, ...), provisionAuthForKind: policy before any mint, the
  * rejected drop, and no handler text or value in the result, errors or log. The
  * store and the scripts are real; the delivery is a stub handler (the kb delivery
- * comes with provision_kb_auth).
+ * itself is tested in provision-kb-auth.test.ts).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -605,14 +605,7 @@ describe('provisionAuthForKind: the kind table', () => {
     }
   });
 
-  it('kb delivery is not available yet, and says so before any mint', async () => {
-    const s = live('kbnotyet');
-    const err = await failure(provisionAuthForKind({ kind: 'kb', member_id: remote.id, secret: s.name, remote: REMOTE }));
-    expectRefused(err, 'not-available');
-    expect(s.runs()).toBe(0);
-  });
-
-  it('kb applies policy first: deny wins over not available', async () => {
+  it('kb applies policy first: deny is refused before the kind checks the member', async () => {
     const s = live('kbdeny', { policy: 'deny' });
     expectRefused(await failure(provisionAuthForKind({ kind: 'kb', member_id: local.id, secret: s.name, remote: REMOTE })), 'policy-deny');
   });

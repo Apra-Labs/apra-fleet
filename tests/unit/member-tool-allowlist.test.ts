@@ -65,7 +65,7 @@ describe('member tool allowlist', () => {
       ['execute_prompt', 'execute_command', 'stop_prompt', 'send_files', 'receive_files', 'shutdown_server'].includes(t)
       || /member/.test(t)
       || t.startsWith('credential_store_')
-      || ['setup_git_app', 'setup_ssh_key', 'provision_llm_auth', 'provision_vcs_auth', 'revoke_vcs_auth',
+      || ['setup_git_app', 'setup_ssh_key', 'provision_llm_auth', 'provision_vcs_auth', 'provision_kb_auth', 'revoke_vcs_auth',
         'vcs_credential_exec', 'compose_permissions', 'update_llm_cli', 'cloud_control', 'fleet_status',
         'send_message', 'send_email', 'dolt_push_mutex', 'child_id_allocator'].includes(t));
     for (const t of ['execute_prompt', 'execute_command', 'stop_prompt', 'send_files', 'receive_files',

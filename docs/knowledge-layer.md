@@ -632,8 +632,10 @@ The config then stores only the reference (`token_ref`), never a token. The
 secret is looked up on every request, so a refreshed value is used by the next
 KB call with no restart of the fleet server or any provider.
 
-Secrets are per host today: each host that runs the fleet server needs the
-secret and a refresher. With fleet.apralabs.com, all members of a fleet share
+Secrets are per host: each host that runs the fleet server needs the secret.
+A remote member can get its copy, and its KB config, from the orchestrator with
+[`provision_kb_auth`](#remote-members-provision_kb_auth); otherwise it needs its
+own refresher. With fleet.apralabs.com, all members of a fleet will share
 secrets through the cloud workspace.
 
 **Per-host refreshers.** `apra-fleet secret --set NAME --persist -y` reads the
@@ -713,10 +715,44 @@ user:
 3. Check it: `fleet_status` shows `live secret KB_TOKEN | script: ... | state: not run`.
    After the first KB call it shows `state: ok` with the last minted time and the
    expiry.
+4. Give each member the token: `provision_kb_auth member_name=<member>
+   secret=KB_TOKEN remote=https://<host>`. The result names the member, the secret,
+   the expiry and the verification, never the token.
 
-Local members share the orchestrator's fleet server, so their KB calls use this
-live secret with nothing more to do. A remote member runs its own fleet server,
-and needs its KB config and token set up on its own install.
+##### Remote members: provision_kb_auth
+
+`provision_kb_auth` gives a member the token from a secret on the orchestrator,
+static or live. The secret's `deny` and `allowedMembers` are applied on the
+orchestrator before anything is minted or sent.
+
+- **Local member:** it shares the orchestrator's fleet server and KB config, so its
+  KB calls already use the secret. Nothing is pushed and the config is not changed:
+  the call checks that the config names this remote and `{{secret.NAME}}`, and is
+  refused (`kb-not-configured` or `kb-other-remote`) if not.
+- **Remote member:** it runs its own fleet server, reached over SSH. The call
+  1. needs a member install of apra-fleet 0.4.5 or later (`install-too-old` or
+     `not-member-install` otherwise, naming the `update_member` remedy);
+  2. resolves the secret on the orchestrator, minting if needed;
+  3. stores the token on the member as an ordinary static secret with its expiry,
+     `allow` and all members, through
+     `apra-fleet secret --set NAME --persist --expires-at <time> -y`. The value is
+     staged in an owner-only file, piped in and removed in the same command, never
+     on a command line;
+  4. runs `apra-fleet kb-setup --remote <url> --token-ref NAME` on the member, which
+     points its KB at the secret unless it already does (replacing another remote),
+     and makes one KB call. It refuses a `deny` secret as `kb_setup` does.
+     Member sessions never get `kb_setup` itself.
+  5. reports that KB call as the verification: `verified`, or failed with
+     `rejected`, `unreachable` or `unverified`.
+
+  If step 4 fails (`kb-setup-failed`), the token stays stored on the member.
+
+The member's copy expires with the token and is not renewed by itself: run
+`provision_kb_auth` again before then. After the KB server refuses a token
+(`E-KB-HTTP-AUTH` reason `rejected` on the member), pass `reason=rejected`, so a
+live secret mints a new token instead of pushing the refused one again. On a
+remote member the `E-KB-HTTP-AUTH` remediation says this renewal comes from the
+orchestrator.
 
 **Headless and SSH failure modes.** The script runs non-interactively, in the
 fleet server's environment. Fleet does not fix that environment; every problem
@@ -1175,6 +1211,8 @@ refresh the secret on this host; no restart is needed:
 ```bash
 apra-fleet secret --set NAME --persist -y
 ```
+On a remote member whose secret came from `provision_kb_auth`, renew it from the
+orchestrator instead (see [Remote members](#remote-members-provision_kb_auth)).
 Check `fleet_status` for the `kb credential:` line (resolves, last written,
 last ok/rejected call). If it shows `resolves: ok` and a `last rejected call`
 time later than the `last ok call` time (or the error reason is `rejected`),

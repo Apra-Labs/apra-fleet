@@ -224,6 +224,8 @@ export interface CredentialSetFields {
   network_policy?: NetworkPolicy;
   allowedMembers?: string[] | '*';
   ttl_seconds?: number;
+  /** An absolute expiry (ISO 8601), or null for none. Replaces the stored one; wins over ttl_seconds. */
+  expiresAt?: string | null;
 }
 
 /**
@@ -247,7 +249,9 @@ export function credentialSetValue(name: string, plaintext: string, given: Crede
     persist,
     given.network_policy ?? existing?.network_policy ?? 'allow',
     given.allowedMembers ?? existing?.allowedMembers ?? '*',
-    given.ttl_seconds !== undefined || isExpired(keptExpiry) ? expiryFromTtl(given.ttl_seconds) : keptExpiry,
+    given.expiresAt !== undefined
+      ? given.expiresAt ?? undefined
+      : given.ttl_seconds !== undefined || isExpired(keptExpiry) ? expiryFromTtl(given.ttl_seconds) : keptExpiry,
   );
 }
 

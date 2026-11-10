@@ -25,6 +25,7 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `compose_permissions` | Generate and deliver provider-native permission config |
 | `provision_llm_auth` | Provision LLM authentication for a **remote** member.  |
 | `provision_vcs_auth` | Provision VCS credentials (GitHub, Bitbucket, Azure DevOps) |
+| `provision_kb_auth` | Give a member the KB token from a secret on the orchestrator (pass reason rejected after a 401) |
 | `revoke_vcs_auth` | Revoke VCS credentials |
 | `setup_ssh_key` | Migrate remote member from password to key-based auth |
 | `setup_git_app` | Configure GitHub App for token minting |

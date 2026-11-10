@@ -615,7 +615,9 @@ throw as a type test, since that would also swallow any unrelated error.
 other route, and the tool returns the server's response as is. While the
 server is unreachable the feedback joins the offline queue (replayed in order
 with queued captures and invalidates) and the tool answers
-`{id, queued: true}`. The client never writes or invents `confidence` and
+`{id, queued: true}`. On `E-KB-HTTP-AUTH` it is queued too and the error is
+raised marked as queued, except a refusal by the secret's own policy
+(`policy-deny`, `member-not-allowed`), which is raised and not queued. The client never writes or invents `confidence` and
 never writes the local fallback store; the server owns the entry's state.
 
 **Known gap left open:** the `kb_stats` "bible" response is now a union of
