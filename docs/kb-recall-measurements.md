@@ -349,3 +349,25 @@ The real models were downloaded once with the eval's
 `APRA_KB_EVAL_ALLOW_DOWNLOAD=1` store into a local folder and read from
 there with `APRA_KB_EVAL_MODELS_DIR`. The guard options use the internal
 `keyword_guard` query option (not on the kb_query tool schema).
+
+## Regression guards in the recall eval
+
+`tests/knowledge/kb-recall-eval.test.ts` (run by `npm test`) enforces these
+numbers:
+
+| guard | asserted | tolerance | runs |
+|---|---|---|---|
+| bare bible keyword-only real MRR | >= 0.8345, and above the 0.4.4 keyword read | 0.01 | always (no model) |
+| bare bible keyword-only authored MRR | >= 0.8283 | 0.01 | always |
+| queries losing a keyword top-5 hit at limit 6 | <= 0 (and > 0 with the guard off, so the check is not vacuous) | none | always (deterministic embedder) |
+| same, default model | <= 0 | none | when the model is available, else SKIPPED |
+| description-signal situations: embedded part carries the whole signal | all 139 | none | always |
+| description-signal keyword + anchor MRR | >= 0.6667 | 0.01 | always |
+| description-signal hybrid MRR, default model | >= 0.7477 and > 0.612 | 0.01 | when the model is available, else SKIPPED |
+
+Each was checked to fail with its fix reverted:
+
+- pre-fix weights: real MRR 0.7294;
+- a fixed guard window of 8: 181 of 182 queries lose a hit;
+- the old situation format: 0 of 139 situations embed their signal, and
+  keyword + anchor MRR is 0.4512.
