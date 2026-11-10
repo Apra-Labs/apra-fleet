@@ -51,6 +51,7 @@ import { Embedder, _setEmbedderForTest } from '../src/services/knowledge/embeddi
 import { ModelStore } from '../src/services/knowledge/embedding/model-store.js';
 import { BUILTIN_EMBEDDING_PROFILES, DEFAULT_EMBEDDING_PROFILE, type EmbeddingProfile } from '../src/services/knowledge/embedding/profiles.js';
 import { FLEET_DIR } from '../src/paths.js';
+import { getGlobalKbProvider, getProjectSqliteProvider, resetKbProviders } from '../src/services/knowledge/kb-providers.js';
 import { isolateGitConfig } from './knowledge/isolate-git-config.js';
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -129,6 +130,12 @@ afterEach(async () => {
   await new Promise<void>((r) => server.close(() => r()));
   restoreRegistry();
   restoreGitConfig();
+  // The cached KB providers hold kb.sqlite open; Windows refuses to delete an
+  // open file, so close them and drop the cache before removing the data
+  // folder. Each case then starts from an empty data folder and fresh providers.
+  (await getProjectSqliteProvider(repo)).close();
+  (await getGlobalKbProvider()).close();
+  resetKbProviders();
   fs.rmSync(path.join(sandbox.root, 'data'), { recursive: true, force: true });
   fs.rmSync(repo, { recursive: true, force: true });
 });
