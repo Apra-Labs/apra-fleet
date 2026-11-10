@@ -37,7 +37,7 @@ console.log(`connected via ${mode}`);
 const status = await fleetApi.fleetStatus({ format: 'json' });
 console.log(status);
 
-transport.stop();
+await transport.close(); // releases the server session; stop() alone leaks it
 ```
 
 Set `APRA_FLEET_TRANSPORT=stdio` / `=http` to force a specific transport, or
@@ -79,7 +79,7 @@ const fleet = new ApraFleet(mcpClient);
 const status = await fleet.fleetStatus({ format: 'json' });
 console.log(status);
 
-transport.stop();
+await transport.close(); // releases the server session; stop() alone leaks it
 ```
 
 ## Connecting over HTTP+SSE (attaches to a running server)
@@ -107,7 +107,7 @@ const fleet = new ApraFleet(mcpClient);
 const members = await fleet.listMembers({ format: 'json' });
 console.log(members);
 
-transport.stop();
+await transport.close(); // releases the server session; stop() alone leaks it
 ```
 
 The HTTP transport performs its own `initialize` handshake internally

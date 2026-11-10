@@ -24,6 +24,32 @@ interface Session {
   /** Identity that opened this session (see SessionOwner). Every later
    *  GET/DELETE/POST on the session id must come from the same identity. */
   owner: SessionOwner;
+  /** Client name from initialize, for log lines. */
+  client: string;
+  /** Last time a request on this session started or ended (ms, `now()`). */
+  lastActivity: number;
+  /** Requests on this session whose response is still open: an SSE GET
+   *  stream, or a POST whose response streams a long tool call. A session
+   *  with any open request is never idle-evicted. */
+  openRequests: number;
+  /** Releases everything the session holds (map entry, McpServer, session
+   *  registry entry). Idempotent; shared by DELETE and idle eviction. */
+  release: (reason: 'closed' | 'idle') => void;
+}
+
+/** Idle bound after which a session with no open request is evicted. */
+export const DEFAULT_SESSION_IDLE_MS = 30 * 60 * 1000;
+const DEFAULT_IDLE_SWEEP_INTERVAL_MS = 60 * 1000;
+/** Open-session count that triggers a one-time WARNING log line. */
+export const DEFAULT_SESSION_COUNT_WARN = 500;
+
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  logLine('session', `WARNING: ignoring ${name}=${JSON.stringify(raw)} (not a positive number); using ${fallback}`);
+  return fallback;
 }
 
 /**
@@ -71,6 +97,18 @@ export interface HttpTransportOptions {
   /** The member access secret file a `?member=` request is checked against
    *  (default: <data dir>/member-access.key; created when missing). */
   memberSecretPath?: string;
+  /** A session with no open request and no request for this long is evicted
+   *  (default APRA_FLEET_SESSION_IDLE_MS, else 30 min). A client that drops
+   *  its session without an HTTP DELETE would otherwise hold its McpServer
+   *  forever. */
+  sessionIdleMs?: number;
+  /** How often the idle sweep runs (default 60 s). */
+  idleSweepIntervalMs?: number;
+  /** Open-session count that logs a WARNING (default
+   *  APRA_FLEET_SESSION_COUNT_WARN, else 500). */
+  sessionCountWarn?: number;
+  /** Clock, injectable for tests (default Date.now). */
+  now?: () => number;
 }
 
 /** Thrown by createHttpTransport when the configured (non-zero) port is already bound. */
@@ -87,6 +125,8 @@ export interface HttpTransportHandle {
   port: number;
   url: string;
   sessions: Map<string, Session>;
+  /** Runs one idle-eviction pass now; returns how many sessions it evicted. */
+  sweepIdleSessions(): number;
   close(): Promise<void>;
 }
 
@@ -184,6 +224,11 @@ function extractBearer(req: http.IncomingMessage): string | null {
 export async function createHttpTransport(options: HttpTransportOptions): Promise<HttpTransportHandle> {
   const { registerTools, preferredPort } = options;
   const sessions = new Map<string, Session>();
+  const now = options.now ?? Date.now;
+  const sessionIdleMs = options.sessionIdleMs ?? positiveIntFromEnv('APRA_FLEET_SESSION_IDLE_MS', DEFAULT_SESSION_IDLE_MS);
+  const sessionCountWarn = options.sessionCountWarn ?? positiveIntFromEnv('APRA_FLEET_SESSION_COUNT_WARN', DEFAULT_SESSION_COUNT_WARN);
+  let sessionsEvicted = 0;
+  let sessionCountWarned = false;
   // Every install has its member access secret from the first server start
   // (install creates it too): a `?member=` request must present it.
   const memberSecretPath = options.memberSecretPath ?? memberAccessSecretPath();
@@ -210,6 +255,41 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
   // LOW-1: Track event listener references for cleanup in close()
   const eventCleanups: Array<() => void> = [];
 
+  /** Counts `res` as an open request on `session` until its response closes. */
+  function trackRequest(session: Session, res: http.ServerResponse): void {
+    session.openRequests += 1;
+    session.lastActivity = now();
+    res.once('close', () => {
+      session.openRequests = Math.max(0, session.openRequests - 1);
+      session.lastActivity = now();
+    });
+  }
+
+  /**
+   * Evicts every session that has had no open request for longer than
+   * sessionIdleMs. Such a session belongs to a client that went away without
+   * an HTTP DELETE (a crash, or a transport stopped without close()): nothing
+   * can reach it again, and it would otherwise keep its McpServer forever.
+   * A client that comes back gets 404 and opens a new session, as the MCP
+   * spec requires.
+   */
+  function sweepIdleSessions(): number {
+    const t = now();
+    let evicted = 0;
+    for (const [sid, s] of [...sessions]) {
+      if (s.openRequests > 0 || t - s.lastActivity <= sessionIdleMs) continue;
+      logLine('session', `evicted idle sid=${shortSid(sid)} client=${s.client} idle_s=${Math.round((t - s.lastActivity) / 1000)} (no open request; the client never closed it)`);
+      s.release('idle');
+      s.transport.close().catch(() => {});
+      evicted += 1;
+    }
+    sessionsEvicted += evicted;
+    if (sessionCountWarned && sessions.size < sessionCountWarn) sessionCountWarned = false;
+    return evicted;
+  }
+  const idleSweepTimer = setInterval(sweepIdleSessions, options.idleSweepIntervalMs ?? DEFAULT_IDLE_SWEEP_INTERVAL_MS);
+  idleSweepTimer.unref?.();
+
   async function handleSessionRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId) {
@@ -224,6 +304,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       return;
     }
     if (refuseForeignCaller(req, res, sessionId, session)) return;
+    trackRequest(session, res);
     await session.transport.handleRequest(req, res);
   }
 
@@ -269,6 +350,8 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         pid: process.pid,
         uptime: Math.floor((Date.now() - startedAt) / 1000),
         sessions: sessions.size,
+        sessionsEvicted,
+        sessionIdleMs,
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(body);
@@ -455,10 +538,72 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
           { name: `apra fleet server ${serverVersion}`, version: serverVersion },
           { capabilities: { logging: {}, experimental: { 'claude/channel': {} } } }
         );
+        // Everything this session holds, released exactly once: by an HTTP
+        // DELETE (onsessionclosed) or by idle eviction (sweepIdleSessions).
+        let released = false;
+        const releaseSession = (sid: string, reason: 'closed' | 'idle'): void => {
+          if (released) return;
+          released = true;
+          if (reason === 'closed') logLine('session', `closed sid=${shortSid(sid)}`);
+          // LOW-2: Close the McpServer when its session closes
+          (sessionServer as any).server?.close().catch(() => {});
+          sessions.delete(sid);
+          // Unregister interactive member session -- but only if the registry
+          // entry still points at THIS session. If the member reconnected
+          // (new sid) before this stale session's close event fired, the
+          // registry now holds the NEW session's sessionId and must not be
+          // clobbered by the old one closing late (apra-fleet-2xs.10).
+          if (postClaims) {
+            const current = sessionRegistry.get(postClaims.workspace_id, postClaims.member_id);
+            if (current?.sessionId === sid) {
+              sessionRegistry.unregister(postClaims.workspace_id, postClaims.member_id);
+              logLine('session', `unregistered member member_id=${postClaims.member_id} sid=${shortSid(sid)}`);
+            } else {
+              logLine('session', `skipped stale unregister member_id=${postClaims.member_id} sid=${shortSid(sid)} (superseded by sid=${shortSid(current?.sessionId)})`);
+            }
+          } else if (fallbackMemberId && channelCapable) {
+            // A tool-only ?member= session never registered (see
+            // onsessioninitialized), so it never unregisters either.
+            const current = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
+            if (current?.sessionId === sid) {
+              sessionRegistry.unregister(sessionWorkspaceId, fallbackMemberId);
+              logLine('session', `unregistered member member_id=${fallbackMemberId} sid=${shortSid(sid)}`);
+            } else {
+              logLine('session', `skipped stale unregister member_id=${fallbackMemberId} sid=${shortSid(sid)} (superseded by sid=${shortSid(current?.sessionId)})`);
+            }
+          } else if (channelCapable) {
+            const idx = orchestratorSessions.findIndex((o) => o.sid === sid);
+            if (idx !== -1) orchestratorSessions.splice(idx, 1);
+            const current = sessionRegistry.get(sessionWorkspaceId, ORCHESTRATOR_SESSION_ID);
+            if (current?.sessionId === sid) {
+              // Hand the id to the newest orchestrating session still open
+              // in this workspace, else drop it.
+              const next = [...orchestratorSessions].reverse().find((o) => o.workspaceId === sessionWorkspaceId);
+              if (next) registerOrchestrator(next);
+              else {
+                sessionRegistry.unregister(sessionWorkspaceId, ORCHESTRATOR_SESSION_ID);
+                logLine('session', `unregistered orchestrator session sid=${shortSid(sid)}`);
+              }
+            }
+          }
+        };
         const sessionTransport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => crypto.randomUUID(),
           onsessioninitialized: (sid) => {
-            sessions.set(sid, { server: sessionServer, transport: sessionTransport, workspaceId: sessionWorkspaceId, owner: sessionOwner });
+            sessions.set(sid, {
+              server: sessionServer,
+              transport: sessionTransport,
+              workspaceId: sessionWorkspaceId,
+              owner: sessionOwner,
+              client: `${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'}`,
+              lastActivity: now(),
+              openRequests: 0,
+              release: (reason) => releaseSession(sid, reason),
+            });
+            if (!sessionCountWarned && sessions.size >= sessionCountWarn) {
+              sessionCountWarned = true;
+              logLine('session', `WARNING: ${sessions.size} open MCP sessions (threshold ${sessionCountWarn}). A client is likely opening sessions without closing them (HTTP DELETE); sessions idle over ${Math.round(sessionIdleMs / 1000)}s are evicted. GET /health shows sessions and sessionsEvicted.`);
+            }
             const hasMember = !!(postClaims || fallbackMemberId);
             logLine('session', `new sid=${shortSid(sid)} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} member=${hasMember} scope=${toolScope.kind}`);
             // Register interactive member session when JWT claims are present.
@@ -533,53 +678,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
               registerOrchestrator(entry);
             }
           },
-          onsessionclosed: (sid) => {
-            logLine('session', `closed sid=${shortSid(sid)}`);
-            // LOW-2: Close the McpServer when its session closes
-            const s = sessions.get(sid);
-            if (s) {
-              (s.server as any).server?.close().catch(() => {});
-            }
-            sessions.delete(sid);
-            // Unregister interactive member session -- but only if the registry
-            // entry still points at THIS session. If the member reconnected
-            // (new sid) before this stale session's close event fired, the
-            // registry now holds the NEW session's sessionId and must not be
-            // clobbered by the old one closing late (apra-fleet-2xs.10).
-            if (postClaims) {
-              const current = sessionRegistry.get(postClaims.workspace_id, postClaims.member_id);
-              if (current?.sessionId === sid) {
-                sessionRegistry.unregister(postClaims.workspace_id, postClaims.member_id);
-                logLine('session', `unregistered member member_id=${postClaims.member_id} sid=${shortSid(sid)}`);
-              } else {
-                logLine('session', `skipped stale unregister member_id=${postClaims.member_id} sid=${shortSid(sid)} (superseded by sid=${shortSid(current?.sessionId)})`);
-              }
-            } else if (fallbackMemberId && channelCapable) {
-              // A tool-only ?member= session never registered (see
-              // onsessioninitialized), so it never unregisters either.
-              const current = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
-              if (current?.sessionId === sid) {
-                sessionRegistry.unregister(sessionWorkspaceId, fallbackMemberId);
-                logLine('session', `unregistered member member_id=${fallbackMemberId} sid=${shortSid(sid)}`);
-              } else {
-                logLine('session', `skipped stale unregister member_id=${fallbackMemberId} sid=${shortSid(sid)} (superseded by sid=${shortSid(current?.sessionId)})`);
-              }
-            } else if (channelCapable) {
-              const idx = orchestratorSessions.findIndex((o) => o.sid === sid);
-              if (idx !== -1) orchestratorSessions.splice(idx, 1);
-              const current = sessionRegistry.get(sessionWorkspaceId, ORCHESTRATOR_SESSION_ID);
-              if (current?.sessionId === sid) {
-                // Hand the id to the newest orchestrating session still open
-                // in this workspace, else drop it.
-                const next = [...orchestratorSessions].reverse().find((o) => o.workspaceId === sessionWorkspaceId);
-                if (next) registerOrchestrator(next);
-                else {
-                  sessionRegistry.unregister(sessionWorkspaceId, ORCHESTRATOR_SESSION_ID);
-                  logLine('session', `unregistered orchestrator session sid=${shortSid(sid)}`);
-                }
-              }
-            }
-          },
+          onsessionclosed: (sid) => releaseSession(sid, 'closed'),
         });
         await registerTools(sessionServer, toolScope);
         await sessionServer.connect(sessionTransport);
@@ -600,6 +699,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         return;
       }
       if (refuseForeignCaller(req, res, sessionId, session)) return;
+      trackRequest(session, res);
       await session.transport.handleRequest(req, res, parsedBody);
       return;
     }
@@ -682,7 +782,9 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
     port,
     url,
     sessions,
+    sweepIdleSessions,
     close(): Promise<void> {
+      clearInterval(idleSweepTimer);
       // LOW-1: Unsubscribe all fleet event listeners
       for (const cleanup of eventCleanups) cleanup();
       // LOW-2: Close all active session McpServers before shutting down
