@@ -423,11 +423,13 @@ and a `hint` that the token cannot be refreshed and how to switch to
 any JWT claim other than `exp` never appear.
 
 `kbHealth.embedding` (`FleetStatusKbEmbedding`; compact: one `kb embedding:`
-line) reports this host's local embedding model (KB config `embedding.model`):
+line when healthy, or one `semantic search ...` notice line for
+`downloading`, `failed` and `disabled`) reports this host's local embedding model (KB config `embedding.model`):
 `state` is `idle` (configured; downloads and loads on first use), `loading`,
-`ready` (with `dims`), `disabled` (`embedding.model` is `none`) or `failed`
-(with `reason`; semantic search is off, keyword and anchor search remain),
-plus `modelId` and `revision` (`local` for a folder model). Reading it never
+`downloading` (model files are being fetched; keyword and anchor search serve
+meanwhile), `ready` (with `dims`), `disabled` (`embedding.model` is `none`) or `failed`
+(semantic search is off, keyword and anchor search remain); `downloading`,
+`failed` and `disabled` also carry `reason` and `fix`, plus `modelId` and `revision` (`local` for a folder model). Reading it never
 loads or downloads a model.
 
 The model is set with the `kb_setup` input `embedding_model`: `"none"`

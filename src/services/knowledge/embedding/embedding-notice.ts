@@ -27,7 +27,7 @@ export function embeddingNotice(e: EmbedderState | undefined): EmbeddingNotice |
     case 'failed': {
       const reason = e.reason;
       const fix = 'run apra-fleet kb model import <folder> (offline install) or apra-fleet kb embedding none (turn semantic search off)';
-      return { state: 'failed', reason, fix, line: `semantic search off: model download failed: ${reason} -- ${fix}; ${KEYWORD_NOTE}` };
+      return { state: 'failed', reason, fix, line: `semantic search off: ${reason.startsWith('load failed') ? 'model failed to load' : 'model download failed'}: ${reason} -- ${fix}; ${KEYWORD_NOTE}` };
     }
     case 'disabled': {
       const reason = 'embedding.model is none';
