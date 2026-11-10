@@ -693,7 +693,7 @@ kb_setup with provider=http, remote=https://<host>, token={{secret.KB_TOKEN}}
 ```
 
 **Failure behaviour.** A failed run reaches the KB as `E-KB-HTTP-AUTH` (reason
-`live-secret-failed`). No request is sent, and captures and invalidates are queued
+`live-secret-failed`). No request is sent, and captures, invalidates and feedback are queued
 offline exactly as for a static secret. On HTTP 401 from the KB server the rejected
 token is dropped from the cache, a new one is minted and the request is retried
 once. A second 401 raises `E-KB-HTTP-AUTH` (reason `rejected`).
@@ -762,15 +762,15 @@ default; it does not fail, so the config keeps working.
 
 A request whose socket is idle for longer than the timeout fails with code
 `ETIMEDOUT` and a message naming the timeout in ms; like any
-unreachable-server error, that queues a capture or invalidate offline and
+unreachable-server error, that queues a capture, invalidate or feedback offline and
 falls back to the local store for reads.
 
 It is a socket idle timeout, not a per-request deadline:
 
 - The timer restarts whenever data arrives, so a server that keeps sending
   bytes slowly can take longer than the value without timing out.
-- When writes are queued offline, capture, query, context, invalidate and
-  prime first try to flush them, and the flush attempt has the same timeout. Against an unresponsive server a call can
+- When writes are queued offline, capture, query, context, invalidate,
+  feedback and prime first try to flush them, and the flush attempt has the same timeout. Against an unresponsive server a call can
   therefore wait up to about twice the value: one timeout for the flush, one
   for the call itself.
 

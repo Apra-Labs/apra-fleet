@@ -642,11 +642,11 @@ and `E-BIBLE-BASIS-NOT-GIT` (`kb_export` / `kb_bible_commit` in a folder that is
 not a git work tree).
 
 `E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_harvest`, `kb_invalidate`,
-`kb_query`, `kb_context` and `kb_session_prime` when the remote (HTTP) KB takes
+`kb_feedback`, `kb_query`, `kb_context` and `kb_session_prime` when the remote (HTTP) KB takes
 its token from a named fleet secret (`kb_setup` token `{{secret.NAME}}`) and that
 secret is missing, expired, or still rejected (HTTP 401) after one re-read and
-retry. The message names the secret and the reason, never the value. A capture
-or invalidate is queued offline first and sent once the secret is accepted; a
+retry. The message names the secret and the reason, never the value. A capture,
+invalidate or feedback is queued offline first and sent once the secret is accepted; a
 member session's CONFIRMED read comes from its checkout bible and is unaffected.
 Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
 restart. When NAME is a live secret (`apra-fleet secret --live NAME ...`), the
@@ -656,8 +656,8 @@ inside its retry backoff, and (reason `rejected`) when the server still answers
 `az login`), or register it again, which also clears the backoff. The secret's own
 policy applies on every KB call, before any request or script run: reason
 `policy-deny` when its network policy is deny, reason `member-not-allowed` when
-`allowedMembers` does not name the calling member session. A capture or invalidate
-refused this way is not queued, and the caller retries it. An operator changes the
+`allowedMembers` does not name the calling member session. A capture, invalidate
+or feedback refused this way is not queued, and the caller retries it. An operator changes the
 policy with `apra-fleet secret --update NAME --allow` or `--members <list>`.
 `kb_setup` refuses a secret whose policy is deny.
 
