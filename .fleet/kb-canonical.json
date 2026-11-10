@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
+    "commit": "c1a438e81c81f0966e60d04ae98a7eb00d3c7d06",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 178
+    "entry_count": 181
   },
   "entries": [
     {
@@ -950,6 +950,27 @@
       }
     },
     {
+      "id": "3c243dc3-9611-4886-b44b-30027f30409c",
+      "type": "knowledge",
+      "title": "Model download stall timeout counts onData calls and destination file growth",
+      "summary": "ModelStore's stall watchdog (stallTimeoutMs, default MODEL_DOWNLOAD_STALL_MS 60 s) treats either an onData callback or growth of the destination file as progress; there is no overall deadline any more.",
+      "symbols": [
+        "ModelStore",
+        "MODEL_DOWNLOAD_STALL_MS",
+        "ModelDownloadFn"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/model-store.ts",
+        "tests/knowledge/kb-model-store-download.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T08:13:00.598Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/model-store.ts": "9ceb51cf2ca096064d71442b325d25420179c2b8",
+        "tests/knowledge/kb-model-store-download.test.ts": "d9fd88b9a09501c60d34a274c4ae9f6ceca08e77"
+      }
+    },
+    {
       "id": "3fad8b37-fcf6-46aa-8af9-c1ec8e92fa5c",
       "type": "learning",
       "title": "A bible removal tombstone retires a clone row permanently, so a later re-promotion never revives it there",
@@ -1780,6 +1801,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:12.487Z"
+    },
+    {
+      "id": "76c92a09-864b-4ce9-bfc4-a338b2ea1eef",
+      "type": "knowledge",
+      "title": "KB keyword bm25 weights are query-time only; identifier columns must not outweigh title",
+      "summary": "KW_WEIGHTS in kb-index.ts feed bm25() arguments at query time, so changing them needs no index rebuild or version bump. Weighting source_files/symbols at 4 let generic normalized path parts outrank the topic on a bare bible (real MRR 0.7294 vs 0.8345).",
+      "symbols": [
+        "KW_WEIGHTS",
+        "KW_BM25",
+        "KbKeywordIndex.hitsSql"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-index.ts",
+        "tests/helpers/kb-keyword-ablation.ts",
+        "docs/kb-recall-measurements.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T08:12:58.207Z",
+      "source_file_hashes": {
+        "docs/kb-recall-measurements.md": "59de1ce851805ceaf0ae325d57067cf943591bfc",
+        "src/services/knowledge/kb-index.ts": "3302dbdfa860053fb9f9dd81a85143c17d74dda1",
+        "tests/helpers/kb-keyword-ablation.ts": "f6398b6e4fa6bf1fe83b68002df02e1653f97792"
+      }
     },
     {
       "id": "774ec22a-e9a1-448a-bd46-b5b0fd7b17ef",
@@ -3339,6 +3383,30 @@
         "packages/apra-fleet-se/fleet-sprint/se-windows.mjs": "15a06892d7bcc78da2aec2c55478f89cab26d7fd",
         "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "867f995a010b67595118915255a5677dbfd4480d",
         "packages/apra-fleet-se/test/vcs-preflight-outcome-and-beads-auth.test.mjs": "d882af4fb7d3d08138b61f94f5febcdec788f143"
+      }
+    },
+    {
+      "id": "ecee2f76-a85f-46b2-a941-eb5e9c3b0d64",
+      "type": "knowledge",
+      "title": "Model download resume folder is <name>@<rev>.partial guarded by a pid lock file",
+      "summary": "ModelStore keeps partial downloads in <base>.partial (lock <base>.partial.lock holding the owner pid) beside the model folder; staging cleanup only matches .part-<pid>-<hex>/.old-<pid>-<hex>, so the resume folder survives failures and killed processes.",
+      "symbols": [
+        "ModelStore",
+        "claimResumeDir",
+        "removeAbandonedStaging",
+        "fetchDownload"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/model-store.ts",
+        "tests/knowledge/kb-model-store-download.test.ts",
+        "tests/knowledge/kb-model-download-network.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T08:13:02.700Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/model-store.ts": "9ceb51cf2ca096064d71442b325d25420179c2b8",
+        "tests/knowledge/kb-model-download-network.test.ts": "b54b7f29c710df3323d03d04be2a30d29cf8437b",
+        "tests/knowledge/kb-model-store-download.test.ts": "d9fd88b9a09501c60d34a274c4ae9f6ceca08e77"
       }
     },
     {
