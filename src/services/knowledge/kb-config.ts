@@ -88,6 +88,34 @@ export function readEmbeddingModelSetting(): unknown {
 }
 
 /**
+ * Like readEmbeddingModelSetting, but tells an unusable file apart from an
+ * absent value: { ok: true, raw } for an absent file or key (raw undefined:
+ * the default model) or a present value; { ok: false, reason } when the file
+ * cannot be read or parsed, is not a JSON object, or "embedding" is not an
+ * object. The server's re-read on a config change uses it, so a file caught
+ * mid-write or broken by hand keeps the current model instead of silently
+ * switching to the default. Never throws, never logs.
+ */
+export function readEmbeddingModelSettingChecked(): { ok: true; raw: unknown } | { ok: false; reason: string } {
+  if (!fs.existsSync(KB_CONFIG_PATH)) return { ok: true, raw: undefined };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(KB_CONFIG_PATH, 'utf-8'));
+  } catch {
+    return { ok: false, reason: `KB config at ${KB_CONFIG_PATH} cannot be read or is not valid JSON` };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, reason: `KB config at ${KB_CONFIG_PATH} is not a JSON object` };
+  }
+  const embedding = (parsed as KbConfigFile).embedding;
+  if (embedding === undefined) return { ok: true, raw: undefined };
+  if (embedding === null || typeof embedding !== 'object' || Array.isArray(embedding)) {
+    return { ok: false, reason: `KB config at ${KB_CONFIG_PATH} has "embedding" that is not an object` };
+  }
+  return { ok: true, raw: (embedding as { model?: unknown }).model };
+}
+
+/**
  * The KB config file cannot be read or parsed, as opposed to holding a bad
  * value. The way out is a hand edit: anything that rewrites the file would
  * lose what it holds (url, token_ref, ...). The message never quotes the file:

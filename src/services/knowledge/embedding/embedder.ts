@@ -45,8 +45,9 @@
  * embed queue calls it after a KB opens with vectors already stored, so
  * semantic search comes back after a restart without any write.
  */
-import { logWarn } from '../../../utils/log-helpers.js';
-import { readEmbeddingModelSetting } from '../kb-config.js';
+import fs from 'node:fs';
+import { logLine, logWarn } from '../../../utils/log-helpers.js';
+import { KB_CONFIG_PATH, readEmbeddingModelSetting, readEmbeddingModelSettingChecked } from '../kb-config.js';
 import { ModelStore } from './model-store.js';
 import {
   resolveEmbeddingModel,
@@ -340,6 +341,10 @@ export class Embedder {
 let shared: Embedder | null = null;
 /** Identity of the choice `shared` was built from (see choiceKey). */
 let sharedKey: string | null = null;
+/** True while a test pinned `shared` (_setEmbedderForTest): no config re-read. */
+let pinned = false;
+/** KB config file signature (see configSignature) when it was last read. */
+let lastConfigSig: string | null = null;
 
 /**
  * A stable identity for a resolved embedding choice: 'disabled', or the whole
@@ -350,14 +355,84 @@ export function embeddingChoiceKey(choice: EmbeddingModelChoice): string {
   return choice.kind === 'disabled' ? 'disabled' : JSON.stringify(choice.profile);
 }
 
-/** The process embedder for this host's KB config; constructing it loads nothing. */
+/**
+ * Cheap signature of the KB config file: mtime (ns), size and inode, or
+ * 'absent'. One stat, no read and no JSON parse.
+ */
+function configSignature(): string {
+  try {
+    const st = fs.statSync(KB_CONFIG_PATH, { bigint: true });
+    return `${st.mtimeNs}:${st.size}:${st.ino}`;
+  } catch {
+    return 'absent';
+  }
+}
+
+/**
+ * The process embedder for this host's KB config; constructing it loads nothing.
+ *
+ * Re-read on change: every call compares the KB config file's signature
+ * (mtime, size, inode -- one stat, no JSON parse when unchanged) with the one
+ * seen last. When it changed, embedding.model is read and resolved again and,
+ * if the resolved choice differs, the process embedder is switched (as by
+ * switchEmbedder). This is how a change made by another process -- the
+ * `apra-fleet kb embedding` CLI, a kb_setup call served elsewhere, a hand
+ * edit -- reaches a running server without a restart. A value that does not
+ * resolve (or a file that cannot be parsed) keeps the current embedder and
+ * logs one warning; it never fails the caller.
+ */
 export function getEmbedder(): Embedder {
   if (!shared) {
+    lastConfigSig = configSignature();
     const choice = resolveEmbeddingModel(readEmbeddingModelSetting(), (m) => logWarn('kb_config', m));
     shared = new Embedder({ choice });
     sharedKey = embeddingChoiceKey(choice);
+    return shared;
   }
+  if (!pinned) reloadIfConfigChanged();
   return shared;
+}
+
+function reloadIfConfigChanged(): void {
+  const sig = configSignature();
+  if (sig === lastConfigSig) return;
+  lastConfigSig = sig;
+  const current = describeShared();
+  const read = readEmbeddingModelSettingChecked();
+  if (!read.ok) {
+    logWarn('kb_config', `${read.reason}; keeping the current embedding model (${current})`);
+    return;
+  }
+  let problem: string | null = null;
+  const choice = resolveEmbeddingModel(read.raw, (m) => { problem ??= m; });
+  if (problem !== null) {
+    logWarn('kb_config', `KB config changed but ${String(problem).replace(/; using the default [^;]*$/, '')}; keeping the current embedding model (${current})`);
+    return;
+  }
+  const old = installEmbedder(choice);
+  if (old) {
+    logLine('kb_config', `KB config changed: embedding model switched from ${current} to ${describeShared()}`);
+    void old.retire().catch(() => undefined);
+  }
+}
+
+function describeShared(): string {
+  const p = shared?.profile;
+  if (!shared) return 'not set';
+  return p ? `${p.modelId}@${p.revision}` : 'none';
+}
+
+/**
+ * Make `choice` the process embedder when it differs from the current one.
+ * Returns the replaced embedder (to retire) or null when nothing changed.
+ */
+function installEmbedder(choice: EmbeddingModelChoice): Embedder | null {
+  const key = embeddingChoiceKey(choice);
+  if (!shared || key === sharedKey) return null;
+  const old = shared;
+  shared = new Embedder({ choice });
+  sharedKey = key;
+  return old;
 }
 
 /**
@@ -372,12 +447,11 @@ export function getEmbedder(): Embedder {
  * (any KB read or write kicks one). Never throws.
  */
 export async function switchEmbedder(choice: EmbeddingModelChoice, timeoutMs = 2000): Promise<boolean> {
-  const old = shared;
+  // The caller usually just wrote the config: take that write as seen, so the
+  // next getEmbedder does not re-read and re-resolve the same value.
+  if (shared && !pinned) lastConfigSig = configSignature();
+  const old = installEmbedder(choice);
   if (!old) return false;
-  const key = embeddingChoiceKey(choice);
-  if (key === sharedKey) return false;
-  shared = new Embedder({ choice });
-  sharedKey = key;
   await boundedWait(old.retire(), timeoutMs);
   return true;
 }
@@ -410,6 +484,8 @@ export async function shutdownEmbedder(timeoutMs = 2000): Promise<void> {
 export function _setEmbedderForTest(e: Embedder | null): void {
   shared = e;
   sharedKey = null;
+  pinned = e !== null;
+  lastConfigSig = null;
 }
 
 // ---------------------------------------------------------------------------

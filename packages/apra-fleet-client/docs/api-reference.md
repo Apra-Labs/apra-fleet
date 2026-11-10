@@ -435,7 +435,10 @@ The model is set with the `kb_setup` input `embedding_model`: `"none"`
 same shapes `embedding.model` accepts). The running server switches at once,
 without a restart, so the next `kb_query` and `fleet_status` reflect it; a
 malformed value is refused with an error and the config file is left
-unchanged; every other KB config key is kept.
+unchanged; every other KB config key is kept. The CLI verb
+`apra-fleet kb embedding [none | <built-in name>]` does the same from a shell
+(useful when a KB tool profile hides `kb_setup`); a running server notices
+the changed config on its next KB search and switches without a restart.
 
 #### `memberDetail(options)`
 

@@ -59,6 +59,7 @@ Usage:
   apra-fleet kb add-directive "<text>" [--symbols a,b] Create an already-active directive (human-only)
   apra-fleet kb commit [--repo <path>] [--global]      Re-export + auto-commit the canonical bible (manual/recovery)
   apra-fleet kb profile [full|developer|custom <a,b>]  Show or set the KB tool profile for interactive sessions
+  apra-fleet kb embedding [none|<model name>]         Show or set the KB semantic search model (none = off)
   apra-fleet join <member-jwt> [--hub-url <url>]  Activate a device using a member JWT obtained out-of-band from fleet-dashboard
   apra-fleet spoke <origin-member-id>        Run as an outbound hub-connected spoke; requires apra-fleet join first
   apra-fleet --version        Print version
@@ -177,6 +178,14 @@ Usage:
     import('./cli/kb-profile.js')
       .then(m => process.exit(m.runKbProfile(process.argv.slice(4))))
       .catch(err => { logError('cli', `kb profile failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'embedding') {
+    // Show/set the KB embedding model (none turns semantic search off). The
+    // developer KB tool profile hides kb_setup, so the CLI is always a way to
+    // change it; a running server re-reads the changed config on its next search.
+    import('./cli/kb-embedding.js')
+      .then(m => m.runKbEmbedding(process.argv.slice(4)))
+      .then(code => process.exit(code))
+      .catch(err => { logError('cli', `kb embedding failed: ${err.message}`); process.exit(1); });
   } else if (subCmd === 'import') {
     // T2.2 (F4, D3): post-merge entry point for absorbing a merged bible into
     // the local KB. Thin wrapper over the same kbImport the MCP tool uses.
