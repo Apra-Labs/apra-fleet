@@ -134,8 +134,8 @@ describe('fleetSeRefusalText', () => {
     expect(text).toContain('fleet-sprint supervisor: pid 500, http://localhost:8787');
     expect(text).toContain('sprint sprint-1: pid 700');
     expect(text).toContain('fleet-sprint run: pid 800 (lock file /l/x.lock)');
-    expect(text).toContain('curl.exe -X POST http://localhost:8787/api/sprints/sprint-1/stop');
-    expect(text).toContain('curl.exe -X POST http://localhost:8787/api/shutdown');
+    expect(text).toContain('curl.exe -X POST http://localhost:8787/api/sprints/sprint-1/stop -H "Content-Type: application/json"');
+    expect(text).toContain('curl.exe -X POST http://localhost:8787/api/shutdown -H "Content-Type: application/json"');
     expect(text).toContain('C:\\inst.exe install --force\n');
     expect(text).toContain('C:\\inst.exe install --force --ignore-running-sprints');
     expect(text).toContain('Restart the supervisor');

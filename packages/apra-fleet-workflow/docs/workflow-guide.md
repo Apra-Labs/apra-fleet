@@ -319,6 +319,26 @@ if (!res.ok) {
 Note that cooperative cancellation (`requestStop()`) is never soft-caught: a `CancelledError`
 always throws, even from a `failSoft: true` call, so a stop request still unwinds the run.
 
+## `command()`'s `pauseExempt` option
+
+A script that parks itself with `requestPause()` while it waits on an external condition
+may still need to look at that condition. `{ pauseExempt: true }` lets one short,
+read-only command do that: it skips the pause gate (it runs while the run is paused), it
+is not counted as in-flight work (so it neither waits for a pause nor holds one back), and
+it takes no journal sequence number (a resumed run replays the same way however many such
+reads ran). Ordinary `agent()`/`command()` calls still block at the gate. A `requestStop()`
+still cancels it with a `CancelledError`; if the call is issued from a timer, pass the
+run's `stopSignal()` as `opts.signal`, captured while the run is current.
+
+```javascript
+const signal = stopSignal();
+requestPause('waiting for an external answer');
+const timer = setInterval(async () => {
+    const out = await command('cat answer.txt', { member_name: 'probe-host', pauseExempt: true, signal, failSoft: true });
+    if (out.ok && out.output.trim()) { clearInterval(timer); await requestResume('answer arrived'); }
+}, 60_000);
+```
+
 ## Budget
 
 `context.budget` (or `workflow.budget` for direct, non-`executeFile()` usage) tracks spend

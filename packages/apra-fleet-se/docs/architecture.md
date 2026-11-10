@@ -1069,7 +1069,14 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
 
 The run's return value reflects the **final verdict**, not blanket success:
 `status: 'success'` only when `finalVerdictResult.verdict === 'PASS'`,
-otherwise `status: 'failed'` (while the PR is still published either way, per
+otherwise `status: 'failed'`. A PASS whose branch was pushed but whose PR was
+skipped for a VCS auth failure returns `status: 'success-with-warnings'` with
+`prSkipped` and a `warnings` array (`PR not opened: VCS auth failure (reason:
+auth-failure)`); the verdict stays PASS. The supervisor's `GET /api/sprints/:id`
+for a finished sprint lifts `resultStatus` and `warnings` from `state.result`,
+the watchdog FINISHED detail repeats them, and the viewer/History result strip
+shows an amber WARNING badge. Consumers must treat `success-with-warnings` as
+a success, not a failure or unknown (while the PR is still published either way, per
 the pm skill's "never suppress, never auto-merge" rule).
 
 ## The viewer

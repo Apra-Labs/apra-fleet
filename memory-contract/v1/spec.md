@@ -95,6 +95,15 @@ array, and not counted against "every method has an entry").
 A binding generated only against the declared `MemoryProvider` interface is
 INCOMPLETE without this set (`INVENTORY.md` section 4.2).
 
+`feedback` (X-2) is the one member of this set that both providers serve: it
+is not reached through `requireSqliteProject`. Over a remote KB,
+`HttpKbProvider.feedback` POSTs the `kb_feedback` request body
+`{id, reason, role}` to `/api/kb/feedback` and `kb_feedback` returns the
+server's response as is; while the server is unreachable the feedback is kept
+in the offline queue (replayed in order with queued captures and invalidates)
+and the tool answers `{id, queued: true}`. Either way the client never writes
+or invents `confidence` (`methods.json` X-2 `providers_note`).
+
 ### 2.3 `CodeIntelligenceProvider` interface methods (`methods.json` ids C-1..C-9)
 
 `graph`, `impact`, `query`, `context`, `map`, `flow`, `tests`. All seven are
@@ -613,7 +622,8 @@ existed.
 ### 3.3a Remote KB auth failure is thrown, and writes are queued first
 
 `E-KB-HTTP-AUTH` is `surfaced: thrown` on every tool that reaches the remote
-provider. A write (`kb_capture`, `kb_harvest`, `kb_invalidate`) is first put
+provider. A write (`kb_capture`, `kb_harvest`, `kb_invalidate`,
+`kb_feedback`) is first put
 in the provider's offline queue -- the same queue a server-down write uses --
 and the thrown message says so; the queue is kept (not flushed, not dropped)
 until the secret is accepted. A write refused by the secret's policy (`policy-deny`,
@@ -679,6 +689,13 @@ KB. `kb_import`'s `path` names a bible file and MUST NOT select which KB is
 written. `kb_setup` installs its hook into the session's folder and writes one
 global config; when the folder cannot carry a KB identity it skips the hook
 and reports the typed reason rather than refusing. (INV-05, INV-06)
+
+`kb_setup` MAY also set the install-wide KB tool profile (`tool_profile`:
+`full`, `developer` or `custom` with `tool_profile_tools`) in that global
+config. The profile decides which `kb_*` tools a FULL (non-member) session is
+served when it registers its tools; it MUST NOT change a MEMBER session's tool
+list, and an unknown `custom` tool name MUST be refused with nothing written.
+It is a usability control, not a security boundary.
 
 **THE PROOF.** `src/services/knowledge/kb-self.ts` owns the resolution:
 `resolveSelfAnchor()` reads the session member id (`getSessionMemberId()`,

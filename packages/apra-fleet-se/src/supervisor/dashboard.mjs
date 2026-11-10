@@ -705,7 +705,7 @@ const SPRINT_PAUSE_SCRIPT = `
         var resultEl = document.querySelector('.pause-result[data-sprint-id="' + sprintId + '"]');
         btn.disabled = true;
         if (resultEl) { resultEl.style.color = '#a1a1aa'; resultEl.textContent = (action === 'pause' ? 'Pause' : 'Resume') + ' requested...'; }
-        fetch('/sprints/' + encodeURIComponent(sprintId) + '/live/' + action, { method: 'POST' })
+        fetch('/sprints/' + encodeURIComponent(sprintId) + '/live/' + action, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
             .then(function (res) {
                 return res.json().catch(function () { return {}; }).then(function (json) {
                     return { status: res.status, json: json };

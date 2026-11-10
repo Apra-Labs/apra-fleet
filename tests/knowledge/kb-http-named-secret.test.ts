@@ -315,6 +315,15 @@ describe('HTTP KB provider with a named-secret token', () => {
     await expectAuthError(kbQuery({ query: 'gear' } as never, { folder: repo }), 'rejected');
   });
 
+  it('2b. feedback rejected twice: E-KB-HTTP-AUTH queued, the feedback op stays in the offline queue', async () => {
+    const p = await provider();
+    stub.accepted = TOKEN_B;
+    const err = await expectAuthError(p.feedback('entry-1', 'Wrong in practice.', 'doer'), 'rejected');
+    expect(err.queued).toBe(true);
+    expect(count('/api/kb/feedback')).toBe(2); // first try + exactly one retry
+    expect(p.offlineQueue).toEqual([{ op: 'feedback', id: 'entry-1', reason: 'Wrong in practice.', role: 'doer' }]);
+  });
+
   it('7. literal token config: unchanged -- no retry on 401, plain HTTP_401 error, nothing queued', async () => {
     writeConfig({ token_encrypted: encryptPassword(TOKEN_A) });
     const p = await provider();

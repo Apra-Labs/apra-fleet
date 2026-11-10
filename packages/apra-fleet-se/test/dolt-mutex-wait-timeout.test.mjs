@@ -279,6 +279,7 @@ describe('dolt mutex acquire -- a client that hangs up', () => {
         const req = {
             method: 'POST',
             url: '/api/dolt-push-mutex/gone/acquire',
+            headers: { 'content-type': 'application/json' },
             on(event, cb) { if (event === 'end') cb(); return this; },
         };
         const written = [];

@@ -472,14 +472,51 @@ const FALLBACK_planReviewerVerdict = {
     required: ['verdict', 'notes', 'taskAssignments'],
 };
 
+// The NEEDS-DECISION request a doer or reviewer returns (shared by both
+// fallbacks below). Mirrors the `decision` property of doer-output.json and
+// reviewer-output.json: a bead id, the full question, at least two options
+// each with an id and its text, and a recommendation.
+const FALLBACK_decisionRequest = {
+    type: 'object',
+    properties: {
+        beadId: { type: 'string', minLength: 1 },
+        question: { type: 'string', minLength: 1 },
+        options: {
+            type: 'array',
+            minItems: 2,
+            items: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string', minLength: 1 },
+                    text: { type: 'string', minLength: 1 },
+                },
+                required: ['id', 'text'],
+            },
+        },
+        recommendation: { type: 'string', minLength: 1 },
+    },
+    required: ['beadId', 'question', 'options', 'recommendation'],
+};
+
+// `field` is NEEDS-DECISION -> `decision` is required.
+function needsDecisionRequires(field) {
+    return {
+        if: { properties: { [field]: { const: 'NEEDS-DECISION' } }, required: [field] },
+        then: { required: ['decision'] },
+    };
+}
+
 // Fallback for role "reviewer". Canonical source:
 // packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json.
 const FALLBACK_reviewerVerdict = {
     $id: 'reviewerVerdict',
     type: 'object',
     properties: {
-        verdict: { type: 'string', enum: ['APPROVED', 'CHANGES_NEEDED'] },
+        verdict: { type: 'string', enum: ['APPROVED', 'CHANGES_NEEDED', 'NEEDS-DECISION'] },
         notes: { type: 'string' },
+        // Required when verdict is NEEDS-DECISION (allOf below). Mirrors
+        // reviewer-output.json.
+        decision: FALLBACK_decisionRequest,
         reopenIds: { type: 'array', items: { type: 'string' } },
         // apra-fleet-eft.67.2: optional, deliberately NOT in `required` below
         // -- mirrors packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json
@@ -509,6 +546,7 @@ const FALLBACK_reviewerVerdict = {
         },
     },
     required: ['verdict', 'notes', 'reopenIds', 'newTasks'],
+    allOf: [needsDecisionRequires('verdict')],
 };
 
 // Fallback for role "doer". Canonical source:
@@ -517,12 +555,16 @@ const FALLBACK_doerReport = {
     $id: 'doerReport',
     type: 'object',
     properties: {
-        status: { type: 'string', enum: ['VERIFY', 'BLOCKED'] },
+        status: { type: 'string', enum: ['VERIFY', 'BLOCKED', 'NEEDS-DECISION'] },
         closedIds: { type: 'array', items: { type: 'string' } },
         notes: { type: 'string' },
+        // Required when status is NEEDS-DECISION (allOf below). Mirrors
+        // doer-output.json.
+        decision: FALLBACK_decisionRequest,
         blockedIds: { type: 'array', items: { type: 'string' } },
     },
     required: ['status', 'closedIds', 'notes'],
+    allOf: [needsDecisionRequires('status')],
 };
 
 // NEW (apra-fleet-unw.16): no corresponding vendored agents/*.md file --

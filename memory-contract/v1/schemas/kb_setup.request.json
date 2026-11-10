@@ -32,6 +32,22 @@
           "maximum": 120000,
           "description": "Socket idle timeout in milliseconds for each request to the remote KB server, 1000-120000 (default 5000). Not a per-request deadline: a call can wait up to about twice this while queued offline writes flush first."
         },
+        "tool_profile": {
+          "type": "string",
+          "enum": [
+            "full",
+            "developer",
+            "custom"
+          ],
+          "description": "Install-wide KB tool profile for interactive (non-member) sessions: full (every kb_* tool, the default), developer (kb_session_prime, kb_query, kb_context, kb_capture, kb_feedback) or custom (the kb_* names in tool_profile_tools). Member sessions and sprint roles are unaffected. Takes effect when a session reconnects. A usability control, not a security boundary; developer hides kb_setup, so switch back with the CLI: apra-fleet kb profile full. Can be set alone, without provider/remote/token."
+        },
+        "tool_profile_tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The registered kb_* tool names the custom tool_profile serves (required with tool_profile custom, not allowed otherwise). An unknown name is refused and nothing is written."
+        },
         "repo_path": {
           "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
         },

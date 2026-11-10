@@ -10,6 +10,7 @@ import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs'
 import { buildRunTitle } from './run-title.mjs';
 import { billedTokens } from '../workflow/pricing.mjs';
 import { createRunSummary, refreshSummaryCore, applyExtensionSummary, backfillExtensionSummaries } from './run-summary.mjs';
+import { checkMutatingRequest, checkRequestHost } from './request-guard.mjs';
 
 // apra-fleet-eft.6.5: the SAME template serves both the live view and the
 // process-free History view -- `opts.history` (true) feeds a FROZEN state
@@ -73,6 +74,9 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     /* (apra-fleet-p2to.2.1) 'paused since <ts>' badge + reason card,
        generic to every workflow run -- no per-workflow-type styling. */
     .pause-banner { background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.4); color: var(--warning); }
+    /* Header-level extension banner slots (see the markup below the header). */
+    .extension-banners { flex-shrink: 0; }
+    .extension-banner { max-height: 45vh; overflow-y: auto; }
     
     /* min-height: 0 on every rung of the flex chain: a flex item's default
        min-height is content-sized, which lets a tall Activity list push the
@@ -225,6 +229,13 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       ${isHistory ? '' : '<button class="btn btn-stop" onclick="stopWorkflow()">Stop</button>'}
     </div>
   </div>
+  <!-- Header-level banner slot per dashboard extension: OUTSIDE every tab
+       panel, so whatever an extension renders here stays visible whichever
+       tab is active (e.g. a run-wide notice that needs the operator's
+       attention). Core never fills or shows these; the extension's own js
+       does (document.getElementById('extension-banner-' + id)). Live view
+       only, like the pause banner: a finished run has nothing to act on. -->
+  ${isHistory ? '' : `<div class="extension-banners" id="extension-banners">${dashboardExtensions.map(ext => `<div id="extension-banner-${ext.id}" class="extension-banner" style="display: none;"></div>`).join('')}</div>`}
   ${isHistory ? '' : `<div class="modal-overlay" id="stop-modal-overlay">
     <div class="modal-box">
       <p>Are you sure you want to forcibly stop the workflow?</p>
@@ -362,7 +373,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 
     async function confirmStopWorkflow() {
       closeStopModal();
-      await fetch('/stop', { method: 'POST' });
+      await fetch('/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       showStopToast();
     }
 
@@ -378,10 +389,10 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // tick, below. That keeps the button truthful about what the engine has
     // ACTUALLY done rather than what the browser merely asked for.
     async function pauseWorkflow() {
-      await fetch('/pause', { method: 'POST' });
+      await fetch('/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     }
     async function resumeWorkflow() {
-      await fetch('/resume', { method: 'POST' });
+      await fetch('/resume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     }
 
 
@@ -974,6 +985,9 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 // module). Reads from the LIVE, full-fidelity in-memory `state.tree` (never
 // the leaned /state payload), which is where an uncapped activity's complete
 // output/error text still lives.
+// Upper bound on a POST /extensions/:extId/actions/:actionId request body.
+const ACTION_BODY_MAX_BYTES = 64 * 1024;
+
 // True for GET /state?summary=1 (any extra query params, e.g. a _t
 // cache-buster, allowed); false for plain /state and /state?_t=....
 function isSummaryRequest(url) {
@@ -1011,6 +1025,9 @@ export { HTML_TEMPLATE };
  * @param {number} [opts.port=8080] - HTTP server port
  * @param {string} [opts.host='127.0.0.1'] - Interface to bind. Loopback by default; pass '0.0.0.0' (or a
  *   specific address) to expose the dashboard off-box -- an explicit opt-in.
+ * @param {string[]|string} [opts.allowedHosts] - Extra Host header names this server answers to. Loopback
+ *   names, IP literals and `host` are always accepted; any other name is refused on every request
+ *   (DNS-rebinding defence, request-guard.mjs checkRequestHost()).
  * @param {string} [opts.runId] - Stable per-run identifier (generated if not provided)
  * @param {string} [opts.name] - Workflow display name
  * @param {string} [opts.debouncedStatePath] - Path to write state JSON (uses default if not provided)
@@ -1454,6 +1471,21 @@ export function createDashboardViewer(workflow, opts = {}) {
     });
 
     const server = http.createServer((req, res) => {
+        // Cross-site request forgery guard (request-guard.mjs): this server
+        // listens on a loopback port any visited web page could POST to, and
+        // its POST routes stop/pause the run or record an operator answer. A
+        // mutating request must be JSON and same-origin (no Origin: the
+        // supervisor's proxy and HTTP clients; or this page's own origin).
+        // The Host header is checked on EVERY request (GET /state included):
+        // a DNS-rebound page controls Origin and Host alike.
+        const hostOpts = { bindHost: host, allowedHosts: opts.allowedHosts };
+        const refused = checkRequestHost(req, hostOpts) || checkMutatingRequest(req, hostOpts);
+        if (refused) {
+            if (typeof req.resume === 'function') req.resume();
+            res.writeHead(refused.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({ error: refused.error }));
+            return;
+        }
         if (req.url === '/') {
             res.writeHead(200, { 'Content-Type': 'text/html' });
             res.end(HTML_TEMPLATE(dashboardExtensions));
@@ -1515,6 +1547,50 @@ export function createDashboardViewer(workflow, opts = {}) {
                 text: detail.text || '',
                 updatedAt: detail.updatedAt ?? null
             }));
+        } else if (req.method === 'POST' && /^\/extensions\/[^/]+\/actions\/[^/]+$/.test(req.url)) {
+            // GENERIC extension action route (mirrors the detail route above):
+            // an extension may register `actions: { <actionId>(ctx) }`, where
+            // ctx = { body, state } with `body` the parsed JSON request body
+            // (bounded to ACTION_BODY_MAX_BYTES). The action returns
+            // { status?, body? } (sync or async). Core never names a specific
+            // extension or action; an unknown extension/action is a 404, a
+            // malformed or oversized body a 400, a throwing action a 500.
+            const match = req.url.match(/^\/extensions\/([^/]+)\/actions\/([^/]+)$/);
+            const extId = decodeURIComponent(match[1]);
+            const actionId = decodeURIComponent(match[2]);
+            const ext = dashboardExtensions.find((e) => e.id === extId);
+            const action = ext && ext.actions && Object.prototype.hasOwnProperty.call(ext.actions, actionId) ? ext.actions[actionId] : null;
+            const reply = (status, body) => {
+                res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+                res.end(JSON.stringify(body));
+            };
+            if (typeof action !== 'function') {
+                reply(404, { error: 'action not found', extension: extId, action: actionId });
+                return;
+            }
+            const chunks = [];
+            let size = 0;
+            let tooBig = false;
+            req.on('data', (c) => {
+                size += c.length;
+                if (size > ACTION_BODY_MAX_BYTES) { tooBig = true; return; }
+                chunks.push(c);
+            });
+            req.on('end', async () => {
+                if (tooBig) { reply(400, { error: 'request body too large' }); return; }
+                let body = {};
+                const raw = Buffer.concat(chunks).toString('utf-8');
+                if (raw.trim()) {
+                    try { body = JSON.parse(raw); } catch { reply(400, { error: 'request body is not valid JSON' }); return; }
+                }
+                try {
+                    const out = (await action({ body, state })) || {};
+                    reply(Number.isInteger(out.status) ? out.status : 200, out.body === undefined ? {} : out.body);
+                } catch (err) {
+                    console.error('[Viewer] extension action failed:', err && err.message ? err.message : err);
+                    reply(500, { error: 'action failed' });
+                }
+            });
         } else if (req.method === 'GET' && /^\/beads\/[^/]+\/description$/.test(req.url)) {
             // BOUNDARY-COMPAT (apra-fleet-eft.37.4, one release only, then
             // dies per docs/workflow-core-boundary-refactoring.md M3): the

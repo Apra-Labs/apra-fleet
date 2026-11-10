@@ -24,7 +24,7 @@ import { checkVersionMismatch, type VersionMismatch } from '../services/version-
 import { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import { listKbScopes, knowledgeRootDir, GLOBAL_KB_SCOPE, type KbScopeLocation } from '../services/knowledge/kb-scopes.js';
 import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
-import { readKbConfigFromDisk, type KbConfigResult } from '../services/knowledge/kb-config.js';
+import { readKbConfigFromDisk, kbToolProfileWarning, type KbConfigResult } from '../services/knowledge/kb-config.js';
 import { getKbHttpAuthState } from '../services/knowledge/kb-http-auth-state.js';
 import { listLiveSecrets, lookupServerSecret, lookupServerSecretMeta, lookupLiveSecret } from '../services/credential-store.js';
 import { jwtExpiry } from '../utils/jwt-expiry.js';
@@ -539,6 +539,8 @@ export interface KbHealth {
   projectProvider: 'sqlite' | 'http';
   /** The remote KB credential; present only when the KB config selects the http provider. */
   credential?: KbHttpCredentialHealth;
+  /** Present only when the configured KB tool profile is invalid: names the bad value and what to do. */
+  toolProfileWarning?: string;
   /** Every project scope found on disk (including `default`, the non-git scope), sorted by slug. */
   scopes: KbScopeHealth[];
   /** The single shared cross-project KB, or null when it does not exist yet. */
@@ -699,7 +701,16 @@ export async function kbHealthSummary(opts: KbHealthOptions = {}): Promise<KbHea
     const config = readKbConfigOrSqlite();
     const projectProvider = config.provider === 'http' ? 'http' : 'sqlite';
     const credential = safeCredentialHealth(config);
-    return { projectProvider, ...(credential ? { credential } : {}), scopes, global, errors, totalEntries };
+    const toolProfileWarning = kbToolProfileWarning();
+    return {
+      projectProvider,
+      ...(credential ? { credential } : {}),
+      ...(toolProfileWarning ? { toolProfileWarning } : {}),
+      scopes,
+      global,
+      errors,
+      totalEntries,
+    };
   } catch {
     return null;
   }
@@ -804,8 +815,9 @@ export function liveSecretsCompactLines(list: LiveSecretHealth[]): string {
 
 export function kbHealthCompactLines(health: KbHealth): string {
   const credentialLine = health.credential ? `\n  ${kbCredentialCompactLine(health.credential)}` : '';
+  const toolProfileLine = health.toolProfileWarning ? `\n  ${health.toolProfileWarning}` : '';
   if (health.scopes.length === 0 && !health.global && health.errors.length === 0) {
-    return 'kb: no knowledge bases found yet (none captured on this server)' + credentialLine;
+    return 'kb: no knowledge bases found yet (none captured on this server)' + credentialLine + toolProfileLine;
   }
   const nonEmpty = health.scopes.filter(s => s.totals.total > 0);
   const empty = health.scopes.filter(s => s.totals.total === 0).map(s => s.scope);
@@ -820,7 +832,7 @@ export function kbHealthCompactLines(health: KbHealth): string {
   for (const e of health.errors) lines.push(`  kb[${e.scope}]: unreadable (${e.error})`);
   if (empty.length > 0) lines.push(`  kb: empty scope(s): ${empty.join(', ')}`);
   if (health.credential) lines.push(`  ${kbCredentialCompactLine(health.credential)}`);
-  return lines.join('\n');
+  return lines.join('\n') + toolProfileLine;
 }
 
 // ---------------------------------------------------------------------------
@@ -843,13 +855,19 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   const liveSecrets = liveSecretsHealth();
 
   if (agents.length === 0) {
+    // A KB tool profile matters without members too, so a bad one is reported
+    // here; otherwise this short form stays as it is, with no KB section.
+    const toolProfileWarning = kbToolProfileWarning();
     if (format === 'json') {
+      const kbHealth = toolProfileWarning ? await kbHealthSummary() : null;
       return JSON.stringify({
         version: serverVersion, summary: { total: 0, online: 0, offline: 0 }, members: [],
+        ...(kbHealth ? { kbHealth } : {}),
         ...(liveSecrets.length > 0 ? { liveSecrets } : {}),
       });
     }
-    return 'No members registered. Use register_member to add one.' +
+    const noMembers = 'No members registered. Use register_member to add one.';
+    return (toolProfileWarning ? `${noMembers}\n${toolProfileWarning}` : noMembers) +
       (liveSecrets.length > 0 ? `\n${liveSecretsCompactLines(liveSecrets)}` : '');
   }
 
