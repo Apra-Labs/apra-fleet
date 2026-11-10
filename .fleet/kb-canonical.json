@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "c1a438e81c81f0966e60d04ae98a7eb00d3c7d06",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 181
+    "entry_count": 182
   },
   "entries": [
     {
@@ -1433,6 +1433,33 @@
         "src/tools/kb-bible-commit.ts": "ab6406dfb1bc48a4a717d41396b158b0d511df55",
         "tests/knowledge/kb-bible-pending-commit.test.ts": "a875b2bd47c46f729a803ebd959c24ec6a6ef26f",
         "tests/knowledge/kb-tombstone-import.test.ts": "e9b8776cc4e12da7af0aab4c0cf7e1ba1bd8bb33"
+      }
+    },
+    {
+      "id": "57bee21e-ee41-4e34-adbd-71ce531ec63c",
+      "type": "knowledge",
+      "title": "kb_query relevant_only admits rows on keyword evidence only, and the engine treats an empty answer as final",
+      "summary": "relevant_only keeps rows with |bm25|/ln(N) >= 2.5 and >= 0.5 x the window's best, or an error_signatures match; semantic/anchor never admit. knowledgeFor skips the kb_session_prime fallback when any kb_query answered.",
+      "symbols": [
+        "passesKeywordCutoff",
+        "keywordRelevance",
+        "SqliteProvider.relevantRows",
+        "createKbWorkClient",
+        "knowledgeFor"
+      ],
+      "source_files": [
+        "src/services/knowledge/hybrid-rank.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "docs/kb-recall-measurements.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T09:03:03.421Z",
+      "source_file_hashes": {
+        "docs/kb-recall-measurements.md": "fcec131d2256e467ee53389e426a22c7c124a441",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "6fd0a757e2b53a0d0822cc21a75c5e1913bbdecf",
+        "src/services/knowledge/hybrid-rank.ts": "ba1fd93b6519276f32968cced565ea3b17cb977f",
+        "src/services/knowledge/sqlite-provider.ts": "84ccfb88f93d7e1c37c1829649672c942bf28329"
       }
     },
     {
