@@ -167,8 +167,8 @@
  *   losing context to a fresh one. The server also records it as a known session. Absent when
  *   the provider supplied none.
  * @property {ExecutePromptUsage} [usage]
- * @property {ToolErrorsReport} [toolErrors] - Present once a dispatch ran: the fleet tool
- *   calls that failed during it, read from the member's error registry. An FYI;
+ * @property {ToolErrorsReport} [toolErrors] - Present once a dispatch ran: the errors the
+ *   member's error registry holds for that member in the dispatch window. An FYI;
  *   execute_prompt takes no action on it.
  */
 
@@ -265,7 +265,8 @@
  * @property {'tool-call'} source
  * @property {string} tool
  * @property {string} code - The typed E-* code, or 'E-UNTYPED' for any other thrown error
- * @property {string|null} reason - The typed error's short reason token (e.g. 'expired'), else null
+ * @property {string|null} reason - The typed error's short reason token (e.g. 'expired'), an
+ *   enum or constant of the error class, never caller data; else null
  */
 
 /**
@@ -277,12 +278,15 @@
  */
 
 /**
- * execute_prompt's `toolErrors`: the member's tool-call errors during the dispatch.
- * `available: false` (with `detail`) when they could not be read -- e.g. an older member
- * install without query_errors, or no time left in max_total_s -- never an empty list then.
+ * execute_prompt's `toolErrors`: every error the member's server recorded for that member
+ * during the dispatch window -- the agent's tool calls, but also the engine's own calls as
+ * that member and concurrent sessions of it. `available: false` (with `detail`) when they
+ * could not be read -- e.g. an older member install without query_errors, or the read was
+ * skipped near a caller deadline -- never an empty list then. Full rules: execute_prompt
+ * in docs/mcp-tools.md.
  * @typedef {Object} ToolErrorsReport
  * @property {boolean} available
- * @property {number} sinceSeconds - The window queried: this call's elapsed seconds
+ * @property {number} sinceSeconds - The window queried: this call's elapsed seconds plus a few seconds of slack
  * @property {number} [total] - Present when available
  * @property {ErrorEntry[]} [entries] - Present when available
  * @property {string} [detail] - Present when not available: why

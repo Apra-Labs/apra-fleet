@@ -443,18 +443,10 @@ refuses a session value (`persist: false`) for a bound name. A live secret's net
 
 Calls `query_errors` -- a member's recorded tool-call errors on the server in
 the last `since_seconds` seconds; a member session reads only its own member.
-Extract the JSON with `parseToolJson()`: a `QueryErrorsResult`. Fields and
-registry bounds: `query_errors` in docs/mcp-tools.md. `QueryErrorsOptions`, `QueryErrorsResult`,
-`ErrorEntry` and `ToolErrorsReport` are pinned against the server by
-`test/client-server-typedef-parity.test.mjs`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `member` | `string` | Member uuid. |
-| `since_seconds` | `number` | Window in seconds, by the server's clock. |
-| `code` | `string?` | Only entries with this code. |
-| `tool` | `string?` | Only entries for this tool. |
-| `limit` | `number?` | Most recent entries to return (default 100, max 1000). |
+Extract the JSON with `parseToolJson()`: a `QueryErrorsResult`. Parameters,
+fields and registry bounds: `query_errors` in docs/mcp-tools.md.
+`QueryErrorsOptions`, `QueryErrorsResult`, `ErrorEntry` and `ToolErrorsReport`
+are pinned against the server by `test/client-server-typedef-parity.test.mjs`.
 
 #### `memberDetail(options)`
 

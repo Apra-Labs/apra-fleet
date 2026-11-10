@@ -8,28 +8,36 @@
 // script then prints structuredContent.toolErrors and checks that it holds
 // that entry.
 //
+// It prints which read path toolErrors took -- in-process (local member) or
+// SSH (remote member), with the member's OS -- and refuses a local member
+// unless --allow-local is passed: a local PASS proves only the in-process
+// path, never the SSH round trip.
+//
 // Usage:
-//   node tests/integration/tool-errors-evidence.mjs --member <name-or-uuid> [--timeout-s 300] [--model cheap]
+//   node tests/integration/tool-errors-evidence.mjs --member <name-or-uuid> [--timeout-s 300] [--model cheap] [--allow-local]
 //
 // Needs: a running fleet server for this install (the same APRA_FLEET_DATA_DIR
 // it runs with), the member registered there with a working LLM, and, for a
 // remote member, its own apra-fleet install at a build that has query_errors
 // (else toolErrors reports available:false, which the script prints and
 // fails on).
-// Exit: 0 entry found, 1 not found or the dispatch failed, 2 usage error.
+// Exit: 0 entry found, 1 not found or the dispatch failed, 2 usage error or
+// a local member without --allow-local.
 
 import { connectFleet } from '@apralabs/apra-fleet-client/server-resolution';
+import { parseToolJson } from '@apralabs/apra-fleet-client';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function parseArgs(argv) {
-  const out = { timeoutS: 300, model: 'cheap' };
+  const out = { timeoutS: 300, model: 'cheap', allowLocal: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const v = argv[i + 1];
     if (a === '--member' && v) { out.member = v; i++; }
     else if (a === '--timeout-s' && v) { out.timeoutS = Number(v); i++; }
     else if (a === '--model' && v) { out.model = v; i++; }
+    else if (a === '--allow-local') out.allowLocal = true;
     else return { error: `unknown or incomplete argument: ${a}` };
   }
   if (!out.member) return { error: '--member <name-or-uuid> is required' };
@@ -55,6 +63,18 @@ async function main() {
   const { fleetApi, transport } = await connectFleet();
   try {
     const who = UUID_RE.test(args.member) ? { member_id: args.member } : { member_name: args.member };
+    const detail = parseToolJson(await fleetApi.memberDetail({ ...who, format: 'json' }));
+    const local = detail.type === 'local';
+    const path = {
+      member: detail.name, type: detail.type, os: detail.os, shell: detail.shell ?? null,
+      read: local ? 'in-process (this fleet server)' : 'ssh (apra-fleet call query_errors on the member)',
+      fleetMcp: detail.fleetMcp ? { state: detail.fleetMcp.state, version: detail.fleetMcp.version ?? null } : null,
+    };
+    console.log(JSON.stringify({ path }, null, 2));
+    if (local && !args.allowLocal) {
+      console.error('REFUSED: a local member exercises only the in-process read, not SSH; pass --allow-local to run it anyway');
+      return 2;
+    }
     const started = new Date().toISOString();
     const result = await fleetApi.executePrompt({
       ...who,
@@ -84,7 +104,7 @@ async function main() {
       console.error('FAIL: no kb_query E-SCOPE-KEY-REMOVED entry (did the agent make the call? see response above)');
       return 1;
     }
-    console.log(`PASS: toolErrors holds ${JSON.stringify(hit)}`);
+    console.log(`PASS (${path.read}, os ${path.os}): toolErrors holds ${JSON.stringify(hit)}`);
     return 0;
   } finally {
     // close() releases the server-side session, then stops the transport.

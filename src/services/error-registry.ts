@@ -22,7 +22,8 @@ export interface ErrorEntry {
   tool: string;
   /** The error's typed E-* code, or E-UNTYPED for anything else thrown. */
   code: string;
-  /** The typed error's short reason token (e.g. E-KB-HTTP-AUTH's "expired"), else null. */
+  /** The typed error's short reason token (e.g. E-KB-HTTP-AUTH's "expired"), else null.
+   *  Always an enum or constant value of the error class, never caller data (see REASON_TOKEN_RE). */
   reason: string | null;
 }
 
@@ -32,6 +33,11 @@ export const UNTYPED_ERROR_CODE = 'E-UNTYPED';
 
 const TYPED_CODE_RE = /^E-[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
 // A reason is kept only when it is a short token, so no free text rides in.
+// The shape check alone cannot tell a constant from a token-shaped secret
+// name, member name or JWT segment, so the invariant is on the error classes:
+// an error with a typed E-* `code` must set `reason` only from an enum or a
+// constant (e.g. KbHttpAuthError's KbHttpAuthReason), never from input or
+// any value the caller supplied.
 const REASON_TOKEN_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 
 interface StoredEntry extends Omit<ErrorEntry, 'at'> { atMs: number }

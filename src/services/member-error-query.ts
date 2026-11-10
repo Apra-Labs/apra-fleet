@@ -13,6 +13,7 @@
 // install, an older install without query_errors, a timeout -- is reported as
 // { available: false }, never as an empty list, and never throws.
 
+import { randomBytes } from 'node:crypto';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { TargetOS } from '../providers/provider.js';
 import { getStrategy } from './strategy.js';
@@ -27,13 +28,13 @@ export type ToolErrorsReport =
   | { available: false; sinceSeconds: number; detail: string };
 
 export interface MemberErrorQueryDeps {
-  exec(agent: Agent, command: string, timeoutMs: number): Promise<SSHExecResult>;
+  exec(agent: Agent, command: string, timeoutMs: number, maxTotalMs: number, signal?: AbortSignal): Promise<SSHExecResult>;
   resolveHome(agent: Agent): Promise<string | null>;
 }
 
 export function defaultMemberErrorQueryDeps(): MemberErrorQueryDeps {
   return {
-    exec: (agent, command, timeoutMs) => getStrategy(agent).execCommand(command, timeoutMs),
+    exec: (agent, command, timeoutMs, maxTotalMs, signal) => getStrategy(agent).execCommand(command, timeoutMs, maxTotalMs, undefined, signal),
     resolveHome: agent => getMemberHomeDir(agent),
   };
 }
@@ -113,12 +114,13 @@ export function parseQueryErrorsOutput(r: SSHExecResult, sinceSeconds: number): 
 
 /**
  * The member's tool-call errors in the last `sinceSeconds` seconds. Never
- * throws. `timeoutMs` bounds the SSH call for a remote member.
+ * throws. For a remote member `opts.timeoutMs` is a wall-clock bound on the
+ * whole read (home probe included), and `opts.signal` cancels it.
  */
 export async function queryMemberToolErrors(
   agent: Agent,
   sinceSeconds: number,
-  timeoutMs: number,
+  opts: { timeoutMs: number; signal?: AbortSignal },
   deps: MemberErrorQueryDeps = defaultMemberErrorQueryDeps(),
 ): Promise<ToolErrorsReport> {
   const unavailable = (detail: string): ToolErrorsReport => ({ available: false, sinceSeconds, detail: clip(detail) });
@@ -130,14 +132,35 @@ export async function queryMemberToolErrors(
     if (agent.fleetMcp?.state !== 'available') {
       return unavailable(`the member's own apra-fleet install is not verified (fleetMcp ${agent.fleetMcp?.state ?? 'never probed'}${agent.fleetMcp?.reason ? `: ${agent.fleetMcp.reason}` : ''}), so its errors cannot be read`);
     }
-    const home = await deps.resolveHome(agent);
-    if (!home) return unavailable('could not resolve the member home folder');
-    const targetOs = getAgentOS(agent) as TargetOS;
-    const shell = getAgentShell(agent);
-    const binPath = memberBinPath(home, targetOs, shell);
-    const argsPath = memberJoin(targetOs, shell, home, '.apra-fleet', `query-errors-args-${agent.id}.json`);
-    const r = await deps.exec(agent, buildQueryErrorsCommand(binPath, agent.id, sinceSeconds, argsPath, targetOs, shell), timeoutMs);
-    return parseQueryErrorsOutput(r, sinceSeconds);
+    if (opts.signal?.aborted) return unavailable('the call was cancelled before the errors were read');
+    // One wall-clock deadline for the whole remote read -- home probe, SSH
+    // connect and the call -- and the caller's abort signal. Whichever comes
+    // first settles it; the exec itself is also capped and aborted.
+    const deadlineMs = opts.timeoutMs;
+    const query = async (): Promise<ToolErrorsReport> => {
+      const home = await deps.resolveHome(agent);
+      if (!home) return unavailable('could not resolve the member home folder');
+      const targetOs = getAgentOS(agent) as TargetOS;
+      const shell = getAgentShell(agent);
+      const binPath = memberBinPath(home, targetOs, shell);
+      // Unique per query, so concurrent queries on one member never share a file.
+      const argsPath = memberJoin(targetOs, shell, home, '.apra-fleet', `query-errors-args-${agent.id}-${randomBytes(4).toString('hex')}.json`);
+      const r = await deps.exec(agent, buildQueryErrorsCommand(binPath, agent.id, sinceSeconds, argsPath, targetOs, shell), deadlineMs, deadlineMs, opts.signal);
+      return parseQueryErrorsOutput(r, sinceSeconds);
+    };
+    let timer: NodeJS.Timeout | undefined;
+    let onAbort: (() => void) | undefined;
+    const stop = new Promise<ToolErrorsReport>(resolve => {
+      timer = setTimeout(() => resolve(unavailable(`query_errors did not answer within ${deadlineMs} ms`)), deadlineMs);
+      onAbort = () => resolve(unavailable('the call was cancelled while the errors were read'));
+      opts.signal?.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      return await Promise.race([query(), stop]);
+    } finally {
+      clearTimeout(timer);
+      if (onAbort) opts.signal?.removeEventListener('abort', onAbort);
+    }
   } catch (err) {
     return unavailable(`query_errors could not run: ${err instanceof Error ? err.message : String(err)}`);
   }
