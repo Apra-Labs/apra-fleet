@@ -31,7 +31,7 @@ import {
   type EmbedderLike, type EmbedderSource, type EmbedQueueStatus,
 } from './embedding/embed-queue.js';
 import { CodeLinkStore, normalizeFileRef, type CodeLinkResolver, type CodeLinksStatus, type ResolvedCodeLink } from './code-links.js';
-import { guardKeywordTop, hybridOrder, ranksFromOrder, ranksFromScores, reciprocalRankFusion, trustPrior, type RankedList } from './hybrid-rank.js';
+import { guardKeywordTop, hybridOrder, keywordGuardFor, passesKeywordCutoff, ranksFromOrder, ranksFromScores, reciprocalRankFusion, RELEVANCE_MIN_DEPTH, trustPrior, type RankedList } from './hybrid-rank.js';
 import { getSessionEngineOrigin } from '../tool-scope.js';
 import { validateFilePaths } from './path-validation.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
@@ -199,7 +199,7 @@ async function withinQueryEmbedDeadline(
 
 /**
  * Most characters of the query text a read sends to the embedder. Engine
- * situations ('about to work on: <title>. <description>. Done when: ...')
+ * situations ('<title>. <description>. Done when: ...')
  * run to 450-800 chars; embedding them whole roughly doubles the hybrid
  * query cost while the title / first sentence carries most of the meaning.
  * A query at or under the cap is embedded unchanged.
@@ -1772,10 +1772,14 @@ export class SqliteProvider implements MemoryProvider {
 
     const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
     const limit = opts.limit ?? 20;
+    // relevant_only: rank a deeper window, cut it, then trim to the limit, so
+    // a strong keyword row ranked just below the limit can replace a cut one.
+    const cutoff = opts.relevant_only === true && !opts.flagged_only;
+    const fetchLimit = cutoff ? Math.max(limit * 3, RELEVANCE_MIN_DEPTH) : limit;
 
     let rows: Record<string, unknown>[];
 
-    const hybrid = opts.flagged_only ? null : await this.hybridRows(opts, conditions, params, limit);
+    const hybrid = opts.flagged_only ? null : await this.hybridRows(opts, conditions, params, fetchLimit);
     if (hybrid) {
       rows = hybrid;
     } else if (opts.query || opts.fts_terms?.length) {
@@ -1787,15 +1791,16 @@ export class SqliteProvider implements MemoryProvider {
       // trigram (partial identifier) hits in below every full-token hit.
       // orJoinFtsTerms remains the single quoting point (kb-normalize).
       const search = opts.fts_terms?.length ? { terms: opts.fts_terms } : { query: opts.query! };
-      rows = this.keywordIndex.search(search, conditions, params, limit, { trigram: true });
+      rows = this.keywordIndex.search(search, conditions, params, fetchLimit, { trigram: true });
     } else {
       rows = db.prepare(`
         SELECT e.* FROM entries e
         ${where}
         ORDER BY e.created_at DESC
         LIMIT ?
-      `).all(...params, limit) as Record<string, unknown>[];
+      `).all(...params, fetchLimit) as Record<string, unknown>[];
     }
+    if (cutoff) rows = this.relevantRows(rows, opts, conditions, params).slice(0, limit);
 
     const results = rows.map(r => {
       const entry = this.rowToEntry(r);
@@ -1808,6 +1813,44 @@ export class SqliteProvider implements MemoryProvider {
     this.bumpReturned(db, results.map(r => r.id));
 
     return { results, total: results.length, l1_only: opts.l1_only ?? false };
+  }
+
+  /**
+   * The relevance cutoff of a relevant_only read (the engine push path):
+   * `rows` (already ranked) keeps only the rows whose keyword match clears
+   * passesKeywordCutoff (hybrid-rank.ts), plus rows whose error_signatures
+   * match the read's error_text. Order is unchanged. A read with no query
+   * text keeps only error matches. When the keyword index is not ready (a
+   * rebuild is running) there is no comparable score and the rows are
+   * returned uncut: the cutoff only ever narrows a result that can be scored.
+   */
+  private relevantRows(
+    rows: Record<string, unknown>[],
+    opts: QueryOptions,
+    conditions: string[],
+    params: SQLInputValue[],
+  ): Record<string, unknown>[] {
+    if (rows.length === 0) return rows;
+    const ids = rows.map(r => r.id as string);
+    const errorText = opts.error_text?.trim() ?? '';
+    const errorIds = new Set<string>(errorText
+      ? this.keywordIndex.search({ query: errorText }, conditions, params, Math.max(ids.length, RELEVANCE_MIN_DEPTH), { column: 'error_signatures' })
+        .map(r => r.id as string)
+      : []);
+    const queryText = opts.query?.trim() ?? '';
+    const search = opts.fts_terms?.length ? { terms: opts.fts_terms } : queryText ? { query: queryText } : null;
+    if (!search) return rows.filter(r => errorIds.has(r.id as string));
+    const scored = this.keywordIndex.keywordScores(search, ids);
+    if (!scored) return rows;
+    // The best keyword score among the candidates: the hybrid order keeps the
+    // keyword top 5 inside the window, so the query's best admissible keyword
+    // row is always one of them.
+    let best: number | undefined;
+    for (const sc of scored.scores.values()) if (best === undefined || sc < best) best = sc;
+    return rows.filter(r => {
+      const id = r.id as string;
+      return errorIds.has(id) || passesKeywordCutoff(scored.scores.get(id), best, scored.docs);
+    });
   }
 
   /**
@@ -1846,8 +1889,9 @@ export class SqliteProvider implements MemoryProvider {
    * D2f additive rules: (1) the semantic text is built from opts.query and
    * error_text only, never fts_terms, so a read carrying only fts_terms
    * returns null/keyword rows exactly as without a model; (2) every id in the
-   * keyword list's top 5 is guaranteed a place in the first 8 of the final
-   * order (guardKeywordTop in hybrid-rank.ts).
+   * keyword list's top 5 is guaranteed a place in the first min(8, limit)
+   * of the final order -- inside what the caller receives
+   * (keywordGuardFor / guardKeywordTop in hybrid-rank.ts).
    */
   private async hybridRows(
     opts: QueryOptions,
@@ -1992,8 +2036,9 @@ export class SqliteProvider implements MemoryProvider {
       const r = rowById.get(id)!;
       return trustPrior({ confidence: r.confidence as string, use_count: Number(r.use_count ?? 0), stale: Number(r.stale ?? 0) === 1 });
     }, lists[0] ? [...lists[0].ranks.keys()] : []);
+    const guard = opts.keyword_guard ?? keywordGuardFor(limit);
     const guarded = keywordRows && !opts.disable_keyword_guard
-      ? guardKeywordTop(order, keywordRows.map(r => r.id as string))
+      ? guardKeywordTop(order, keywordRows.map(r => r.id as string), guard.keep, guard.within)
       : order;
     return guarded.slice(0, limit).map(id => rowById.get(id)!);
   }

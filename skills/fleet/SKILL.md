@@ -112,6 +112,17 @@ All tools accept `member_id` (UUID) or `member_name` (friendly name) to identify
   needs. Escalate to the owner only if the tool refuses. Before asking the owner, check how
   the engine already performs the same action.
 
+## KB semantic search: turn off or switch model
+
+- To turn semantic search off, call `kb_setup` with `embedding_model: "none"`; keyword and
+  anchor search keep serving. To switch model, pass a built-in model name instead (or a
+  custom-model object). An invalid value is refused and nothing is written.
+- When `kb_setup` is not available (a KB tool profile can hide it), run
+  `apra-fleet kb embedding none` or `apra-fleet kb embedding <model name>`; with no argument
+  it prints the current setting.
+- Either way the running fleet server switches on its next KB search: no restart.
+  `fleet_status` shows the embedding state.
+
 ## Dispatch Rules
 
 **Rule:** Shell commands (git, npm, bash scripts, file ops) -> `execute_command`. LLM reasoning tasks (write code, review, plan, analyse) -> `execute_prompt`. When in doubt: if a human could write the exact command string upfront, it's `execute_command`.

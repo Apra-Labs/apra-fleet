@@ -71,7 +71,7 @@ describe('Embedder failure handling', () => {
     _setEmbedderForTest(e);
     const health = await kbHealthSummary({ knowledgeDir: path.join(tmp, 'no-kb') });
     expect(health!.embedding).toMatchObject({ state: 'failed', reason: expect.stringMatching(/wasm backend exploded/) });
-    expect(kbHealthCompactLines(health!)).toMatch(/kb embedding: .* failed: load failed: wasm backend exploded/);
+    expect(kbHealthCompactLines(health!)).toMatch(/semantic search off: model failed to load: load failed: wasm backend exploded -- run apra-fleet kb model import/);
   });
 
   it("'none' -> disabled: no load attempted, null vectors, fleet_status shows disabled", async () => {
@@ -81,8 +81,8 @@ describe('Embedder failure handling', () => {
     expect(factory).not.toHaveBeenCalled();
     _setEmbedderForTest(e);
     const health = await kbHealthSummary({ knowledgeDir: path.join(tmp, 'no-kb') });
-    expect(health!.embedding).toEqual({ state: 'disabled' });
-    expect(kbHealthCompactLines(health!)).toContain('kb embedding: disabled');
+    expect(health!.embedding).toMatchObject({ state: 'disabled', reason: expect.any(String), fix: expect.stringContaining('apra-fleet kb embedding') });
+    expect(kbHealthCompactLines(health!)).toContain('semantic search off: embedding.model is none');
   });
 
   it('a corrupt ONNX file fails the load on the real runtime, never a throw', async () => {

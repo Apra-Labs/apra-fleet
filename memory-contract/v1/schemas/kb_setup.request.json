@@ -48,6 +48,18 @@
           },
           "description": "The registered kb_* tool names the custom tool_profile serves (required with tool_profile custom, not allowed otherwise). An unknown name is refused and nothing is written."
         },
+        "embedding_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "additionalProperties": {}
+            }
+          ],
+          "description": "Embedding model for KB semantic search: \"none\" (semantic search off; keyword and anchor search keep serving), a built-in model name (bge-small-en-v1.5, snowflake-arctic-embed-s, snowflake-arctic-embed-xs), or a custom-model object ({id, revision} for a Hugging Face model pinned to a full commit sha, or {path} for a local folder; optional pooling, normalize, query_prefix, doc_prefix, dtype, dims, token_limit, semantic_floor). Takes effect on the running server at once, no restart. A malformed value is refused and nothing is written. Can be set alone, without provider/remote/token."
+        },
         "repo_path": {
           "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
         },

@@ -80,6 +80,9 @@
             },
             "token_estimate": {
               "type": "number"
+            },
+            "embedding_warning": {
+              "type": "string"
             }
           },
           "required": [

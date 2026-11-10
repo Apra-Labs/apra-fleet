@@ -101,10 +101,66 @@ export function hybridOrder(
     || a.localeCompare(b));
 }
 
+// -- Relevance cutoff (kb_query relevant_only, the engine push path) ---------
+//
+// Without a cutoff a pushed block of 8 always fills to 8, and on the measured
+// push-path set (24 real beads, the real bible, the default model) only about
+// 2.3 of the 8 rows were relevant (docs/kb-recall-measurements.md,
+// "Relevance cutoff on the push path"). The cutoff keeps a row only when its
+// KEYWORD match is strong, both in absolute terms and against the best
+// keyword match of the same query. Semantic similarity and file/symbol
+// anchors still order the rows that are kept but never admit a row on their
+// own: measured, neither separated relevant from irrelevant rows (similarity
+// 0.55-0.75 for both with the default model). Being keyword-only, the cutoff
+// does not depend on the model: with no model it keeps the same rows.
+
+/** Minimum keyword relevance (see keywordRelevance) a kept row needs. */
+export const RELEVANCE_MIN_KEYWORD_SCORE = 2.5;
+/** A kept row's keyword score is at least this share of the query's best. */
+export const RELEVANCE_TOP_RATIO = 0.5;
+/** Rows the cutoff looks at before cutting back to the caller's limit. */
+export const RELEVANCE_MIN_DEPTH = 30;
+
+/**
+ * Keyword relevance of a bm25 score (FTS5 bm25: negative, lower is better):
+ * |score| / ln(docs), docs = rows in the keyword index. A term's idf grows
+ * with ln(docs) for a term held by a fixed few entries, so the division keeps
+ * the threshold meaning the same as the KB grows. 0 for an index of < 2 rows.
+ */
+export function keywordRelevance(score: number, docs: number): number {
+  return docs >= 2 && Number.isFinite(score) ? -score / Math.log(docs) : 0;
+}
+
+/**
+ * True when a row's keyword score clears the cutoff: keyword relevance of at
+ * least RELEVANCE_MIN_KEYWORD_SCORE and at least RELEVANCE_TOP_RATIO of the
+ * best score among the query's candidate rows. A row with no keyword score
+ * (semantic or anchor only) never clears it.
+ */
+export function passesKeywordCutoff(score: number | undefined, best: number | undefined, docs: number): boolean {
+  if (score === undefined || best === undefined || !(best < 0) || !(score < 0)) return false;
+  return keywordRelevance(score, docs) >= RELEVANCE_MIN_KEYWORD_SCORE && score / best >= RELEVANCE_TOP_RATIO;
+}
+
 /** D2f additive rule: how many keyword-list head ids are guaranteed a place... */
 export const KEYWORD_GUARD_KEEP = 5;
 /** ...within this many leading positions of the final order (the pushed block size). */
 export const KEYWORD_GUARD_WITHIN = 8;
+
+/**
+ * The guard window for a read returning `limit` rows: the keyword top
+ * KEYWORD_GUARD_KEEP within the first min(KEYWORD_GUARD_WITHIN, limit). A
+ * fixed window of 8 protected nothing a caller saw at a smaller limit: a
+ * guarded id moved to position 7 or 8 was cut by the limit, so at the member
+ * default limit 6, 112 of 182 eval queries lost a keyword top-5 hit (0 with
+ * the window clamped). Measured trade (docs/kb-recall-measurements.md, limit
+ * 6, default model): bare bible real MRR 0.8520 -> 0.8611 and real R@6
+ * 0.9762 -> 1.0000, authored R@6 0.9424 -> 0.9281.
+ */
+export function keywordGuardFor(limit: number): { keep: number; within: number } {
+  const within = Number.isFinite(limit) && limit > 0 ? Math.min(KEYWORD_GUARD_WITHIN, Math.floor(limit)) : KEYWORD_GUARD_WITHIN;
+  return { keep: KEYWORD_GUARD_KEEP, within };
+}
 
 /**
  * Keyword top-N guard (D2f additive rule). Every id in the first `keep`

@@ -12,6 +12,8 @@ import './kb-code-link-resolver.js';
 import type { KBEntry, MemoryProvider } from '../services/knowledge/types.js';
 import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import { FLEET_DIR } from '../paths.js';
+import { getEmbeddingState } from '../services/knowledge/embedding/embedder.js';
+import { embeddingNotice } from '../services/knowledge/embedding/embedding-notice.js';
 
 export const kbSessionPrimeSchema = z.object({
   confidence: z.array(z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED'])).min(1).optional()
@@ -173,7 +175,29 @@ function parseContextNeighbors(result: unknown): string[] {
   }
 }
 
+/**
+ * Add one `embedding_warning` line when semantic search is downloading or
+ * failed (not when deliberately off). Never throws and never changes the result otherwise.
+ */
+function withEmbeddingWarning(json: string): string {
+  try {
+    const notice = embeddingNotice(getEmbeddingState());
+    // A deliberate off (embedding.model none) is the user's choice: no warning
+    // on every prime that could invite an assistant to undo it.
+    if (!notice || notice.state === 'off') return json;
+    const parsed = JSON.parse(json) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return json;
+    return JSON.stringify({ ...(parsed as Record<string, unknown>), embedding_warning: notice.line });
+  } catch {
+    return json;
+  }
+}
+
 export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnchor): Promise<string> {
+  return withEmbeddingWarning(await kbSessionPrimeCore(input, anchor));
+}
+
+async function kbSessionPrimeCore(input: KbSessionPrimeInput, anchor?: KbAnchor): Promise<string> {
   if (input.session_files?.length) validateFilePaths(input.session_files);
 
   // Prime the calling session's own KB (kb-self.ts): a member session's work

@@ -423,12 +423,24 @@ and a `hint` that the token cannot be refreshed and how to switch to
 any JWT claim other than `exp` never appear.
 
 `kbHealth.embedding` (`FleetStatusKbEmbedding`; compact: one `kb embedding:`
-line) reports this host's local embedding model (KB config `embedding.model`):
+line when healthy, or one `semantic search ...` notice line for
+`downloading`, `failed` and `disabled`) reports this host's local embedding model (KB config `embedding.model`):
 `state` is `idle` (configured; downloads and loads on first use), `loading`,
-`ready` (with `dims`), `disabled` (`embedding.model` is `none`) or `failed`
-(with `reason`; semantic search is off, keyword and anchor search remain),
-plus `modelId` and `revision` (`local` for a folder model). Reading it never
+`downloading` (model files are being fetched; keyword and anchor search serve
+meanwhile), `ready` (with `dims`), `disabled` (`embedding.model` is `none`) or `failed`
+(semantic search is off, keyword and anchor search remain); `downloading`,
+`failed` and `disabled` also carry `reason` and `fix`, plus `modelId` and `revision` (`local` for a folder model). Reading it never
 loads or downloads a model.
+
+The model is set with the `kb_setup` input `embedding_model`: `"none"`
+(semantic search off), a built-in model name, or a custom-model object (the
+same shapes `embedding.model` accepts). The running server switches at once,
+without a restart, so the next `kb_query` and `fleet_status` reflect it; a
+malformed value is refused with an error and the config file is left
+unchanged; every other KB config key is kept. The CLI verb
+`apra-fleet kb embedding [none | <built-in name>]` does the same from a shell
+(useful when a KB tool profile hides `kb_setup`); a running server notices
+the changed config on its next KB search and switches without a restart.
 
 #### `memberDetail(options)`
 

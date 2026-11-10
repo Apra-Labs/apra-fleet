@@ -305,14 +305,17 @@
 
 /**
  * Local KB embedding model state, `kbHealth.embedding` in fleet_status json
- * output (one compact `kb embedding:` line in compact output). This host
- * only; reading it never loads or downloads a model.
+ * output (compact output: one `kb embedding:` line when healthy, or one `semantic search ...` notice line for downloading, failed and off). This host
+ * only; reading it never loads or downloads a model. Set the model with the
+ * kb_setup input embedding_model ("none", a built-in model name or a
+ * custom-model object); the running server switches without a restart.
  * @typedef {Object} FleetStatusKbEmbedding
- * @property {"idle" | "loading" | "ready" | "disabled" | "failed"} state - idle: configured, downloads and loads on first use; disabled: embedding.model none; failed: semantic search off, keyword and anchor search remain
+ * @property {"idle" | "loading" | "downloading" | "ready" | "disabled" | "failed"} state - idle: configured, downloads and loads on first use; downloading: model files are being fetched, keyword and anchor search serve meanwhile; disabled: embedding.model none; failed: semantic search off, keyword and anchor search remain
  * @property {string} [modelId] - Model repo id or local folder (absent when disabled)
  * @property {string} [revision] - Pinned revision, or "local" for a folder model
  * @property {number} [dims] - state "ready": vector size
- * @property {string} [reason] - state "failed": why the download or load failed
+ * @property {string} [reason] - states "downloading", "failed" and "disabled": what is happening or why the download or load failed
+ * @property {string} [fix] - states "downloading" and "failed": the command or action that resolves it; state "disabled" (a deliberate setting): how to change it
  */
 
 /**
@@ -811,6 +814,10 @@
  *   against entries' error_signatures and added to the semantic query text.
  *   files/symbols/error_text are used by the local SQLite KB only; an HTTP KB
  *   backend ignores them.
+ * @property {boolean} [relevant_only] - Optional, default false: keep only rows with
+ *   strong keyword evidence for the query (strong for the KB's size and at least half
+ *   the query's best keyword match) or an error_signatures match for error_text.
+ *   Fewer rows, possibly none; meant for pushed context. Local SQLite KB only.
  */
 
 /**
@@ -1432,7 +1439,8 @@ export class ApraFleet {
      * Search the calling session's KB (kb_query). Result JSON is
      * {l1_results, l2_expanded, related_claims?}, or {flagged_entries, total,
      * note} with flagged_only; extract with parseToolJson(). The optional
-     * files / symbols / error_text inputs are additive hybrid-ranking hints.
+     * files / symbols / error_text inputs are additive hybrid-ranking hints;
+     * relevant_only: true cuts rows without strong keyword evidence.
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
      * @param {KbQueryOptions} options

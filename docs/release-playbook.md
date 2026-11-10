@@ -74,6 +74,10 @@ gh release view vX.Y.Z                 # see the auto-generated draft
 gh release edit vX.Y.Z --notes "..."   # replace with a clean summary
 ```
 
+If `docs/release-notes-<version>.md` exists for this release, start from the
+sections in it (for 0.4.5: `docs/release-notes-0.4.5.md`) and fold them into
+the summary.
+
 Keep the summary short: what changed and why. It's fine to leave GitHub's
 "Full Changelog" link at the bottom for anyone who wants the raw commit diff.
 

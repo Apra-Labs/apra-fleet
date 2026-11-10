@@ -764,8 +764,15 @@ export function createKbWorkClient(opts = {}) {
         return m ? m.record : null;
     }
 
-    /** kb_query on the target: CONFIRMED, undisputed entries (direct hits, then graph-related). */
+    /**
+     * kb_query on the target: CONFIRMED, undisputed entries (direct hits, then
+     * graph-related), cut to the rows with strong keyword evidence
+     * (relevant_only). Resolves to { entries, answered }: answered is true
+     * when the KB gave a parseable result, even an empty one -- after the
+     * cutoff "nothing relevant" is a real answer, not a failure.
+     */
     async function queryEntries(record, query, extra = {}) {
+        const none = { entries: [], answered: false };
         try {
             const res = await memberCall(record, 'kb_query', {
                 query,
@@ -776,15 +783,18 @@ export function createKbWorkClient(opts = {}) {
                 expand_related: true,
                 confidence: ['CONFIRMED'],
                 exclude_disputed: true,
+                // Pushed context: fewer but relevant rows, an empty block is
+                // fine. A KB server predating the option ignores it.
+                relevant_only: true,
             });
             // apra-fleet-23c: a tool-level failure RESOLVES with {isError:true}
             // rather than throwing; log it instead of reading it as "no hits".
             if (isToolError(res)) {
                 log(`[kb-work] kb_query rejected for ${memberLabel(record)} (non-fatal): ${toolErrorText(res)}`);
-                return [];
+                return none;
             }
             const parsed = parseResult(res);
-            if (!parsed) return [];
+            if (!parsed) return none;
             const hits = Array.isArray(parsed.l1_results) ? parsed.l1_results : [];
             const related = Array.isArray(parsed.related_claims) ? parsed.related_claims : [];
             const seen = new Set();
@@ -800,10 +810,10 @@ export function createKbWorkClient(opts = {}) {
                 seen.add(e.id);
                 out.push({ ...e, via: 'kb-graph' });
             }
-            return out.slice(0, KB_MAX_KNOWLEDGE_ENTRIES);
+            return { entries: out.slice(0, KB_MAX_KNOWLEDGE_ENTRIES), answered: true };
         } catch (err) {
             log(`[kb-work] kb_query failed for ${memberLabel(record)} (non-fatal): ${err.message}`);
-            return [];
+            return none;
         }
     }
 
@@ -1538,7 +1548,10 @@ export function createKbWorkClient(opts = {}) {
          *
          * `hints` is either a bare term list or {terms, hintSymbols,
          * hintModules} (kb-hints.mjs roleHints). Order: kb_query on the
-         * terms; when that finds nothing, kb_session_prime ranked by
+         * situations (or the joined terms), cut to relevant rows
+         * (relevant_only); when the KB answered and nothing was relevant,
+         * NOTHING. Only when no kb_query could be answered (rejected, failed,
+         * unparseable) or there were no terms: kb_session_prime ranked by
          * hint_symbols/hint_modules; when that finds nothing too, NOTHING --
          * there is deliberately no fall-back to an arbitrary set.
          *
@@ -1569,17 +1582,26 @@ export function createKbWorkClient(opts = {}) {
                     ...situations.filter((x) => x.kind !== 'file'),
                     ...situations.filter((x) => x.kind === 'file'),
                 ].slice(0, KB_MAX_SITUATION_QUERIES);
-                const lists = await Promise.all(picked.map(async (x) => ({
-                    withError: typeof x.errorText === 'string' && x.errorText.length > 0,
-                    entries: await queryEntries(target, x.situation, {
+                const lists = await Promise.all(picked.map(async (x) => {
+                    const r = await queryEntries(target, x.situation, {
                         files: strs(x.files), symbols: strs(x.symbols), error_text: x.errorText,
-                    }),
-                })));
+                    });
+                    return {
+                        withError: typeof x.errorText === 'string' && x.errorText.length > 0,
+                        entries: r.entries,
+                        answered: r.answered,
+                    };
+                }));
                 const merged = mergeRankedLists(lists, KB_MAX_KNOWLEDGE_ENTRIES);
                 if (merged.length > 0) return { entries: merged, source: 'query' };
+                // The KB answered and nothing cleared the relevance cutoff:
+                // that is the answer. Falling back to kb_session_prime here
+                // would push rows nobody judged relevant to this dispatch.
+                if (lists.some((l) => l.answered)) return nothing;
             } else if (terms.length > 0) {
                 const queried = await queryEntries(target, terms.join(' '));
-                if (queried.length > 0) return { entries: queried, source: 'query' };
+                if (queried.entries.length > 0) return { entries: queried.entries, source: 'query' };
+                if (queried.answered) return nothing;
             }
             if (hintSymbols.length > 0 || hintModules.length > 0) {
                 const primed = await primeEntries(target, hintSymbols, hintModules);

@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
+    "commit": "c1a438e81c81f0966e60d04ae98a7eb00d3c7d06",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 178
+    "entry_count": 187
   },
   "entries": [
     {
@@ -117,6 +117,36 @@
       "source_file_hashes": {
         "src/services/knowledge/sqlite-provider.ts": "be02241973f3d1e354942d16bf189966221407c2",
         "src/tools/kb-export.ts": "216aeabdcbd26c4a30b2bdbb9264575e0c58a05b"
+      }
+    },
+    {
+      "id": "0d9cd4e7-0642-4e24-a562-945f8acb9ff7",
+      "type": "knowledge",
+      "title": "A KB config change reaches a running server through a stat gate in getEmbedder",
+      "summary": "getEmbedder re-reads embedding.model only when the KB config file's mtime(ns)/size/inode signature changes, and switches the process embedder; tests that inject an embedder via _setEmbedderForTest are pinned and never re-read.",
+      "symbols": [
+        "getEmbedder",
+        "switchEmbedder",
+        "Embedder.retire",
+        "readEmbeddingModelSettingChecked",
+        "writeKbEmbeddingModel",
+        "_setEmbedderForTest"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/embedder.ts",
+        "src/services/knowledge/kb-config.ts",
+        "src/services/knowledge/embedding/embed-queue.ts",
+        "src/tools/kb-setup.ts",
+        "tests/knowledge/kb-embedding-cli.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T10:04:24.575Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/embed-queue.ts": "1680d36d1054ab3680dd313506cd76500a2ce871",
+        "src/services/knowledge/embedding/embedder.ts": "c935470c12d4b7a10a28bdd2aaaab259feb9992a",
+        "src/services/knowledge/kb-config.ts": "af9be1ff4882fd9611d7867cd697c8886e5b09d2",
+        "src/tools/kb-setup.ts": "164182835f0631c21e93d87c508cf2b788bd7895",
+        "tests/knowledge/kb-embedding-cli.test.ts": "529bebe733f148749075080817c4616198913155"
       }
     },
     {
@@ -921,6 +951,29 @@
       }
     },
     {
+      "id": "3ac9f54d-6d87-4ecd-8c3b-3f0e57763519",
+      "type": "learning",
+      "title": "Count hub requests to prove a spawned fleet server never tried to load a model",
+      "summary": "In a real-server e2e test, point HF_ENDPOINT at a local HTTP server that counts requests and 404s; an enabled embedder trying to load downloads from it, so an unchanged count across kb_query + fleet_status proves no load attempt.",
+      "symbols": [
+        "ModelStore",
+        "fleetStatus",
+        "kbHealthSummary"
+      ],
+      "source_files": [
+        "tests/knowledge/kb-embedding-switch-live-server-e2e.test.ts",
+        "src/services/knowledge/embedding/model-store.ts",
+        "tests/setup.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T10:04:26.927Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/model-store.ts": "9ceb51cf2ca096064d71442b325d25420179c2b8",
+        "tests/knowledge/kb-embedding-switch-live-server-e2e.test.ts": "516e2ff6535b255869a55b679991d8ca560075df",
+        "tests/setup.ts": "64b0099ea61c3c885cff14c7bf80cce876eceb2a"
+      }
+    },
+    {
       "id": "3c18010b-49e1-4e66-8cce-60e9fb7c9227",
       "type": "knowledge",
       "title": "kb_bible_commit tombstones superseded/invalidated removals and kb_import retires them",
@@ -947,6 +1000,27 @@
         "src/services/knowledge/sqlite-provider.ts": "1ed681d9cbdb65076ed0af9e320e66fa0fac5c0f",
         "src/tools/kb-bible-commit.ts": "baad2cb8e29cdd66210a29ea9cc0af7af003846a",
         "tests/knowledge/kb-bible-removal-tombstones.test.ts": "0838148276608cba549d9553f3153731b7d9d9c3"
+      }
+    },
+    {
+      "id": "3c243dc3-9611-4886-b44b-30027f30409c",
+      "type": "knowledge",
+      "title": "Model download stall timeout counts onData calls and destination file growth",
+      "summary": "ModelStore's stall watchdog (stallTimeoutMs, default MODEL_DOWNLOAD_STALL_MS 60 s) treats either an onData callback or growth of the destination file as progress; there is no overall deadline any more.",
+      "symbols": [
+        "ModelStore",
+        "MODEL_DOWNLOAD_STALL_MS",
+        "ModelDownloadFn"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/model-store.ts",
+        "tests/knowledge/kb-model-store-download.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T08:13:00.598Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/model-store.ts": "9ceb51cf2ca096064d71442b325d25420179c2b8",
+        "tests/knowledge/kb-model-store-download.test.ts": "d9fd88b9a09501c60d34a274c4ae9f6ceca08e77"
       }
     },
     {
@@ -1264,6 +1338,31 @@
       }
     },
     {
+      "id": "4c77d3ad-2bc3-4f5e-8fc2-7004597ed2cb",
+      "type": "knowledge",
+      "title": "model-release-assets.mjs imports profiles.ts as TypeScript source via type stripping",
+      "summary": "scripts/model-release-assets.mjs loads src/services/knowledge/embedding/profiles.ts with node --experimental-strip-types (no build), so profiles.ts must keep no imports and only erasable TypeScript syntax; the release and prerelease CI jobs run it.",
+      "symbols": [
+        "assetPlan",
+        "loadProfiles",
+        "modelReleaseAssets"
+      ],
+      "source_files": [
+        "scripts/model-release-assets.mjs",
+        "src/services/knowledge/embedding/profiles.ts",
+        ".github/workflows/ci.yml",
+        "tests/knowledge/kb-model-release-assets-script.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T10:32:06.023Z",
+      "source_file_hashes": {
+        ".github/workflows/ci.yml": "8c0f8582d96635eee48957e6990458ef1c25b306",
+        "scripts/model-release-assets.mjs": "c78c54488a6d5f7f3fed46026dee021d7ef573dd",
+        "src/services/knowledge/embedding/profiles.ts": "3807650103aa377e0efe848aa2934c1466e741f9",
+        "tests/knowledge/kb-model-release-assets-script.test.ts": "efee2995f197a0830de1da42a89ffc0e37926fc1"
+      }
+    },
+    {
       "id": "4e315af5-d8ab-460e-850a-36d1d38ce19a",
       "type": "knowledge",
       "title": "runner.js's re-export of fatal-diagnostics.mjs is load-bearing for abort.mjs, not just compatibility sugar",
@@ -1412,6 +1511,33 @@
         "src/tools/kb-bible-commit.ts": "ab6406dfb1bc48a4a717d41396b158b0d511df55",
         "tests/knowledge/kb-bible-pending-commit.test.ts": "a875b2bd47c46f729a803ebd959c24ec6a6ef26f",
         "tests/knowledge/kb-tombstone-import.test.ts": "e9b8776cc4e12da7af0aab4c0cf7e1ba1bd8bb33"
+      }
+    },
+    {
+      "id": "57bee21e-ee41-4e34-adbd-71ce531ec63c",
+      "type": "knowledge",
+      "title": "kb_query relevant_only admits rows on keyword evidence only, and the engine treats an empty answer as final",
+      "summary": "relevant_only keeps rows with |bm25|/ln(N) >= 2.5 and >= 0.5 x the window's best, or an error_signatures match; semantic/anchor never admit. knowledgeFor skips the kb_session_prime fallback when any kb_query answered.",
+      "symbols": [
+        "passesKeywordCutoff",
+        "keywordRelevance",
+        "SqliteProvider.relevantRows",
+        "createKbWorkClient",
+        "knowledgeFor"
+      ],
+      "source_files": [
+        "src/services/knowledge/hybrid-rank.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "docs/kb-recall-measurements.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T09:03:03.421Z",
+      "source_file_hashes": {
+        "docs/kb-recall-measurements.md": "fcec131d2256e467ee53389e426a22c7c124a441",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "6fd0a757e2b53a0d0822cc21a75c5e1913bbdecf",
+        "src/services/knowledge/hybrid-rank.ts": "ba1fd93b6519276f32968cced565ea3b17cb977f",
+        "src/services/knowledge/sqlite-provider.ts": "84ccfb88f93d7e1c37c1829649672c942bf28329"
       }
     },
     {
@@ -1782,6 +1908,29 @@
       "updated_at": "2026-09-29T06:13:12.487Z"
     },
     {
+      "id": "76c92a09-864b-4ce9-bfc4-a338b2ea1eef",
+      "type": "knowledge",
+      "title": "KB keyword bm25 weights are query-time only; identifier columns must not outweigh title",
+      "summary": "KW_WEIGHTS in kb-index.ts feed bm25() arguments at query time, so changing them needs no index rebuild or version bump. Weighting source_files/symbols at 4 let generic normalized path parts outrank the topic on a bare bible (real MRR 0.7294 vs 0.8345).",
+      "symbols": [
+        "KW_WEIGHTS",
+        "KW_BM25",
+        "KbKeywordIndex.hitsSql"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-index.ts",
+        "tests/helpers/kb-keyword-ablation.ts",
+        "docs/kb-recall-measurements.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T08:12:58.207Z",
+      "source_file_hashes": {
+        "docs/kb-recall-measurements.md": "59de1ce851805ceaf0ae325d57067cf943591bfc",
+        "src/services/knowledge/kb-index.ts": "3302dbdfa860053fb9f9dd81a85143c17d74dda1",
+        "tests/helpers/kb-keyword-ablation.ts": "f6398b6e4fa6bf1fe83b68002df02e1653f97792"
+      }
+    },
+    {
       "id": "774ec22a-e9a1-448a-bd46-b5b0fd7b17ef",
       "type": "knowledge",
       "title": "apra-fleet-se test:slow bypasses run-tests.mjs and gets none of its runner-level behaviour",
@@ -2071,6 +2220,30 @@
       "source_file_hashes": {
         "src/tools/kb-query.ts": "18fce224bba6e9a4eb46bbee8863e2353d78f5a8",
         "tests/knowledge/kb-member-query-defaults.test.ts": "2279d4299fe75dd998c843b59f7248066f82d88b"
+      }
+    },
+    {
+      "id": "8b0ead48-b5b6-4eba-9bf8-d2344d640f33",
+      "type": "knowledge",
+      "title": "A fresh SqliteProvider keyword index is ready at once; imported rows queue and drain on read",
+      "summary": "KbKeywordIndex.init rebuilds synchronously when the entries table is empty, so a new kb.sqlite (or a ':memory:' member bible view) is ready before any import; imported rows go to kb_index_pending and are drained by the next read. The background rebuild only happens when an existing populated DB is at an older index version.",
+      "symbols": [
+        "KbKeywordIndex.init",
+        "KbKeywordIndex.isReady",
+        "KbKeywordIndex.keywordScores",
+        "SqliteProvider.relevantRows"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-index.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/member-bible-view.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T12:29:07.661Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-index.ts": "7ddc4d1c79afaf6d64a446cd24c965adc479113e",
+        "src/services/knowledge/member-bible-view.ts": "194b5c060008ab62fee6db1376bbff19c6d4f582",
+        "src/services/knowledge/sqlite-provider.ts": "84ccfb88f93d7e1c37c1829649672c942bf28329"
       }
     },
     {
@@ -2853,6 +3026,30 @@
       }
     },
     {
+      "id": "ca9c428d-e0ce-4c43-80c0-1f72571ab097",
+      "type": "knowledge",
+      "title": "fleet_status zero-member short form still shows the embedding notice and kbHealth",
+      "summary": "With no members registered, fleetStatus prints the embedding notice line (downloading, failed, off) and returns kbHealth in JSON when a notice or a tool-profile warning exists; only a healthy state gives the bare 'No members registered' form.",
+      "symbols": [
+        "fleetStatus",
+        "embeddingNotice",
+        "safeEmbeddingState",
+        "kbHealthSummary"
+      ],
+      "source_files": [
+        "src/tools/check-status.ts",
+        "src/services/knowledge/embedding/embedding-notice.ts",
+        "tests/fleet-status-embedding-state-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T11:42:47.223Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/embedding-notice.ts": "0af8f56e6b51e812c6c5c3c0d35c08d353f850bd",
+        "src/tools/check-status.ts": "a7744b7d324a5848c15028b381acbd0d82eb7f90",
+        "tests/fleet-status-embedding-state-e2e.test.ts": "34ab09f0d0ab91723a7b2cf2a8b9bc0c17751ceb"
+      }
+    },
+    {
       "id": "caac0e77-a378-4f1e-bb9e-141c8e82e19a",
       "type": "learning",
       "title": "Typing kb_captures item properties conflicts with the keep-the-report capture tests",
@@ -3339,6 +3536,30 @@
         "packages/apra-fleet-se/fleet-sprint/se-windows.mjs": "15a06892d7bcc78da2aec2c55478f89cab26d7fd",
         "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "867f995a010b67595118915255a5677dbfd4480d",
         "packages/apra-fleet-se/test/vcs-preflight-outcome-and-beads-auth.test.mjs": "d882af4fb7d3d08138b61f94f5febcdec788f143"
+      }
+    },
+    {
+      "id": "ecee2f76-a85f-46b2-a941-eb5e9c3b0d64",
+      "type": "knowledge",
+      "title": "Model download resume folder is <name>@<rev>.partial guarded by a pid lock file",
+      "summary": "ModelStore keeps partial downloads in <base>.partial (lock <base>.partial.lock holding the owner pid) beside the model folder; staging cleanup only matches .part-<pid>-<hex>/.old-<pid>-<hex>, so the resume folder survives failures and killed processes.",
+      "symbols": [
+        "ModelStore",
+        "claimResumeDir",
+        "removeAbandonedStaging",
+        "fetchDownload"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/model-store.ts",
+        "tests/knowledge/kb-model-store-download.test.ts",
+        "tests/knowledge/kb-model-download-network.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-10T08:13:02.700Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/model-store.ts": "9ceb51cf2ca096064d71442b325d25420179c2b8",
+        "tests/knowledge/kb-model-download-network.test.ts": "b54b7f29c710df3323d03d04be2a30d29cf8437b",
+        "tests/knowledge/kb-model-store-download.test.ts": "d9fd88b9a09501c60d34a274c4ae9f6ceca08e77"
       }
     },
     {

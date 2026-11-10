@@ -356,3 +356,37 @@ export function resolveEmbeddingModel(raw: unknown, warn: EmbeddingWarn): Embedd
   warn(`embedding.model has an unsupported value ${JSON.stringify(raw)}; using the default ${DEFAULT_EMBEDDING_PROFILE}`);
   return defaultChoice();
 }
+
+/** One file of a built-in profile as published on an apra-fleet GitHub release. */
+export interface ModelReleaseAsset {
+  /** Release asset name (flat: GitHub release assets cannot hold folders). */
+  name: string;
+  /** File path inside the model folder (hub layout). */
+  path: string;
+  sha256: string;
+}
+
+/**
+ * Release asset name for one file of a hub profile:
+ *   kbmodel-<owner>.<name>-<first 12 of revision>-<path, '/' as '.'>
+ * e.g. kbmodel-Snowflake.snowflake-arctic-embed-xs-d8c86521100d-onnx.model_quantized.onnx
+ * Only [A-Za-z0-9._-] survive (anything else becomes '_'), the characters
+ * GitHub keeps unchanged in an asset name. The release workflow
+ * (scripts/model-release-assets.mjs) uploads under exactly these names and
+ * the model store requests exactly these names, both through this function.
+ * That script imports this file as TypeScript source with type stripping, so
+ * this file must keep no imports and only erasable TypeScript syntax.
+ */
+export function modelReleaseAssetName(repo: string, revision: string, filePath: string): string {
+  const raw = `kbmodel-${repo.replace(/\//g, '.')}-${revision.slice(0, 12)}-${filePath.replace(/\//g, '.')}`;
+  return raw.replace(/[^A-Za-z0-9._-]/g, '_');
+}
+
+/** Release assets of a built-in hub profile (every file with its pinned sha256); [] for any other profile. */
+export function modelReleaseAssets(profile: EmbeddingProfile): ModelReleaseAsset[] {
+  const src = profile.source;
+  if (!profile.builtin || src.kind !== 'hub') return [];
+  return src.files
+    .filter((f): f is { path: string; sha256: string } => typeof f.sha256 === 'string' && f.sha256 !== '')
+    .map((f) => ({ name: modelReleaseAssetName(src.repo, src.revision, f.path), path: f.path, sha256: f.sha256 }));
+}

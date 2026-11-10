@@ -70,8 +70,18 @@ export const KB_KEYWORD_INDEX_VERSION =
 export const KW_COLUMNS = [
   'title', 'summary', 'content', 'tags', 'symbols', 'source_files', 'recall_cues', 'error_signatures',
 ] as const;
+/**
+ * Measured, not guessed (docs/kb-recall-measurements.md). The earlier weights
+ * (title 5, summary 3, symbols / source_files / recall_cues 4) cost keyword
+ * MRR on a bare bible: a normalized path or identifier splits into generic
+ * parts (src, servic, knowledg, kb, provid) that most queries contain, and a
+ * weight-4 hit on such a part lifted entries that merely touch a file over the
+ * entry the query was about. source_files is now weighted like body text and
+ * symbols at the title's weight. Weights are applied at query time only (bm25
+ * arguments), so changing them needs no index rebuild.
+ */
 export const KW_WEIGHTS: Record<(typeof KW_COLUMNS)[number], number> = {
-  title: 5, summary: 3, content: 1, tags: 1, symbols: 4, source_files: 4, recall_cues: 4, error_signatures: 4,
+  title: 2, summary: 1, content: 1, tags: 1, symbols: 2, source_files: 1, recall_cues: 1, error_signatures: 4,
 };
 export const KW_BM25 = `bm25(entries_kw, ${KW_COLUMNS.map(c => KW_WEIGHTS[c]).join(', ')})`;
 export const TRI_BM25 = 'bm25(entries_tri, 5, 4, 4)';
@@ -85,9 +95,15 @@ const MAX_LIKE_TERMS = 16;
 /**
  * Most distinct normalized terms a free-text keyword search ORs together.
  * A long query (an engine situation of 450-800 chars) otherwise ORs 100+
- * terms and costs unbounded SQL; the earliest terms (the title words of a
- * situation) are kept. A query with fewer distinct terms is unaffected, and
- * discrete-term (fts_terms) searches are never bounded.
+ * terms and costs unbounded SQL; the earliest terms are kept. Engine
+ * situations put the bead title and description first and the acceptance and
+ * changed symbols/paths last (fleet-sprint kb-hints roleHints), so the bound
+ * keeps the signal and drops the boilerplate. Measured against keeping the
+ * rarest terms (index document frequency) and against dropping terms no
+ * entry holds before the cut: both scored lower on situations whose signal is
+ * in the description (docs/kb-recall-measurements.md). A query with fewer
+ * distinct terms is unaffected, and discrete-term (fts_terms) searches are
+ * never bounded.
  */
 export const MAX_QUERY_KEYWORD_TERMS = 32;
 
@@ -639,6 +655,36 @@ export class KbKeywordIndex {
       WHERE 1 ${cond}
       ORDER BY page.g, e.created_at DESC
     `;
+  }
+
+  /**
+   * bm25 keyword scores (KW_BM25, negative, lower is better) of the given
+   * entry ids for a search, plus the number of rows in the keyword index (the
+   * N bm25's idf is computed from). An id the search does not match has no
+   * score. Null when the normalized index is not ready (a rebuild is running):
+   * there is then no comparable score to give.
+   */
+  keywordScores(s: KeywordSearch, ids: string[]): { scores: Map<string, number>; docs: number } | null {
+    if (!this.isReady()) return null;
+    this.drain();
+    const db = this.db();
+    const docs = Number((db.prepare('SELECT COUNT(*) AS n FROM entries_kw').get() as { n: number }).n);
+    const scores = new Map<string, number>();
+    const kw = keywordMatch(s);
+    const wanted = Array.from(new Set(ids));
+    if (!kw || wanted.length === 0) return { scores, docs };
+    // bm25() is only usable in a direct full-text query: score in its own
+    // MATERIALIZED CTE, then join the wanted ids back to it.
+    for (let i = 0; i < wanted.length; i += 500) {
+      const chunk = wanted.slice(i, i + 500);
+      const rows = db.prepare(`
+        WITH kw AS MATERIALIZED (SELECT rowid AS rid, ${KW_BM25} AS s FROM entries_kw WHERE entries_kw MATCH ?)
+        SELECT e.id AS id, kw.s AS s FROM kw CROSS JOIN entries e ON e.rowid = kw.rid
+        WHERE e.id IN (${chunk.map(() => '?').join(',')})
+      `).all(kw, ...chunk) as { id: string; s: number }[];
+      for (const r of rows) scores.set(r.id, Number(r.s));
+    }
+    return { scores, docs };
   }
 
   /**

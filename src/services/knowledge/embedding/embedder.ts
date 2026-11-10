@@ -45,8 +45,9 @@
  * embed queue calls it after a KB opens with vectors already stored, so
  * semantic search comes back after a restart without any write.
  */
-import { logWarn } from '../../../utils/log-helpers.js';
-import { readEmbeddingModelSetting } from '../kb-config.js';
+import fs from 'node:fs';
+import { logLine, logWarn } from '../../../utils/log-helpers.js';
+import { KB_CONFIG_PATH, readEmbeddingModelSetting, readEmbeddingModelSettingChecked } from '../kb-config.js';
 import { ModelStore } from './model-store.js';
 import {
   resolveEmbeddingModel,
@@ -63,6 +64,7 @@ export { WASM_SEA_ASSET, EMBED_WORKER_SEA_ASSET, loadOrtWasmBinary, EmbedWorkerL
 export type EmbedderState =
   | { state: 'idle'; modelId: string; revision: string }
   | { state: 'loading'; modelId: string; revision: string }
+  | { state: 'downloading'; modelId: string; revision: string }
   | { state: 'ready'; modelId: string; revision: string; dims: number }
   | { state: 'disabled' }
   | { state: 'failed'; modelId?: string; revision?: string; reason: string };
@@ -121,6 +123,8 @@ export class Embedder {
   private readonly readyListeners = new Set<() => void>();
   /** Query text -> vector (or the in-flight embedding), oldest first. See embedQuery. */
   private readonly queryCache = new Map<string, Promise<Float32Array | null>>();
+  /** Set by retire(): replaced by a model switch, never loads again. */
+  private retiredFlag = false;
 
   constructor(opts: EmbedderOptions) {
     this.choice = opts.choice;
@@ -134,7 +138,14 @@ export class Embedder {
       : { state: 'idle', modelId: opts.choice.profile.modelId, revision: opts.choice.profile.revision };
   }
 
-  get state(): EmbedderState { return this.current; }
+  /** Loading is reported as downloading while the model store is fetching the model's files. */
+  get state(): EmbedderState {
+    const cur = this.current;
+    if (cur.state === 'loading' && this.choice.kind === 'enabled' && this.store.isDownloading?.(this.choice.profile)) {
+      return { state: 'downloading', modelId: cur.modelId, revision: cur.revision };
+    }
+    return cur;
+  }
 
   /** The active profile, or null when embedding is disabled. */
   get profile(): EmbeddingProfile | null {
@@ -145,6 +156,12 @@ export class Embedder {
   /** Vector size: the loaded model's, else the profile's (undefined for a not-yet-loaded custom model). */
   get dims(): number | undefined { return this.runtime?.dims ?? this.profile?.dims; }
   get tokenLimit(): number | null { return this.profile?.tokenLimit ?? null; }
+  /**
+   * True once retire() ran: this embedder was replaced by a model switch.
+   * Embed calls resolve to null and nothing loads; a caller that still holds
+   * it (an embed queue mid-batch) should fetch the current one again.
+   */
+  get retired(): boolean { return this.retiredFlag; }
 
   /**
    * Start loading the model in the background if nothing has started it yet
@@ -152,6 +169,7 @@ export class Embedder {
    * ready, or failed (a failed load retries on its own timer).
    */
   warmUp(): void {
+    if (this.retiredFlag) return;
     if (this.choice.kind !== 'enabled' || this.current.state !== 'idle') return;
     void this.ensureLoaded();
   }
@@ -237,6 +255,7 @@ export class Embedder {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
+      if (this.retiredFlag) return;
       if (this.current.state !== 'failed' || this.runtime || this.loading) return;
       this.loading = this.load(profile);
     }, delay);
@@ -263,7 +282,20 @@ export class Embedder {
     try { await runtime?.close?.(); } catch { /* shutting down */ }
   }
 
+  /**
+   * Stop this embedder for good: it was replaced by a model switch. Releases
+   * the runtime like close(), drops onReady listeners, and from now on every
+   * embed call resolves to null without loading anything. Never throws.
+   */
+  async retire(): Promise<void> {
+    this.retiredFlag = true;
+    this.readyListeners.clear();
+    this.queryCache.clear();
+    await this.close();
+  }
+
   private ensureLoaded(): Promise<EmbeddingRuntime | null> {
+    if (this.retiredFlag) return Promise.resolve(null);
     if (this.runtime) return Promise.resolve(this.runtime);
     if (this.choice.kind === 'disabled' || this.current.state === 'failed') return Promise.resolve(null);
     if (!this.loading) this.loading = this.load(this.choice.profile);
@@ -278,6 +310,13 @@ export class Embedder {
       const stored = await this.store.ensure({ kind: 'enabled', profile });
       if (stored.state === 'ready') {
         const runtime = await this.runtimeFactory(profile, stored.dir);
+        if (this.retiredFlag) {
+          // Replaced while loading (a retire() that timed out waiting for this
+          // load): never keep a worker alive for a model nobody uses.
+          this.loading = null;
+          try { await runtime.close?.(); } catch { /* best effort */ }
+          return null;
+        }
         this.runtime = runtime;
         this.current = { state: 'ready', ...ids, dims: runtime.dims };
         this.loading = null;
@@ -308,14 +347,130 @@ export class Embedder {
 // ---------------------------------------------------------------------------
 
 let shared: Embedder | null = null;
+/** Identity of the choice `shared` was built from (see choiceKey). */
+let sharedKey: string | null = null;
+/** True while a test pinned `shared` (_setEmbedderForTest): no config re-read. */
+let pinned = false;
+/** KB config file signature (see configSignature) when it was last read. */
+let lastConfigSig: string | null = null;
 
-/** The process embedder for this host's KB config; constructing it loads nothing. */
+/**
+ * A stable identity for a resolved embedding choice: 'disabled', or the whole
+ * profile as JSON (two custom objects naming the same model with different
+ * prefixes or pooling are different choices).
+ */
+export function embeddingChoiceKey(choice: EmbeddingModelChoice): string {
+  return choice.kind === 'disabled' ? 'disabled' : JSON.stringify(choice.profile);
+}
+
+/**
+ * Cheap signature of the KB config file: mtime (ns), size and inode, or
+ * 'absent'. One stat, no read and no JSON parse.
+ */
+function configSignature(): string {
+  try {
+    const st = fs.statSync(KB_CONFIG_PATH, { bigint: true });
+    return `${st.mtimeNs}:${st.size}:${st.ino}`;
+  } catch {
+    return 'absent';
+  }
+}
+
+/**
+ * The process embedder for this host's KB config; constructing it loads nothing.
+ *
+ * Re-read on change: every call compares the KB config file's signature
+ * (mtime, size, inode -- one stat, no JSON parse when unchanged) with the one
+ * seen last. When it changed, embedding.model is read and resolved again and,
+ * if the resolved choice differs, the process embedder is switched (as by
+ * switchEmbedder). This is how a change made by another process -- the
+ * `apra-fleet kb embedding` CLI, a kb_setup call served elsewhere, a hand
+ * edit -- reaches a running server without a restart. A value that does not
+ * resolve (or a file that cannot be parsed) keeps the current embedder and
+ * logs one warning; it never fails the caller.
+ */
 export function getEmbedder(): Embedder {
   if (!shared) {
+    lastConfigSig = configSignature();
     const choice = resolveEmbeddingModel(readEmbeddingModelSetting(), (m) => logWarn('kb_config', m));
     shared = new Embedder({ choice });
+    sharedKey = embeddingChoiceKey(choice);
+    return shared;
   }
+  if (!pinned) reloadIfConfigChanged();
   return shared;
+}
+
+function reloadIfConfigChanged(): void {
+  const sig = configSignature();
+  if (sig === lastConfigSig) return;
+  lastConfigSig = sig;
+  const current = describeShared();
+  const read = readEmbeddingModelSettingChecked();
+  if (!read.ok) {
+    logWarn('kb_config', `${read.reason}; keeping the current embedding model (${current})`);
+    return;
+  }
+  let problem: string | null = null;
+  const choice = resolveEmbeddingModel(read.raw, (m) => { problem ??= m; });
+  if (problem !== null) {
+    logWarn('kb_config', `KB config changed but ${String(problem).replace(/; using the default [^;]*$/, '')}; keeping the current embedding model (${current})`);
+    return;
+  }
+  const old = installEmbedder(choice);
+  if (old) {
+    logLine('kb_config', `KB config changed: embedding model switched from ${current} to ${describeShared()}`);
+    void old.retire().catch(() => undefined);
+  }
+}
+
+function describeShared(): string {
+  const p = shared?.profile;
+  if (!shared) return 'not set';
+  return p ? `${p.modelId}@${p.revision}` : 'none';
+}
+
+/**
+ * Make `choice` the process embedder when it differs from the current one.
+ * Returns the replaced embedder (to retire) or null when nothing changed.
+ */
+function installEmbedder(choice: EmbeddingModelChoice): Embedder | null {
+  const key = embeddingChoiceKey(choice);
+  if (!shared || key === sharedKey) return null;
+  const old = shared;
+  shared = new Embedder({ choice });
+  sharedKey = key;
+  return old;
+}
+
+/**
+ * Switch the process embedder to `choice` without a restart. The new embedder
+ * is installed BEFORE the old one is shut down, so a query never finds no
+ * embedder; the old one is retired (its worker terminated, bounded by
+ * timeoutMs, and it never loads again). Returns true when a switch happened,
+ * false when the process has not built its embedder yet (getEmbedder reads
+ * the config when first needed) or the choice is the one already active.
+ * Vectors are stored per model id, revision and dims, so a switch never mixes
+ * vectors: the embed queues re-embed under the new model on their next run
+ * (any KB read or write kicks one). Never throws.
+ */
+export async function switchEmbedder(choice: EmbeddingModelChoice, timeoutMs = 2000): Promise<boolean> {
+  // The caller usually just wrote the config: take that write as seen, so the
+  // next getEmbedder does not re-read and re-resolve the same value.
+  if (shared && !pinned) lastConfigSig = configSignature();
+  const old = installEmbedder(choice);
+  if (!old) return false;
+  await boundedWait(old.retire(), timeoutMs);
+  return true;
+}
+
+async function boundedWait(p: Promise<void>, timeoutMs: number): Promise<void> {
+  let t: NodeJS.Timeout | undefined;
+  await Promise.race([
+    p.catch(() => undefined),
+    new Promise<void>((r) => { t = setTimeout(r, timeoutMs); t.unref?.(); }),
+  ]);
+  if (t) clearTimeout(t);
 }
 
 /** Current state of the process embedder, without loading anything. */
@@ -330,17 +485,15 @@ export function getEmbeddingState(): EmbedderState {
 export async function shutdownEmbedder(timeoutMs = 2000): Promise<void> {
   const e = shared;
   if (!e) return;
-  let t: NodeJS.Timeout | undefined;
-  await Promise.race([
-    e.close(),
-    new Promise<void>((r) => { t = setTimeout(r, timeoutMs); t.unref?.(); }),
-  ]);
-  if (t) clearTimeout(t);
+  await boundedWait(e.close(), timeoutMs);
 }
 
 /** Tests only: replace (or with null, reset) the process embedder. */
 export function _setEmbedderForTest(e: Embedder | null): void {
   shared = e;
+  sharedKey = null;
+  pinned = e !== null;
+  lastConfigSig = null;
 }
 
 // ---------------------------------------------------------------------------

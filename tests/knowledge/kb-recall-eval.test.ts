@@ -4,8 +4,14 @@ import {
   DEFAULT_CONFIGS, loadQueries, loadEvalEntries, loadEvalProvider, runEval, formatReport,
   recallAtK, meanReciprocalRank, firstHitRank, missingExpectedIds, writeReportFile, type EvalReport,
   keywordConfig, modelConfigs, MODEL_PROFILES, MODEL_EMBED_TIMEOUT_MS, modelsRequired, formatTable,
-  semanticFloorSweep, formatFloorSweep, NONSENSE_QUERIES, guardOffConfigs,
+  semanticFloorSweep, formatFloorSweep, NONSENSE_QUERIES, guardOffConfigs, loadBareBibleEntries,
+  hybridConfig, descriptionSignalSituations, rankSituations, useCountSnapshot, type DescriptionSituation,
 } from '../helpers/kb-recall-eval.js';
+import { capEmbedText, QUERY_EMBED_MAX_CHARS, type SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
+import { keywordGuardFor } from '../../src/services/knowledge/hybrid-rank.js';
+import { FakeEmbedder } from '../helpers/fake-embedder.js';
+import { runKeywordAblation, ABLATION_VARIANTS } from '../helpers/kb-keyword-ablation.js';
+import { buildV044Kb } from '../helpers/v044-kb-build.js';
 import { kbQuerySchema } from '../../src/tools/kb-query.js';
 import { BUILTIN_EMBEDDING_PROFILES } from '../../src/services/knowledge/embedding/profiles.js';
 // @ts-expect-error plain .mjs shared with scripts/gen-kb-recall-eval.mjs
@@ -261,11 +267,211 @@ describe('KB recall eval set', () => {
   });
 });
 
+// The BARE bible (bible-bare-live.json, no enrichment): what a fresh clone's
+// keyword search ranks, and the set where keyword MRR had fallen below 0.4.4
+// (docs/kb-recall-measurements.md). The ablation re-implements the keyword
+// read with each factor switchable; its production variant must equal the
+// provider's own result, so the table measures the real code path.
+describe('bare bible keyword ranking against 0.4.4', () => {
+  let bare: Awaited<ReturnType<typeof loadEvalProvider>>;
+  let bareReport: EvalReport;
+  let ablation: Map<string, Record<string, string[]>>;
+  const dbFile = () => path.join(bare.dir, 'kb.sqlite');
+
+  beforeAll(async () => {
+    bare = await loadEvalProvider(loadBareBibleEntries());
+    bareReport = await runEval(keywordConfig, bare.provider, loadQueries());
+    ablation = runKeywordAblation(dbFile(), loadQueries(), ABLATION_VARIANTS.filter(v => v.v044 || !v.weights));
+    console.log(`[kb-recall-eval] bare bible ${formatReport(bareReport).replace('[kb-recall-eval] ', '')}`);
+  }, 120_000);
+  afterAll(() => bare?.cleanup());
+
+  it('imports the bare bible with no rejects and every labelled id present', () => {
+    expect(bare.counts.rejected).toBe(0);
+    expect(missingExpectedIds(bare.provider, loadQueries())).toEqual([]);
+  });
+
+  it('the ablation production variant reproduces the provider keyword-only order exactly', async () => {
+    const mine = ablation.get('current (production weights)')!;
+    for (const q of loadQueries()) {
+      const got = (await bare.provider.query({ query: q.query, limit: 20, confidence: ['CONFIRMED'], disable_lists: ['semantic'] })).results.map(e => e.id);
+      expect(mine[q.id], q.id).toEqual(got);
+    }
+  });
+
+  it('prints keyword-only next to the 0.4.4 keyword read (real and authored)', () => {
+    const v044 = ablation.get('0.4.4 keyword read')!;
+    for (const src of ['real', 'authored']) {
+      const qs = loadQueries().filter(q => q.source === src);
+      const old = meanReciprocalRank(qs.map(q => firstHitRank(v044[q.id], q.expected)));
+      console.log(`[kb-recall-eval] bare bible ${src}: keyword-only MRR ${bareReport.bySource[src].mrr.toFixed(4)}, 0.4.4 keyword read MRR ${old.toFixed(4)}`);
+    }
+  });
+
+  // Manual measurement (APRA_KB_EVAL_ABLATION=1): the full single-factor
+  // table on the bare and the enriched eval KB, and a cross-check of the
+  // 0.4.4 port against the REAL 0.4.4 SqliteProvider built from the v0.4.4
+  // tag (skipped loudly when the tag is not available).
+  it('ablation table (APRA_KB_EVAL_ABLATION=1)', async () => {
+    if (process.env.APRA_KB_EVAL_ABLATION !== '1') {
+      console.log('[kb-recall-eval] ablation table SKIPPED: set APRA_KB_EVAL_ABLATION=1 to print it');
+      return;
+    }
+    const queries = loadQueries();
+    const sets: Array<[string, string]> = [['bare bible', dbFile()], ['enriched eval KB', path.join(ctx.dir, 'kb.sqlite')]];
+    const lines = ['| variant | ' + sets.map(([n]) => `${n} real MRR | ${n} authored MRR`).join(' | ') + ' |', '|---|' + sets.map(() => '---|---|').join('')];
+    const all = sets.map(([, f]) => runKeywordAblation(f, queries, ABLATION_VARIANTS));
+    for (const v of ABLATION_VARIANTS) {
+      const cells = all.flatMap(res => ['real', 'authored'].map(src => {
+        const qs = queries.filter(q => q.source === src);
+        return meanReciprocalRank(qs.map(q => firstHitRank(res.get(v.name)![q.id], q.expected))).toFixed(4);
+      }));
+      lines.push(`| ${v.name} | ${cells.join(' | ')} |`);
+    }
+    console.log(['KB keyword ablation (MRR@5)', '', ...lines].join('\n'));
+
+    const real044 = await buildV044Kb(bare.dir);
+    if (!real044.ok) {
+      console.log(`[kb-recall-eval] 0.4.4 cross-check SKIPPED: ${real044.reason}`);
+      return;
+    }
+    const out = real044.run(dbFile(), bare.dir, queries.map(q => ({ op: 'query' as const, query: q.query })));
+    const port = all[0].get('0.4.4 keyword read')!;
+    queries.forEach((q, i) => {
+      const ids = (out[i] as { ids: string[] }).ids;
+      expect(port[q.id].slice(0, 5), `0.4.4 port differs on ${q.id}`).toEqual(ids.slice(0, 5));
+    });
+  }, 300_000);
+
+  // The fix (kb-index.ts KW_WEIGHTS) took bare-bible keyword-only real MRR
+  // from 0.7294 to 0.8345, above 0.4.4's 0.7984. Falsifiability (checked by
+  // hand): restoring the pre-fix weights (PRE_FIX_KW_WEIGHTS) makes this fail.
+  it('keyword-only MRR on the bare bible stays at the fixed value and above the 0.4.4 keyword read', () => {
+    const v044 = ablation.get('0.4.4 keyword read')!;
+    const real = loadQueries().filter(q => q.source === 'real');
+    const oldMrr = meanReciprocalRank(real.map(q => firstHitRank(v044[q.id], q.expected)));
+    expect(bareReport.bySource.real.mrr).toBeGreaterThanOrEqual(BARE_REAL_MRR - BARE_TOLERANCE);
+    expect(bareReport.bySource.real.mrr).toBeGreaterThan(oldMrr);
+    expect(bareReport.bySource.authored.mrr).toBeGreaterThanOrEqual(BARE_AUTHORED_MRR - BARE_TOLERANCE);
+  });
+
+  // Guard window (hybrid-rank.ts keywordGuardFor): every keyword top-5 id is
+  // inside what a limit-6 read returns. A deterministic fake embedder makes
+  // every query hybrid (it has no similarity floor), so this runs without a
+  // model. Falsifiability (checked by hand): a fixed window of 8 makes
+  // losses > 0; the guard-off count proves the semantic list does displace
+  // keyword rows here, so the assertion is not vacuous.
+  it('at the member default limit 6 no query loses a keyword top-5 hit (deterministic embedder)', async () => {
+    expect(keywordGuardFor(6)).toEqual({ keep: 5, within: 6 });
+    expect(keywordGuardFor(8)).toEqual({ keep: 5, within: 8 });
+    expect(keywordGuardFor(20)).toEqual({ keep: 5, within: 8 });
+    const emb = new FakeEmbedder('eval/guard-window-fake', 'r1', 64);
+    bare.provider.attachEmbedder(() => emb);
+    try {
+      expect(await bare.provider.waitForEmbeddings(60_000)).toBe(true);
+      const losses = await guardLosses(bare.provider, 6);
+      const lossesOff = await guardLosses(bare.provider, 6, true);
+      console.log(`[kb-recall-eval] limit 6, deterministic embedder: queries losing a keyword top-5 hit ${losses}/${loadQueries().length} (guard off: ${lossesOff})`);
+      expect(lossesOff).toBeGreaterThan(0);
+      expect(losses).toBeLessThanOrEqual(GUARD_LOSSES_AT_6);
+    } finally {
+      bare.provider.attachEmbedder(null);
+    }
+  }, 120_000);
+});
+
+/** Queries whose keyword-only top 5 is not wholly inside a hybrid read of `limit` rows. */
+async function guardLosses(provider: SqliteProvider, limit: number, guardOff = false): Promise<number> {
+  let lost = 0;
+  for (const q of loadQueries()) {
+    const base = { query: q.query, ...(q.error_text ? { error_text: q.error_text } : {}), confidence: ['CONFIRMED' as const] };
+    const kw = (await provider.query({ ...base, limit: 20, disable_lists: ['semantic', 'anchor', 'error'] })).results.map(e => e.id).slice(0, 5);
+    const got = (await provider.query({ ...base, limit, ...(guardOff ? { disable_keyword_guard: true } : {}) })).results.map(e => e.id);
+    if (kw.some(id => !got.includes(id))) lost++;
+  }
+  return lost;
+}
+
+// Bare bible, keyword-only, measured after the fix: real MRR 0.8345,
+// authored 0.8283 (pre-fix 0.7294 / 0.8212; 0.4.4 0.7984 / 0.7097).
+// Tolerance 0.01: less than one real query falling one place from rank 1
+// (0.0119 on 42 queries), so any real-query regression fails.
+const BARE_REAL_MRR = 0.8345;
+const BARE_AUTHORED_MRR = 0.8283;
+const BARE_TOLERANCE = 0.01;
+// Measured with the chosen window min(8, limit): 0 (default model and the
+// deterministic embedder); with the old fixed window of 8: 107-112 of 182.
+const GUARD_LOSSES_AT_6 = 0;
+
+// Engine situations whose signal is in the description (fleet-sprint
+// roleHints): the title and description must lead the situation text, so the
+// part of it the KB embeds (QUERY_EMBED_MAX_CHARS) carries the description.
+// Measured on a fresh enriched eval KB with use_count reset before each pass
+// (docs/kb-recall-measurements.md): keyword + anchor MRR 0.6667 (0.4512 with
+// the old 'about to change <symbols> in <paths>, which <title>' lead), hybrid
+// with the default model 0.7477 (0.1138 before; the judge's set: 0.612).
+// Falsifiability (checked by hand): restoring the old situation format in
+// kb-hints.mjs makes the embedded-signal and keyword + anchor assertions fail.
+describe('engine situations whose signal is in the description', () => {
+  let fresh: Awaited<ReturnType<typeof loadEvalProvider>>;
+  let sits: DescriptionSituation[];
+  let resetUseCounts: () => void;
+
+  beforeAll(async () => {
+    fresh = await loadEvalProvider();
+    resetUseCounts = useCountSnapshot(path.join(fresh.dir, 'kb.sqlite'));
+    sits = descriptionSignalSituations();
+  }, 120_000);
+  afterAll(() => fresh?.cleanup());
+
+  it('the embedded part of every situation carries its whole description signal', () => {
+    expect(sits.length).toBeGreaterThanOrEqual(139);
+    const missing = sits.filter(s => !capEmbedText(s.situation, QUERY_EMBED_MAX_CHARS).includes(s.signal)).map(s => s.id);
+    expect(missing).toEqual([]);
+  });
+
+  it('keyword + anchor (no model) MRR stays at the measured value', async () => {
+    resetUseCounts();
+    const mrr = meanReciprocalRank(await rankSituations(fresh.provider, sits, false));
+    console.log(`[kb-recall-eval] description-signal situations: keyword + anchor MRR ${mrr.toFixed(4)}`);
+    expect(mrr).toBeGreaterThanOrEqual(DESC_KEYWORD_MRR - DESC_TOLERANCE);
+  });
+
+  it('hybrid MRR and the limit-6 guard with the default model stay at the measured values (SKIPPED without the model)', async () => {
+    const rank = await hybridConfig.setup(fresh.provider);
+    if ('skip' in rank) {
+      console.log(`[kb-recall-eval] description-signal hybrid (${MODEL_PROFILES[0]}) SKIPPED: ${rank.skip}`);
+      if (modelsRequired()) expect.fail(`APRA_KB_EVAL_REQUIRE_MODELS=1 but ${hybridConfig.name} skipped: ${rank.skip}`);
+      return;
+    }
+    try {
+      resetUseCounts();
+      const mrr = meanReciprocalRank(await rankSituations(fresh.provider, sits, true));
+      console.log(`[kb-recall-eval] description-signal situations: hybrid (${MODEL_PROFILES[0]}) MRR ${mrr.toFixed(4)}`);
+      expect(mrr).toBeGreaterThanOrEqual(DESC_HYBRID_MRR - DESC_TOLERANCE);
+      expect(mrr).toBeGreaterThan(0.612);
+      // The guard window with the real model at the member default limit.
+      const losses = await guardLosses(fresh.provider, 6);
+      console.log(`[kb-recall-eval] limit 6, ${MODEL_PROFILES[0]}: queries losing a keyword top-5 hit ${losses}/${loadQueries().length}`);
+      expect(losses).toBeLessThanOrEqual(GUARD_LOSSES_AT_6);
+    } finally {
+      await hybridConfig.teardown?.(fresh.provider);
+    }
+  }, MODEL_EMBED_TIMEOUT_MS);
+});
+
+// Description-signal situations, measured: keyword + anchor 0.6667, hybrid
+// (default model) 0.7477. Tolerance 0.01: about three of the 139 situations
+// falling one place from rank 1 (0.0036 each).
+const DESC_KEYWORD_MRR = 0.6667;
+const DESC_HYBRID_MRR = 0.7477;
+const DESC_TOLERANCE = 0.01;
+
 // Keyword-only regression floors, set below the measured baselines.
-// Authored set (139 queries): measured recall@5 0.9137, MRR 0.8288.
+// Authored set (139 queries): measured recall@5 0.9137, MRR 0.8348.
 const FLOOR_RECALL = 0.85;
 const FLOOR_MRR = 0.75;
-// Real set (42 recorded queries): measured recall@5 1.0000, MRR 0.9083.
+// Real set (42 recorded queries): measured recall@5 0.9762, MRR 0.9167.
 const FLOOR_REAL_RECALL = 0.95;
 const FLOOR_REAL_MRR = 0.85;
 

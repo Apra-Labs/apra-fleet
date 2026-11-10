@@ -623,6 +623,18 @@ jobs:
           sha256sum apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe BUILD_INFO > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Fetch the pinned default KB embedding model files
+        run: |
+          # Release source of the KB model store: it asks this release (the
+          # running build's version tag) for these asset names before Hugging
+          # Face. Names and sha256 come from profiles.ts; each file is verified.
+          # Non-fatal: without them clients fall back to Hugging Face.
+          if ! node --experimental-strip-types scripts/model-release-assets.mjs --out release-models; then
+            echo "::warning::could not fetch the KB model files; this release ships without them (clients fall back to Hugging Face)"
+            rm -f release-models/kbmodel-*
+          fi
+          ls -l release-models || true
+
       - name: Read the previous stable release
         id: prev
         env:
@@ -647,6 +659,7 @@ jobs:
             release-binaries/apra-fleet-installer-darwin-arm64
             release-binaries/apra-fleet-installer-darwin-x64
             release-binaries/apra-fleet-installer-win-x64.exe
+            release-models/kbmodel-*
           generate_release_notes: true
 
   # Unsigned prerelease of every build pushed to main / stabilize_*, so a
@@ -680,12 +693,35 @@ jobs:
       # Drafts of this channel older than this are leftovers of cancelled runs.
       STALE_DRAFT_SECONDS: '86400'
     steps:
+      # Checkout only for scripts/ and profiles.ts (the KB model asset list);
+      # before the artifact download, since checkout cleans the workspace.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
       - name: Download the unsigned binaries and the tarball
         uses: actions/download-artifact@v4
         with:
           path: prerelease
           pattern: apra-fleet-*
           merge-multiple: true
+
+      - name: Fetch the pinned default KB embedding model files
+        run: |
+          # Release source of the KB model store (see the release job): the
+          # prerelease tag is the build version too, so it carries them as well.
+          # Non-fatal: without them clients fall back to Hugging Face.
+          if ! node --experimental-strip-types scripts/model-release-assets.mjs --out prerelease; then
+            echo "::warning::could not fetch the KB model files; this prerelease ships without them (clients fall back to Hugging Face)"
+            rm -f prerelease/kbmodel-*
+          fi
+          ls -l prerelease/kbmodel-* 2>/dev/null || true
 
       # No token in this step's environment: it runs the built binary.
       - name: Read the build version from the linux binary
@@ -722,6 +758,7 @@ jobs:
           cd prerelease
           FILES="apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe SHA256SUMS BUILD_INFO"
           for t in apra-fleet-*.tar.gz; do if [ -f "$t" ]; then FILES="$FILES $t"; fi; done
+          for m in kbmodel-*; do if [ -f "$m" ]; then FILES="$FILES $m"; fi; done
           if gh release view "$TAG" >/dev/null 2>&1; then
             STATE=$(gh release view "$TAG" --json isPrerelease,isDraft --jq '"\(.isPrerelease) \(.isDraft)"')
             case "$STATE" in

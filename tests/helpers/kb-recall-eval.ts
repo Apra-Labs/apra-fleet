@@ -8,6 +8,8 @@ import { Embedder } from '../../src/services/knowledge/embedding/embedder.js';
 import { ModelStore } from '../../src/services/knowledge/embedding/model-store.js';
 import { BUILTIN_EMBEDDING_PROFILES, DEFAULT_EMBEDDING_PROFILE } from '../../src/services/knowledge/embedding/profiles.js';
 import { FLEET_DIR } from '../../src/paths.js';
+// @ts-expect-error plain .mjs (fleet-sprint engine hints)
+import { roleHints } from '../../packages/apra-fleet-se/fleet-sprint/kb-hints.mjs';
 
 // KB recall evaluation harness: loads the pinned bible snapshot (with each
 // entry's real captured content where one exists, and its recall_cues /
@@ -26,6 +28,17 @@ export const EVAL_DIR = path.resolve(__dirname, '../fixtures/kb-recall-eval');
 // scripts/gen-kb-recall-eval.mjs together with the queries), so a routine bible
 // promotion cannot turn the coverage check red.
 export const BIBLE_PATH = path.resolve(__dirname, '../fixtures/kb-recall-eval/bible-snapshot.json');
+/**
+ * The BARE bible: a pinned copy of .fleet/kb-canonical.json as committed on
+ * 2026-11-10 (178 entries; title, summary, symbols and source_files only --
+ * no content, recall_cues or error_signatures), loaded WITHOUT the
+ * enrichment overlay. This is what a fresh clone's keyword search actually
+ * ranks, and the set the keyword MRR regression against 0.4.4 was found and
+ * fixed on (docs/kb-recall-measurements.md). Not refreshed by
+ * scripts/gen-kb-recall-eval.mjs: re-pin it only together with the
+ * measurements doc and the bare-bible floor in kb-recall-eval.test.ts.
+ */
+export const BARE_BIBLE_PATH = path.resolve(__dirname, '../fixtures/kb-recall-eval/bible-bare-live.json');
 export const RECALL_K = 5;
 /** Second cut-off reported next to recall@5: the guard window (KEYWORD_GUARD_WITHIN). */
 export const RECALL_K8 = 8;
@@ -179,6 +192,13 @@ export function loadEvalEntries(): unknown[] {
   return [...bible, ...extra].map(e => ({ ...e, ...(enrichment[e.id as string] ?? {}) }));
 }
 
+/** The bare bible (BARE_BIBLE_PATH) plus the extra entries, with no enrichment overlay. */
+export function loadBareBibleEntries(): unknown[] {
+  const bible = JSON.parse(fs.readFileSync(BARE_BIBLE_PATH, 'utf-8')).entries as Array<Record<string, unknown>>;
+  const extra = JSON.parse(fs.readFileSync(path.join(EVAL_DIR, 'extra-entries.json'), 'utf-8')).entries as Array<Record<string, unknown>>;
+  return [...bible, ...extra];
+}
+
 /** 1-based rank of the first expected id within the top `k`, or null. */
 export function firstHitRank(ranked: string[], expected: string[], k = RECALL_K): number | null {
   const idx = ranked.slice(0, k).findIndex(id => expected.includes(id));
@@ -213,11 +233,11 @@ export interface EvalReport {
 
 export interface EvalImportCounts { imported: number; skipped: number; linked: number; rejected: number }
 
-export async function loadEvalProvider(): Promise<{ provider: SqliteProvider; dir: string; counts: EvalImportCounts; cleanup: () => void }> {
+export async function loadEvalProvider(entries: unknown[] = loadEvalEntries()): Promise<{ provider: SqliteProvider; dir: string; counts: EvalImportCounts; cleanup: () => void }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-recall-eval-'));
   const provider = new SqliteProvider(path.join(dir, 'kb.sqlite'));
   await provider.init();
-  const res = await importBibleEntries(provider, loadEvalEntries(), { verbatim: true });
+  const res = await importBibleEntries(provider, entries, { verbatim: true });
   const counts: EvalImportCounts = { imported: res.imported, skipped: res.skipped, linked: res.linked, rejected: res.rejected };
   return {
     provider, dir, counts,
@@ -379,4 +399,91 @@ export function formatFloorSweep(model: string, rows: FloorSweepRow[]): string {
     lines.push(`| ${r.floor === null ? 'none' : r.floor.toFixed(2)} | ${r.real.recallAt5.toFixed(4)} | ${r.real.mrr.toFixed(4)} | ${r.authored.recallAt5.toFixed(4)} | ${r.authored.mrr.toFixed(4)} | ${r.nonsenseChanged} |`);
   }
   return lines.join('\n');
+}
+
+// -- Engine situations whose signal is in the description -------------------
+//
+// One situation per authored query, built through the real fleet-sprint
+// roleHints('doer') from a bead with a generic title, the authored query as
+// the description (followed by a sentence naming invented, unrelated symbols
+// and paths, the way a real bead names identifiers) and a generic acceptance
+// line -- so the signal is in the description, not the title
+// (docs/kb-recall-measurements.md, "Embedded text of engine situations").
+
+const DESC_SIGNAL_TITLES = [
+  'Fix the reported failure', 'Follow-up from code review', 'Harden the edge case',
+  'Address the judge finding', 'Close the gap found in testing', 'Handle the reported regression',
+];
+const DESC_SIGNAL_FILLERS = [
+  'Keep renderSummaryTable, formatDuration and parseCliFlags in src/cli/summary-table.ts and src/utils/duration.ts behaving as before.',
+  'Leave buildReportRows, toPercentString and sortByColumn in src/report/rows.ts and src/report/columns.ts untouched.',
+  'Do not change loadThemeConfig, applyPalette and resolveFontStack in src/theme/config.ts and src/theme/palette.ts.',
+];
+const DESC_SIGNAL_ACCEPTANCE = [
+  'npm test passes and a unit test covers the change',
+  'the change is covered by a test and the docs mention it',
+  'tests pass and no unrelated behaviour changes',
+];
+
+export interface DescriptionSituation {
+  id: string;
+  expected: string[];
+  /** The description's signal (the authored query text). */
+  signal: string;
+  situation: string;
+  files: string[];
+  symbols: string[];
+}
+
+export function descriptionSignalSituations(queries: EvalQuery[] = loadQueries()): DescriptionSituation[] {
+  return queries.filter(q => q.source === 'authored').map((q, i) => {
+    const bead = {
+      title: DESC_SIGNAL_TITLES[i % DESC_SIGNAL_TITLES.length],
+      description: `${q.query}. ${DESC_SIGNAL_FILLERS[i % DESC_SIGNAL_FILLERS.length]}`,
+      acceptance_criteria: DESC_SIGNAL_ACCEPTANCE[i % DESC_SIGNAL_ACCEPTANCE.length],
+    };
+    const s = (roleHints('doer', { beadTitles: [bead] }) as { situations: Array<{ situation: string; files: string[]; symbols: string[] }> }).situations[0];
+    return { id: q.id, expected: q.expected, signal: q.query, situation: s.situation, files: s.files, symbols: s.symbols };
+  });
+}
+
+/**
+ * First-hit ranks (top 5) of each situation queried the way the engine push
+ * path does: situation text plus its anchor files / symbols. semantic false
+ * leaves the semantic list out (keyword + anchor only).
+ */
+export async function rankSituations(provider: SqliteProvider, sits: DescriptionSituation[], semantic: boolean): Promise<Array<number | null>> {
+  const out: Array<number | null> = [];
+  for (const s of sits) {
+    const r = await provider.query({
+      query: s.situation, anchor_files: s.files, anchor_symbols: s.symbols, limit: 20, confidence: ['CONFIRMED'],
+      ...(semantic ? {} : { disable_lists: ['semantic' as const] }),
+    });
+    out.push(firstHitRank(r.results.map(e => e.id), s.expected));
+  }
+  return out;
+}
+
+/**
+ * Snapshot every entry's use_count (it feeds the hybrid trust prior and every
+ * query bumps it) and return a function that puts the snapshot back, so a
+ * measurement starts from the imported values whatever ran before it.
+ */
+export function useCountSnapshot(dbFile: string): () => void {
+  const db = new DatabaseSync(dbFile);
+  db.exec('PRAGMA busy_timeout = 5000');
+  const counts = db.prepare('SELECT id, use_count FROM entries').all() as Array<{ id: string; use_count: number }>;
+  db.close();
+  return () => {
+    const w = new DatabaseSync(dbFile);
+    try {
+      w.exec('PRAGMA busy_timeout = 5000');
+      const st = w.prepare('UPDATE entries SET use_count = ? WHERE id = ?');
+      w.exec('BEGIN');
+      for (const c of counts) st.run(c.use_count, c.id);
+      w.exec('COMMIT');
+    } finally {
+      w.close();
+    }
+  };
 }

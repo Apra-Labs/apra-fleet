@@ -241,6 +241,13 @@ export interface QueryOptions {
   anchor_files?: string[];
   anchor_symbols?: string[];
   error_text?: string;
+  // kb_query relevant_only (the engine push path): keep only rows with strong
+  // keyword evidence for the query, or an error_signatures match for
+  // error_text (passesKeywordCutoff in hybrid-rank.ts, measured in
+  // docs/kb-recall-measurements.md). Fewer rows, possibly none. Absent/false:
+  // results unchanged. A provider that does not implement it (HttpKbProvider)
+  // ignores it.
+  relevant_only?: boolean;
   // INTERNAL ONLY (eval harness and falsifiability tests): ranked lists to
   // leave out of the fusion. Not on kbQuerySchema or the HTTP route.
   disable_lists?: Array<'keyword' | 'error' | 'semantic' | 'anchor'>;
@@ -250,6 +257,10 @@ export interface QueryOptions {
   // INTERNAL ONLY (eval before/after comparison): skip the keyword top-5
   // guard (guardKeywordTop) in hybridRows. Not on kbQuerySchema or the HTTP route.
   disable_keyword_guard?: boolean;
+  // INTERNAL ONLY (eval guard-window measurement): override how many keyword
+  // head ids the guard protects (keep) and within how many leading positions
+  // (within). Not on kbQuerySchema or the HTTP route.
+  keyword_guard?: { keep: number; within: number };
 }
 
 export interface KBResult {

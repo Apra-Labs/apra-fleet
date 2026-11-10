@@ -136,6 +136,7 @@ const KB_RESPONSE_BODIES = {
     fresh_summaries: z.array(z.unknown()),
     recommended_code_calls: z.array(z.unknown()),
     token_estimate: z.number(),
+    embedding_warning: z.string().optional(),
   }),
   // F-8: kb_query returns one of two mutually exclusive shapes, keyed by
   // whether the request set flagged_only. related_claims is ABSENT (not
