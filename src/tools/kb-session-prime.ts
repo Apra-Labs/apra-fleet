@@ -176,13 +176,15 @@ function parseContextNeighbors(result: unknown): string[] {
 }
 
 /**
- * Add one `embedding_warning` line when semantic search is downloading, failed
- * or off. Never throws and never changes the result otherwise.
+ * Add one `embedding_warning` line when semantic search is downloading or
+ * failed (not when deliberately off). Never throws and never changes the result otherwise.
  */
 function withEmbeddingWarning(json: string): string {
   try {
     const notice = embeddingNotice(getEmbeddingState());
-    if (!notice) return json;
+    // A deliberate off (embedding.model none) is the user's choice: no warning
+    // on every prime that could invite an assistant to undo it.
+    if (!notice || notice.state === 'off') return json;
     const parsed = JSON.parse(json) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return json;
     return JSON.stringify({ ...(parsed as Record<string, unknown>), embedding_warning: notice.line });

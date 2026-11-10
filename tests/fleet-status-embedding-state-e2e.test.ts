@@ -224,12 +224,16 @@ describe.each(withMembers)('embedding notices (member registered: %s)', (hasMemb
     if (hasMember) addAgent(makeTestAgent({ friendlyName: 'embed-state-member' }));
   });
 
-  it('off: kb_setup embedding_model none shows state, reason and fix', async () => {
+  it('off: kb_setup embedding_model none shows state and how to change it; no prime warning', async () => {
     const res = JSON.parse(await kbSetup({ embedding_model: 'none' }, { folder: repo }));
     expect(res.success).toBe(true);
     await captureOne();
-    expectNotice(await seen(), 'disabled', /embedding\.model is none/);
-    await primeOk(true);
+    const s = await seen();
+    expectNotice(s, 'disabled', /embedding\.model is none/);
+    // A deliberate off is stated, never urged back on.
+    expect(s.compact).not.toMatch(/back on/);
+    expect(s.json.kbHealth.embedding.fix).not.toMatch(/back on/);
+    await primeOk(false);
     await expectKeywordHit();
   });
 

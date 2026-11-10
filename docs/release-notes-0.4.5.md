@@ -32,7 +32,8 @@ One line, with the state, the reason and the fix, appears when the model is:
 - downloading: in progress, keyword and anchor search serve meanwhile;
 - failed: the reason, plus `apra-fleet kb model import <folder>` or
   `apra-fleet kb embedding none`;
-- off: says it was turned off and how to turn it back on.
+- off: says it is off and how to change the setting (kb_session_prime adds
+  no warning for a deliberate off).
 
 `kbHealth.embedding` in the JSON form carries the same state, reason and fix.
 When the model is healthy nothing extra is shown.

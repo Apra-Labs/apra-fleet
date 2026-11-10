@@ -315,7 +315,7 @@
  * @property {string} [revision] - Pinned revision, or "local" for a folder model
  * @property {number} [dims] - state "ready": vector size
  * @property {string} [reason] - states "downloading", "failed" and "disabled": what is happening or why the download or load failed
- * @property {string} [fix] - states "downloading", "failed" and "disabled": the command or action that resolves it
+ * @property {string} [fix] - states "downloading" and "failed": the command or action that resolves it; state "disabled" (a deliberate setting): how to change it
  */
 
 /**

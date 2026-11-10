@@ -1,9 +1,9 @@
 // One-line, operator-facing description of an embedding model state that needs
 // attention: what state it is in, why, and the command that fixes it. Used by
 // fleet_status (compact line + JSON fields) and kb_session_prime (one warning).
-// Healthy states (idle, loading, ready) have no notice.
+// Healthy states (idle, loading, ready) have no notice. kb_session_prime skips
+// the deliberate off state.
 
-import { DEFAULT_EMBEDDING_PROFILE } from './profiles.js';
 import type { EmbedderState } from './embedder.js';
 
 export interface EmbeddingNotice {
@@ -30,8 +30,10 @@ export function embeddingNotice(e: EmbedderState | undefined): EmbeddingNotice |
       return { state: 'failed', reason, fix, line: `semantic search off: ${reason.startsWith('load failed') ? 'model failed to load' : 'model download failed'}: ${reason} -- ${fix}; ${KEYWORD_NOTE}` };
     }
     case 'disabled': {
+      // A deliberate setting, not a fault: state it and how to change it,
+      // without urging anyone to undo it.
       const reason = 'embedding.model is none';
-      const fix = `run apra-fleet kb embedding ${DEFAULT_EMBEDDING_PROFILE} (or kb_setup embedding_model ${DEFAULT_EMBEDDING_PROFILE}) to turn it back on`;
+      const fix = 'set in the KB config; apra-fleet kb embedding <model name> (or kb_setup embedding_model) changes it';
       return { state: 'off', reason, fix, line: `semantic search off: ${reason}, keyword and anchor search only -- ${fix}` };
     }
     default:

@@ -1118,16 +1118,19 @@ in the background; queries only ever compare vectors of the active model.
   current one was retired. A malformed config file keeps the current model
   rather than silently changing it.
 - **Loud failures.** One line giving state, reason and fix is surfaced for
-  downloading, failed and deliberately-off states: in `fleet_status` (compact
-  and JSON, including the zero-member short form, as `kbHealth.embedding`) and
-  as `embedding_warning` in `kb_session_prime`. A healthy embedder adds
-  nothing. Note: the off-state warning repeats on every session prime.
+  downloading, failed and deliberately-off states in `fleet_status` (compact
+  and JSON, including the zero-member short form, as `kbHealth.embedding`);
+  the off line only states the setting and how to change it. Downloading and
+  failed also appear as `embedding_warning` in `kb_session_prime`; a
+  deliberate off does not. A healthy embedder adds nothing.
 - **Download path.** The fetch honours `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`
   (undici `EnvHttpProxyAgent`), has a per-source stall watchdog (no bytes or
   file growth), and resumes with HTTP Range (handling 200, 416 and a
   mismatched 206 safely) inside a pid-locked `.partial` folder. sha256
   verification and the atomic rename remain the only way a model becomes ready.
-  A partial file left by a failed source may be resumed by the next source.
+  A partial file left by a failed source may be resumed by the next source;
+  if the resumed file fails sha256 it is discarded and that source is retried
+  once from byte 0.
 - **Sources.** In order: the apra-fleet release asset for the exact build tag,
   the stable release tag, then Hugging Face (`kbmodel-*` assets are attached by
   the CI release and prerelease jobs). `apra-fleet kb model import
