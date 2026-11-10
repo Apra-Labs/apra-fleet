@@ -21,7 +21,7 @@ export function embeddingNotice(e: EmbedderState | undefined): EmbeddingNotice |
   switch (e.state) {
     case 'downloading': {
       const reason = `downloading the ${e.modelId} model (about 23 MB for the default); ${KEYWORD_NOTE}`;
-      const fix = 'none needed, it finishes on its own';
+      const fix = 'wait for it; on an offline machine run apra-fleet kb model import <folder>, or run apra-fleet kb embedding none to turn semantic search off';
       return { state: 'downloading', reason, fix, line: `semantic search starting: ${reason} -- ${fix}` };
     }
     case 'failed': {
