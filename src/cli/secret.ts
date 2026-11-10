@@ -38,7 +38,7 @@ export async function runSecret(args: string[]): Promise<void> {
   const ownArgs = args[0] === '--live' ? args.slice(0, 2) : args;
   if (ownArgs.includes('--help') || ownArgs.includes('-h') || args.length === 0) {
     console.error('Usage:');
-    console.error('  apra-fleet secret --set <name> [--persist] [--expires-at <ISO 8601 time>|none] [-y]');
+    console.error('  apra-fleet secret --set <name> [--persist] [--expires-at <ISO 8601 time>|none] [--allow|--deny] [--members <list>|*] [-y]');
     console.error(LIVE_USAGE_INLINE);
     console.error(LIVE_USAGE_FILE);
     console.error('  apra-fleet secret --list');
@@ -315,7 +315,8 @@ async function handleDelete(args: string[]): Promise<void> {
 
 /**
  * The value of --expires-at: an ISO 8601 time with an explicit zone, in the future,
- * or `none` for no expiry. A time is kept as given, so a member's clock never shifts it.
+ * or `none` for no expiry. Returned as the same instant in UTC (toISOString), so
+ * the stored expiry does not depend on this host's time zone.
  */
 export function parseExpiresAt(raw: string | undefined): string | null | { error: string } {
   if (raw === 'none') return null;
@@ -354,7 +355,7 @@ async function handleSet(args: string[]): Promise<void> {
   }
 
   // Validate flags before prompting for user input
-  const knownFlagExact = new Set(['--persist', '--ask-persist', '-y', '--prompt', '--expires-at']);
+  const knownFlagExact = new Set(['--persist', '--ask-persist', '-y', '--prompt', '--expires-at', '--allow', '--deny', '--members']);
   for (const a of args.slice(1)) {
     if (!a.startsWith('-')) continue; // positional value (e.g. value for --prompt)
     if (knownFlagExact.has(a)) continue;
@@ -374,6 +375,28 @@ async function handleSet(args: string[]): Promise<void> {
       process.exit(1);
     }
     expiresAt = parsed;
+  }
+  // Explicit policy fields, as on --update: each one given replaces the stored one,
+  // and anything left out stays as stored.
+  const fields: { network_policy?: NetworkPolicy; allowedMembers?: string[] | '*' } = {};
+  if (args.includes('--allow') && args.includes('--deny')) {
+    console.error('Error: --allow and --deny cannot be combined.');
+    process.exit(1);
+  }
+  if (args.includes('--allow')) fields.network_policy = 'allow';
+  if (args.includes('--deny')) fields.network_policy = 'deny';
+  const membersIdx = args.indexOf('--members');
+  if (membersIdx !== -1) {
+    const list = args[membersIdx + 1];
+    if (!list || list.startsWith('-')) {
+      console.error('Error: --members needs a value: a comma-separated list of member names, or *');
+      process.exit(1);
+    }
+    fields.allowedMembers = list === '*' ? '*' : list.split(',').map((m) => m.trim()).filter(Boolean);
+  }
+  if ((fields.network_policy !== undefined || fields.allowedMembers !== undefined) && !persist) {
+    console.error('Error: --allow, --deny and --members need --persist: they are stored with the persistent record.');
+    process.exit(1);
   }
 
   let secretValue: string;
@@ -466,7 +489,7 @@ async function handleSet(args: string[]): Promise<void> {
 
     // Persist mode: store the secret
     try {
-      const meta = credentialSetValue(name, persistValue, { persist: true, ...(expiresAt !== undefined ? { expiresAt } : {}) });
+      const meta = credentialSetValue(name, persistValue, { persist: true, ...fields, ...(expiresAt !== undefined ? { expiresAt } : {}) });
       console.error(`✓ Secret stored for ${name}.`);
       console.error(policyNote(name, meta.network_policy));
     } catch (err: any) {
@@ -476,7 +499,7 @@ async function handleSet(args: string[]): Promise<void> {
   } else if (persist) {
     // OOB delivery + persist: store the secret
     try {
-      const meta = credentialSetValue(name, persistValue, { persist: true, ...(expiresAt !== undefined ? { expiresAt } : {}) });
+      const meta = credentialSetValue(name, persistValue, { persist: true, ...fields, ...(expiresAt !== undefined ? { expiresAt } : {}) });
       console.error(`✓ Secret also stored for future use.`);
       console.error(policyNote(name, meta.network_policy));
     } catch (err: any) {

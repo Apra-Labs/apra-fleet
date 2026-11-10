@@ -43,8 +43,10 @@ export type KbStepFailure =
   | 'member-unreachable'
   | 'install-too-old'
   | 'not-member-install'
+  | 'relay-unsupported'
   | 'kb-not-configured'
   | 'kb-other-remote'
+  | 'secret-file-unavailable'
   | 'delivery-failed'
   | 'kb-setup-failed';
 
@@ -56,6 +58,28 @@ export class KbStepError extends Error {
 }
 
 export type KbVerification = 'verified' | 'rejected' | 'unreachable' | 'unverified';
+
+/** What kb-setup changed in the member's KB config, when it wrote one. */
+export type KbMemberChange =
+  | 'kb-config-created'
+  | 'kb-config-replaced-sqlite'
+  | 'kb-config-replaced-remote'
+  | 'kb-config-replaced-token'
+  | 'kb-config-replaced-unreadable';
+
+const CHANGE_OF_PREVIOUS: Record<string, KbMemberChange> = {
+  missing: 'kb-config-created',
+  'not-http': 'kb-config-replaced-sqlite',
+  'other-remote': 'kb-config-replaced-remote',
+  'other-token': 'kb-config-replaced-token',
+  unreadable: 'kb-config-replaced-unreadable',
+};
+
+export interface KbDelivery {
+  verification: KbVerification;
+  /** Set when kb-setup wrote the member's KB config; absent when it was already right. */
+  change?: KbMemberChange;
+}
 
 export interface ProvisionKbDeps {
   exec(agent: Agent, command: string, timeoutMs: number): Promise<SSHExecResult>;
@@ -96,14 +120,20 @@ function osAndShell(agent: Agent): { targetOs: TargetOS; shell: ReturnType<typeo
 }
 
 /**
- * `secret --set NAME --persist --expires-at <time|none> -y` reading the staged
- * file on stdin, then removing it whatever the outcome, and exiting with the
- * CLI's code. The value is only in the file. Exported for tests.
+ * `secret --set NAME --persist --expires-at <time|none> --allow --members * -y`
+ * reading the staged file on stdin, then removing it whatever the outcome, and
+ * exiting with the CLI's code. The value is only in the file. The record is plain
+ * allow, all members, whatever was stored under the name on the member: policy
+ * was applied on the orchestrator before the push. POSIX: a trap removes the
+ * file if the shell exits early or is hung up on. Exported for tests.
  */
 export function buildPushSecretCommand(binPath: string, name: string, expiresAt: string | null, staged: string, targetOs: TargetOS, shell: ReturnType<typeof getAgentShell>): string {
-  const args = ['secret', '--set', name, '--persist', '--expires-at', expiresAt ?? 'none', '-y'];
+  const args = ['secret', '--set', name, '--persist', '--expires-at', expiresAt ?? 'none', '--allow', '--members', '*', '-y'];
+  const s = posixQuote(staged);
   return memberCommandFor(targetOs, shell, {
-    posix: `${posixQuote(binPath)} ${args.map(posixQuote).join(' ')} < ${posixQuote(staged)} 2>&1; rc=$?; rm -f ${posixQuote(staged)}; exit $rc`,
+    posix:
+      `f=${s}; trap 'rm -f "$f"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; ` +
+      `${posixQuote(binPath)} ${args.map(posixQuote).join(' ')} < "$f" 2>&1`,
     // stderr is merged as text: under the encoded wrapper's Stop preference a
     // native stderr line would otherwise end the script before the cleanup.
     powershell:
@@ -142,6 +172,8 @@ function lastJson(text: string): Record<string, unknown> | null {
 
 /** Everything that can fail without the value. May start a cloud member. */
 export async function prepareKb(member: Agent, remote: string, secret: string): Promise<void> {
+  // A relay member has no channel that writes a file without a command line.
+  if (member.agentType === 'relay') throw new KbStepError('relay-unsupported');
   if (member.agentType === 'local') {
     const match = kbConfigMatch(remote, secret);
     if (match === 'match') return;
@@ -171,25 +203,36 @@ export async function prepareKb(member: Agent, remote: string, secret: string): 
  * after prepare. A failure after the push leaves the pushed secret on the member,
  * where it is unused until its KB config names it.
  */
-export async function deliverKb(member: Agent, remote: string, secret: string, value: string, expiresAt: string | null): Promise<KbVerification> {
+export async function deliverKb(member: Agent, remote: string, secret: string, value: string, expiresAt: string | null): Promise<KbDelivery> {
   // Local: the core resolved the value through the orchestrator's store, which
-  // is what this member's KB calls use.
-  if (member.agentType === 'local') return 'verified';
+  // is what this member's KB calls use. No KB call is made.
+  if (member.agentType === 'local') return { verification: 'verified' };
   const d = deps();
   const home = await d.resolveHome(member);
   if (!home) throw new KbStepError('member-unreachable');
   const { targetOs, shell } = osAndShell(member);
   const binPath = memberBinPath(home, targetOs, shell);
 
-  const staged = await d.stage(member, value);
+  // A helper may print any ISO 8601 zone form (+0530); the member takes UTC.
+  const pushExpiry = expiresAt === null ? null : new Date(expiresAt).toISOString();
+  let staged: string;
+  try {
+    staged = await d.stage(member, value);
+  } catch {
+    throw new KbStepError('secret-file-unavailable');
+  }
   let push: SSHExecResult;
   try {
-    push = await d.exec(member, buildPushSecretCommand(binPath, secret, expiresAt, staged, targetOs, shell), MEMBER_CLI_TIMEOUT_MS);
+    push = await d.exec(member, buildPushSecretCommand(binPath, secret, pushExpiry, staged, targetOs, shell), MEMBER_CLI_TIMEOUT_MS);
   } catch {
     await d.removeStaged(member, staged);
     throw new KbStepError('delivery-failed');
   }
-  if (push.code !== 0) throw new KbStepError(isUnknownToOldInstall(push) ? 'install-too-old' : 'delivery-failed');
+  if (push.code !== 0) {
+    // The command removes the file itself; this covers a shell that never got that far.
+    await d.removeStaged(member, staged);
+    throw new KbStepError(isUnknownToOldInstall(push) ? 'install-too-old' : 'delivery-failed');
+  }
 
   let setup: SSHExecResult;
   try {
@@ -201,6 +244,10 @@ export async function deliverKb(member: Agent, remote: string, secret: string, v
   const result = lastJson(`${setup.stdout}\n${setup.stderr}`);
   const verification = result?.verification;
   if (setup.code !== 0 || !result || typeof verification !== 'string') throw new KbStepError('kb-setup-failed');
-  return (['verified', 'rejected', 'unreachable'] as const).includes(verification as never) ? verification as KbVerification : 'unverified';
+  const change = result.kbSetup === 'written' && typeof result.previous === 'string' ? CHANGE_OF_PREVIOUS[result.previous] : undefined;
+  return {
+    verification: (['verified', 'rejected', 'unreachable'] as const).includes(verification as never) ? verification as KbVerification : 'unverified',
+    ...(change ? { change } : {}),
+  };
 }
 

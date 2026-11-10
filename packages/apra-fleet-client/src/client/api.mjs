@@ -688,15 +688,21 @@
  * @property {string|null} expiresAt - The token expiry pushed with it, or null for none.
  * @property {{status: "verified"} | {status: "failed", reason: "rejected" | "unreachable" |
  *   "not-configured" | "unverified", detail: string}} verification - Outcome of the one KB
- *   call on the member (remote) or the resolve on the orchestrator (local).
+ *   call on the member (remote) or the resolve on the orchestrator (local, no KB call).
+ * @property {{reason: "kb-config-created" | "kb-config-replaced-sqlite" |
+ *   "kb-config-replaced-remote" | "kb-config-replaced-token" | "kb-config-replaced-unreadable",
+ *   detail: string} | null} memberChange - What the member's KB config was before this call
+ *   wrote it, or null when it already named this remote and secret. Kept when verification
+ *   failed: the new config stays.
  *
  * A refusal or failure is an error result instead (isError), whose structuredContent is
- * `{ok: false, code: "E-PROVISION-AUTH", reason, message}`. reason is one of member-not-found,
- * unknown-kind, bad-input, secret-not-found, secret-unreadable, secret-expired,
- * member-not-allowed, policy-deny, mint-failed, member-unreachable, install-too-old,
- * not-member-install, kb-not-configured, kb-other-remote, delivery-failed,
- * kb-setup-failed.
- * kb-setup-failed means the secret was stored on the member but its KB was not set up to use it.
+ * `{ok: false, code: "E-PROVISION-AUTH", reason, message, expiresAt?}`. reason is one of
+ * member-not-found, unknown-kind, bad-input, secret-not-found, secret-unreadable,
+ * secret-expired, member-not-allowed, policy-deny, mint-failed, relay-unsupported,
+ * member-unreachable, install-too-old, not-member-install, kb-not-configured, kb-other-remote,
+ * secret-file-unavailable, delivery-failed, kb-setup-failed.
+ * kb-setup-failed means the secret was stored on the member but its KB was not set up to use it;
+ * expiresAt is then the expiry of that stored copy.
  * No field carries a value. Mirrors src/tools/provision-kb-auth.ts.
  */
 

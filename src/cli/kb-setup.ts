@@ -9,7 +9,9 @@
 // secret, and never installs a git hook.
 //
 // The last stdout line is JSON for the orchestrator:
-//   {"kbSetup":"written"|"unchanged","verification":"verified"|"rejected"|"unreachable"|"unverified"}
+//   {"kbSetup":"written"|"unchanged","previous"?:<what a write replaced>,"verification":"verified"|"rejected"|"unreachable"|"unverified"}
+// previous (only with written) is missing, not-http (sqlite), other-remote,
+// other-token or unreadable. A failed verification keeps what was written.
 // A refusal exits 1 with {"error":"refused"} and the reason on stderr. No line
 // carries a token.
 
@@ -86,13 +88,14 @@ export async function runKbSetupCli(args: string[], io: Io = defaultIo): Promise
     return 1;
   }
   const { remote, name } = parsed;
-  let written = false;
+  let previous: string | undefined;
   try {
     // The same refusals as the kb_setup tool, also when the config already matches.
     assertKbTokenSecretUsable(name);
-    if (kbConfigMatch(remote, name) !== 'match') {
+    const match = kbConfigMatch(remote, name);
+    if (match !== 'match') {
       await kbSetup({ provider: 'http', remote, token: formatSecretToken(name) }, undefined, { hook: false });
-      written = true;
+      previous = match;
     }
   } catch (err) {
     io.error(`Error: ${(err as Error).message}`);
@@ -100,6 +103,6 @@ export async function runKbSetupCli(args: string[], io: Io = defaultIo): Promise
     return 1;
   }
   const verification = await verify(remote, name);
-  io.log(JSON.stringify({ kbSetup: written ? 'written' : 'unchanged', verification }));
+  io.log(JSON.stringify(previous ? { kbSetup: 'written', previous, verification } : { kbSetup: 'unchanged', verification }));
   return 0;
 }

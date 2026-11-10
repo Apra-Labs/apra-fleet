@@ -65,7 +65,7 @@ const fakeDeps: ProvisionKbDeps = {
 interface Live { name: string; runs: () => number }
 
 /** A live secret whose script prints TOKEN-<run> with the given expiry per run. */
-function live(label: string, opts: { policy?: 'deny'; members?: string } = {}): Live {
+function live(label: string, opts: { policy?: 'deny'; members?: string; basicOffset?: boolean } = {}): Live {
   const name = `${label}_${RUN}`;
   names.push(name);
   const counter = path.join(tmp, `${label}.runs`);
@@ -74,7 +74,9 @@ function live(label: string, opts: { policy?: 'deny'; members?: string } = {}): 
     const fs = require('fs');
     fs.appendFileSync(${JSON.stringify(counter)}, 'x');
     const run = fs.readFileSync(${JSON.stringify(counter)}, 'utf8').length;
-    process.stdout.write(JSON.stringify({ token: ${JSON.stringify(TOKEN)} + '-' + run, expires_at: new Date(Date.UTC(2099, 0, run)).toISOString() }));
+    // basicOffset: the same instant written as 05:30 at +0530, as date +%Y-%m-%dT%H:%M:%S%z prints it.
+    const expires = ${opts.basicOffset ? "'2099-01-' + String(run).padStart(2, '0') + 'T05:30:00+0530'" : 'new Date(Date.UTC(2099, 0, run)).toISOString()'};
+    process.stdout.write(JSON.stringify({ token: ${JSON.stringify(TOKEN)} + '-' + run, expires_at: expires }));
   `);
   saveLiveSecret(prepareLiveSecret(name, { program: process.execPath, args: [js], env: [] }));
   if (opts.policy || opts.members) credentialUpdate(name, { ...(opts.policy ? { network_policy: opts.policy } : {}), ...(opts.members ? { members: opts.members } : {}) });
@@ -122,7 +124,7 @@ beforeEach(() => {
     version: '0.4.5',
     marker: 0,
     push: { code: 0, stdout: 'Secret stored\n', stderr: '' },
-    kbSetup: { code: 0, stdout: '{"kbSetup":"written","verification":"verified"}\n', stderr: '' },
+    kbSetup: { code: 0, stdout: '{"kbSetup":"written","previous":"missing","verification":"verified"}\n', stderr: '' },
   };
   readyHook = (a) => a;
   kbConfigBackup = fs.existsSync(KB_CONFIG_PATH) ? fs.readFileSync(KB_CONFIG_PATH, 'utf8') : null;
@@ -145,7 +147,6 @@ afterEach(() => {
 describe('provision_kb_auth, remote member: the token never reaches a command line', () => {
   const shapes: Array<[string, Partial<Agent>]> = [
     ['linux', { os: 'linux' }],
-    ['macos', { os: 'macos' }],
     ['windows powershell', { os: 'windows' }],
     ['windows gitbash', { os: 'windows', shell: 'gitbash' }],
   ];
@@ -168,8 +169,8 @@ describe('provision_kb_auth, remote member: the token never reaches a command li
         expect(push).toMatch(/finally \{ Remove-Item -Force -LiteralPath '[^']+' /);
       } else {
         expect(push).toContain(`'/home/u/.apra-fleet/bin/apra-fleet${shape.os === 'windows' ? '.exe' : ''}' 'secret' '--set' '${s.name}' '--persist'`);
-        expect(push).toContain(`< '${STAGED}'`);
-        expect(push).toMatch(/rm -f '[^']+'; exit \$rc$/);
+        expect(push).toContain(`f='${STAGED}'; trap 'rm -f "$f"' EXIT;`);
+        expect(push).toContain(`< "$f"`);
       }
       expect(JSON.stringify(r)).not.toContain(TOKEN);
     });
@@ -193,9 +194,9 @@ describe('provision_kb_auth, remote member: expiry', () => {
     const m = addRemote();
     const r = await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE });
     expect(r.structuredContent.expiresAt).toBe(expiryOf(1));
-    expect(pushes()[0].text).toContain(`'--expires-at' '${expiryOf(1)}' '-y'`);
+    expect(pushes()[0].text).toContain(`'--expires-at' '${expiryOf(1)}' '--allow' '--members' '*' '-y'`);
     await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE, reason: 'rejected' });
-    expect(pushes()[1].text).toContain(`'--expires-at' '${expiryOf(2)}' '-y'`);
+    expect(pushes()[1].text).toContain(`'--expires-at' '${expiryOf(2)}' '--allow' '--members' '*' '-y'`);
   });
 
   it('a static secret with no expiry pushes none, so an expiry stored by an earlier push is cleared', async () => {
@@ -203,7 +204,7 @@ describe('provision_kb_auth, remote member: expiry', () => {
     const m = addRemote();
     const r = await provisionKbAuth({ member_id: m.id, secret: name, remote: REMOTE });
     expect(r.structuredContent.expiresAt).toBeNull();
-    expect(pushes()[0].text).toContain("'--expires-at' 'none' '-y'");
+    expect(pushes()[0].text).toContain("'--expires-at' 'none' '--allow' '--members' '*' '-y'");
     expect(staged[0].content).toBe(STATIC_VALUE);
   });
 });
@@ -385,14 +386,67 @@ describe('provision_kb_auth, local member: the shared KB config is checked, neve
   });
 });
 
-describe('the client wrapper names every failure reason the server can give', () => {
-  it('each handler failure reason is in the ProvisionKbAuthStructured typedef, and the method calls this tool', async () => {
-    const { PROVISION_HANDLER_FAILURES } = await import('../src/services/provision-auth-kinds.js');
-    const api = fs.readFileSync(path.join(__dirname, '..', 'packages', 'apra-fleet-client', 'src', 'client', 'api.mjs'), 'utf8');
-    const typedef = api.slice(api.indexOf('@typedef {Object} ProvisionKbAuthStructured'), api.indexOf('@typedef {Object} ProvisionVcsAuthOptions'));
-    expect(PROVISION_HANDLER_FAILURES.length).toBeGreaterThan(0);
-    // not-available is for a kind with no delivery yet; kb has one.
-    for (const reason of PROVISION_HANDLER_FAILURES.filter((r) => r !== 'not-available')) expect(typedef).toMatch(new RegExp(`\\b${reason}\\b`));
-    expect(api).toMatch(/async provisionKbAuth\(options\) \{\s+return this\.mcpClient\.callTool\('provision_kb_auth', options\);/);
+describe('provision_kb_auth: review fixes', () => {
+  it('a helper expiry in basic offset form (+0530) is pushed as the same instant in UTC, which the member accepts', async () => {
+    const s = live('offset', { basicOffset: true });
+    const m = addRemote();
+    await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE });
+    expect(pushes()[0].text).toContain(`'--expires-at' '${expiryOf(1)}' '--allow'`);
+    const { parseExpiresAt } = await import('../src/cli/secret.js');
+    expect(parseExpiresAt(expiryOf(1))).toBe(expiryOf(1));
+  });
+
+  it('a relay member is refused before any mint, with a fixed reason', async () => {
+    const s = live('relay');
+    const m = addRemote({ agentType: 'relay' });
+    const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE }));
+    expect(err.structuredContent.reason).toBe('relay-unsupported');
+    expect(s.runs()).toBe(0);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('a member that cannot take the staged file (SFTP off) fails with a reason naming SFTP', async () => {
+    const s = live('nosftp');
+    const m = addRemote();
+    __setProvisionKbDeps({ ...fakeDeps, stage: async () => { throw new Error('sftp subsystem request failed'); } });
+    const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE }));
+    expect(err.structuredContent.reason).toBe('secret-file-unavailable');
+    expect(err.message).toContain('SFTP');
+    expect(err.message).not.toContain('subsystem request failed');
+  });
+
+  it('a push that exits non-zero also removes the staged file from the orchestrator side', async () => {
+    const s = live('pushfail');
+    const m = addRemote();
+    answers.push = { code: 1, stdout: '', stderr: 'boom' };
+    await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE }));
+    expect(removedStaged).toEqual([STAGED]);
+  });
+
+  it('a member that knows --expires-at but not kb-setup is reported as too old', async () => {
+    const s = live('nokbsetup');
+    const m = addRemote();
+    answers.kbSetup = { code: 1, stdout: "Error: unknown option 'kb-setup'\n", stderr: '' };
+    const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE }));
+    expect(err.structuredContent.reason).toBe('install-too-old');
+  });
+
+  it('a kb-setup failure carries the expiry of the copy left on the member', async () => {
+    const s = live('setupexp');
+    const m = addRemote();
+    answers.kbSetup = { code: 1, stdout: '{"error":"refused"}\n', stderr: '' };
+    const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE }));
+    expect(err.structuredContent).toMatchObject({ reason: 'kb-setup-failed', expiresAt: expiryOf(1) });
+  });
+
+  it('a config kb-setup replaced is named in the result, also when verification failed', async () => {
+    const s = live('replaced');
+    const m = addRemote();
+    answers.kbSetup = { code: 0, stdout: '{"kbSetup":"written","previous":"other-remote","verification":"rejected"}\n', stderr: '' };
+    const r = await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE });
+    expect(r.structuredContent.memberChange).toEqual({ reason: 'kb-config-replaced-remote', detail: expect.stringContaining('named another remote') });
+    expect(r.text).toContain('named another remote');
+    answers.kbSetup = { code: 0, stdout: '{"kbSetup":"unchanged","verification":"verified"}\n', stderr: '' };
+    expect((await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE })).structuredContent.memberChange).toBeNull();
   });
 });

@@ -498,7 +498,7 @@ What it does for a local and a remote member, and its failure reasons, are in
 | `remote` | string | yes | KB server URL, http(s), as the member reaches it |
 | `reason` | `"rejected"` | no | The KB server refused the token: a live secret mints a new one before the push |
 
-`structuredContent` is `{ok, member, kind, secret, expiresAt, verification}`; act
+`structuredContent` is `{ok, member, kind, secret, expiresAt, verification, memberChange}`; act
 on `ok` and `verification`. A refusal is an error result whose
 `structuredContent.reason` names it. No field carries the token.
 

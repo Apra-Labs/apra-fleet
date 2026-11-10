@@ -142,6 +142,10 @@ describe('the push command, run by the member shell for real', () => {
   const targetOs = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux';
 
   it('stores the staged value with its expiry, removes the staged file, and passes a failure exit code on', async () => {
+    // A record already on the member, made deny and scoped there: the push resets it to allow, all members.
+    await setSecret('old-value');
+    expect((await cli(['secret', '--update', NAME, '--deny', '--members', 'someone-else'])).code).toBe(0);
+    expect(record()).toMatchObject({ network_policy: 'deny', allowedMembers: ['someone-else'] });
     const staged = path.join(sandbox, 'staged-token');
     fs.writeFileSync(staged, TOKEN);
     const exp = new Date(Date.now() + 3_600_000).toISOString();
@@ -149,6 +153,7 @@ describe('the push command, run by the member shell for real', () => {
     expect(ok.code).toBe(0);
     expect(fs.existsSync(staged)).toBe(false);
     expect(record()?.expiresAt).toBe(exp);
+    expect(record()).toMatchObject({ network_policy: 'allow', allowedMembers: '*' });
     // The stored value is the staged one: the KB server accepts it.
     const url = await startKb();
     expect(lastJson(await cli(['kb-setup', '--remote', url, '--token-ref', NAME])).verification).toBe('verified');
@@ -158,6 +163,26 @@ describe('the push command, run by the member shell for real', () => {
     expect(bad.code).toBe(1);
     expect(fs.existsSync(staged)).toBe(false);
     expect(`${bad.stdout}${bad.stderr}`).toContain('--expires-at');
+  }, 60_000);
+
+  // POSIX form under a real sh; on Windows through Git for Windows' bash, skipped if absent.
+  const gitBash = 'C:\\Program Files\\Git\\bin\\bash.exe';
+  const bash = process.platform === 'win32' ? (fs.existsSync(gitBash) ? gitBash : null) : '/bin/sh';
+  const toPosix = (p: string) => (process.platform === 'win32' ? p.replace(/^([A-Za-z]):/, (_m, d: string) => `/${d.toLowerCase()}`).replace(/\\/g, '/') : p);
+
+  it.skipIf(!bash)('POSIX: a shell hung up on mid-push still removes the staged file', async () => {
+    const staged = path.join(sandbox, 'staged-hup');
+    fs.writeFileSync(staged, TOKEN);
+    const slow = path.join(sandbox, 'slow-fleet');
+    fs.writeFileSync(slow, '#!/bin/sh\nsleep 4\n', { mode: 0o755 });
+    const command = buildPushSecretCommand(toPosix(slow), NAME, null, toPosix(staged), 'linux', undefined);
+    const driver = 'sh -c "$PUSH_CMD" & p=$!; sleep 1; kill -HUP $p; wait $p; echo "rc=$?"';
+    const r = await new Promise<Run>((resolve) => {
+      execFile(bash!, ['-c', driver], { env: { ...process.env, PUSH_CMD: command }, cwd: sandbox, timeout: 30_000, encoding: 'utf-8' },
+        (err, stdout, stderr) => resolve({ code: err ? 1 : 0, stdout, stderr }));
+    });
+    expect(r.stdout).toContain('rc=129');
+    expect(fs.existsSync(staged)).toBe(false);
   }, 60_000);
 });
 
@@ -174,7 +199,7 @@ describe('kb-setup (real CLI)', () => {
     fs.mkdirSync(path.join(repo, '.git', 'hooks'));
     const r = await cli(['kb-setup', '--remote', url, '--token-ref', NAME], '', repo);
     expect(r.code).toBe(0);
-    expect(lastJson(r)).toEqual({ kbSetup: 'written', verification: 'verified' });
+    expect(lastJson(r)).toEqual({ kbSetup: 'written', previous: 'missing', verification: 'verified' });
     expect(JSON.parse(fs.readFileSync(kbConfigPath(), 'utf-8'))).toMatchObject({ provider: 'http', url, token_ref: `{{secret.${NAME}}}` });
     expect(requests).toEqual([{ url: '/api/kb/query?limit=1', auth: `Bearer ${TOKEN}` }]);
     expect(fs.readdirSync(path.join(repo, '.git', 'hooks'))).toEqual([]);
@@ -192,7 +217,7 @@ describe('kb-setup (real CLI)', () => {
     expect(fs.statSync(kbConfigPath()).mtimeMs).toBe(before);
     fs.writeFileSync(kbConfigPath(), JSON.stringify({ provider: 'http', url: 'http://127.0.0.1:1', token_ref: `{{secret.${NAME}}}` }));
     const moved = await cli(['kb-setup', '--remote', url, '--token-ref', NAME]);
-    expect(lastJson(moved)).toEqual({ kbSetup: 'written', verification: 'verified' });
+    expect(lastJson(moved)).toEqual({ kbSetup: 'written', previous: 'other-remote', verification: 'verified' });
   });
 
   it('a token the server refuses is reported as rejected, an unreachable server as unreachable', async () => {
@@ -245,13 +270,25 @@ describe('kb-setup (real CLI)', () => {
       });
       const url = `http://127.0.0.1:${port}`;
       await setSecret();
-      expect(lastJson(await cli(['kb-setup', '--remote', url, '--token-ref', NAME]))).toEqual({ kbSetup: 'written', verification: 'verified' });
+      expect(lastJson(await cli(['kb-setup', '--remote', url, '--token-ref', NAME]))).toEqual({ kbSetup: 'written', previous: 'missing', verification: 'verified' });
       fs.writeFileSync(tokenFile, `${TOKEN}-rotated`);
       await new Promise((r) => setTimeout(r, 600));
       expect(lastJson(await cli(['kb-setup', '--remote', url, '--token-ref', NAME]))).toEqual({ kbSetup: 'unchanged', verification: 'rejected' });
     } finally {
       kb.kill();
     }
+  });
+
+  it('an expired secret is refused, also when the config already names it', async () => {
+    const url = await startKb();
+    await setSecret(TOKEN, '--expires-at', new Date(Date.now() + 1500).toISOString());
+    fs.mkdirSync(path.dirname(kbConfigPath()), { recursive: true });
+    fs.writeFileSync(kbConfigPath(), JSON.stringify({ provider: 'http', url, token_ref: `{{secret.${NAME}}}` }));
+    await new Promise((r) => setTimeout(r, 2000));
+    const r = await cli(['kb-setup', '--remote', url, '--token-ref', NAME]);
+    expect(r.code).toBe(1);
+    expect(lastJson(r)).toEqual({ error: 'refused' });
+    expect(requests).toHaveLength(0);
   });
 
   it('a missing secret is refused', async () => {

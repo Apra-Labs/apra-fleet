@@ -260,15 +260,16 @@ function readRequestTimeout(value: unknown): number {
 }
 
 /** How this install's KB config relates to a remote KB url and the secret its token should come from. */
-export type KbConfigMatch = 'match' | 'not-http' | 'other-remote' | 'other-token' | 'unreadable';
+export type KbConfigMatch = 'match' | 'missing' | 'not-http' | 'other-remote' | 'other-token' | 'unreadable';
 
 /**
  * Whether the KB config selects provider http at `remote` (a trailing slash is
- * ignored) with its token from secret `secretName`. Read only. `not-http`: no
- * config, or sqlite. `other-token`: the right remote with a literal token or
+ * ignored) with its token from secret `secretName`. Read only. `missing`: no
+ * config file. `not-http`: sqlite. `other-token`: the right remote with a literal token or
  * another secret.
  */
 export function kbConfigMatch(remote: string, secretName: string): KbConfigMatch {
+  if (!fs.existsSync(KB_CONFIG_PATH)) return 'missing';
   let config: KbConfigResult;
   try {
     config = readKbConfigFromDisk();

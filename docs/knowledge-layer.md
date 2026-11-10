@@ -728,25 +728,37 @@ orchestrator before anything is minted or sent.
 - **Local member:** it shares the orchestrator's fleet server and KB config, so its
   KB calls already use the secret. Nothing is pushed and the config is not changed:
   the call checks that the config names this remote and `{{secret.NAME}}`, and is
-  refused (`kb-not-configured` or `kb-other-remote`) if not.
+  refused (`kb-not-configured` or `kb-other-remote`) if not. `verified` here means
+  the secret resolved on the orchestrator; no KB call is made.
+- **Relay member:** refused (`relay-unsupported`) before anything is minted: a relay
+  has no way to receive a file without a command line.
 - **Remote member:** it runs its own fleet server, reached over SSH. The call
   1. needs a member install of apra-fleet 0.4.5 or later (`install-too-old` or
-     `not-member-install` otherwise, naming the `update_member` remedy);
+     `not-member-install` otherwise, naming the `update_member` remedy). A 0.4.5
+     build from before this tool passes that check and is refused one step later,
+     when it does not know `--expires-at`: the token has been minted by then, but
+     nothing is stored on the member;
   2. resolves the secret on the orchestrator, minting if needed;
-  3. stores the token on the member as an ordinary static secret with its expiry,
-     through `apra-fleet secret --set NAME --persist --expires-at <time> -y`. A new
-     record there is `allow` and all members; a record that already exists keeps
-     its own policy fields, as for any re-set. The value is
-     staged in an owner-only file, piped in and removed in the same command, never
-     on a command line;
+  3. stores the token on the member as an ordinary static secret through
+     `apra-fleet secret --set NAME --persist --expires-at <time> --allow --members '*' -y`:
+     its expiry (in UTC), policy `allow` and all members, whatever was stored under
+     that name on the member before. The value is staged in an owner-only file over
+     SFTP (`secret-file-unavailable` if SFTP is off), piped in and removed in the
+     same command, never on a command line;
   4. runs `apra-fleet kb-setup --remote <url> --token-ref NAME` on the member, which
-     points its KB at the secret unless it already does (replacing another remote),
-     and makes one KB call. It refuses a `deny` secret as `kb_setup` does.
-     Member sessions never get `kb_setup` itself.
-  5. reports that KB call as the verification: `verified`, or failed with
-     `rejected`, `unreachable` or `unverified`.
+     points its KB at the secret unless it already does, and makes one KB call. It
+     refuses a missing, expired or `deny` secret as `kb_setup` does. Member sessions
+     never get `kb_setup` itself. If it had to write the config, the result's
+     `memberChange` says what was there before: none, the local store, another
+     remote, or another token source;
+  5. reports that KB call as the verification: `verified` (the server answered
+     with success), or failed with `rejected`, `unreachable` or `unverified`.
 
-  If step 4 fails (`kb-setup-failed`), the token stays stored on the member.
+  After step 3 the member holds the secret, and after step 4 its KB config names
+  this remote and secret. Neither is rolled back when a later step fails: if
+  kb-setup fails (`kb-setup-failed`, with the stored copy's `expiresAt`), the
+  secret stays and the config is as it was; if verification fails, the secret and
+  the new config both stay, and the previous config is not restored.
 
 The member's copy expires with the token and is not renewed by itself: run
 `provision_kb_auth` again before then. After the KB server refuses a token

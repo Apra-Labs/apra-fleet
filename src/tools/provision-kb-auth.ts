@@ -14,11 +14,16 @@ export type ProvisionKbAuthInput = z.infer<typeof provisionKbAuthSchema>;
 /** A refusal or failure, as a tool error result. Names only, never a value. */
 export class ProvisionKbAuthToolError extends Error {
   readonly code = 'E-PROVISION-AUTH';
-  readonly structuredContent: { ok: false; code: 'E-PROVISION-AUTH'; reason: ProvisionKindFailure; message: string };
+  readonly structuredContent: { ok: false; code: 'E-PROVISION-AUTH'; reason: ProvisionKindFailure; message: string; expiresAt?: string | null };
   constructor(err: ProvisionAuthError) {
     super(`E-PROVISION-AUTH: ${err.reason}: ${err.message}`);
     this.name = 'ProvisionKbAuthToolError';
-    this.structuredContent = { ok: false, code: 'E-PROVISION-AUTH', reason: err.reason, message: err.message };
+    // expiresAt is present when the failure came after the value was resolved, so a
+    // copy pushed to the member (kb-setup-failed) is known to expire then.
+    this.structuredContent = {
+      ok: false, code: 'E-PROVISION-AUTH', reason: err.reason, message: err.message,
+      ...(err.expiresAt !== undefined ? { expiresAt: err.expiresAt } : {}),
+    };
   }
 }
 
@@ -41,6 +46,7 @@ export async function provisionKbAuth(input: ProvisionKbAuthInput): Promise<{ te
     ? 'verified'
     : `failed: ${result.verification.reason} (${result.verification.detail})`;
   const text = `${ok ? '[OK]' : '[WARN]'} KB token from secret "${result.secret}" provisioned to member "${result.member.name}"; ` +
-    `expires ${result.expiresAt ?? 'never'}; verification ${verified}`;
+    `expires ${result.expiresAt ?? 'never'}; verification ${verified}` +
+    (result.memberChange ? `; ${result.memberChange.detail}` : '');
   return { text, structuredContent: { ok, ...result } };
 }

@@ -2,31 +2,49 @@
 // Evidence run for provision_kb_auth against a REAL remote member, by hand.
 //
 // What it does, printing each step and its result:
-//   1. starts a KB test server here (apra-fleet kb-server --token-file), whose
-//      token is a random value in a temp file: no real credential is involved;
-//   2. registers a live secret on the orchestrator whose fake helper reads that
-//      file (apra-fleet secret --live ... -- node fake-helper.mjs <file>);
-//   3. backs up the member's KB config on the member (a copy next to it);
-//   4. calls provision_kb_auth through the orchestrator's running fleet server
-//      and checks it is verified, and that the member's KB config names the
-//      secret;
-//   5. rotates the KB server token: provision_kb_auth without reason pushes the
-//      cached token and must report verification rejected; with reason
-//      rejected it must mint a new one and report verified;
-//   6. cleans up: deletes the pushed secret on the member, restores its KB
-//      config, deletes the live secret here, stops the KB server.
+//   1. starts a KB test server here (apra-fleet kb-server --token-file, its own
+//      data dir), whose token is a random value in a temp file: no real
+//      credential is involved;
+//   2. attaches to the orchestrator fleet server named by APRA_FLEET_DATA_DIR
+//      (never starts one), and with --register registers the member there;
+//   3. records the member's KB config (backed up next to it), its home's staged
+//      token files and its work folder's post-commit hook;
+//   4. registers a live secret on the orchestrator whose fake helper reads the
+//      token file;
+//   5. calls provision_kb_auth: verified, no token in the result, and the
+//      member's KB config names the secret;
+//   6. makes a KB call through the member's OWN fleet server (apra-fleet call
+//      --member <id> kb_capture on the member) and finds that entry on the test
+//      KB server: the member's server used the pushed token;
+//   7. rotates the KB server token: without reason the cached token is pushed
+//      and must report rejected; with reason rejected a new one is minted and
+//      verified;
+//   8. checks no staged token file and no new git hook were left on the member;
+//   9. cleans up: the pushed secret and KB config on the member, the live
+//      secret, the registration (with --register), the KB server.
 //
-// It changes the member's KB config while it runs, and needs the member to run
-// a member install of this build. The KB server must be reachable FROM THE
-// MEMBER at --kb-url (it listens on all interfaces here, on --port or the
-// port in --kb-url). The orchestrator's fleet server must run this build, with
-// the same data dir as the apra-fleet CLI used here.
+// Needs: the member running a member install of this build; its work folder a
+// git repository with an origin remote (a member session's KB identity); the KB
+// port reachable FROM THE MEMBER at --kb-url; `node` on the orchestrator
+// server's PATH.
 //
-// Usage:
+// Against the shared orchestrator (it must run this build):
 //   node tests/integration/provision-kb-auth/run.mjs --member <name> --kb-url http://<this host>:<port> --yes
-//     [--port <listen port>] [--secret <name>] [--fleet-bin <apra-fleet path>] [--keep]
 //
-// Exit code 0 only when every check passed.
+// Against an isolated orchestrator started from this build, with its own data
+// dir and port (nothing shared is touched; recommended):
+//   npm run build
+//   export APRA_FLEET_DATA_DIR=<new empty dir> APRA_FLEET_PORT=<free port>
+//   node dist/index.js run &          # the isolated orchestrator
+//   node tests/integration/provision-kb-auth/run.mjs --use-build --register \
+//     --member kb-evidence --host <member host> --ssh-user <user> --ssh-key <key path> \
+//     --work-folder <member work folder> --kb-url http://<this host>:<port> --yes
+//   then stop that server and remove the data dir.
+// --register uses fleet_install auto: a member older than this build is
+// upgraded by it.
+//
+// Options: [--port <KB listen port>] [--secret <name>] [--fleet-bin <apra-fleet>]
+//          [--use-build] [--ssh-port N] [--keep]. Exit code 0 only when every check passed.
 
 import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -38,35 +56,34 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '..', '..', '..');
 
+function usage(msg) {
+  console.error(`error: ${msg}`);
+  console.error('usage: run.mjs --member <name> --kb-url http://<host reachable from the member>:<port> --yes [--use-build] [--register --host H --ssh-user U --ssh-key K --work-folder F [--ssh-port N]] [--port N] [--secret NAME] [--fleet-bin PATH] [--keep]');
+  process.exit(2);
+}
+
 function parseArgs(argv) {
-  const out = { yes: false, keep: false };
+  const out = { yes: false, keep: false, register: false, useBuild: false };
+  const valued = { '--member': 'member', '--kb-url': 'kbUrl', '--port': 'port', '--secret': 'secret', '--fleet-bin': 'fleetBin',
+    '--host': 'host', '--ssh-user': 'sshUser', '--ssh-key': 'sshKey', '--work-folder': 'workFolder', '--ssh-port': 'sshPort' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    const next = () => { if (argv[i + 1] === undefined) usage(`${a} needs a value`); return argv[++i]; };
-    if (a === '--member') out.member = next();
-    else if (a === '--kb-url') out.kbUrl = next();
-    else if (a === '--port') out.port = Number(next());
-    else if (a === '--secret') out.secret = next();
-    else if (a === '--fleet-bin') out.fleetBin = next();
+    if (valued[a]) { if (argv[i + 1] === undefined) usage(`${a} needs a value`); out[valued[a]] = argv[++i]; }
     else if (a === '--yes') out.yes = true;
     else if (a === '--keep') out.keep = true;
+    else if (a === '--register') out.register = true;
+    else if (a === '--use-build') out.useBuild = true;
     else usage(`unknown argument ${a}`);
   }
   if (!out.member || !out.kbUrl) usage('--member and --kb-url are required');
+  if (out.register && !(out.host && out.sshUser && out.sshKey && out.workFolder)) usage('--register needs --host, --ssh-user, --ssh-key and --work-folder');
   return out;
-}
-
-function usage(msg) {
-  console.error(`error: ${msg}`);
-  console.error('usage: run.mjs --member <name> --kb-url http://<host reachable from the member>:<port> --yes [--port N] [--secret NAME] [--fleet-bin PATH] [--keep]');
-  process.exit(2);
 }
 
 const args = parseArgs(process.argv.slice(2));
 const kbUrl = new URL(args.kbUrl);
-const port = args.port ?? Number(kbUrl.port || 7878);
+const port = Number(args.port ?? (kbUrl.port || 7878));
 const secretName = args.secret ?? `KB_EVIDENCE_${crypto.randomBytes(3).toString('hex')}`;
-const fleetBin = args.fleetBin ?? 'apra-fleet';
 const isWin = process.platform === 'win32';
 
 let failures = 0;
@@ -76,14 +93,16 @@ function fail(text) { failures++; console.log(`  [FAIL] ${text}`); }
 function info(text) { console.log(`  ${text}`); }
 function check(cond, good, bad) { if (cond) ok(good); else fail(bad); return cond; }
 
-// npm installs a .cmd shim on Windows, which needs a shell; arguments with spaces are then quoted.
-const viaShell = isWin && !/\.exe$/i.test(fleetBin);
+// The fleet CLI here: this build (--use-build), or an installed apra-fleet. An npm
+// .cmd shim on Windows needs a shell; arguments with spaces are then quoted.
+const fleetBin = args.useBuild ? process.execPath : (args.fleetBin ?? 'apra-fleet');
+const fleetPre = args.useBuild ? [path.join(repo, 'dist', 'index.js')] : [];
+const viaShell = isWin && !args.useBuild && !/\.exe$/i.test(fleetBin);
 const shellArgs = (list) => (viaShell ? list.map((a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a)) : list);
 const fleetCmd = viaShell ? `"${fleetBin}"` : fleetBin;
 
-/** The fleet CLI on this host. */
 function fleet(cliArgs, input) {
-  const r = spawnSync(fleetCmd, shellArgs(cliArgs), { input, encoding: 'utf-8', shell: viaShell, timeout: 120_000 });
+  const r = spawnSync(fleetCmd, shellArgs([...fleetPre, ...cliArgs]), { input, encoding: 'utf-8', shell: viaShell, timeout: 120_000 });
   return { code: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() };
 }
 
@@ -107,9 +126,10 @@ fs.writeFileSync(helper, [
 
 let kbServer;
 let client;
-let memberCtx;
+let registered = false;
+let liveRegistered = false;
+const m = {};
 
-/** structuredContent of a tool result, or a parsed text body. */
 function payload(result) {
   if (result?.structuredContent) return result.structuredContent;
   const text = (result?.content ?? []).map((c) => c.text ?? '').join('\n');
@@ -126,7 +146,7 @@ const pq = (s) => `'${String(s).replace(/'/g, "''")}'`;
 
 /** A command on the member through execute_command, built for its shell with absolute, quoted paths. */
 async function onMember(posix, powershell) {
-  const r = await tool('execute_command', { member_name: args.member, command: memberCtx.posix ? posix : powershell, timeout_s: 60 });
+  const r = await tool('execute_command', { member_name: args.member, command: m.posix ? posix : powershell, timeout_s: 90 });
   return { code: r.body.exitCode ?? (r.isError ? 1 : 0), out: `${r.body.stdout ?? ''}${r.body.stderr ?? ''}`.trim() || r.text };
 }
 
@@ -136,12 +156,30 @@ async function provision(extra = {}) {
   return r;
 }
 
+/** GET on the test KB server with its current token. */
+async function kbGet(pathname) {
+  const res = await fetch(new URL(pathname, `http://127.0.0.1:${port}`), { headers: { Authorization: `Bearer ${fs.readFileSync(tokenFile, 'utf8').trim()}` } });
+  return res.json();
+}
+
+/** Staged token files in the member's home, and the post-commit hook's hash (or none). */
+async function memberLeftovers() {
+  const staged = await onMember(
+    `ls -a ${sq(m.home)} | grep -c '^\\.apra-fleet-kb-token-' || true`,
+    `@(Get-ChildItem -Force -LiteralPath ${pq(m.home)} -Filter '.apra-fleet-kb-token-*').Count`,
+  );
+  const hook = await onMember(
+    `if [ -f ${sq(m.hook)} ]; then cksum < ${sq(m.hook)}; else echo none; fi`,
+    `if (Test-Path -LiteralPath ${pq(m.hook)}) { (Get-FileHash -LiteralPath ${pq(m.hook)}).Hash } else { 'none' }`,
+  );
+  return { staged: Number.parseInt(staged.out.trim().split(/\s+/).pop(), 10), hook: hook.out.trim() };
+}
+
 async function main() {
   step(1, `KB test server on port ${port}, token from ${tokenFile}`);
-  // Its own data dir: the test server never reads or writes the orchestrator's.
   const serverData = path.join(tmp, 'kb-server-data');
   fs.mkdirSync(serverData);
-  kbServer = spawn(fleetCmd, shellArgs(['kb-server', '--port', String(port), '--token-file', tokenFile, '--db', path.join(tmp, 'kb.sqlite')]),
+  kbServer = spawn(fleetCmd, shellArgs([...fleetPre, 'kb-server', '--port', String(port), '--token-file', tokenFile, '--db', path.join(tmp, 'kb.sqlite')]),
     { stdio: ['ignore', 'ignore', 'pipe'], shell: viaShell, env: { ...process.env, APRA_FLEET_DATA_DIR: serverData } });
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('kb-server did not start in 20 s')), 20_000);
@@ -150,53 +188,73 @@ async function main() {
   });
   ok(`listening; the member must reach it at ${args.kbUrl}`);
 
-  step(2, 'connect to the orchestrator fleet server');
+  step(2, `orchestrator fleet server (data dir ${process.env.APRA_FLEET_DATA_DIR ?? 'default'})`);
   const { connectFleet } = await import(pathToFileURL(path.join(repo, 'packages', 'apra-fleet-client', 'src', 'client', 'server-resolution.mjs')).href);
   // http forced: attach to the running server only, never start one or fall back to stdio.
   client = await connectFleet({ env: { ...process.env, APRA_FLEET_TRANSPORT: 'http' } });
-  const version = await tool('version', {});
-  info(`server: ${version.text.split('\n')[0]}`);
-  const tools = await client.mcpClient.listTools();
-  const names = (tools?.tools ?? []).map((t) => t.name);
+  info(`server: ${(await tool('version', {})).text.split('\n')[0]}`);
+  const names = ((await client.mcpClient.listTools())?.tools ?? []).map((t) => t.name);
   if (!check(names.includes('provision_kb_auth'), 'the server has provision_kb_auth', 'the server has no provision_kb_auth: run this build')) return;
+  if (args.register) {
+    const reg = await tool('register_member', {
+      friendly_name: args.member, member_type: 'remote', host: args.host, port: Number(args.sshPort ?? 22),
+      username: args.sshUser, auth_type: 'key', key_path: args.sshKey, work_folder: args.workFolder, fleet_install: 'auto',
+    });
+    registered = !reg.isError;
+    info(reg.text.split('\n').slice(0, 3).join(' | '));
+    if (!check(registered, 'member registered on this orchestrator', 'register_member failed')) return;
+  }
 
   step(3, `member "${args.member}"`);
-  const detail = await tool('member_detail', { member_name: args.member, format: 'json' });
-  const d = detail.body;
-  info(`type=${d.type} os=${d.os} shell=${d.shell ?? '(default)'} host=${d.host}`);
+  const d = (await tool('member_detail', { member_name: args.member, format: 'json' })).body;
+  info(`type=${d.type} os=${d.os} shell=${d.shell ?? '(default)'} host=${d.host} folder=${d.folder}`);
   if (!check(d.type === 'remote', 'a remote member', 'this script is for a remote member')) return;
-  memberCtx = { posix: d.os !== 'windows' || d.shell === 'gitbash' };
-  const homeR = await onMember('printf %s "$HOME"', '[Console]::Out.Write($HOME)');
-  const home = homeR.out.trim();
-  const join = (...p) => (memberCtx.posix ? p.join('/') : p.join('\\'));
-  memberCtx.bin = join(home, '.apra-fleet', 'bin', d.os === 'windows' ? 'apra-fleet.exe' : 'apra-fleet');
-  memberCtx.config = join(home, '.apra-fleet', 'data', 'knowledge', 'config.json');
-  memberCtx.backup = `${memberCtx.config}.evidence-bak`;
-  const mv = await onMember(`${sq(memberCtx.bin)} --version`, `& ${pq(memberCtx.bin)} --version`);
-  info(`member install: ${mv.out.split('\n')[0]}`);
-
-  step(4, 'back up the member KB config');
+  m.id = d.id;
+  m.posix = d.os !== 'windows' || d.shell === 'gitbash';
+  m.home = (await onMember('printf %s "$HOME"', '[Console]::Out.Write($HOME)')).out.trim();
+  const join = (...p) => (m.posix ? p.join('/') : p.join('\\'));
+  m.bin = join(m.home, '.apra-fleet', 'bin', d.os === 'windows' ? 'apra-fleet.exe' : 'apra-fleet');
+  m.config = join(m.home, '.apra-fleet', 'data', 'knowledge', 'config.json');
+  m.backup = `${m.config}.evidence-bak`;
+  m.hook = join(d.folder, '.git', 'hooks', 'post-commit');
+  m.args = join(m.home, '.apra-fleet', `kb-evidence-args-${crypto.randomBytes(3).toString('hex')}.json`);
+  info(`member install: ${(await onMember(`${sq(m.bin)} --version`, `& ${pq(m.bin)} --version`)).out.split('\n')[0]}`);
   const b = await onMember(
-    `if [ -f ${sq(memberCtx.config)} ]; then cp -p ${sq(memberCtx.config)} ${sq(memberCtx.backup)} && echo backed-up; else echo none; fi`,
-    `if (Test-Path -LiteralPath ${pq(memberCtx.config)}) { Copy-Item -LiteralPath ${pq(memberCtx.config)} -Destination ${pq(memberCtx.backup)} -Force; 'backed-up' } else { 'none' }`,
+    `if [ -f ${sq(m.config)} ]; then cp -p ${sq(m.config)} ${sq(m.backup)} && echo backed-up; else echo none; fi`,
+    `if (Test-Path -LiteralPath ${pq(m.config)}) { Copy-Item -LiteralPath ${pq(m.config)} -Destination ${pq(m.backup)} -Force; 'backed-up' } else { 'none' }`,
   );
-  memberCtx.hadConfig = b.out.includes('backed-up');
-  check(b.code === 0, memberCtx.hadConfig ? `copied to ${memberCtx.backup}` : 'no KB config on the member yet', `backup failed: ${b.out}`);
+  m.hadConfig = b.out.includes('backed-up');
+  check(b.code === 0, m.hadConfig ? `KB config copied to ${m.backup}` : 'no KB config on the member yet', `backup failed: ${b.out}`);
+  m.before = await memberLeftovers();
+  info(`before: staged token files ${m.before.staged}, post-commit hook ${m.before.hook}`);
 
-  step(5, `live secret ${secretName} on the orchestrator, fake helper ${helper}`);
+  step(4, `live secret ${secretName} on the orchestrator, fake helper ${helper}`);
   // node by bare name: the orchestrator's fleet server resolves it on its own PATH.
   const reg = fleet(['secret', '--live', secretName, '--', 'node', helper, tokenFile]);
-  if (!check(reg.code === 0 && /^OK: expires/m.test(reg.out), `registered: ${reg.out}`, `registration failed: ${reg.out}`)) return;
+  liveRegistered = reg.code === 0;
+  if (!check(liveRegistered && /^OK: expires/m.test(reg.out), `registered: ${reg.out}`, `registration failed: ${reg.out}`)) return;
 
-  step(6, 'provision_kb_auth');
+  step(5, 'provision_kb_auth');
   const first = await provision();
   check(!first.isError && first.body.ok === true && first.body.verification?.status === 'verified', 'verified', 'not verified');
   check(!JSON.stringify(first).includes(fs.readFileSync(tokenFile, 'utf8').trim()), 'the result carries no token', 'the token appears in the result');
-  const cfg = await onMember(`cat ${sq(memberCtx.config)}`, `Get-Content -Raw -LiteralPath ${pq(memberCtx.config)}`);
+  const cfg = await onMember(`cat ${sq(m.config)}`, `Get-Content -Raw -LiteralPath ${pq(m.config)}`);
   let parsed = {};
   try { parsed = JSON.parse(cfg.out); } catch { /* reported below */ }
   check(parsed.provider === 'http' && parsed.token_ref === `{{secret.${secretName}}}`,
     `member KB config: provider=${parsed.provider} url=${parsed.url} token_ref=${parsed.token_ref}`, `member KB config does not name the secret: ${cfg.out.slice(0, 200)}`);
+
+  step(6, "a KB call through the member's own fleet server");
+  const marker = `kb-evidence-${crypto.randomBytes(4).toString('hex')}`;
+  const capture = JSON.stringify({ type: 'knowledge', title: marker, summary: `provision_kb_auth evidence ${marker}.`, content: `Written through the member fleet server for ${marker}.` });
+  const call = await onMember(
+    `printf '%s' ${sq(capture)} > ${sq(m.args)} && ${sq(m.bin)} call --member ${sq(m.id)} kb_capture --args-file ${sq(m.args)} --rm-args-file`,
+    `Set-Content -LiteralPath ${pq(m.args)} -Value ${pq(capture)} -NoNewline -Encoding ascii; & ${pq(m.bin)} call --member ${pq(m.id)} kb_capture --args-file ${pq(m.args)} --rm-args-file`,
+  );
+  info(`member kb_capture: exit ${call.code}: ${call.out.split('\n').pop().slice(0, 200)}`);
+  check(call.code === 0 && !/offline-|E-KB-HTTP-AUTH/.test(call.out), 'kb_capture answered by the member server, not queued', 'kb_capture failed or was queued offline');
+  const found = await kbGet(`/api/kb/query?query=${marker}&confidence=CONFIRMED,INFERRED,UNVERIFIED`);
+  check((found.l1_results ?? []).some((e) => e.title === marker), 'the entry is on the test KB server: the member server authenticated with the pushed token', 'the entry is not on the test KB server');
 
   step(7, 'rotate the KB server token; the cached token is now refused');
   fs.writeFileSync(tokenFile, newToken());
@@ -206,21 +264,29 @@ async function main() {
     'without reason: the cached token was pushed and the member reports rejected', 'expected verification rejected');
   const fresh = await provision({ reason: 'rejected' });
   check(fresh.body.ok === true, 'with reason rejected: a new token was minted, pushed and verified', 'expected verified after reason rejected');
+
+  step(8, 'nothing left behind on the member');
+  const after = await memberLeftovers();
+  check(after.staged === m.before.staged, `staged token files: ${after.staged} (as before)`, `staged token files: ${m.before.staged} before, ${after.staged} after`);
+  check(after.hook === m.before.hook, `post-commit hook unchanged (${after.hook})`, `post-commit hook changed: ${m.before.hook} -> ${after.hook}`);
 }
 
 async function cleanup() {
   if (args.keep) { info('--keep: nothing cleaned up'); return; }
-  step(8, 'clean up');
-  if (client && memberCtx?.bin) {
-    const del = await onMember(`${sq(memberCtx.bin)} secret --delete ${sq(secretName)}`, `& ${pq(memberCtx.bin)} secret --delete ${pq(secretName)}`);
+  step(9, 'clean up');
+  if (client && m.bin) {
+    const del = await onMember(`${sq(m.bin)} secret --delete ${sq(secretName)}`, `& ${pq(m.bin)} secret --delete ${pq(secretName)}`);
     info(`member secret delete: exit ${del.code}`);
-    const restore = memberCtx.hadConfig
-      ? await onMember(`mv -f ${sq(memberCtx.backup)} ${sq(memberCtx.config)}`, `Move-Item -Force -LiteralPath ${pq(memberCtx.backup)} -Destination ${pq(memberCtx.config)}`)
-      : await onMember(`rm -f ${sq(memberCtx.config)}`, `Remove-Item -Force -LiteralPath ${pq(memberCtx.config)} -ErrorAction SilentlyContinue`);
-    check(restore.code === 0, memberCtx.hadConfig ? 'member KB config restored' : 'member KB config removed (there was none)', `restore failed: ${restore.out}`);
+    const restore = m.hadConfig
+      ? await onMember(`mv -f ${sq(m.backup)} ${sq(m.config)}`, `Move-Item -Force -LiteralPath ${pq(m.backup)} -Destination ${pq(m.config)}`)
+      : await onMember(`rm -f ${sq(m.config)}`, `Remove-Item -Force -LiteralPath ${pq(m.config)} -ErrorAction SilentlyContinue`);
+    check(restore.code === 0, m.hadConfig ? 'member KB config restored' : 'member KB config removed (there was none)', `restore failed: ${restore.out}`);
   }
-  const del = fleet(['secret', '--delete', secretName]);
-  info(`orchestrator live secret delete: ${del.out}`);
+  if (liveRegistered) info(`orchestrator live secret delete: ${fleet(['secret', '--delete', secretName]).out}`);
+  if (registered) {
+    const rm = await tool('remove_member', { member_name: args.member, force: true });
+    info(`remove_member: ${rm.text.split('\n')[0]}`);
+  }
   // Through a .cmd shim the child is cmd.exe, so the whole tree is stopped.
   if (kbServer && kbServer.exitCode === null) {
     if (isWin) spawnSync('taskkill', ['/PID', String(kbServer.pid), '/T', '/F'], { windowsHide: true });

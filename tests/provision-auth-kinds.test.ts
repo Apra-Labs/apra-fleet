@@ -173,6 +173,7 @@ describe('provisionAuthForKind: a live and a static secret', () => {
       secret: s.name,
       expiresAt: expiryOf(1),
       verification: { status: 'verified' },
+      memberChange: null,
     });
     expect(delivered).toEqual([{ value: tokenOf(1), expiresAt: expiryOf(1), agentType: 'remote', host: 'old.example.test', params: { remote: REMOTE } }]);
     expect(s.runs()).toBe(1);
@@ -292,8 +293,8 @@ describe('provisionAuthForKind: prepare', () => {
 
   it('a failing prepare runs no script and delivers nothing', async () => {
     const s = live('prepfail');
-    stub.kb.prepare = async () => { throw new ProvisionHandlerError('not-available'); };
-    expectRefused(await failure(provision(s.name)), 'not-available');
+    stub.kb.prepare = async () => { throw new ProvisionHandlerError('member-unreachable'); };
+    expectRefused(await failure(provision(s.name)), 'member-unreachable');
     expect(s.runs()).toBe(0);
     expect(delivered).toEqual([]);
   });
@@ -540,10 +541,10 @@ describe('provisionAuthForKind: no handler text or value in the result, errors o
 
   it('a handler reason carries no text: a known one gets its fixed text, an unknown one is delivery-failed', async () => {
     const name = staticSecret('reasononly');
-    stub.kb.deliver = async () => { throw new ProvisionHandlerError('not-available'); };
+    stub.kb.deliver = async () => { throw new ProvisionHandlerError('member-unreachable'); };
     const known = await failure(provision(name));
-    expectRefused(known, 'not-available');
-    expect(known.message).toContain('this kind cannot deliver to a member yet');
+    expectRefused(known, 'member-unreachable');
+    expect(known.message).toContain('the member could not be reached or started');
     stub.kb.deliver = async ({ value }) => { throw new ProvisionHandlerError(`${HANDLER_TEXT} ${value}` as never); };
     const unknown = await failure(provision(name));
     expectRefused(unknown, 'delivery-failed');

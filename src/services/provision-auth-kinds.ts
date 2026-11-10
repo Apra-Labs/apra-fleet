@@ -34,9 +34,10 @@ import type { Agent } from '../types.js';
 /** Why a handler step failed. Each has fixed text, so no handler text can reach a result or the log. */
 const HANDLER_FAILURES = {
   'bad-input': 'the input for this kind is not valid',
-  'not-available': 'this kind cannot deliver to a member yet',
   'delivery-failed': 'the secret could not be delivered to the member',
   'member-unreachable': 'the member could not be reached or started; check it with member_detail',
+  'relay-unsupported': 'a relay member has no channel that delivers a secret without a command line, so it cannot be provisioned; use a remote (SSH) member',
+  'secret-file-unavailable': 'the value could not be written to an owner-only file on the member over SFTP, the only way it is sent; enable the SFTP subsystem in the member sshd_config, then try again',
   'install-too-old': 'the apra-fleet install on the member is missing or too old for this; run update_member {member_id, fleet_install: "auto"}, then try again',
   'not-member-install': 'the member runs a full apra-fleet install, not a member install, so the fleet does not manage it; replace it with update_member {member_id, fleet_install: "replace-full"} (or by hand, as update_member describes), then try again',
   'kb-not-configured': 'the KB config on the orchestrator does not take its token from this secret at this remote, and a local member shares that config, which this tool does not change; run kb_setup on the orchestrator with provider http, this remote and token {{secret.<the secret>}}',
@@ -63,6 +64,8 @@ export type ProvisionKindFailure =
 /** A provisioning failure. The message names the member and secret, never a value. */
 export class ProvisionAuthError extends Error {
   readonly code = 'E-PROVISION-AUTH';
+  /** Set when delivery failed after the value was resolved: its expiry, null for none. A pushed copy may be left with it. */
+  expiresAt?: string | null;
   constructor(readonly reason: ProvisionKindFailure, message: string) {
     super(message);
     this.name = 'ProvisionAuthError';
@@ -99,10 +102,21 @@ export interface ProvisionKindInput {
   reason?: 'rejected';
 }
 
-/** What a handler's deliver reports. A reason only: there is no field for its own words. */
+/** What delivery changed on the member besides the secret, with fixed text. */
+const MEMBER_CHANGES = {
+  'kb-config-created': 'the member had no KB config; one was written that takes its token from this secret',
+  'kb-config-replaced-sqlite': 'the member KB config used its local store; it now uses this remote, with its token from this secret',
+  'kb-config-replaced-remote': 'the member KB config named another remote; it now names this one, with its token from this secret',
+  'kb-config-replaced-token': 'the member KB config named this remote with another token source; it now takes its token from this secret',
+  'kb-config-replaced-unreadable': 'the member KB config could not be read; it was replaced with one that takes its token from this secret',
+} as const;
+
+export type ProvisionMemberChange = keyof typeof MEMBER_CHANGES;
+
+/** What a handler's deliver reports. Reasons only: there is no field for its own words. */
 export type ProvisionKindDelivery =
-  | { status: 'verified' }
-  | { status: 'failed'; reason: ProvisionVerificationFailure };
+  | { status: 'verified'; change?: ProvisionMemberChange }
+  | { status: 'failed'; reason: ProvisionVerificationFailure; change?: ProvisionMemberChange };
 
 export type ProvisionKindVerification =
   | { status: 'verified' }
@@ -116,6 +130,8 @@ export interface ProvisionKindResult {
   /** When the value expires; null for a static secret with no expiry. */
   expiresAt: string | null;
   verification: ProvisionKindVerification;
+  /** What else delivery changed on the member, or null. Kept even when verification failed. */
+  memberChange: { reason: ProvisionMemberChange; detail: string } | null;
 }
 
 export interface ProvisionKindContext<P> {
@@ -172,8 +188,9 @@ const kbHandler: ProvisionKindHandler<{ remote: string }> = {
   },
   prepare: (ctx) => kbStep(() => prepareKb(ctx.member, ctx.params.remote, ctx.secret)),
   deliver: async (ctx) => {
-    const v = await kbStep(() => deliverKb(ctx.member, ctx.params.remote, ctx.secret, ctx.value, ctx.expiresAt));
-    return v === 'verified' ? { status: 'verified' } : { status: 'failed', reason: v };
+    const { verification: v, change } = await kbStep(() => deliverKb(ctx.member, ctx.params.remote, ctx.secret, ctx.value, ctx.expiresAt));
+    const extra = change ? { change } : {};
+    return v === 'verified' ? { status: 'verified', ...extra } : { status: 'failed', reason: v, ...extra };
   },
 };
 
@@ -277,13 +294,21 @@ async function run(
 
   const { value, expiresAt } = await resolveValue(name, source);
   const deliveredTo = member;
-  const delivery = await handlerStep(() => handler.deliver({ member: deliveredTo, secret: name, params, value, expiresAt }), kind, name, member);
+  let delivery: ProvisionKindDelivery;
+  try {
+    delivery = await handlerStep(() => handler.deliver({ member: deliveredTo, secret: name, params, value, expiresAt }), kind, name, member);
+  } catch (err) {
+    if (err instanceof ProvisionAuthError) err.expiresAt = expiresAt;
+    throw err;
+  }
+  const change = delivery.change !== undefined && Object.hasOwn(MEMBER_CHANGES, delivery.change) ? delivery.change : null;
   return {
     member: { id: member.id, name: member.friendlyName },
     kind,
     secret: name,
     expiresAt,
     verification: verificationOf(delivery),
+    memberChange: change ? { reason: change, detail: MEMBER_CHANGES[change] } : null,
   };
 }
 

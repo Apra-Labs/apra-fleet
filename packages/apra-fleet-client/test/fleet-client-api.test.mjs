@@ -289,6 +289,17 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'ok' });
     });
 
+    test('provisionKbAuth calls provision_kb_auth with the options as given and returns its result', async () => {
+        let calledName, calledArgs;
+        const reply = { structuredContent: { ok: false, code: 'E-PROVISION-AUTH', reason: 'install-too-old' }, isError: true };
+        const fleet = new ApraFleet({ async callTool(name, args) { calledName = name; calledArgs = args; return reply; } });
+        const options = { member_name: 'alice', secret: 'KB_TOKEN', remote: 'https://kb.example.test', reason: 'rejected' };
+        const result = await fleet.provisionKbAuth(options);
+        assert.strictEqual(calledName, 'provision_kb_auth');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.strictEqual(result, reply);
+    });
+
     // apra-fleet-e7qd split: provision_vcs_auth's structuredContent now
     // carries a `message` field with the human-readable failure cause (e.g.
     // "No repos specified and none on agent config.") alongside `reason` --
