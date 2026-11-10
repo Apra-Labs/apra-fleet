@@ -5,8 +5,8 @@
  *  - `kb-setup --remote <url> --token-ref NAME`, against a KB stub server here.
  * Plus the E-KB-HTTP-AUTH remediation on a member install. Requires `npm run build`.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFile } from 'node:child_process';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execFile, spawnSync } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,6 +26,9 @@ let server: http.Server | null;
 let serverToken: string;
 let requests: Array<{ url?: string; auth?: string }>;
 const savedDataDir = process.env.APRA_FLEET_DATA_DIR;
+
+// Each test spawns several CLI processes (about 1 s each, more under load).
+vi.setConfig({ testTimeout: 60_000 });
 
 interface Run { code: number | null; stdout: string; stderr: string }
 
@@ -156,8 +159,13 @@ describe('kb-setup (real CLI)', () => {
   it('writes the config with the secret reference, checks it with one KB call, and installs no git hook', async () => {
     const url = await startKb();
     await setSecret();
+    // A repository that can carry a KB identity, so a hook would be installed if one were asked for.
     const repo = path.join(sandbox, 'repo');
-    fs.mkdirSync(path.join(repo, '.git', 'hooks'), { recursive: true });
+    fs.mkdirSync(repo);
+    expect(spawnSync('git', ['init', '-q'], { cwd: repo }).status).toBe(0);
+    expect(spawnSync('git', ['remote', 'add', 'origin', 'https://example.test/org/repo.git'], { cwd: repo }).status).toBe(0);
+    fs.rmSync(path.join(repo, '.git', 'hooks'), { recursive: true, force: true });
+    fs.mkdirSync(path.join(repo, '.git', 'hooks'));
     const r = await cli(['kb-setup', '--remote', url, '--token-ref', NAME], '', repo);
     expect(r.code).toBe(0);
     expect(lastJson(r)).toEqual({ kbSetup: 'written', verification: 'verified' });
