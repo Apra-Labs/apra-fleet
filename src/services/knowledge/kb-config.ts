@@ -43,10 +43,40 @@ export interface KbConfigFile {
   token_ref?: string;
   request_timeout_ms?: number;
   bible?: { autoCommit?: boolean };
+  /** embedding.model: a built-in profile name, a custom-model object, or 'none' (see embedding/profiles.ts). */
+  embedding?: { model?: unknown };
   [key: string]: unknown;
 }
 
 export const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
+
+/**
+ * The raw embedding.model value from the KB config, resolved to a profile or
+ * the disabled state by resolveEmbeddingModel. Kept apart from
+ * readKbConfigFromDisk (which throws on a broken http config) so a bad file
+ * can never break embedding resolution, and a bad embedding key can never
+ * break the provider path. Never throws: an absent file or key returns
+ * undefined (the default profile); an unreadable file or a non-object
+ * "embedding" logs a warning and also returns undefined.
+ */
+export function readEmbeddingModelSetting(): unknown {
+  if (!fs.existsSync(KB_CONFIG_PATH)) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(KB_CONFIG_PATH, 'utf-8'));
+  } catch (err) {
+    logWarn('kb_config', `KB config at ${KB_CONFIG_PATH} is unreadable (${(err as Error).message}); using the default embedding model`);
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const embedding = (parsed as KbConfigFile).embedding;
+  if (embedding === undefined) return undefined;
+  if (embedding === null || typeof embedding !== 'object' || Array.isArray(embedding)) {
+    logWarn('kb_config', `KB config at ${KB_CONFIG_PATH} has "embedding" ${JSON.stringify(embedding)}, not an object; using the default embedding model`);
+    return undefined;
+  }
+  return (embedding as { model?: unknown }).model;
+}
 
 /**
  * Read the KB provider config kb_setup wrote (provider/url/token_encrypted). Nothing

@@ -54,7 +54,11 @@ this pair as "member identifier" rather than repeating it.
 telemetry the engine reports; `kb_stats.usage` reads it back).
 
 The knowledge-bank family is described in
-[knowledge-layer.md](knowledge-layer.md).
+[knowledge-layer.md](knowledge-layer.md). `kb_query` also accepts the optional,
+additive inputs `files`, `symbols` and `error_text`, which turn on hybrid
+ranking (keyword, error-signature, semantic and file/symbol anchor lists fused
+by reciprocal rank) in the local SQLite KB; see
+[Hybrid search and embeddings](knowledge-layer.md#hybrid-search-and-embeddings-sqlite-only).
 
 ---
 

@@ -30,7 +30,9 @@ vi.mock('../../src/services/strategy.js', () => ({
 
 import { addAgent } from '../../src/services/registry.js';
 import { runWithSessionMember } from '../../src/services/tool-scope.js';
-import { resetMemberBibleViews } from '../../src/services/knowledge/member-bible-view.js';
+import { resetMemberBibleViews, setMemberViewCodeResolverFactory } from '../../src/services/knowledge/member-bible-view.js';
+import { getSelfReadKb } from '../../src/services/knowledge/kb-self.js';
+import type { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { kbQuery } from '../../src/tools/kb-query.js';
 import { kbStats } from '../../src/tools/kb-stats.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
@@ -165,5 +167,33 @@ describe.skipIf(process.platform === 'win32')('MEMBER session on a remote (non-l
     expect(err!.message).toMatch(/Could not reach member/);
     expect(err!.message).toMatch(/ENOENT/);
     expect(err!.message).not.toContain('exit 1');
+  });
+
+  it('no code-link resolver for a remote checkout: anchors come from the entries own source_files only', async () => {
+    const factoryCalls: string[] = [];
+    const prev = setMemberViewCodeResolverFactory((f) => {
+      factoryCalls.push(f);
+      return async (items) => items.map(it => ({ ...it, resolved: true, neighbours: ['Linked.only'] }));
+    });
+    try {
+      writeBible([
+        entry('a-1', { source_files: ['src/other.ts'] }),
+        entry('a-2', { source_files: ['src/anchor.ts'] }),
+        entry('a-3', { source_files: ['src/other.ts'], symbols: ['Gear.turn'] }),
+      ]);
+      const out = JSON.parse(await asMember(() => kbQuery({ query: 'sprocket gearbox', files: ['src/anchor.ts'], limit: 10 })));
+      expect(out.l1_results[0].id).toBe('a-2');
+      const view = (await asMember(() => getSelfReadKb())).providers.project as SqliteProvider;
+      expect(factoryCalls).toEqual([]);
+      expect(view.hasCodeResolver).toBe(false);
+      // A symbol reached only through a code link matches nothing here.
+      const linked = JSON.parse(await asMember(() => kbQuery({ query: 'zzunrelated', symbols: ['Linked.only'], limit: 10 })));
+      expect(linked.l1_results).toEqual([]);
+      // The entry's own symbol still anchors it.
+      const own = JSON.parse(await asMember(() => kbQuery({ query: 'sprocket gearbox', symbols: ['Gear.turn'], limit: 10 })));
+      expect(own.l1_results[0].id).toBe('a-3');
+    } finally {
+      setMemberViewCodeResolverFactory(prev);
+    }
   });
 });

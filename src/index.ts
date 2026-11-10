@@ -177,6 +177,12 @@ Usage:
       .then(m => m.runKbImport(process.argv.slice(4)))
       .then(code => process.exit(code))
       .catch(err => { logError('cli', `kb import failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'embed-check') {
+    // Diagnostic: embed one text through the KB embed worker (SEA-safe check).
+    import('./cli/kb-embed-check.js')
+      .then(m => m.runKbEmbedCheck(process.argv.slice(4)))
+      .then(code => process.exit(code))
+      .catch(err => { logError('cli', `kb embed-check failed: ${err.message}`); process.exit(1); });
   } else {
     console.error(`Error: unknown kb subcommand '${subCmd}'`);
     process.exit(1);
@@ -553,6 +559,11 @@ async function startHttpServer() {
     try { await cleanupAuthSocket(); } catch {}
     try { closeAllConnections(); } catch {}
     try { stallDetector.stop(); } catch {}
+    // KB embed worker: terminated (bounded wait), never a hang on stop.
+    try {
+      const { shutdownEmbedder } = await import('./services/knowledge/embedding/embedder.js');
+      await shutdownEmbedder();
+    } catch {}
     process.exit(0);
   }
 

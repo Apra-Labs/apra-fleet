@@ -5,10 +5,26 @@ import { SqliteProvider } from './sqlite-provider.js';
 import { HttpKbProvider } from './http-provider.js';
 import { readKbConfigFromDisk, KB_CONFIG_PATH } from './kb-config.js';
 import type { KbConfigResult } from './kb-config.js';
-import { resolveProjectSlug } from './project-slug.js';
+import { resolveProjectSlug, slugFromRemoteUrl } from './project-slug.js';
 import { resolveRepositoryIdentity } from './repository-header.js';
 import type { MemoryProvider } from './types.js';
 import { FLEET_DIR } from '../../paths.js';
+import { getEmbedder } from './embedding/embedder.js';
+import type { EmbedderSource } from './embedding/embed-queue.js';
+
+/**
+ * Where this host's KB providers get their embedder for background embedding
+ * of captures: the process embedder (embedding.model in the KB config picks
+ * the model, or 'none'), unless the environment sets APRA_FLEET_KB_EMBED=off,
+ * which turns background embedding off for the process (keyword and anchor
+ * search are unaffected). The switch exists for sandboxes and air-gapped CI
+ * that must never attempt a model download without writing a KB config file;
+ * the test suite sets it (tests/setup.ts) and attaches fakes where it needs
+ * vectors. Read when a provider is built.
+ */
+export function kbEmbedderSource(): EmbedderSource | null {
+  return process.env.APRA_FLEET_KB_EMBED === 'off' ? null : getEmbedder;
+}
 import { logWarn } from '../../utils/log-helpers.js';
 
 export interface KbProviders {
@@ -41,6 +57,9 @@ function getGlobalProvider(): Promise<SqliteProvider> {
       const globalDir = path.join(FLEET_DIR, 'knowledge', 'global');
       fs.mkdirSync(globalDir, { recursive: true });
       const provider = new SqliteProvider(path.join(globalDir, 'kb.sqlite'));
+      // Background embedding with the process embedder (lazy: nothing loads
+      // until the first queued entry is embedded, off the request path).
+      provider.attachEmbedder(kbEmbedderSource());
       await provider.init();
       return provider;
     })();
@@ -65,6 +84,7 @@ async function createBaseProvidersForSlug(slug: string, repoPath: string): Promi
   const projectDir = path.join(FLEET_DIR, 'knowledge', slug);
   fs.mkdirSync(projectDir, { recursive: true });
   const projectSqlite = new SqliteProvider(path.join(projectDir, 'kb.sqlite'), repoPath);
+  projectSqlite.attachEmbedder(kbEmbedderSource());
   await projectSqlite.init();
   const global = await getGlobalProvider();
   return { projectSqlite, global };
@@ -325,6 +345,21 @@ function slugFor(cwd?: string, remoteUrl?: string): string {
   return slug;
 }
 
+/**
+ * Seed the slug cache for a local repo folder (no remoteUrl) from its origin
+ * remote URL, already read by the caller with the same ceiling-scoped
+ * 'git remote get-url origin' query resolveProjectSlug would run -- so the
+ * first getKbProviders(folder) does not spawn git synchronously again
+ * (kb-self.ts prewarmSelfGitCache). A cached slug is never replaced, and a URL
+ * that yields no slug seeds nothing (resolveProjectSlug's fallback applies).
+ */
+export function primeProjectSlug(cwd: string, originUrl: string): void {
+  const key = `${cwd}\0`;
+  if (_slugCache.has(key)) return;
+  const slug = slugFromRemoteUrl(originUrl);
+  if (slug) _slugCache.set(key, slug);
+}
+
 /** The project slug (KB identity) for a repo folder, cached like getKbProviders'. */
 export function getProjectSlug(cwd?: string, remoteUrl?: string): string {
   return slugFor(cwd, remoteUrl);
@@ -359,6 +394,17 @@ export async function getKbProviders(cwd?: string, remoteUrl?: string): Promise<
   _selections.set(key, selection);
   evictOnReject(_selections, key, selection, selection.providers);
   return selection.providers;
+}
+
+/**
+ * The per-repo SqliteProvider for a repo folder, whatever provider the KB
+ * config selects on top of it (the same cached handle getKbProviders builds
+ * on). The member bible view reads its stored vectors so it does not embed
+ * entries the per-repo DB already embedded (member-bible-view.ts).
+ */
+export async function getProjectSqliteProvider(cwd: string, remoteUrl?: string): Promise<SqliteProvider> {
+  const slug = slugFor(cwd, remoteUrl);
+  return (await getBaseProviders(slug, cwd, providerKey(slug, cwd))).projectSqlite;
 }
 
 export function resetKbProviders(): void {

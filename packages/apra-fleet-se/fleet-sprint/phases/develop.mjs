@@ -704,6 +704,10 @@ export async function runDevelopPhase({
                         context: {
                             beadIds: actualBeadIds,
                             beadTitles: laneBeads,
+                            // Reviewer findings for a bead bounced back to this
+                            // doer drive its KB lookup as error_text (bounded and
+                            // id-stripped in kb-hints.mjs); a first dispatch has none.
+                            beadErrorTexts: laneBeads.map((b) => (b && b.id && perBeadFeedback.get(b.id)) || null),
                             laneFiles: pathsFromText(laneBeads.map((b) => b && `${b.description || ''}\n${b.acceptance_criteria || ''}\n${b.notes || ''}`)),
                         },
                         captureChannel: true,

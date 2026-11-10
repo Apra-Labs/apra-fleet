@@ -29,6 +29,15 @@ export function resolveProjectSlug(cwd?: string, remoteUrl?: string): string {
   return 'default';
 }
 
+/**
+ * The slug resolveProjectSlug derives from an origin remote URL ('' when the
+ * URL yields none, in which case resolveProjectSlug falls back to the repo
+ * root's directory name).
+ */
+export function slugFromRemoteUrl(url: string): string {
+  return slugify(url);
+}
+
 function slugify(s: string): string {
   return s
     // Strip userinfo ONLY when it is really there. `[^@]*@?` was greedy and

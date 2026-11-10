@@ -27,6 +27,7 @@ import { listKbScopes, knowledgeRootDir, GLOBAL_KB_SCOPE, type KbScopeLocation }
 import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
 import { readKbConfigFromDisk, type KbConfigResult } from '../services/knowledge/kb-config.js';
 import { getKbHttpAuthState } from '../services/knowledge/kb-http-auth-state.js';
+import { getEmbeddingState, type EmbedderState } from '../services/knowledge/embedding/embedder.js';
 import { lookupServerSecret, lookupServerSecretMeta } from '../services/credential-store.js';
 import { gitExecutable } from '../os/git-executable.js';
 
@@ -544,6 +545,13 @@ export interface KbHealth {
   projectProvider: 'sqlite' | 'http';
   /** The remote KB credential; present only when the KB config selects the http provider. */
   credential?: KbHttpCredentialHealth;
+  /**
+   * The local embedding model on this host (KB config embedding.model):
+   * idle (configured, loads on first use), loading, ready (with dims),
+   * disabled ('none'), or failed with the reason. Semantic search is off
+   * unless ready; keyword and anchor search never depend on it.
+   */
+  embedding?: EmbedderState;
   /** Every project scope found on disk (including `default`, the non-git scope), sorted by slug. */
   scopes: KbScopeHealth[];
   /** The single shared cross-project KB, or null when it does not exist yet. */
@@ -714,6 +722,15 @@ function safeCredentialHealth(config: KbConfigResult): KbHttpCredentialHealth | 
   }
 }
 
+/** The embedding state, never loading a model; undefined only if reading it failed unexpectedly. */
+function safeEmbeddingState(): EmbedderState | undefined {
+  try {
+    return getEmbeddingState();
+  } catch {
+    return undefined;
+  }
+}
+
 export interface KbHealthOptions {
   /** Knowledge root to enumerate; defaults to FLEET_DIR/knowledge. */
   knowledgeDir?: string;
@@ -764,6 +781,7 @@ export async function kbHealthSummary(opts: KbHealthOptions = {}): Promise<KbHea
     const config = readKbConfigOrSqlite();
     const projectProvider = config.provider === 'http' ? 'http' : 'sqlite';
     const credential = safeCredentialHealth(config);
+    const embedding = safeEmbeddingState();
     const hostScopeExists = repoSlug !== null && locations.some(l => l.slug === repoSlug);
     const hostScopeReadable = hostScopeExists && scopes.some(s => s.scope === repoSlug);
     let bible: KbBibleHealth;
@@ -772,7 +790,10 @@ export async function kbHealthSummary(opts: KbHealthOptions = {}): Promise<KbHea
     } catch (err) {
       bible = { repoPath: opts.repoPath ?? null, scope: repoSlug, present: false, entries: null, drift: null, entriesError: err instanceof Error ? err.message : String(err), driftReason: KB_BIBLE_DRIFT_UNAVAILABLE_REASON };
     }
-    return { projectProvider, ...(credential ? { credential } : {}), scopes, global, errors, totalEntries, bible };
+    return {
+      projectProvider, ...(credential ? { credential } : {}), ...(embedding ? { embedding } : {}),
+      scopes, global, errors, totalEntries, bible,
+    };
   } catch {
     return null;
   }
@@ -844,11 +865,28 @@ export function kbCredentialCompactLine(c: KbHttpCredentialHealth): string {
     `| token expiry: ${c.tokenExpiry ?? 'none'} | ${calls}`;
 }
 
+/** Render the one compact line for the local embedding model. */
+export function kbEmbeddingCompactLine(e: EmbedderState): string {
+  switch (e.state) {
+    case 'disabled':
+      return 'kb embedding: disabled (embedding.model none; keyword and anchor search only)';
+    case 'failed':
+      return `kb embedding: ${e.modelId ? `${e.modelId}@${e.revision} ` : ''}failed: ${e.reason} (keyword and anchor search only)`;
+    case 'ready':
+      return `kb embedding: ${e.modelId}@${e.revision} ready (${e.dims} dims)`;
+    case 'loading':
+      return `kb embedding: ${e.modelId}@${e.revision} loading`;
+    case 'idle':
+      return `kb embedding: ${e.modelId}@${e.revision} not loaded yet (downloads and loads on first use)`;
+  }
+}
+
 export function kbHealthCompactLines(health: KbHealth): string {
   const credentialLine = health.credential ? `\n  ${kbCredentialCompactLine(health.credential)}` : '';
+  const embeddingLine = health.embedding ? `\n  ${kbEmbeddingCompactLine(health.embedding)}` : '';
   const bibleLine = health.bible && health.bible.repoPath !== null ? `\n  ${kbBibleCompactLine(health.bible)}` : '';
   if (health.scopes.length === 0 && !health.global && health.errors.length === 0) {
-    return 'kb: no knowledge bases found yet (none captured on this server)' + bibleLine + credentialLine;
+    return 'kb: no knowledge bases found yet (none captured on this server)' + bibleLine + credentialLine + embeddingLine;
   }
   const nonEmpty = health.scopes.filter(s => s.totals.total > 0);
   const empty = health.scopes.filter(s => s.totals.total === 0).map(s => s.scope);
@@ -864,6 +902,7 @@ export function kbHealthCompactLines(health: KbHealth): string {
   for (const e of health.errors) lines.push(`  kb[${e.scope}]: unreadable (${e.error})`);
   if (empty.length > 0) lines.push(`  kb: empty scope(s): ${empty.join(', ')}`);
   if (health.credential) lines.push(`  ${kbCredentialCompactLine(health.credential)}`);
+  if (health.embedding) lines.push(`  ${kbEmbeddingCompactLine(health.embedding)}`);
   return lines.join('\n');
 }
 

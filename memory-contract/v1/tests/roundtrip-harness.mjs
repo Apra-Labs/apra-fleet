@@ -432,6 +432,7 @@ export const SCENARIO = [
   // with not_demoted_or_unknown. ids is empty, so this round only tombstones.
   { tool: 'kb_bible_commit', case: 'tombstone', derive: { demoted_ids: ['DEMOTED', 'FOO'] } },
   { tool: 'kb_query', case: 'happy-confirmed-only', assertParsed: assertConfirmedOnly },
+  { tool: 'kb_query', case: 'happy-hybrid' },
   { tool: 'kb_stats', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },
   // Bible v3 round trip: the basis carried in A's exported bible travels to B.

@@ -169,7 +169,14 @@ hash, and captures are stored at most INFERRED.
 In a MEMBER session the default reads (`kb_query`, `kb_session_prime`,
 `kb_list`, `kb_context`, `kb_stats`) are answered from an in-memory view of the
 member's own checkout bible (`.fleet/kb-canonical.json`), rebuilt when the file
-changes. An explicit confidence list is split: CONFIRMED is read from the
+changes. The view ranks as the per-repo DB does (section on `kb_query`
+HYBRID INPUTS): the same semantic list with the same model and similarity
+floor, and, for a member whose checkout is on the serving host, code-index
+anchors; for a member on another host, anchors come from the entries' own
+`source_files`/`symbols` only. Entries not yet embedded on this host are
+reached through the keyword, error and anchor lists until they are. Test
+hook: `tests/knowledge/kb-query-hybrid-member.test.ts`. An explicit
+confidence list is split: CONFIRMED is read from the
 member checkout bible and INFERRED/UNVERIFIED only from the member's own
 captures in the per-repo DB (tagged `member:<caller uuid>`), merged for a
 mixed request. The own half of a mixed request asks for every listed tier, so
@@ -1292,23 +1299,33 @@ proceeds.
 response shapes, selected by the request: when `flagged_only: true`, the
 response MUST be `{flagged_entries, total, note}`; otherwise it MUST be
 `{l1_results, l2_expanded, related_claims?}`. At least one of `query`, `tag`,
-or `flagged_only` MUST be supplied; a provider MUST refuse a request carrying
-none of the three. A consumer MUST treat this section's response shapes, and
+`flagged_only`, `files`, `symbols` or `error_text` MUST be supplied; a provider
+MUST refuse a request carrying none of them (the refusal text names the
+original three selectors and is unchanged). A consumer MUST treat this section's response shapes, and
 every other `kb_*` response shape, as a DIFFERENT KIND of claim than the
 request shapes documented elsewhere in this spec: they are OBSERVED, not
 derived from an enforced schema, because no tool in this surface declares
 one. (INV-08, INV-09)
 
-**THE PROOF.** The selector guard is `src/tools/kb-query.ts:33-35`: `if
-(!input.query && !input.flagged_only && !input.tag) throw new Error(...)`.
+**MEMBER DEFAULTS.** A `kb_query` issued from a MEMBER session that carries no
+`limit` MUST return at most 6 `l1_results`, each holding only `id`, `title`,
+`summary`, `confidence` and `source_files`, and `l2_expanded` for the top 3 only.
+An explicit `limit` always wins and keeps the full row shape and the top-5
+`l2_expanded`; a non-member (FULL) session keeps the defaults of 20 rows, the
+full row shape and the top-5 `l2_expanded`. `related_claims` is unchanged.
+
+**THE PROOF.** The selector guard is `src/tools/kb-query.ts:227-231`: `if
+(!input.query && !input.flagged_only && !input.tag && !hasHybridInput(input))
+throw new Error(...)`, where `hasHybridInput` (`:104-106`) is true when
+`files`, `symbols` or `error_text` is given.
 This is a documented, coded throw, not an undocumented one: `taxonomy.json`
 carries it as `E-QUERY-NO-SELECTOR` (groups.validation, source cited at
-`src/tools/kb-query.ts:34`, `surfaced: "thrown"`, raised pre-provider by
-`kb_query`/P-3). The `flagged_only` branch (`src/tools/kb-query.ts:39-66`)
+`src/tools/kb-query.ts:230`, `surfaced: "thrown"`, raised pre-provider by
+`kb_query`/P-3). The `flagged_only` branch (`src/tools/kb-query.ts:250-277`)
 merges project and global flagged results and returns `{flagged_entries,
-total, note}` (`:59-65`); the default branch (`:68-126`) merges L1/L2
+total, note}` (`:270-276`); the default branch (`:279-362`) merges L1/L2
 project and global results and returns `{l1_results, l2_expanded,
-...(expand_related ? {related_claims} : {})}` (`:122-126`) -- `related_claims`
+...(expand_related ? {related_claims} : {})}` (`:357-361`) -- `related_claims`
 is itself conditional on `expand_related`, so even the non-flagged shape is
 not fixed-key. `schemas/kb_query.response.json` models both branches as an
 `anyOf` of two object schemas under `parsed` (`:58-104`), tagged
@@ -1317,7 +1334,7 @@ both observed shapes, but nothing in `src/tools/kb-query.ts` or
 `src/services/tool-registry.ts` (`wrapTool`, which only ever wraps a bare
 returned `string` into the text envelope) checks the stringified body against
 that schema at runtime. `INVENTORY.md` section 3 states the meta-fact
-directly (`:102`, "NO tool in this surface declares a response zod schema").
+directly (`:147`, "NO tool in this surface declares a response zod schema").
 The discriminator loss is a separate, related finding: `tests/GENERATOR-
 DECISION.md`'s D1 row records that the generator emits `anyOf`, not `oneOf`,
 for a discriminated response union, because "an OpenAPI 3.1 `discriminator`
@@ -1366,6 +1383,38 @@ store that cannot filter MUST filter the merged result itself before
 responding (`src/tools/kb-query.ts` `passesTrustFilter` does this on top of
 the sqlite provider's SQL filter). Test hook: the `kb_query`
 `happy-confirmed-only` fixture and `tests/knowledge/kb-query-trust-filter.test.ts`.
+
+**HYBRID INPUTS.** The default branch accepts three OPTIONAL inputs, all
+additive: `files` (string array), `symbols` (string array) and `error_text`
+(string). A request without them MUST return exactly the keys it returned
+before they existed, and none of them adds a response field. An
+implementation that supports them (the SQLite provider) ranks by reciprocal
+rank fusion (k = 60) of up to four ranked lists: keyword (the free-text
+`query` against the normalized keyword index), error (`error_text` against
+the entries' `error_signatures`, normalized the same way), semantic (`query`
+plus `error_text` embedded with the active model's query prefix and scored by
+each entry's best-matching vector of that model only; an entry enters it
+only when that cosine similarity is at or above the model's similarity floor,
+so a query with no good match adds nothing) and anchor (entries
+whose `source_files`/`symbols` contain the given files/symbols, or whose
+code-index links touch them, one code-graph hop for symbols). Trust priors
+then multiply the fused score: CONFIRMED up, the existing `use_count` a small
+capped lift, stale down. Every filter (`confidence`, `exclude_disputed`,
+`tag`, `type`, `include_stale`, the MEMBER owner tag) applies to every list.
+FALLBACK: when no embedding model is loaded (embedding set to `none`, the
+model not yet downloaded, or a failed load) the semantic list is absent and
+the fusion uses keyword + error + anchor only -- never an error, and a read
+never waits for a model download. With no hybrid input and no loaded model
+the order is the plain keyword order; likewise with no hybrid input and no
+semantic candidate above the floor the result is exactly the plain keyword
+result (a nonsense query, or `kb_session_prime` with an unknown symbol,
+returns what it returned without a model). Test hook:
+`tests/knowledge/kb-semantic-floor.test.ts`. An implementation that does not
+support them (the HTTP provider, a placeholder for third-party KB backends)
+MUST accept and ignore them. In a MEMBER mixed-tier read both halves receive
+the inputs and the fixed bible-then-own merge order is unchanged. Test hook:
+the `kb_query` `happy-hybrid` fixture and
+`tests/knowledge/kb-query-hybrid.test.ts`.
 
 **THE TEST HOOK.** The selector guard and both response shapes are checked
 by the round-trip harness at the request/happy-path level

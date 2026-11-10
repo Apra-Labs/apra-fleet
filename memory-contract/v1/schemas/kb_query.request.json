@@ -13,7 +13,7 @@
         "query": {
           "type": "string",
           "minLength": 1,
-          "description": "Free-text search string. Required unless flagged_only is true or tag is provided."
+          "description": "Free-text search string. Required unless flagged_only is true or tag, files, symbols or error_text is provided."
         },
         "type": {
           "type": "string",
@@ -31,7 +31,7 @@
         },
         "limit": {
           "type": "number",
-          "description": "Max L1 results (default 20)"
+          "description": "Max L1 results. Default 20; a MEMBER session that omits it gets 6 slim rows (id, title, summary, confidence, source_files) with expanded content for the top 3. An explicit limit always wins and keeps the full row shape."
         },
         "include_stale": {
           "type": "boolean",
@@ -61,6 +61,27 @@
         "exclude_disputed": {
           "type": "boolean",
           "description": "Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default true when confidence is omitted (CONFIRMED-undisputed default); default false when confidence is given explicitly. Ignored when flagged_only is true."
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Optional file paths you are working on. Entries whose source_files (or code-index links) touch these files rank higher. Additive: omit it and the result is unchanged."
+        },
+        "symbols": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Optional symbol names you are working on. Entries naming these symbols, or linked one code-graph hop from them, rank higher."
+        },
+        "error_text": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional error message you hit. Matched against the error_signatures of entries and added to the semantic search text, so an entry that explains this error is returned."
         },
         "repo_path": {
           "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."

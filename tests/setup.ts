@@ -27,6 +27,14 @@ vi.mock('../src/tools/code-index-heal.js', () => ({
 }));
 
 process.env.NODE_ENV = 'test';
+// KB providers embed captures in the background with the process embedder,
+// whose default model downloads lazily from the Hugging Face hub. No test may
+// reach the network or wait on a model: background embedding is off for the
+// suite (kb-providers.ts kbEmbedderSource); tests that need vectors attach a
+// fake embedder to their provider. As a second guard, the hub points at a
+// closed local port so any download a test does trigger fails at once.
+process.env.APRA_FLEET_KB_EMBED = 'off';
+process.env.HF_ENDPOINT = 'http://127.0.0.1:9';
 // install's post-start /health wait: off unless a test opts in
 // (_setServiceHealthWaitOverride) -- no test may wait on a real server.
 process.env.APRA_FLEET_INSTALL_HEALTH_TIMEOUT_MS ??= '0';

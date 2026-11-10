@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6a62fbbf6d960a7b0ddce1fc853277d598183b0a",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 141
+    "entry_count": 163
   },
   "entries": [
     {
@@ -217,6 +217,80 @@
       "updated_at": "2026-09-29T06:13:11.978Z"
     },
     {
+      "id": "10a60056-b879-4e62-b20a-9689e2966c34",
+      "type": "knowledge",
+      "title": "KB keeps the legacy entries_fts for 0.4.4 rollback and repairs it on every init",
+      "summary": "KbKeywordIndex never drops the external-content entries_fts or the entries_ai/ad/au triggers. Every init re-runs 0.4.4's exact statements (LEGACY_FTS_SQL) and runs the FTS5 rebuild when the table was missing, the row count differs, or the integrity check fails.",
+      "symbols": [
+        "KbKeywordIndex.init",
+        "KbKeywordIndex.finish",
+        "LEGACY_FTS_SQL",
+        "buildV044Kb"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-index.ts",
+        "tests/knowledge/kb-keyword-rollback.test.ts",
+        "tests/knowledge/kb-keyword-rollback-044.test.ts",
+        "tests/helpers/v044-kb-build.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T03:59:24.587Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-index.ts": "22aa8ff7dd443cd004d0d3a0895c8656298d4ecd",
+        "tests/helpers/v044-kb-build.ts": "ac326e98195bc3abf684b1f83f85065f954044a0",
+        "tests/knowledge/kb-keyword-rollback-044.test.ts": "3f84f3936adc9da0c004f0d95f7c77e5225da509",
+        "tests/knowledge/kb-keyword-rollback.test.ts": "3c8f3a0b77f32ede4ca7c7c431b70991fe79af45"
+      }
+    },
+    {
+      "id": "1168f68e-99aa-405a-be40-e127e561f1f0",
+      "type": "knowledge",
+      "title": "KB embed worker in the SEA binary runs from an embedded CommonJS asset via eval",
+      "summary": "build-sea.mjs bundles embed-worker.ts into dist/kb-embed-worker.cjs, gen-sea-config.mjs embeds it as SEA asset kb/embed-worker.cjs, and worker-runtime.ts starts it with new Worker(source, {eval:true}); the WASM bytes are passed in workerData.",
+      "symbols": [
+        "resolveEmbedWorkerScript",
+        "createWorkerRuntime",
+        "EMBED_WORKER_SEA_ASSET",
+        "loadOrtWasmBinary",
+        "runKbEmbedCheck"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/worker-runtime.ts",
+        "src/services/knowledge/embedding/embed-worker.ts",
+        "scripts/build-sea.mjs",
+        "scripts/gen-sea-config.mjs",
+        "src/cli/kb-embed-check.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T01:59:51.739Z",
+      "source_file_hashes": {
+        "scripts/build-sea.mjs": "e9f455d48a46de8ab4a38d4f872e0c9a76635ecd",
+        "scripts/gen-sea-config.mjs": "4b0051f12c0aec5a85532c839a05247cb5dbe8e8",
+        "src/cli/kb-embed-check.ts": "03d86e30ddc5735d9afc05df4ccb62036d5532e1",
+        "src/services/knowledge/embedding/embed-worker.ts": "97b2d81b5f93fe0c3f33da266b8c29f4f78bd1d4",
+        "src/services/knowledge/embedding/worker-runtime.ts": "17186e75f7614a0383db0ecda17aeba90fabab31"
+      }
+    },
+    {
+      "id": "176d4504-d6d0-43a4-b77d-453ac54dc154",
+      "type": "learning",
+      "title": "fleet_status returns before the KB section when no members are registered",
+      "summary": "fleetStatus() in check-status.ts returns 'No members registered...' early when the registry is empty, so the kbHealth section (credential, embedding lines) is never rendered on a fresh install; tests must call kbHealthSummary directly or register a member.",
+      "symbols": [
+        "fleetStatus",
+        "kbHealthSummary",
+        "kbHealthCompactLines"
+      ],
+      "source_files": [
+        "src/tools/check-status.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T11:07:20.222Z",
+      "source_file_hashes": {
+        "src/tools/check-status.ts": "f0484bc82df24739ac505dc114054ba75bfd3f3d"
+      }
+    },
+    {
       "id": "17b581e1-3760-4947-b4fa-b7793874384a",
       "type": "knowledge",
       "title": "GOMAXPROCS=1 default for bd/dolt on Windows members lives in go-concurrency.ts",
@@ -355,6 +429,34 @@
       "updated_at": "2026-09-25T22:26:27.578Z"
     },
     {
+      "id": "1c6f3afa-f936-4ca5-a1df-e00dc51f24a4",
+      "type": "knowledge",
+      "title": "KB vectors and the embed queue are driven by SQL triggers on entries, like the keyword index",
+      "summary": "VectorStore.init creates entry_vectors, kb_embed_pending and triggers: insert or update of embeddable columns queues the entry id; retiring (superseded_at set or content_hash 'invalidated') or deleting it removes its vectors. EmbedQueue drains kb_embed_pending off the request path; scoring reads only the active model id+revision+dims.",
+      "symbols": [
+        "VectorStore",
+        "EmbedQueue",
+        "SqliteProvider.capture",
+        "SqliteProvider.scoreVectors",
+        "kbEmbedderSource",
+        "KB_VECTOR_INDEX_VERSION"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/vector-store.ts",
+        "src/services/knowledge/embedding/embed-queue.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/kb-providers.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T13:58:31.768Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/embed-queue.ts": "3980a8aa1c42a34542b94986a0254d62c1bdf55f",
+        "src/services/knowledge/embedding/vector-store.ts": "214d29c806d75c579ff5d170c2b8d5bdabc0a1c2",
+        "src/services/knowledge/kb-providers.ts": "12ae0b8b5bb627dd83235d1aa881b5b838f297ff",
+        "src/services/knowledge/sqlite-provider.ts": "7807802179eb29b818bc240920b423e31989c695"
+      }
+    },
+    {
       "id": "20a4a71f-bf80-4dab-b90c-d167eb1bd7e2",
       "type": "knowledge",
       "title": "An armed watchdog's timeoutS resolves through maxTotalS, never the inactivity budget",
@@ -424,6 +526,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.625Z"
+    },
+    {
+      "id": "25856ccf-613d-4ec0-b6b7-8da2d0719a62",
+      "type": "knowledge",
+      "title": "Member bible view reuses per-repo DB vectors by entry id and chunk text hash",
+      "summary": "SqliteProvider.adoptVectorsFrom copies the per-repo DB's vectors into a fresh member view for entries whose id and per-chunk text hashes match under the active model, and records the model identity first so the view's queue does not start a full rebuild.",
+      "symbols": [
+        "adoptVectorsFrom",
+        "attachViewEmbedding",
+        "getProjectSqliteProvider",
+        "ensureModel"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/member-bible-view.ts",
+        "src/services/knowledge/embedding/embed-queue.ts",
+        "src/services/knowledge/kb-providers.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T08:47:25.599Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/embed-queue.ts": "146d93963cc3cdbbf13b3ee493e4e34b9991d39b",
+        "src/services/knowledge/kb-providers.ts": "7639d73fe465d80d3acba1cfc50a3caaa2e3ecbe",
+        "src/services/knowledge/member-bible-view.ts": "402c27b39ba70a090fc7387a954ab08d7a5a7663",
+        "src/services/knowledge/sqlite-provider.ts": "b3d3d48f72dd8002ee3ed6a66d1d4c6233ce711e"
+      }
     },
     {
       "id": "266d51a9-b30a-4d52-bf4c-97f26de518d7",
@@ -558,6 +686,30 @@
       }
     },
     {
+      "id": "2eadf404-bb9c-4d9f-b4a6-5a9c5ec21c75",
+      "type": "knowledge",
+      "title": "KB embedder runs onnxruntime-web WASM with the .wasm embedded as a SEA asset",
+      "summary": "The KB embedder uses onnxruntime-web/wasm (bundle variant, glue inlined) plus @huggingface/tokenizers, never @huggingface/transformers, whose Node entry point loads the native onnxruntime-node and sharp addons at import time and would fail only at runtime in the SEA.",
+      "symbols": [
+        "createOrtRuntime",
+        "loadOrtWasmBinary",
+        "WASM_SEA_ASSET",
+        "Embedder"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/embedder.ts",
+        "scripts/gen-sea-config.mjs",
+        "tests/knowledge/embedder.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T17:04:52.481Z",
+      "source_file_hashes": {
+        "scripts/gen-sea-config.mjs": "479b2800b2080a57fbc3b9c3189f655acaa823df",
+        "src/services/knowledge/embedding/embedder.ts": "ce07589b9d275b8aab4f182e40214300390122ea",
+        "tests/knowledge/embedder.test.ts": "219a56baf219cfaf132726ef577b1f4a7e0a3e4a"
+      }
+    },
+    {
       "id": "2ffc0a85-7607-49d0-9e9a-f3ca9b8cfbb4",
       "type": "learning",
       "title": "execute_command's input schema is not zod .strict(), unlike execute_prompt's, so a removed field silently strips instead of rejecting",
@@ -610,6 +762,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T06:25:49.718Z"
+    },
+    {
+      "id": "33a725a7-b4ac-4c81-8499-fcdddd7fd237",
+      "type": "learning",
+      "title": "Tiny test embedding model fails on out-of-vocab text with a BigInt error",
+      "summary": "Words outside the tiny fixture model's vocabulary make embedding fail with 'Cannot convert undefined to a BigInt', on both the dist and SEA paths; use in-vocab words.",
+      "symbols": [
+        "writeTinyModel",
+        "TINY_VOCAB",
+        "runKbEmbedCheck",
+        "createInProcessOrtRuntime"
+      ],
+      "source_files": [
+        "tests/helpers/tiny-embedding-model.ts",
+        "src/services/knowledge/embedding/ort-runtime.ts",
+        "src/cli/kb-embed-check.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T03:17:23.499Z",
+      "source_file_hashes": {
+        "src/cli/kb-embed-check.ts": "03d86e30ddc5735d9afc05df4ccb62036d5532e1",
+        "src/services/knowledge/embedding/ort-runtime.ts": "a155924c5a628cd953663cfe61dfaa6fbadebf8e",
+        "tests/helpers/tiny-embedding-model.ts": "7d8a2dca5c2b34033449e50e540db3ea7fb22e39"
+      }
     },
     {
       "id": "33c1189c-bf95-4cf3-b875-4b93620bea0f",
@@ -798,6 +974,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T09:57:31.784Z"
+    },
+    {
+      "id": "45a64b2d-bf11-4967-8b69-d63e25332825",
+      "type": "knowledge",
+      "title": "KB keyword reads drain the index queue in a write transaction and can fail when locked",
+      "summary": "KbKeywordIndex.search drains kb_index_pending with BEGIN IMMEDIATE before a ready-index read, so a keyword query blocks on, and throws after busy_timeout because of, another connection's write lock whenever rows are pending.",
+      "symbols": [
+        "KbKeywordIndex.search",
+        "KbKeywordIndex.drain",
+        "KbKeywordIndex.inTxn"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-index.ts",
+        "src/services/knowledge/sqlite-provider.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T12:30:24.376Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-index.ts": "0150c1867e1bbbd7cd0c1c198061dfe80e46fbac",
+        "src/services/knowledge/sqlite-provider.ts": "c926cb5d0ffcfc8f8039ea32f7039b4af44dce52"
+      }
     },
     {
       "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
@@ -1221,6 +1418,26 @@
       }
     },
     {
+      "id": "699d8ebd-a323-4e4b-a27d-ca9a5d1677f7",
+      "type": "learning",
+      "title": "fleet-sprint knowledgeFor returns nothing when terms is empty even with situations",
+      "summary": "createKbWorkClient.knowledgeFor returns early when terms, hintSymbols and hintModules are all empty, before the situations path runs, so callers must pass terms alongside situations.",
+      "symbols": [
+        "createKbWorkClient",
+        "knowledgeFor"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "tests/knowledge/kb-member-real-model.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T08:47:26.107Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "39d12a1a50628f2bfad0426c62daf3b00551b79e",
+        "tests/knowledge/kb-member-real-model.test.ts": "877d0ca4c0ce6e060a46e2ed101463334b7c1735"
+      }
+    },
+    {
       "id": "6b538682-67b1-4cf2-ab81-ae27d8d2bf8e",
       "type": "knowledge",
       "title": "kill-port netstat parsing depends on the colon-anchored port suffix",
@@ -1238,6 +1455,56 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:31.774Z"
+    },
+    {
+      "id": "6baf7369-d6e5-413e-ba86-76ea6b2483de",
+      "type": "learning",
+      "title": "Empty semantic kb_query with a ready embedder usually means below the similarity floor",
+      "summary": "A paraphrase whose best vector scores under the per-model floor (arctic-xs 0.60) returns exactly the keyword-only result, which is indistinguishable from 'model not loaded'; terse 4-word paraphrases often land just under it.",
+      "symbols": [
+        "SqliteProvider.hybridRows",
+        "semanticFloorFor",
+        "SEMANTIC_FLOORS",
+        "SqliteProvider.scoreVectorsForModel"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/embedding/profiles.ts",
+        "tests/knowledge/kb-embed-worker-responsiveness.test.ts",
+        "tests/knowledge/kb-embedder-startup-load.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T10:44:03.877Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/profiles.ts": "c29decfd986e64a28e174f8d8fcc669e9a97706c",
+        "src/services/knowledge/sqlite-provider.ts": "b3d3d48f72dd8002ee3ed6a66d1d4c6233ce711e",
+        "tests/knowledge/kb-embed-worker-responsiveness.test.ts": "4a4fe36c8fc83a0b17feed30dd3a78f0676a993b",
+        "tests/knowledge/kb-embedder-startup-load.test.ts": "968dc91b48d53d54b179704e0ea800d75851bc4e"
+      }
+    },
+    {
+      "id": "6f12a796-0a5f-4ff7-b01c-7bc731af8329",
+      "type": "knowledge",
+      "title": "Dropped member bible views must call releaseEmbedQueue, not close()",
+      "summary": "member-bible-view.ts releaseSlot calls SqliteProvider.releaseEmbedQueue on any view leaving the cache (rebuild on bible change, local or remote, and resetMemberBibleViews). It unsubscribes from the shared embedder's onReady but keeps the DB open for in-flight readers.",
+      "symbols": [
+        "releaseSlot",
+        "SqliteProvider.releaseEmbedQueue",
+        "getMemberBibleView",
+        "resetMemberBibleViews"
+      ],
+      "source_files": [
+        "src/services/knowledge/member-bible-view.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "tests/knowledge/kb-member-view-embed-release.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T11:24:51.753Z",
+      "source_file_hashes": {
+        "src/services/knowledge/member-bible-view.ts": "194b5c060008ab62fee6db1376bbff19c6d4f582",
+        "src/services/knowledge/sqlite-provider.ts": "9a53e9be6106ab2df47c69f5cbd991f9cb8d877c",
+        "tests/knowledge/kb-member-view-embed-release.test.ts": "7fe287e4580308b075b11d3303711d710ad500f1"
+      }
     },
     {
       "id": "70f0e881-49d9-40eb-85ab-ff9c8868f49b",
@@ -1610,6 +1877,56 @@
       }
     },
     {
+      "id": "87f501b6-48cb-462b-b112-1ca0a294dca0",
+      "type": "knowledge",
+      "title": "kb_query caps the merged project+global L1 at the effective limit",
+      "summary": "Since the keyword-index sprint, kbQuery and splitQuery slice the merged L1 (project first, then title-deduped global) to the effective limit through capMerged, so l1_results never exceeds limit even though each provider side is limited separately.",
+      "symbols": [
+        "capMerged",
+        "splitQuery",
+        "kbQuery",
+        "readDefaults"
+      ],
+      "source_files": [
+        "src/tools/kb-query.ts",
+        "tests/knowledge/kb-member-query-defaults.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T13:58:32.687Z",
+      "source_file_hashes": {
+        "src/tools/kb-query.ts": "18fce224bba6e9a4eb46bbee8863e2353d78f5a8",
+        "tests/knowledge/kb-member-query-defaults.test.ts": "2279d4299fe75dd998c843b59f7248066f82d88b"
+      }
+    },
+    {
+      "id": "8e76e27c-13eb-40bd-bd9f-65473ee3833b",
+      "type": "learning",
+      "title": "KB capture paths must not write the fleet log in tests: hermetic guards snapshot FLEET_DIR/logs",
+      "summary": "tests/knowledge/kb-bible-rich-content.test.ts snapshots every file under FLEET_DIR (including logs/fleet-<pid>.log) and the repo .fleet dir around each test, and kb-sqlite-stock-and-http-guard asserts console.error is never called during capture+query. Any logLine/logWarn from a capture-triggered background job (embedding, code links) fails them.",
+      "symbols": [
+        "logLine",
+        "logWarn",
+        "CodeLinkStore",
+        "kbEmbedderSource"
+      ],
+      "source_files": [
+        "tests/knowledge/kb-bible-rich-content.test.ts",
+        "tests/knowledge/kb-sqlite-stock-and-http-guard.test.ts",
+        "src/utils/log-helpers.ts",
+        "src/services/knowledge/code-links.ts",
+        "tests/setup.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T17:04:52.929Z",
+      "source_file_hashes": {
+        "src/services/knowledge/code-links.ts": "f16bad872eda804070b0f9559a47be4c367a2899",
+        "src/utils/log-helpers.ts": "27f4f02a8004ceae5d1b8883ada455890a6d6997",
+        "tests/knowledge/kb-bible-rich-content.test.ts": "ab2b5eb4ac2d462bc46cb93546ffe0268718f7cf",
+        "tests/knowledge/kb-sqlite-stock-and-http-guard.test.ts": "0e6dd75876aca3bc4802025a9d5e8b34da5990e6",
+        "tests/setup.ts": "64b0099ea61c3c885cff14c7bf80cce876eceb2a"
+      }
+    },
+    {
       "id": "8fdf21fa-e64c-43d2-a22a-edfd21bd6791",
       "type": "knowledge",
       "title": "Three distinct git-credential-helper file shapes exist across member OS/shell combinations",
@@ -1650,6 +1967,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:33.791Z"
+    },
+    {
+      "id": "9345ca85-a2e4-4cac-8556-f43629ab94fc",
+      "type": "learning",
+      "title": "KB FTS term sanitizer ftsSafeTerm must keep Unicode letters or non-ASCII queries are silently dropped",
+      "summary": "ftsSafeTerm (audn.ts) used [A-Za-z0-9_]+, so every normalized query token with a non-ASCII letter vanished before FTS5 MATCH. It now keeps \\p{L}\\p{M}\\p{N}_. Changing normalizer output needs a KB_NORMALIZER_VERSION bump.",
+      "symbols": [
+        "ftsSafeTerm",
+        "orJoinFtsTerms",
+        "splitIdentifier",
+        "KB_NORMALIZER_VERSION"
+      ],
+      "source_files": [
+        "src/services/knowledge/audn.ts",
+        "src/services/knowledge/kb-normalize.ts",
+        "tests/knowledge/kb-normalize.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T03:59:24.023Z",
+      "source_file_hashes": {
+        "src/services/knowledge/audn.ts": "d37001d89bc064cec12c3c1e5911fe47cf3001ab",
+        "src/services/knowledge/kb-normalize.ts": "139b65c2d2dfe80424cc504a2bc5a6985bdddf7c",
+        "tests/knowledge/kb-normalize.test.ts": "625628fdf9784fcddf3f3387fdca4d4b8cb96df4"
+      }
     },
     {
       "id": "93bbfb5a-0681-45d2-9024-ecf14c44a479",
@@ -1763,6 +2104,31 @@
         "src/services/knowledge/bible-import.ts": "9a75635a8ccb17c83c0aef0cc1806386ec3c8cd5",
         "src/services/knowledge/sqlite-provider.ts": "3b70b8d2bfe7a3e3b4c1c522400841d0b5282d6f",
         "tests/knowledge/kb-member-mixed-tier-reads.test.ts": "f452ea5700809ded25e518a2743994214a4bc750"
+      }
+    },
+    {
+      "id": "9b49976a-e24b-45fb-b25c-6a604cb16be7",
+      "type": "knowledge",
+      "title": "SqliteProvider keyword index is kept in sync by a pending-rowid queue drained before reads",
+      "summary": "entries_kw and entries_tri hold normalized/raw index text computed in JS; pure-SQL triggers on entries enqueue rowids into kb_index_pending and KbKeywordIndex.search drains the queue before every keyword read, so no write path has to update the index itself.",
+      "symbols": [
+        "KbKeywordIndex",
+        "KB_KEYWORD_INDEX_VERSION",
+        "KB_NORMALIZER_VERSION",
+        "SqliteProvider.query",
+        "SqliteProvider.findAudnCandidates"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-index.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/kb-normalize.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T12:30:24.876Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-index.ts": "0150c1867e1bbbd7cd0c1c198061dfe80e46fbac",
+        "src/services/knowledge/kb-normalize.ts": "4853f2b0df90e005c138918ae39864a459311f41",
+        "src/services/knowledge/sqlite-provider.ts": "c926cb5d0ffcfc8f8039ea32f7039b4af44dce52"
       }
     },
     {
@@ -1907,6 +2273,27 @@
       "updated_at": "2026-09-29T06:13:15.733Z"
     },
     {
+      "id": "a754029d-f807-4919-aa2c-74788e5c03c7",
+      "type": "knowledge",
+      "title": "git remote set-url can leave .git/config size and mtime unchanged; only the inode changes",
+      "summary": "A git metadata fingerprint must include the config file's inode: set-url to a same-length URL keeps size and mtime (1 s granularity) but rewrites the file through lock+rename.",
+      "symbols": [
+        "gitMetaFingerprint",
+        "statSig",
+        "gitOut"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-self.ts",
+        "tests/knowledge/kb-self-git-cache.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T07:56:02.929Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-self.ts": "df56190b21c61122c66a7c2cdaeb64ac7275c700",
+        "tests/knowledge/kb-self-git-cache.test.ts": "e922caca3bcabef81816223e0ba6d6cd5168c43b"
+      }
+    },
+    {
       "id": "a888b84b-d7a0-47ad-9318-2f062770cf2f",
       "type": "learning",
       "title": "ASCII-only gate scans test fixtures too; write emoji markers as escapes",
@@ -1925,6 +2312,74 @@
         "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "0dffb028188c744e0bcc172691eb9fc79bfb354b",
         "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56",
         "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
+    },
+    {
+      "id": "a9cbd0a2-f452-48f4-b53f-63ac97f6e04d",
+      "type": "learning",
+      "title": "KB vector scoring isolates models by id AND revision AND dims together",
+      "summary": "VectorStore scoring filters entry_vectors on model_id, model_revision and dims together, so a test meant to catch a dropped model_id predicate needs two models with the same revision and dims.",
+      "symbols": [
+        "VectorStore",
+        "SqliteProvider.scoreVectors"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/vector-store.ts",
+        "tests/knowledge/kb-vectors-integration.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T03:17:22.861Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/vector-store.ts": "ea32c998f445156d869b412d6a533efbf28530b3",
+        "tests/knowledge/kb-vectors-integration.test.ts": "d9dc75227362f18b80c2e587fc3759d725d85412"
+      }
+    },
+    {
+      "id": "ab967e3e-4b21-4143-8cf0-6d43065535d9",
+      "type": "learning",
+      "title": "The KB process embedder only loads when something embeds; reads never trigger it",
+      "summary": "Embedder starts idle and loads only inside embedWith (embedQuery/embedDocuments). EmbedQueue calls embedDocuments only for pending entries and SqliteProvider.queryEmbedder requires state ready, so a process whose KB is already embedded never loads the model from reads alone.",
+      "symbols": [
+        "Embedder",
+        "EmbedQueue",
+        "queryEmbedder",
+        "hybridRows"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/embedder.ts",
+        "src/services/knowledge/embedding/embed-queue.ts",
+        "src/services/knowledge/sqlite-provider.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T17:04:51.973Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/embed-queue.ts": "793bf9232fb2cdb4218217f4ac5a262b20aef941",
+        "src/services/knowledge/embedding/embedder.ts": "ce07589b9d275b8aab4f182e40214300390122ea",
+        "src/services/knowledge/sqlite-provider.ts": "1df93b09d7eed6873399f072259f672f4a42954f"
+      }
+    },
+    {
+      "id": "af351ced-8562-477e-8122-1baddba46817",
+      "type": "knowledge",
+      "title": "kb_query hybrid ranking only runs when there is something to fuse beyond keyword",
+      "summary": "SqliteProvider.hybridRows returns null (plain keyword path, unchanged order) unless error_text, files/symbols anchors, or an already-loaded query embedder with embedQuery is present; QueryOptions.disable_lists is an internal switch used by the eval and falsifiability tests.",
+      "symbols": [
+        "SqliteProvider.hybridRows",
+        "SqliteProvider.queryEmbedder",
+        "reciprocalRankFusion",
+        "trustPrior"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/hybrid-rank.ts",
+        "src/services/knowledge/types.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-05T16:17:31.026Z",
+      "source_file_hashes": {
+        "src/services/knowledge/hybrid-rank.ts": "31e0d6893e87cf4344baf26c89a77f25947b86db",
+        "src/services/knowledge/sqlite-provider.ts": "1df93b09d7eed6873399f072259f672f4a42954f",
+        "src/services/knowledge/types.ts": "74b69e36b091e7eae8cd72068b5ef3cbb80d9892"
       }
     },
     {
@@ -2537,6 +2992,30 @@
       }
     },
     {
+      "id": "ea12b9e0-b515-42ee-afa2-e0911513fb07",
+      "type": "learning",
+      "title": "KB recall eval numbers drift with query history because query() bumps use_count",
+      "summary": "SqliteProvider.query increments use_count on every returned entry and trustPrior lifts by use_count, so eval configs that share one provider see rankings shifted by earlier configs' queries; reset use_count to compare configs fairly.",
+      "symbols": [
+        "SqliteProvider.query",
+        "trustPrior",
+        "semanticFloorSweep",
+        "runEval"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/hybrid-rank.ts",
+        "tests/helpers/kb-recall-eval.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T07:56:02.437Z",
+      "source_file_hashes": {
+        "src/services/knowledge/hybrid-rank.ts": "31e0d6893e87cf4344baf26c89a77f25947b86db",
+        "src/services/knowledge/sqlite-provider.ts": "375e377de7ac2b70b42f053173606a6d4a9e9b6d",
+        "tests/helpers/kb-recall-eval.ts": "d8dd0c0d50a3215552a0284528825c67af9029a1"
+      }
+    },
+    {
       "id": "ec1c087a-90bd-4475-828a-c684ee1c1342",
       "type": "knowledge",
       "title": "VCS preflight probes non-re-mintable members before provisioning",
@@ -2616,6 +3095,34 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:08:07.865Z"
+    },
+    {
+      "id": "f2a4c5c1-39c7-43ea-af04-0042ad56a43e",
+      "type": "knowledge",
+      "title": "kb_* and code_* tool calls prewarm the self-scope git cache with async spawns before the handler",
+      "summary": "tool-registry.ts awaits prewarmSelfGitCache() for tools named kb_* or code_*. It replays the self resolution in kb-self.ts with gitOut in dry-run mode, where a cache miss throws GitCacheMiss instead of spawning, and answers each miss with an async git spawn, so the handler's synchronous resolution only hits the cache.",
+      "symbols": [
+        "prewarmSelfGitCache",
+        "gitOut",
+        "GitCacheMiss",
+        "dryResolve",
+        "primeProjectSlug",
+        "registerAllTools"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-self.ts",
+        "src/services/tool-registry.ts",
+        "src/services/knowledge/kb-providers.ts",
+        "tests/knowledge/kb-self-git-cache.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T05:53:44.960Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-providers.ts": "f6540e1ded9174c6ae6766c796c6349e3aaf605a",
+        "src/services/knowledge/kb-self.ts": "df56190b21c61122c66a7c2cdaeb64ac7275c700",
+        "src/services/tool-registry.ts": "259f4cb04f3996dc137d73b4a71bcaca32460061",
+        "tests/knowledge/kb-self-git-cache.test.ts": "e922caca3bcabef81816223e0ba6d6cd5168c43b"
+      }
     },
     {
       "id": "f2c0c490-c149-488d-939c-beb60734c8bc",
@@ -2821,6 +3328,33 @@
         "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "bd92d5073942148377413cf030e6787cf1a3f679",
         "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "95b3752f2049b201e649e091520f35645fd8d96e",
         "packages/apra-fleet-se/test/doer-max-turns-resume-explicit-session.test.mjs": "725d0dab768d2ad2c42aad09ca0c12c5137c6c79"
+      }
+    },
+    {
+      "id": "fc908045-3c3d-4ba6-b679-16237d284211",
+      "type": "knowledge",
+      "title": "An EmbedQueue attached to the shared Embedder stays reachable until close(): onReady listeners pin it",
+      "summary": "EmbedQueue.watchReady subscribes Embedder.onReady when the embedder is failed or idle with stored vectors; Embedder keeps listeners until unsubscribed, so any SqliteProvider given attachEmbedder must be closed, or it and its DB are retained for the process lifetime.",
+      "symbols": [
+        "EmbedQueue.watchReady",
+        "EmbedQueue.close",
+        "Embedder.onReady",
+        "getMemberBibleView",
+        "attachViewEmbedding"
+      ],
+      "source_files": [
+        "src/services/knowledge/embedding/embed-queue.ts",
+        "src/services/knowledge/embedding/embedder.ts",
+        "src/services/knowledge/member-bible-view.ts",
+        "src/services/knowledge/sqlite-provider.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-06T10:44:03.446Z",
+      "source_file_hashes": {
+        "src/services/knowledge/embedding/embed-queue.ts": "146d93963cc3cdbbf13b3ee493e4e34b9991d39b",
+        "src/services/knowledge/embedding/embedder.ts": "e887f648227cef25d5628987a3822f121d9bb692",
+        "src/services/knowledge/member-bible-view.ts": "402c27b39ba70a090fc7387a954ab08d7a5a7663",
+        "src/services/knowledge/sqlite-provider.ts": "b3d3d48f72dd8002ee3ed6a66d1d4c6233ce711e"
       }
     },
     {

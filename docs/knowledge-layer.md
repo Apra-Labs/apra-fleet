@@ -174,6 +174,22 @@ call from a member session of a member registered on it (then, as applicable,
 make that folder a git repository with an origin remote). The error text is
 `<code>: <problem> Remediation: <fix>`, one line.
 
+**No git spawn per call.** Every kb_* and code_* call resolves its scope this
+way, so the git answers (`rev-parse --git-dir`, `remote get-url origin`,
+`rev-parse --show-toplevel` for client roots) are cached per folder in
+`kb-self.ts`. A cached answer is used only while a plain-`stat` fingerprint of
+the folder's git metadata (`.git` kind and inode, the git dir's `config` and
+`HEAD`; gitfile worktrees and bare repos followed) is unchanged, so removing
+the origin remote or `.git` is reported on the next call with the same error.
+After 30 s an answer is re-checked with an asynchronous git spawn while the
+cached one keeps serving, so steady-state calls never block the event loop on
+git. A spawn failure or timeout (no git verdict) is never cached. Before a
+kb_* or code_* handler runs, the tool wrapper (`tool-registry.ts`) awaits
+`prewarmSelfGitCache()`, which runs the same resolution in a dry-run mode
+and answers each cache miss with an asynchronous git spawn (and seeds the
+project slug from the cached origin), so even the first call on a folder
+spawns no git on the main thread.
+
 **Remote members.** A remote member's work folder is a path on another host,
 so git cannot be shelled out for it. Its KB identity is the single origin URL
 recorded on the member (`knownRepoRemoteUrl`, set via `update_member
@@ -896,6 +912,204 @@ Write it with `kb_setup ... token={{secret.KB_TOKEN}}`; see
   one 401 retry re-reads the secret but resends the same repository headers,
   and a replayed queued write gets both the current secret and its provider's
   repository headers.
+
+### Hybrid search and embeddings (SQLite only)
+
+Only `SqliteProvider` gets hybrid search, the normalized keyword index (FTS)
+and embeddings. `HttpKbProvider` is a placeholder for third-party KB and memory
+backends and is not improved here: it ignores the `kb_query` hybrid inputs and
+forwards only the existing query parameters.
+
+`kb_query` takes three optional, additive inputs:
+
+- `files` -- paths you are working on; entries whose `source_files` (or
+  code-index links) touch them rank higher.
+- `symbols` -- symbol names; entries naming them, or linked one code-graph hop
+  from them, rank higher.
+- `error_text` -- an error message you hit; matched against each entry's
+  `error_signatures` and added to the semantic query text.
+
+A call without them returns the same keys as before. With any of them, or once
+an embedding model is loaded, `SqliteProvider.query` fuses up to four ranked
+lists by reciprocal rank fusion (k = 60, `src/services/knowledge/hybrid-rank.ts`):
+keyword (the query text), error (error_text against error_signatures),
+semantic (query text plus error_text, scored by each entry's best vector of
+the active model) and anchor (files/symbols). Trust priors then multiply the
+fused score: CONFIRMED up, the existing `use_count` a small capped lift, stale
+down. A semantic candidate enters only when its cosine similarity to the
+query is at or above the active model's floor (`SEMANTIC_FLOORS` in
+`src/services/knowledge/embedding/profiles.ts`, derived from the recall eval;
+a custom model has none unless its config sets `semantic_floor`). When no
+semantic candidate clears the floor and the call had no files, symbols or
+error_text, the result is exactly the plain keyword result -- so a nonsense
+query, or kb_session_prime with an unknown symbol, returns what it returned
+before embeddings (nothing). Every filter (confidence, exclude_disputed, tag, type, include_stale,
+member owner tag) applies to every list. Vector compare is brute force in
+SQLite (no vector database); the budget is under 200 ms per query on CPU.
+
+Measuring it: `node scripts/kb-query-bench.mjs` (after `npm run build`) builds
+a synthetic 5k-entry KB in a temp folder, with entries sized like the real
+bible entries, and prints p50/p95/p99 for single hybrid queries and for
+bursts of 6 concurrent queries (the shape of one fleet-sprint knowledgeFor
+call); `--breakdown` times each list alone. Query vectors come from the real
+default model when it is available locally (document vectors are a fake with
+the real dims; the output says which), and with the real model it also
+embeds the recall eval's entries for real and checks that nonsense queries
+return 0 rows (the similarity floor). The nightly `kb-real-model` job runs it
+with `APRA_KB_BENCH_REQUIRE_MODEL=1` and puts the numbers in its summary. Query
+scoring keeps the active model's vectors in memory as float16 (2 bytes per
+dimension per vector, about 36 MB for 5k entries at 384 dims), reloaded only
+when the vector table changes. The recall eval (`tests/knowledge/kb-recall-eval.test.ts`,
+part of `npm test`) reports recall@5 and MRR for keyword-only and hybrid with
+each built-in model, overall and per query source: REAL queries (kb_query
+calls agents actually made in this repo, recorded verbatim with provenance,
+labelled against the bible -- `scripts/kb-recall-queries-real.mjs`), AUTHORED
+situation queries (one per CONFIRMED bible entry) and the owner-reported
+`Resource not accessible by integration` case. Eval entries carry real
+captured content where the maintainer KB has it, plus recall_cues and
+error_signatures derived from each entry's own text, so those vectors are
+measured too; `node scripts/gen-kb-recall-eval.mjs [--kb-db <kb.sqlite>]`
+rebuilds the fixtures. Under `npm test` the model configs print a skip line
+unless a models folder is given with `APRA_KB_EVAL_MODELS_DIR` (or
+`APRA_KB_EVAL_ALLOW_DOWNLOAD=1` for a manual run); the nightly workflow's
+`kb-real-model` job downloads every built-in model into a cached folder, sets
+`APRA_KB_EVAL_REQUIRE_MODELS=1` (a model that cannot load fails rather than
+skips) and puts the recall@5 / MRR tables in its job summary. The bench takes
+`APRA_KB_BENCH_MODELS_DIR` / `APRA_KB_BENCH_ALLOW_DOWNLOAD=1` the same way to
+include real query-embedding time. Member reads with the real model are
+covered by `tests/knowledge/kb-member-real-model.test.ts`: as a registered
+member with a committed bible, a no-shared-keyword paraphrase must return the
+bible entry in the top 5 (also through fleet-sprint's knowledgeFor via
+memberCall), a file anchor must rank its entry first and a nonsense query must
+return 0 rows. It takes `APRA_KB_EVAL_MODELS_DIR` (skips with a printed reason
+without it); the nightly `kb-real-model` job runs it with
+`APRA_KB_EVAL_REQUIRE_MODELS=1` and adds its result to the lane verdict.
+
+Fallback: when no model is loaded the semantic list is simply absent and the
+search is keyword + error + anchor, never an error. A read never waits for a
+model load or download: the background embed queue loads the model, and
+until then queries run without the semantic list. After a restart on a KB
+that already has vectors for the active model, the queue's first run loads
+the model in the background (nothing needs to be written first), so semantic
+search comes back on its own. A failed load is retried after 60 s, doubling
+up to 15 min between attempts, with one log line per attempt; it is never
+left failed for the life of the process. With `APRA_FLEET_KB_EMBED=off`
+nothing loads and nothing retries.
+
+#### embedding.model
+
+Set the embedding model in the KB config file (`<FLEET_DIR>/knowledge/config.json`):
+
+```json
+{ "provider": "sqlite", "embedding": { "model": "snowflake-arctic-embed-xs" } }
+```
+
+- Omitted: the default profile `snowflake-arctic-embed-xs` (chosen on the
+  recall eval's real query set: the built-in models tie on recall@5 and it has
+  the best MRR and the smallest download; the numbers are in the header of
+  `src/services/knowledge/embedding/profiles.ts`). Vectors are keyed by model
+  id, revision and dims, so a KB embedded under another model (for example the
+  former default `bge-small-en-v1.5`) is re-embedded under the active model in
+  the background and the two are never mixed.
+- A built-in profile name: `bge-small-en-v1.5`, `snowflake-arctic-embed-s`,
+  `snowflake-arctic-embed-xs`.
+- `"none"`: embeddings off. Semantic search is disabled; keyword and anchor
+  search still work.
+- An object for a custom model (`id` of a Hugging Face repo plus its
+  `revision`, the full 40-character commit sha, or `path` of a local folder --
+  exactly one of `id` and `path` -- plus optional `pooling`,
+  `normalize`, `query_prefix`, `doc_prefix`, `dtype`, `token_limit`,
+  `semantic_floor` -- the minimum cosine similarity, -1 to 1, for a semantic
+  hit; omitted means no floor).
+
+An invalid value logs a warning and uses the default. The model is never
+shipped with fleet: it is downloaded lazily on first use, off the request
+path, into `<FLEET_DIR>/models/<owner>/<name>@<revision>/` -- for example
+`<FLEET_DIR>/models/Snowflake/snowflake-arctic-embed-xs@d8c86521100d3556476a063fc2342036d45c106f/`,
+with the hub file layout inside (`tokenizer.json`, `onnx/model_quantized.onnx`).
+This path is the contract: a model already in that folder is used without a
+download. A local model id is resolved relative to `<FLEET_DIR>/models`.
+`HF_ENDPOINT` overrides the download host. A download is staged in a temp
+folder beside the model folder and renamed into place only once every file is
+present and sha256-verified, so an interrupted download never leaves a folder
+that loads as ready. One overall deadline (20 min) bounds the whole download,
+all files included; a stalled or trickling server fails it with a reason
+naming the timeout, and the load is retried later like any failed load. The environment variable `APRA_FLEET_KB_EMBED=off` turns
+background embedding off for the process (used by sandboxes and the test
+suite) without writing a config file. Changing the model re-embeds every entry
+in the background; queries only ever compare vectors of the active model.
+
+#### Hybrid search invariants and known limits
+
+- **Member read defaults.** A member session that omits `limit` gets 6 slim
+  rows (L1 fields) with full content for the top 3; an explicit `limit` always
+  wins. The engine's per-bead/per-file knowledge injection merges its
+  situations and caps the result at 8.
+- **Keyword index.** Titles, summaries and content are normalized before
+  indexing and querying (camelCase, snake_case, kebab-case and paths are
+  split; words are stemmed), scored by column-weighted bm25 plus a trigram
+  index for partial identifiers. The index carries a version; a version change
+  rebuilds it in the background while queries keep working.
+- **Rollback.** A 0.4.4 build can run on the same `kb.sqlite`: this build keeps
+  the legacy `entries_fts` index and triggers populated and repairs them on
+  open, and re-indexes what the older build wrote on its next read.
+- **Vectors.** Entries are chunked, each chunk stored as a float16 vector
+  tagged with the model id; an entry scores by its best chunk. Capture never
+  waits for embedding: a background queue embeds, and changing the model or
+  index version re-embeds. Vectors of other models are ignored, never mixed.
+- **Model source.** Downloads are lazy and verified against a pinned sha256.
+  A custom hub model must name its commit sha: a branch or tag can move while
+  stored vectors stay keyed by its name, so any other value is reported as
+  malformed and the default model is used.
+- **Event loop.** The ONNX runtime runs in a worker thread
+  (`src/services/knowledge/embedding/worker-runtime.ts` spawns
+  `embed-worker.ts`): model load and every document and query embedding run
+  there, and the main thread only posts texts and receives vectors, so a
+  rebuild never stalls tool calls or `/health`. The worker starts on the first
+  embedding, is terminated on server shutdown, and a worker crash marks the
+  embedder failed (keyword search keeps serving). In the SEA binary the worker
+  script and the onnxruntime-web WASM are embedded assets
+  (`kb/embed-worker.cjs`, built by `scripts/build-sea.mjs`). Check a host or
+  binary with `apra-fleet kb embed-check [--model-dir <folder>] [--text <t>]`,
+  which embeds one text through the worker and prints one JSON line
+  (`ok`, `origin` of the worker script, `dims`).
+- **Member bible view.** The member-side CONFIRMED view
+  (`member-bible-view.ts`) ranks like the per-repo DB: it attaches the
+  process embedder and, for a local member, the code-link resolver. It does
+  not re-embed the bible on each build: entries whose id and chunk text
+  hashes match vectors the per-repo DB holds for the active model are copied
+  from there (`SqliteProvider.adoptVectorsFrom`); only the rest are embedded,
+  in the background, and until then reach readers through keyword, error and
+  anchor lists only. A remote member's view gets no code-link resolver (its
+  checkout and code index are not on this host): anchors there come from the
+  entries' own `source_files`/`symbols` only.
+- **Semantic text is additive and bounded.** The text embedded for a query is
+  built only from the caller's `query` and `error_text`; `fts_terms` (identifier
+  bags) feed the keyword list only, so they cannot dilute the semantic signal.
+  Embedded query text is capped at 200 characters, cut at a sentence or word
+  boundary. The keyword match ORs at most 32 distinct terms; `fts_terms` are
+  never truncated, and the legacy FTS path is bounded only when a query exceeds
+  the limit.
+- **Keyword top-5 guard.** After RRF fusion, `guardKeywordTop`
+  (`hybrid-rank.ts`) guarantees the keyword list's top 5 hits sit within the
+  first 8 rows, so semantic neighbours cannot push exact keyword matches out of
+  the window the engine injects. The guard is a fixed 8-row window applied
+  before the `limit` slice: a caller with `limit` below 8 (member default is 6)
+  can still lose a guarded hit placed at slot 7 or 8. The switch to turn it off
+  (`QueryOptions.disable_keyword_guard`) exists for evaluation only and is
+  deliberately not exposed in the tool schema or `/api/kb/query`. On the real
+  42-query set R@8 with the guard is at least as high as without for all three
+  models; on the larger authored set it dips slightly for the two smaller
+  arctic models.
+- **Recall evaluation.** The recall eval reports R@8 alongside the other
+  cut-offs and targets real, existing KB entries (never invented ids). Its
+  fixture generator is idempotent: rerunning it reproduces the committed
+  fixtures byte for byte. The query bench has an engine-situation lane built
+  with the real role hints, which is the shape of the engine's actual queries.
+- **Benchmark scope.** The bench's p95 uses a fake query embedder; a real
+  model adds roughly 150 ms for query embedding on a low-end laptop CPU.
+- **Downgrades.** Downgrading leaves an empty legacy FTS table behind;
+  harmless, but it is not cleaned up.
 
 ### Future: Postgres
 

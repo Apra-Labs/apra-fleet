@@ -1,0 +1,1435 @@
+{
+  "entries": {
+    "0349a241-9b26-47c6-91d5-2bd998154430": {
+      "recall_cues": [
+        "is json response",
+        "get onboarding preamble",
+        "list fleet members",
+        "tool registry",
+        "fleet members"
+      ],
+      "error_signatures": []
+    },
+    "0b6a7734-3224-4b5e-b407-6353af651e29": {
+      "recall_cues": [
+        "raise vcs pr for member",
+        "check generic boundary",
+        "generic boundary guard test",
+        "vcs auth",
+        "generic engine boundary"
+      ],
+      "error_signatures": []
+    },
+    "0c2d907a-bee5-4324-b61e-6ee0e2bc4b74": {
+      "recall_cues": [
+        "role policies",
+        "dispatch role"
+      ],
+      "error_signatures": []
+    },
+    "0c998153-a3fa-4e2f-a8d8-749917425ed5": {
+      "recall_cues": [
+        "print kept section",
+        "run uninstall",
+        "cleanup workflows",
+        "uninstall dry run"
+      ],
+      "error_signatures": []
+    },
+    "0cd76690-8f11-4441-8604-d722134a879d": {
+      "recall_cues": [
+        "bible content of",
+        "to canonical entry",
+        "kb export",
+        "sqlite provider"
+      ],
+      "error_signatures": []
+    },
+    "0dd36c44-87bd-4743-952c-ba90f5c85c3c": {
+      "recall_cues": [
+        "create http transport",
+        "get or create member access secret",
+        "member access secret matches",
+        "connect fleet member",
+        "member secret header",
+        "http transport",
+        "member access secret",
+        "server resolution"
+      ],
+      "error_signatures": []
+    },
+    "0ee42346-ce6b-4988-9a0e-325115dce8ad": {
+      "recall_cues": [
+        "ok reasons",
+        "auth result",
+        "create llm auth self heal callback",
+        "provision outcome",
+        "provision auth",
+        "vcs auth"
+      ],
+      "error_signatures": []
+    },
+    "0f432ed4-a1fa-4185-8a5f-d7d62fe8cc5d": {
+      "recall_cues": [
+        "get kb providers",
+        "create kb providers for slug",
+        "sqlite provider",
+        "kb providers"
+      ],
+      "error_signatures": []
+    },
+    "101692b0-d5e6-4a32-8d6e-e8595ddc39f0": {
+      "recall_cues": [
+        "register all tools",
+        "generate contract",
+        "tool registry",
+        "memory contract roster guard test"
+      ],
+      "error_signatures": []
+    },
+    "1045da8b-1650-40db-aa11-2389ad00e9a2": {
+      "recall_cues": [
+        "resolve watchdog timeout",
+        "resolve budget",
+        "with dispatch watchdog",
+        "role policies",
+        "dispatch role",
+        "dispatch failure",
+        "role policies table test"
+      ],
+      "error_signatures": []
+    },
+    "1168f68e-99aa-405a-be40-e127e561f1f0": {
+      "content": "resolveEmbedWorkerScript in src/services/knowledge/embedding/worker-runtime.ts checks, in order: SEA asset kb/embed-worker.cjs (eval), sibling compiled embed-worker.js (tsc dist), sibling kb-embed-worker.cjs (plain-node run of dist/sea-bundle.cjs), sibling embed-worker.ts bundled on the fly with esbuild (vitest/tsx). The worker resolves no file paths: loadOrtWasmBinary runs on the main thread (SEA asset or installed package) and the bytes go in workerData. apra-fleet kb embed-check --model-dir <folder> prints the origin and dims.",
+      "recall_cues": [
+        "resolve embed worker script",
+        "create worker runtime",
+        "embed worker sea asset",
+        "load ort wasm binary",
+        "run kb embed check",
+        "worker runtime",
+        "embed worker",
+        "build sea"
+      ],
+      "error_signatures": []
+    },
+    "176d4504-d6d0-43a4-b77d-453ac54dc154": {
+      "content": "In src/tools/check-status.ts, fleetStatus checks agents.length === 0 and returns the plain string 'No members registered. Use register_member to add one.' before computing kbHealth. A smoke check of the KB section against a fresh sandboxed server (for example a built SEA binary run with 'run --stdio') therefore never shows 'kb ...' lines. Use kbHealthSummary()/kbHealthCompactLines() in tests, or register a member first.",
+      "recall_cues": [
+        "fleet status",
+        "kb health summary",
+        "kb health compact lines",
+        "check status"
+      ],
+      "error_signatures": []
+    },
+    "17b581e1-3760-4947-b4fa-b7793874384a": {
+      "recall_cues": [
+        "with go max procs default",
+        "go maxprocs default pwsh",
+        "go maxprocs default gitbash",
+        "get clean env",
+        "clean exec",
+        "build agent prompt command",
+        "wrap in work folder",
+        "go concurrency"
+      ],
+      "error_signatures": []
+    },
+    "18ed0717-9b70-4d66-af9a-f27499c122d3": {
+      "recall_cues": [
+        "mark busy",
+        "execute command",
+        "probe lock holders",
+        "member busy",
+        "dolt sync"
+      ],
+      "error_signatures": []
+    },
+    "19197697-8273-4c51-9d9e-ecffe39d2dc7": {
+      "recall_cues": [
+        "bd mode",
+        "replay bd",
+        "run cmd",
+        "bd replay",
+        "run tests"
+      ],
+      "error_signatures": []
+    },
+    "1b2df6eb-33c9-4deb-8253-2a553183fcfe": {
+      "recall_cues": [
+        "build lock holder probe",
+        "beads lock probe",
+        "dolt lock holder watchdog test"
+      ],
+      "error_signatures": []
+    },
+    "1be49eaa-30f9-4ae0-917e-5b98d3d37eeb": {
+      "recall_cues": [
+        "parse dolt remote list",
+        "check dolt remote absent",
+        "check sandbox sync remote",
+        "check sandbox sync remote test"
+      ],
+      "error_signatures": [
+        "could not parse"
+      ]
+    },
+    "1c6f3afa-f936-4ca5-a1df-e00dc51f24a4": {
+      "content": "src/services/knowledge/embedding/vector-store.ts: entry_vectors(entry_id, kind, ordinal, model_id, model_revision, dims, text_hash, float16 vec BLOB). Triggers entries_vec_ai/au queue ids into kb_embed_pending; entries_vec_retire/ad delete vectors. embed-queue.ts EmbedQueue.kick() only schedules a setImmediate run; the run checks the embedder state, compares kb_index_meta vec_model_id/vec_model_revision/vec_dims/vec_index_version with the active embedder, claims a rebuild (vec_rebuild_owner + heartbeat in BEGIN IMMEDIATE) on a mismatch, embeds batches and deletes other models' vectors when the queue drains. A fresh KB with no entries records the model identity silently (no rebuild log). SqliteProvider.capture kicks the queue and enqueues code-link resolution and never awaits either. kb-providers.ts kbEmbedderSource() attaches getEmbedder unless APRA_FLEET_KB_EMBED=off.",
+      "recall_cues": [
+        "vector store",
+        "embed queue",
+        "sqlite provider",
+        "kb embedder source",
+        "kb vector index version",
+        "kb providers"
+      ],
+      "error_signatures": []
+    },
+    "20a4a71f-bf80-4dab-b90c-d167eb1bd7e2": {
+      "recall_cues": [
+        "resolve watchdog timeout",
+        "budget by name",
+        "create recording ctx",
+        "role policies",
+        "watchdog armed roles runtime test",
+        "dispatch role harness"
+      ],
+      "error_signatures": []
+    },
+    "20de02b8-1dd8-4bb0-9ee3-223babb6866c": {
+      "recall_cues": [
+        "derive probe command",
+        "test concurrency",
+        "run tests script wiring test",
+        "run tests",
+        "run tests wiring probe"
+      ],
+      "error_signatures": []
+    },
+    "22dd4e68-3702-4ecd-a500-df6e9b27f4b3": {
+      "recall_cues": [
+        "engine file set",
+        "signal patterns",
+        "check generic boundary"
+      ],
+      "error_signatures": []
+    },
+    "2405734f-e88a-42b5-83bb-abce9a2215db": {
+      "recall_cues": [
+        "stall detector",
+        "stall entry",
+        "compute effective threshold ms",
+        "stall detector test",
+        "stall no signal false kill test"
+      ],
+      "error_signatures": []
+    },
+    "266d51a9-b30a-4d52-bf4c-97f26de518d7": {
+      "content": "@modelcontextprotocol/sdk McpServer.createToolError(message) keeps only error.message, so custom error fields never reach the client. src/services/tool-registry.ts wrapTool catches an Error whose structuredContent is a plain object and returns {content:[{type:'text', text: err.message}], isError:true, structuredContent} itself; other errors are rethrown unchanged. CodeIntelError (code-intelligence-readiness.ts) uses this for E-CODE-INDEX-NOT-READY retry_after_ms/progress. In-process callers of wrapped handlers (memory-contract roundtrip-harness.mjs, record-fixtures.mjs) therefore see an isError envelope, not a rejection, for such refusals and normalize it back to a thrown refusal.",
+      "recall_cues": [
+        "code intel error",
+        "index not ready error",
+        "register all tools",
+        "tool registry",
+        "code intelligence readiness",
+        "roundtrip harness"
+      ],
+      "error_signatures": [
+        "E-CODE-INDEX-NOT-READY"
+      ]
+    },
+    "26b8c94b-20c8-4d6e-8862-8e65bc512ba6": {
+      "recall_cues": [
+        "group streaks from lane metadata",
+        "select streaks",
+        "create git sync",
+        "with git sync",
+        "code write bracket key",
+        "git sync"
+      ],
+      "error_signatures": []
+    },
+    "2b244307-8635-4406-904f-6a2290d54490": {
+      "recall_cues": [
+        "extract string literals",
+        "proc fd glob",
+        "check generic boundary",
+        "beads lock probe"
+      ],
+      "error_signatures": []
+    },
+    "2d11a53b-f992-4a4a-aa83-f3670dc08959": {
+      "content": "src/services/knowledge/kb-config.ts readKbConfigFromDisk returns tokenSecretName for a token_ref ({{secret.NAME}}) config; kb-providers.ts selectProjectProvider passes {secretName} to HttpKbProvider. Because getKbProviders only re-selects when config.json content changes and a secret update does not touch config.json, the value must be resolved per request: HttpKbProvider.request() calls resolveToken() (lookupServerSecret) each attempt. Missing/expired/unreadable secret throws KbHttpAuthError before any request; HTTP 401 re-reads and retries once, second 401 throws reason rejected. tryFlushQueue breaks (keeps queue) on isConnectionError OR KbHttpAuthError; capture/invalidate enqueue then rethrow err.asQueued(). Literal-token sources keep the old behaviour (plain HTTP_401 error, no retry, no enqueue). rawRequest(token, method, path, body, query, nonJson401IsAuth) now takes the token first; tests reaching the private method should use request(method, path, body). Per-URL last success/last 401 times live in kb-http-auth-state.ts and are read by fleet_status (check-status.ts kbHttpCredentialHealth).",
+      "recall_cues": [
+        "http kb provider",
+        "kb http auth error",
+        "read kb config from disk",
+        "select project provider",
+        "kb http credential health",
+        "record kb http success",
+        "record kb http rejected",
+        "http provider"
+      ],
+      "error_signatures": [
+        "E-KB-HTTP-AUTH"
+      ]
+    },
+    "2d4ffb90-4bd2-4b84-a143-c2b84dc4cb21": {
+      "recall_cues": [
+        "dolt orphan sweep"
+      ],
+      "error_signatures": []
+    },
+    "2e85c726-b08e-4d07-991d-28a387e4a507": {
+      "content": "src/services/credential-store.ts saveCredentialFile writes a sibling temp file (credentials.json.<pid>.<random>.tmp, mode 0600, enforceOwnerOnly) and renameWithRetry()s it over credentials.json, retrying up to 10 times with 20ms Atomics.wait on EPERM/EACCES/EBUSY (Windows open-file rename), unlinking the temp on failure. Reverting to fs.writeFileSync in place made about 6-8% of concurrent loadCredentialFile-based lookups in another process fail with 'Unexpected end of JSON input' (writer doing 400 alternating credentialSet calls). Any new writer of credentials.json must keep the temp+rename pattern; a temp file in the data dir can be left behind only if the process dies between write and rename.",
+      "recall_cues": [
+        "save credential file",
+        "rename with retry",
+        "load credential file",
+        "lookup server secret",
+        "credential store",
+        "credential store atomic write test"
+      ],
+      "error_signatures": [
+        "EPERM",
+        "EACCES",
+        "EBUSY"
+      ]
+    },
+    "2eadf404-bb9c-4d9f-b4a6-5a9c5ec21c75": {
+      "content": "src/services/knowledge/embedding/embedder.ts imports 'onnxruntime-web/wasm' lazily. That entry resolves to ort.wasm.bundle.min.mjs, whose Emscripten glue is inlined, so there is no runtime import() of a sibling .mjs, which a SEA cannot do. The runtime gets the WASM as bytes via env.wasm.wasmBinary, with numThreads 1 because the threaded build spawns workers from a script URL. In the SEA the bytes come from the asset 'onnxruntime-web/ort-wasm-simd-threaded.wasm' (WASM_SEA_ASSET), which scripts/gen-sea-config.mjs adds; in plain Node they are read via require.resolve('onnxruntime-web/ort-wasm-simd-threaded.wasm'). @huggingface/transformers v4 is deliberately not used: its Node entry imports onnxruntime-node, which loads a .node binding at import time, plus sharp. build-sea.mjs's loader {'.node':'empty'} would hide that at build time. tests/knowledge/embedder.test.ts asserts via an esbuild metafile that no .node file, onnxruntime-node or sharp is reachable from embedder.ts.",
+      "recall_cues": [
+        "create ort runtime",
+        "load ort wasm binary",
+        "wasm sea asset",
+        "gen sea config",
+        "embedder test"
+      ],
+      "error_signatures": []
+    },
+    "2ffc0a85-7607-49d0-9e9a-f3ca9b8cfbb4": {
+      "recall_cues": [
+        "execute prompt schema",
+        "execute command schema",
+        "validate against schema",
+        "execute prompt",
+        "execute command",
+        "schema validated fake api"
+      ],
+      "error_signatures": []
+    },
+    "304fb583-7651-44f4-a038-61bf9927db8b": {
+      "recall_cues": [
+        "doer output",
+        "auto sprint schemas drift test",
+        "golden transcript test"
+      ],
+      "error_signatures": []
+    },
+    "3377795a-7d1a-4f6f-98b6-fd721581db37": {
+      "recall_cues": [
+        "open sftp",
+        "close refused sftp channels",
+        "with sftp session",
+        "sftp subsystem refusal test"
+      ],
+      "error_signatures": []
+    },
+    "33c1189c-bf95-4cf3-b875-4b93620bea0f": {
+      "recall_cues": [
+        "exec timer never binds ms",
+        "execute prompt",
+        "exec timeout source",
+        "execute prompt per provider exec timeout test"
+      ],
+      "error_signatures": []
+    },
+    "399f2e9b-c7d1-4c6a-9785-192062276a11": {
+      "recall_cues": [
+        "check install currency",
+        "is core older",
+        "backlog role no orchestrator identifiers test",
+        "member init probe"
+      ],
+      "error_signatures": []
+    },
+    "3fe69283-7266-44c7-9f6d-d376847b4873": {
+      "recall_cues": [
+        "connect with tofu",
+        "verify host key",
+        "host key mismatch error",
+        "get ssh config",
+        "known hosts",
+        "ssh host key reaccept test"
+      ],
+      "error_signatures": []
+    },
+    "416532bd-32a5-4056-8cb5-03f2219c2870": {
+      "recall_cues": [
+        "resolve server port",
+        "recorded member install port",
+        "default port",
+        "write member install marker",
+        "http transport",
+        "install guard"
+      ],
+      "error_signatures": []
+    },
+    "43bc4917-e7c1-4be0-9a0a-c6fc407a155c": {
+      "recall_cues": [
+        "playbook required bash patterns",
+        "composed allow",
+        "integ playbook permission profiles test",
+        "integ test playbook",
+        "regression test playbook",
+        "base dev",
+        "base reviewer"
+      ],
+      "error_signatures": []
+    },
+    "44cfb13c-397c-4b93-88b3-5731cb417c65": {
+      "recall_cues": [
+        "wrap command",
+        "invalidate all beads cache",
+        "is beads mutating command",
+        "create beads scope",
+        "beads scope",
+        "beads scope extraction test"
+      ],
+      "error_signatures": []
+    },
+    "44d154ae-2927-443c-bdae-fa7aa15f8f1f": {
+      "recall_cues": [
+        "surface dolt failure text",
+        "windows spawn limit message",
+        "run dolt step",
+        "dolt sync",
+        "git sync"
+      ],
+      "error_signatures": []
+    },
+    "45a64b2d-bf11-4967-8b69-d63e25332825": {
+      "content": "src/services/knowledge/kb-index.ts: SQL triggers on entries enqueue rowids into kb_index_pending, and only reads drain the queue. search() calls drain(), which calls inTxn(), which runs BEGIN IMMEDIATE when the index is ready and the queue is non-empty. A WAL reader that used to be lock-free therefore needs the write lock. Repro: two SqliteProvider handles on one kb.sqlite; one imports entries; a third connection holds BEGIN IMMEDIATE; the other handle's query throws 'database is locked' after about 5.2 s (busy_timeout 5000). Any change to this read path must keep the drain best-effort, or move indexing to the write path.",
+      "recall_cues": [
+        "kb keyword index",
+        "kb index",
+        "sqlite provider"
+      ],
+      "error_signatures": []
+    },
+    "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c": {
+      "recall_cues": [
+        "has opposite polarity"
+      ],
+      "error_signatures": []
+    },
+    "4694fdaf-0c7f-4ad3-90b2-85615da53a92": {
+      "recall_cues": [
+        "mock vcs credential exec",
+        "default mock call tool",
+        "build mock fleet api",
+        "mock sprint harness",
+        "full db fetch tripwire test"
+      ],
+      "error_signatures": []
+    },
+    "483c4334-ebbd-4dda-9e66-ca7899110f85": {
+      "recall_cues": [
+        "member base tools",
+        "member maintainer tools",
+        "member never tools",
+        "member tool scope",
+        "is tool in scope",
+        "kb maintainer call",
+        "connect fleet member",
+        "member tool allowlist"
+      ],
+      "error_signatures": []
+    },
+    "48e12361-051f-4d38-9cf0-ca955eca4fdc": {
+      "recall_cues": [
+        "kb session prime",
+        "prime from",
+        "merge primed",
+        "split context",
+        "get member split read",
+        "kb context",
+        "kb self"
+      ],
+      "error_signatures": []
+    },
+    "4ab868ea-bb49-459a-b21e-f2b906d3cb58": {
+      "recall_cues": [
+        "create http transport",
+        "http transport",
+        "http transport test"
+      ],
+      "error_signatures": []
+    },
+    "4bbf15d9-821e-460f-aea3-10d749f9320b": {
+      "recall_cues": [
+        "write service notice",
+        "take pending service notice",
+        "record access restart notice",
+        "report legacy",
+        "service notice"
+      ],
+      "error_signatures": []
+    },
+    "4e315af5-d8ab-460e-850a-36d1d38ce19a": {
+      "recall_cues": [
+        "find dolt diverged cause",
+        "is typed abort error",
+        "resolve terminal reason",
+        "capture dolt conflict dump",
+        "fatal diagnostics"
+      ],
+      "error_signatures": []
+    },
+    "4f62e71d-0544-49f1-863f-6bbc503604ac": {
+      "recall_cues": [
+        "provider adapter",
+        "exec timeout source",
+        "exec timer never binds ms",
+        "retry budget",
+        "execute prompt"
+      ],
+      "error_signatures": []
+    },
+    "50e0fad1-a4ed-4aaf-82cc-486b8cfc5a05": {
+      "recall_cues": [
+        "shell escape",
+        "vcs credential exec",
+        "shell helpers"
+      ],
+      "error_signatures": []
+    },
+    "5461f16e-7fbf-4e46-9005-1922220c1854": {
+      "recall_cues": [
+        "resolve conditional body",
+        "resolve agent conditionals",
+        "tool availability",
+        "read frontmatter tools",
+        "conditional marker error",
+        "transform agent for agy",
+        "transform agent for open code",
+        "agent transform"
+      ],
+      "error_signatures": []
+    },
+    "5b0c0a37-6e58-4854-b1f4-b672ca0a6080": {
+      "recall_cues": [
+        "git sync",
+        "sync bracket mutual exclusion test",
+        "runner clean state pause guard test"
+      ],
+      "error_signatures": []
+    },
+    "5b8dec9a-f054-4867-8422-a7cb3e008952": {
+      "recall_cues": [
+        "dist bundled schemas dir",
+        "package local schemas dir",
+        "resolve schemas dir",
+        "dist pm",
+        "contracts schema dist staleness guard test"
+      ],
+      "error_signatures": []
+    },
+    "64bedb7a-8a2d-46ba-9586-6254a88f6dcd": {
+      "recall_cues": [
+        "dispatch review",
+        "run review phase",
+        "run re review phase",
+        "run final review phase",
+        "re review",
+        "final review"
+      ],
+      "error_signatures": []
+    },
+    "65688ff3-63b2-4d8d-8772-9767a7008a59": {
+      "recall_cues": [
+        "total steps",
+        "dolt step deps"
+      ],
+      "error_signatures": []
+    },
+    "668bc632-0c2b-49b8-956b-9da60709ff36": {
+      "recall_cues": [
+        "run develop phase",
+        "open blocks dependents",
+        "doctor blocked ids",
+        "beads scope",
+        "mock sprint doer blocked set aside test"
+      ],
+      "error_signatures": []
+    },
+    "66ab34e7-0092-4be5-b77d-17453ddc46c9": {
+      "recall_cues": [
+        "format agent host",
+        "list members",
+        "agent helpers"
+      ],
+      "error_signatures": []
+    },
+    "698deaad-20a7-468e-9ed6-e696dd03bd0c": {
+      "recall_cues": [
+        "evaluate audn",
+        "import bible entries",
+        "sqlite provider",
+        "bible import"
+      ],
+      "error_signatures": []
+    },
+    "6b538682-67b1-4cf2-ab81-ae27d8d2bf8e": {
+      "recall_cues": [
+        "parse netstat pids",
+        "find pids",
+        "kill pids",
+        "probe tool missing error",
+        "kill port",
+        "kill port test",
+        "regression test playbook"
+      ],
+      "error_signatures": []
+    },
+    "70f0e881-49d9-40eb-85ab-ff9c8868f49b": {
+      "recall_cues": [
+        "resolve backlog role alias",
+        "resolve role map with warnings",
+        "build runner args",
+        "validate args",
+        "create sprint controller",
+        "backlog role",
+        "sprint args"
+      ],
+      "error_signatures": []
+    },
+    "70f6818d-fe2c-425e-80b1-e2124b82270c": {
+      "recall_cues": [
+        "merge kb canonical",
+        "entry identity",
+        "content signature",
+        "content fields",
+        "malformed input error",
+        "merge kb canonical test",
+        "kb canonical merge"
+      ],
+      "error_signatures": []
+    },
+    "71323701-67db-4aa8-b7ce-858fb5e2aea7": {
+      "recall_cues": [
+        "get member split read",
+        "merge split by id",
+        "split query",
+        "kb list",
+        "kb self",
+        "kb query"
+      ],
+      "error_signatures": []
+    },
+    "715c2ff2-f5fa-43ba-a0e2-1946939af614": {
+      "recall_cues": [
+        "stall detector poll",
+        "log scope",
+        "probes issued",
+        "probes skipped",
+        "entry probe intervals",
+        "stall detector",
+        "log helpers"
+      ],
+      "error_signatures": []
+    },
+    "76754ef3-5ff3-4fb4-a7cf-d74504f5013b": {
+      "recall_cues": [
+        "create supervisor",
+        "regression test playbook"
+      ],
+      "error_signatures": []
+    },
+    "774ec22a-e9a1-448a-bd46-b5b0fd7b17ef": {
+      "recall_cues": [
+        "scaled timeout",
+        "run tests"
+      ],
+      "error_signatures": []
+    },
+    "780724c4-bbfa-458d-94fc-ebb733800a55": {
+      "recall_cues": [
+        "windows service manager",
+        "graceful stop by server json",
+        "install force test"
+      ],
+      "error_signatures": []
+    },
+    "78f14fd2-717c-4201-9897-fb638379f393": {
+      "recall_cues": [
+        "build sprint views",
+        "fetch child summary",
+        "classify child summary",
+        "render sprint progress html",
+        "create child port resolver",
+        "child port",
+        "supervisor dashboard pulled summary test"
+      ],
+      "error_signatures": []
+    },
+    "7a7649d6-fd51-4e47-b898-384499d53c54": {
+      "recall_cues": [
+        "ascii baseline",
+        "ascii only gate test",
+        "ascii only gate behaviour test"
+      ],
+      "error_signatures": []
+    },
+    "7d7320d0-ed80-4b16-8ac8-c5df806cea55": {
+      "recall_cues": [
+        "check install currency",
+        "gating steps",
+        "member init probe"
+      ],
+      "error_signatures": []
+    },
+    "7ec3c926-46e3-42df-ba26-148260f36a61": {
+      "recall_cues": [
+        "get retirement reasons",
+        "kb bible commit",
+        "bible commit message",
+        "resolve contradiction",
+        "sqlite provider",
+        "kb bible commit removal test",
+        "kb bible prune e2e test"
+      ],
+      "error_signatures": []
+    },
+    "7f7c5b11-5779-4c0b-8265-d21a7f0e1d6d": {
+      "recall_cues": [
+        "fallback plan reviewer verdict",
+        "extract contested bead ids",
+        "plan reviewer verdict",
+        "plan reviewer output",
+        "plan reviewer",
+        "newtask text"
+      ],
+      "error_signatures": []
+    },
+    "7fe61086-2df7-44bf-9d40-a16d6081c1f5": {
+      "recall_cues": [
+        "acquire lock",
+        "check lock state",
+        "sandbox lock",
+        "sandbox lock test",
+        "regression test playbook"
+      ],
+      "error_signatures": []
+    },
+    "81df596b-4490-4862-8cef-3ad5ee7c0785": {
+      "content": "src/tools/check-status.ts kbHealthSummary reads readKbConfigFromDisk once and adds kbHealth.credential (KbHttpCredentialHealth, kind secret|literal) only for provider http. Call times come from src/services/knowledge/kb-http-auth-state.ts, an in-memory Map keyed by the URL with trailing slashes stripped (not by provider instance, because a config change replaces the HttpKbProvider), so they show null/never after a server restart until the first KB call. tokenExpiry decrypts the secret via lookupServerSecret only to run jwtExpiry (exp only); resolves uses lookupServerSecretMeta so expired records are never deleted. kbHttpCredentialHealth is wrapped in safeCredentialHealth, which swallows credential-store errors so the KB section still renders.",
+      "recall_cues": [
+        "kb http credential health",
+        "safe credential health",
+        "jwt expiry",
+        "get kb http auth state",
+        "kb credential compact line",
+        "check status",
+        "kb http auth state",
+        "fleet status kb credential test"
+      ],
+      "error_signatures": []
+    },
+    "84258482-2b78-4c46-a077-7698d06fc4b4": {
+      "recall_cues": [
+        "handle terminating signal",
+        "run bounded",
+        "run all tests",
+        "run all tests timeout test"
+      ],
+      "error_signatures": []
+    },
+    "8672df56-841f-4c14-8e15-f3c6926063f2": {
+      "recall_cues": [
+        "find explicit id create violations",
+        "find command literals",
+        "create dispatch literal re",
+        "explicit id create re",
+        "mask comments",
+        "skip string literal",
+        "find call sites",
+        "explicit id create guard"
+      ],
+      "error_signatures": []
+    },
+    "86ae8b43-42ad-4606-a961-2755421723be": {
+      "recall_cues": [
+        "register all tools",
+        "bindings mcp dir",
+        "kb member read scope wording test",
+        "tool registry",
+        "generate contract"
+      ],
+      "error_signatures": []
+    },
+    "87f501b6-48cb-462b-b112-1ca0a294dca0": {
+      "content": "src/tools/kb-query.ts: capMerged(rows, limit) is applied to mergedL1 in both splitQuery (the member mixed-tier path) and the unsplit kbQuery path. The effective limit is the explicit input.limit, or the default (20 normally; 6 slim rows with 3 L2 entries for a MEMBER session that gives no limit). Earlier behaviour let the project and global sides each return up to limit, so l1_results could reach twice the limit. The earlier CONFIRMED KB claim that l1_results can exceed limit is out of date. L2 is now also returned in L1 rank order: ids are looked up, then remapped through a Map.",
+      "recall_cues": [
+        "cap merged",
+        "split query",
+        "kb query",
+        "read defaults",
+        "kb member query defaults test"
+      ],
+      "error_signatures": []
+    },
+    "8e76e27c-13eb-40bd-bd9f-65473ee3833b": {
+      "content": "logLine/logWarn in src/utils/log-helpers.ts both append to the fleet log file under FLEET_DIR/logs and mirror to console.error. tests/knowledge/kb-bible-rich-content.test.ts compares a size:mtime snapshot of FLEET_DIR and <repo>/.fleet before and after each test, so a single log line from a background job started by kb_capture fails it. tests/knowledge/kb-sqlite-stock-and-http-guard.test.ts spies console.error over getKbProviders + capture + query and expects zero calls; asynchronous warnings from earlier tests in the same file can land inside that window. Expected background skips (no code index, no resolver) are therefore recorded in kb_index_meta instead of logged, and background embedding is off in the suite via APRA_FLEET_KB_EMBED=off (tests/setup.ts).",
+      "recall_cues": [
+        "log line",
+        "log warn",
+        "code link store",
+        "kb embedder source",
+        "kb bible rich content test",
+        "kb sqlite stock and http guard test",
+        "log helpers",
+        "code links"
+      ],
+      "error_signatures": []
+    },
+    "8fdf21fa-e64c-43d2-a22a-edfd21bd6791": {
+      "recall_cues": [
+        "git credential helper write",
+        "git credential helper read",
+        "windows git bash commands",
+        "windows gitbash",
+        "os commands",
+        "vcs credential exec",
+        "se windows gitbash"
+      ],
+      "error_signatures": []
+    },
+    "919a3f50-dcb3-4ee9-91d1-767fd503a3b8": {
+      "recall_cues": [
+        "sprint self id",
+        "build runner args",
+        "is self reservation",
+        "classify active sprints",
+        "generate sprint id",
+        "sprint identity"
+      ],
+      "error_signatures": []
+    },
+    "93bbfb5a-0681-45d2-9024-ecf14c44a479": {
+      "recall_cues": [
+        "bound child env",
+        "child env block cap chars",
+        "child env bound",
+        "windows gitbash"
+      ],
+      "error_signatures": []
+    },
+    "962688bf-cee4-4461-bc3b-10b87eaf56c4": {
+      "recall_cues": [
+        "create supervisor",
+        "serve main"
+      ],
+      "error_signatures": []
+    },
+    "9699c735-270e-439f-8313-c01fd6c98814": {
+      "recall_cues": [
+        "git executable",
+        "resolve git executable",
+        "git executable test"
+      ],
+      "error_signatures": []
+    },
+    "96a63862-eb7a-43f3-8352-4cd686412d43": {
+      "recall_cues": [
+        "known repo remote url",
+        "git repos",
+        "member remote url",
+        "execute prompt"
+      ],
+      "error_signatures": []
+    },
+    "98dd92b2-2606-4baa-8d60-fd3cd3dc78a0": {
+      "recall_cues": [
+        "member expr for",
+        "find inline ladder violations",
+        "role member",
+        "pool head member",
+        "runtime member",
+        "role policies",
+        "inline ladder guard",
+        "inline ladder guard test"
+      ],
+      "error_signatures": []
+    },
+    "9af40daa-2521-430a-a529-7db25d27da87": {
+      "recall_cues": [
+        "import bible entries",
+        "bible import",
+        "sqlite provider",
+        "kb member mixed tier reads test"
+      ],
+      "error_signatures": []
+    },
+    "9b49976a-e24b-45fb-b25c-6a604cb16be7": {
+      "content": "entries_kw (FTS5, normalized text via kb-normalize.ts, bm25 weights title5 symbols4 source_files4 recall_cues4 error_signatures4 summary3 content1 tags1) and entries_tri (trigram FTS5 over raw title/symbols/source_files) are not external-content tables. Triggers entries_kw_ai/ad/au (the update trigger fires only on the indexed columns) INSERT OR IGNORE the rowid into kb_index_pending. KbKeywordIndex.search() drains pending rows first when the index is ready. kb_index_meta.kw_version must equal KB_KEYWORD_INDEX_VERSION; a mismatch starts a background chunked rebuild claimed with rebuild_owner/rebuild_heartbeat under BEGIN IMMEDIATE, and while it runs reads fall back to the legacy entries_fts if present, else a LIKE scan. Changing normalizer output requires bumping KB_NORMALIZER_VERSION so existing DBs rebuild.",
+      "recall_cues": [
+        "kb keyword index",
+        "kb keyword index version",
+        "kb normalizer version",
+        "sqlite provider",
+        "kb index",
+        "kb normalize"
+      ],
+      "error_signatures": []
+    },
+    "a05ff689-9610-4624-ac2f-301d91e83846": {
+      "recall_cues": [
+        "resolve windows bd script",
+        "exec bd sync",
+        "exec bd async",
+        "assert safe args",
+        "bin dir",
+        "exec bd",
+        "sandbox seed beads"
+      ],
+      "error_signatures": []
+    },
+    "a098caf8-263f-4b72-b5a7-55fc3d290a07": {
+      "recall_cues": [
+        "throw if set aside stall",
+        "evaluate set aside stall",
+        "collect set aside entries",
+        "stalled sprint error",
+        "set aside",
+        "mock sprint blocked stall cycle1 test"
+      ],
+      "error_signatures": []
+    },
+    "a1a279ec-5537-4820-a23a-c9a7737f2507": {
+      "recall_cues": [
+        "review scope bead ids",
+        "run review phase",
+        "run develop phase",
+        "mock sprint review scope failed streak closes test"
+      ],
+      "error_signatures": []
+    },
+    "a3fdac5d-31b6-4b87-9456-10d813aa095b": {
+      "recall_cues": [
+        "kb knowledge block",
+        "agent type applies kb captures",
+        "compose permission config",
+        "post result steps",
+        "role policies"
+      ],
+      "error_signatures": []
+    },
+    "a4d684ba-ff2b-48e7-831c-7f68346f5d19": {
+      "recall_cues": [
+        "run deploy phase",
+        "latest deploy failure",
+        "format deploy set aside notes",
+        "deploy permissions failed step",
+        "deployer output",
+        "mock sprint deploy permissions set aside test"
+      ],
+      "error_signatures": []
+    },
+    "a67295f1-33ca-4960-93a0-da0275505905": {
+      "recall_cues": [
+        "sh quote",
+        "sh quote json",
+        "uses power shell quoting",
+        "curl binary",
+        "escape for windows argv",
+        "resolve member target",
+        "shell helpers",
+        "azure devops"
+      ],
+      "error_signatures": []
+    },
+    "a888b84b-d7a0-47ad-9318-2f062770cf2f": {
+      "content": "tests/ascii-only-gate.test.ts and tests/ascii-only-gate-behaviour.test.ts run scripts/check-ascii-only.mjs against the whole tree. A new test that pastes a tool's literal cross-mark (U+274C) refusal text (e.g. from src/tools/compose-permissions.ts) fails the gate, because new files must have zero non-ASCII characters. Write such markers as JS escapes ('\\u274c ...'), the way composeFailureText in packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs matches /^(\\u274c|\\[FAIL\\])/.",
+      "recall_cues": [
+        "compose failure text",
+        "check ascii only",
+        "ascii only gate test",
+        "member provisioning"
+      ],
+      "error_signatures": []
+    },
+    "ab967e3e-4b21-4143-8cf0-6d43065535d9": {
+      "content": "src/services/knowledge/embedding/embedder.ts: the Embedder state is 'idle' until ensureLoaded() runs, and only embedWith() (embedQuery and embedDocuments) calls it. embed-queue.ts drain() returns 'drained' through finishDrain() before any embedDocuments call when kb_embed_pending is empty. sqlite-provider.ts queryEmbedder() returns null unless state === 'ready', and hybridRows never calls embedQuery otherwise. Result: after a restart over a fully embedded KB, hybrid kb_query has no semantic list until some write queues an entry. Seen in a standalone two-process script: after 5 queries the state was still idle with 0 embed calls. Any query-time use of the embedder needs an explicit non-blocking warm-up.",
+      "recall_cues": [
+        "embed queue",
+        "query embedder",
+        "hybrid rows",
+        "sqlite provider"
+      ],
+      "error_signatures": []
+    },
+    "af351ced-8562-477e-8122-1baddba46817": {
+      "content": "SqliteProvider.query calls hybridRows first. It returns null, and the old keyword path runs unchanged, when there is no error_text, no anchor_files/anchor_symbols and no ready query embedder: the embedder must be in state 'ready' with modelId, revision and an embedQuery method, so a read never waits for a model load. Otherwise it fuses keyword, error (FTS column filter on error_signatures), semantic and anchor lists by RRF k=60 (hybrid-rank.ts), multiplies by trust priors, and re-applies every SQL filter to semantic- and anchor-only ids. QueryOptions.disable_lists (internal only) switches individual lists off; the recall eval and the falsifiability tests use it.",
+      "recall_cues": [
+        "sqlite provider",
+        "reciprocal rank fusion",
+        "trust prior",
+        "hybrid rank"
+      ],
+      "error_signatures": []
+    },
+    "b03effcd-0488-452b-9b49-ab21049c0ece": {
+      "recall_cues": [
+        "run dolt step",
+        "surface dolt failure text",
+        "windows spawn limit message",
+        "is spawn outage failure",
+        "classify dolt failure",
+        "dolt sync",
+        "dolt windows spawn limit message test"
+      ],
+      "error_signatures": []
+    },
+    "b7ec6763-407e-4ca3-8cf7-91183e33e39f": {
+      "recall_cues": [
+        "bitbucket provider",
+        "bitbucket token username",
+        "parse bitbucket remote",
+        "http get status with bearer",
+        "git ls remote non interactive",
+        "os commands",
+        "provision vcs auth bitbucket test"
+      ],
+      "error_signatures": []
+    },
+    "b7fc09bb-cf5b-40bb-a965-9ab9852c7cdf": {
+      "recall_cues": [
+        "parse claude reset time",
+        "claude provider",
+        "guessed usage limit signal"
+      ],
+      "error_signatures": []
+    },
+    "b8d328fa-e22b-498f-98cf-2ff10bd6370a": {
+      "recall_cues": [
+        "create http transport",
+        "session owner",
+        "session owner mismatch",
+        "refuse foreign caller",
+        "caller identity",
+        "http transport",
+        "http transport test"
+      ],
+      "error_signatures": []
+    },
+    "bcd7c247-9534-4ba5-bc6a-997c94ca7bbd": {
+      "recall_cues": [
+        "bound child env",
+        "is protected env name",
+        "child env block cap chars",
+        "get clean env",
+        "clean exec",
+        "child env bound",
+        "windows gitbash",
+        "windows child env bound test"
+      ],
+      "error_signatures": []
+    },
+    "c2899616-0cb1-41e8-b229-76e291a0cd81": {
+      "recall_cues": [
+        "anchor is missing",
+        "check freshness",
+        "freshness sweep",
+        "kb session prime",
+        "sqlite provider",
+        "kb freshness sweep",
+        "kb remote anchor freshness test"
+      ],
+      "error_signatures": []
+    },
+    "c4fb3b10-577e-46a8-8ddb-bde2844b57c7": {
+      "content": "src/services/credential-store.ts exports lookupServerSecret(name) -> {status:'ok', value, meta} | {status:'missing'} | {status:'expired', expiresAt, meta}, and lookupServerSecretMeta(name), which returns the same statuses without decrypting. Persistent store wins over the session store; allowedMembers is not checked (the caller is the fleet server, not a member command); an expired record is reported as expired and left in place, unlike credentialResolve, which deletes expired records on read. kb_setup (src/tools/kb-setup.ts checkTokenRef) uses the meta variant to refuse missing/expired secrets for provider http.",
+      "recall_cues": [
+        "lookup server secret",
+        "lookup server secret meta",
+        "credential resolve",
+        "check token ref",
+        "credential store",
+        "kb setup",
+        "credential store atomic write test"
+      ],
+      "error_signatures": []
+    },
+    "c5ebfbc3-a76c-42e4-8254-87fc2c82e39d": {
+      "recall_cues": [
+        "create kb work client",
+        "kb bible skip retry rounds",
+        "kb retryable skip reasons",
+        "kb bible commit round test"
+      ],
+      "error_signatures": []
+    },
+    "cc085797-4b47-455d-9357-fbbb267281ed": {
+      "recall_cues": [
+        "run sprint cycle",
+        "run harvest phase",
+        "run publish pr phase",
+        "phase sequence order test",
+        "guarded modules coverage test",
+        "publish pr"
+      ],
+      "error_signatures": []
+    },
+    "cdb38747-c24d-47f0-8e38-2d62f13eeb61": {
+      "recall_cues": [
+        "create usage limit pause controller",
+        "usage limit wait exhausted error",
+        "on usage limit",
+        "usage limit controller",
+        "dispatch role"
+      ],
+      "error_signatures": []
+    },
+    "d1963b85-b03a-4da7-85c0-ce433768c615": {
+      "recall_cues": [
+        "scaled timeout",
+        "test concurrency",
+        "run tests"
+      ],
+      "error_signatures": []
+    },
+    "d3016610-0d2a-40db-ba0b-537f49ff1cbf": {
+      "recall_cues": [
+        "resolve watchdog timeout",
+        "derive stalled abort floor ms",
+        "policy for",
+        "mock sprint planner dispatch stalled session test",
+        "role policies",
+        "dispatch failure"
+      ],
+      "error_signatures": []
+    },
+    "d3e704fd-d1ee-49d5-aca9-c9eea9c03cb4": {
+      "recall_cues": [
+        "collect parent notes staleness notes",
+        "most recently created child",
+        "compute parent notes staleness note",
+        "parent notes staleness",
+        "parent notes staleness test"
+      ],
+      "error_signatures": []
+    },
+    "d3ec9cb9-285c-4e61-842b-c81393237c68": {
+      "recall_cues": [
+        "azure devops real e2e test"
+      ],
+      "error_signatures": []
+    },
+    "d6a925e2-7ffb-409e-9d6d-df112557edda": {
+      "recall_cues": [
+        "build sweep command",
+        "parse sweep output",
+        "normalize owner data dir prefix",
+        "create dolt orphan sweep",
+        "dolt orphan sweep",
+        "supervisor dolt orphan sweep test"
+      ],
+      "error_signatures": []
+    },
+    "d75f28a9-bb69-4fd8-bf81-1ad9bd17d51b": {
+      "recall_cues": [
+        "create schema validated fake api",
+        "has structured response",
+        "schema validated fake api",
+        "schema validated fake api output shape test",
+        "execute prompt"
+      ],
+      "error_signatures": []
+    },
+    "da7d0105-e454-43d0-b12f-c27d00e7f337": {
+      "recall_cues": [
+        "git executable",
+        "git executable test"
+      ],
+      "error_signatures": []
+    },
+    "da934546-d15f-42ca-bdce-bfab58ec0e83": {
+      "recall_cues": [
+        "provision vcs auth",
+        "validate non secret fields",
+        "collect oob api key",
+        "azure devops",
+        "provision vcs auth test"
+      ],
+      "error_signatures": []
+    },
+    "dd912ec8-958c-49d0-9926-636ee3a17f95": {
+      "recall_cues": [
+        "with git sync",
+        "pushes code",
+        "all dispatch policies",
+        "role policies",
+        "dispatch role",
+        "dispatch sync bracket coverage test",
+        "execution role dispatch pins test"
+      ],
+      "error_signatures": []
+    },
+    "ddc0692c-edc3-4883-a409-d6a958b9c71f": {
+      "recall_cues": [
+        "build credential read command",
+        "read member vcs credential token",
+        "parse expires at from provision text",
+        "phase5 consumer migration end state test",
+        "vcs auth",
+        "member provisioning"
+      ],
+      "error_signatures": []
+    },
+    "de1c60a9-b27f-411b-a23c-953e37207536": {
+      "recall_cues": [],
+      "error_signatures": []
+    },
+    "deeaaf96-ce12-4249-834c-f7562dda6013": {
+      "recall_cues": [
+        "assumed mock sprint file count",
+        "real bd nested suite timeout ms",
+        "assert nested suite really ran",
+        "phase3 dispatch engine completeness test",
+        "phase1 leaf facade completeness test"
+      ],
+      "error_signatures": []
+    },
+    "e078ec0e-b747-4274-a82b-4155c342928b": {
+      "recall_cues": [
+        "copy dir resolved",
+        "resolvable text extensions",
+        "resolve agent conditionals",
+        "install binary asset copy test"
+      ],
+      "error_signatures": []
+    },
+    "e0d3a928-0df8-49c1-bd69-3674ad65310a": {
+      "recall_cues": [
+        "launch auth web",
+        "auth web",
+        "auth socket"
+      ],
+      "error_signatures": []
+    },
+    "e0de87cc-0368-4014-8cfe-e1879bbe57f9": {
+      "recall_cues": [
+        "vcs auth extraction facade test",
+        "dispatch safety guard test",
+        "vcs auth"
+      ],
+      "error_signatures": []
+    },
+    "e1673449-1192-4948-bd32-7b743635a820": {
+      "recall_cues": [
+        "compute child floor",
+        "beads children",
+        "child floor includes closed children test"
+      ],
+      "error_signatures": []
+    },
+    "e6525404-e387-4360-8df3-fe08d050a28a": {
+      "recall_cues": [
+        "partition ready by goal",
+        "format below goal exclusion log",
+        "dispatchable ready leaf beads",
+        "worked on bead ids",
+        "beads scope"
+      ],
+      "error_signatures": []
+    },
+    "e687ffa8-8697-4f7f-9418-ba7f3efd6c2b": {
+      "recall_cues": [
+        "create ledger",
+        "set scope freshness",
+        "serve main",
+        "beads view"
+      ],
+      "error_signatures": []
+    },
+    "e7d3e8e5-0564-4f16-8318-f5e81c436302": {
+      "recall_cues": [
+        "create dashboard viewer",
+        "refresh summary core",
+        "apply extension summary",
+        "run summary"
+      ],
+      "error_signatures": []
+    },
+    "e9f7d4a8-575a-4f4f-9342-9bf47b017b6f": {
+      "recall_cues": [
+        "salvage before reset",
+        "sync member before",
+        "output of",
+        "member sync",
+        "git sync",
+        "mock sprint harness"
+      ],
+      "error_signatures": []
+    },
+    "ec1c087a-90bd-4475-828a-c684ee1c1342": {
+      "recall_cues": [
+        "create vcs auth preflight callback",
+        "read member record",
+        "vcs credential probe failed",
+        "git ls remote probe",
+        "provision vcs auth for member",
+        "vcs auth",
+        "se posix",
+        "se windows"
+      ],
+      "error_signatures": []
+    },
+    "ed948146-37b6-4146-9d10-b2a31512b0bd": {
+      "recall_cues": [
+        "create usage limit pause controller",
+        "dispatch role",
+        "guarded modules",
+        "guard registration exempt",
+        "open sync bracket count",
+        "usage limit controller",
+        "git sync",
+        "dispatch sync bracket coverage test"
+      ],
+      "error_signatures": []
+    },
+    "ee61d08c-1bd1-471b-97c4-23afc08470c3": {
+      "recall_cues": [
+        "parse vcs curl output",
+        "build azure dev ops create pr command",
+        "vcs auth",
+        "azure devops",
+        "mock sprint harness",
+        "vcs http stub test"
+      ],
+      "error_signatures": []
+    },
+    "efc3bf05-c36c-480f-a69e-7ece4b2536bd": {
+      "recall_cues": [
+        "phase5 consumer migration end state test",
+        "member provisioning"
+      ],
+      "error_signatures": []
+    },
+    "f2c0c490-c149-488d-939c-beb60734c8bc": {
+      "recall_cues": [
+        "service notice"
+      ],
+      "error_signatures": []
+    },
+    "f33011e2-8ae6-4388-95d4-5e21f1716d0f": {
+      "recall_cues": [
+        "ensure member fleet install",
+        "replace full install",
+        "build replace full install plan",
+        "probe remote",
+        "install fail closed",
+        "member fleet install",
+        "update member",
+        "register member"
+      ],
+      "error_signatures": []
+    },
+    "f40ed9c2-9dd5-4b32-a216-db902c79ddb2": {
+      "content": "src/services/session-roots.ts fetches MCP client roots lazily on the first kb_/code_ call via the tool handler's extra.sendRequest({method:'roots/list'}, ListRootsResultSchema, {timeout}), which sets relatedRequestId so the server->client request is written onto the in-flight tools/call response stream. A server-initiated request outside a request context (e.g. listRoots() from oninitialized) goes to the standalone GET SSE stream in StreamableHTTPServerTransport; if the client has not opened one, the message is dropped and the request only fails at its timeout. Verified end to end with the SDK StreamableHTTPClientTransport in tests/kb-code-scope-roots.test.ts.",
+      "recall_cues": [
+        "session roots cache",
+        "create roots cache",
+        "register all tools",
+        "session roots",
+        "tool registry",
+        "kb code scope roots test"
+      ],
+      "error_signatures": []
+    },
+    "f503ec1b-2ff6-488f-9f2c-583adaeec7e9": {
+      "recall_cues": [
+        "launcher path for",
+        "windows service manager",
+        "windows service task xml test"
+      ],
+      "error_signatures": []
+    },
+    "f5c5d252-51e0-4107-a55f-c4eba27ea15d": {
+      "recall_cues": [
+        "code index readiness",
+        "index inconsistency",
+        "index generation",
+        "call git nexus",
+        "is recorded analyze alive",
+        "index changed during call error",
+        "code intelligence readiness",
+        "code index state"
+      ],
+      "error_signatures": []
+    },
+    "f60d53f5-f72a-439f-82c9-03b7deaefc9a": {
+      "recall_cues": [
+        "create member init probe",
+        "member init probe",
+        "mock sprint member init probe test"
+      ],
+      "error_signatures": []
+    },
+    "f76a103e-797e-4606-b224-bc130e8243e0": {
+      "recall_cues": [
+        "latest deploy failure",
+        "apply deploy failure verdict gate",
+        "deploy retry cycle limit",
+        "run final review phase",
+        "final review",
+        "mock sprint deploy failure verdict test"
+      ],
+      "error_signatures": []
+    },
+    "f8b2695a-bfbf-4a63-93de-5dcfe7d6c374": {
+      "content": "src/cli/secret.ts: with -y (nonInteractive) the --set path reads all of process.stdin, trims it, and aborts with an error on an empty value; --persist then stores it via credentialSet in this CLI process, which writes credentials.json atomically (temp + rename) so a running fleet server reading it concurrently never sees a partial file. Trimming means CRLF from PowerShell pipelines or a trailing newline from az ... -o tsv is harmless. The documented KB refresher recipe (docs/knowledge-layer.md, Named credentials and refreshers) relies on this; tests/knowledge/kb-named-credential-live-e2e.test.ts drives it with execFileSync input.",
+      "recall_cues": [
+        "run secret",
+        "handle set",
+        "credential set",
+        "knowledge layer",
+        "kb named credential live e2e test"
+      ],
+      "error_signatures": []
+    },
+    "fbf058a3-a2de-45e1-b97f-ec58b048cbc4": {
+      "recall_cues": [
+        "resolve resume arg",
+        "session id of error",
+        "dispatch role",
+        "doer max turns resume explicit session test"
+      ],
+      "error_signatures": []
+    },
+    "ff02b32b-5d77-4af5-ad6b-0d7288e2476f": {
+      "recall_cues": [
+        "build sweep command",
+        "create dolt orphan sweep",
+        "normalize owner data dir prefix",
+        "serve main",
+        "dolt orphan sweep",
+        "dolt settle",
+        "supervisor dolt orphan sweep test"
+      ],
+      "error_signatures": []
+    },
+    "4f54d973-5627-49c3-903a-466695892a45": {
+      "content": "error_signature: \"Resource not accessible by integration\" (gh / GitHub API 403). Cause: the GitHub App installation token minted by provision_vcs_auth was granted too little access (e.g. git_access push or read). push cannot create PRs or dispatch workflows. Fix: re-run provision_vcs_auth (github-app) with git_access: \"push+pr\" and repos passed as full owner/repo names (e.g. Apra-Labs/apra-fleet). Members provisioned only by sprint preflight have no stored access level and may fail with deploy_failed until re-minted. Evidence: GIT_ACCESS_DESCRIPTION and git_access enum (read, push, push+pr, admin, issues, full) in src/tools/provision-vcs-auth.ts.",
+      "recall_cues": [
+        "provision vcs auth"
+      ],
+      "error_signatures": [
+        "Resource not accessible by integration"
+      ]
+    }
+  }
+}
