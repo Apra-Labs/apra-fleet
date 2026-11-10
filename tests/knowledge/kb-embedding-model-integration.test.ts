@@ -181,9 +181,11 @@ describe('fallback at the embedder: null vectors, failed state, one log line', (
       log,
     });
     await expectFallback(e, log, /sha256 mismatch/);
-    // Staged download: the refused model never reaches its folder.
+    // Staged download: the refused model never reaches its folder; only the
+    // resume folder (never a model folder) is left, without the bad file.
     expect(fs.existsSync(path.join(tmp, 'Test', `tiny-embed@${REV}`))).toBe(false);
-    expect(fs.readdirSync(path.join(tmp, 'Test'))).toEqual([]);
+    expect(fs.readdirSync(path.join(tmp, 'Test'))).toEqual([`tiny-embed@${REV}.partial`]);
+    expect(fs.existsSync(path.join(tmp, 'Test', `tiny-embed@${REV}.partial`, 'onnx', 'model_quantized.onnx'))).toBe(false);
   });
 });
 

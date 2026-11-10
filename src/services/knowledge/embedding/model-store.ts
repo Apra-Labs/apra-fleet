@@ -22,10 +22,23 @@
  *   removed by the next attempt). Files already present and verified in an
  *   existing model folder are copied into the staging folder rather than
  *   downloaded again.
- * - One overall deadline (downloadDeadlineMs, default
- *   MODEL_DOWNLOAD_DEADLINE_MS) bounds the whole download -- every file,
- *   redirects and body streaming -- not each request: a server trickling
- *   bytes forever fails at the deadline with a reason naming the timeout.
+ * - Downloaded bytes survive a failed attempt (and a killed process) in a
+ *   resume folder beside the model folder (<name>@<revision>.partial), owned
+ *   by one process at a time through <name>@<revision>.partial.lock (holder
+ *   pid; a dead holder's lock is taken over). Its name never equals a model
+ *   folder, so it is never loaded as a model. The next attempt reuses files
+ *   there that already pass sha256 and continues the others with an HTTP Range
+ *   request; a server that ignores Range (200) or rejects it (416) gets a full
+ *   re-download. A file that fails sha256 -- resumed or not -- is deleted. The
+ *   resume folder is removed once the model is in place. When another live
+ *   process holds the lock, this attempt downloads into its own staging folder
+ *   without resume.
+ * - A stall timeout (stallTimeoutMs, default MODEL_DOWNLOAD_STALL_MS) fails a
+ *   download only when no bytes arrive for that long; a slow but steady
+ *   download never times out. The reason names the stall.
+ * - The default download (fetchDownload) honours HTTPS_PROXY, HTTP_PROXY and
+ *   NO_PROXY (and their lowercase spellings) through undici's
+ *   EnvHttpProxyAgent; plain fetch() ignores them.
  * - Files already on disk are re-verified once per process.
  * - A local folder (air-gapped installs) is used as-is: no download, no hash.
  *
@@ -35,8 +48,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { EnvHttpProxyAgent, fetch as undiciFetch } from 'undici';
 import { FLEET_DIR } from '../../../paths.js';
 import { ONNX_FILE_FOR_DTYPE, type EmbeddingModelChoice, type EmbeddingProfile } from './profiles.js';
 
@@ -46,37 +60,98 @@ export type ModelState =
   | { state: 'failed'; profile?: EmbeddingProfile; reason: string };
 
 /**
- * Download seam: fetch url into destPath (create or overwrite). Rejects on any
- * failure. signal aborts at the overall model download deadline; a seam that
- * ignores it is still cut off (the store stops waiting at the deadline).
+ * Download seam: fetch url into destPath. destPath may already hold bytes of
+ * an earlier, interrupted attempt; the seam may continue them (HTTP Range) or
+ * overwrite them, but must leave the whole file there on success. Rejects on
+ * any failure. signal aborts when the download stalls; a seam that ignores it
+ * is still cut off (the store stops waiting). onData, when called with each
+ * chunk's size, counts as progress for the stall timeout; growth of destPath
+ * counts too, so a seam that never calls it is not mistaken for a stall
+ * while it writes.
  */
-export type ModelDownloadFn = (url: string, destPath: string, signal?: AbortSignal) => Promise<void>;
+export type ModelDownloadFn = (
+  url: string,
+  destPath: string,
+  signal?: AbortSignal,
+  onData?: (bytes: number) => void,
+) => Promise<void>;
 
 export interface ModelStoreOptions {
   /** Root of the models folder; default <FLEET_DIR>/models. */
   modelsDir?: string;
-  /** Download seam; default streams over fetch(). Tests inject a fake. */
+  /** Download seam; default fetchDownload (proxy-aware, resumes partial files). Tests inject a fake. */
   download?: ModelDownloadFn;
   /** Hugging Face endpoint; default HF_ENDPOINT or https://huggingface.co. */
   hubEndpoint?: string;
-  /** Overall deadline for one model's whole download; default MODEL_DOWNLOAD_DEADLINE_MS. */
-  downloadDeadlineMs?: number;
+  /** Fail a download when no bytes arrive for this long; default MODEL_DOWNLOAD_STALL_MS. */
+  stallTimeoutMs?: number;
 }
 
-/** Overall budget for downloading one model (all files; the largest built-in file is ~34 MB). */
-export const MODEL_DOWNLOAD_DEADLINE_MS = 20 * 60 * 1000;
+/** Default stall timeout: a download with no bytes for this long has failed. */
+export const MODEL_DOWNLOAD_STALL_MS = 60 * 1000;
 
-/** Default download: stream the HTTP body to destPath, abortable at any point. */
-export const fetchDownload: ModelDownloadFn = async (url, destPath, signal) => {
-  const res = await fetch(url, { redirect: 'follow', signal });
-  if (!res.ok || !res.body) {
-    throw new Error(`HTTP ${res.status} ${res.statusText} for ${url}`);
+function sizeOf(file: string): number {
+  try { return fs.statSync(file).size; } catch { return 0; }
+}
+
+/** Parse the first byte position of a Content-Range header (bytes <start>-<end>/<total>). */
+function contentRangeStart(header: string | null): number | null {
+  const m = header ? /^bytes\s+(\d+)-\d+\/(?:\d+|\*)$/i.exec(header.trim()) : null;
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Default download: stream the HTTP body to destPath, abortable at any point.
+ * Goes through undici's EnvHttpProxyAgent, so HTTPS_PROXY / HTTP_PROXY /
+ * NO_PROXY (and lowercase spellings) apply; global fetch() ignores them. When
+ * destPath already holds bytes it asks for the rest with a Range request and
+ * appends on 206; on 200 (Range ignored) it rewrites the file whole, and on
+ * 416 (partial already as large as, or larger than, the file) it deletes the
+ * partial and downloads afresh.
+ */
+export const fetchDownload: ModelDownloadFn = async (url, destPath, signal, onData) => {
+  // Built per call: it reads the proxy variables at construction.
+  const dispatcher = new EnvHttpProxyAgent();
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const have = sizeOf(destPath);
+      const headers: Record<string, string> = { 'accept-encoding': 'identity' };
+      if (have > 0) headers.range = `bytes=${have}-`;
+      const res = await undiciFetch(url, { redirect: 'follow', signal, headers, dispatcher });
+      if (res.status === 416 && have > 0) {
+        await res.body?.cancel().catch(() => {});
+        fs.rmSync(destPath, { force: true });
+        continue;
+      }
+      if (!res.ok || !res.body) {
+        await res.body?.cancel().catch(() => {});
+        throw new Error(`HTTP ${res.status} ${res.statusText} for ${url}`);
+      }
+      const append = res.status === 206 && have > 0 && contentRangeStart(res.headers.get('content-range')) === have;
+      if (res.status === 206 && !append) {
+        // A range we did not ask for: start over without one.
+        await res.body.cancel().catch(() => {});
+        fs.rmSync(destPath, { force: true });
+        continue;
+      }
+      const counter = new Transform({
+        transform(chunk: Buffer, _enc, cb) {
+          onData?.(chunk.length);
+          cb(null, chunk);
+        },
+      });
+      await pipeline(
+        Readable.fromWeb(res.body as import('node:stream/web').ReadableStream),
+        counter,
+        fs.createWriteStream(destPath, { flags: append ? 'a' : 'w' }),
+        signal ? { signal } : {},
+      );
+      return;
+    }
+    throw new Error(`server rejected the byte range for ${url} twice`);
+  } finally {
+    dispatcher.destroy().catch(() => {});
   }
-  await pipeline(
-    Readable.fromWeb(res.body as import('node:stream/web').ReadableStream),
-    fs.createWriteStream(destPath),
-    signal ? { signal } : {},
-  );
 };
 
 export function sha256OfFile(file: string): Promise<string> {
@@ -109,7 +184,7 @@ export class ModelStore {
   readonly modelsDir: string;
   private readonly download: ModelDownloadFn;
   private readonly hubEndpoint: string;
-  private readonly deadlineMs: number;
+  private readonly stallMs: number;
   /** One promise per model folder: in flight, or settled ready. Failures are dropped so a later call may retry. */
   private readonly pending = new Map<string, Promise<ModelState>>();
 
@@ -117,7 +192,7 @@ export class ModelStore {
     this.modelsDir = opts.modelsDir ?? path.join(FLEET_DIR, 'models');
     this.download = opts.download ?? fetchDownload;
     this.hubEndpoint = (opts.hubEndpoint ?? process.env.HF_ENDPOINT ?? 'https://huggingface.co').replace(/\/+$/, '');
-    this.deadlineMs = opts.downloadDeadlineMs ?? MODEL_DOWNLOAD_DEADLINE_MS;
+    this.stallMs = opts.stallTimeoutMs ?? MODEL_DOWNLOAD_STALL_MS;
   }
 
   /** Folder a profile's files live in (the local folder itself for a local profile). */
@@ -179,47 +254,75 @@ export class ModelStore {
     this.removeAbandonedStaging(parent, base);
     const staging = path.join(parent, `${base}.part-${process.pid}-${randomUUID().slice(0, 8)}`);
     fs.mkdirSync(staging, { recursive: true });
+    // Resume folder: survives a failed attempt; null when another live process owns it.
+    const resumeDir = this.claimResumeDir(parent, base);
+    const lockFile = path.join(parent, `${base}.partial.lock`);
 
-    // One deadline for the whole download.
-    const deadline = new AbortController();
-    const timeoutReason = `timed out after ${this.deadlineMs / 1000} s (overall model download deadline)`;
-    let onDeadline!: (err: Error) => void;
-    const deadlineHit = new Promise<never>((_, reject) => { onDeadline = reject; });
-    deadlineHit.catch(() => { /* observed via the race below */ });
-    const timer = setTimeout(() => {
-      const err = new Error(timeoutReason);
-      deadline.abort(err);
-      onDeadline(err);
-    }, this.deadlineMs);
+    // Stall watchdog: fails the download only when no bytes arrive for stallMs.
+    const stallSecs = this.stallMs / 1000;
+    const stallReason = `stalled: no data received for ${stallSecs} s (model download stall timeout)`;
+    const stall = new AbortController();
+    let onStall!: (err: Error) => void;
+    const stallHit = new Promise<never>((_, reject) => { onStall = reject; });
+    stallHit.catch(() => { /* observed via the race below */ });
+    let watched: string | null = null;
+    let watchedSize = 0;
+    let lastActivity = Date.now();
+    const markActivity = () => { lastActivity = Date.now(); };
+    const timer = setInterval(() => {
+      if (watched === null || stall.signal.aborted) return;
+      const size = sizeOf(watched);
+      if (size !== watchedSize) { watchedSize = size; markActivity(); }
+      if (Date.now() - lastActivity >= this.stallMs) {
+        const err = new Error(stallReason);
+        stall.abort(err);
+        onStall(err);
+      }
+    }, Math.max(10, Math.min(1000, Math.floor(this.stallMs / 4))));
     timer.unref?.();
 
     let current = '';
     try {
       for (const file of src.files) {
         current = file.path;
-        const staged = path.join(staging, ...file.path.split('/'));
+        const rel = file.path.split('/');
+        const staged = path.join(staging, ...rel);
         fs.mkdirSync(path.dirname(staged), { recursive: true });
         if (good.has(file.path)) {
-          fs.copyFileSync(path.join(dir, ...file.path.split('/')), staged);
+          fs.copyFileSync(path.join(dir, ...rel), staged);
           continue;
         }
-        if (deadline.signal.aborted) throw new Error(timeoutReason);
-        const url = `${this.hubEndpoint}/${src.repo}/resolve/${encodeURIComponent(src.revision)}/${file.path}`;
-        try {
-          await Promise.race([this.download(url, staged, deadline.signal), deadlineHit]);
-        } catch (err) {
-          throw new Error(deadline.signal.aborted ? timeoutReason : errMessage(err));
-        }
-        if (file.sha256) {
-          const actual = await sha256OfFile(staged);
-          if (actual !== file.sha256) {
-            return {
-              state: 'failed',
-              profile,
-              reason: `sha256 mismatch for ${src.repo}@${src.revision}/${file.path}: expected ${file.sha256}, got ${actual}; file removed`,
-            };
+        const target = resumeDir ? path.join(resumeDir, ...rel) : staged;
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        // A file finished and verified by an earlier attempt needs no request.
+        const done = resumeDir !== null && file.sha256 !== undefined && file.sha256 !== ''
+          && fs.existsSync(target) && (await sha256OfFile(target)) === file.sha256;
+        if (!done) {
+          if (stall.signal.aborted) throw new Error(stallReason);
+          const url = `${this.hubEndpoint}/${src.repo}/resolve/${encodeURIComponent(src.revision)}/${file.path}`;
+          watched = target;
+          watchedSize = sizeOf(target);
+          markActivity();
+          try {
+            await Promise.race([this.download(url, target, stall.signal, markActivity), stallHit]);
+          } catch (err) {
+            throw new Error(stall.signal.aborted ? stallReason : errMessage(err));
+          } finally {
+            watched = null;
+          }
+          if (file.sha256) {
+            const actual = await sha256OfFile(target);
+            if (actual !== file.sha256) {
+              fs.rmSync(target, { force: true });
+              return {
+                state: 'failed',
+                profile,
+                reason: `sha256 mismatch for ${src.repo}@${src.revision}/${file.path}: expected ${file.sha256}, got ${actual}; file removed`,
+              };
+            }
           }
         }
+        if (target !== staged) fs.copyFileSync(target, staged);
       }
       // Complete and verified: swap the staging folder into place.
       const old = fs.existsSync(dir) ? `${dir}.old-${process.pid}-${randomUUID().slice(0, 8)}` : null;
@@ -231,6 +334,7 @@ export class ModelStore {
         throw err;
       }
       if (old) fs.rmSync(old, { recursive: true, force: true });
+      if (resumeDir) fs.rmSync(resumeDir, { recursive: true, force: true });
       return { state: 'ready', profile, dir };
     } catch (err) {
       return {
@@ -239,9 +343,41 @@ export class ModelStore {
         reason: `download of ${src.repo}@${src.revision}/${current} failed: ${errMessage(err)}`,
       };
     } finally {
-      clearTimeout(timer);
+      clearInterval(timer);
       fs.rmSync(staging, { recursive: true, force: true });
+      if (resumeDir) fs.rmSync(lockFile, { force: true });
     }
+  }
+
+  /**
+   * Take the resume folder <base>.partial for this process: create the lock
+   * <base>.partial.lock holding our pid, taking over a lock whose holder is no
+   * longer running. Returns null when a live holder (another process, or this
+   * one through another store) has it.
+   */
+  private claimResumeDir(parent: string, base: string): string | null {
+    const lockFile = path.join(parent, `${base}.partial.lock`);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        fs.writeFileSync(lockFile, String(process.pid), { flag: 'wx' });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return null;
+        let holder = 0;
+        try { holder = Number(fs.readFileSync(lockFile, 'utf-8').trim()); } catch { /* vanished */ }
+        if (pidAlive(holder)) return null;
+        fs.rmSync(lockFile, { force: true });
+        continue;
+      }
+      const resumeDir = path.join(parent, `${base}.partial`);
+      try {
+        fs.mkdirSync(resumeDir, { recursive: true });
+      } catch {
+        fs.rmSync(lockFile, { force: true });
+        return null;
+      }
+      return resumeDir;
+    }
+    return null;
   }
 
   /** Remove staging/old folders of this model left by a process that is no longer running. */

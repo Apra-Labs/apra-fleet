@@ -1,6 +1,6 @@
 /**
- * Model download robustness: one overall deadline bounds the whole model
- * download (every file, redirects and body streaming), and an interrupted
+ * Model download robustness: a stall timeout (no bytes for N s) bounds a
+ * download, never its total length, and an interrupted
  * download never leaves a folder a later run treats as complete (files are
  * staged in a temp folder, verified, then the folder is renamed into place).
  * The models folder path <modelsDir>/<owner>/<name>@<revision>/ is the
@@ -61,56 +61,55 @@ afterEach(() => {
 
 const modelDir = () => path.join(tmp, 'Test', `tiny-model@${REV}`);
 
-describe('overall download deadline', () => {
-  it('a server that keeps trickling bytes is cut off at the overall deadline, with a reason naming the timeout', async () => {
-    // Real HTTP: one small chunk every 50 ms, forever -- never idle, never done.
+describe('stall timeout (no overall deadline)', () => {
+  it('a server that sends part of a file then stops is cut off by the stall timeout, with a reason naming the stall', async () => {
     const sockets = new Set<import('node:net').Socket>();
     const server = http.createServer((_req, res) => {
-      res.writeHead(200, { 'content-type': 'application/octet-stream' });
-      const t = setInterval(() => res.write('x'), 50);
-      res.on('close', () => clearInterval(t));
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': '1000' });
+      res.write('xxxx'); // then nothing, ever
     });
     server.on('connection', (s) => { sockets.add(s); s.on('close', () => sockets.delete(s)); });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     const port = (server.address() as AddressInfo).port;
     try {
-      const store = new ModelStore({ modelsDir: tmp, hubEndpoint: `http://127.0.0.1:${port}`, downloadDeadlineMs: 400 });
+      const store = new ModelStore({ modelsDir: tmp, hubEndpoint: `http://127.0.0.1:${port}`, stallTimeoutMs: 400 });
       const started = Date.now();
       const state = await store.ensure({ kind: 'enabled', profile: pinnedProfile(bodies) });
       const took = Date.now() - started;
       expect(state.state).toBe('failed');
-      expect(state.state === 'failed' && state.reason).toMatch(/timed out after 0\.4 s \(overall model download deadline\)/);
+      expect(state.state === 'failed' && state.reason).toMatch(/stalled: no data received for 0\.4 s \(model download stall timeout\)/);
       expect(took).toBeGreaterThanOrEqual(350);
       expect(took).toBeLessThan(5000);
       expect(fs.existsSync(modelDir())).toBe(false);
-      expect(fs.readdirSync(tmp).filter((n) => n !== 'Test')).toEqual([]);
-      expect(fs.existsSync(path.join(tmp, 'Test')) ? fs.readdirSync(path.join(tmp, 'Test')) : []).toEqual([]);
+      // Only the resume folder (never loadable as a model) is left in the owner folder.
+      expect(fs.readdirSync(path.join(tmp, 'Test'))).toEqual([`tiny-model@${REV}.partial`]);
     } finally {
       for (const s of sockets) s.destroy();
       await new Promise<void>((r) => server.close(() => r()));
     }
   });
 
-  it('the deadline spans all files, not each one: slow files that each fit a per-file budget still fail overall', async () => {
-    const download = vi.fn<ModelDownloadFn>(async (url, dest, signal) => {
-      await new Promise<void>((resolve, reject) => {
-        const t = setTimeout(resolve, 150);
-        signal?.addEventListener('abort', () => { clearTimeout(t); reject(signal.reason); }, { once: true });
-      });
-      fs.writeFileSync(dest, bodies[url.split(`/resolve/${REV}/`)[1] as keyof typeof bodies]);
+  it('a download that takes longer than the stall timeout in total but keeps reporting bytes succeeds', async () => {
+    const download = vi.fn<ModelDownloadFn>(async (url, dest, _signal, onData) => {
+      const body = bodies[url.split(`/resolve/${REV}/`)[1] as keyof typeof bodies];
+      for (let i = 0; i < 5; i++) {
+        await new Promise((r) => setTimeout(r, 40));
+        onData?.(1);
+      }
+      fs.writeFileSync(dest, body);
     });
-    const store = new ModelStore({ modelsDir: tmp, download, downloadDeadlineMs: 250 });
+    const store = new ModelStore({ modelsDir: tmp, download, stallTimeoutMs: 120 });
+    const started = Date.now();
     const state = await store.ensure({ kind: 'enabled', profile: pinnedProfile(bodies) });
-    expect(state.state === 'failed' && state.reason).toMatch(/timed out after 0\.25 s/);
-    expect(download.mock.calls.length).toBe(2);
-    expect(fs.existsSync(modelDir())).toBe(false);
+    expect(Date.now() - started).toBeGreaterThan(120 * 3);
+    expect(state).toMatchObject({ state: 'ready', dir: modelDir() });
   });
 
-  it('a download seam that ignores the abort signal is still bounded by the deadline', async () => {
+  it('a download seam that ignores the abort signal is still bounded by the stall timeout', async () => {
     const download = vi.fn<ModelDownloadFn>(() => new Promise(() => {}));
-    const store = new ModelStore({ modelsDir: tmp, download, downloadDeadlineMs: 100 });
+    const store = new ModelStore({ modelsDir: tmp, download, stallTimeoutMs: 100 });
     const state = await store.ensure({ kind: 'enabled', profile: pinnedProfile(bodies) });
-    expect(state.state === 'failed' && state.reason).toMatch(/timed out after 0\.1 s/);
+    expect(state.state === 'failed' && state.reason).toMatch(/no data received for 0\.1 s/);
   });
 
   it('fetchDownload honours the abort signal', async () => {
@@ -129,22 +128,62 @@ describe('overall download deadline', () => {
 });
 
 describe('interrupted downloads', () => {
-  it('a download that fails on a later file leaves no model folder; the next attempt downloads and is ready', async () => {
+  it('a download that fails on a later file leaves no model folder; the next attempt reuses the finished files and is ready', async () => {
     const profile = pinnedProfile(bodies);
     const broken = serveDownload(bodies, { failOn: 'onnx/model_quantized.onnx' });
     const first = await new ModelStore({ modelsDir: tmp, download: broken }).ensure({ kind: 'enabled', profile });
     expect(first.state === 'failed' && first.reason).toMatch(/socket hang up/);
     expect(fs.existsSync(modelDir())).toBe(false);
-    // No staging leftovers either.
-    expect(fs.readdirSync(path.join(tmp, 'Test'))).toEqual([]);
+    // No staging leftovers and no lock: only the resume folder, which is never a model folder.
+    expect(fs.readdirSync(path.join(tmp, 'Test'))).toEqual([`tiny-model@${REV}.partial`]);
 
     // A later run with a store that would treat any existing folder as complete never sees a half folder.
     const good = serveDownload(bodies);
     const second = await new ModelStore({ modelsDir: tmp, download: good }).ensure({ kind: 'enabled', profile });
     expect(second).toMatchObject({ state: 'ready', dir: modelDir() });
-    expect(good).toHaveBeenCalledTimes(3);
+    // The two verified files survived in the resume folder; only the broken one is fetched again.
+    expect(good).toHaveBeenCalledTimes(1);
+    expect(good.mock.calls[0][0]).toMatch(/model_quantized\.onnx$/);
     expect(fs.readFileSync(path.join(modelDir(), 'onnx', 'model_quantized.onnx'), 'utf-8')).toBe('ONNX-BYTES');
     expect(fs.readdirSync(path.join(tmp, 'Test'))).toEqual([`tiny-model@${REV}`]);
+  });
+
+  it('a resume folder locked by a running process is left alone; this attempt downloads without it', async () => {
+    const profile = pinnedProfile(bodies);
+    const owner = path.join(tmp, 'Test');
+    fs.mkdirSync(path.join(owner, `tiny-model@${REV}.partial`), { recursive: true });
+    fs.writeFileSync(path.join(owner, `tiny-model@${REV}.partial`, 'config.json'), 'theirs');
+    fs.writeFileSync(path.join(owner, `tiny-model@${REV}.partial.lock`), String(process.ppid));
+    const good = serveDownload(bodies);
+    const state = await new ModelStore({ modelsDir: tmp, download: good }).ensure({ kind: 'enabled', profile });
+    expect(state).toMatchObject({ state: 'ready', dir: modelDir() });
+    expect(good).toHaveBeenCalledTimes(3);
+    expect(fs.readFileSync(path.join(owner, `tiny-model@${REV}.partial`, 'config.json'), 'utf-8')).toBe('theirs');
+    expect(fs.readdirSync(owner).sort()).toEqual([`tiny-model@${REV}`, `tiny-model@${REV}.partial`, `tiny-model@${REV}.partial.lock`]);
+  });
+
+  it('a lock left by a dead process is taken over and its partial files resumed', async () => {
+    const profile = pinnedProfile(bodies);
+    const owner = path.join(tmp, 'Test');
+    const resume = path.join(owner, `tiny-model@${REV}.partial`);
+    fs.mkdirSync(resume, { recursive: true });
+    fs.writeFileSync(path.join(resume, 'config.json'), bodies['config.json']); // complete and correct
+    fs.writeFileSync(path.join(owner, `tiny-model@${REV}.partial.lock`), '99999999');
+    const good = serveDownload(bodies);
+    const state = await new ModelStore({ modelsDir: tmp, download: good }).ensure({ kind: 'enabled', profile });
+    expect(state).toMatchObject({ state: 'ready', dir: modelDir() });
+    expect(good).toHaveBeenCalledTimes(2);
+    expect(good.mock.calls.map((c) => c[0]).some((u) => u.endsWith('config.json'))).toBe(false);
+    expect(fs.readdirSync(owner)).toEqual([`tiny-model@${REV}`]);
+  });
+
+  it('a file that fails sha256 is removed from the resume folder; no model folder is left', async () => {
+    const profile = pinnedProfile(bodies);
+    const download = vi.fn<ModelDownloadFn>(async (_url, dest) => { fs.writeFileSync(dest, 'WRONG'); });
+    const state = await new ModelStore({ modelsDir: tmp, download }).ensure({ kind: 'enabled', profile });
+    expect(state.state === 'failed' && state.reason).toMatch(/sha256 mismatch for .*config\.json.*file removed/);
+    expect(fs.existsSync(modelDir())).toBe(false);
+    expect(fs.existsSync(path.join(tmp, 'Test', `tiny-model@${REV}.partial`, 'config.json'))).toBe(false);
   });
 
   it('a process killed mid-download (staging folder left behind) is never loaded as ready and is cleaned up', async () => {
