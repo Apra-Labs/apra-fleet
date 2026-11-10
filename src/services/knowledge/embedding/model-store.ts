@@ -97,10 +97,10 @@ export interface ModelStoreOptions {
   stallTimeoutMs?: number;
   /**
    * Base URL of the GitHub release holding the built-in model files (asset
-   * names appended after a '/'); null or '' turns the release source off.
-   * Default: defaultModelReleaseBaseUrl().
+   * names appended after a '/'), or several tried in order; null, '' or []
+   * turns the release source off. Default: defaultModelReleaseBaseUrls().
    */
-  releaseBaseUrl?: string | null;
+  releaseBaseUrl?: string | readonly string[] | null;
 }
 
 /** Default stall timeout: a download with no bytes for this long has failed. */
@@ -112,35 +112,57 @@ export const MODEL_RELEASE_URL_ENV = 'APRA_FLEET_MODEL_RELEASE_URL';
 /** GitHub repository whose releases carry the built-in model files (same repo as member-fleet-install.ts RELEASE_REPO). */
 export const MODEL_RELEASE_REPO = 'Apra-Labs/apra-fleet';
 
+/** A build version with the _<6 hex> commit suffix scripts/build-sea.mjs appends when git is available. */
+const SUFFIXED_BUILD_VERSION = /^(v\d+\.\d+\.\d+)_[0-9a-f]{6}$/i;
+
 /**
- * Where the release source looks for model files.
+ * Where the release source looks for model files, in the order tried.
  *
- * Choice: the release of the RUNNING build's version tag
- * (https://github.com/Apra-Labs/apra-fleet/releases/download/<serverVersion>/),
- * not a fixed model-assets release. The release workflow attaches the pinned
- * default-model files to every release it publishes -- stable v<x.y.z> tags
- * and the v<x.y.z>_<sha6> prereleases alike, whose tag is exactly the version
- * the binary reports -- so an installed build always finds the files its own
- * profiles.ts pins, with no separate release to create or keep in step with
- * profile changes. A local dev build's version names no published release:
- * the request 404s and the download falls through to Hugging Face.
+ * Choice: the releases of the RUNNING build's version, not a fixed
+ * model-assets release. The release workflow attaches the pinned
+ * default-model files to every release it publishes, so an installed build
+ * finds the files its own profiles.ts pins with no separate release to create
+ * or keep in step with profile changes. The build version is not always a
+ * release tag, though:
+ *  - an npm/tsc install (no .git) reports a bare v<x.y.z>: the stable tag;
+ *  - a CI-built binary reports v<x.y.z>_<sha6> (scripts/build-sea.mjs appends
+ *    the commit whenever git is available), whether it ships in the stable
+ *    v<x.y.z> release or in the v<x.y.z>_<sha6> prerelease of that commit --
+ *    and prereleases are pruned to the newest few per branch.
+ * So a suffixed version tries two releases: the exact build tag (the
+ * prerelease, while it exists) and then the stable tag with the suffix
+ * stripped (the same rule member-fleet-install.ts uses for binaries). Asset
+ * names carry the model revision and every file is sha256-verified, so any
+ * release carrying the assets is safe to read. A local dev build's version
+ * names no published release: the requests 404 and the download falls
+ * through to Hugging Face.
  *
- * APRA_FLEET_MODEL_RELEASE_URL overrides it (tests point it at a local
- * server; 'off', 'none' or '' turns the release source off).
+ * APRA_FLEET_MODEL_RELEASE_URL overrides it with one base URL (tests point it
+ * at a local server; 'off', 'none' or '' turns the release source off).
  */
-export function defaultModelReleaseBaseUrl(env: NodeJS.ProcessEnv = process.env, version: string = serverVersion): string | null {
+export function defaultModelReleaseBaseUrls(env: NodeJS.ProcessEnv = process.env, version: string = serverVersion): string[] {
   const override = env[MODEL_RELEASE_URL_ENV];
   if (override !== undefined) {
     const v = override.trim();
-    if (v === '' || v === 'off' || v === 'none') return null;
-    return v.replace(/\/+$/, '');
+    if (v === '' || v === 'off' || v === 'none') return [];
+    return [v.replace(/\/+$/, '')];
   }
-  return `https://github.com/${MODEL_RELEASE_REPO}/releases/download/${encodeURIComponent(version)}`;
+  const tags = [version];
+  const m = SUFFIXED_BUILD_VERSION.exec(version);
+  if (m) tags.push(m[1]);
+  return tags.map((t) => `https://github.com/${MODEL_RELEASE_REPO}/releases/download/${encodeURIComponent(t)}`);
+}
+
+/** First release base URL defaultModelReleaseBaseUrls tries, or null when the release source is off. */
+export function defaultModelReleaseBaseUrl(env: NodeJS.ProcessEnv = process.env, version: string = serverVersion): string | null {
+  return defaultModelReleaseBaseUrls(env, version)[0] ?? null;
 }
 
 /** One place a model file can be downloaded from. */
 interface DownloadSource {
   label: string;
+  /** Identity for the per-attempt dead-source map (two release tags share a label). */
+  key: string;
   url: (repo: string, revision: string, filePath: string) => string;
 }
 
@@ -255,7 +277,7 @@ export class ModelStore {
   private readonly download: ModelDownloadFn;
   private readonly hubEndpoint: string;
   private readonly stallMs: number;
-  private readonly releaseBaseUrl: string | null;
+  private readonly releaseBaseUrls: string[];
   /** One promise per model folder: in flight, or settled ready. Failures are dropped so a later call may retry. */
   private readonly pending = new Map<string, Promise<ModelState>>();
   /** Model folders with a file download in flight right now (progress signal for the embedder state). */
@@ -266,24 +288,28 @@ export class ModelStore {
     this.download = opts.download ?? fetchDownload;
     this.hubEndpoint = (opts.hubEndpoint ?? process.env.HF_ENDPOINT ?? 'https://huggingface.co').replace(/\/+$/, '');
     this.stallMs = opts.stallTimeoutMs ?? MODEL_DOWNLOAD_STALL_MS;
-    const rel = opts.releaseBaseUrl === undefined ? defaultModelReleaseBaseUrl() : opts.releaseBaseUrl;
-    this.releaseBaseUrl = rel ? rel.replace(/\/+$/, '') : null;
+    const rel = opts.releaseBaseUrl === undefined ? defaultModelReleaseBaseUrls() : opts.releaseBaseUrl;
+    const list = rel === null ? [] : typeof rel === 'string' ? [rel] : [...rel];
+    this.releaseBaseUrls = [...new Set(list.map((u) => u.trim().replace(/\/+$/, '')).filter((u) => u !== ''))];
   }
 
   /** Download sources for a profile, in the order they are tried. */
   private sourcesFor(profile: EmbeddingProfile): DownloadSource[] {
     const out: DownloadSource[] = [];
     const pinned = profile.source.kind === 'hub' && profile.source.files.every((f) => typeof f.sha256 === 'string' && f.sha256 !== '');
-    const release = this.releaseBaseUrl;
-    if (profile.builtin && pinned && release) {
-      out.push({
-        label: 'GitHub release',
-        url: (repo, revision, filePath) => `${release}/${modelReleaseAssetName(repo, revision, filePath)}`,
-      });
+    if (profile.builtin && pinned) {
+      for (const release of this.releaseBaseUrls) {
+        out.push({
+          label: 'GitHub release',
+          key: `release ${release}`,
+          url: (repo, revision, filePath) => `${release}/${modelReleaseAssetName(repo, revision, filePath)}`,
+        });
+      }
     }
     const hub = this.hubEndpoint;
     out.push({
       label: 'Hugging Face',
+      key: 'hub',
       url: (repo, revision, filePath) => `${hub}/${repo}/resolve/${encodeURIComponent(revision)}/${filePath}`,
     });
     return out;
@@ -382,7 +408,7 @@ export class ModelStore {
           let fetched = false;
           for (const source of sources) {
             const url = source.url(src.repo, src.revision, file.path);
-            const earlier = dead.get(source.label);
+            const earlier = dead.get(source.key);
             if (earlier !== undefined) {
               failures.push(`${source.label} (${url}): not tried, it failed an earlier file: ${earlier}`);
               continue;
@@ -397,7 +423,7 @@ export class ModelStore {
               }
             } catch (err) {
               const why = errMessage(err);
-              dead.set(source.label, why);
+              dead.set(source.key, why);
               failures.push(`${source.label} (${url}): ${why}`);
               if (sources.length === 1) throw new Error(why);
               continue;

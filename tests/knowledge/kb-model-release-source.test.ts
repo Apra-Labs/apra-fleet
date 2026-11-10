@@ -21,6 +21,7 @@ import {
 import {
   ModelStore,
   defaultModelReleaseBaseUrl,
+  defaultModelReleaseBaseUrls,
   type ModelDownloadFn,
 } from '../../src/services/knowledge/embedding/model-store.js';
 import { readTar, runKbModel } from '../../src/cli/kb-model-import.js';
@@ -67,7 +68,7 @@ let tmp: string;
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-model-rel-')); });
 afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
-const store = (download: ModelDownloadFn, releaseBaseUrl: string | null = RELEASE) =>
+const store = (download: ModelDownloadFn, releaseBaseUrl: string | readonly string[] | null = RELEASE) =>
   new ModelStore({ modelsDir: path.join(tmp, 'models'), download, hubEndpoint: HUB, releaseBaseUrl });
 
 describe('release asset names', () => {
@@ -85,6 +86,33 @@ describe('release asset names', () => {
     expect(defaultModelReleaseBaseUrl({ APRA_FLEET_MODEL_RELEASE_URL: 'http://127.0.0.1:1/x/' }, 'v0.4.5')).toBe('http://127.0.0.1:1/x');
     expect(defaultModelReleaseBaseUrl({ APRA_FLEET_MODEL_RELEASE_URL: 'off' }, 'v0.4.5')).toBeNull();
     expect(defaultModelReleaseBaseUrl({ APRA_FLEET_MODEL_RELEASE_URL: '' }, 'v0.4.5')).toBeNull();
+  });
+
+  it('a CI-built binary version (v<x.y.z>_<sha6>) tries the exact build tag, then the stable tag', () => {
+    const gh = 'https://github.com/Apra-Labs/apra-fleet/releases/download';
+    expect(defaultModelReleaseBaseUrls({}, 'v0.4.5_abc123')).toEqual([`${gh}/v0.4.5_abc123`, `${gh}/v0.4.5`]);
+    expect(defaultModelReleaseBaseUrls({}, 'v0.4.5')).toEqual([`${gh}/v0.4.5`]);
+    // Not a build-sea suffix: left alone, no guessed stable tag.
+    expect(defaultModelReleaseBaseUrls({}, 'v0.4.5_dev')).toEqual([`${gh}/v0.4.5_dev`]);
+    // The override is one URL and replaces both tags.
+    expect(defaultModelReleaseBaseUrls({ APRA_FLEET_MODEL_RELEASE_URL: 'http://127.0.0.1:1/x' }, 'v0.4.5_abc123')).toEqual(['http://127.0.0.1:1/x']);
+    expect(defaultModelReleaseBaseUrls({ APRA_FLEET_MODEL_RELEASE_URL: 'off' }, 'v0.4.5_abc123')).toEqual([]);
+  });
+
+  it('build-tag release missing: every file comes from the stable-tag release, Hugging Face never asked', async () => {
+    const PRE = 'http://release.test/download/v9.9.9_abc123';
+    const download = vi.fn<ModelDownloadFn>(async (url, dest) => {
+      if (url.startsWith(`${PRE}/`)) throw new Error('HTTP 404 Not Found');
+      const rel = fileOf(url);
+      if (!rel || !url.startsWith(`${RELEASE}/`)) throw new Error(`unexpected url ${url}`);
+      fs.writeFileSync(dest, bodies[rel]);
+    });
+    const state = await store(download, [PRE, RELEASE]).ensure({ kind: 'enabled', profile: profile() });
+    expect(state.state).toBe('ready');
+    const urls = download.mock.calls.map((c) => c[0]);
+    expect(urls.filter((u) => u.startsWith(`${PRE}/`)).length).toBe(1);
+    expect(urls.filter((u) => u.startsWith(`${RELEASE}/`)).length).toBe(3);
+    expect(urls.some((u) => u.startsWith(HUB))).toBe(false);
   });
 });
 
