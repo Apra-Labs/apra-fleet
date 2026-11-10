@@ -45,7 +45,7 @@ Usage:
   apra-fleet call --member <uuid> --list-tools                List the member session's tools
   apra-fleet uninstall                 Remove binary, hooks, and MCP registration
   apra-fleet secret --set <name>       Deliver a secret to a waiting request
-  apra-fleet secret --set <name> --persist [--expires-at <time>|none] -y   Store a secret from stdin
+  apra-fleet secret --set <name> --persist [--expires-at <time>|none] [--allow|--deny] [--members <list>|*] -y   Store a secret from stdin
   apra-fleet secret --list             List secrets
   apra-fleet secret --delete <name>    Delete a secret
   apra-fleet auth --oauth [--llm <provider>] <token>          Write OAuth token to provider credential file

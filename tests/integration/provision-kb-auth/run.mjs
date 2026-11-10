@@ -147,7 +147,8 @@ const pq = (s) => `'${String(s).replace(/'/g, "''")}'`;
 /** A command on the member through execute_command, built for its shell with absolute, quoted paths. */
 async function onMember(posix, powershell) {
   const r = await tool('execute_command', { member_name: args.member, command: m.posix ? posix : powershell, timeout_s: 90 });
-  return { code: r.body.exitCode ?? (r.isError ? 1 : 0), out: `${r.body.stdout ?? ''}${r.body.stderr ?? ''}`.trim() || r.text };
+  // No exit code in the result is not a success.
+  return { code: typeof r.body.exitCode === 'number' && !r.isError ? r.body.exitCode : null, out: `${r.body.stdout ?? ''}${r.body.stderr ?? ''}`.trim() || r.text };
 }
 
 async function provision(extra = {}) {
@@ -162,17 +163,24 @@ async function kbGet(pathname) {
   return res.json();
 }
 
-/** Staged token files in the member's home, and the post-commit hook's hash (or none). */
+/**
+ * Staged token files in the member's home, and the post-commit hook's hash (or
+ * none). Any probe that fails (a listing that cannot run, a work folder with no
+ * .git, a result without exit code 0, unparseable output) gives ok false, which
+ * the caller reports as FAIL: a failed probe never counts as nothing found.
+ */
 async function memberLeftovers() {
   const staged = await onMember(
-    `ls -a ${sq(m.home)} | grep -c '^\\.apra-fleet-kb-token-' || true`,
-    `@(Get-ChildItem -Force -LiteralPath ${pq(m.home)} -Filter '.apra-fleet-kb-token-*').Count`,
+    `l=$(ls -a ${sq(m.home)}) || exit 3; printf '%s\\n' "$l" | grep -c '^\\.apra-fleet-kb-token-'; exit 0`,
+    `try { @(Get-ChildItem -Force -LiteralPath ${pq(m.home)} -Filter '.apra-fleet-kb-token-*' -ErrorAction Stop).Count } catch { exit 3 }`,
   );
   const hook = await onMember(
-    `if [ -f ${sq(m.hook)} ]; then cksum < ${sq(m.hook)}; else echo none; fi`,
-    `if (Test-Path -LiteralPath ${pq(m.hook)}) { (Get-FileHash -LiteralPath ${pq(m.hook)}).Hash } else { 'none' }`,
+    `[ -d ${sq(m.gitDir)} ] || exit 3; if [ -f ${sq(m.hook)} ]; then cksum < ${sq(m.hook)} || exit 3; else echo none; fi`,
+    `if (-not (Test-Path -LiteralPath ${pq(m.gitDir)} -PathType Container)) { exit 3 }; try { if (Test-Path -LiteralPath ${pq(m.hook)}) { (Get-FileHash -LiteralPath ${pq(m.hook)} -ErrorAction Stop).Hash } else { 'none' } } catch { exit 3 }`,
   );
-  return { staged: Number.parseInt(staged.out.trim().split(/\s+/).pop(), 10), hook: hook.out.trim() };
+  const count = /^\d+$/.test(staged.out.trim()) ? Number(staged.out.trim()) : NaN;
+  const ok = staged.code === 0 && Number.isFinite(count) && hook.code === 0 && hook.out.trim() !== '';
+  return { ok, staged: count, hook: hook.out.trim(), detail: `listing exit ${staged.code}: ${staged.out.slice(0, 120)}; hook exit ${hook.code}: ${hook.out.slice(0, 120)}` };
 }
 
 async function main() {
@@ -216,6 +224,7 @@ async function main() {
   m.bin = join(m.home, '.apra-fleet', 'bin', d.os === 'windows' ? 'apra-fleet.exe' : 'apra-fleet');
   m.config = join(m.home, '.apra-fleet', 'data', 'knowledge', 'config.json');
   m.backup = `${m.config}.evidence-bak`;
+  m.gitDir = join(d.folder, '.git');
   m.hook = join(d.folder, '.git', 'hooks', 'post-commit');
   m.args = join(m.home, '.apra-fleet', `kb-evidence-args-${crypto.randomBytes(3).toString('hex')}.json`);
   info(`member install: ${(await onMember(`${sq(m.bin)} --version`, `& ${pq(m.bin)} --version`)).out.split('\n')[0]}`);
@@ -226,7 +235,7 @@ async function main() {
   m.hadConfig = b.out.includes('backed-up');
   check(b.code === 0, m.hadConfig ? `KB config copied to ${m.backup}` : 'no KB config on the member yet', `backup failed: ${b.out}`);
   m.before = await memberLeftovers();
-  info(`before: staged token files ${m.before.staged}, post-commit hook ${m.before.hook}`);
+  if (!check(m.before.ok, `before: staged token files ${m.before.staged}, post-commit hook ${m.before.hook}`, `the leftover probes failed before the run: ${m.before.detail}`)) return;
 
   step(4, `live secret ${secretName} on the orchestrator, fake helper ${helper}`);
   // node by bare name: the orchestrator's fleet server resolves it on its own PATH.
@@ -267,6 +276,7 @@ async function main() {
 
   step(8, 'nothing left behind on the member');
   const after = await memberLeftovers();
+  if (!check(after.ok, 'the leftover probes ran', `the leftover probes failed after the run: ${after.detail}`)) return;
   check(after.staged === m.before.staged, `staged token files: ${after.staged} (as before)`, `staged token files: ${m.before.staged} before, ${after.staged} after`);
   check(after.hook === m.before.hook, `post-commit hook unchanged (${after.hook})`, `post-commit hook changed: ${m.before.hook} -> ${after.hook}`);
 }

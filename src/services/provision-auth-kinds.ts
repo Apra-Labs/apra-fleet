@@ -37,7 +37,7 @@ const HANDLER_FAILURES = {
   'delivery-failed': 'the secret could not be delivered to the member',
   'member-unreachable': 'the member could not be reached or started; check it with member_detail',
   'relay-unsupported': 'a relay member has no channel that delivers a secret without a command line, so it cannot be provisioned; use a remote (SSH) member',
-  'secret-file-unavailable': 'the value could not be written to an owner-only file on the member over SFTP, the only way it is sent; enable the SFTP subsystem in the member sshd_config, then try again',
+  'secret-file-unavailable': 'could not write the token file on the member (SFTP unavailable, connection lost, or a disk or permission error in the member home); the token is sent only through that file. Check the member is reachable, its sshd has the SFTP subsystem, and its home is writable with free space, then try again',
   'install-too-old': 'the apra-fleet install on the member is missing or too old for this; run update_member {member_id, fleet_install: "auto"}, then try again',
   'not-member-install': 'the member runs a full apra-fleet install, not a member install, so the fleet does not manage it; replace it with update_member {member_id, fleet_install: "replace-full"} (or by hand, as update_member describes), then try again',
   'kb-not-configured': 'the KB config on the orchestrator does not take its token from this secret at this remote, and a local member shares that config, which this tool does not change; run kb_setup on the orchestrator with provider http, this remote and token {{secret.<the secret>}}',

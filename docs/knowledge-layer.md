@@ -743,7 +743,7 @@ orchestrator before anything is minted or sent.
      `apra-fleet secret --set NAME --persist --expires-at <time> --allow --members '*' -y`:
      its expiry (in UTC), policy `allow` and all members, whatever was stored under
      that name on the member before. The value is staged in an owner-only file over
-     SFTP (`secret-file-unavailable` if SFTP is off), piped in and removed in the
+     SFTP (`secret-file-unavailable` if SFTP is off, the connection drops, or the member home cannot be written), piped in and removed in the
      same command, never on a command line;
   4. runs `apra-fleet kb-setup --remote <url> --token-ref NAME` on the member, which
      points its KB at the secret unless it already does, and makes one KB call. It

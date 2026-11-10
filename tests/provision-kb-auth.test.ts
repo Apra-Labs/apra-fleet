@@ -392,8 +392,6 @@ describe('provision_kb_auth: review fixes', () => {
     const m = addRemote();
     await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE });
     expect(pushes()[0].text).toContain(`'--expires-at' '${expiryOf(1)}' '--allow'`);
-    const { parseExpiresAt } = await import('../src/cli/secret.js');
-    expect(parseExpiresAt(expiryOf(1))).toBe(expiryOf(1));
   });
 
   it('a relay member is refused before any mint, with a fixed reason', async () => {
@@ -405,13 +403,13 @@ describe('provision_kb_auth: review fixes', () => {
     expect(sent).toHaveLength(0);
   });
 
-  it('a member that cannot take the staged file (SFTP off) fails with a reason naming SFTP', async () => {
+  it('a staged-file write that fails has a reason naming SFTP, a lost connection and disk or permission errors', async () => {
     const s = live('nosftp');
     const m = addRemote();
     __setProvisionKbDeps({ ...fakeDeps, stage: async () => { throw new Error('sftp subsystem request failed'); } });
     const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE }));
     expect(err.structuredContent.reason).toBe('secret-file-unavailable');
-    expect(err.message).toContain('SFTP');
+    expect(err.message).toContain('SFTP unavailable, connection lost, or a disk or permission error');
     expect(err.message).not.toContain('subsystem request failed');
   });
 

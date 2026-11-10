@@ -104,6 +104,22 @@ describe('secret --set --expires-at (real CLI)', () => {
     expect(record()?.expiresAt).toBeUndefined();
   });
 
+  it('policy flags: --allow with --deny, --members with no value, and either without --persist are refused, storing nothing', async () => {
+    const cases: Array<[string[], string]> = [
+      [['--persist', '--allow', '--deny'], '--allow and --deny cannot be combined'],
+      [['--persist', '--members'], '--members needs a value'],
+      [['--persist', '--members', '--allow'], '--members needs a value'],
+      [['--allow'], 'need --persist'],
+      [['--members', '*'], 'need --persist'],
+    ];
+    for (const [flags, message] of cases) {
+      const r = await cli(['secret', '--set', NAME, ...flags, '-y'], `${TOKEN}\n`);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain(message);
+    }
+    expect(record()).toBeUndefined();
+  });
+
   it('a time without a zone, a past time, or no --persist is refused and stores nothing', async () => {
     for (const extra of [['--expires-at', '2099-01-01T00:00:00'], ['--expires-at', '2000-01-01T00:00:00Z']]) {
       const r = await setSecret(TOKEN, ...extra);
@@ -281,10 +297,13 @@ describe('kb-setup (real CLI)', () => {
 
   it('an expired secret is refused, also when the config already names it', async () => {
     const url = await startKb();
-    await setSecret(TOKEN, '--expires-at', new Date(Date.now() + 1500).toISOString());
+    const expiry = Date.now() + 4000;
+    // Stored first, so the refusal below is for an expired secret, not a missing one.
+    expect((await setSecret(TOKEN, '--expires-at', new Date(expiry).toISOString())).code).toBe(0);
+    expect(record()?.expiresAt).toBe(new Date(expiry).toISOString());
     fs.mkdirSync(path.dirname(kbConfigPath()), { recursive: true });
     fs.writeFileSync(kbConfigPath(), JSON.stringify({ provider: 'http', url, token_ref: `{{secret.${NAME}}}` }));
-    await new Promise((r) => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, Math.max(0, expiry - Date.now()) + 300));
     const r = await cli(['kb-setup', '--remote', url, '--token-ref', NAME]);
     expect(r.code).toBe(1);
     expect(lastJson(r)).toEqual({ error: 'refused' });

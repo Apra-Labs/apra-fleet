@@ -125,7 +125,9 @@ function osAndShell(agent: Agent): { targetOs: TargetOS; shell: ReturnType<typeo
  * exiting with the CLI's code. The value is only in the file. The record is plain
  * allow, all members, whatever was stored under the name on the member: policy
  * was applied on the orchestrator before the push. POSIX: a trap removes the
- * file if the shell exits early or is hung up on. Exported for tests.
+ * file when the shell exits, or on HUP, INT or TERM. A dropped SSH channel with
+ * no pty usually sends no signal at all, so the guard there is deliverKb
+ * removing the file over SFTP after a failed exec. Exported for tests.
  */
 export function buildPushSecretCommand(binPath: string, name: string, expiresAt: string | null, staged: string, targetOs: TargetOS, shell: ReturnType<typeof getAgentShell>): string {
   const args = ['secret', '--set', name, '--persist', '--expires-at', expiresAt ?? 'none', '--allow', '--members', '*', '-y'];
