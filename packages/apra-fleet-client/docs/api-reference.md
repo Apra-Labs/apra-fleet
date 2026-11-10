@@ -342,10 +342,8 @@ file is written without the key and the dispatch logs a WARN naming the cause.
 | `signal` | `AbortSignal?` | Cancels the client-side wait only; cannot cancel a job already accepted by the server. |
 
 Once a dispatch ran, the result's `structuredContent.toolErrors` (a
-`ToolErrorsReport`: `{available: true, sinceSeconds, total, entries}` or
-`{available: false, sinceSeconds, detail}`) lists the fleet tool calls that
-failed during it -- an FYI, never a failure of the dispatch. See execute_prompt
-in docs/mcp-tools.md.
+`ToolErrorsReport`) lists the fleet tool calls that failed during it; see
+execute_prompt in docs/mcp-tools.md.
 
 #### `executeCommand(options: ExecuteCommandOptions)`
 
@@ -445,10 +443,8 @@ refuses a session value (`persist: false`) for a bound name. A live secret's net
 
 Calls `query_errors` -- a member's recorded tool-call errors on the server in
 the last `since_seconds` seconds; a member session reads only its own member.
-Extract the JSON with `parseToolJson()`: a `QueryErrorsResult`
-`{member, since_seconds, total, entries}` of `ErrorEntry`
-`{at, member, source, tool, code, reason}`. Fields and registry bounds:
-`query_errors` in docs/mcp-tools.md. `QueryErrorsOptions`, `QueryErrorsResult`,
+Extract the JSON with `parseToolJson()`: a `QueryErrorsResult`. Fields and
+registry bounds: `query_errors` in docs/mcp-tools.md. `QueryErrorsOptions`, `QueryErrorsResult`,
 `ErrorEntry` and `ToolErrorsReport` are pinned against the server by
 `test/client-server-typedef-parity.test.mjs`.
 

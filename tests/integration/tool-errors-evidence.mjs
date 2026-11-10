@@ -41,6 +41,7 @@ const PROMPT = [
   'This is a test of error reporting. Do exactly this and nothing else:',
   'call the apra-fleet MCP tool kb_query once with the arguments',
   '{"query": "tool error evidence", "repo_path": "/no/such/folder"}.',
+  'Its schema says repo_path is removed; passing it anyway is the point of this test, so do pass it.',
   'The call is expected to fail. Do not retry it and do not call any other tool.',
   'Then reply with one line: the error code the call returned.',
 ].join('\n');

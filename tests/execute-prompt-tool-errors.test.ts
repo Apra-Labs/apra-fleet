@@ -147,12 +147,16 @@ describe('execute_prompt toolErrors', () => {
     expect(sc.toolErrors).toMatchObject({ available: false });
   });
 
-  it('no max_total_s left: the remote query is skipped, reported unavailable', async () => {
+  // The caller's deadline counts max_total_s, else timeout_s (deriveTimeoutMs).
+  it.each([
+    ['max_total_s', { timeout_s: 120, max_total_s: 43 }],
+    ['timeout_s (no max_total_s)', { timeout_s: 43 }],
+  ])('no %s left: the remote query is skipped, reported unavailable', async (_label, limits) => {
     const member = makeTestAgent({ friendlyName: 'te-budget', os: 'linux', fleetMcp: AVAILABLE });
     addAgent(member);
     stub(async () => { throw new Error('the query must not run'); });
 
-    const r = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 120, max_total_s: 43 });
+    const r = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, ...limits });
     const sc = structured(r);
     expect(sc.response).toBe('ok');
     expect(sc.toolErrors).toMatchObject({ available: false });

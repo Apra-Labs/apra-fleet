@@ -643,7 +643,7 @@ async function executePromptInteractive(
 
 /** Upper bound on the post-dispatch query_errors SSH call to a remote member. */
 export const TOOL_ERRORS_QUERY_TIMEOUT_MS = 20_000;
-/** Below this much max_total_s left, the remote query is skipped (reported unavailable). */
+/** Below this much of the call's budget left, the remote query is skipped (reported unavailable). */
 const TOOL_ERRORS_MIN_BUDGET_MS = 2_000;
 
 let errorQueryDeps: MemberErrorQueryDeps | null = null;
@@ -660,17 +660,22 @@ interface DispatchTrack { agent?: Agent }
  * The member's tool-call errors for the window this call ran, as an FYI on
  * the result. Never throws and never fails the dispatch: a remote query that
  * cannot run in time is reported as unavailable.
+ *
+ * `budgetS` is the call's budget as the caller's own deadline counts it
+ * (max_total_s, else timeout_s -- the client derives its request timeout
+ * from the same field, plus a grace), so the query never pushes a finished
+ * dispatch past the caller's deadline.
  */
-async function toolErrorsAfterDispatch(agent: Agent, startedAt: number, maxTotalS: number | undefined, signal: AbortSignal | undefined): Promise<ToolErrorsReport> {
+async function toolErrorsAfterDispatch(agent: Agent, startedAt: number, budgetS: number | undefined, signal: AbortSignal | undefined): Promise<ToolErrorsReport> {
   const elapsedMs = Date.now() - startedAt;
   const sinceSeconds = Math.max(1, Math.ceil(elapsedMs / 1000));
   try {
     let timeoutMs = TOOL_ERRORS_QUERY_TIMEOUT_MS;
     if (agent.agentType !== 'local') {
       if (signal?.aborted) return { available: false, sinceSeconds, detail: 'the call was cancelled before the errors were read' };
-      if (maxTotalS !== undefined) {
-        const left = maxTotalS * 1000 - elapsedMs;
-        if (left < TOOL_ERRORS_MIN_BUDGET_MS) return { available: false, sinceSeconds, detail: 'max_total_s left no time to read the member errors' };
+      if (budgetS !== undefined) {
+        const left = budgetS * 1000 - elapsedMs;
+        if (left < TOOL_ERRORS_MIN_BUDGET_MS) return { available: false, sinceSeconds, detail: 'the call\'s time budget left no time to read the member errors' };
         timeoutMs = Math.min(timeoutMs, left);
       }
     }
@@ -688,7 +693,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // structuredContent: adding structuredContent where there was none would
   // change what MCP callers read.
   if (!track.agent || typeof result === 'string' || !result.structuredContent) return result;
-  const toolErrors = await toolErrorsAfterDispatch(track.agent, startedAt, input.max_total_s, extra?.signal);
+  const toolErrors = await toolErrorsAfterDispatch(track.agent, startedAt, input.max_total_s ?? input.timeout_s, extra?.signal);
   return { ...result, structuredContent: { ...result.structuredContent, toolErrors } };
 }
 
