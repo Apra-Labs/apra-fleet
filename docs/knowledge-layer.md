@@ -1107,6 +1107,47 @@ background embedding off for the process (used by sandboxes and the test
 suite) without writing a config file. Changing the model re-embeds every entry
 in the background; queries only ever compare vectors of the active model.
 
+#### Turning embeddings off, switching, and download resilience
+
+- **Off and switch at runtime.** `kb_setup` with `embedding_model` (or
+  `apra-fleet kb embedding [<name>|none]`) validates the value strictly before
+  writing anything and merges it into the config, keeping other keys. A running
+  server notices the config file change (stat signature, checked in
+  `getEmbedder`) and swaps embedders live: the new one is installed before the
+  old one is retired, and the embed queue re-fetches the embedder if its
+  current one was retired. A malformed config file keeps the current model
+  rather than silently changing it.
+- **Loud failures.** One line giving state, reason and fix is surfaced for
+  downloading, failed and deliberately-off states: in `fleet_status` (compact
+  and JSON, including the zero-member short form, as `kbHealth.embedding`) and
+  as `embedding_warning` in `kb_session_prime`. A healthy embedder adds
+  nothing. Note: the off-state warning repeats on every session prime.
+- **Download path.** The fetch honours `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`
+  (undici `EnvHttpProxyAgent`), has a per-source stall watchdog (no bytes or
+  file growth), and resumes with HTTP Range (handling 200, 416 and a
+  mismatched 206 safely) inside a pid-locked `.partial` folder. sha256
+  verification and the atomic rename remain the only way a model becomes ready.
+  A partial file left by a failed source may be resumed by the next source.
+- **Sources.** In order: the apra-fleet release asset for the exact build tag,
+  the stable release tag, then Hugging Face (`kbmodel-*` assets are attached by
+  the CI release and prerelease jobs). `apra-fleet kb model import
+  <folder|archive>` installs a model offline; the tar reader writes only
+  profile paths (no path traversal).
+
+#### Relevance cutoff and keyword weights
+
+- `kb_query` accepts an opt-in `relevant_only`. A hit is kept when its
+  normalized bm25 (bm25 / ln(docs)) is at least 2.5 and at least half of the
+  best hit's, or when an `error_signatures` match exists. The engine's push
+  path uses it and returns nothing, rather than falling back to weaker rows,
+  when the KB answered. Default `kb_query` behaviour is unchanged (snapshot
+  tested for keyword and hybrid). The relevance labels behind the thresholds
+  were judged by the implementer, not independently; numbers are in
+  `kb-recall-measurements.md`.
+- The keyword ranking weights (`KW_WEIGHTS`) were retuned after the
+  source_files/identifier parts were found to be over-weighted; keyword MRR on
+  the bare bible is guarded by a recall-eval test.
+
 #### Hybrid search invariants and known limits
 
 - **Member read defaults.** A member session that omits `limit` gets 6 slim
