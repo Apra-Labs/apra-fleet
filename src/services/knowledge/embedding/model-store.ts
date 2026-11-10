@@ -406,37 +406,46 @@ export class ModelStore {
         if (!done) {
           const failures: string[] = [];
           let fetched = false;
-          for (const source of sources) {
+          nextSource: for (const source of sources) {
             const url = source.url(src.repo, src.revision, file.path);
             const earlier = dead.get(source.key);
             if (earlier !== undefined) {
               failures.push(`${source.label} (${url}): not tried, it failed an earlier file: ${earlier}`);
               continue;
             }
-            try {
-              this.downloading.set(dir, (this.downloading.get(dir) ?? 0) + 1);
+            // A resumed file joins bytes from an earlier attempt (or an earlier
+            // source) with this source's rest; a bad prefix would fail sha256
+            // on every resume, so a mismatch after a resume retries this source
+            // once from byte 0.
+            let resumed = sizeOf(target) > 0;
+            for (;;) {
               try {
-                await this.downloadWatched(url, target);
-              } finally {
-                const left = (this.downloading.get(dir) ?? 1) - 1;
-                if (left > 0) this.downloading.set(dir, left); else this.downloading.delete(dir);
-              }
-            } catch (err) {
-              const why = errMessage(err);
-              dead.set(source.key, why);
-              failures.push(`${source.label} (${url}): ${why}`);
-              if (sources.length === 1) throw new Error(why);
-              continue;
-            }
-            if (file.sha256) {
-              const actual = await sha256OfFile(target);
-              if (actual !== file.sha256) {
-                fs.rmSync(target, { force: true });
-                const why = `sha256 mismatch for ${src.repo}@${src.revision}/${file.path}: expected ${file.sha256}, got ${actual}; file removed`;
-                if (sources.length === 1) return { state: 'failed', profile, reason: why };
+                this.downloading.set(dir, (this.downloading.get(dir) ?? 0) + 1);
+                try {
+                  await this.downloadWatched(url, target);
+                } finally {
+                  const left = (this.downloading.get(dir) ?? 1) - 1;
+                  if (left > 0) this.downloading.set(dir, left); else this.downloading.delete(dir);
+                }
+              } catch (err) {
+                const why = errMessage(err);
+                dead.set(source.key, why);
                 failures.push(`${source.label} (${url}): ${why}`);
-                continue;
+                if (sources.length === 1) throw new Error(why);
+                continue nextSource;
               }
+              if (file.sha256) {
+                const actual = await sha256OfFile(target);
+                if (actual !== file.sha256) {
+                  fs.rmSync(target, { force: true });
+                  if (resumed) { resumed = false; continue; }
+                  const why = `sha256 mismatch for ${src.repo}@${src.revision}/${file.path}: expected ${file.sha256}, got ${actual}; file removed`;
+                  if (sources.length === 1) return { state: 'failed', profile, reason: why };
+                  failures.push(`${source.label} (${url}): ${why}`);
+                  continue nextSource;
+                }
+              }
+              break;
             }
             fetched = true;
             break;

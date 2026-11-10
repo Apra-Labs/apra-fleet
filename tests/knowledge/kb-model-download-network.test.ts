@@ -280,13 +280,32 @@ describe('resume', () => {
     expect(fs.readdirSync(owner())).toEqual([`net-model@${REV}`]);
   });
 
-  it('a resumed file that fails sha256 leaves the model not ready, no model folder, and is discarded', async () => {
+  it('a resumed file that fails sha256 is retried once from byte 0 and ends ready', async () => {
     const tampered = 'X'.repeat(bodies[ONNX].length);
     const server = await modelServer((file, body, req, res, n) => {
       if (file !== ONNX) return false;
       if (n === 1) { dropMidway(res, body, 700); return true; }
       if (n === 2) { serveRange(req, res, tampered); return true; } // wrong tail bytes
-      return false; // third attempt: the true file, whole
+      return false; // the retry from byte 0: the true file, whole
+    });
+    const profile = profileFor(bodies);
+    expect((await store(server.port).ensure({ kind: 'enabled', profile })).state).toBe('failed');
+    const partial = fs.statSync(resumeFile(ONNX)).size;
+
+    const second = await store(server.port).ensure({ kind: 'enabled', profile });
+    expect(second).toMatchObject({ state: 'ready', dir: modelDir() });
+    expect(server.hits.filter((h) => h.file === ONNX).map((h) => h.range)).toEqual([undefined, `bytes=${partial}-`, undefined]);
+    expectModelFiles();
+  });
+
+  it('a file that still fails sha256 after the retry from byte 0 leaves the model not ready and is discarded', async () => {
+    const tampered = 'X'.repeat(bodies[ONNX].length);
+    const server = await modelServer((file, body, req, res, n) => {
+      if (file !== ONNX) return false;
+      if (n === 1) { dropMidway(res, body, 700); return true; }
+      if (n === 2) { serveRange(req, res, tampered); return true; } // wrong tail bytes
+      if (n === 3) { res.writeHead(200, { 'content-length': String(tampered.length) }); res.end(tampered); return true; } // wrong whole file
+      return false; // a later attempt: the true file, whole
     });
     const profile = profileFor(bodies);
     expect((await store(server.port).ensure({ kind: 'enabled', profile })).state).toBe('failed');
@@ -297,12 +316,12 @@ describe('resume', () => {
     expect(second.state === 'failed' && second.reason).toMatch(/sha256 mismatch for .*onnx\/model_quantized\.onnx/);
     expect(fs.existsSync(modelDir())).toBe(false);
     expect(fs.existsSync(resumeFile(ONNX))).toBe(false);
-    expect(server.hits.filter((h) => h.file === ONNX).map((h) => h.range)).toEqual([undefined, `bytes=${partial}-`]);
+    expect(server.hits.filter((h) => h.file === ONNX).map((h) => h.range)).toEqual([undefined, `bytes=${partial}-`, undefined]);
 
     // The discarded file is fetched afresh (no Range) next time.
     const third = await store(server.port).ensure({ kind: 'enabled', profile });
     expect(third).toMatchObject({ state: 'ready', dir: modelDir() });
-    expect(server.hits.filter((h) => h.file === ONNX).map((h) => h.range)[2]).toBeUndefined();
+    expect(server.hits.filter((h) => h.file === ONNX).map((h) => h.range)[3]).toBeUndefined();
     expectModelFiles();
   });
 });

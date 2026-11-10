@@ -9,6 +9,9 @@
  * 2. Both unreachable: failed; the reason names both sources.
  * 3. The release serves a file with a wrong hash, Hugging Face the right one:
  *    falls through and ends ready.
+ * 3b. The release writes WRONG bytes for a file and drops the connection;
+ *    Hugging Face honours Range. The joined (resumed) file fails sha256, so
+ *    the store retries Hugging Face once from byte 0: ready.
  * 4. kb model import of a folder: placed; ensure() is then ready with zero
  *    requests to either server.
  * 5. Same with a .tar.gz archive.
@@ -65,6 +68,27 @@ async function serve(handler: (p: string) => [number, string]): Promise<Server> 
     const [status, body] = handler(p);
     res.writeHead(status, { 'content-type': 'application/octet-stream', 'content-length': String(Buffer.byteLength(body)) });
     res.end(body);
+  });
+  server.on('connection', (s) => { sockets.add(s); s.on('close', () => sockets.delete(s)); });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  const s: Server = {
+    url: `http://127.0.0.1:${port}`,
+    log,
+    close: () => new Promise<void>((r) => { for (const k of sockets) k.destroy(); server.close(() => r()); }),
+  };
+  servers.push(s);
+  return s;
+}
+
+/** Start a real server with a raw request handler; every request is logged as "<path> range=<Range header>". */
+async function serveRaw(handler: (p: string, req: http.IncomingMessage, res: http.ServerResponse) => void): Promise<Server> {
+  const log: string[] = [];
+  const sockets = new Set<net.Socket>();
+  const server = http.createServer((req, res) => {
+    const p = decodeURIComponent((req.url ?? '').split('?')[0]);
+    log.push(`${p} range=${req.headers.range ?? ''}`);
+    handler(p, req, res);
   });
   server.on('connection', (s) => { sockets.add(s); s.on('close', () => sockets.delete(s)); });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -154,6 +178,41 @@ describe('release source with real servers', () => {
     if (state.state === 'ready') {
       expect(fs.readFileSync(path.join(state.dir, 'tokenizer.json'), 'utf-8')).toBe(bodies['tokenizer.json']);
     }
+  });
+
+  it('3b. release writes a bad prefix and drops, Hugging Face honours Range: retried from byte 0, ready', async () => {
+    const onnx = 'onnx/model_quantized.onnx';
+    const full = bodies[onnx];
+    const release = await serveRaw((p, _req, res) => {
+      for (const [f, b] of Object.entries(bodies)) {
+        if (p !== assetPath(f)) continue;
+        if (f !== onnx) { res.writeHead(200, { 'content-length': String(b.length) }); res.end(b); return; }
+        // Wrong bytes, then the connection drops before the file is complete.
+        res.writeHead(200, { 'content-length': String(full.length) });
+        res.write('X'.repeat(500));
+        setTimeout(() => res.socket?.destroy(), 100);
+        return;
+      }
+      res.writeHead(404); res.end('Not Found');
+    });
+    const hub = await serveRaw((p, req, res) => {
+      if (p !== hubPath(onnx)) { res.writeHead(404); res.end('Not Found'); return; }
+      const m = /^bytes=(\d+)-$/.exec(req.headers.range ?? '');
+      const start = m ? Number(m[1]) : 0;
+      if (start > 0) {
+        const rest = full.slice(start);
+        res.writeHead(206, { 'content-length': String(rest.length), 'content-range': `bytes ${start}-${full.length - 1}/${full.length}` });
+        res.end(rest);
+        return;
+      }
+      res.writeHead(200, { 'content-length': String(full.length) });
+      res.end(full);
+    });
+    const state = await store(release.url, hub.url).ensure(choice);
+    expect(state.state === 'failed' ? state.reason : state.state).toBe('ready');
+    // First a resume of the bad prefix, then the retry from byte 0.
+    expect(hub.log).toEqual([`${hubPath(onnx)} range=bytes=500-`, `${hubPath(onnx)} range=`]);
+    if (state.state === 'ready') expect(fs.readFileSync(path.join(state.dir, ...onnx.split('/')), 'utf-8')).toBe(full);
   });
 });
 
