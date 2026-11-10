@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { parse as parseYaml } from 'yaml';
 import {
@@ -105,19 +106,21 @@ describe('ci.yml model fetch is non-fatal', () => {
   async function closedPort(): Promise<number> {
     const srv = net.createServer();
     await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
-    const port = (srv.address() as net.AddressInfo).port;
+    const port = (srv.address() as AddressInfo).port;
     await new Promise<void>((r) => srv.close(() => r()));
     return port;
   }
 
-  // The step's own shell text, run by bash as the runner would (POSIX only:
-  // the release and prerelease jobs run on Linux).
-  it.skipIf(process.platform === 'win32').each(['release', 'prerelease'])(
+  // The step's own shell text, run by bash as the runner would. On Windows a
+  // bare 'bash' can resolve to WSL's System32 bash, so Git's bash is named
+  // explicitly there (skipped when it is not installed).
+  const BASH = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash';
+  it.skipIf(process.platform === 'win32' && !fs.existsSync(BASH)).each(['release', 'prerelease'])(
     '%s job: Hugging Face unreachable -> the step succeeds, warns, and leaves no kbmodel-* file',
     async (job) => {
       const step = doc.jobs[job].steps.find((s) => (s.run ?? '').includes('scripts/model-release-assets.mjs'));
       expect(step?.run).toBeDefined();
-      const out = /--out (\S+)/.exec(step!.run!)?.[1] ?? '';
+      const out = /--out ([\w-]+)/.exec(step!.run!)?.[1] ?? '';
       expect(out).not.toBe('');
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-model-ci-step-'));
       try {
@@ -125,7 +128,7 @@ describe('ci.yml model fetch is non-fatal', () => {
         fs.mkdirSync(path.join(tmp, out), { recursive: true });
         fs.writeFileSync(path.join(tmp, out, 'kbmodel-stale'), 'x');
         const script = step!.run!.replaceAll('scripts/model-release-assets.mjs', JSON.stringify(SCRIPT));
-        const res = spawnSync('bash', ['-e', '-c', script], {
+        const res = spawnSync(BASH,['-e', '-c', script], {
           cwd: tmp,
           encoding: 'utf-8',
           env: { ...process.env, HF_ENDPOINT: `http://127.0.0.1:${await closedPort()}` },
