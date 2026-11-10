@@ -66,6 +66,11 @@ export interface EmbedderLike {
   warmUp?(): void;
   /** Subscribe to successful loads (including retries); returns an unsubscribe. Optional. */
   onReady?(cb: () => void): () => void;
+  /**
+   * True once the embedder was replaced by a model switch (it embeds nothing
+   * any more). A run holding it fetches the current embedder again. Optional.
+   */
+  readonly retired?: boolean;
 }
 
 /** Resolves the active embedder at run time (so a swapped process embedder is seen). */
@@ -165,6 +170,14 @@ export class EmbedQueue {
   private watchReady(emb: EmbedderLike): void {
     if (typeof emb.onReady !== 'function' || this.readySubs.has(emb) || this.closed) return;
     this.readySubs.set(emb, emb.onReady(() => this.kick()));
+  }
+
+  /** Forget a retired embedder's onReady subscription. */
+  private watchReadyDrop(emb: EmbedderLike): void {
+    const unsubscribe = this.readySubs.get(emb);
+    if (!unsubscribe) return;
+    unsubscribe();
+    this.readySubs.delete(emb);
   }
 
   /** Schedule a run off the current call stack. Cheap, idempotent, never throws. */
@@ -407,6 +420,9 @@ export class EmbedQueue {
       if (this.closed || this.opts.getDb() === null) return 'closed';
       const emb = this.source?.() ?? null;
       if (!emb) return 'unusable';
+      for (const seen of [...this.readySubs.keys()]) {
+        if (seen !== emb && seen.retired === true) this.watchReadyDrop(seen);
+      }
       const state = emb.state.state;
       if (state === 'disabled' || emb.modelId === null || emb.revision === null) {
         this.notice('info', 'disabled', 'embedding is disabled (embedding.model none): KB entries are not embedded; keyword and anchor search serve');
@@ -449,6 +465,12 @@ export class EmbedQueue {
       const texts = items.flatMap(i => i.inputs.map(x => x.embedText));
       const vectors = await active.embedDocuments(texts);
       if (this.closed || this.opts.getDb() === null) return 'closed';
+      if (!vectors && active.retired === true) {
+        // The model was switched under this batch: nothing is lost (the
+        // entries are still pending), so embed them with the current embedder.
+        this.watchReadyDrop(active);
+        continue;
+      }
       if (!vectors || vectors.length !== texts.length) {
         const after = active.state;
         if (after.state === 'failed') {

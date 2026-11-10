@@ -225,3 +225,32 @@ describe('background embedding', () => {
     }
   });
 });
+
+describe('model switch under a running batch', () => {
+  it('a batch held by an embedder retired by a switch is re-embedded with the current one, nothing lost', async () => {
+    // The production source is getEmbedder, which a model switch repoints;
+    // the embedder replaced mid-batch is retired and resolves null.
+    class RetiringFake extends FakeEmbedder {
+      retired = false;
+      override async embedDocuments(texts: string[]): Promise<Float32Array[] | null> {
+        this.calls.push(texts);
+        this.retired = true;
+        current = b;
+        return null;
+      }
+    }
+    const a = new RetiringFake('acme/model-a');
+    const b = new FakeEmbedder('acme/model-b');
+    let current: FakeEmbedder = a;
+    provider.attachEmbedder(() => current);
+    const e1 = await capture({ title: 'Quasar cache eviction', summary: 'quasar cache evicts early', symbols: ['QuasarCache'] });
+    expect(await provider.waitForEmbeddings(5000)).toBe(true);
+    expect(a.calls.length).toBeGreaterThan(0);
+    expect(b.calls.length).toBeGreaterThan(0);
+    const vecs = provider.vectorStore.entryVectors(e1.id);
+    expect(vecs.length).toBeGreaterThan(0);
+    expect(vecs.every(v => v.modelId === 'acme/model-b')).toBe(true);
+    expect(provider.vectorIndexStatus().pending).toBe(0);
+    expect(logs.some(l => /embedding a batch of .* failed/.test(l))).toBe(false);
+  });
+});

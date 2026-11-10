@@ -860,6 +860,15 @@ served when it registers its tools; it MUST NOT change a MEMBER session's tool
 list, and an unknown `custom` tool name MUST be refused with nothing written.
 It is a usability control, not a security boundary.
 
+`kb_setup` MAY also set the embedding model for semantic search
+(`embedding_model`: `none`, a built-in model name, or a custom-model object)
+as `embedding.model` in that global config. A value the server cannot resolve
+MUST be refused with the config file left unchanged; a valid one is merged in
+(every other key kept) and the running server MUST switch to it without a
+restart. `none` turns semantic search off: reads keep serving keyword and
+anchor results and load no model. Vectors stay keyed by model id, revision
+and dimensions, so a switch never mixes vectors of two models.
+
 **THE PROOF.** `src/services/knowledge/kb-self.ts` owns the resolution:
 `resolveSelfAnchor()` reads the session member id (`getSessionMemberId()`,
 `src/services/tool-scope.ts`), looks the member up in the registry and

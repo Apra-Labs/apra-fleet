@@ -11,6 +11,12 @@ import { lookupServerSecretMeta } from '../services/credential-store.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { resolveKbAnchor, KbSelfError, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { KB_TOOL_PROFILE_NAMES, makeKbToolProfile, describeKbToolProfile, type KbToolProfile } from '../services/kb-tool-profile.js';
+import {
+  BUILTIN_EMBEDDING_PROFILES,
+  resolveEmbeddingModel,
+  type EmbeddingModelChoice,
+} from '../services/knowledge/embedding/profiles.js';
+import { switchEmbedder } from '../services/knowledge/embedding/embedder.js';
 
 export const kbSetupSchema = z.object({
   provider: z.enum(['sqlite', 'http']).optional()
@@ -25,6 +31,8 @@ export const kbSetupSchema = z.object({
     .describe('Install-wide KB tool profile for interactive (non-member) sessions: full (every kb_* tool, the default), developer (kb_session_prime, kb_query, kb_context, kb_capture, kb_feedback) or custom (the kb_* names in tool_profile_tools). Member sessions and sprint roles are unaffected. Takes effect when a session reconnects. A usability control, not a security boundary; developer hides kb_setup, so switch back with the CLI: apra-fleet kb profile full. Can be set alone, without provider/remote/token.'),
   tool_profile_tools: z.array(z.string()).optional()
     .describe('The registered kb_* tool names the custom tool_profile serves (required with tool_profile custom, not allowed otherwise). An unknown name is refused and nothing is written.'),
+  embedding_model: z.union([z.string(), z.record(z.string(), z.unknown())]).optional()
+    .describe('Embedding model for KB semantic search: "none" (semantic search off; keyword and anchor search keep serving), a built-in model name (' + Object.keys(BUILTIN_EMBEDDING_PROFILES).join(', ') + '), or a custom-model object ({id, revision} for a Hugging Face model pinned to a full commit sha, or {path} for a local folder; optional pooling, normalize, query_prefix, doc_prefix, dtype, dims, token_limit, semantic_floor). Takes effect on the running server at once, no restart. A malformed value is refused and nothing is written. Can be set alone, without provider/remote/token.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
   // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
   ...KB_REMOVED_SCOPE_KEYS_SHAPE,
@@ -132,6 +140,61 @@ export function writeKbToolProfile(profile: KbToolProfile): { steps: string[] } 
   applyToolProfile(config, profile);
   writeConfig(config);
   return { steps: [toolProfileStep(profile), 'Wrote KB config to ' + KB_CONFIG_PATH] };
+}
+
+/**
+ * Validate an embedding.model value (the kb_setup embedding_model input or the
+ * `apra-fleet kb embedding` argument) and resolve it, or throw an Error saying
+ * what is wrong. Uses the same resolver the server reads the config with, but
+ * strictly: where that resolver warns and falls back to the default model,
+ * this refuses, so a malformed value is never written.
+ */
+export function checkEmbeddingModel(raw: unknown): EmbeddingModelChoice {
+  if (raw === undefined) throw new Error('embedding_model needs a value: "none", a built-in model name or a custom-model object');
+  const problems: string[] = [];
+  const choice = resolveEmbeddingModel(raw, (m) => problems.push(m));
+  if (problems.length > 0) {
+    const reason = problems[0].replace(/; using the default [^;]*$/, '');
+    throw new Error(`embedding_model is not valid: ${reason}`);
+  }
+  return choice;
+}
+
+/** A short human description of a resolved embedding choice. */
+export function describeEmbeddingChoice(choice: EmbeddingModelChoice): string {
+  if (choice.kind === 'disabled') return 'none (semantic search off; keyword and anchor search serve)';
+  const p = choice.profile;
+  return p.builtin ? p.name : `custom model ${p.modelId}@${p.revision}`;
+}
+
+/** Write an embedding.model value into a config object, keeping other embedding.* keys. */
+function applyEmbeddingModel(config: KbConfigFile, raw: unknown): void {
+  const prev = config.embedding;
+  const keep = prev !== null && typeof prev === 'object' && !Array.isArray(prev) ? prev : {};
+  config.embedding = { ...keep, model: raw };
+}
+
+/** The step line reporting an embedding model change. */
+function embeddingModelStep(choice: EmbeddingModelChoice, switched: boolean): string {
+  return `Set KB embedding model to ${describeEmbeddingChoice(choice)}; ` +
+    (switched ? 'the running server switched to it now' : 'takes effect on the next KB search, no restart needed');
+}
+
+/**
+ * Set embedding.model in the KB config, leaving every other key as it was,
+ * then switch this process's embedder to it (no restart). Shared by kb_setup
+ * callers that only change the model and the `apra-fleet kb embedding` CLI
+ * verb. Validates first: a malformed value throws and nothing is written.
+ * Throws KbConfigUnreadableError, writing nothing, when the existing file
+ * cannot be parsed (a rewrite would lose the url and token it holds).
+ */
+export async function writeKbEmbeddingModel(raw: unknown): Promise<{ steps: string[]; choice: EmbeddingModelChoice }> {
+  const choice = checkEmbeddingModel(raw);
+  const config = readKbConfigForMerge();
+  applyEmbeddingModel(config, raw);
+  writeConfig(config);
+  const switched = await switchEmbedder(choice);
+  return { steps: [embeddingModelStep(choice, switched), 'Wrote KB config to ' + KB_CONFIG_PATH], choice };
 }
 
 interface TokenRef {
@@ -279,6 +342,14 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<s
   // hook and leaves any existing config untouched.
   checkRequestTimeout(input.request_timeout_ms);
   const toolProfile = checkToolProfile(input);
+  let embeddingChoice: EmbeddingModelChoice | null = null;
+  if (input.embedding_model !== undefined) {
+    try {
+      embeddingChoice = checkEmbeddingModel(input.embedding_model);
+    } catch (err) {
+      throw new Error(`kb_setup: ${(err as Error).message}`);
+    }
+  }
   const warnings = input.remote ? checkRemoteUrl(input.remote) : [];
   for (const warning of warnings) {
     logWarn('kb_setup', warning);
@@ -314,7 +385,13 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<s
     applyToolProfile(config, toolProfile);
     steps.push(toolProfileStep(toolProfile));
   }
+  if (embeddingChoice) applyEmbeddingModel(config, input.embedding_model);
   writeConfig(config);
+  if (embeddingChoice) {
+    // After the write, so a server that has not built its embedder yet reads
+    // the new value; a built one is swapped here, without a restart.
+    steps.push(embeddingModelStep(embeddingChoice, await switchEmbedder(embeddingChoice)));
+  }
   steps.push('Wrote KB config to ' + KB_CONFIG_PATH);
 
   return JSON.stringify({ success: true, steps, warnings });

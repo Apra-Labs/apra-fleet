@@ -306,7 +306,9 @@
 /**
  * Local KB embedding model state, `kbHealth.embedding` in fleet_status json
  * output (one compact `kb embedding:` line in compact output). This host
- * only; reading it never loads or downloads a model.
+ * only; reading it never loads or downloads a model. Set the model with the
+ * kb_setup input embedding_model ("none", a built-in model name or a
+ * custom-model object); the running server switches without a restart.
  * @typedef {Object} FleetStatusKbEmbedding
  * @property {"idle" | "loading" | "ready" | "disabled" | "failed"} state - idle: configured, downloads and loads on first use; disabled: embedding.model none; failed: semantic search off, keyword and anchor search remain
  * @property {string} [modelId] - Model repo id or local folder (absent when disabled)

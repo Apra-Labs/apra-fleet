@@ -121,6 +121,8 @@ export class Embedder {
   private readonly readyListeners = new Set<() => void>();
   /** Query text -> vector (or the in-flight embedding), oldest first. See embedQuery. */
   private readonly queryCache = new Map<string, Promise<Float32Array | null>>();
+  /** Set by retire(): replaced by a model switch, never loads again. */
+  private retiredFlag = false;
 
   constructor(opts: EmbedderOptions) {
     this.choice = opts.choice;
@@ -145,6 +147,12 @@ export class Embedder {
   /** Vector size: the loaded model's, else the profile's (undefined for a not-yet-loaded custom model). */
   get dims(): number | undefined { return this.runtime?.dims ?? this.profile?.dims; }
   get tokenLimit(): number | null { return this.profile?.tokenLimit ?? null; }
+  /**
+   * True once retire() ran: this embedder was replaced by a model switch.
+   * Embed calls resolve to null and nothing loads; a caller that still holds
+   * it (an embed queue mid-batch) should fetch the current one again.
+   */
+  get retired(): boolean { return this.retiredFlag; }
 
   /**
    * Start loading the model in the background if nothing has started it yet
@@ -152,6 +160,7 @@ export class Embedder {
    * ready, or failed (a failed load retries on its own timer).
    */
   warmUp(): void {
+    if (this.retiredFlag) return;
     if (this.choice.kind !== 'enabled' || this.current.state !== 'idle') return;
     void this.ensureLoaded();
   }
@@ -237,6 +246,7 @@ export class Embedder {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
+      if (this.retiredFlag) return;
       if (this.current.state !== 'failed' || this.runtime || this.loading) return;
       this.loading = this.load(profile);
     }, delay);
@@ -263,7 +273,20 @@ export class Embedder {
     try { await runtime?.close?.(); } catch { /* shutting down */ }
   }
 
+  /**
+   * Stop this embedder for good: it was replaced by a model switch. Releases
+   * the runtime like close(), drops onReady listeners, and from now on every
+   * embed call resolves to null without loading anything. Never throws.
+   */
+  async retire(): Promise<void> {
+    this.retiredFlag = true;
+    this.readyListeners.clear();
+    this.queryCache.clear();
+    await this.close();
+  }
+
   private ensureLoaded(): Promise<EmbeddingRuntime | null> {
+    if (this.retiredFlag) return Promise.resolve(null);
     if (this.runtime) return Promise.resolve(this.runtime);
     if (this.choice.kind === 'disabled' || this.current.state === 'failed') return Promise.resolve(null);
     if (!this.loading) this.loading = this.load(this.choice.profile);
@@ -278,6 +301,13 @@ export class Embedder {
       const stored = await this.store.ensure({ kind: 'enabled', profile });
       if (stored.state === 'ready') {
         const runtime = await this.runtimeFactory(profile, stored.dir);
+        if (this.retiredFlag) {
+          // Replaced while loading (a retire() that timed out waiting for this
+          // load): never keep a worker alive for a model nobody uses.
+          this.loading = null;
+          try { await runtime.close?.(); } catch { /* best effort */ }
+          return null;
+        }
         this.runtime = runtime;
         this.current = { state: 'ready', ...ids, dims: runtime.dims };
         this.loading = null;
@@ -308,14 +338,57 @@ export class Embedder {
 // ---------------------------------------------------------------------------
 
 let shared: Embedder | null = null;
+/** Identity of the choice `shared` was built from (see choiceKey). */
+let sharedKey: string | null = null;
+
+/**
+ * A stable identity for a resolved embedding choice: 'disabled', or the whole
+ * profile as JSON (two custom objects naming the same model with different
+ * prefixes or pooling are different choices).
+ */
+export function embeddingChoiceKey(choice: EmbeddingModelChoice): string {
+  return choice.kind === 'disabled' ? 'disabled' : JSON.stringify(choice.profile);
+}
 
 /** The process embedder for this host's KB config; constructing it loads nothing. */
 export function getEmbedder(): Embedder {
   if (!shared) {
     const choice = resolveEmbeddingModel(readEmbeddingModelSetting(), (m) => logWarn('kb_config', m));
     shared = new Embedder({ choice });
+    sharedKey = embeddingChoiceKey(choice);
   }
   return shared;
+}
+
+/**
+ * Switch the process embedder to `choice` without a restart. The new embedder
+ * is installed BEFORE the old one is shut down, so a query never finds no
+ * embedder; the old one is retired (its worker terminated, bounded by
+ * timeoutMs, and it never loads again). Returns true when a switch happened,
+ * false when the process has not built its embedder yet (getEmbedder reads
+ * the config when first needed) or the choice is the one already active.
+ * Vectors are stored per model id, revision and dims, so a switch never mixes
+ * vectors: the embed queues re-embed under the new model on their next run
+ * (any KB read or write kicks one). Never throws.
+ */
+export async function switchEmbedder(choice: EmbeddingModelChoice, timeoutMs = 2000): Promise<boolean> {
+  const old = shared;
+  if (!old) return false;
+  const key = embeddingChoiceKey(choice);
+  if (key === sharedKey) return false;
+  shared = new Embedder({ choice });
+  sharedKey = key;
+  await boundedWait(old.retire(), timeoutMs);
+  return true;
+}
+
+async function boundedWait(p: Promise<void>, timeoutMs: number): Promise<void> {
+  let t: NodeJS.Timeout | undefined;
+  await Promise.race([
+    p.catch(() => undefined),
+    new Promise<void>((r) => { t = setTimeout(r, timeoutMs); t.unref?.(); }),
+  ]);
+  if (t) clearTimeout(t);
 }
 
 /** Current state of the process embedder, without loading anything. */
@@ -330,17 +403,13 @@ export function getEmbeddingState(): EmbedderState {
 export async function shutdownEmbedder(timeoutMs = 2000): Promise<void> {
   const e = shared;
   if (!e) return;
-  let t: NodeJS.Timeout | undefined;
-  await Promise.race([
-    e.close(),
-    new Promise<void>((r) => { t = setTimeout(r, timeoutMs); t.unref?.(); }),
-  ]);
-  if (t) clearTimeout(t);
+  await boundedWait(e.close(), timeoutMs);
 }
 
 /** Tests only: replace (or with null, reset) the process embedder. */
 export function _setEmbedderForTest(e: Embedder | null): void {
   shared = e;
+  sharedKey = null;
 }
 
 // ---------------------------------------------------------------------------
