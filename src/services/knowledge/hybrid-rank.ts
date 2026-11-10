@@ -107,6 +107,21 @@ export const KEYWORD_GUARD_KEEP = 5;
 export const KEYWORD_GUARD_WITHIN = 8;
 
 /**
+ * The guard window for a read returning `limit` rows: the keyword top
+ * KEYWORD_GUARD_KEEP within the first min(KEYWORD_GUARD_WITHIN, limit). A
+ * fixed window of 8 protected nothing a caller saw at a smaller limit: a
+ * guarded id moved to position 7 or 8 was cut by the limit, so at the member
+ * default limit 6, 112 of 182 eval queries lost a keyword top-5 hit (0 with
+ * the window clamped). Measured trade (docs/kb-recall-measurements.md, limit
+ * 6, default model): bare bible real MRR 0.8520 -> 0.8611 and real R@6
+ * 0.9762 -> 1.0000, authored R@6 0.9424 -> 0.9281.
+ */
+export function keywordGuardFor(limit: number): { keep: number; within: number } {
+  const within = Number.isFinite(limit) && limit > 0 ? Math.min(KEYWORD_GUARD_WITHIN, Math.floor(limit)) : KEYWORD_GUARD_WITHIN;
+  return { keep: KEYWORD_GUARD_KEEP, within };
+}
+
+/**
  * Keyword top-N guard (D2f additive rule). Every id in the first `keep`
  * entries of `keywordTop` that is present in `order` is guaranteed a position
  * within the first `within` of the result. A guarded id sitting below that is

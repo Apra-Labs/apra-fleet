@@ -95,9 +95,15 @@ const MAX_LIKE_TERMS = 16;
 /**
  * Most distinct normalized terms a free-text keyword search ORs together.
  * A long query (an engine situation of 450-800 chars) otherwise ORs 100+
- * terms and costs unbounded SQL; the earliest terms (the title words of a
- * situation) are kept. A query with fewer distinct terms is unaffected, and
- * discrete-term (fts_terms) searches are never bounded.
+ * terms and costs unbounded SQL; the earliest terms are kept. Engine
+ * situations put the bead title and description first and the acceptance and
+ * changed symbols/paths last (fleet-sprint kb-hints roleHints), so the bound
+ * keeps the signal and drops the boilerplate. Measured against keeping the
+ * rarest terms (index document frequency) and against dropping terms no
+ * entry holds before the cut: both scored lower on situations whose signal is
+ * in the description (docs/kb-recall-measurements.md). A query with fewer
+ * distinct terms is unaffected, and discrete-term (fts_terms) searches are
+ * never bounded.
  */
 export const MAX_QUERY_KEYWORD_TERMS = 32;
 

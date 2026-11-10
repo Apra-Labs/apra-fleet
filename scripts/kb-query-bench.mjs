@@ -15,17 +15,19 @@
 // for short queries only.
 //
 // ENGINE-SITUATION lane: real engine situations are 450-800 chars of real
-// English ('about to work on: <title>. <description>. Done when:
-// <acceptance>'). The lane builds them through the real fleet-sprint
+// English ('<title>. <description>. Done when: <acceptance>. Changes
+// <symbols> in <paths>'). The lane builds them through the real fleet-sprint
 // roleHints() (packages/apra-fleet-se/fleet-sprint/kb-hints.mjs, doer role)
 // from real text -- titles and summaries of the recall eval entries
 // (tests/fixtures/kb-recall-eval) -- keeps those of 450-800 chars, and issues
 // them with the anchors / error_text roleHints derives, as single queries and
-// as bursts of 6 (reported whole and per query). So that real words have
-// realistic keyword posting lists, the KB holds the eval entries themselves
-// and about half of the synthetic entries are written in the eval entries'
-// real vocabulary (the rest keep the invented pool). Text output and --json
-// (key engine_situation) report the lane next to the short-query lane.
+// as bursts of 6 (reported whole -- the latency a burst's queries see -- and
+// as throughput: burst time / 6, the amortized cost per query, not a latency).
+// So that real words have realistic keyword posting lists, the KB holds the
+// eval entries themselves and about half of the synthetic entries are written
+// in the eval entries' real vocabulary (the rest keep the invented pool).
+// Text output and --json (key engine_situation) report the lane next to the
+// short-query lane.
 //
 // Vectors: query vectors come from the REAL default model when it is available
 // locally (APRA_KB_BENCH_MODELS_DIR, a models folder holding it, e.g. the
@@ -374,10 +376,15 @@ try {
       size: BURST_SIZE,
       bursts: sitBurstTimes.length,
       whole: sitBurstWhole,
-      per_query: {
-        p50_ms: Number((sitBurstWhole.p50_ms / BURST_SIZE).toFixed(1)),
-        p95_ms: Number((sitBurstWhole.p95_ms / BURST_SIZE).toFixed(1)),
-        max_ms: Number((sitBurstWhole.max_ms / BURST_SIZE).toFixed(1)),
+      // THROUGHPUT, not latency: a burst's wall time divided by its size,
+      // i.e. the amortized cost per query while BURST_SIZE run together. No
+      // single query in a burst finishes that fast; its latency is the whole
+      // burst time above (they are issued together and resolve together).
+      throughput: {
+        ms_per_query_p50: Number((sitBurstWhole.p50_ms / BURST_SIZE).toFixed(1)),
+        ms_per_query_p95: Number((sitBurstWhole.p95_ms / BURST_SIZE).toFixed(1)),
+        ms_per_query_max: Number((sitBurstWhole.max_ms / BURST_SIZE).toFixed(1)),
+        queries_per_s_p50: sitBurstWhole.p50_ms > 0 ? Number(((BURST_SIZE * 1000) / sitBurstWhole.p50_ms).toFixed(1)) : null,
       },
     },
   };
@@ -440,7 +447,7 @@ try {
     console.log(`[kb-query-bench] engine-situation lane (real roleHints situations, ${es.chars.min}-${es.chars.max} chars, p50 ${es.chars.p50}):`);
     console.log(`[kb-query-bench]   single situation (${es.single.queries} queries): p50=${es.single.p50_ms} ms p95=${es.single.p95_ms} ms max=${es.single.max_ms} ms`);
     console.log(`[kb-query-bench]   burst of ${es.burst.size} situations (${es.burst.bursts} bursts): whole p50=${es.burst.whole.p50_ms} ms p95=${es.burst.whole.p95_ms} ms max=${es.burst.whole.max_ms} ms; ` +
-      `per query p50=${es.burst.per_query.p50_ms} ms p95=${es.burst.per_query.p95_ms} ms max=${es.burst.per_query.max_ms} ms`);
+      `throughput (burst time / ${es.burst.size}, not a per-query latency) p50=${es.burst.throughput.ms_per_query_p50} ms/query (${es.burst.throughput.queries_per_s_p50} queries/s) p95=${es.burst.throughput.ms_per_query_p95} ms/query max=${es.burst.throughput.ms_per_query_max} ms/query`);
     if (floor) {
       const zero = floor.results.filter((r) => r.rows === 0).length;
       const same = floor.results.filter((r) => r.same_as_keyword).length;

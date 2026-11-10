@@ -31,7 +31,7 @@ import {
   type EmbedderLike, type EmbedderSource, type EmbedQueueStatus,
 } from './embedding/embed-queue.js';
 import { CodeLinkStore, normalizeFileRef, type CodeLinkResolver, type CodeLinksStatus, type ResolvedCodeLink } from './code-links.js';
-import { guardKeywordTop, hybridOrder, ranksFromOrder, ranksFromScores, reciprocalRankFusion, trustPrior, type RankedList } from './hybrid-rank.js';
+import { guardKeywordTop, hybridOrder, keywordGuardFor, ranksFromOrder, ranksFromScores, reciprocalRankFusion, trustPrior, type RankedList } from './hybrid-rank.js';
 import { getSessionEngineOrigin } from '../tool-scope.js';
 import { validateFilePaths } from './path-validation.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
@@ -199,7 +199,7 @@ async function withinQueryEmbedDeadline(
 
 /**
  * Most characters of the query text a read sends to the embedder. Engine
- * situations ('about to work on: <title>. <description>. Done when: ...')
+ * situations ('<title>. <description>. Done when: ...')
  * run to 450-800 chars; embedding them whole roughly doubles the hybrid
  * query cost while the title / first sentence carries most of the meaning.
  * A query at or under the cap is embedded unchanged.
@@ -1846,8 +1846,9 @@ export class SqliteProvider implements MemoryProvider {
    * D2f additive rules: (1) the semantic text is built from opts.query and
    * error_text only, never fts_terms, so a read carrying only fts_terms
    * returns null/keyword rows exactly as without a model; (2) every id in the
-   * keyword list's top 5 is guaranteed a place in the first 8 of the final
-   * order (guardKeywordTop in hybrid-rank.ts).
+   * keyword list's top 5 is guaranteed a place in the first min(8, limit)
+   * of the final order -- inside what the caller receives
+   * (keywordGuardFor / guardKeywordTop in hybrid-rank.ts).
    */
   private async hybridRows(
     opts: QueryOptions,
@@ -1992,8 +1993,9 @@ export class SqliteProvider implements MemoryProvider {
       const r = rowById.get(id)!;
       return trustPrior({ confidence: r.confidence as string, use_count: Number(r.use_count ?? 0), stale: Number(r.stale ?? 0) === 1 });
     }, lists[0] ? [...lists[0].ranks.keys()] : []);
+    const guard = opts.keyword_guard ?? keywordGuardFor(limit);
     const guarded = keywordRows && !opts.disable_keyword_guard
-      ? guardKeywordTop(order, keywordRows.map(r => r.id as string))
+      ? guardKeywordTop(order, keywordRows.map(r => r.id as string), guard.keep, guard.within)
       : order;
     return guarded.slice(0, limit).map(id => rowById.get(id)!);
   }

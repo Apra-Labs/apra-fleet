@@ -250,6 +250,10 @@ export interface QueryOptions {
   // INTERNAL ONLY (eval before/after comparison): skip the keyword top-5
   // guard (guardKeywordTop) in hybridRows. Not on kbQuerySchema or the HTTP route.
   disable_keyword_guard?: boolean;
+  // INTERNAL ONLY (eval guard-window measurement): override how many keyword
+  // head ids the guard protects (keep) and within how many leading positions
+  // (within). Not on kbQuerySchema or the HTTP route.
+  keyword_guard?: { keep: number; within: number };
 }
 
 export interface KBResult {

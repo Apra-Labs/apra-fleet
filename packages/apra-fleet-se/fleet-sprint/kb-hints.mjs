@@ -293,12 +293,18 @@ export function roleHints(role, ctx = {}) {
             const parts = [cleanProse(title, knownIds, 160)];
             const d = cleanProse(desc, knownIds, KB_HINT_LIMITS.maxDescriptionChars);
             const a = cleanProse(acc, knownIds, KB_HINT_LIMITS.maxAcceptanceChars);
-            let situation = `about to work on: ${parts[0]}`;
-            if (bsyms.length > 0 || bfiles.length > 0) {
-                situation = `about to change ${bsyms.slice(0, 3).join(', ') || 'code'}${bfiles.length ? ` in ${bfiles.slice(0, 2).join(', ')}` : ''}, which ${parts[0]}`;
-            }
-            if (d) situation += `. ${d}`;
+            // Title and description lead: the KB embeds only the leading ~200
+            // chars of a query, and a leading 'about to change <symbols> in
+            // <paths>' phrase used most of them, so the description -- where
+            // a bead's signal usually is -- never reached the embedder. The
+            // symbols and paths go last: they still reach the keyword search,
+            // and travel as the anchor files/symbols of the query anyway.
+            let situation = parts[0];
+            if (d) situation += `${situation ? '. ' : ''}${d}`;
             if (a) situation += `. Done when: ${a}`;
+            if (bsyms.length > 0 || bfiles.length > 0) {
+                situation += `. Changes ${bsyms.slice(0, 3).join(', ') || 'code'}${bfiles.length ? ` in ${bfiles.slice(0, 2).join(', ')}` : ''}`;
+            }
             const errorText = boundedErrorText(nth(ctx.beadErrorTexts, i), knownIds);
             situations.push({
                 kind: 'bead',
