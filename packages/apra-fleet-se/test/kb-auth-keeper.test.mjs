@@ -434,15 +434,19 @@ describe('KB auth keeper: watchdog, resume failure, heal timer', () => {
     test('a heal moves the running timer to the new token\'s refresh time', async () => {
         const f = fleet();
         const tm = timers();
+        // Record when each timer was set, so its due time (set at + delay) is known.
+        const set = tm.setTimer;
+        tm.setTimer = (fn, ms) => { const h = set(fn, ms); tm.pending.get(h).at = f.clock.now; return h; };
         const { keeper, lines } = keeperFor(f, tm);
-        let delayAfterHeal;
+        let dueAfterHeal;
         const a = agent([
             { toolErrors: authReport('rejected'), sessionId: 's1', during: async () => { f.clock.now = T0 + 20 * 60_000; } },
-            { during: async () => { delayAfterHeal = [...tm.pending.values()].map((t) => t.ms); } },
+            { during: async () => { dueAfterHeal = [...tm.pending.values()].map((t) => t.at + t.ms); } },
         ]);
         await dispatchOn(keeper, 'm1', a);
-        // New token at t=20 min: expires at 80, refresh at 74, so 54 min from now.
-        assert.deepEqual(delayAfterHeal, [54 * 60_000]);
+        // First token: refresh due at t=54 min. The heal at t=20 min brings one
+        // expiring at t=80, refresh due at t=74: the timer follows it.
+        assert.deepEqual(dueAfterHeal, [T0 + 74 * 60_000]);
         assert.equal(lines.filter((l) => l.includes('brought no new token')).length, 0);
     });
 
