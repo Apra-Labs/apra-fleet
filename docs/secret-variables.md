@@ -126,6 +126,7 @@ reach an LLM prompt. Use `execute_command` instead.
 
 - Delivery vs. persistence: Running `apra-fleet secret --set NAME` without `--persist` delivers to a waiting OOB request but does NOT store in the vault. `{{secret.NAME}}` requires vault storage - use `--persist`.
 - `credential_store_set` **blocks** - when called, the tool opens an OOB terminal and waits synchronously for the user to enter the secret. It does not return a "Waiting..." intermediate status or require a second call. On success it returns `[OK] NAME stored [session/persistent]. Use {{secret.NAME}} in commands.`
+- A value typed with `apra-fleet secret --set NAME --persist` while `credential_store_set` or `register_member` waits for NAME goes to that call, which stores it with the policy and members it asked for. That command does not store it again, so its `--allow`, `--deny`, `--members` and `--expires-at` are not applied (change them afterwards with `secret --update`). `--persist` counts for `register_member`; `credential_store_set` takes the tier from its own `persist`.
 - Failed resolution is always explicit - the tool returns an error and aborts. No silent pass-through of the token string.
 
 ## CI / Non-Interactive Usage
@@ -198,10 +199,12 @@ arguments starting with `-`.
   it: `'--'`.
 - An unknown option before the path is an error, and so is an `--env` value not of the
   form `VAR={{secret.R}}`.
-- `--inline` takes one script and no script path. On Windows PowerShell 5.1 a double
-  quote inside an inline script is stripped and the script split. That fails with
-  `inline-extra-args` and saves nothing: use doubled single quotes, as in the examples,
-  or a script file.
+- `--inline` takes one script and no script path. Windows PowerShell 5.1 removes the
+  double quotes inside an inline script before apra-fleet sees it. A script split by
+  that fails with `inline-extra-args`; one changed without a split (`$x = "abc"` arriving
+  as `$x = abc`) fails with `inline-quotes-changed`, found by checking the command's own
+  command line on Windows. If that line cannot be read the result is `inline-unverified`.
+  Each saves nothing: use doubled single quotes, as in the examples, or a script file.
 
 ### Script types per OS
 

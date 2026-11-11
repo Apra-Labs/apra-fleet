@@ -698,7 +698,10 @@ kb_setup with provider=http, remote=https://<host>, token={{secret.KB_TOKEN}}
 `live-secret-failed`). No request is sent, and captures, invalidates and feedback are queued
 offline exactly as for a static secret. On HTTP 401 from the KB server the rejected
 token is dropped from the cache, a new one is minted and the request is retried
-once. A second 401 raises `E-KB-HTTP-AUTH` (reason `rejected`).
+once. A second 401 raises `E-KB-HTTP-AUTH` (reason `rejected`), drops that token too and
+starts a KB cool-down (10 s, doubling per consecutive rejected mint, up to 5 minutes):
+a KB call inside it raises `rejected` at once, with no request and no mint. Other uses
+of the live secret mint as usual. Registering it again ends the cool-down.
 
 **fleet_status.** When the KB config names a live secret, the `kb credential:` line
 reads `live secret NAME | resolves: <state> | last minted | token expiry`, then any

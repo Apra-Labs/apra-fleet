@@ -20,6 +20,7 @@ import {
 } from '../src/services/credential-store.js';
 import {
   dropCachedLiveToken,
+  dropLiveToken,
   getLiveTokenDetail,
   getLiveTokenStatus,
   resetLiveTokenCache,
@@ -337,6 +338,14 @@ describe('provisionAuthForKind: prepare', () => {
     expect(delivered).toEqual([]);
   });
 
+  it('an expired static secret still refuses by policy first: member-not-allowed, then policy-deny', async () => {
+    const unshared = staticSecret('expunshared', { members: ['someone-else'], ttl: -1 });
+    expectRefused(await failure(provision(unshared)), 'member-not-allowed');
+    const denied = staticSecret('expdenied', { policy: 'deny', ttl: -1 });
+    expectRefused(await failure(provision(denied)), 'policy-deny');
+    expect(delivered).toEqual([]);
+  });
+
   it('a member unshared during prepare is seen, with no mint', async () => {
     const s = live('unshareduring');
     stub.kb.prepare = async () => { credentialUpdate(s.name, { members: 'someone-else' }); };
@@ -371,6 +380,19 @@ describe('provisionAuthForKind: reason rejected', () => {
     expect(s.runs()).toBe(2);
     expect(delivered[1].value).toBe(tokenOf(2));
     expect(result.expiresAt).toBe(expiryOf(2));
+  }, 30_000);
+
+  it('during the KB cool-down after two rejected tokens, provisioning mints, with or without the reason, and never delivers a rejected token', async () => {
+    const s = live('rejcool');
+    await provision(s.name);
+    const rec = lookupLiveSecret(s.name)!;
+    expect(dropLiveToken(s.name, tokenOf(1))).toEqual({ retry: true });
+    expect((await getLiveTokenDetail(s.name, rec)).token).toBe(tokenOf(2));
+    expect(dropLiveToken(s.name, tokenOf(2)).retry).toBe(false);
+    await provision(s.name);
+    await provision(s.name, { reason: 'rejected' });
+    expect(delivered.map((d) => d.value)).toEqual([tokenOf(1), tokenOf(3), tokenOf(4)]);
+    expect(s.runs()).toBe(4);
   }, 30_000);
 
   it('without the reason the cached token stays', async () => {

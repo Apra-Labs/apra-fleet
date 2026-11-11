@@ -143,6 +143,14 @@ describe('credentialResolve: TTL enforcement', () => {
     expect(credentialResolve(name)).toBeNull();
   });
 
+  it.each([true, false])('an expired secret not shared with the member is denied, not expired (persistent: %s)', (persist) => {
+    const name = `ttl_scoped_${persist}_${Date.now()}`;
+    credentialSet(name, 'secret', persist, 'allow', ['alpha'], -1);
+    const result = credentialResolve(name, 'beta');
+    expect(result && 'denied' in result).toBe(true);
+    credentialDelete(name);
+  });
+
   it('returns null for a credential that never existed', () => {
     expect(credentialResolve('does_not_exist_xyz_scoping')).toBeNull();
   });

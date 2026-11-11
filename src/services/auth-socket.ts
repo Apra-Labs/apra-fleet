@@ -22,6 +22,8 @@ interface PendingAuth {
   createdAt: number;
   spawned_pid?: number;
   persist?: boolean;
+  /** The waiting tool stores the value as a secret under this name itself, with the policy it was asked for. */
+  storesSecret?: boolean;
 }
 
 interface PasswordWaiter {
@@ -145,7 +147,7 @@ export async function ensureAuthSocket(): Promise<void> {
   return tryListen(maxRetries);
 }
 
-export function createPendingAuth(memberName: string): void {
+export function createPendingAuth(memberName: string, storesSecret = false): void {
   // Clean expired entries
   const now = Date.now();
   for (const [name, entry] of pendingRequests) {
@@ -153,7 +155,7 @@ export function createPendingAuth(memberName: string): void {
       pendingRequests.delete(name);
     }
   }
-  pendingRequests.set(memberName, { createdAt: now });
+  pendingRequests.set(memberName, { createdAt: now, ...(storesSecret ? { storesSecret } : {}) });
 }
 
 export function getPendingPassword(memberName: string): string | null {
@@ -174,9 +176,11 @@ export function getPendingPassword(memberName: string): string | null {
  * Deliver a plaintext credential to a pending auth request: encrypt it
  * immediately, store it on the pending entry, and resolve any waiting tool
  * handler. Shared by the socket handler (CLI entry) and the browser fallback
- * (local web UI entry) so both delivery paths behave identically.
+ * (local web UI entry) so both delivery paths behave identically. `stored`
+ * tells a `secret --set` CLI that the waiting tool stores the value itself, so
+ * the CLI must not write it again over the policy that tool was asked for.
  */
-export function submitPassword(memberName: string, plaintext: string, persist?: boolean): { ok: boolean; error?: string } {
+export function submitPassword(memberName: string, plaintext: string, persist?: boolean): { ok: boolean; error?: string; stored?: true } {
   const pending = pendingRequests.get(memberName);
   if (!pending) return { ok: false, error: `No pending auth for ${memberName}` };
   // Encrypt immediately; plaintext is never stored or logged.
@@ -194,7 +198,7 @@ export function submitPassword(memberName: string, plaintext: string, persist?: 
     waiter.resolve(pending.encryptedPassword);
     fleetEvents.emit('credential:stored', { name: memberName });
   }
-  return { ok: true };
+  return pending.storesSecret ? { ok: true, stored: true } : { ok: true };
 }
 
 /**
@@ -310,7 +314,7 @@ async function collectOobInput(
   mode: 'password' | 'api-key',
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; additionalArgs?: string[] },
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; additionalArgs?: string[]; storesSecret?: boolean },
 ): Promise<{ password?: string; fallback?: string; persist?: boolean }> {
   const launch = _opts?.launchFn ?? launchAuthTerminal;
   const waitTimeoutMs = _opts?.waitTimeoutMs;
@@ -336,7 +340,7 @@ async function collectOobInput(
   }
 
   await ensureAuthSocket();
-  createPendingAuth(memberName);
+  createPendingAuth(memberName, _opts?.storesSecret);
 
   // Tear-down for the local browser UI if it ends up being the active
   // collector; called on every exit path. A holder object (rather than a bare
@@ -460,7 +464,7 @@ export async function collectOobPassword(
 export async function collectOobApiKey(
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; askPersist?: boolean },
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; askPersist?: boolean; storesSecret?: boolean },
 ): Promise<{ password?: string; fallback?: string; persist?: boolean }> {
   const additionalArgs = _opts?.askPersist ? ['--ask-persist'] : [];
   return collectOobInput('api-key', memberName, toolName, { ...(_opts ?? {}), additionalArgs });
