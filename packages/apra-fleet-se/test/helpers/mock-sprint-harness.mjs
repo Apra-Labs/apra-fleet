@@ -1,6 +1,7 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
+import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'os';
 import crypto from 'node:crypto';
 import { runCmd as bdRunCmd } from './bd-replay.mjs';
@@ -964,24 +965,39 @@ export function answerBeadsIdentityProbe(overrides, member, command) {
     return null;
 }
 
+/** The temp data dir this process made for itself, if any (removed at exit). */
+let ownTestDataDir = null;
+
 /**
- * Throws unless APRA_FLEET_DATA_DIR names a data dir of its own, never the real
- * ~/.apra-fleet/data (of this home or, inside the test sandbox, the real one).
- * The engine reads the orchestrator's KB config there, so a mock sprint that
- * saw the real one would switch the KB auth keeper on. scripts/run-tests.mjs and
- * the root test sandbox both set it; every mock sprint checks it here.
+ * Makes sure APRA_FLEET_DATA_DIR names a data dir of the tests' own, never the
+ * real ~/.apra-fleet/data. The engine reads the orchestrator's KB config there,
+ * so a mock sprint that saw the real one would switch the KB auth keeper on.
+ * - Unset (any lane that does not set it, e.g. the slow lane's plain
+ *   `node --test`): a temp data dir is created, set for this process and
+ *   removed at exit.
+ * - The real ~/.apra-fleet/data (of this home or, inside the test sandbox, of
+ *   the real home): refused.
+ * Every mock sprint calls it, in buildMockFleetApi. Returns the data dir.
  */
-export function assertSandboxedDataDir(env = process.env) {
-    const dir = env.APRA_FLEET_DATA_DIR;
-    const real = [os.homedir(), env.APRA_TEST_REAL_HOME].filter(Boolean).map((h) => path.resolve(h, '.apra-fleet', 'data'));
-    if (!dir || real.includes(path.resolve(dir))) {
-        throw new Error(`mock-sprint-harness: APRA_FLEET_DATA_DIR must name a test data dir, not ${dir ? `the real ${dir}` : 'unset (the real ~/.apra-fleet/data)'}; run tests through scripts/run-tests.mjs or npm test.`);
+export function ensureTestDataDir(env = process.env) {
+    if (!env.APRA_FLEET_DATA_DIR) {
+        if (!ownTestDataDir) {
+            const made = mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-mock-data-'));
+            ownTestDataDir = made;
+            process.on('exit', () => { try { rmSync(made, { recursive: true, force: true }); } catch { /* best effort */ } });
+        }
+        env.APRA_FLEET_DATA_DIR = ownTestDataDir;
     }
-    return path.resolve(dir);
+    const dir = path.resolve(env.APRA_FLEET_DATA_DIR);
+    const real = [os.homedir(), env.APRA_TEST_REAL_HOME].filter(Boolean).map((h) => path.resolve(h, '.apra-fleet', 'data'));
+    if (real.includes(dir)) {
+        throw new Error(`mock-sprint-harness: APRA_FLEET_DATA_DIR is the real ${dir}; tests must never use it. Unset it (a temp data dir is made) or point it at a test dir.`);
+    }
+    return dir;
 }
 
 export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = {}) {
-    assertSandboxedDataDir();
+    ensureTestDataDir();
     const {
         planReviewerMode = 'reject-then-approve',
         doerHandler = null,

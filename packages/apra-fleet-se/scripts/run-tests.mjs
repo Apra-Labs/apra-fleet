@@ -44,7 +44,7 @@ if (!Object.prototype.hasOwnProperty.call(MODES, mode)) {
 // ~/.apra-fleet/data would switch the KB auth keeper on inside mock sprints on
 // a machine whose KB is HTTP. A sandboxed `npm test` already sets one; a direct
 // run gets a temp dir here, removed at exit. The mock sprint harness refuses
-// the real one (assertSandboxedDataDir).
+// the real one (ensureTestDataDir), and makes its own in any lane that sets none.
 if (!process.env.APRA_FLEET_DATA_DIR) {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-se-test-data-'));
     process.env.APRA_FLEET_DATA_DIR = dataDir;
