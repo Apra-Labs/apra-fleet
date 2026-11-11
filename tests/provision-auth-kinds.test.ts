@@ -20,8 +20,10 @@ import {
 } from '../src/services/credential-store.js';
 import {
   dropCachedLiveToken,
+  dropLiveToken,
   getLiveTokenDetail,
   getLiveTokenStatus,
+  liveKbCoolDownUntil,
   resetLiveTokenCache,
 } from '../src/services/live-secret-cache.js';
 import {
@@ -371,6 +373,20 @@ describe('provisionAuthForKind: reason rejected', () => {
     expect(s.runs()).toBe(2);
     expect(delivered[1].value).toBe(tokenOf(2));
     expect(result.expiresAt).toBe(expiryOf(2));
+  }, 30_000);
+
+  it('during the KB cool-down after two rejected tokens, provisioning mints, with or without the reason, and never delivers a rejected token', async () => {
+    const s = live('rejcool');
+    await provision(s.name);
+    const rec = lookupLiveSecret(s.name)!;
+    expect(dropLiveToken(s.name, tokenOf(1))).toEqual({ retry: true });
+    expect((await getLiveTokenDetail(s.name, rec)).token).toBe(tokenOf(2));
+    expect(dropLiveToken(s.name, tokenOf(2)).retry).toBe(false);
+    expect(liveKbCoolDownUntil(s.name)).not.toBeNull();
+    await provision(s.name);
+    await provision(s.name, { reason: 'rejected' });
+    expect(delivered.map((d) => d.value)).toEqual([tokenOf(1), tokenOf(3), tokenOf(4)]);
+    expect(s.runs()).toBe(4);
   }, 30_000);
 
   it('without the reason the cached token stays', async () => {

@@ -23,7 +23,7 @@ import type {
 
 import { DEFAULT_REQUEST_TIMEOUT_MS } from './kb-config.js';
 import { lookupServerSecret, lookupLiveSecret, type CredentialMeta, type LiveSecretRecord } from '../credential-store.js';
-import { getLiveToken, dropLiveToken, noteLiveTokenAccepted } from '../live-secret-cache.js';
+import { getLiveToken, dropLiveToken, liveKbCoolDownUntil, noteLiveTokenAccepted } from '../live-secret-cache.js';
 import { getAgent } from '../registry.js';
 import { getSessionMemberId } from '../tool-scope.js';
 import { LiveSecretError } from '../live-secret-runner.js';
@@ -137,6 +137,15 @@ function isAuthError(err: unknown): err is KbHttpAuthError {
  */
 function isPolicyRefusal(err: KbHttpAuthError): boolean {
   return err.reason === 'policy-deny' || err.reason === 'member-not-allowed';
+}
+
+/** E-KB-HTTP-AUTH rejected, inside the KB's cool-down for this live secret. */
+function kbCoolDownError(name: string, until: string): KbHttpAuthError {
+  return new KbHttpAuthError(
+    name, 'rejected',
+    `the KB server rejected the token from live secret "${name}" (HTTP 401), and the token minted to replace it; no new token is minted for the KB before ${until}.`,
+    false, liveSecretRemediation(name),
+  );
 }
 
 function isHttp401(err: unknown): boolean {
@@ -298,6 +307,8 @@ export class HttpKbProvider implements MemoryProvider {
     }
     if (live) {
       assertKbSecretPolicy(name, live);
+      const coolDownUntil = liveKbCoolDownUntil(name);
+      if (coolDownUntil) throw kbCoolDownError(name, coolDownUntil);
       return { token: await this.liveToken(name, live), live: true };
     }
     let found: ReturnType<typeof lookupServerSecret>;
@@ -342,9 +353,9 @@ export class HttpKbProvider implements MemoryProvider {
    * and the request retried once; a second 401 raises E-KB-HTTP-AUTH.
    * Live secret: on 401 the rejected token is dropped from the cache, so the
    * retry's lookup mints once more (shared with any concurrent caller); a
-   * second 401 raises E-KB-HTTP-AUTH. A rejected token that replaced a
-   * rejected one is kept through its cool-down (live-secret-cache.ts): then
-   * the first 401 raises E-KB-HTTP-AUTH, with no mint and no retry.
+   * second 401 raises E-KB-HTTP-AUTH. When the replacement was rejected too,
+   * the KB is in a cool-down (live-secret-cache.ts): it raises E-KB-HTTP-AUTH
+   * with no mint and no request until the cool-down ends.
    * Records the last success / last 401 for fleet_status either way.
    */
   private async request<T>(
@@ -375,13 +386,7 @@ export class HttpKbProvider implements MemoryProvider {
         if (secretName === undefined) throw err;
         if (live) {
           const drop = dropLiveToken(secretName, token);
-          if (!drop.retry) {
-            throw new KbHttpAuthError(
-              secretName, 'rejected',
-              `the KB server rejected the token from live secret "${secretName}" (HTTP 401), which was minted after the previous token was rejected; no new token is minted before ${drop.keptUntil}.`,
-              false, liveSecretRemediation(secretName),
-            );
-          }
+          if (!drop.retry) throw kbCoolDownError(secretName, drop.coolDownUntil);
           if (attempt >= attempts) {
             throw new KbHttpAuthError(
               secretName, 'rejected',

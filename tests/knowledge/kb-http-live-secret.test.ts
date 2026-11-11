@@ -18,9 +18,10 @@ import { HttpKbProvider, KbHttpAuthError } from '../../src/services/knowledge/ht
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { KB_CONFIG_PATH, readKbConfigFromDisk } from '../../src/services/knowledge/kb-config.js';
 import { resetKbHttpAuthState } from '../../src/services/knowledge/kb-http-auth-state.js';
-import { prepareLiveSecret, saveLiveSecret, credentialDelete } from '../../src/services/credential-store.js';
+import { prepareLiveSecret, saveLiveSecret, credentialDelete, lookupLiveSecret } from '../../src/services/credential-store.js';
 import {
   resetLiveTokenCache,
+  getLiveTokenDetail,
   liveRefreshAt,
   liveBackoffMs,
   LIVE_BACKOFF_BASE_MS,
@@ -220,33 +221,43 @@ describe('HttpKbProvider with a credential helper', () => {
     expect(stub.requests).toHaveLength(2);
   });
 
-  it('a server that rejects every token: the replacement is kept through a cool-down, so later calls run no script and stay rejected', async () => {
+  it('a server that rejects every token: after the replacement is rejected too, KB calls run no script and send nothing until a cool-down ends', async () => {
     stub.accept = () => false;
     await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
     expect([helper.runs().length, stub.requests.length]).toEqual([2, 2]);
     for (let i = 1; i <= 3; i++) {
       const err = await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
-      expect([helper.runs().length, stub.requests.length]).toEqual([2, 2 + i]);
-      expect(err.message).toContain('no new token is minted before');
+      expect([helper.runs().length, stub.requests.length]).toEqual([2, 2]);
+      expect(err.message).toContain('no new token is minted for the KB before');
     }
-    // Past the 10 s cool-down: one new mint, then a 20 s cool-down for that one.
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
+      // Past the 10 s cool-down: one new mint and request, then a 20 s cool-down.
       vi.setSystemTime(Date.now() + LIVE_BACKOFF_BASE_MS + 1000);
       await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
-      expect([helper.runs().length, stub.requests.length]).toEqual([3, 7]);
+      expect([helper.runs().length, stub.requests.length]).toEqual([3, 3]);
       vi.setSystemTime(Date.now() + LIVE_BACKOFF_BASE_MS + 1000);
       await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
-      expect([helper.runs().length, stub.requests.length]).toEqual([3, 8]);
+      expect([helper.runs().length, stub.requests.length]).toEqual([3, 3]);
+      // Accepted once: the count resets, so a later rejection gets its one re-mint.
+      vi.setSystemTime(Date.now() + LIVE_BACKOFF_BASE_MS);
+      stub.accept = (token) => token.includes(PREFIX);
+      await query();
+      stub.accept = (token) => helperRunOf(token, PREFIX) >= 5;
+      await query();
+      expect(helper.runs()).toHaveLength(5);
     } finally {
       vi.useRealTimers();
     }
-    // Accepted once: the count resets, so a later rejection gets its one re-mint.
-    stub.accept = (token) => token.includes(PREFIX);
-    await query();
-    stub.accept = (token) => helperRunOf(token, PREFIX) >= 4;
-    await query();
-    expect(helper.runs()).toHaveLength(4);
+  });
+
+  it('during the KB cool-down no other consumer is handed a token the KB server rejected', async () => {
+    stub.accept = () => false;
+    await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
+    const rejected = stub.requests.map((r) => r.token);
+    const detail = await getLiveTokenDetail(NAME, lookupLiveSecret(NAME)!);
+    expect(rejected).not.toContain(detail.token);
+    expect(helperRunOf(detail.token, PREFIX)).toBe(3);
   });
 
   it('concurrent 401s share one re-run', async () => {

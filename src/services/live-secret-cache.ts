@@ -30,11 +30,12 @@ import { appendLogRecord } from '../utils/log-helpers.js';
  *   Inside the window every caller gets the failure again, without a run. A
  *   token that is below T but not yet expired is still served while the
  *   refresh keeps failing.
- * - A server that rejects a token (HTTP 401) gets one new mint, except when
- *   the rejected token replaced a rejected one: it is then kept until a
- *   cool-down on the backoff schedule has passed since it was minted (10 s,
- *   doubling per consecutive rejected mint, capped at 5 minutes). A request the
- *   server accepts resets the count.
+ * - A token the KB server rejects (HTTP 401) is dropped, and the KB gets one
+ *   new mint, except when the rejected token replaced a rejected one: then the
+ *   KB mints nothing more until a cool-down on the backoff schedule has passed
+ *   since that token was minted (10 s, doubling per consecutive rejected mint,
+ *   capped at 5 minutes). Other consumers mint as usual. A request the server
+ *   accepts resets the count.
  * - Re-registering the live secret (a new script, program, args, bindings or
  *   created_at) starts a fresh entry: no cached token, no backoff. Updating a
  *   bound secret's value or the record's policy fields does not: the token
@@ -59,6 +60,8 @@ interface CacheEntry {
   lastMintedAtMs?: number;
   /** Consecutive minted tokens a server rejected, since one was last accepted. */
   rejectedMints: number;
+  /** The KB mints no new token before this, after a replacement token was rejected too. */
+  kbCoolDownUntilMs?: number;
   lastFailureAt?: string;
   lastFailureReason?: string;
   consecutiveFailures: number;
@@ -221,32 +224,50 @@ export function getLiveToken(name: string, record: LiveSecretRecord): Promise<st
 }
 
 /** What dropLiveToken did with a rejected token. */
-export type LiveTokenDrop = { retry: true } | { retry: false; keptUntil: string };
+export type LiveTokenDrop = { retry: true } | { retry: false; coolDownUntil: string };
 
 /**
- * A server rejected this token (HTTP 401): forget it, so the next getLiveToken
- * mints, and tell the caller to retry. When a concurrent caller already replaced
- * it, the newer token is kept, with no extra mint, and the caller retries with
- * it. When it replaced a rejected token and its cool-down has not passed, it is
- * kept and the caller does not retry: a server that rejects every token costs
- * one request per call and no script run.
+ * The KB server rejected this token (HTTP 401): forget it, so no consumer is
+ * handed it again, and tell the KB caller whether to retry with a new mint.
+ * When a concurrent caller already replaced it, the newer token is kept and the
+ * caller retries with it. When it replaced a rejected token inside that token's
+ * cool-down, the caller does not retry, and the KB starts a cool-down
+ * (liveKbCoolDownUntil): a server that rejects every token costs no script run
+ * per KB call. Other consumers are not held back: they mint as usual.
  */
 export function dropLiveToken(name: string, rejectedToken: string): LiveTokenDrop {
   const entry = _entries.get(name);
   if (!entry || entry.token !== rejectedToken) return { retry: true };
-  if (entry.rejectedMints > 0 && entry.lastMintedAtMs !== undefined) {
-    const coolDownUntilMs = entry.lastMintedAtMs + liveBackoffMs(entry.rejectedMints);
-    if (Date.now() < coolDownUntilMs) return { retry: false, keptUntil: new Date(coolDownUntilMs).toISOString() };
-  }
+  const untilMs = entry.rejectedMints > 0 && entry.lastMintedAtMs !== undefined
+    ? entry.lastMintedAtMs + liveBackoffMs(entry.rejectedMints)
+    : undefined;
   entry.rejectedMints += 1;
   clearToken(entry);
+  if (untilMs !== undefined && Date.now() < untilMs) {
+    entry.kbCoolDownUntilMs = untilMs;
+    return { retry: false, coolDownUntil: new Date(untilMs).toISOString() };
+  }
   return { retry: true };
+}
+
+/**
+ * When the KB must not mint for this live secret yet (ISO time), or null. Only
+ * while no token is cached or being minted: a token another consumer minted in
+ * the meantime is tried.
+ */
+export function liveKbCoolDownUntil(name: string): string | null {
+  const entry = _entries.get(name);
+  if (!entry?.kbCoolDownUntilMs || entry.token !== undefined || entry.inFlight) return null;
+  return Date.now() < entry.kbCoolDownUntilMs ? new Date(entry.kbCoolDownUntilMs).toISOString() : null;
 }
 
 /** A server accepted this token, so earlier rejections no longer count toward a cool-down. */
 export function noteLiveTokenAccepted(name: string, acceptedToken: string): void {
   const entry = _entries.get(name);
-  if (entry && entry.token === acceptedToken) entry.rejectedMints = 0;
+  if (entry && entry.token === acceptedToken) {
+    entry.rejectedMints = 0;
+    entry.kbCoolDownUntilMs = undefined;
+  }
 }
 
 /**
