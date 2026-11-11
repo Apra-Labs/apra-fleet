@@ -1,12 +1,23 @@
 import path from 'node:path';
 import os from 'node:os';
-import { inject, vi } from 'vitest';
+import { afterEach, inject, vi } from 'vitest';
 // @ts-expect-error -- plain .mjs helper shared with the node --test runners
 import { assertNotRealProfile } from '../scripts/test-sandbox.mjs';
+// @ts-expect-error -- plain .mjs helper shared with the node --test runners
+import { takeWriteGuardViolations } from '../scripts/test-sandbox-write-guard.mjs';
 
 // Fail fast if this worker would resolve the real user profile (fleet.key,
 // ~/.apra-fleet/bin, ~/.apra-fleet/data): see scripts/test-sandbox.mjs.
 assertNotRealProfile();
+
+// A write into the real checkout's git dir or the real profile was refused by
+// the preloaded guard. Product code may have caught that error, so fail here.
+afterEach(() => {
+  const violations: string[] = takeWriteGuardViolations();
+  if (violations.length > 0) {
+    throw new Error(`[test-sandbox] this test wrote outside its sandbox:\n${violations.join('\n')}`);
+  }
+});
 
 // Global mock: preflightCheck always passes in tests.
 // The real preflightCheck hits strategy.testConnection + execCommand on every

@@ -22,6 +22,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { PROTECTED_DIRS_ENV } from './test-sandbox-write-guard.mjs';
 
 export const SANDBOX_ROOT_ENV = 'APRA_TEST_SANDBOX_ROOT';
 export const REAL_HOME_ENV = 'APRA_TEST_REAL_HOME';
@@ -92,6 +94,22 @@ export function assertNotRealProfile(env = process.env, homedir = os.homedir) {
 }
 
 /**
+ * Dirs no sandboxed process may write into (scripts/test-sandbox-write-guard.mjs):
+ * the git dir shared by the checkout the run starts in, the real profile's
+ * protected dirs, and a data dir the caller had set.
+ * @param {string} realHome
+ * @param {string|undefined} realDataDir
+ */
+function protectedDirs(realHome, realDataDir) {
+    const out = PROTECTED.map((d) => path.join(realHome, d));
+    if (realDataDir) out.push(path.resolve(realDataDir));
+    const git = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', windowsHide: true });
+    const common = git.status === 0 ? git.stdout.trim() : '';
+    if (common) out.push(path.resolve(common));
+    return out;
+}
+
+/**
  * Create (or reuse, when already inside one) the per-run sandbox, point
  * `env` at it and drop the beads workspace variables. Returns { root, created, cleanup }.
  * @param {Record<string, string|undefined>} [env] mutated in place (normally process.env)
@@ -135,6 +153,7 @@ export function ensureTestSandbox(env = process.env) {
         env.HOMEDRIVE = parsed.root.replace(/\\$/, '');
         env.HOMEPATH = home.slice(env.HOMEDRIVE.length);
     }
+    env[PROTECTED_DIRS_ENV] = JSON.stringify(protectedDirs(realHome, env.APRA_FLEET_DATA_DIR));
     env.APPDATA = dirs.appdata;
     env.LOCALAPPDATA = dirs.localappdata;
     env.XDG_CONFIG_HOME = dirs.xdgConfig;

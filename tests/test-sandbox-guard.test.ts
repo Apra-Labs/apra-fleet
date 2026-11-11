@@ -5,12 +5,16 @@
  * resolves the real profile anyway refuses to start.
  */
 import { describe, it, expect } from 'vitest';
+import fs, { writeFileSync } from 'node:fs';
+import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 // @ts-expect-error -- plain .mjs helper
 import { assertNotRealProfile, dropBeadsWorkspaceEnv, REAL_HOME_ENV, SANDBOX_ROOT_ENV } from '../scripts/test-sandbox.mjs';
+// @ts-expect-error -- plain .mjs helper
+import { PROTECTED_DIRS_ENV, takeWriteGuardViolations } from '../scripts/test-sandbox-write-guard.mjs';
 import { FLEET_DIR, SERVER_INFO_PATH } from '../src/paths.js';
 import { BIN_DIR, FLEET_BASE } from '../src/cli/config.js';
 
@@ -80,3 +84,59 @@ describe('test sandbox', () => {
     expect(r.stderr).toMatch(/\[test-sandbox\] refusing to run/);
   });
 });
+
+describe('test sandbox write guard', () => {
+  const dirs: string[] = JSON.parse(process.env[PROTECTED_DIRS_ENV] ?? '[]');
+  const gitDir = dirs.find((d) => path.basename(d) === '.git') as string;
+  const probe = () => path.join(gitDir, `apra-fleet-guard-probe-${process.pid}-${Math.random().toString(36).slice(2)}`);
+
+  it('protects the git dir this checkout shares, and the real profile', () => {
+    expect(gitDir, `no .git in ${PROTECTED_DIRS_ENV}`).toBeTruthy();
+    expect(dirs).toContain(path.join(REAL, '.apra-fleet'));
+  });
+
+  it('a write into the real git dir throws, writes nothing, and is recorded even when the code catches it', async () => {
+    const targets = [probe(), probe(), probe(), probe()];
+    try {
+      expect(() => fs.writeFileSync(targets[0], 'x')).toThrow(/E-TEST-SANDBOX-WRITE/);
+      expect(() => writeFileSync(targets[1], 'x')).toThrow(/E-TEST-SANDBOX-WRITE/);
+      await expect(fsp.writeFile(targets[2], 'x')).rejects.toThrow(/E-TEST-SANDBOX-WRITE/);
+      try { fs.mkdirSync(path.join(targets[3], 'hooks'), { recursive: true }); } catch { /* swallowed, as a best-effort hook install would */ }
+      expect(takeWriteGuardViolations()).toHaveLength(4);
+      for (const t of targets) expect(fs.existsSync(t), t).toBe(false);
+    } finally {
+      for (const t of targets) realRm(t);
+    }
+  });
+
+  it('a child node process is refused too, and its write is reported to this test', () => {
+    const target = probe();
+    try {
+      const r = spawnSync(process.execPath, ['-e', `require('fs').writeFileSync(${JSON.stringify(target)}, 'x')`], {
+        encoding: 'utf8', windowsHide: true,
+      });
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toMatch(/E-TEST-SANDBOX-WRITE/);
+      expect(fs.existsSync(target)).toBe(false);
+      expect(takeWriteGuardViolations()).toEqual([expect.stringContaining(target)]);
+    } finally {
+      realRm(target);
+    }
+  });
+
+  it('writes under the sandbox and the temp dir are untouched by the guard', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-ok-'));
+    fs.writeFileSync(path.join(tmp, 'f'), 'x');
+    fs.rmSync(tmp, { recursive: true, force: true });
+    expect(takeWriteGuardViolations()).toEqual([]);
+  });
+});
+
+/** Removes a probe the guard let through (only without the guard); never recursive. */
+function realRm(p: string): void {
+  for (const f of [path.join(p, 'hooks'), p]) {
+    try {
+      if (fs.statSync(f).isDirectory()) fs.rmdirSync(f); else fs.unlinkSync(f);
+    } catch { /* absent */ }
+  }
+}
