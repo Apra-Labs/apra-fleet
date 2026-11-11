@@ -348,6 +348,8 @@ import {
 import {
     installFatalDiagnosticsGuard, findDoltDivergedCause, resolveTerminalReason, captureDoltConflictDump,
 } from './fatal-diagnostics.mjs';
+// KB token keeping and the KB auth heal around each dispatch.
+import { createKbAuthKeeper } from './kb-auth-keeper.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
@@ -1012,6 +1014,8 @@ async function runSprintCycle(context) {
     // bead id -> bead, refreshed with the sprint tree; the reviewer's hint
     // sources (titles of the beads under review) are read from it.
     let kbBeadIndex = new Map();
+    // Bound below, next to onLlmAuthFailure (kb-auth-keeper.mjs).
+    let kbAuthKeeper = null;
     const kbBeadTitles = (ids) => (Array.isArray(ids) ? ids : []).map((id) => kbBeadIndex.get(id)?.title).filter((t) => typeof t === 'string' && t);
     const agent = async (prompt, opts = {}) => {
         let finalPrompt = prompt;
@@ -1040,7 +1044,9 @@ async function runSprintCycle(context) {
                 // an unreadable count is recorded as unknown, never 0).
                 return await dispatchAccounting.around(
                     { memberName: opts.member_name, role: opts.agentType, label: opts.label },
-                    () => agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts }),
+                    () => (kbAuthKeeper
+                        ? kbAuthKeeper.dispatch({ member: opts.member_name, prompt: finalPrompt, opts: { sprint_id: sprintMutexId, ...opts }, run: agentRaw })
+                        : agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts })),
                 );
             } finally {
                 if (opts.member_name) DoltSync.noteMemberDispatchCompleted(opts.member_name);
@@ -1279,6 +1285,18 @@ async function runSprintCycle(context) {
         (args && typeof args.callTool === 'function')
             ? createLlmAuthSelfHealCallback({ callTool: args.callTool, log })
             : undefined
+    );
+
+    // KB counterpart of the two self-heals above (kb-auth-keeper.mjs): keeps
+    // each member's KB token fresh around its dispatches and heals, then
+    // resumes once, a dispatch whose toolErrors show E-KB-HTTP-AUTH. Read by
+    // the agent() wrapper above, which no dispatch reaches before this line.
+    // Same precedence shape: context.kbAuthKeeper, else args.callTool, else
+    // none (dispatches run as before).
+    kbAuthKeeper = context.kbAuthKeeper ?? (
+        (args && typeof args.callTool === 'function')
+            ? createKbAuthKeeper({ callTool: args.callTool, log })
+            : null
     );
 
     // Provisions a member unattended='auto' right before its deployer /

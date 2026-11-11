@@ -760,12 +760,49 @@ orchestrator before anything is minted or sent.
   secret stays and the config is as it was; if verification fails, the secret and
   the new config both stay, and the previous config is not restored.
 
-The member's copy expires with the token and is not renewed by itself: run
-`provision_kb_auth` again before then. After the KB server refuses a token
+The member's copy expires with the token and is not renewed by itself. The
+result's `refreshAt` says when to push again: `expiresAt` minus T, with T from
+`liveSecrets` in the orchestrator's `config.json` (see
+[When a token is minted](secret-variables.md#when-a-token-is-minted)) and the
+lifetime counted from the call, so a live secret mints a new token by then;
+null when the token has no expiry. After the KB server refuses a token
 (`E-KB-HTTP-AUTH` reason `rejected` on the member), pass `reason=rejected`, so a
 live secret mints a new token instead of pushing the refused one again. On a
 remote member the `E-KB-HTTP-AUTH` remediation says this renewal comes from the
 orchestrator.
+
+###### Keeping it fresh during a sprint
+
+fleet-sprint does the renewal for its own dispatches when the orchestrator's KB
+config selects the http provider with a `{{secret.NAME}}` token (it reads the
+remote and the secret from `fleet_status`'s `kbHealth.credential`). A literal
+token or a local store turns this off. Plain `execute_prompt` from another
+session is not covered. Log lines start with `[kb-auth]`.
+
+- **Remote member, dispatch starts:** `provision_kb_auth` runs when the member's
+  recorded `refreshAt` has passed, or nothing is recorded yet. Every remote
+  member the sprint dispatches to is pointed at this KB this way.
+- **Remote member, dispatch running:** a timer at `refreshAt` runs it again; the
+  member's fleet server reads the new copy on its next KB call. A push that
+  fails is logged and tried again a minute later. A push that returns the same
+  expiry (a static secret nobody rotated) stops the timer. The timer stops when
+  the member's last dispatch ends.
+- **Dispatch ends with `E-KB-HTTP-AUTH` in `toolErrors`** (see
+  [execute_prompt](mcp-tools.md#execute_prompt)): `provision_kb_auth` runs, with
+  `reason=rejected` on a remote member whose error had reason `rejected`; for a
+  local member it is one resolve on the orchestrator. On success the same
+  session is resumed once with a note that KB auth is restored and the agent
+  should redo the KB lookups it needed; a provider that returned no session id
+  gets the prompt again with that note instead. On failure there is no resume,
+  and one error is logged per member per run. A dispatch that failed outright is
+  healed but not resumed: its retry follows. `toolErrors` that could not be read
+  (`available: false`) cause no heal.
+- **Recorded `refreshAt`** lives in the sprint process. After a sprint restart
+  nothing is recorded, so the first dispatch on each remote member pushes again.
+  Two sprints on one member get the same cached token, so a second push is
+  harmless.
+- **Orchestrator down:** nothing renews; the member fails with
+  `E-KB-HTTP-AUTH` reason `expired` once its copy expires.
 
 **Headless and SSH failure modes.** The script runs non-interactively, in the
 fleet server's environment. Fleet does not fix that environment; every problem
