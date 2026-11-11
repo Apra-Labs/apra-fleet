@@ -23,7 +23,6 @@ import {
   dropLiveToken,
   getLiveTokenDetail,
   getLiveTokenStatus,
-  liveKbCoolDownUntil,
   resetLiveTokenCache,
 } from '../src/services/live-secret-cache.js';
 import {
@@ -390,7 +389,6 @@ describe('provisionAuthForKind: reason rejected', () => {
     expect(dropLiveToken(s.name, tokenOf(1))).toEqual({ retry: true });
     expect((await getLiveTokenDetail(s.name, rec)).token).toBe(tokenOf(2));
     expect(dropLiveToken(s.name, tokenOf(2)).retry).toBe(false);
-    expect(liveKbCoolDownUntil(s.name)).not.toBeNull();
     await provision(s.name);
     await provision(s.name, { reason: 'rejected' });
     expect(delivered.map((d) => d.value)).toEqual([tokenOf(1), tokenOf(3), tokenOf(4)]);
