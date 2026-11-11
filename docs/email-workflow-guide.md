@@ -43,7 +43,7 @@ automatically.
 import { parseToolJson } from '@apralabs/apra-fleet-client';
 import { connectFleet } from '@apralabs/apra-fleet-client/server-resolution';
 
-const { fleetApi } = await connectFleet({ env: process.env });
+const { fleetApi, transport } = await connectFleet({ env: process.env });
 
 // fleetApi wrappers return the raw MCP tool result ({ content: [...] }),
 // not a JSON string -- parseToolJson extracts the payload.
@@ -63,6 +63,9 @@ if (result.ok) {
 } else {
   console.error(`Failed: ${result.error}`);
 }
+
+// Release the server session when done (stop() alone leaves it open).
+await transport.close();
 ```
 
 No secrets in this code. The SMTP password resolves from the credential store

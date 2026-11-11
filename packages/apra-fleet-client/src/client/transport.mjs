@@ -101,6 +101,12 @@ export class StdioTransport extends EventEmitter {
             this.process = null;
         }
     }
+
+    /** Same as stop(): a stdio server lives and dies with its process. Lets
+     *  every caller end any transport with close(). */
+    async close() {
+        this.stop();
+    }
 }
 
 export class StreamableHttpTransport extends EventEmitter {

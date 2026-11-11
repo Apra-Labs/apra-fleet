@@ -37,6 +37,8 @@ Spawns a child process and speaks newline-delimited JSON over its stdin/stdout.
   null).
 - **`stop()`** -- kills the child process (`SIGTERM` via `.kill()`) and
   clears the internal process handle. Safe to call even if not started.
+- **`async close()`** -- same as `stop()`, so every transport can be ended
+  with `close()`.
 
 Incoming stdout data is buffered and split on `\r?\n`; each complete line is
 `JSON.parse`d and emitted as `'message'`. A line that fails to parse is
@@ -78,7 +80,10 @@ send client-to-server messages.
   session stays alive.
 - **`async close()`** -- best-effort HTTP `DELETE` of the session
   (`mcp-session-id`, 5 s bound) so the server releases the McpServer and any
-  member registry entry, then `stop()`. Use for short-lived sessions.
+  member registry entry, then `stop()`. Always end a transport with
+  `close()`. A session left open by `stop()` holds an McpServer on the
+  fleet server until the server evicts it as idle (no open request for
+  `APRA_FLEET_SESSION_IDLE_MS`, default 30 min).
 
 Both fetches go through `undici`'s own `fetch` with a dedicated `Agent`
 (`headersTimeout: 0`, `bodyTimeout: 0`, `keepAliveTimeout: 4000`) rather
@@ -1037,7 +1042,12 @@ HTTP headers or child-process spawn options).
   `APRA_FLEET_TRANSPORT=http`; unresponsive -> error) and retries that request
   once. A request that may have reached the server (e.g. an in-flight
   `execute_prompt`/`execute_command` whose response stream died) is rejected
-  and never re-sent; the next request reconnects.
+  and never re-sent; the next request reconnects. A replaced connection's
+  server session is released (HTTP DELETE, best effort). `close()` releases
+  the current session and stops; `stop()` is local only. Releasing a session
+  cancels any tool call still running on it, including the member process of
+  an `execute_prompt`/`execute_command`; the server does the same when it
+  evicts a session abandoned mid-call.
 - `isNeverDeliveredError(err)` -- the predicate behind that retry rule.
   `StreamableHttpTransport` send errors now carry `.status`.
 
