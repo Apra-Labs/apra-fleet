@@ -13,8 +13,9 @@
 //   recorded refresh time has passed, or nothing is recorded yet.
 // - Remote member, dispatch running: a timer at that refresh time runs
 //   provision_kb_auth again; it stops when the member's last dispatch ends.
-//   A timed push that fails is logged and tried again KB_AUTH_PUSH_RETRY_MS
-//   later.
+//   A timed push that fails, or brings no new token, is logged and tried again
+//   KB_AUTH_PUSH_RETRY_MS later. With no successful push recorded there is no
+//   timer: the next check is the next dispatch start.
 // - Dispatch ends with E-KB-HTTP-AUTH in execute_prompt's toolErrors: remote
 //   member, provision_kb_auth (reason rejected when the KB server refused the
 //   token); local member, provision_kb_auth too, whose local path is one
@@ -158,6 +159,10 @@ export function createKbAuthKeeper(opts) {
         }
         const expiresAt = typeof sc.expiresAt === 'string' ? sc.expiresAt : null;
         const refreshAtMs = typeof sc.refreshAt === 'string' && Number.isFinite(Date.parse(sc.refreshAt)) ? Date.parse(sc.refreshAt) : null;
+        // The member's KB config was rewritten to use this KB: said in the log, never silent.
+        if (sc.memberChange && typeof sc.memberChange.detail === 'string') {
+            log(`[kb-auth] member '${member}': ${sc.memberChange.detail}`);
+        }
         return { ok: true, expiresAt, refreshAtMs };
     }
 
@@ -199,11 +204,14 @@ export function createKbAuthKeeper(opts) {
         t.handle = setTimer(() => { t.handle = null; void fire(member, cfg); }, Math.max(0, delayMs));
     }
 
-    /** Arm the member's timer from its record: at the refresh time, or a retry when nothing is recorded. */
+    /**
+     * Arm the member's timer at its recorded refresh time. Nothing recorded (the
+     * dispatch-start push failed) or no expiry: no timer; the next check is the
+     * next dispatch start.
+     */
     function armFromRecord(member, cfg) {
         const rec = records.get(member);
-        if (!rec) return arm(member, cfg, retryMs);
-        if (rec.refreshAtMs === null) return; // no expiry: nothing to keep fresh
+        if (!rec || rec.refreshAtMs === null) return;
         arm(member, cfg, rec.refreshAtMs - now());
     }
 
@@ -212,9 +220,18 @@ export function createKbAuthKeeper(opts) {
         if (!t || t.active === 0) return;
         const r = await push(member, cfg, 'refresh time reached during a dispatch');
         if (!r.ok) return arm(member, cfg, retryMs);
-        // The same expiry again (a static secret nobody rotated): another push
-        // cannot help, so the timer stops; the next dispatch start checks again.
-        if (!r.changed) return;
+        if (!r.changed) {
+            // The same expiry again: a live secret whose refresh failed or is
+            // backing off (the old token is still served), or a static secret
+            // nobody rotated. Tried again after a fixed delay, so the retries
+            // never close in on the expiry.
+            const key = `${member}|same-expiry`;
+            if (!pushFailuresLogged.has(key)) {
+                pushFailuresLogged.add(key);
+                log(`[kb-auth] WARN: the timed push for member '${member}' brought no new token (it still expires ${records.get(member)?.expiresAt ?? 'never'}); tried again in ${Math.round(retryMs / 1000)} s. fleet_status shows the secret's state.`);
+            }
+            return arm(member, cfg, retryMs);
+        }
         armFromRecord(member, cfg);
     }
 

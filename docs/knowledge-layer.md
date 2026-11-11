@@ -781,12 +781,14 @@ session is not covered. Log lines start with `[kb-auth]`.
 
 - **Remote member, dispatch starts:** `provision_kb_auth` runs when the member's
   recorded `refreshAt` has passed, or nothing is recorded yet. Every remote
-  member the sprint dispatches to is pointed at this KB this way.
+  member the sprint dispatches to is pointed at this KB this way; a rewritten
+  member KB config (`memberChange`) is logged.
 - **Remote member, dispatch running:** a timer at `refreshAt` runs it again; the
   member's fleet server reads the new copy on its next KB call. A push that
-  fails is logged and tried again a minute later. A push that returns the same
-  expiry (a static secret nobody rotated) stops the timer. The timer stops when
-  the member's last dispatch ends.
+  fails, or returns the same expiry (a live secret whose refresh failed, a
+  static secret nobody rotated), is logged and tried again a minute later. If
+  the dispatch-start push failed there is no timer; the next dispatch start
+  tries again. The timer stops when the member's last dispatch ends.
 - **Dispatch ends with `E-KB-HTTP-AUTH` in `toolErrors`** (see
   [execute_prompt](mcp-tools.md#execute_prompt)): `provision_kb_auth` runs, with
   `reason=rejected` on a remote member whose error had reason `rejected`; for a

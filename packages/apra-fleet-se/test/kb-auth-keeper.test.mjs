@@ -18,6 +18,7 @@ function fleet({ credential = { kind: 'live', url: REMOTE, secretName: SECRET },
     const calls = [];
     const clock = { now: T0 };
     let mint = 0;
+    let lastExp = null;
     const callTool = async (name, args) => {
         calls.push({ name, args });
         if (name === 'fleet_status') return json({ members: [], ...(credential ? { kbHealth: { credential } } : { kbHealth: {} }) });
@@ -27,9 +28,10 @@ function fleet({ credential = { kind: 'live', url: REMOTE, secretName: SECRET },
             if (answer === 'fail') {
                 return { isError: true, content: [{ type: 'text', text: 'E-PROVISION-AUTH: mint-failed' }], structuredContent: { ok: false, code: 'E-PROVISION-AUTH', reason: 'mint-failed' } };
             }
-            mint += 1;
-            // A token living one hour from now, refresh due 6 minutes before it expires.
-            const exp = clock.now + HOUR;
+            // 'same': the previous token again (a refresh that failed, or a static secret).
+            if (answer !== 'same') { mint += 1; lastExp = clock.now + HOUR; }
+            // A token living one hour, refresh due 6 minutes before it expires.
+            const exp = lastExp;
             return {
                 content: [{ type: 'text', text: '[OK]' }],
                 structuredContent: { ok: true, expiresAt: new Date(exp).toISOString(), refreshAt: new Date(exp - 360_000).toISOString(), mint },
@@ -160,6 +162,47 @@ describe('KB auth keeper: timer during a dispatch', () => {
         assert.deepEqual(delays, [KB_AUTH_PUSH_RETRY_MS]);
         assert.equal(f.provisions().length, 3);
         assert.equal(lines.filter((l) => /failed: mint-failed/.test(l)).length, 1);
+    });
+
+    test('a timed push that brings no new token (same expiry) is logged once and tried again later', async () => {
+        const f = fleet({ provisionAnswers: ['ok', 'same', 'same'] });
+        const tm = timers();
+        const { keeper, lines } = keeperFor(f, tm);
+        const delays = [];
+        const a = agent([{
+            during: async () => {
+                f.clock.now += [...tm.pending.values()][0].ms;
+                await tm.fireOnly();
+                delays.push([...tm.pending.values()][0].ms);
+                await tm.fireOnly();
+                delays.push([...tm.pending.values()][0].ms);
+            },
+        }]);
+        await dispatchOn(keeper, 'm1', a);
+        assert.deepEqual(delays, [KB_AUTH_PUSH_RETRY_MS, KB_AUTH_PUSH_RETRY_MS]);
+        assert.equal(lines.filter((l) => /brought no new token/.test(l)).length, 1);
+    });
+
+    test('no timer when the dispatch-start push failed: the next dispatch start tries again', async () => {
+        const f = fleet({ provisionAnswers: ['fail', 'ok'] });
+        const tm = timers();
+        const { keeper } = keeperFor(f, tm);
+        await dispatchOn(keeper, 'm1', agent([{ during: async () => assert.equal(tm.pending.size, 0) }]));
+        await dispatchOn(keeper, 'm1', agent());
+        assert.equal(f.provisions().length, 2);
+    });
+
+    test('a rewritten member KB config is logged', async () => {
+        const f = fleet();
+        const base = f.callTool;
+        f.callTool = async (name, args) => {
+            const r = await base(name, args);
+            if (name === 'provision_kb_auth') r.structuredContent.memberChange = { reason: 'kb-config-replaced-sqlite', detail: 'its KB used the local store' };
+            return r;
+        };
+        const { keeper, lines } = keeperFor(f);
+        await dispatchOn(keeper, 'm1', agent());
+        assert.ok(lines.some((l) => l === "[kb-auth] member 'm1': its KB used the local store"), lines.join('\n'));
     });
 });
 

@@ -146,15 +146,17 @@ async function onMember(posix, powershell) {
   return { code: typeof r.body.exitCode === 'number' && !r.isError ? r.body.exitCode : null, out: `${r.body.stdout ?? ''}${r.body.stderr ?? ''}`.trim() || r.text };
 }
 
-/** One keeper-wrapped dispatch. Returns {value, lines, provisions, runs}. */
+/** One keeper-wrapped dispatch. Returns {value, lines, runs}; each run keeps its own toolErrors. */
 async function keeperDispatch(wf, keeperState, prompt, beforeFirstRun) {
   const lines = [];
   keeperState.log = (l) => { lines.push(l); info(l); };
   const runs = [];
   const run = async (p, o) => {
     if (runs.length === 0 && beforeFirstRun) await beforeFirstRun();
-    runs.push({ resume: o.resume, note: p.startsWith('KB auth is restored') });
-    return wf.agent(p, o);
+    const entry = { resume: o.resume, note: p.startsWith('KB auth is restored'), toolErrors: [] };
+    runs.push(entry);
+    const onToolErrors = (r, meta) => { entry.toolErrors.push(r); o.onToolErrors?.(r, meta); };
+    return wf.agent(p, { ...o, onToolErrors });
   };
   const value = await keeperState.keeper.dispatch({
     member: args.member, prompt,
@@ -238,10 +240,15 @@ async function main() {
   check(d1.lines.some((l) => /provision_kb_auth for member .*no token recorded in this sprint process/.test(l)), 'pushed before the dispatch: no token recorded yet', 'no pre-dispatch push logged');
   check(d1.lines.some((l) => /provision_kb_auth for member .*refresh time reached during a dispatch/.test(l)), 'pushed again by the timer during the dispatch', 'no timer push logged (a dispatch shorter than the refresh delay? raise the wait or lower --lifetime-s)');
   check(d1.runs.length === 1, 'no heal was needed', `the dispatch was re-run ${d1.runs.length - 1} time(s)`);
+  check(d1.runs[0].toolErrors.some((r) => r.available === true), 'toolErrors were read from the member', `toolErrors not available: ${JSON.stringify(d1.runs[0].toolErrors)}`);
 
   step(5, 'dispatch 2: the KB server token is rotated after the pre-dispatch push, so the agent is rejected and healed');
-  // A long-lived token now, so no timer push repairs it before the agent's call.
+  // A long-lived token now, so no timer push repairs it before the agent's call;
+  // and wait out dispatch 1's last refresh window, so dispatch 2 starts with a push.
   fs.writeFileSync(lifetimeFile, '3600');
+  const waitS = Math.ceil(lifetimeS * (1 - fraction)) + 5;
+  info(`waiting ${waitS} s for the recorded refresh time to pass`);
+  await new Promise((r) => setTimeout(r, waitS * 1000));
   const d2 = await keeperDispatch(wf, keeperState, kbPrompt('once'), async () => {
     fs.writeFileSync(tokenFile, newToken());
     info('KB server token rotated: the member\'s copy is now refused');
@@ -252,7 +259,12 @@ async function main() {
   const resumes = d2.lines.filter((l) => /KB auth restored, resuming session/.test(l));
   check(resumes.length === 1, `healed and resumed once: ${resumes[0] ?? ''}`, `expected exactly one resume, logged ${resumes.length}`);
   check(d2.runs.length === 2 && typeof d2.runs[1].resume === 'string' && d2.runs[1].note, 'the second run resumed the session by id with the note', `runs: ${JSON.stringify(d2.runs)}`);
-  check(!/E-KB-HTTP-AUTH/.test(String(d2.value)), 'the resumed agent\'s kb_query worked', 'the resumed agent still reports E-KB-HTTP-AUTH');
+  const authIn = (reports) => reports.flatMap((r) => (r.available ? r.entries : [])).filter((e) => e.code === 'E-KB-HTTP-AUTH');
+  const firstAuth = authIn(d2.runs[0]?.toolErrors ?? []);
+  check(firstAuth.some((e) => e.reason === 'rejected' && e.origin === 'session'), `the agent's own KB call was rejected: ${JSON.stringify(firstAuth)}`, `no rejected E-KB-HTTP-AUTH from the agent in toolErrors: ${JSON.stringify(d2.runs[0]?.toolErrors)}`);
+  const resumedReports = d2.runs[1]?.toolErrors ?? [];
+  check(resumedReports.some((r) => r.available) && authIn(resumedReports).length === 0, 'the resumed session made its KB call with no auth error',
+    `the resumed session's toolErrors: ${JSON.stringify(resumedReports)}`);
 }
 
 async function cleanup() {
