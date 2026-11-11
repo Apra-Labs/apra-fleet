@@ -346,7 +346,7 @@ async function runSetup(suiteId, runDir) {
 
     process.stdout.write('Setup phase complete: T1, T2, T2-done all PASS.\n');
   } finally {
-    try { transport.stop(); } catch { /* best-effort cleanup */ }
+    try { await transport.close(); } catch { /* best-effort cleanup */ }
   }
 }
 
@@ -560,7 +560,7 @@ async function runCollectLogs(runDir) {
     }
     process.stdout.write('Log collection complete.\n');
   } finally {
-    try { transport.stop(); } catch { /* best-effort cleanup */ }
+    try { await transport.close(); } catch { /* best-effort cleanup */ }
   }
 }
 
@@ -615,7 +615,7 @@ async function runTeardown(suiteId) {
       process.stdout.write('T6: PASS\n');
     }
   } finally {
-    try { transport.stop(); } catch { /* best-effort cleanup */ }
+    try { await transport.close(); } catch { /* best-effort cleanup */ }
   }
 }
 

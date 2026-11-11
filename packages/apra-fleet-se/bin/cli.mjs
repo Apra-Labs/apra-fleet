@@ -851,6 +851,9 @@ async function main() {
     // is retried once only when it provably never reached the server.
     const transport = createFleetHttpTransport(connection, { dirname: __dirname, exists: existsSync });
     await transport.start();
+    // Every exit below releases the server session first: stop() alone leaves
+    // it (and its McpServer) open on the fleet server until idle eviction.
+    const closeFleetTransport = () => transport.close().catch(() => { /* best effort */ });
     const mcpClient = new McpClient(transport);
 
     const fleetApi = new ApraFleet(mcpClient);
@@ -873,14 +876,14 @@ async function main() {
         const result = resolveMemberValidation({ rawMembers, registeredNames, allowMissingMembers });
         if (!result.ok) {
             console.error(result.message);
-            transport.stop();
+            await closeFleetTransport();
             process.exit(1);
         }
         if (result.message) console.warn(result.message);
         validMembers = result.validMembers;
     } catch (err) {
         console.error(`Error: Failed to list fleet members: ${err.message}`);
-        transport.stop();
+        await closeFleetTransport();
         process.exit(1);
     }
 
@@ -925,7 +928,7 @@ async function main() {
     });
     if (!issueCheck.ok) {
         console.error(issueCheck.message);
-        transport.stop();
+        await closeFleetTransport();
         process.exit(1);
     }
 
@@ -1011,7 +1014,10 @@ async function main() {
     const onLaunchSigint = () => {
         sprintReservation.releaseAll()
             .catch((err) => console.error('[member-reservation] release-on-SIGINT failed:', err))
-            .finally(() => process.exit(130));
+            .finally(async () => {
+                await closeFleetTransport();
+                process.exit(130);
+            });
     };
     process.once('SIGINT', onLaunchSigint);
     const topology = await reserveThenAlign({ sprintReservation, align: () => prepareLaunchTopology({
@@ -1027,7 +1033,7 @@ async function main() {
     }) });
     if (!topology.ok) {
         console.error(`Error: ${topology.message}`);
-        transport.stop();
+        await closeFleetTransport();
         process.exit(1);
     }
     if (!topology.singleMember) {
@@ -1097,8 +1103,8 @@ async function main() {
             console.error(`Error: ${message}`);
             sprintReservation.releaseAll()
                 .catch((err) => console.error('[member-reservation] release on viewer failure failed:', err && err.message ? err.message : err))
-                .finally(() => {
-                    transport.stop();
+                .finally(async () => {
+                    await closeFleetTransport();
                     process.exit(1);
                 });
         },
@@ -1195,7 +1201,10 @@ async function main() {
     const onSigint = () => {
         releaseReservationOnce()
             .catch((err) => console.error('[member-reservation] release-on-SIGINT failed:', err))
-            .finally(() => process.exit(130));
+            .finally(async () => {
+                await closeFleetTransport();
+                process.exit(130);
+            });
     };
     process.removeListener('SIGINT', onLaunchSigint);
     process.once('SIGINT', onSigint);
@@ -1238,7 +1247,7 @@ async function main() {
         await releaseReservationOnce();
         console.log('Sprint finished:', res);
         server.close();
-        transport.stop();
+        await closeFleetTransport();
         process.exit(0);
     } catch (err) {
         process.removeListener('SIGINT', onSigint);
@@ -1271,7 +1280,7 @@ async function main() {
             });
         }
         server.close();
-        transport.stop();
+        await closeFleetTransport();
         process.exit(process.exitCode || 1);
     }
 }

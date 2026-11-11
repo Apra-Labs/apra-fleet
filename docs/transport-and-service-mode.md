@@ -51,6 +51,14 @@ session id from a different identity is answered HTTP 403, so knowing or
 guessing a session id is not enough to use or tear down someone else's session.
 Session ids appear in logs only in shortened form.
 
+A client ends its session with an HTTP `DELETE` (the client package's
+`transport.close()`). A session whose client went away without one is evicted
+once it has had no open request (no SSE stream, no in-flight tool call) for
+`APRA_FLEET_SESSION_IDLE_MS` (default 30 minutes); its client gets 404 on its
+next request and opens a new session. Each eviction is logged. `GET /health`
+reports `sessions`, `sessionsEvicted` and `sessionIdleMs`, and the log warns
+once when open sessions reach `APRA_FLEET_SESSION_COUNT_WARN` (default 500).
+
 You can override the default port with the `APRA_FLEET_PORT` environment variable.
 If the configured port is already in use, the server refuses to start with an error
 naming the port, the pid recorded in `server.json` (if any) and `APRA_FLEET_PORT`.
