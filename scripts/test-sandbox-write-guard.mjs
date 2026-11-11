@@ -7,15 +7,18 @@
 // real post-commit hook into the shared hooks folder of the developer's clone.
 //
 // Recorded, not only thrown, because product code may catch the error (a
-// best-effort hook install): tests/setup.ts fails the test in afterEach. A
-// violation in a child node process goes to <sandbox root>/write-guard.log,
-// which tests/setup.ts reads too. A non-node child (git itself) is not covered.
+// best-effort hook install): tests/setup.ts fails the test in afterEach. Each
+// test gets its own log (beginWriteGuardTest), named in an env var its child node
+// processes inherit, so a child's violation is reported in the test that spawned
+// it and nowhere else. A non-node child (git itself) is not covered.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { syncBuiltinESMExports } from 'node:module';
 
 export const PROTECTED_DIRS_ENV = 'APRA_TEST_PROTECTED_DIRS';
+/** The current test's violation log; child processes inherit it. */
+export const TEST_LOG_ENV = 'APRA_TEST_WRITE_GUARD_LOG';
 export const WRITE_GUARD_CODE = 'E-TEST-SANDBOX-WRITE';
 const STATE = Symbol.for('apra-fleet.test-sandbox-write-guard');
 
@@ -43,14 +46,10 @@ export function protectedDirOf(p, dirs) {
     return null;
 }
 
-function logPath(env) {
-    const root = env.APRA_TEST_SANDBOX_ROOT;
-    return root ? path.join(root, 'write-guard.log') : null;
-}
-
 const WRITE_FLAGS = fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_APPEND;
 function opensForWrite(flags) {
-    if (flags === undefined || flags === null) return false;
+    // fs.open(path, callback): no flags, so a read.
+    if (flags === undefined || flags === null || typeof flags === 'function') return false;
     if (typeof flags === 'number') return (flags & WRITE_FLAGS) !== 0;
     return /[wa+]/.test(String(flags));
 }
@@ -72,19 +71,15 @@ export function installWriteGuard(env = process.env) {
     if (globalThis[STATE]) return globalThis[STATE];
     let dirs = [];
     try { dirs = JSON.parse(env[PROTECTED_DIRS_ENV] || '[]'); } catch { dirs = []; }
-    const log = logPath(env);
-    let logOffset = 0;
-    try { logOffset = log ? fs.readFileSync(log, 'utf8').length : 0; } catch { logOffset = 0; }
-    // Entries already in the log belong to earlier processes, and were reported there.
-    const state = { dirs, violations: [], logOffset, log };
+    const state = { dirs, violations: [], log: null, bypass: 0, tests: 0, appendLog: fs.appendFileSync, readLog: fs.readFileSync, unlinkLog: fs.unlinkSync };
     globalThis[STATE] = state;
     if (dirs.length === 0) return state;
-    const appendLog = fs.appendFileSync;
 
     const refuse = (name, target, dir) => {
         const line = `${WRITE_GUARD_CODE}: fs.${name} on ${target} (pid ${process.pid}) is inside ${dir}, outside the test sandbox`;
         state.violations.push(line);
-        if (log) { try { appendLog(log, `${process.pid}\t${line}\n`); } catch { /* the throw still reports it */ } }
+        const log = process.env[TEST_LOG_ENV];
+        if (log) { try { state.appendLog(log, `${process.pid}\t${line}\n`); } catch { /* the throw still reports it */ } }
         const err = new Error(`[test-sandbox] ${line}. A test must write only under its own temp dirs.`);
         // Never silent, even where the error is caught and no vitest afterEach looks.
         process.stderr.write(`${err.message}\n`);
@@ -92,7 +87,7 @@ export function installWriteGuard(env = process.env) {
         return err;
     };
     const check = (name, idx, when, args) => {
-        if (when && !when(args)) return null;
+        if (state.bypass > 0 || (when && !when(args))) return null;
         for (const i of idx) {
             const dir = protectedDirOf(args[i], dirs);
             if (dir) return refuse(name, toPath(args[i]), dir);
@@ -141,8 +136,21 @@ export function installWriteGuard(env = process.env) {
 }
 
 /**
- * Violations since the last call: this process's, plus those child processes
- * logged. Each is returned once.
+ * Start a test: its child node processes log violations to a file of its own,
+ * under the sandbox root. Call before each test (tests/setup.ts does).
+ */
+export function beginWriteGuardTest() {
+    const state = globalThis[STATE];
+    const root = process.env.APRA_TEST_SANDBOX_ROOT;
+    if (!state || !root) return;
+    state.violations.length = 0;
+    state.log = path.join(root, `write-guard-${process.pid}-${++state.tests}.log`);
+    process.env[TEST_LOG_ENV] = state.log;
+}
+
+/**
+ * Violations since the last call: this process's, plus those its child
+ * processes logged for the current test. Each is returned once.
  */
 export function takeWriteGuardViolations() {
     const state = globalThis[STATE];
@@ -150,13 +158,21 @@ export function takeWriteGuardViolations() {
     const out = state.violations.splice(0);
     if (state.log) {
         let text = '';
-        try { text = fs.readFileSync(state.log, 'utf8'); } catch { text = ''; }
-        const fresh = text.slice(state.logOffset);
-        state.logOffset = text.length;
-        for (const row of fresh.split('\n')) {
+        try { text = state.readLog(state.log, 'utf8'); state.unlinkLog(state.log); } catch { text = ''; }
+        for (const row of text.split('\n')) {
             const tab = row.indexOf('\t');
             if (tab > 0 && Number(row.slice(0, tab)) !== process.pid) out.push(row.slice(tab + 1));
         }
     }
     return out;
+}
+
+/**
+ * Test-only allowance: run `fn` with the guard off in this process, to remove
+ * what a broken guard let a test write. Never for a test's own writes.
+ */
+export function withWriteGuardBypass(fn) {
+    const state = globalThis[STATE];
+    if (state) state.bypass++;
+    try { return fn(); } finally { if (state) state.bypass--; }
 }

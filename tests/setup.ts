@@ -1,17 +1,19 @@
 import path from 'node:path';
 import os from 'node:os';
-import { afterEach, inject, vi } from 'vitest';
+import { afterEach, beforeEach, inject, vi } from 'vitest';
 // @ts-expect-error -- plain .mjs helper shared with the node --test runners
 import { assertNotRealProfile } from '../scripts/test-sandbox.mjs';
 // @ts-expect-error -- plain .mjs helper shared with the node --test runners
-import { takeWriteGuardViolations } from '../scripts/test-sandbox-write-guard.mjs';
+import { beginWriteGuardTest, takeWriteGuardViolations } from '../scripts/test-sandbox-write-guard.mjs';
 
 // Fail fast if this worker would resolve the real user profile (fleet.key,
 // ~/.apra-fleet/bin, ~/.apra-fleet/data): see scripts/test-sandbox.mjs.
 assertNotRealProfile();
 
 // A write into the real checkout's git dir or the real profile was refused by
-// the preloaded guard. Product code may have caught that error, so fail here.
+// the preloaded guard. Product code may have caught that error, so fail the test
+// that made it, or whose child process did (scripts/test-sandbox-write-guard.mjs).
+beforeEach(() => beginWriteGuardTest());
 afterEach(() => {
   const violations: string[] = takeWriteGuardViolations();
   if (violations.length > 0) {

@@ -103,10 +103,45 @@ export function assertNotRealProfile(env = process.env, homedir = os.homedir) {
 function protectedDirs(realHome, realDataDir) {
     const out = PROTECTED.map((d) => path.join(realHome, d));
     if (realDataDir) out.push(path.resolve(realDataDir));
-    const git = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', windowsHide: true });
-    const common = git.status === 0 ? git.stdout.trim() : '';
-    if (common) out.push(path.resolve(common));
+    const common = findGitCommonDir(process.cwd());
+    if (common) out.push(common);
     return out;
+}
+
+const runGit = (cwd, args) => {
+    const r = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
+    return r.status === 0 ? r.stdout.trim() : null;
+};
+
+/**
+ * The git dir shared by the checkout `cwd` is in (for a linked worktree, the main
+ * clone's .git), or null when `cwd` is in no checkout. Asks git, falling back to
+ * a git without --path-format (before 2.31), then to reading the .git entries
+ * when git cannot run. A .git found but not understood throws: the guard must
+ * never go unprotected without a word.
+ * @param {string} cwd
+ * @param {(cwd: string, args: string[]) => string|null} [git]
+ */
+export function findGitCommonDir(cwd, git = runGit) {
+    const absolute = git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+    // A git before 2.31 echoes the unknown option back instead of failing.
+    if (absolute && !absolute.includes('--path-format')) return path.resolve(absolute);
+    const relative = git(cwd, ['rev-parse', '--git-common-dir']);
+    if (relative) return path.resolve(cwd, relative);
+    for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+        const dotGit = path.join(dir, '.git');
+        let st = null;
+        try { st = fs.statSync(dotGit); } catch { st = null; }
+        if (st?.isDirectory()) return dotGit;
+        if (st?.isFile()) {
+            const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, 'utf8'));
+            if (!m) throw new Error(`[test-sandbox] cannot read ${dotGit}, so the checkout's git dir cannot be protected`);
+            const gitDir = path.resolve(dir, m[1].trim());
+            const commonFile = path.join(gitDir, 'commondir');
+            return fs.existsSync(commonFile) ? path.resolve(gitDir, fs.readFileSync(commonFile, 'utf8').trim()) : gitDir;
+        }
+        if (path.dirname(dir) === dir) return null;
+    }
 }
 
 /**
