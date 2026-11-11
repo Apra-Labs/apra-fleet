@@ -309,13 +309,14 @@ export class HttpKbProvider implements MemoryProvider {
     if (found.status === 'missing') {
       throw new KbHttpAuthError(name, 'missing', `the KB server token comes from fleet secret "${name}", which does not exist.`);
     }
+    // Policy before expiry: a refusal is not queued, an expired secret is.
+    assertKbSecretPolicy(name, found.meta);
     if (found.status === 'expired') {
       throw new KbHttpAuthError(
         name, 'expired',
         `the KB server token comes from fleet secret "${name}", which expired at ${found.expiresAt}.`,
       );
     }
-    assertKbSecretPolicy(name, found.meta);
     return { token: found.value };
   }
 

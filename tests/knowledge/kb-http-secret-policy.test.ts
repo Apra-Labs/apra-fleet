@@ -315,6 +315,16 @@ describe('allowedMembers', () => {
     expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/capture']);
   });
 
+  it('on an expired secret a refused member is refused, not queued, so its write never goes out once the secret is renewed', async () => {
+    credentialUpdate(STATIC, { members: member.friendlyName, expiresAt: Date.now() - 1000 });
+    const err = await asMember(other.id, () => authError(provider.capture(entry('from outsider')), 'member-not-allowed', STATIC));
+    expect(err.queued).toBe(false);
+    expect(provider.offlineQueue).toHaveLength(0);
+    credentialUpdate(STATIC, { expiresAt: null });
+    await asMember(member.id, () => provider.query({ query: 'gear' }));
+    expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/query']);
+  });
+
   it('the caller is read per call, not fixed on the provider', async () => {
     credentialUpdate(STATIC, { members: member.friendlyName });
     await asMember(member.id, () => provider.query({ query: 'gear' }));
