@@ -224,11 +224,11 @@ describe('HttpKbProvider with a credential helper', () => {
     stub.accept = () => false;
     await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
     expect([helper.runs().length, stub.requests.length]).toEqual([2, 2]);
-    for (let i = 0; i < 3; i++) {
+    for (let i = 1; i <= 3; i++) {
       const err = await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
+      expect([helper.runs().length, stub.requests.length]).toEqual([2, 2 + i]);
       expect(err.message).toContain('no new token is minted before');
     }
-    expect([helper.runs().length, stub.requests.length]).toEqual([2, 5]);
     // Past the 10 s cool-down: one new mint, then a 20 s cool-down for that one.
     vi.useFakeTimers({ toFake: ['Date'] });
     try {

@@ -86,6 +86,8 @@ export function installWriteGuard(env = process.env) {
         state.violations.push(line);
         if (log) { try { appendLog(log, `${process.pid}\t${line}\n`); } catch { /* the throw still reports it */ } }
         const err = new Error(`[test-sandbox] ${line}. A test must write only under its own temp dirs.`);
+        // Never silent, even where the error is caught and no vitest afterEach looks.
+        process.stderr.write(`${err.message}\n`);
         err.code = WRITE_GUARD_CODE;
         return err;
     };

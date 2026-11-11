@@ -207,17 +207,23 @@ describe('secret --live grammar, through the real CLI', () => {
     const node = process.execPath.replace(/'/g, "''");
     const cliPath = CLI.replace(/'/g, "''");
     const okPath = ok.replace(/'/g, "''");
+    // A second hop as npm's PowerShell shim makes it: & node <cli> $args.
+    const shim = path.join(sandbox, 'apra-fleet.ps1');
+    fs.writeFileSync(shim, `& '${node}' '${cliPath}' $args`);
+    const shimPath = shim.replace(/'/g, "''");
     fs.writeFileSync(ps1, [
       `& '${node}' '${cliPath}' secret --live changed --inline '$x = "abc"; node ''${okPath}'''`,
+      `& '${shimPath}' secret --live shimmed --inline '$x = "abc"; node ''${okPath}'''`,
       `& '${node}' '${cliPath}' secret --live kept --inline 'node ''${okPath}'''`,
     ].join('\r\n'));
     const r = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1], {
       env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir }, encoding: 'utf-8', timeout: 90_000,
     });
-    expect(r.stderr).toMatch(/^FAILED: inline-quotes-changed: /m);
+    expect(r.stderr.match(/^FAILED: inline-quotes-changed: /gm)).toHaveLength(2);
     expect(r.stderr).not.toContain('abc');
     expect(r.stdout).toMatch(/^OK: expires /m);
     expect(records().changed).toBeUndefined();
+    expect(records().shimmed).toBeUndefined();
     expect(records().kept).toBeDefined();
   }, 90_000);
 

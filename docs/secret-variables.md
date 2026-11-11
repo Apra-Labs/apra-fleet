@@ -126,7 +126,7 @@ reach an LLM prompt. Use `execute_command` instead.
 
 - Delivery vs. persistence: Running `apra-fleet secret --set NAME` without `--persist` delivers to a waiting OOB request but does NOT store in the vault. `{{secret.NAME}}` requires vault storage - use `--persist`.
 - `credential_store_set` **blocks** - when called, the tool opens an OOB terminal and waits synchronously for the user to enter the secret. It does not return a "Waiting..." intermediate status or require a second call. On success it returns `[OK] NAME stored [session/persistent]. Use {{secret.NAME}} in commands.`
-- A value typed with `apra-fleet secret --set NAME --persist` while `credential_store_set` or `register_member` waits for NAME goes to that call, which stores it with the policy and members it asked for. That command does not store it again, so its `--allow`, `--deny`, `--members` and `--expires-at` are not applied: change them afterwards with `secret --update`.
+- A value typed with `apra-fleet secret --set NAME --persist` while `credential_store_set` or `register_member` waits for NAME goes to that call, which stores it with the policy and members it asked for. That command does not store it again, so its `--allow`, `--deny`, `--members` and `--expires-at` are not applied (change them afterwards with `secret --update`). `--persist` counts for `register_member`; `credential_store_set` takes the tier from its own `persist`.
 - Failed resolution is always explicit - the tool returns an error and aborts. No silent pass-through of the token string.
 
 ## CI / Non-Interactive Usage
