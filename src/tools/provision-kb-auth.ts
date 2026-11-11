@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { liveRefreshAt } from '../services/live-secret-cache.js';
 import { provisionAuthForKind, ProvisionAuthError, type ProvisionKindFailure, type ProvisionKindResult } from '../services/provision-auth-kinds.js';
 
 export const provisionKbAuthSchema = z.object({
@@ -48,5 +49,19 @@ export async function provisionKbAuth(input: ProvisionKbAuthInput): Promise<{ te
   const text = `${ok ? '[OK]' : '[WARN]'} KB token from secret "${result.secret}" provisioned to member "${result.member.name}"; ` +
     `expires ${result.expiresAt ?? 'never'}; verification ${verified}` +
     (result.memberChange ? `; ${result.memberChange.detail}` : '');
-  return { text, structuredContent: { ok, ...result } };
+  return { text, structuredContent: { ok, ...result, refreshAt: refreshAtFor(result.expiresAt, Date.now()) } };
+}
+
+/**
+ * When a caller keeping the member's copy fresh should push again: expiresAt
+ * minus T, with T from config.json liveSecrets.* and the lifetime counted from
+ * now. A live token is minted no later than now, so this is never earlier than
+ * the cache's own refresh time, and a push at it gets a new token. Null when the
+ * token has no expiry. Exported for tests.
+ */
+export function refreshAtFor(expiresAt: string | null, nowMs: number): string | null {
+  if (!expiresAt) return null;
+  const expiresAtMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresAtMs)) return null;
+  return new Date(liveRefreshAt(nowMs, expiresAtMs)).toISOString();
 }

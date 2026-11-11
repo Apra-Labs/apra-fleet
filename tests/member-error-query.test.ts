@@ -27,9 +27,10 @@ describe('queryMemberToolErrors', () => {
   beforeEach(() => __resetErrorRegistry());
   afterEach(() => __resetErrorRegistry());
 
-  it('local member: reads this server\'s registry in-process, no command run', async () => {
+  it('local member: reads this server\'s registry in-process, no command run, engine-origin calls left out', async () => {
     const member = makeTestLocalAgent({ friendlyName: 'meq-local' });
     recordToolError(member.id, 'kb_query', Object.assign(new Error('x'), { code: 'E-KB-HTTP-AUTH', reason: 'expired' }));
+    recordToolError(member.id, 'kb_capture', Object.assign(new Error('x'), { code: 'E-KB-HTTP-AUTH', reason: 'rejected' }), 'engine');
     recordToolError('someone-else', 'kb_query', new Error('x'));
     const d = deps(async () => { throw new Error('must not run'); });
     const r = await queryMemberToolErrors(member, 30, { timeoutMs: 1000 }, d);
@@ -46,7 +47,8 @@ describe('queryMemberToolErrors', () => {
     expect(r).toEqual({ available: true, sinceSeconds: 42, total: 1, entries: [entry] });
     expect(d.cmds).toHaveLength(1);
     const cmd = d.cmds[0];
-    expect(cmd).toContain(`'{"member":"${member.id}","since_seconds":42}'`);
+    // origin session: the member's server leaves out the engine's own calls.
+    expect(cmd).toContain(`'{"member":"${member.id}","since_seconds":42,"origin":"session"}'`);
     expect(cmd).toContain(`'/home/u/.apra-fleet/bin/apra-fleet' 'call' '--member' '${member.id}' 'query_errors' '--args-file'`);
     expect(vi.mocked(d.exec).mock.calls[0].slice(2, 4)).toEqual([5000, 5000]);
   });

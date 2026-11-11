@@ -100,6 +100,9 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   const server = scopeGatedServer(baseServer, scope);
   const sessionMemberId = scopeMemberId(scope);
   const engineOrigin = scopeIsEngineOrigin(scope);
+  // Recorded on each error-registry entry, so execute_prompt's toolErrors can
+  // leave out the engine's own calls made as the member.
+  const errorOrigin = engineOrigin ? 'engine' as const : 'session' as const;
   // Whether this member session carries the engine's kb_maintainer grant;
   // handlers read it via getSessionKbMaintainer() (src/services/tool-scope.ts).
   const kbMaintainer = scopeHasKbMaintainer(scope);
@@ -216,7 +219,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
       try {
         return await run(input, extra);
       } catch (err) {
-        recordToolError(sessionMemberId, toolName, err);
+        recordToolError(sessionMemberId, toolName, err, errorOrigin);
         throw err;
       }
     };
@@ -256,7 +259,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
         // the SDK unchanged.
         const sc = err instanceof Error ? (err as { structuredContent?: unknown }).structuredContent : undefined;
         if (err instanceof Error && sc && typeof sc === 'object' && !Array.isArray(sc)) {
-          recordToolError(sessionMemberId, toolName, err);
+          recordToolError(sessionMemberId, toolName, err, errorOrigin);
           const toolText = (err as { toolText?: unknown }).toolText;
           return { content: [{ type: 'text' as const, text: typeof toolText === 'string' ? toolText : err.message }], isError: true, structuredContent: sc as Record<string, unknown> };
         }

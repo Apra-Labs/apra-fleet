@@ -13,7 +13,7 @@ import { credentialDelete, credentialSet, credentialUpdate, prepareLiveSecret, s
 import { resetLiveTokenCache } from '../src/services/live-secret-cache.js';
 import { __setProvisionKbDeps, type ProvisionKbDeps } from '../src/services/provision-kb.js';
 import { KB_CONFIG_PATH } from '../src/services/knowledge/kb-config.js';
-import { provisionKbAuth, provisionKbAuthSchema, ProvisionKbAuthToolError } from '../src/tools/provision-kb-auth.js';
+import { provisionKbAuth, provisionKbAuthSchema, ProvisionKbAuthToolError, refreshAtFor } from '../src/tools/provision-kb-auth.js';
 import { addAgent, getAgent, updateAgent } from '../src/services/registry.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
 import { backupAndResetRegistry, makeTestAgent, makeTestLocalAgent, restoreRegistry } from './test-helpers.js';
@@ -204,8 +204,22 @@ describe('provision_kb_auth, remote member: expiry', () => {
     const m = addRemote();
     const r = await provisionKbAuth({ member_id: m.id, secret: name, remote: REMOTE });
     expect(r.structuredContent.expiresAt).toBeNull();
+    expect(r.structuredContent.refreshAt).toBeNull();
     expect(pushes()[0].text).toContain("'--expires-at' 'none' '--allow' '--members' '*' '-y'");
     expect(staged[0].content).toBe(STATIC_VALUE);
+  });
+
+  it('refreshAt is the expiry minus T = min(0.1 x lifetime from now, 600 s) by default, and is in the result', async () => {
+    const now = Date.parse('2030-01-01T00:00:00Z');
+    expect(refreshAtFor('2030-01-01T01:00:00Z', now)).toBe('2030-01-01T00:54:00.000Z');
+    expect(refreshAtFor('2030-01-01T10:00:00Z', now)).toBe('2030-01-01T09:50:00.000Z');
+    const s = live('refresh');
+    const m = addRemote();
+    const r = await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE });
+    const refreshAt = Date.parse(r.structuredContent.refreshAt as string);
+    const expiresAt = Date.parse(r.structuredContent.expiresAt as string);
+    expect(refreshAt).toBeLessThan(expiresAt);
+    expect(expiresAt - refreshAt).toBeLessThanOrEqual(600_000);
   });
 });
 
