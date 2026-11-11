@@ -254,6 +254,7 @@
  * @property {number} since_seconds - Window: errors recorded in the last this many seconds, by the server's clock
  * @property {string} [code] - Only entries with this code, e.g. 'E-KB-HTTP-AUTH'
  * @property {string} [tool] - Only entries for this tool name
+ * @property {'engine'|'session'} [origin] - Only entries from this origin (default: both)
  * @property {number} [limit] - Most recent entries to return (default 100, max 1000)
  */
 
@@ -263,6 +264,8 @@
  * @property {string} at - ISO time it was recorded (that server's clock)
  * @property {string|null} member - Member uuid of the calling session; null for a non-member session
  * @property {'tool-call'} source
+ * @property {'engine'|'session'} origin - engine: a session the engine opened as the member
+ *   (origin=engine, e.g. apra-fleet call); session: any other
  * @property {string} tool
  * @property {string} code - The typed E-* code, or 'E-UNTYPED' for any other thrown error
  * @property {string|null} reason - The typed error's short reason token (e.g. 'expired'), an
@@ -279,8 +282,8 @@
 
 /**
  * execute_prompt's `toolErrors`: every error the member's server recorded for that member
- * during the dispatch window -- the agent's tool calls, but also the engine's own calls as
- * that member and concurrent sessions of it. `available: false` (with `detail`) when they
+ * during the dispatch window with origin `session` -- the agent's tool calls and concurrent
+ * sessions of it, not the engine's own calls as that member. `available: false` (with `detail`) when they
  * could not be read -- e.g. an older member install without query_errors, or the read was
  * skipped near a caller deadline -- never an empty list then. Full rules: execute_prompt
  * in docs/mcp-tools.md.
@@ -724,6 +727,10 @@
  *   it must be the remote the orchestrator KB config already names.
  * @property {"rejected"} [reason] - The KB server refused the token this secret last gave out: a
  *   cached live token is dropped and a new one minted before the push.
+ * @property {boolean} [keep_member_kb] - Remote member: never rewrite a member KB config that names
+ *   another remote, names this remote with its own token source, uses its local store or cannot be
+ *   read; such a member is refused (member-kb-other-remote, member-kb-other-token,
+ *   member-kb-local-store, member-kb-unreadable) before any mint or push.
  */
 
 /**
@@ -733,6 +740,10 @@
  * @property {"kb"} kind - Always "kb".
  * @property {string} secret - The secret name.
  * @property {string|null} expiresAt - The token expiry pushed with it, or null for none.
+ * @property {"live"|"static"} secretKind - live: minted on the orchestrator; static: a stored
+ *   value that only an operator renews.
+ * @property {string|null} refreshAt - When to push again to keep the member's copy fresh:
+ *   expiresAt minus T (config.json liveSecrets.*); null when expiresAt is null.
  * @property {{status: "verified"} | {status: "failed", reason: "rejected" | "unreachable" |
  *   "not-configured" | "unverified", detail: string}} verification - Outcome of the one KB
  *   call on the member (remote) or the resolve on the orchestrator (local, no KB call).
@@ -747,6 +758,7 @@
  * member-not-found, unknown-kind, bad-input, secret-not-found, secret-unreadable,
  * secret-expired, member-not-allowed, policy-deny, mint-failed, relay-unsupported,
  * member-unreachable, install-too-old, not-member-install, kb-not-configured, kb-other-remote,
+ * member-kb-other-remote, member-kb-other-token, member-kb-local-store, member-kb-unreadable,
  * secret-file-unavailable, delivery-failed, kb-setup-failed.
  * kb-setup-failed means the secret was stored on the member but its KB was not set up to use it;
  * expiresAt is then the expiry of that stored copy.

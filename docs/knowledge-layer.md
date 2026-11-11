@@ -738,6 +738,14 @@ orchestrator before anything is minted or sent.
      build from before this tool passes that check and is refused one step later,
      when it does not know `--expires-at`: the token has been minted by then, but
      nothing is stored on the member;
+     with `keep_member_kb=true`, it also runs `apra-fleet kb-setup ... --check`
+     (writes nothing) and refuses a member whose KB config names another remote,
+     names this remote with its own token source, uses its local store or cannot
+     be read (`member-kb-other-remote`, `member-kb-other-token`,
+     `member-kb-local-store`, `member-kb-unreadable`), before anything is
+     minted; an install without `--check` is `install-too-old`. Step 4 then
+     runs with `--keep`, so a config changed after the check is refused by the
+     write itself, never overwritten (the pushed secret stays, unused);
   2. resolves the secret on the orchestrator, minting if needed;
   3. stores the token on the member as an ordinary static secret through
      `apra-fleet secret --set NAME --persist --expires-at <time> --allow --members '*' -y`:
@@ -760,12 +768,70 @@ orchestrator before anything is minted or sent.
   secret stays and the config is as it was; if verification fails, the secret and
   the new config both stay, and the previous config is not restored.
 
-The member's copy expires with the token and is not renewed by itself: run
-`provision_kb_auth` again before then. After the KB server refuses a token
+The member's copy expires with the token and is not renewed by itself. The
+result's `refreshAt` says when to push again: `expiresAt` minus T, with T from
+`liveSecrets` in the orchestrator's `config.json` (see
+[When a token is minted](secret-variables.md#when-a-token-is-minted)) and the
+lifetime counted from the call, so a live secret mints a new token by then;
+null when the token has no expiry. After the KB server refuses a token
 (`E-KB-HTTP-AUTH` reason `rejected` on the member), pass `reason=rejected`, so a
 live secret mints a new token instead of pushing the refused one again. On a
 remote member the `E-KB-HTTP-AUTH` remediation says this renewal comes from the
 orchestrator.
+
+###### Keeping it fresh during a sprint
+
+fleet-sprint does the renewal for its own dispatches when the orchestrator's KB
+config selects the http provider with a `{{secret.NAME}}` token. It reads that
+config once per run, straight from `<data dir>/knowledge/config.json` on the
+orchestrator (no tool call, no member probe); a literal token, a local store, or
+a config it cannot read (logged once) turns this off for the run. Plain `execute_prompt` from another
+session is not covered. Log lines start with `[kb-auth]`.
+
+- **Which members:** a remote member with no KB config, or one already naming
+  this remote and secret. Every call passes `keep_member_kb=true`, so a member
+  whose KB config names another remote, names this remote with its own token
+  source, uses its local store or cannot be read is never rewired, token source
+  included. Such a member, and one refused as `install-too-old`,
+  `not-member-install` or `relay-unsupported`, is skipped for the run (no push,
+  timer or heal), with one log line naming why.
+- **Remote member, dispatch starts:** `provision_kb_auth` runs when the member's
+  recorded `refreshAt` has passed, or nothing is recorded yet. It runs before the
+  dispatch's watchdog starts, so it never uses up the dispatch's budget.
+- **Remote member, dispatch running:** a timer at `refreshAt` runs it again; the
+  member's fleet server reads the new copy on its next KB call. A push that
+  fails, or a live secret that returns the same expiry (its refresh failed or is
+  backing off), is logged and tried again a minute later. A static secret that
+  returns the same expiry (nobody rotated it) is not pushed again for that
+  member in the run, with one log line. If the dispatch-start push failed there
+  is no timer; the next dispatch start tries again. A heal moves the timer to the
+  new token's `refreshAt`. Delays beyond what a timer can hold (about 24 days)
+  are capped, and an early wake-up only re-arms. The timer stops when the
+  member's last dispatch ends.
+- **Dispatch ends with `E-KB-HTTP-AUTH` in `toolErrors`** (see
+  [execute_prompt](mcp-tools.md#execute_prompt)): `provision_kb_auth` runs, with
+  `reason=rejected` on a remote member whose error had reason `rejected`; for a
+  local member it is one resolve on the orchestrator. On success the same
+  session is resumed once with a note that KB auth is restored and the agent
+  should redo the KB lookups it needed; a provider that returned no session id
+  gets the prompt again with that note instead. If that resume itself fails (an
+  expired session, a busy member), the dispatch's first answer is kept, with one
+  log line. On a failed heal there is no resume, and one error is logged per
+  member per run. Heals on one member run one at a time. A dispatch the watchdog
+  already gave up on is neither healed nor resumed when it settles later. For a role whose dispatch has a
+  client watchdog, the heal and the resume run under a fresh budget of their own
+  (the role's `max_total_s` plus the watchdog grace, restarted once when the heal
+  begins), so a dispatch that ended near its budget is not killed during them;
+  the whole call is bounded by twice that budget. The resume itself also carries
+  the role's own `max_total_s` to the member. A dispatch that failed outright is healed but not resumed: its retry
+  follows. `toolErrors` that could not be read (`available: false`) cause no
+  heal.
+- **Recorded `refreshAt`** lives in the sprint process. After a sprint restart
+  nothing is recorded, so the first dispatch on each remote member pushes again.
+  Two sprints on one member get the same cached token, so a second push is
+  harmless.
+- **Orchestrator down:** nothing renews; the member fails with
+  `E-KB-HTTP-AUTH` reason `expired` once its copy expires.
 
 **Headless and SSH failure modes.** The script runs non-interactively, in the
 fleet server's environment. Fleet does not fix that environment; every problem

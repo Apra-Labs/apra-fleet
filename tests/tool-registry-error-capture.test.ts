@@ -35,13 +35,13 @@ import { KbScopeKeyRemovedError } from '../src/services/knowledge/kb-removed-sco
 
 type ToolHandler = (input: unknown, extra?: unknown) => Promise<unknown>;
 
-async function register(memberId: string): Promise<Map<string, ToolHandler>> {
+async function register(memberId: string, engineOrigin = false): Promise<Map<string, ToolHandler>> {
   const registered = new Map<string, ToolHandler>();
   const fakeServer = {
     tool: (name: string, _d: string, _s: unknown, handler: ToolHandler) => { registered.set(name, handler); },
     server: { sendLoggingMessage: async () => {} },
   };
-  await registerAllTools(fakeServer as never, memberToolScope(memberId, false));
+  await registerAllTools(fakeServer as never, memberToolScope(memberId, false, engineOrigin));
   return registered;
 }
 
@@ -63,10 +63,18 @@ describe('wrapTool error capture', () => {
     await expect(tools.get('kb_query')!({ query: CANARY })).rejects.toBe(err);
     const r = queryErrorEntries({ member: 'm-cap', sinceSeconds: 60 });
     expect(r.entries).toEqual([
-      { at: expect.any(String), member: 'm-cap', source: 'tool-call', tool: 'kb_query', code: 'E-KB-HTTP-AUTH', reason: 'expired' },
+      { at: expect.any(String), member: 'm-cap', source: 'tool-call', origin: 'session', tool: 'kb_query', code: 'E-KB-HTTP-AUTH', reason: 'expired' },
     ]);
     // Neither the arguments nor the message text are recorded.
     expect(JSON.stringify(r)).not.toContain(CANARY);
+  });
+
+  it('records origin engine for a session the engine opened as the member', async () => {
+    const tools = await register('m-cap', true);
+    behaviour.kbQuery = Object.assign(new Error('E-KB-HTTP-AUTH: x'), { code: 'E-KB-HTTP-AUTH', reason: 'expired' });
+    await expect(tools.get('kb_query')!({ query: 'q' })).rejects.toThrow();
+    const r = queryErrorEntries({ member: 'm-cap', sinceSeconds: 60 });
+    expect(r.entries.map(e => [e.tool, e.origin])).toEqual([['kb_query', 'engine']]);
   });
 
   it('records the removed-scope-key refusal thrown before the handler, and rethrows it unchanged', async () => {

@@ -22,6 +22,8 @@
 // child is still running, which a fully synchronous spawnSync cannot give
 // us.
 import { spawn, spawnSync } from 'child_process';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { TEST_CONCURRENCY } from '../test/helpers/test-concurrency.mjs';
@@ -35,6 +37,18 @@ const mode = process.argv[2];
 if (!Object.prototype.hasOwnProperty.call(MODES, mode)) {
     console.error(`Usage: node scripts/run-tests.mjs <mock|real|record> [extra node --test args]`);
     process.exit(2);
+}
+
+// Every run gets its own fleet data dir. The engine reads the orchestrator's
+// KB config from it (kb-auth-keeper.mjs), so a run that fell back to the real
+// ~/.apra-fleet/data would switch the KB auth keeper on inside mock sprints on
+// a machine whose KB is HTTP. A sandboxed `npm test` already sets one; a direct
+// run gets a temp dir here, removed at exit. The mock sprint harness refuses
+// the real one (ensureTestDataDir), and makes its own in any lane that sets none.
+if (!process.env.APRA_FLEET_DATA_DIR) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-se-test-data-'));
+    process.env.APRA_FLEET_DATA_DIR = dataDir;
+    process.on('exit', () => { try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* best effort */ } });
 }
 
 const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;

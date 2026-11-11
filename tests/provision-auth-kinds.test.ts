@@ -172,6 +172,7 @@ describe('provisionAuthForKind: a live and a static secret', () => {
       kind: 'kb',
       secret: s.name,
       expiresAt: expiryOf(1),
+      secretKind: 'live',
       verification: { status: 'verified' },
       memberChange: null,
     });

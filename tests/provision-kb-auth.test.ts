@@ -13,7 +13,7 @@ import { credentialDelete, credentialSet, credentialUpdate, prepareLiveSecret, s
 import { resetLiveTokenCache } from '../src/services/live-secret-cache.js';
 import { __setProvisionKbDeps, type ProvisionKbDeps } from '../src/services/provision-kb.js';
 import { KB_CONFIG_PATH } from '../src/services/knowledge/kb-config.js';
-import { provisionKbAuth, provisionKbAuthSchema, ProvisionKbAuthToolError } from '../src/tools/provision-kb-auth.js';
+import { provisionKbAuth, provisionKbAuthSchema, ProvisionKbAuthToolError, refreshAtFor } from '../src/tools/provision-kb-auth.js';
 import { addAgent, getAgent, updateAgent } from '../src/services/registry.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
 import { backupAndResetRegistry, makeTestAgent, makeTestLocalAgent, restoreRegistry } from './test-helpers.js';
@@ -34,7 +34,7 @@ let sent: Sent[];
 let staged: Array<{ host?: string; content: string }>;
 let removedStaged: string[];
 /** Per-step answers; a test overrides one to fail it. */
-let answers: { version: string; marker: number; push: SSHExecResult; kbSetup: SSHExecResult };
+let answers: { version: string; marker: number; push: SSHExecResult; kbSetup: SSHExecResult; kbCheck: SSHExecResult };
 let readyHook: (a: Agent) => Agent;
 
 function decode(cmd: string): string {
@@ -46,6 +46,7 @@ function answer(text: string): SSHExecResult {
   if (text.includes('--version')) return { code: 0, stdout: `apra-fleet ${answers.version}\n`, stderr: '' };
   if (text.includes('member-install.json')) return { code: answers.marker, stdout: '', stderr: '' };
   if (text.includes("'secret'")) return answers.push;
+  if (text.includes("'kb-setup'") && text.includes("'--check'")) return answers.kbCheck;
   if (text.includes("'kb-setup'")) return answers.kbSetup;
   throw new Error(`unexpected member command: ${text}`);
 }
@@ -125,6 +126,7 @@ beforeEach(() => {
     marker: 0,
     push: { code: 0, stdout: 'Secret stored\n', stderr: '' },
     kbSetup: { code: 0, stdout: '{"kbSetup":"written","previous":"missing","verification":"verified"}\n', stderr: '' },
+    kbCheck: { code: 0, stdout: '{"check":"missing"}\n', stderr: '' },
   };
   readyHook = (a) => a;
   kbConfigBackup = fs.existsSync(KB_CONFIG_PATH) ? fs.readFileSync(KB_CONFIG_PATH, 'utf8') : null;
@@ -204,8 +206,94 @@ describe('provision_kb_auth, remote member: expiry', () => {
     const m = addRemote();
     const r = await provisionKbAuth({ member_id: m.id, secret: name, remote: REMOTE });
     expect(r.structuredContent.expiresAt).toBeNull();
+    expect(r.structuredContent.refreshAt).toBeNull();
     expect(pushes()[0].text).toContain("'--expires-at' 'none' '--allow' '--members' '*' '-y'");
     expect(staged[0].content).toBe(STATIC_VALUE);
+  });
+
+  it('refreshAt is the expiry minus T = min(0.1 x lifetime from now, 600 s) by default, and is in the result', async () => {
+    const now = Date.parse('2030-01-01T00:00:00Z');
+    expect(refreshAtFor('2030-01-01T01:00:00Z', now)).toBe('2030-01-01T00:54:00.000Z');
+    expect(refreshAtFor('2030-01-01T10:00:00Z', now)).toBe('2030-01-01T09:50:00.000Z');
+    const s = live('refresh');
+    const m = addRemote();
+    const r = await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE });
+    const refreshAt = Date.parse(r.structuredContent.refreshAt as string);
+    const expiresAt = Date.parse(r.structuredContent.expiresAt as string);
+    expect(refreshAt).toBeLessThan(expiresAt);
+    expect(expiresAt - refreshAt).toBeLessThanOrEqual(600_000);
+  });
+});
+
+describe('provision_kb_auth, remote member: keep_member_kb', () => {
+  const checkAnswer = (found: string): SSHExecResult => ({ code: 0, stdout: `{"check":"${found}"}\n`, stderr: '' });
+  const checks = () => sent.filter((c) => c.text.includes("'--check'"));
+
+  it.each([
+    ['other-remote', 'member-kb-other-remote'],
+    ['not-http', 'member-kb-local-store'],
+    ['unreadable', 'member-kb-unreadable'],
+    // This remote with the member's own token source: its operator's set-up, never rewired.
+    ['other-token', 'member-kb-other-token'],
+  ])('a member KB config that is %s is refused as %s, before any mint or push', async (found, reason) => {
+    const s = live(`keep_${found.replace('-', '_')}`);
+    const m = addRemote();
+    answers.kbCheck = checkAnswer(found);
+    const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE, keep_member_kb: true }));
+    expect(err.structuredContent.reason).toBe(reason);
+    expect(checks()[0].text).toContain(`'kb-setup' '--remote' '${REMOTE}' '--token-ref' '${s.name}' '--check'`);
+    expect(s.runs()).toBe(0);
+    expect(staged).toHaveLength(0);
+    expect(pushes()).toHaveLength(0);
+  });
+
+  it.each(['missing', 'match'])('a member KB config that is %s is provisioned, and the write carries --keep', async (found) => {
+    const s = live(`keepok_${found.replace('-', '_')}`);
+    const m = addRemote();
+    answers.kbCheck = checkAnswer(found);
+    const r = await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE, keep_member_kb: true });
+    expect(r.structuredContent.ok).toBe(true);
+    expect(pushes()).toHaveLength(1);
+    const writes = setups().filter((c) => !c.text.includes("'--check'"));
+    expect(writes).toHaveLength(1);
+    expect(writes[0].text).toContain(`'--token-ref' '${s.name}' '--keep'`);
+  });
+
+  it('a member KB config changed after the check is refused by the write itself (--keep), not overwritten', async () => {
+    const s = live('keeprace');
+    const m = addRemote();
+    answers.kbCheck = checkAnswer('missing');
+    answers.kbSetup = { code: 1, stdout: '{"error":"kept","check":"other-remote"}\n', stderr: 'Error: ...' };
+    const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE, keep_member_kb: true }));
+    expect(err.structuredContent.reason).toBe('member-kb-other-remote');
+  });
+
+  it('a build that knows --check but not --keep is refused as too old at the write', async () => {
+    const s = live('keepnokeep');
+    const m = addRemote();
+    answers.kbCheck = checkAnswer('missing');
+    answers.kbSetup = { code: 1, stdout: '{"error":"usage"}\n', stderr: 'Usage: ...' };
+    const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE, keep_member_kb: true }));
+    expect(err.structuredContent.reason).toBe('install-too-old');
+  });
+
+  it('the result says whether the secret is live or static', async () => {
+    const m = addRemote();
+    const s = live('kindlive');
+    expect((await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE })).structuredContent.secretKind).toBe('live');
+    const name = staticSecret('kindstatic');
+    expect((await provisionKbAuth({ member_id: m.id, secret: name, remote: REMOTE })).structuredContent.secretKind).toBe('static');
+  });
+
+  it('an install without --check is refused as too old; without keep_member_kb nothing is checked', async () => {
+    const s = live('keepold');
+    const m = addRemote();
+    answers.kbCheck = { code: 1, stdout: '{"error":"usage"}\n', stderr: 'Usage: apra-fleet kb-setup ...' };
+    const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE, keep_member_kb: true }));
+    expect(err.structuredContent.reason).toBe('install-too-old');
+    sent = [];
+    await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE });
+    expect(checks()).toHaveLength(0);
   });
 });
 

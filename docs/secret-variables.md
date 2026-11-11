@@ -278,8 +278,10 @@ A secret a helper reads, through `{{secret.R}}` or `--env`, is bound to it.
 ### When a token is minted
 
 On each use: while the remaining lifetime is at least T the current token is handed off;
-below T, or once expired, a new one is minted first and replaces it. Nothing mints on a
-timer here. Concurrent callers share one mint.
+below T, or once expired, a new one is minted first and replaces it. The cache has no
+timer; the one timed push is fleet-sprint's, for a remote member's KB token during a
+dispatch (see [Keeping it fresh during a sprint](knowledge-layer.md#keeping-it-fresh-during-a-sprint)).
+Concurrent callers share one mint.
 
 T is `min(refreshFraction x lifetime, refreshMaxSeconds)`, from `liveSecrets` in the fleet
 `config.json`. These are the defaults:

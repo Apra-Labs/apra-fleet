@@ -20,8 +20,10 @@
 //      and must report rejected; with reason rejected a new one is minted and
 //      verified;
 //   8. checks no staged token file and no new git hook were left on the member;
-//   9. cleans up: the pushed secret and KB config on the member, the live
-//      secret, the registration (with --register), the KB server.
+//   9. cleans up what it created: the pushed secret and KB config on the
+//      member, the live secret, the KB server. It never deregisters a member
+//      (remove_member deletes the member's LLM login files): with --register
+//      the registration stays in the orchestrator's data dir.
 //
 // Needs: the member running a member install of this build; its work folder a
 // git repository with an origin remote (a member session's KB identity); the KB
@@ -293,10 +295,10 @@ async function cleanup() {
     check(restore.code === 0, m.hadConfig ? 'member KB config restored' : 'member KB config removed (there was none)', `restore failed: ${restore.out}`);
   }
   if (liveRegistered) info(`orchestrator live secret delete: ${fleet(['secret', '--delete', secretName]).out}`);
-  if (registered) {
-    const rm = await tool('remove_member', { member_name: args.member, force: true });
-    info(`remove_member: ${rm.text.split('\n')[0]}`);
-  }
+  // Detach without deregistering: remove_member deletes the member's LLM login
+  // files, so it is never called. With --register the registration stays in the
+  // orchestrator's data dir; remove that data dir when you are done.
+  if (registered) info(`member "${args.member}" stays registered on this orchestrator (not deregistered on purpose)`);
   // Through a .cmd shim the child is cmd.exe, so the whole tree is stopped.
   if (kbServer && kbServer.exitCode === null) {
     if (isWin) spawnSync('taskkill', ['/PID', String(kbServer.pid), '/T', '/F'], { windowsHide: true });

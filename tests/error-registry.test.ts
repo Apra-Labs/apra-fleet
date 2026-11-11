@@ -86,6 +86,19 @@ describe('query_errors tool', () => {
     expect(limited.entries[0].code).toBe('E-UNTYPED');
   });
 
+  it('returns both origins unless asked to filter by one', async () => {
+    recordToolError('m-1', 'kb_query', typed('E-KB-HTTP-AUTH', 'expired'));
+    now += 1;
+    recordToolError('m-1', 'kb_capture', typed('E-KB-HTTP-AUTH', 'rejected'), 'engine');
+    const all = JSON.parse(await queryErrors({ member: 'm-1', since_seconds: 60 }));
+    expect(all.entries.map((e: { tool: string; origin: string }) => [e.tool, e.origin])).toEqual([['kb_query', 'session'], ['kb_capture', 'engine']]);
+    const engine = JSON.parse(await queryErrors({ member: 'm-1', since_seconds: 60, origin: 'engine' }));
+    expect(engine.entries.map((e: { tool: string }) => e.tool)).toEqual(['kb_capture']);
+    const session = JSON.parse(await queryErrors({ member: 'm-1', since_seconds: 60, origin: 'session' }));
+    expect(session).toMatchObject({ total: 1 });
+    expect(session.entries.map((e: { tool: string }) => e.tool)).toEqual(['kb_query']);
+  });
+
   it('a member session reads its own member and is refused any other', async () => {
     recordToolError('m-1', 'kb_query', new Error('x'));
     recordToolError('m-2', 'kb_query', new Error('x'));
