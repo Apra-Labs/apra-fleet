@@ -964,7 +964,24 @@ export function answerBeadsIdentityProbe(overrides, member, command) {
     return null;
 }
 
+/**
+ * Throws unless APRA_FLEET_DATA_DIR names a data dir of its own, never the real
+ * ~/.apra-fleet/data (of this home or, inside the test sandbox, the real one).
+ * The engine reads the orchestrator's KB config there, so a mock sprint that
+ * saw the real one would switch the KB auth keeper on. scripts/run-tests.mjs and
+ * the root test sandbox both set it; every mock sprint checks it here.
+ */
+export function assertSandboxedDataDir(env = process.env) {
+    const dir = env.APRA_FLEET_DATA_DIR;
+    const real = [os.homedir(), env.APRA_TEST_REAL_HOME].filter(Boolean).map((h) => path.resolve(h, '.apra-fleet', 'data'));
+    if (!dir || real.includes(path.resolve(dir))) {
+        throw new Error(`mock-sprint-harness: APRA_FLEET_DATA_DIR must name a test data dir, not ${dir ? `the real ${dir}` : 'unset (the real ~/.apra-fleet/data)'}; run tests through scripts/run-tests.mjs or npm test.`);
+    }
+    return path.resolve(dir);
+}
+
 export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = {}) {
+    assertSandboxedDataDir();
     const {
         planReviewerMode = 'reject-then-approve',
         doerHandler = null,

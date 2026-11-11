@@ -35,7 +35,8 @@ async function withOrchestratorKb(fn) {
 }
 
 /** A callTool factory answering member_detail (a remote member) and provision_kb_auth with `provision`. */
-function keeperCallTools(provision) {
+/** events, when given, records the order of pushes and the engine's session_stats reads. */
+function keeperCallTools(provision, events = []) {
     return (executeCommand) => {
         const base = defaultMockCallTool({ executeCommand });
         return async (name, args) => {
@@ -43,7 +44,8 @@ function keeperCallTools(provision) {
             if (name === 'member_detail') {
                 return { content: [{ text: JSON.stringify({ vcsProvider: 'github', id: '0b9d3a1e-5f2c-4c6e-9a7b-1c2d3e4f5a6b', type: 'remote', os: 'linux', folder: '/srv/mock/widget' }) }] };
             }
-            if (name === 'provision_kb_auth') return provision(args);
+            if (name === 'provision_kb_auth') { events.push('push'); return provision(args); }
+            if (name === 'execute_command' && typeof args.command === 'string' && args.command.includes('session_stats')) events.push('stats');
             return base(name, args);
         };
     };
@@ -53,11 +55,12 @@ test('mock sprint: a remote doer gets its KB token before dispatch, and a reject
     await withScenarioMarkers('kb auth keeper wiring', () => withOrchestratorKb(async () => {
         const provisions = [];
         const doerCalls = [];
+        const events = [];
         const callToolFactory = keeperCallTools((args) => {
             provisions.push(args);
             const exp = Date.now() + 3600_000;
             return { content: [{ type: 'text', text: '[OK]' }], structuredContent: { ok: true, expiresAt: new Date(exp).toISOString(), refreshAt: new Date(exp - 360_000).toISOString(), secretKind: 'live' } };
-        });
+        }, events);
         const doerHandler = async ({ opts, tempDir, runCmd }) => {
             doerCalls.push({ prompt: opts.prompt, resume: opts.resume });
             const match = opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/);
@@ -86,6 +89,11 @@ test('mock sprint: a remote doer gets its KB token before dispatch, and a reject
         assert.equal(doerCalls[1].prompt.startsWith(KB_AUTH_RESUME_NOTE), true, 'the resume carries the note');
         assert.equal(typeof doerCalls[1].resume, 'string', 'the resume targets the explicit session id');
         assert.equal(doerCalls.filter((c) => c.prompt.startsWith(KB_AUTH_RESUME_NOTE)).length, 1, 'resumed only once');
+        // The dispatch-start push runs in dispatch-role's pre-dispatch hook, before
+        // the agent() call: so before the engine's session_stats read that opens
+        // every dispatch inside agent(), and outside the watchdog race.
+        assert.ok(events.includes('stats'), 'the engine read session_stats around the dispatch');
+        assert.ok(events.indexOf('push') < events.indexOf('stats'), `the first push must come before the first dispatch's session_stats read: ${events.join(',')}`);
     }));
 });
 
