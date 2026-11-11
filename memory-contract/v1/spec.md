@@ -643,7 +643,8 @@ When the named credential is a live secret (a script the server runs to mint
 the token), the same code is raised, with the same queueing, when the script
 fails or is inside its retry backoff after a failure (reason
 `live-secret-failed`; no request is sent), and when the server answers 401
-again after one retry with a freshly minted token (reason `rejected`). Neither
+again after one retry with a freshly minted token, or answers 401 to that token
+while it is kept through its cool-down, with no new mint (reason `rejected`). Neither
 the token nor the script's output appears in the message.
 
 ### 3.4 Silent refusals are named but not projectable

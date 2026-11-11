@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -218,6 +218,35 @@ describe('HttpKbProvider with a credential helper', () => {
     expect(err.message).toContain('HTTP 401');
     expect(helper.runs()).toHaveLength(2);
     expect(stub.requests).toHaveLength(2);
+  });
+
+  it('a server that rejects every token: the replacement is kept through a cool-down, so later calls run no script and stay rejected', async () => {
+    stub.accept = () => false;
+    await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
+    expect([helper.runs().length, stub.requests.length]).toEqual([2, 2]);
+    for (let i = 0; i < 3; i++) {
+      const err = await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
+      expect(err.message).toContain('no new token is minted before');
+    }
+    expect([helper.runs().length, stub.requests.length]).toEqual([2, 5]);
+    // Past the 10 s cool-down: one new mint, then a 20 s cool-down for that one.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + LIVE_BACKOFF_BASE_MS + 1000);
+      await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
+      expect([helper.runs().length, stub.requests.length]).toEqual([3, 7]);
+      vi.setSystemTime(Date.now() + LIVE_BACKOFF_BASE_MS + 1000);
+      await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
+      expect([helper.runs().length, stub.requests.length]).toEqual([3, 8]);
+    } finally {
+      vi.useRealTimers();
+    }
+    // Accepted once: the count resets, so a later rejection gets its one re-mint.
+    stub.accept = (token) => token.includes(PREFIX);
+    await query();
+    stub.accept = (token) => helperRunOf(token, PREFIX) >= 4;
+    await query();
+    expect(helper.runs()).toHaveLength(4);
   });
 
   it('concurrent 401s share one re-run', async () => {

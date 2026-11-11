@@ -30,6 +30,11 @@ import { appendLogRecord } from '../utils/log-helpers.js';
  *   Inside the window every caller gets the failure again, without a run. A
  *   token that is below T but not yet expired is still served while the
  *   refresh keeps failing.
+ * - A server that rejects a token (HTTP 401) gets one new mint, except when
+ *   the rejected token replaced a rejected one: it is then kept until a
+ *   cool-down on the backoff schedule has passed since it was minted (10 s,
+ *   doubling per consecutive rejected mint, capped at 5 minutes). A request the
+ *   server accepts resets the count.
  * - Re-registering the live secret (a new script, program, args, bindings or
  *   created_at) starts a fresh entry: no cached token, no backoff. Updating a
  *   bound secret's value or the record's policy fields does not: the token
@@ -51,6 +56,9 @@ interface CacheEntry {
   /** exp of the cached token when it is a JWT, decoded locally. */
   jwtExp?: string | null;
   lastMintedAt?: string;
+  lastMintedAtMs?: number;
+  /** Consecutive minted tokens a server rejected, since one was last accepted. */
+  rejectedMints: number;
   lastFailureAt?: string;
   lastFailureReason?: string;
   consecutiveFailures: number;
@@ -75,7 +83,7 @@ function entryFor(name: string, record: LiveSecretRecord): CacheEntry {
   const fingerprint = fingerprintOf(record);
   let entry = _entries.get(name);
   if (!entry || entry.fingerprint !== fingerprint) {
-    entry = { fingerprint, consecutiveFailures: 0 };
+    entry = { fingerprint, consecutiveFailures: 0, rejectedMints: 0 };
     _entries.set(name, entry);
   }
   return entry;
@@ -164,6 +172,7 @@ function startMint(name: string, record: LiveSecretRecord, entry: CacheEntry): P
       entry.refreshAtMs = liveRefreshAt(obtainedAtMs, expiresAtMs);
       entry.jwtExp = jwtExpiry(minted.token);
       entry.lastMintedAt = new Date(obtainedAtMs).toISOString();
+      entry.lastMintedAtMs = obtainedAtMs;
       entry.consecutiveFailures = 0;
       entry.backoffUntilMs = undefined;
       return { token: minted.token, expiresAt: minted.expiresAt };
@@ -211,15 +220,33 @@ export function getLiveToken(name: string, record: LiveSecretRecord): Promise<st
   return getLiveTokenDetail(name, record).then((detail) => detail.token);
 }
 
+/** What dropLiveToken did with a rejected token. */
+export type LiveTokenDrop = { retry: true } | { retry: false; keptUntil: string };
+
 /**
- * Forget the cached token after a server rejected it (HTTP 401), so the next
- * getLiveToken mints. Only drops the token the caller sent: when a concurrent
- * caller already replaced it, the newer token is kept and no extra mint happens.
+ * A server rejected this token (HTTP 401): forget it, so the next getLiveToken
+ * mints, and tell the caller to retry. When a concurrent caller already replaced
+ * it, the newer token is kept, with no extra mint, and the caller retries with
+ * it. When it replaced a rejected token and its cool-down has not passed, it is
+ * kept and the caller does not retry: a server that rejects every token costs
+ * one request per call and no script run.
  */
-export function dropLiveToken(name: string, rejectedToken: string): void {
+export function dropLiveToken(name: string, rejectedToken: string): LiveTokenDrop {
   const entry = _entries.get(name);
-  if (!entry || entry.token !== rejectedToken) return;
+  if (!entry || entry.token !== rejectedToken) return { retry: true };
+  if (entry.rejectedMints > 0 && entry.lastMintedAtMs !== undefined) {
+    const coolDownUntilMs = entry.lastMintedAtMs + liveBackoffMs(entry.rejectedMints);
+    if (Date.now() < coolDownUntilMs) return { retry: false, keptUntil: new Date(coolDownUntilMs).toISOString() };
+  }
+  entry.rejectedMints += 1;
   clearToken(entry);
+  return { retry: true };
+}
+
+/** A server accepted this token, so earlier rejections no longer count toward a cool-down. */
+export function noteLiveTokenAccepted(name: string, acceptedToken: string): void {
+  const entry = _entries.get(name);
+  if (entry && entry.token === acceptedToken) entry.rejectedMints = 0;
 }
 
 /**
