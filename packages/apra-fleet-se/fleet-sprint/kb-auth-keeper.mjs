@@ -77,7 +77,7 @@ const TOKEN_REF_RE = /^\{\{(?:secret|secure)\.([a-zA-Z0-9_-]{1,64})\}\}$/;
  * file kb_setup writes), read directly: no tool call, no member probe. Null
  * when there is none. Throws when it cannot be read or parsed.
  */
-export function readOrchestratorKbConfig(env = process.env) {
+export function readFleetKbConfig(env = process.env) {
     const file = path.join(getFleetDataDir(env), 'knowledge', 'config.json');
     if (!fs.existsSync(file)) return null;
     return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -125,7 +125,7 @@ export function createKbAuthKeeper(opts) {
     const setTimer = opts.setTimer ?? ((fn, ms) => { const h = setTimeout(fn, ms); if (h && h.unref) h.unref(); return h; });
     const clearTimer = opts.clearTimer ?? clearTimeout;
     const retryMs = opts.retryMs ?? KB_AUTH_PUSH_RETRY_MS;
-    const readKbConfig = opts.readKbConfig ?? readOrchestratorKbConfig;
+    const readKbConfig = opts.readKbConfig ?? readFleetKbConfig;
 
     /** Resolved once: {remote, secret}, or null when the KB needs no keeping. */
     let kbConfig;

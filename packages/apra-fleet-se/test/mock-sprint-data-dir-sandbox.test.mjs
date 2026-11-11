@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { getFleetDataDir } from '@apralabs/apra-fleet-client/server-resolution';
 import { ensureTestDataDir } from './helpers/mock-sprint-harness.mjs';
-import { readOrchestratorKbConfig } from '../fleet-sprint/kb-auth-keeper.mjs';
+import { readFleetKbConfig } from '../fleet-sprint/kb-auth-keeper.mjs';
 
 // Mock sprints must never see the real ~/.apra-fleet/data: the KB auth keeper
 // reads the orchestrator's KB config there, and on a machine whose KB is HTTP
@@ -21,19 +21,17 @@ test('this run\'s fleet data dir is a test dir, not the real one, and the keeper
     const dir = ensureTestDataDir();
     assert.equal(path.resolve(getFleetDataDir()), dir);
     assert.notEqual(dir, path.resolve(os.homedir(), '.apra-fleet', 'data'));
-    assert.equal(readOrchestratorKbConfig(), null, 'no KB config in a test data dir');
+    assert.equal(readFleetKbConfig(), null, 'no KB config in a test data dir');
 });
 
 test('a mock sprint started with APRA_FLEET_DATA_DIR unset runs against a temp data dir, removed at exit', () => {
     // A fresh process with the variable unset, as in the slow lane.
-    const harness = pathToFileURL(path.join(here, 'helpers', 'mock-sprint-harness.mjs')).href;
-    const keeper = pathToFileURL(path.join(here, '..', 'fleet-sprint', 'kb-auth-keeper.mjs')).href;
     const script = `
-        const { buildMockFleetApi } = await import(${JSON.stringify(harness)});
-        const { readOrchestratorKbConfig } = await import(${JSON.stringify(keeper)});
+        const { buildMockFleetApi } = await import(${JSON.stringify(pathToFileURL(path.join(here, 'helpers', 'mock-sprint-harness.mjs')).href)});
+        const { readFleetKbConfig } = await import(${JSON.stringify(pathToFileURL(path.join(here, '..', 'fleet-sprint', 'kb-auth-keeper.mjs')).href)});
         buildMockFleetApi(${JSON.stringify(os.tmpdir())}, { id: 'epic-1' }, [], []);
         const dir = process.env.APRA_FLEET_DATA_DIR;
-        console.log(JSON.stringify({ dir, exists: !!dir && (await import('node:fs')).existsSync(dir), kb: readOrchestratorKbConfig() }));
+        console.log(JSON.stringify({ dir, exists: !!dir && (await import('node:fs')).existsSync(dir), kb: readFleetKbConfig() }));
     `;
     const env = { ...process.env };
     delete env.APRA_FLEET_DATA_DIR;

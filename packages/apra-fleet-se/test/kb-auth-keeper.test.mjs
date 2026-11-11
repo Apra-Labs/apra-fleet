@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createKbAuthKeeper, readOrchestratorKbConfig, KB_AUTH_RESUME_NOTE, KB_AUTH_PUSH_RETRY_MS, MAX_TIMER_MS } from '../fleet-sprint/kb-auth-keeper.mjs';
+import { createKbAuthKeeper, readFleetKbConfig, KB_AUTH_RESUME_NOTE, KB_AUTH_PUSH_RETRY_MS, MAX_TIMER_MS } from '../fleet-sprint/kb-auth-keeper.mjs';
 
 // The KB auth keeper around a dispatch: the pre-dispatch push, the timer push
 // while it runs, and the heal plus one resume when the agent's toolErrors show
@@ -385,14 +385,14 @@ describe('KB auth keeper: the KB config is read directly, once per run', () => {
         assert.equal(lines.filter((l) => l.includes("could not read the orchestrator's KB config")).length, 1);
     });
 
-    test('readOrchestratorKbConfig reads <data dir>/knowledge/config.json, and null when there is none', () => {
+    test('readFleetKbConfig reads <data dir>/knowledge/config.json, and null when there is none', () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-keeper-cfg-'));
         try {
             const env = { APRA_FLEET_DATA_DIR: dir };
-            assert.equal(readOrchestratorKbConfig(env), null);
+            assert.equal(readFleetKbConfig(env), null);
             fs.mkdirSync(path.join(dir, 'knowledge'));
             fs.writeFileSync(path.join(dir, 'knowledge', 'config.json'), JSON.stringify({ provider: 'http', url: REMOTE, token_ref: '{{secret.x}}' }));
-            assert.deepEqual(readOrchestratorKbConfig(env), { provider: 'http', url: REMOTE, token_ref: '{{secret.x}}' });
+            assert.deepEqual(readFleetKbConfig(env), { provider: 'http', url: REMOTE, token_ref: '{{secret.x}}' });
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
         }
