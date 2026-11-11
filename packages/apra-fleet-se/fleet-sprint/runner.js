@@ -1017,7 +1017,9 @@ async function runSprintCycle(context) {
     // Bound below, next to onLlmAuthFailure (kb-auth-keeper.mjs).
     let kbAuthKeeper = null;
     const kbBeadTitles = (ids) => (Array.isArray(ids) ? ids : []).map((id) => kbBeadIndex.get(id)?.title).filter((t) => typeof t === 'string' && t);
-    const agent = async (prompt, opts = {}) => {
+    const agent = async (prompt, callOpts = {}) => {
+        // dispatch-role's watchdog lease is for the KB auth keeper only, never a dispatch option.
+        const { watchdogLease, ...opts } = callOpts;
         let finalPrompt = prompt;
         if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
             // Only promise the kb_captures channel to a persona whose returned
@@ -1045,7 +1047,7 @@ async function runSprintCycle(context) {
                 return await dispatchAccounting.around(
                     { memberName: opts.member_name, role: opts.agentType, label: opts.label },
                     () => (kbAuthKeeper
-                        ? kbAuthKeeper.dispatch({ member: opts.member_name, prompt: finalPrompt, opts: { sprint_id: sprintMutexId, ...opts }, run: agentRaw })
+                        ? kbAuthKeeper.dispatch({ member: opts.member_name, prompt: finalPrompt, opts: { sprint_id: sprintMutexId, ...opts, watchdogLease }, run: agentRaw })
                         : agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts })),
                 );
             } finally {

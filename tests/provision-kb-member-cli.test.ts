@@ -222,6 +222,20 @@ describe('kb-setup (real CLI)', () => {
     expect(`${r.stdout}${r.stderr}`).not.toContain(TOKEN);
   });
 
+  it('--check reports what the config is, with no secret, no KB call and no write', async () => {
+    const url = 'http://127.0.0.1:9';
+    const check = async (remote: string) => lastJson(await cli(['kb-setup', '--remote', remote, '--token-ref', NAME, '--check']));
+    expect(await check(url)).toEqual({ check: 'missing' });
+    expect(fs.existsSync(kbConfigPath())).toBe(false);
+    fs.mkdirSync(path.dirname(kbConfigPath()), { recursive: true });
+    fs.writeFileSync(kbConfigPath(), JSON.stringify({ provider: 'http', url, token_ref: `{{secret.${NAME}}}` }));
+    expect(await check(url)).toEqual({ check: 'match' });
+    expect(await check('http://127.0.0.1:8')).toEqual({ check: 'other-remote' });
+    fs.writeFileSync(kbConfigPath(), JSON.stringify({ provider: 'sqlite' }));
+    expect(await check(url)).toEqual({ check: 'not-http' });
+    expect(JSON.parse(fs.readFileSync(kbConfigPath(), 'utf-8'))).toEqual({ provider: 'sqlite' });
+  });
+
   it('an existing matching config is left alone, and a config for another remote is replaced', async () => {
     const url = await startKb();
     await setSecret();

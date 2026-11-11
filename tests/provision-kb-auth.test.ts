@@ -34,7 +34,7 @@ let sent: Sent[];
 let staged: Array<{ host?: string; content: string }>;
 let removedStaged: string[];
 /** Per-step answers; a test overrides one to fail it. */
-let answers: { version: string; marker: number; push: SSHExecResult; kbSetup: SSHExecResult };
+let answers: { version: string; marker: number; push: SSHExecResult; kbSetup: SSHExecResult; kbCheck: SSHExecResult };
 let readyHook: (a: Agent) => Agent;
 
 function decode(cmd: string): string {
@@ -46,6 +46,7 @@ function answer(text: string): SSHExecResult {
   if (text.includes('--version')) return { code: 0, stdout: `apra-fleet ${answers.version}\n`, stderr: '' };
   if (text.includes('member-install.json')) return { code: answers.marker, stdout: '', stderr: '' };
   if (text.includes("'secret'")) return answers.push;
+  if (text.includes("'kb-setup'") && text.includes("'--check'")) return answers.kbCheck;
   if (text.includes("'kb-setup'")) return answers.kbSetup;
   throw new Error(`unexpected member command: ${text}`);
 }
@@ -125,6 +126,7 @@ beforeEach(() => {
     marker: 0,
     push: { code: 0, stdout: 'Secret stored\n', stderr: '' },
     kbSetup: { code: 0, stdout: '{"kbSetup":"written","previous":"missing","verification":"verified"}\n', stderr: '' },
+    kbCheck: { code: 0, stdout: '{"check":"missing"}\n', stderr: '' },
   };
   readyHook = (a) => a;
   kbConfigBackup = fs.existsSync(KB_CONFIG_PATH) ? fs.readFileSync(KB_CONFIG_PATH, 'utf8') : null;
@@ -220,6 +222,47 @@ describe('provision_kb_auth, remote member: expiry', () => {
     const expiresAt = Date.parse(r.structuredContent.expiresAt as string);
     expect(refreshAt).toBeLessThan(expiresAt);
     expect(expiresAt - refreshAt).toBeLessThanOrEqual(600_000);
+  });
+});
+
+describe('provision_kb_auth, remote member: keep_member_kb', () => {
+  const checkAnswer = (found: string): SSHExecResult => ({ code: 0, stdout: `{"check":"${found}"}\n`, stderr: '' });
+  const checks = () => sent.filter((c) => c.text.includes("'--check'"));
+
+  it.each([
+    ['other-remote', 'member-kb-other-remote'],
+    ['not-http', 'member-kb-local-store'],
+    ['unreadable', 'member-kb-unreadable'],
+  ])('a member KB config that is %s is refused as %s, before any mint or push', async (found, reason) => {
+    const s = live(`keep_${found.replace('-', '_')}`);
+    const m = addRemote();
+    answers.kbCheck = checkAnswer(found);
+    const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE, keep_member_kb: true }));
+    expect(err.structuredContent.reason).toBe(reason);
+    expect(checks()[0].text).toContain(`'kb-setup' '--remote' '${REMOTE}' '--token-ref' '${s.name}' '--check'`);
+    expect(s.runs()).toBe(0);
+    expect(staged).toHaveLength(0);
+    expect(pushes()).toHaveLength(0);
+  });
+
+  it.each(['missing', 'match', 'other-token'])('a member KB config that is %s is provisioned', async (found) => {
+    const s = live(`keepok_${found.replace('-', '_')}`);
+    const m = addRemote();
+    answers.kbCheck = checkAnswer(found);
+    const r = await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE, keep_member_kb: true });
+    expect(r.structuredContent.ok).toBe(true);
+    expect(pushes()).toHaveLength(1);
+  });
+
+  it('an install without --check is refused as too old; without keep_member_kb nothing is checked', async () => {
+    const s = live('keepold');
+    const m = addRemote();
+    answers.kbCheck = { code: 1, stdout: '{"error":"usage"}\n', stderr: 'Usage: apra-fleet kb-setup ...' };
+    const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE, keep_member_kb: true }));
+    expect(err.structuredContent.reason).toBe('install-too-old');
+    sent = [];
+    await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE });
+    expect(checks()).toHaveLength(0);
   });
 });
 

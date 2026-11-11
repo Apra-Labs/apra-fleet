@@ -9,13 +9,21 @@
 // provision_kb_auth call here uses. A literal token or a sqlite KB turns it
 // off for the run.
 //
+// - Members: every remote call passes keep_member_kb, so a member whose own KB
+//   config names another remote, uses its local store or cannot be read is
+//   refused before any mint and skipped for the run (one log line): it is
+//   never rewired.
 // - Remote member, dispatch starts: provision_kb_auth when the member's
 //   recorded refresh time has passed, or nothing is recorded yet.
 // - Remote member, dispatch running: a timer at that refresh time runs
 //   provision_kb_auth again; it stops when the member's last dispatch ends.
-//   A timed push that fails, or brings no new token, is logged and tried again
-//   KB_AUTH_PUSH_RETRY_MS later. With no successful push recorded there is no
-//   timer: the next check is the next dispatch start.
+//   A timed push that fails, or brings a live secret's same token back, is
+//   logged and tried again KB_AUTH_PUSH_RETRY_MS later. A static secret that
+//   comes back with the same expiry is not pushed again for that member in the
+//   run. With no successful push recorded there is no timer: the next check is
+//   the next dispatch start.
+// - The heal and the resume renew the dispatch watchdog's lease once, so they
+//   run under a fresh budget of their own.
 // - Dispatch ends with E-KB-HTTP-AUTH in execute_prompt's toolErrors: remote
 //   member, provision_kb_auth (reason rejected when the KB server refused the
 //   token); local member, provision_kb_auth too, whose local path is one
@@ -41,6 +49,13 @@ export const KB_AUTH_PUSH_RETRY_MS = 60_000;
 export const KB_AUTH_RESUME_NOTE =
     'KB auth is restored: the knowledge bank calls that failed with E-KB-HTTP-AUTH will work now. ' +
     'Redo any KB lookups or captures you needed, finish the task, and give your final answer again in the same format as before.';
+
+/** provision_kb_auth refusals for a member whose own KB config is set up for something else. */
+const MEMBER_KB_ELSEWHERE = {
+    'member-kb-other-remote': 'its KB config names another remote',
+    'member-kb-local-store': 'its KB config uses its local store',
+    'member-kb-unreadable': 'its KB config cannot be read',
+};
 
 function parseJson(text) {
     try { return JSON.parse(text); } catch { return null; }
@@ -99,6 +114,10 @@ export function createKbAuthKeeper(opts) {
     const pushFailuresLogged = new Set();
     /** members whose failed heal was already logged. */
     const healFailuresLogged = new Set();
+    /** member name -> why its own KB config is left alone: no push, timer or heal for the run. */
+    const skipped = new Map();
+    /** members whose static secret came back with the same expiry: no more pushes this run. */
+    const staticSettled = new Set();
 
     async function sprintKb() {
         if (kbConfig !== undefined) return kbConfig;
@@ -118,7 +137,7 @@ export function createKbAuthKeeper(opts) {
         }
         const c = status.kbHealth && status.kbHealth.credential;
         if (c && (c.kind === 'secret' || c.kind === 'live') && typeof c.url === 'string' && typeof c.secretName === 'string') {
-            kbConfig = { remote: c.url, secret: c.secretName };
+            kbConfig = { remote: c.url, secret: c.secretName, kind: c.kind };
             log(`[kb-auth] the KB at ${c.url} takes its token from secret '${c.secretName}': members' tokens are kept fresh with provision_kb_auth.`);
         } else {
             kbConfig = null;
@@ -141,12 +160,18 @@ export function createKbAuthKeeper(opts) {
         return type;
     }
 
-    /** One provision_kb_auth call; {ok, expiresAt, refreshAtMs, reason}. Never throws. */
-    async function provision(member, cfg, reason) {
+    /**
+     * One provision_kb_auth call; {ok, expiresAt, refreshAtMs, reason}. Never throws.
+     * A remote member's call passes keep_member_kb, so a member KB config set up
+     * for another remote or the local store is refused before any mint, and the
+     * member is skipped for the run.
+     */
+    async function provision(member, cfg, remote, reason) {
         let res;
         try {
             res = await callTool('provision_kb_auth', {
-                member_name: member, secret: cfg.secret, remote: cfg.remote, ...(reason ? { reason } : {}),
+                member_name: member, secret: cfg.secret, remote: cfg.remote,
+                ...(remote ? { keep_member_kb: true } : {}), ...(reason ? { reason } : {}),
             });
         } catch (err) {
             return { ok: false, reason: `call failed: ${err && err.message ? err.message : err}` };
@@ -155,6 +180,10 @@ export function createKbAuthKeeper(opts) {
         if (!res || res.isError || !sc || sc.ok !== true) {
             const why = sc && typeof sc.reason === 'string' ? sc.reason
                 : (sc && sc.verification && sc.verification.reason) || resultText(res) || 'no result';
+            if (Object.hasOwn(MEMBER_KB_ELSEWHERE, why) && !skipped.has(member)) {
+                skipped.set(member, why);
+                log(`[kb-auth] member '${member}' is not kept: ${MEMBER_KB_ELSEWHERE[why]}, which the sprint leaves as it is. No KB token push, timer or heal for it in this run.`);
+            }
             return { ok: false, reason: String(why) };
         }
         const expiresAt = typeof sc.expiresAt === 'string' ? sc.expiresAt : null;
@@ -172,8 +201,9 @@ export function createKbAuthKeeper(opts) {
         if (inFlight) return inFlight;
         const run = (async () => {
             const before = records.get(member);
-            const r = await provision(member, cfg);
+            const r = await provision(member, cfg, true);
             if (!r.ok) {
+                if (skipped.has(member)) return { ok: false, changed: false };
                 const key = `${member}|${r.reason}`;
                 if (!pushFailuresLogged.has(key)) {
                     pushFailuresLogged.add(key);
@@ -183,7 +213,14 @@ export function createKbAuthKeeper(opts) {
             }
             records.set(member, { expiresAt: r.expiresAt, refreshAtMs: r.refreshAtMs });
             log(`[kb-auth] provision_kb_auth for member '${member}' (${why}): token expires ${r.expiresAt ?? 'never'}.`);
-            return { ok: true, changed: !before || before.expiresAt !== r.expiresAt };
+            const changed = !before || before.expiresAt !== r.expiresAt;
+            // A static secret with the same expiry again: nobody rotated it, so
+            // pushing it again cannot help. Stopped for the rest of the run.
+            if (!changed && cfg.kind === 'secret' && !staticSettled.has(member)) {
+                staticSettled.add(member);
+                log(`[kb-auth] member '${member}': static secret '${cfg.secret}' still expires ${r.expiresAt ?? 'never'}; not pushed again in this run (rotate it to renew).`);
+            }
+            return { ok: true, changed };
         })();
         const shared = run.finally(() => { if (pushing.get(member) === shared) pushing.delete(member); });
         pushing.set(member, shared);
@@ -192,6 +229,7 @@ export function createKbAuthKeeper(opts) {
 
     /** Dispatch start on a remote member: push unless the recorded token is still fresh. */
     async function ensureFresh(member, cfg) {
+        if (staticSettled.has(member)) return;
         const rec = records.get(member);
         if (rec && (rec.refreshAtMs === null || now() < rec.refreshAtMs)) return;
         await push(member, cfg, rec ? 'token within its refresh window' : 'no token recorded in this sprint process');
@@ -219,16 +257,17 @@ export function createKbAuthKeeper(opts) {
         const t = timers.get(member);
         if (!t || t.active === 0) return;
         const r = await push(member, cfg, 'refresh time reached during a dispatch');
+        if (skipped.has(member)) return;
         if (!r.ok) return arm(member, cfg, retryMs);
+        if (staticSettled.has(member)) return;
         if (!r.changed) {
-            // The same expiry again: a live secret whose refresh failed or is
-            // backing off (the old token is still served), or a static secret
-            // nobody rotated. Tried again after a fixed delay, so the retries
-            // never close in on the expiry.
+            // The same expiry again from a live secret: its refresh failed or is
+            // backing off, and the old token is still served. Tried again after
+            // a fixed delay, so the retries never close in on the expiry.
             const key = `${member}|same-expiry`;
             if (!pushFailuresLogged.has(key)) {
                 pushFailuresLogged.add(key);
-                log(`[kb-auth] WARN: the timed push for member '${member}' brought no new token (it still expires ${records.get(member)?.expiresAt ?? 'never'}); tried again in ${Math.round(retryMs / 1000)} s. fleet_status shows the secret's state.`);
+                log(`[kb-auth] WARN: the timed push for member '${member}' brought no new token from live secret '${cfg.secret}' (it still expires ${records.get(member)?.expiresAt ?? 'never'}); tried again in ${Math.round(retryMs / 1000)} s. fleet_status shows the secret's state.`);
             }
             return arm(member, cfg, retryMs);
         }
@@ -256,7 +295,7 @@ export function createKbAuthKeeper(opts) {
     async function heal(member, type, cfg, auth) {
         const remote = type !== 'local';
         // A local member's KB provider already retried in-line; its call only resolves the secret.
-        const r = await provision(member, cfg, remote && auth.rejected ? 'rejected' : undefined);
+        const r = await provision(member, cfg, remote, remote && auth.rejected ? 'rejected' : undefined);
         if (!r.ok) {
             if (!healFailuresLogged.has(member)) {
                 healFailuresLogged.add(member);
@@ -272,13 +311,17 @@ export function createKbAuthKeeper(opts) {
      * Run one dispatch with the KB token kept fresh around it.
      * @param {{ member?: string, prompt: string, opts: object, run: (prompt: string, opts: object) => Promise<any> }} d
      */
-    async function dispatch({ member, prompt, opts: dispatchOpts, run }) {
+    async function dispatch({ member, prompt, opts: rawOpts, run }) {
+        // The watchdog lease is the caller's, never a dispatch option.
+        const { watchdogLease, ...dispatchOpts } = rawOpts || {};
         const cfg = member ? await sprintKb() : null;
-        const type = cfg ? await memberType(member) : null;
+        const type = cfg && !skipped.has(member) ? await memberType(member) : null;
         if (!cfg || !type) return run(prompt, dispatchOpts);
         const remote = type !== 'local';
         if (remote) {
             await ensureFresh(member, cfg);
+            // Refused at that push: this member's KB is its own business.
+            if (skipped.has(member)) return run(prompt, dispatchOpts);
             startTimer(member, cfg);
         }
         try {
@@ -304,7 +347,14 @@ export function createKbAuthKeeper(opts) {
                 throw err;
             }
             const auth = kbAuthErrorsOf(reports);
-            if (!auth || !(await heal(member, type, cfg, auth))) return value;
+            if (!auth) return value;
+            // The heal and the resume get a fresh watchdog budget of their own,
+            // so a dispatch that ended near its max_total_s is not killed during
+            // them. The lease renews once (dispatch-failure.mjs).
+            if (watchdogLease && typeof watchdogLease.renew === 'function' && watchdogLease.renew()) {
+                log(`[kb-auth] member '${member}': the heal and resume run under a fresh dispatch watchdog budget.`);
+            }
+            if (!(await heal(member, type, cfg, auth))) return value;
             const label = dispatchOpts.label ? `${dispatchOpts.label} [KB auth restored]` : undefined;
             if (sessionId) {
                 log(`[kb-auth] member '${member}' hit ${KB_AUTH_ERROR_CODE} ${auth.count} time(s); KB auth restored, resuming session '${sessionId}' once.`);

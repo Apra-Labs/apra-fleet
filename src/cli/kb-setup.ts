@@ -14,6 +14,11 @@
 // other-token or unreadable. A failed verification keeps what was written.
 // A refusal exits 1 with {"error":"refused"} and the reason on stderr. No line
 // carries a token.
+//
+// --check writes nothing, needs no secret and makes no KB call: it prints
+// {"check":<kbConfigMatch>} (match, missing, not-http, other-remote,
+// other-token or unreadable), so the orchestrator can leave a member KB that is
+// set up for something else alone before it mints anything.
 
 import { kbConfigMatch } from '../services/knowledge/kb-config.js';
 import { HttpKbProvider, KbHttpAuthError, isConnectionError } from '../services/knowledge/http-provider.js';
@@ -21,7 +26,7 @@ import { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import { assertKbTokenSecretUsable, kbSetup } from '../tools/kb-setup.js';
 import { formatSecretToken } from '../services/secret-token.js';
 
-export const KB_SETUP_USAGE = 'Usage: apra-fleet kb-setup --remote <http(s) url> --token-ref <secret name>';
+export const KB_SETUP_USAGE = 'Usage: apra-fleet kb-setup --remote <http(s) url> --token-ref <secret name> [--check]';
 
 const NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -62,17 +67,19 @@ async function verify(remote: string, name: string): Promise<KbSetupVerification
   }
 }
 
-function parseArgs(args: string[]): { remote: string; name: string } | null {
+function parseArgs(args: string[]): { remote: string; name: string; check: boolean } | null {
   let remote: string | undefined;
   let name: string | undefined;
+  let check = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === '--remote' && args[i + 1] !== undefined) remote = args[++i];
+    if (a === '--check') check = true;
+    else if (a === '--remote' && args[i + 1] !== undefined) remote = args[++i];
     else if (a === '--token-ref' && args[i + 1] !== undefined) name = args[++i];
     else return null;
   }
   if (!remote || !name || !NAME_REGEX.test(name)) return null;
-  return { remote, name };
+  return { remote, name, check };
 }
 
 /** Run the verb; returns the process exit code. */
@@ -88,6 +95,10 @@ export async function runKbSetupCli(args: string[], io: Io = defaultIo): Promise
     return 1;
   }
   const { remote, name } = parsed;
+  if (parsed.check) {
+    io.log(JSON.stringify({ check: kbConfigMatch(remote, name) }));
+    return 0;
+  }
   let previous: string | undefined;
   try {
     // The same refusals as the kb_setup tool, also when the config already matches.

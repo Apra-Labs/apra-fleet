@@ -605,9 +605,10 @@ local OAuth session to the member instead. `api_key` supports a
 
 Calls `provision_kb_auth` -- gives a member the KB token from a secret on the
 orchestrator. Options: `member_id?`, `member_name?`, `secret` (the secret NAME,
-static or live), `remote` (the KB URL as the member reaches it) and `reason?`
+static or live), `remote` (the KB URL as the member reaches it), `reason?`
 (`"rejected"` after the KB server refused the token, so a live secret mints a new
-one first). A remote member gets the token as a static secret with its expiry, its
+one first) and `keep_member_kb?` (never rewire a remote member KB set up for
+another remote or its local store; such a member is refused). A remote member gets the token as a static secret with its expiry, its
 KB pointed at it and one KB call to check it; a local member gets nothing pushed,
 and the orchestrator's shared KB config must already name this remote and secret.
 `structuredContent` is `{ok, member, kind, secret, expiresAt, refreshAt, verification, memberChange}`; a

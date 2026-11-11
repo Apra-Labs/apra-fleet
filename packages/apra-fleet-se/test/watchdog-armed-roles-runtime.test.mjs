@@ -228,3 +228,31 @@ for (const role of NEWLY_ARMED_ROLES) {
         }
     });
 }
+
+test('an armed dispatch hands its agent() call the watchdog lease, and a renew keeps the dispatch alive for a second budget', async () => {
+    const role = NEWLY_ARMED_ROLES[0];
+    const rowTimeouts = policyFor(role).timeouts;
+    const timeoutS = BUDGET_BY_NAME[rowTimeouts.maxTotalS ?? rowTimeouts.timeoutS];
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+        let lease;
+        let leaseSeen;
+        const slow = (entry) => { lease = entry.options.watchdogLease; return new Promise(() => {}); };
+        const { ctx, rec } = createRecordingCtx({ responses: [slow] });
+        ctx.withDispatchWatchdog = (p, options) => { leaseSeen = options.lease; return withDispatchWatchdog(p, options); };
+        const settled = dispatchRole(ctx, role, { bindings: BINDINGS, ...ROLE_CALL_OPTS[role] }).then((o) => o, (e) => e);
+        await until(() => leaseSeen !== undefined && lease !== undefined, 'the engine never reached the watchdog race');
+        assert.strictEqual(leaseSeen, lease, 'the watchdog and the agent() call share one lease');
+        const budgetMs = (timeoutS + GRACE_S) * 1000;
+        mock.timers.tick(budgetMs - 1000);
+        assert.equal(lease.renew(), true);
+        mock.timers.tick(budgetMs - 1);
+        await drainTurns();
+        assert.ok(!rec.logs.some((l) => l.includes('[dispatch-watchdog]')), 'not killed within the renewed budget');
+        mock.timers.tick(1);
+        await settled;
+        assert.ok(rec.logs.some((l) => l.includes('[dispatch-watchdog]')), 'killed once the renewed budget is spent');
+    } finally {
+        mock.timers.reset();
+    }
+});

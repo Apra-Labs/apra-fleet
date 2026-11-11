@@ -21,9 +21,11 @@
 //      the keeper's pre-dispatch push, so the agent's kb_query is rejected; the
 //      keeper heals with reason rejected and resumes the session exactly once,
 //      and the resumed agent's kb_query works;
-//   6. cleans up: the member's pushed secret and KB config (restored from a
-//      backup), the live secret, the orchestrator KB config, the registration
-//      (with --register), the KB server.
+//   6. cleans up what it created: the member's pushed secret and KB config
+//      (restored from a backup), the live secret, the orchestrator KB config,
+//      the KB server. It never deregisters a member (remove_member deletes the
+//      member's LLM login files): with --register the registration stays in the
+//      isolated data dir, removed with it.
 //
 // Needs: a member install of this build on the member (query_errors with
 // origin, provision_kb_auth's push); the member's LLM sessions reaching their
@@ -207,12 +209,14 @@ async function main() {
   m.bin = join(m.home, '.apra-fleet', 'bin', d.os === 'windows' ? 'apra-fleet.exe' : 'apra-fleet');
   m.config = join(m.home, '.apra-fleet', 'data', 'knowledge', 'config.json');
   m.backup = `${m.config}.keeper-bak`;
+  // Moved aside, so the member has no KB config: the keeper never rewires a
+  // member KB set up for something else, and would skip this member.
   const b = await onMember(
-    `if [ -f ${sq(m.config)} ]; then cp -p ${sq(m.config)} ${sq(m.backup)} && echo backed-up; else echo none; fi`,
-    `if (Test-Path -LiteralPath ${pq(m.config)}) { Copy-Item -LiteralPath ${pq(m.config)} -Destination ${pq(m.backup)} -Force; 'backed-up' } else { 'none' }`,
+    `if [ -f ${sq(m.config)} ]; then mv -f ${sq(m.config)} ${sq(m.backup)} && echo backed-up; else echo none; fi`,
+    `if (Test-Path -LiteralPath ${pq(m.config)}) { Move-Item -LiteralPath ${pq(m.config)} -Destination ${pq(m.backup)} -Force; 'backed-up' } else { 'none' }`,
   );
   m.hadConfig = b.out.includes('backed-up');
-  if (!check(b.code === 0, m.hadConfig ? `member KB config copied to ${m.backup}` : 'no KB config on the member yet', `backup failed: ${b.out}`)) return;
+  if (!check(b.code === 0, m.hadConfig ? `member KB config moved aside to ${m.backup}` : 'no KB config on the member yet', `backup failed: ${b.out}`)) return;
 
   step(3, `live secret ${secretName} (token for ${lifetimeS} s) and the orchestrator KB config`);
   const reg = fleet(['secret', '--live', secretName, '--', 'node', helper, tokenFile, lifetimeFile]);
@@ -283,10 +287,8 @@ async function cleanup() {
     info('orchestrator KB config removed (an isolated data dir)');
   }
   if (liveRegistered) info(`orchestrator live secret delete: ${fleet(['secret', '--delete', secretName]).out}`);
-  if (registered) {
-    const rm = await tool('remove_member', { member_name: args.member, force: true });
-    info(`remove_member: ${rm.text.split('\n')[0]}`);
-  }
+  // Detach without deregistering (see the header).
+  if (registered) info(`member "${args.member}" stays registered on this orchestrator (not deregistered on purpose)`);
   if (kbServer && kbServer.exitCode === null) {
     if (isWin) spawnSync('taskkill', ['/PID', String(kbServer.pid), '/T', '/F'], { windowsHide: true });
     else kbServer.kill();

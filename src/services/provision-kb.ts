@@ -46,6 +46,9 @@ export type KbStepFailure =
   | 'relay-unsupported'
   | 'kb-not-configured'
   | 'kb-other-remote'
+  | 'member-kb-other-remote'
+  | 'member-kb-local-store'
+  | 'member-kb-unreadable'
   | 'secret-file-unavailable'
   | 'delivery-failed'
   | 'kb-setup-failed';
@@ -145,9 +148,9 @@ export function buildPushSecretCommand(binPath: string, name: string, expiresAt:
   });
 }
 
-/** `kb-setup --remote <url> --token-ref NAME` on the member. Exported for tests. */
-export function buildKbSetupCommand(binPath: string, remote: string, name: string, targetOs: TargetOS, shell: ReturnType<typeof getAgentShell>): string {
-  const args = ['kb-setup', '--remote', remote, '--token-ref', name];
+/** `kb-setup --remote <url> --token-ref NAME [--check]` on the member. Exported for tests. */
+export function buildKbSetupCommand(binPath: string, remote: string, name: string, targetOs: TargetOS, shell: ReturnType<typeof getAgentShell>, check = false): string {
+  const args = ['kb-setup', '--remote', remote, '--token-ref', name, ...(check ? ['--check'] : [])];
   return memberCommandFor(targetOs, shell, {
     posix: `${posixQuote(binPath)} ${args.map(posixQuote).join(' ')} 2>&1`,
     powershell: `$ErrorActionPreference = 'Continue'; & ${psQuote(binPath)} ${args.map(psQuote).join(' ')} 2>&1 | ForEach-Object { "$_" }; exit $LASTEXITCODE`,
@@ -172,8 +175,20 @@ function lastJson(text: string): Record<string, unknown> | null {
   return null;
 }
 
-/** Everything that can fail without the value. May start a cloud member. */
-export async function prepareKb(member: Agent, remote: string, secret: string): Promise<void> {
+/** What `kb-setup --check` found that keepMemberKb leaves alone, as the refusal. */
+const KEEP_REFUSALS: Record<string, KbStepFailure> = {
+  'other-remote': 'member-kb-other-remote',
+  'not-http': 'member-kb-local-store',
+  unreadable: 'member-kb-unreadable',
+};
+
+/**
+ * Everything that can fail without the value. May start a cloud member.
+ * keepMemberKb: a remote member whose KB config names another remote, uses its
+ * local store or cannot be read is refused here, before any mint; no config, or
+ * one naming this remote, goes ahead.
+ */
+export async function prepareKb(member: Agent, remote: string, secret: string, opts: { keepMemberKb?: boolean } = {}): Promise<void> {
   // A relay member has no channel that writes a file without a command line.
   if (member.agentType === 'relay') throw new KbStepError('relay-unsupported');
   if (member.agentType === 'local') {
@@ -198,6 +213,20 @@ export async function prepareKb(member: Agent, remote: string, secret: string): 
   const marker = await probeMemberInstallMarker(ready, home, probeDeps);
   if (marker.kind === 'probe-failed') throw new KbStepError('member-unreachable');
   if (marker.kind === 'absent') throw new KbStepError('not-member-install');
+  if (!opts.keepMemberKb) return;
+  let check: SSHExecResult;
+  try {
+    check = await d.exec(ready, buildKbSetupCommand(memberBinPath(home, targetOs, shell), remote, secret, targetOs, shell, true), PROBE_TIMEOUT_MS);
+  } catch {
+    throw new KbStepError('member-unreachable');
+  }
+  const found = lastJson(`${check.stdout}\n${check.stderr}`);
+  // An install from before --check answers with its usage line.
+  if (check.code !== 0 || !found || typeof found.check !== 'string') {
+    throw new KbStepError(found && found.error === 'usage' ? 'install-too-old' : 'member-unreachable');
+  }
+  const refusal = KEEP_REFUSALS[found.check];
+  if (refusal) throw new KbStepError(refusal);
 }
 
 /**

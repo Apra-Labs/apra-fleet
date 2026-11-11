@@ -604,8 +604,12 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             for (const key of Object.keys(options)) {
                 if (options[key] === undefined) delete options[key];
             }
+            // The watchdog fills in renew() below; the KB auth keeper calls it
+            // to give its heal and resume their own budget.
+            const watchdogLease = {};
             const inFlight = agent(prepared.prompt ?? defaultPrompt, {
                 ...options,
+                watchdogLease,
                 member_name: member,
             });
             if (!dispatch.watchdog.armed) return inFlight;
@@ -618,6 +622,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 member,
                 label: resolveWatchdogLabel(dispatch.watchdog.label, localBindings),
                 log: ctx.log,
+                lease: watchdogLease,
             });
         };
         // `dispatch.bracket`, not `policy.bracket`: a secondary dispatch

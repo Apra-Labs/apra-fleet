@@ -169,15 +169,16 @@ const DISPATCH_WATCHDOG_GRACE_S = 30;
 
 /**
  * @param {Promise<any>} dispatchPromise - an ALREADY-STARTED dispatch (e.g. an agent() call).
- * @param {{ timeoutS: number, member?: string, label?: string, log?: (msg: string) => void }} opts
+ * @param {{ timeoutS: number, member?: string, label?: string, log?: (msg: string) => void, lease?: object }} opts
+ *   lease: an object this sets `renew()` on; the dispatch calls it to restart the budget once.
  * @returns {Promise<any>}
  */
 export function withDispatchWatchdog(dispatchPromise, opts = {}) {
-    const { timeoutS, member = 'unknown', label = 'dispatch', log = () => {} } = opts;
+    const { timeoutS, member = 'unknown', label = 'dispatch', log = () => {}, lease } = opts;
     const budgetMs = (timeoutS + DISPATCH_WATCHDOG_GRACE_S) * 1000;
     let timer;
     const watchdogPromise = new Promise((_resolve, reject) => {
-        timer = setTimeout(() => {
+        const fire = () => {
             // "its configured watchdog budget", not a named field: this
             // budget is role-policies.mjs's resolved elapsed-ceiling value
             // (timeouts.maxTotalS when set and longer, else timeouts.timeoutS
@@ -191,7 +192,22 @@ export function withDispatchWatchdog(dispatchPromise, opts = {}) {
                 `[Workflow Error] ${label} timed out (watchdog): no response from '${member}' within ${timeoutS}s (+${DISPATCH_WATCHDOG_GRACE_S}s grace).`,
                 { details: { reason: 'watchdog_timeout', member, timeoutS, graceS: DISPATCH_WATCHDOG_GRACE_S } }
             ));
-        }, budgetMs);
+        };
+        timer = setTimeout(fire, budgetMs);
+        // A lease lets the dispatch start ONE fresh budget for follow-up work
+        // inside the same call (the KB auth heal and its resume): the timer
+        // restarts at the full budget once, so the whole call is bounded by
+        // twice the budget, never more.
+        if (lease && typeof lease === 'object') {
+            let renewed = false;
+            lease.renew = () => {
+                if (renewed) return false;
+                renewed = true;
+                clearTimeout(timer);
+                timer = setTimeout(fire, budgetMs);
+                return true;
+            };
+        }
         // The timer is deliberately NOT unref'd. A never-settling dispatch can
         // leave this timer as the only work on the event loop; an unref'd timer
         // would then let the loop drain before it fires, so the abort would

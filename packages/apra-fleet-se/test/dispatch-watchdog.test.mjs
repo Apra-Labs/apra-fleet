@@ -124,3 +124,24 @@ test('withDispatchWatchdog: a dispatch that rejects on its own within budget sur
         mock.timers.reset();
     }
 });
+
+test('withDispatchWatchdog: a lease restarts the full budget once (the KB auth heal and resume), so the call is bounded by twice the budget', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+        const logs = [];
+        const lease = {};
+        const raced = withDispatchWatchdog(new Promise(() => {}), { timeoutS: 10, member: 'm', label: 'doer', log: (msg) => logs.push(msg), lease });
+        const settled = assert.rejects(raced, (err) => err.details?.reason === 'watchdog_timeout');
+        const budgetMs = (10 + 30) * 1000;
+        mock.timers.tick(budgetMs - 1000);
+        assert.equal(lease.renew(), true, 'the first renew restarts the budget');
+        assert.equal(lease.renew(), false, 'a second renew does nothing');
+        mock.timers.tick(budgetMs - 1);
+        assert.equal(logs.length, 0, 'still alive a full budget after the renew, minus 1 ms');
+        mock.timers.tick(1);
+        await settled;
+        assert.equal(logs.length, 1);
+    } finally {
+        mock.timers.reset();
+    }
+});

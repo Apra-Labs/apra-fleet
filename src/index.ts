@@ -59,7 +59,7 @@ Usage:
   apra-fleet kb add-directive "<text>" [--symbols a,b] Create an already-active directive (human-only)
   apra-fleet kb commit [--repo <path>] [--global]      Re-export + auto-commit the canonical bible (manual/recovery)
   apra-fleet kb profile [full|developer|custom <a,b>]  Show or set the KB tool profile for interactive sessions
-  apra-fleet kb-setup --remote <url> --token-ref <name>  Point this install's KB at a remote server, token from a secret, and check it
+  apra-fleet kb-setup --remote <url> --token-ref <name> [--check]  Point this install's KB at a remote server, token from a secret, and check it; --check only reports what the config is
   apra-fleet join <member-jwt> [--hub-url <url>]  Activate a device using a member JWT obtained out-of-band from fleet-dashboard
   apra-fleet spoke <origin-member-id>        Run as an outbound hub-connected spoke; requires apra-fleet join first
   apra-fleet --version        Print version

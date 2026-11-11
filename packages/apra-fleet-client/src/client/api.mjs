@@ -727,6 +727,9 @@
  *   it must be the remote the orchestrator KB config already names.
  * @property {"rejected"} [reason] - The KB server refused the token this secret last gave out: a
  *   cached live token is dropped and a new one minted before the push.
+ * @property {boolean} [keep_member_kb] - Remote member: never rewrite a member KB config that names
+ *   another remote, uses its local store or cannot be read; such a member is refused
+ *   (member-kb-other-remote, member-kb-local-store, member-kb-unreadable) before any mint or push.
  */
 
 /**
@@ -752,6 +755,7 @@
  * member-not-found, unknown-kind, bad-input, secret-not-found, secret-unreadable,
  * secret-expired, member-not-allowed, policy-deny, mint-failed, relay-unsupported,
  * member-unreachable, install-too-old, not-member-install, kb-not-configured, kb-other-remote,
+ * member-kb-other-remote, member-kb-local-store, member-kb-unreadable,
  * secret-file-unavailable, delivery-failed, kb-setup-failed.
  * kb-setup-failed means the secret was stored on the member but its KB was not set up to use it;
  * expiresAt is then the expiry of that stored copy.

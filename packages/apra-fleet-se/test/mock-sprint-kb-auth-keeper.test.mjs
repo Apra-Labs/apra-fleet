@@ -53,7 +53,7 @@ test('mock sprint: a remote doer gets its KB token before dispatch, and a reject
         });
 
         assert.ok(provisions.length >= 2, `expected a pre-dispatch push and a heal, got ${JSON.stringify(provisions)}`);
-        assert.deepEqual(provisions[0], { member_name: 'local', secret: 'kb-live', remote: 'https://kb.example.test' });
+        assert.deepEqual(provisions[0], { member_name: 'local', secret: 'kb-live', remote: 'https://kb.example.test', keep_member_kb: true });
         const heals = provisions.filter((p) => p.reason === 'rejected');
         assert.equal(heals.length, 1, 'one heal with reason rejected');
         assert.ok(doerCalls.length >= 2, 'the doer was resumed');

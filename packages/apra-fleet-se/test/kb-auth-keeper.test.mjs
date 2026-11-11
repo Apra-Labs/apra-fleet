@@ -25,8 +25,10 @@ function fleet({ credential = { kind: 'live', url: REMOTE, secretName: SECRET },
         if (name === 'member_detail') return json({ type: types[args.member_name] ?? 'remote' });
         if (name === 'provision_kb_auth') {
             const answer = provisionAnswers.length ? provisionAnswers.shift() : 'ok';
-            if (answer === 'fail') {
-                return { isError: true, content: [{ type: 'text', text: 'E-PROVISION-AUTH: mint-failed' }], structuredContent: { ok: false, code: 'E-PROVISION-AUTH', reason: 'mint-failed' } };
+            // 'fail', or a refusal reason such as 'member-kb-other-remote'.
+            if (answer !== 'ok' && answer !== 'same') {
+                const reason = answer === 'fail' ? 'mint-failed' : answer;
+                return { isError: true, content: [{ type: 'text', text: `E-PROVISION-AUTH: ${reason}` }], structuredContent: { ok: false, code: 'E-PROVISION-AUTH', reason } };
             }
             // 'same': the previous token again (a refresh that failed, or a static secret).
             if (answer !== 'same') { mint += 1; lastExp = clock.now + HOUR; }
@@ -94,7 +96,8 @@ describe('KB auth keeper: dispatch start', () => {
         const { keeper } = keeperFor(f);
         await dispatchOn(keeper, 'm1', agent());
         assert.equal(f.provisions().length, 1);
-        assert.deepEqual(f.provisions()[0].args, { member_name: 'm1', secret: SECRET, remote: REMOTE });
+        // keep_member_kb: a remote member's own KB set-up is never rewired.
+        assert.deepEqual(f.provisions()[0].args, { member_name: 'm1', secret: SECRET, remote: REMOTE, keep_member_kb: true });
         f.clock.now += 30 * 60_000;
         await dispatchOn(keeper, 'm1', agent());
         assert.equal(f.provisions().length, 1, 'fresh token: no push');
@@ -278,5 +281,68 @@ describe('KB auth keeper: heal after E-KB-HTTP-AUTH', () => {
         await assert.rejects(() => dispatchOn(keeper, 'm1', a), (e) => e === boom);
         assert.equal(a.runs.length, 1);
         assert.equal(f.provisions().length, 2);
+    });
+
+    test('the heal and the resume renew the dispatch watchdog once; a dispatch with no KB auth error does not', async () => {
+        const f = fleet();
+        const { keeper } = keeperFor(f);
+        let renews = 0;
+        const lease = { renew: () => { renews += 1; return true; } };
+        const plain = agent([{ value: 'fine' }]);
+        await keeper.dispatch({ member: 'm1', prompt: 'p', opts: { member_name: 'm1', watchdogLease: lease }, run: plain.run });
+        assert.equal(renews, 0);
+        assert.equal(plain.runs[0].opts.watchdogLease, undefined, 'the lease is not a dispatch option');
+        const a = agent([{ toolErrors: authReport('expired'), sessionId: 's1' }, { value: 'resumed' }]);
+        await keeper.dispatch({ member: 'm1', prompt: 'p', opts: { member_name: 'm1', watchdogLease: lease }, run: a.run });
+        assert.equal(renews, 1);
+    });
+});
+
+describe('KB auth keeper: a member whose KB is set up for something else', () => {
+    for (const [reason, why] of [['member-kb-other-remote', 'names another remote'], ['member-kb-local-store', 'uses its local store']]) {
+        test(`${reason}: skipped for the run, with one log line naming why; no timer, no heal`, async () => {
+            const f = fleet({ provisionAnswers: [reason] });
+            const tm = timers();
+            const { keeper, lines } = keeperFor(f, tm);
+            const a1 = agent([{ toolErrors: authReport('rejected'), sessionId: 's1', during: async () => assert.equal(tm.pending.size, 0) }]);
+            assert.equal(await dispatchOn(keeper, 'm1', a1), 'value-1');
+            f.clock.now += 2 * HOUR;
+            const a2 = agent([{ toolErrors: authReport('rejected'), sessionId: 's2' }]);
+            await dispatchOn(keeper, 'm1', a2);
+            assert.equal(f.provisions().length, 1, 'only the one refused push');
+            assert.equal(f.provisions()[0].args.keep_member_kb, true);
+            assert.equal(a1.runs.length + a2.runs.length, 2, 'never resumed');
+            const skipLines = lines.filter((l) => l.includes("member 'm1' is not kept"));
+            assert.equal(skipLines.length, 1);
+            assert.ok(skipLines[0].includes(why), skipLines[0]);
+        });
+    }
+
+    test('another member is still provisioned', async () => {
+        const f = fleet({ provisionAnswers: ['member-kb-other-remote', 'ok'] });
+        const { keeper } = keeperFor(f);
+        await dispatchOn(keeper, 'm1', agent());
+        await dispatchOn(keeper, 'm2', agent());
+        assert.deepEqual(f.provisions().map((c) => c.args.member_name), ['m1', 'm2']);
+    });
+});
+
+describe('KB auth keeper: a static secret with the same expiry', () => {
+    test('stops pushing for the rest of the run, with one log line; no timer', async () => {
+        const f = fleet({ credential: { kind: 'secret', url: REMOTE, secretName: SECRET }, provisionAnswers: ['ok', 'same'] });
+        const tm = timers();
+        const { keeper, lines } = keeperFor(f, tm);
+        const a = agent([{
+            during: async () => {
+                f.clock.now += [...tm.pending.values()][0].ms;
+                await tm.fireOnly();
+                assert.equal(tm.pending.size, 0, 'not re-armed');
+            },
+        }]);
+        await dispatchOn(keeper, 'm1', a);
+        f.clock.now += 10 * 60_000;
+        await dispatchOn(keeper, 'm1', agent());
+        assert.equal(f.provisions().length, 2, 'no push at the next dispatch start');
+        assert.equal(lines.filter((l) => l.includes("static secret 'kb-token'")).length, 1);
     });
 });

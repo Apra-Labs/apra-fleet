@@ -42,6 +42,9 @@ const HANDLER_FAILURES = {
   'not-member-install': 'the member runs a full apra-fleet install, not a member install, so the fleet does not manage it; replace it with update_member {member_id, fleet_install: "replace-full"} (or by hand, as update_member describes), then try again',
   'kb-not-configured': 'the KB config on the orchestrator does not take its token from this secret at this remote, and a local member shares that config, which this tool does not change; run kb_setup on the orchestrator with provider http, this remote and token {{secret.<the secret>}}',
   'kb-other-remote': 'the KB config on the orchestrator names a different remote, and a local member shares that config, which this tool does not change; pass that remote, or run kb_setup on the orchestrator to change it',
+  'member-kb-other-remote': 'the member KB config names another remote; keep_member_kb leaves it as it is, so nothing was minted or pushed',
+  'member-kb-local-store': 'the member KB config uses its local store; keep_member_kb leaves it as it is, so nothing was minted or pushed',
+  'member-kb-unreadable': 'the member KB config could not be read; keep_member_kb leaves it as it is, so nothing was minted or pushed',
   'kb-setup-failed': 'the secret was stored on the member and stays there, but setting up the member KB to use it failed; run apra-fleet kb-setup --remote <url> --token-ref <secret> on the member to see why',
 } as const;
 
@@ -100,6 +103,8 @@ export interface ProvisionKindInput {
   remote?: string;
   /** The server refused what this secret last gave out: a cached token is dropped and a new one minted. */
   reason?: 'rejected';
+  /** kb: never rewrite a remote member KB config that names another remote or uses its local store. */
+  keep_member_kb?: boolean;
 }
 
 /** What delivery changed on the member besides the secret, with fixed text. */
@@ -177,16 +182,16 @@ async function kbStep<T>(step: () => Promise<T>): Promise<T> {
  * core on the orchestrator first: the pushed record is a plain static secret
  * with allow and all members.
  */
-const kbHandler: ProvisionKindHandler<{ remote: string }> = {
+const kbHandler: ProvisionKindHandler<{ remote: string; keepMemberKb: boolean }> = {
   parse: (input) => {
     let url: URL | null = null;
     try {
       if (input.remote) url = new URL(input.remote);
     } catch { /* reported below */ }
     if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:')) throw new ProvisionHandlerError('bad-input');
-    return { remote: input.remote as string };
+    return { remote: input.remote as string, keepMemberKb: input.keep_member_kb === true };
   },
-  prepare: (ctx) => kbStep(() => prepareKb(ctx.member, ctx.params.remote, ctx.secret)),
+  prepare: (ctx) => kbStep(() => prepareKb(ctx.member, ctx.params.remote, ctx.secret, { keepMemberKb: ctx.params.keepMemberKb })),
   deliver: async (ctx) => {
     const { verification: v, change } = await kbStep(() => deliverKb(ctx.member, ctx.params.remote, ctx.secret, ctx.value, ctx.expiresAt));
     const extra = change ? { change } : {};
