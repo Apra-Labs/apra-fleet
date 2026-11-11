@@ -611,7 +611,7 @@ one first) and `keep_member_kb?` (never rewire a remote member KB set up for
 another remote or its local store; such a member is refused). A remote member gets the token as a static secret with its expiry, its
 KB pointed at it and one KB call to check it; a local member gets nothing pushed,
 and the orchestrator's shared KB config must already name this remote and secret.
-`structuredContent` is `{ok, member, kind, secret, expiresAt, refreshAt, verification, memberChange}`; a
+`structuredContent` is `{ok, member, kind, secret, expiresAt, secretKind, refreshAt, verification, memberChange}`; a
 refusal is an error result whose `structuredContent.reason` names it
 (`ProvisionKbAuthStructured` lists them). No field carries the token. The steps
 and failure reasons are in the

@@ -233,6 +233,8 @@ describe('provision_kb_auth, remote member: keep_member_kb', () => {
     ['other-remote', 'member-kb-other-remote'],
     ['not-http', 'member-kb-local-store'],
     ['unreadable', 'member-kb-unreadable'],
+    // This remote with the member's own token source: its operator's set-up, never rewired.
+    ['other-token', 'member-kb-other-token'],
   ])('a member KB config that is %s is refused as %s, before any mint or push', async (found, reason) => {
     const s = live(`keep_${found.replace('-', '_')}`);
     const m = addRemote();
@@ -245,13 +247,42 @@ describe('provision_kb_auth, remote member: keep_member_kb', () => {
     expect(pushes()).toHaveLength(0);
   });
 
-  it.each(['missing', 'match', 'other-token'])('a member KB config that is %s is provisioned', async (found) => {
+  it.each(['missing', 'match'])('a member KB config that is %s is provisioned, and the write carries --keep', async (found) => {
     const s = live(`keepok_${found.replace('-', '_')}`);
     const m = addRemote();
     answers.kbCheck = checkAnswer(found);
     const r = await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE, keep_member_kb: true });
     expect(r.structuredContent.ok).toBe(true);
     expect(pushes()).toHaveLength(1);
+    const writes = setups().filter((c) => !c.text.includes("'--check'"));
+    expect(writes).toHaveLength(1);
+    expect(writes[0].text).toContain(`'--token-ref' '${s.name}' '--keep'`);
+  });
+
+  it('a member KB config changed after the check is refused by the write itself (--keep), not overwritten', async () => {
+    const s = live('keeprace');
+    const m = addRemote();
+    answers.kbCheck = checkAnswer('missing');
+    answers.kbSetup = { code: 1, stdout: '{"error":"kept","check":"other-remote"}\n', stderr: 'Error: ...' };
+    const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE, keep_member_kb: true }));
+    expect(err.structuredContent.reason).toBe('member-kb-other-remote');
+  });
+
+  it('a build that knows --check but not --keep is refused as too old at the write', async () => {
+    const s = live('keepnokeep');
+    const m = addRemote();
+    answers.kbCheck = checkAnswer('missing');
+    answers.kbSetup = { code: 1, stdout: '{"error":"usage"}\n', stderr: 'Usage: ...' };
+    const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE, keep_member_kb: true }));
+    expect(err.structuredContent.reason).toBe('install-too-old');
+  });
+
+  it('the result says whether the secret is live or static', async () => {
+    const m = addRemote();
+    const s = live('kindlive');
+    expect((await provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE })).structuredContent.secretKind).toBe('live');
+    const name = staticSecret('kindstatic');
+    expect((await provisionKbAuth({ member_id: m.id, secret: name, remote: REMOTE })).structuredContent.secretKind).toBe('static');
   });
 
   it('an install without --check is refused as too old; without keep_member_kb nothing is checked', async () => {

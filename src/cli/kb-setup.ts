@@ -19,6 +19,12 @@
 // {"check":<kbConfigMatch>} (match, missing, not-http, other-remote,
 // other-token or unreadable), so the orchestrator can leave a member KB that is
 // set up for something else alone before it mints anything.
+//
+// --keep makes the write itself refuse a config set up for something else
+// (other-remote, other-token, not-http, unreadable), in the process that
+// writes, so a change made after the --check is never overwritten. It exits 1
+// with {"error":"kept","check":<what it found>}. No config, or one already
+// naming this remote and secret, goes ahead.
 
 import { kbConfigMatch } from '../services/knowledge/kb-config.js';
 import { HttpKbProvider, KbHttpAuthError, isConnectionError } from '../services/knowledge/http-provider.js';
@@ -26,7 +32,7 @@ import { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import { assertKbTokenSecretUsable, kbSetup } from '../tools/kb-setup.js';
 import { formatSecretToken } from '../services/secret-token.js';
 
-export const KB_SETUP_USAGE = 'Usage: apra-fleet kb-setup --remote <http(s) url> --token-ref <secret name> [--check]';
+export const KB_SETUP_USAGE = 'Usage: apra-fleet kb-setup --remote <http(s) url> --token-ref <secret name> [--check | --keep]';
 
 const NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -67,19 +73,21 @@ async function verify(remote: string, name: string): Promise<KbSetupVerification
   }
 }
 
-function parseArgs(args: string[]): { remote: string; name: string; check: boolean } | null {
+function parseArgs(args: string[]): { remote: string; name: string; check: boolean; keep: boolean } | null {
   let remote: string | undefined;
   let name: string | undefined;
   let check = false;
+  let keep = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--check') check = true;
+    else if (a === '--keep') keep = true;
     else if (a === '--remote' && args[i + 1] !== undefined) remote = args[++i];
     else if (a === '--token-ref' && args[i + 1] !== undefined) name = args[++i];
     else return null;
   }
   if (!remote || !name || !NAME_REGEX.test(name)) return null;
-  return { remote, name, check };
+  return { remote, name, check, keep };
 }
 
 /** Run the verb; returns the process exit code. */
@@ -104,6 +112,11 @@ export async function runKbSetupCli(args: string[], io: Io = defaultIo): Promise
     // The same refusals as the kb_setup tool, also when the config already matches.
     assertKbTokenSecretUsable(name);
     const match = kbConfigMatch(remote, name);
+    if (parsed.keep && match !== 'match' && match !== 'missing') {
+      io.error(`Error: the KB config here is set up for something else (${match}); --keep leaves it as it is`);
+      io.log(JSON.stringify({ error: 'kept', check: match }));
+      return 1;
+    }
     if (match !== 'match') {
       await kbSetup({ provider: 'http', remote, token: formatSecretToken(name) }, undefined, { hook: false });
       previous = match;

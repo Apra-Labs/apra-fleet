@@ -740,9 +740,12 @@ orchestrator before anything is minted or sent.
      nothing is stored on the member;
      with `keep_member_kb=true`, it also runs `apra-fleet kb-setup ... --check`
      (writes nothing) and refuses a member whose KB config names another remote,
-     uses its local store or cannot be read (`member-kb-other-remote`,
-     `member-kb-local-store`, `member-kb-unreadable`), before anything is minted;
-     an install without `--check` is `install-too-old`;
+     names this remote with its own token source, uses its local store or cannot
+     be read (`member-kb-other-remote`, `member-kb-other-token`,
+     `member-kb-local-store`, `member-kb-unreadable`), before anything is
+     minted; an install without `--check` is `install-too-old`. Step 4 then
+     runs with `--keep`, so a config changed after the check is refused by the
+     write itself, never overwritten (the pushed secret stays, unused);
   2. resolves the secret on the orchestrator, minting if needed;
   3. stores the token on the member as an ordinary static secret through
      `apra-fleet secret --set NAME --persist --expires-at <time> --allow --members '*' -y`:
@@ -779,25 +782,31 @@ orchestrator.
 ###### Keeping it fresh during a sprint
 
 fleet-sprint does the renewal for its own dispatches when the orchestrator's KB
-config selects the http provider with a `{{secret.NAME}}` token (it reads the
-remote and the secret from `fleet_status`'s `kbHealth.credential`). A literal
-token or a local store turns this off. Plain `execute_prompt` from another
+config selects the http provider with a `{{secret.NAME}}` token. It reads that
+config once per run, straight from `<data dir>/knowledge/config.json` on the
+orchestrator (no tool call, no member probe); a literal token, a local store, or
+a config it cannot read (logged once) turns this off for the run. Plain `execute_prompt` from another
 session is not covered. Log lines start with `[kb-auth]`.
 
 - **Which members:** a remote member with no KB config, or one already naming
-  this remote. Every call passes `keep_member_kb=true`, so a member whose KB
-  config names another remote, uses its local store or cannot be read is never
-  rewired: it is skipped for the run (no push, timer or heal), with one log line
-  naming why.
+  this remote and secret. Every call passes `keep_member_kb=true`, so a member
+  whose KB config names another remote, names this remote with its own token
+  source, uses its local store or cannot be read is never rewired, token source
+  included. Such a member, and one refused as `install-too-old`,
+  `not-member-install` or `relay-unsupported`, is skipped for the run (no push,
+  timer or heal), with one log line naming why.
 - **Remote member, dispatch starts:** `provision_kb_auth` runs when the member's
-  recorded `refreshAt` has passed, or nothing is recorded yet.
+  recorded `refreshAt` has passed, or nothing is recorded yet. It runs before the
+  dispatch's watchdog starts, so it never uses up the dispatch's budget.
 - **Remote member, dispatch running:** a timer at `refreshAt` runs it again; the
   member's fleet server reads the new copy on its next KB call. A push that
   fails, or a live secret that returns the same expiry (its refresh failed or is
   backing off), is logged and tried again a minute later. A static secret that
   returns the same expiry (nobody rotated it) is not pushed again for that
   member in the run, with one log line. If the dispatch-start push failed there
-  is no timer; the next dispatch start tries again. The timer stops when the
+  is no timer; the next dispatch start tries again. A heal moves the timer to the
+  new token's `refreshAt`. Delays beyond what a timer can hold (about 24 days)
+  are capped, and an early wake-up only re-arms. The timer stops when the
   member's last dispatch ends.
 - **Dispatch ends with `E-KB-HTTP-AUTH` in `toolErrors`** (see
   [execute_prompt](mcp-tools.md#execute_prompt)): `provision_kb_auth` runs, with
@@ -805,8 +814,11 @@ session is not covered. Log lines start with `[kb-auth]`.
   local member it is one resolve on the orchestrator. On success the same
   session is resumed once with a note that KB auth is restored and the agent
   should redo the KB lookups it needed; a provider that returned no session id
-  gets the prompt again with that note instead. On failure there is no resume,
-  and one error is logged per member per run. For a role whose dispatch has a
+  gets the prompt again with that note instead. If that resume itself fails (an
+  expired session, a busy member), the dispatch's first answer is kept, with one
+  log line. On a failed heal there is no resume, and one error is logged per
+  member per run. Heals on one member run one at a time. A dispatch the watchdog
+  already gave up on is neither healed nor resumed when it settles later. For a role whose dispatch has a
   client watchdog, the heal and the resume run under a fresh budget of their own
   (the role's `max_total_s` plus the watchdog grace, restarted once when the heal
   begins), so a dispatch that ended near its budget is not killed during them;

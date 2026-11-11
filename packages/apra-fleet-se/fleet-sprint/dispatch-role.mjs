@@ -607,6 +607,12 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // The watchdog fills in renew() below; the KB auth keeper calls it
             // to give its heal and resume their own budget.
             const watchdogLease = {};
+            // Pre-dispatch work that must not count against the watchdog
+            // budget (the KB auth keeper's token push): awaited before the
+            // agent() call, so before the race starts.
+            if (typeof ctx.beforeAgentDispatch === 'function') {
+                await ctx.beforeAgentDispatch({ member, lease: watchdogLease });
+            }
             const inFlight = agent(prepared.prompt ?? defaultPrompt, {
                 ...options,
                 watchdogLease,

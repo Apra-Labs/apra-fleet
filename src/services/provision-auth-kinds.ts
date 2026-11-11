@@ -45,6 +45,7 @@ const HANDLER_FAILURES = {
   'member-kb-other-remote': 'the member KB config names another remote; keep_member_kb leaves it as it is, so nothing was minted or pushed',
   'member-kb-local-store': 'the member KB config uses its local store; keep_member_kb leaves it as it is, so nothing was minted or pushed',
   'member-kb-unreadable': 'the member KB config could not be read; keep_member_kb leaves it as it is, so nothing was minted or pushed',
+  'member-kb-other-token': 'the member KB config names this remote with its own token source; keep_member_kb leaves it as it is, so nothing was minted or pushed',
   'kb-setup-failed': 'the secret was stored on the member and stays there, but setting up the member KB to use it failed; run apra-fleet kb-setup --remote <url> --token-ref <secret> on the member to see why',
 } as const;
 
@@ -134,6 +135,8 @@ export interface ProvisionKindResult {
   secret: string;
   /** When the value expires; null for a static secret with no expiry. */
   expiresAt: string | null;
+  /** live: a live secret, minted on the orchestrator; static: a stored value, which only an operator renews. */
+  secretKind: 'live' | 'static';
   verification: ProvisionKindVerification;
   /** What else delivery changed on the member, or null. Kept even when verification failed. */
   memberChange: { reason: ProvisionMemberChange; detail: string } | null;
@@ -193,7 +196,7 @@ const kbHandler: ProvisionKindHandler<{ remote: string; keepMemberKb: boolean }>
   },
   prepare: (ctx) => kbStep(() => prepareKb(ctx.member, ctx.params.remote, ctx.secret, { keepMemberKb: ctx.params.keepMemberKb })),
   deliver: async (ctx) => {
-    const { verification: v, change } = await kbStep(() => deliverKb(ctx.member, ctx.params.remote, ctx.secret, ctx.value, ctx.expiresAt));
+    const { verification: v, change } = await kbStep(() => deliverKb(ctx.member, ctx.params.remote, ctx.secret, ctx.value, ctx.expiresAt, { keepMemberKb: ctx.params.keepMemberKb }));
     const extra = change ? { change } : {};
     return v === 'verified' ? { status: 'verified', ...extra } : { status: 'failed', reason: v, ...extra };
   },
@@ -312,6 +315,7 @@ async function run(
     kind,
     secret: name,
     expiresAt,
+    secretKind: 'live' in source ? 'live' : 'static',
     verification: verificationOf(delivery),
     memberChange: change ? { reason: change, detail: MEMBER_CHANGES[change] } : null,
   };

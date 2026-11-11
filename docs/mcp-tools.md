@@ -499,8 +499,9 @@ What it does for a local and a remote member, and its failure reasons, are in
 | `secret` | string | yes | The secret NAME on the orchestrator (not a value or placeholder) |
 | `remote` | string | yes | KB server URL, http(s), as the member reaches it |
 | `reason` | `"rejected"` | no | The KB server refused the token: a live secret mints a new one before the push |
+| `keep_member_kb` | boolean | no | Remote member: refuse, before any mint, a member KB config set up for something else (another remote, this remote with its own token source, its local store, unreadable) instead of rewriting it |
 
-`structuredContent` is `{ok, member, kind, secret, expiresAt, verification, memberChange}`; act
+`structuredContent` is `{ok, member, kind, secret, expiresAt, secretKind, refreshAt, verification, memberChange}` (`refreshAt`: when to push again, expiresAt minus T; `secretKind`: live or static); act
 on `ok` and `verification`. A refusal is an error result whose
 `structuredContent.reason` names it. No field carries the token.
 

@@ -177,8 +177,11 @@ export function withDispatchWatchdog(dispatchPromise, opts = {}) {
     const { timeoutS, member = 'unknown', label = 'dispatch', log = () => {}, lease } = opts;
     const budgetMs = (timeoutS + DISPATCH_WATCHDOG_GRACE_S) * 1000;
     let timer;
+    // over: the watchdog fired, or the race settled. A renew then does nothing.
+    let over = false;
     const watchdogPromise = new Promise((_resolve, reject) => {
         const fire = () => {
+            over = true;
             // "its configured watchdog budget", not a named field: this
             // budget is role-policies.mjs's resolved elapsed-ceiling value
             // (timeouts.maxTotalS when set and longer, else timeouts.timeoutS
@@ -197,11 +200,13 @@ export function withDispatchWatchdog(dispatchPromise, opts = {}) {
         // A lease lets the dispatch start ONE fresh budget for follow-up work
         // inside the same call (the KB auth heal and its resume): the timer
         // restarts at the full budget once, so the whole call is bounded by
-        // twice the budget, never more.
+        // twice the budget, never more. Once the watchdog has fired (the
+        // dispatch was abandoned) or the race settled, renew returns false and
+        // starts nothing.
         if (lease && typeof lease === 'object') {
             let renewed = false;
             lease.renew = () => {
-                if (renewed) return false;
+                if (renewed || over) return false;
                 renewed = true;
                 clearTimeout(timer);
                 timer = setTimeout(fire, budgetMs);
@@ -216,5 +221,5 @@ export function withDispatchWatchdog(dispatchPromise, opts = {}) {
         // abort fires; a dispatch that settles first is released by the
         // clearTimeout() below, so a fast dispatch never delays process exit.
     });
-    return Promise.race([dispatchPromise, watchdogPromise]).finally(() => clearTimeout(timer));
+    return Promise.race([dispatchPromise, watchdogPromise]).finally(() => { over = true; clearTimeout(timer); });
 }

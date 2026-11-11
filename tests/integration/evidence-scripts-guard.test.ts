@@ -25,7 +25,10 @@ describe('evidence scripts', () => {
     expect(found.map((f) => path.relative(ROOT, f).replace(/\\/g, '/'))).toEqual(
       expect.arrayContaining(['provision-kb-auth/run.mjs', 'kb-auth-keeper/run.mjs']),
     );
-    const callers = found.filter((f) => /['"`]remove_member['"`]|removeMember\(/.test(fs.readFileSync(f, 'utf8')));
+    // The MCP tool, the CLI verb (apra-fleet remove-member) and the client
+    // method, in code; comments may name it to say why it is never called.
+    const code = (f: string) => fs.readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const callers = found.filter((f) => /remove[-_]member|removeMember\s*\(/.test(code(f)));
     expect(callers.map((f) => path.relative(ROOT, f))).toEqual([]);
   });
 });

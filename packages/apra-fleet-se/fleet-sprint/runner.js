@@ -1016,10 +1016,12 @@ async function runSprintCycle(context) {
     let kbBeadIndex = new Map();
     // Bound below, next to onLlmAuthFailure (kb-auth-keeper.mjs).
     let kbAuthKeeper = null;
+    const withoutWatchdogLease = ({ watchdogLease: _lease, ...rest }) => rest;
     const kbBeadTitles = (ids) => (Array.isArray(ids) ? ids : []).map((id) => kbBeadIndex.get(id)?.title).filter((t) => typeof t === 'string' && t);
-    const agent = async (prompt, callOpts = {}) => {
+    const agent = async (prompt, opts = {}) => {
         // dispatch-role's watchdog lease is for the KB auth keeper only, never a dispatch option.
-        const { watchdogLease, ...opts } = callOpts;
+        const { watchdogLease } = opts;
+        if (watchdogLease !== undefined) opts = withoutWatchdogLease(opts);
         let finalPrompt = prompt;
         if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
             // Only promise the kb_captures channel to a persona whose returned
@@ -1955,6 +1957,10 @@ async function runSprintCycle(context) {
         getMemberForRole,
         memberSessionGuard,
         onLlmAuthFailure,
+        // The KB auth keeper's pre-dispatch work (KB config, member type, the
+        // token push), run before the watchdog race starts so it never eats the
+        // dispatch's watchdog grace.
+        beforeAgentDispatch: (info) => (kbAuthKeeper ? kbAuthKeeper.prepare(info) : undefined),
         // apra-fleet-hzeb.4.2: the usage-limit pause/resume/re-probe hook the
         // engine arms for a role whose retry.usageLimitPause is set.
         onUsageLimit,

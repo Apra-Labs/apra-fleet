@@ -229,29 +229,27 @@ for (const role of NEWLY_ARMED_ROLES) {
     });
 }
 
-test('an armed dispatch hands its agent() call the watchdog lease, and a renew keeps the dispatch alive for a second budget', async () => {
+// The renew timing itself is pinned in dispatch-watchdog.test.mjs; this pins the
+// engine side: one lease shared by the race and the agent() call, and the
+// pre-dispatch hook run on that lease before the agent() call starts.
+test('an armed dispatch shares one watchdog lease between the race and its agent() call, after the pre-dispatch hook', async () => {
     const role = NEWLY_ARMED_ROLES[0];
-    const rowTimeouts = policyFor(role).timeouts;
-    const timeoutS = BUDGET_BY_NAME[rowTimeouts.maxTotalS ?? rowTimeouts.timeoutS];
     mock.timers.enable({ apis: ['setTimeout'] });
     try {
+        const order = [];
         let lease;
         let leaseSeen;
-        const slow = (entry) => { lease = entry.options.watchdogLease; return new Promise(() => {}); };
-        const { ctx, rec } = createRecordingCtx({ responses: [slow] });
+        let leaseHooked;
+        const slow = (entry) => { order.push('agent'); lease = entry.options.watchdogLease; return new Promise(() => {}); };
+        const { ctx } = createRecordingCtx({ responses: [slow] });
+        ctx.beforeAgentDispatch = async ({ lease: l }) => { order.push('before'); leaseHooked = l; };
         ctx.withDispatchWatchdog = (p, options) => { leaseSeen = options.lease; return withDispatchWatchdog(p, options); };
-        const settled = dispatchRole(ctx, role, { bindings: BINDINGS, ...ROLE_CALL_OPTS[role] }).then((o) => o, (e) => e);
+        dispatchRole(ctx, role, { bindings: BINDINGS, ...ROLE_CALL_OPTS[role] }).then(() => {}, () => {});
         await until(() => leaseSeen !== undefined && lease !== undefined, 'the engine never reached the watchdog race');
         assert.strictEqual(leaseSeen, lease, 'the watchdog and the agent() call share one lease');
-        const budgetMs = (timeoutS + GRACE_S) * 1000;
-        mock.timers.tick(budgetMs - 1000);
-        assert.equal(lease.renew(), true);
-        mock.timers.tick(budgetMs - 1);
-        await drainTurns();
-        assert.ok(!rec.logs.some((l) => l.includes('[dispatch-watchdog]')), 'not killed within the renewed budget');
-        mock.timers.tick(1);
-        await settled;
-        assert.ok(rec.logs.some((l) => l.includes('[dispatch-watchdog]')), 'killed once the renewed budget is spent');
+        assert.strictEqual(leaseHooked, lease, 'the pre-dispatch hook gets the same lease');
+        assert.deepEqual(order, ['before', 'agent'], 'the hook runs before the agent() call, so before the race');
+        assert.equal(typeof lease.renew, 'function');
     } finally {
         mock.timers.reset();
     }

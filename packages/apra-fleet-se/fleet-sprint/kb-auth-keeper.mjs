@@ -3,8 +3,8 @@
 // reacts when the agent hit a KB auth error. The KB counterpart of the VCS
 // auth self-heal (onAuthFailure / onLlmAuthFailure in runner.js).
 //
-// Active only when the orchestrator's KB config (fleet_status json,
-// kbHealth.credential) selects an HTTP KB whose token comes from a fleet
+// Active only when the orchestrator's KB config (<data dir>/knowledge/config.json,
+// read once per run, no tool call) selects an HTTP KB whose token comes from a fleet
 // secret, static or live: that gives the remote URL and the secret name every
 // provision_kb_auth call here uses. A literal token or a sqlite KB turns it
 // off for the run.
@@ -40,22 +40,48 @@
 // dispatch on each remote member pushes again.
 // =============================================================================
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { getFleetDataDir } from '@apralabs/apra-fleet-client/server-resolution';
 import { resultText } from './mcp-result.mjs';
 
 export const KB_AUTH_ERROR_CODE = 'E-KB-HTTP-AUTH';
 /** Delay before a failed timed push is tried again. */
 export const KB_AUTH_PUSH_RETRY_MS = 60_000;
+/** The longest delay setTimeout honours (2^31-1 ms); anything longer fires at once. */
+export const MAX_TIMER_MS = 2 ** 31 - 1;
 /** What the resumed (or re-dispatched) agent is told after a successful heal. */
 export const KB_AUTH_RESUME_NOTE =
     'KB auth is restored: the knowledge bank calls that failed with E-KB-HTTP-AUTH will work now. ' +
     'Redo any KB lookups or captures you needed, finish the task, and give your final answer again in the same format as before.';
 
-/** provision_kb_auth refusals for a member whose own KB config is set up for something else. */
-const MEMBER_KB_ELSEWHERE = {
+/**
+ * provision_kb_auth refusals that hold for the whole run: the member's own KB
+ * config is set up for something else (never rewired), or its install cannot
+ * take the token. The member is skipped for the run after the first one.
+ */
+const PERMANENT_REFUSALS = {
     'member-kb-other-remote': 'its KB config names another remote',
+    'member-kb-other-token': 'its KB config names this remote with its own token source',
     'member-kb-local-store': 'its KB config uses its local store',
     'member-kb-unreadable': 'its KB config cannot be read',
+    'not-member-install': 'it runs a full fleet install, not a member install',
+    'install-too-old': 'its fleet install is missing or too old (update_member fleet_install auto)',
+    'relay-unsupported': 'it is a relay member, which cannot receive a secret file',
 };
+
+const TOKEN_REF_RE = /^\{\{(?:secret|secure)\.([a-zA-Z0-9_-]{1,64})\}\}$/;
+
+/**
+ * The orchestrator's KB config file (<data dir>/knowledge/config.json, the
+ * file kb_setup writes), read directly: no tool call, no member probe. Null
+ * when there is none. Throws when it cannot be read or parsed.
+ */
+export function readOrchestratorKbConfig(env = process.env) {
+    const file = path.join(getFleetDataDir(env), 'knowledge', 'config.json');
+    if (!fs.existsSync(file)) return null;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
 
 function parseJson(text) {
     try { return JSON.parse(text); } catch { return null; }
@@ -90,6 +116,7 @@ export function kbAuthErrorsOf(reports) {
  *   setTimer?: (fn: () => void, ms: number) => any,
  *   clearTimer?: (handle: any) => void,
  *   retryMs?: number,
+ *   readKbConfig?: () => object|null,
  * }} opts
  */
 export function createKbAuthKeeper(opts) {
@@ -98,10 +125,10 @@ export function createKbAuthKeeper(opts) {
     const setTimer = opts.setTimer ?? ((fn, ms) => { const h = setTimeout(fn, ms); if (h && h.unref) h.unref(); return h; });
     const clearTimer = opts.clearTimer ?? clearTimeout;
     const retryMs = opts.retryMs ?? KB_AUTH_PUSH_RETRY_MS;
+    const readKbConfig = opts.readKbConfig ?? readOrchestratorKbConfig;
 
     /** Resolved once: {remote, secret}, or null when the KB needs no keeping. */
     let kbConfig;
-    let kbConfigFailureLogged = false;
     /** member name -> {type} from member_detail. */
     const memberTypes = new Map();
     /** member name -> {expiresAt: string|null, refreshAtMs: number|null}: the last successful push. */
@@ -112,33 +139,35 @@ export function createKbAuthKeeper(opts) {
     const timers = new Map();
     /** `${member}|${reason}` already logged for a failed push. */
     const pushFailuresLogged = new Set();
+    /** member name -> in-flight heal promise. */
+    const healing = new Map();
     /** members whose failed heal was already logged. */
     const healFailuresLogged = new Set();
-    /** member name -> why its own KB config is left alone: no push, timer or heal for the run. */
+    /** member name -> the permanent refusal it got: no push, timer or heal for the run. */
     const skipped = new Map();
     /** members whose static secret came back with the same expiry: no more pushes this run. */
     const staticSettled = new Set();
 
-    async function sprintKb() {
+    /**
+     * The KB the sprint keeps tokens for, read once per run from the
+     * orchestrator's KB config: provider http with a {{secret.NAME}} token_ref.
+     * Anything else, or a config that cannot be read (logged once), is null
+     * for the whole run.
+     */
+    function sprintKb() {
         if (kbConfig !== undefined) return kbConfig;
-        let status;
+        let raw;
         try {
-            status = parseJson(resultText(await callTool('fleet_status', { format: 'json' })));
+            raw = readKbConfig();
         } catch (err) {
-            if (!kbConfigFailureLogged) log(`[kb-auth] WARN: could not read the KB config from fleet_status (${err && err.message ? err.message : err}); KB tokens are not kept fresh until it can be read.`);
-            kbConfigFailureLogged = true;
-            return null;
-        }
-        if (!status || typeof status !== 'object') {
-            // Not a transport failure: asking again would get the same answer.
-            log('[kb-auth] WARN: fleet_status returned no JSON; KB tokens are not kept fresh in this run.');
+            log(`[kb-auth] WARN: could not read the orchestrator's KB config (${err && err.message ? err.message : err}); KB tokens are not kept fresh in this run.`);
             kbConfig = null;
-            return null;
+            return kbConfig;
         }
-        const c = status.kbHealth && status.kbHealth.credential;
-        if (c && (c.kind === 'secret' || c.kind === 'live') && typeof c.url === 'string' && typeof c.secretName === 'string') {
-            kbConfig = { remote: c.url, secret: c.secretName, kind: c.kind };
-            log(`[kb-auth] the KB at ${c.url} takes its token from secret '${c.secretName}': members' tokens are kept fresh with provision_kb_auth.`);
+        const ref = raw && typeof raw.token_ref === 'string' ? TOKEN_REF_RE.exec(raw.token_ref) : null;
+        if (raw && raw.provider === 'http' && typeof raw.url === 'string' && raw.url && ref) {
+            kbConfig = { remote: raw.url, secret: ref[1] };
+            log(`[kb-auth] the KB at ${raw.url} takes its token from secret '${ref[1]}': members' tokens are kept fresh with provision_kb_auth.`);
         } else {
             kbConfig = null;
         }
@@ -180,9 +209,9 @@ export function createKbAuthKeeper(opts) {
         if (!res || res.isError || !sc || sc.ok !== true) {
             const why = sc && typeof sc.reason === 'string' ? sc.reason
                 : (sc && sc.verification && sc.verification.reason) || resultText(res) || 'no result';
-            if (Object.hasOwn(MEMBER_KB_ELSEWHERE, why) && !skipped.has(member)) {
+            if (Object.hasOwn(PERMANENT_REFUSALS, why) && !skipped.has(member)) {
                 skipped.set(member, why);
-                log(`[kb-auth] member '${member}' is not kept: ${MEMBER_KB_ELSEWHERE[why]}, which the sprint leaves as it is. No KB token push, timer or heal for it in this run.`);
+                log(`[kb-auth] member '${member}' is not kept: ${PERMANENT_REFUSALS[why]} (${why}). The sprint leaves it as it is: no KB token push, timer or heal for it in this run.`);
             }
             return { ok: false, reason: String(why) };
         }
@@ -192,7 +221,7 @@ export function createKbAuthKeeper(opts) {
         if (sc.memberChange && typeof sc.memberChange.detail === 'string') {
             log(`[kb-auth] member '${member}': ${sc.memberChange.detail}`);
         }
-        return { ok: true, expiresAt, refreshAtMs };
+        return { ok: true, expiresAt, refreshAtMs, secretKind: sc.secretKind === 'static' ? 'static' : 'live' };
     }
 
     /** Push the token to a remote member and record its refresh time. Single-flight per member. */
@@ -216,7 +245,7 @@ export function createKbAuthKeeper(opts) {
             const changed = !before || before.expiresAt !== r.expiresAt;
             // A static secret with the same expiry again: nobody rotated it, so
             // pushing it again cannot help. Stopped for the rest of the run.
-            if (!changed && cfg.kind === 'secret' && !staticSettled.has(member)) {
+            if (!changed && r.secretKind === 'static' && !staticSettled.has(member)) {
                 staticSettled.add(member);
                 log(`[kb-auth] member '${member}': static secret '${cfg.secret}' still expires ${r.expiresAt ?? 'never'}; not pushed again in this run (rotate it to renew).`);
             }
@@ -239,7 +268,9 @@ export function createKbAuthKeeper(opts) {
         const t = timers.get(member);
         if (!t || t.active === 0) return;
         if (t.handle !== null) clearTimer(t.handle);
-        t.handle = setTimer(() => { t.handle = null; void fire(member, cfg); }, Math.max(0, delayMs));
+        // setTimeout fires at once above 2^31-1 ms (about 24.8 days): longer
+        // delays are capped, and fire() re-arms from the record when early.
+        t.handle = setTimer(() => { t.handle = null; void fire(member, cfg); }, Math.min(Math.max(0, delayMs), MAX_TIMER_MS));
     }
 
     /**
@@ -256,6 +287,9 @@ export function createKbAuthKeeper(opts) {
     async function fire(member, cfg) {
         const t = timers.get(member);
         if (!t || t.active === 0) return;
+        const rec = records.get(member);
+        // Woken before the refresh time (a capped delay): nothing to push yet.
+        if (rec && rec.refreshAtMs !== null && now() < rec.refreshAtMs) return armFromRecord(member, cfg);
         const r = await push(member, cfg, 'refresh time reached during a dispatch');
         if (skipped.has(member)) return;
         if (!r.ok) return arm(member, cfg, retryMs);
@@ -291,8 +325,21 @@ export function createKbAuthKeeper(opts) {
         }
     }
 
-    /** provision_kb_auth after the agent hit a KB auth error. True when the token is good again. */
-    async function heal(member, type, cfg, auth) {
+    /**
+     * provision_kb_auth after the agent hit a KB auth error. True when the token
+     * is good again. Single-flight per member, like push(): a second heal on the
+     * member while one runs waits for it instead of minting again.
+     */
+    function heal(member, type, cfg, auth) {
+        const inFlight = healing.get(member);
+        if (inFlight) return inFlight;
+        const run = healOnce(member, type, cfg, auth);
+        const shared = run.finally(() => { if (healing.get(member) === shared) healing.delete(member); });
+        healing.set(member, shared);
+        return shared;
+    }
+
+    async function healOnce(member, type, cfg, auth) {
         const remote = type !== 'local';
         // A local member's KB provider already retried in-line; its call only resolves the secret.
         const r = await provision(member, cfg, remote, remote && auth.rejected ? 'rejected' : undefined);
@@ -303,7 +350,11 @@ export function createKbAuthKeeper(opts) {
             }
             return false;
         }
-        if (remote) records.set(member, { expiresAt: r.expiresAt, refreshAtMs: r.refreshAtMs });
+        if (remote) {
+            records.set(member, { expiresAt: r.expiresAt, refreshAtMs: r.refreshAtMs });
+            // The running timer still points at the old token's refresh time.
+            armFromRecord(member, cfg);
+        }
         return true;
     }
 
@@ -311,15 +362,27 @@ export function createKbAuthKeeper(opts) {
      * Run one dispatch with the KB token kept fresh around it.
      * @param {{ member?: string, prompt: string, opts: object, run: (prompt: string, opts: object) => Promise<any> }} d
      */
+    /**
+     * The pre-dispatch work: KB config, member type and the dispatch-start
+     * push. dispatch-role calls it before the agent() call, so outside the
+     * watchdog race, and marks the lease so dispatch() does not do it again.
+     */
+    async function prepare({ member, lease } = {}) {
+        const cfg = member ? sprintKb() : null;
+        const type = cfg && !skipped.has(member) ? await memberType(member) : null;
+        if (cfg && type && type !== 'local') await ensureFresh(member, cfg);
+        if (lease && typeof lease === 'object') lease.kbPrepared = true;
+    }
+
     async function dispatch({ member, prompt, opts: rawOpts, run }) {
         // The watchdog lease is the caller's, never a dispatch option.
         const { watchdogLease, ...dispatchOpts } = rawOpts || {};
-        const cfg = member ? await sprintKb() : null;
+        const cfg = member ? sprintKb() : null;
         const type = cfg && !skipped.has(member) ? await memberType(member) : null;
         if (!cfg || !type) return run(prompt, dispatchOpts);
         const remote = type !== 'local';
         if (remote) {
-            await ensureFresh(member, cfg);
+            if (!(watchdogLease && watchdogLease.kbPrepared)) await ensureFresh(member, cfg);
             // Refused at that push: this member's KB is its own business.
             if (skipped.has(member)) return run(prompt, dispatchOpts);
             startTimer(member, cfg);
@@ -350,22 +413,38 @@ export function createKbAuthKeeper(opts) {
             if (!auth) return value;
             // The heal and the resume get a fresh watchdog budget of their own,
             // so a dispatch that ended near its max_total_s is not killed during
-            // them. The lease renews once (dispatch-failure.mjs).
-            if (watchdogLease && typeof watchdogLease.renew === 'function' && watchdogLease.renew()) {
+            // them. The lease renews once (dispatch-failure.mjs). A renew that
+            // fails means the watchdog already gave up on this dispatch: the
+            // engine has moved on, so nothing is healed or resumed outside it.
+            if (watchdogLease && typeof watchdogLease.renew === 'function') {
+                if (!watchdogLease.renew()) {
+                    log(`[kb-auth] member '${member}' hit ${KB_AUTH_ERROR_CODE}, but its dispatch was already abandoned by the watchdog: no heal or resume.`);
+                    return value;
+                }
                 log(`[kb-auth] member '${member}': the heal and resume run under a fresh dispatch watchdog budget.`);
             }
             if (!(await heal(member, type, cfg, auth))) return value;
             const label = dispatchOpts.label ? `${dispatchOpts.label} [KB auth restored]` : undefined;
             if (sessionId) {
                 log(`[kb-auth] member '${member}' hit ${KB_AUTH_ERROR_CODE} ${auth.count} time(s); KB auth restored, resuming session '${sessionId}' once.`);
-                return await run(KB_AUTH_RESUME_NOTE, { ...dispatchOpts, resume: sessionId, ...(label ? { label } : {}) });
+            } else {
+                log(`[kb-auth] member '${member}' hit ${KB_AUTH_ERROR_CODE} ${auth.count} time(s); KB auth restored, and the provider reported no session to resume, so the prompt is dispatched again once with the note.`);
             }
-            log(`[kb-auth] member '${member}' hit ${KB_AUTH_ERROR_CODE} ${auth.count} time(s); KB auth restored, and the provider reported no session to resume, so the prompt is dispatched again once with the note.`);
-            return await run(`${prompt}\n\n${KB_AUTH_RESUME_NOTE}`, { ...dispatchOpts, resume: false, ...(label ? { label } : {}) });
+            try {
+                return sessionId
+                    ? await run(KB_AUTH_RESUME_NOTE, { ...dispatchOpts, resume: sessionId, ...(label ? { label } : {}) })
+                    : await run(`${prompt}\n\n${KB_AUTH_RESUME_NOTE}`, { ...dispatchOpts, resume: false, ...(label ? { label } : {}) });
+            } catch (err) {
+                // The first answer was usable: a failed resume (an expired
+                // session, a busy member, a dropped transport) must not make the
+                // role's retry ladder re-run the work.
+                log(`[kb-auth] WARN: the resume after the KB auth heal on member '${member}' failed (${err && err.message ? err.message : err}); keeping the dispatch's first answer.`);
+                return value;
+            }
         } finally {
             if (remote) stopTimer(member);
         }
     }
 
-    return { dispatch };
+    return { prepare, dispatch };
 }

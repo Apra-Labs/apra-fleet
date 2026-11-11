@@ -728,8 +728,9 @@
  * @property {"rejected"} [reason] - The KB server refused the token this secret last gave out: a
  *   cached live token is dropped and a new one minted before the push.
  * @property {boolean} [keep_member_kb] - Remote member: never rewrite a member KB config that names
- *   another remote, uses its local store or cannot be read; such a member is refused
- *   (member-kb-other-remote, member-kb-local-store, member-kb-unreadable) before any mint or push.
+ *   another remote, names this remote with its own token source, uses its local store or cannot be
+ *   read; such a member is refused (member-kb-other-remote, member-kb-other-token,
+ *   member-kb-local-store, member-kb-unreadable) before any mint or push.
  */
 
 /**
@@ -739,6 +740,8 @@
  * @property {"kb"} kind - Always "kb".
  * @property {string} secret - The secret name.
  * @property {string|null} expiresAt - The token expiry pushed with it, or null for none.
+ * @property {"live"|"static"} secretKind - live: minted on the orchestrator; static: a stored
+ *   value that only an operator renews.
  * @property {string|null} refreshAt - When to push again to keep the member's copy fresh:
  *   expiresAt minus T (config.json liveSecrets.*); null when expiresAt is null.
  * @property {{status: "verified"} | {status: "failed", reason: "rejected" | "unreachable" |
@@ -755,7 +758,7 @@
  * member-not-found, unknown-kind, bad-input, secret-not-found, secret-unreadable,
  * secret-expired, member-not-allowed, policy-deny, mint-failed, relay-unsupported,
  * member-unreachable, install-too-old, not-member-install, kb-not-configured, kb-other-remote,
- * member-kb-other-remote, member-kb-local-store, member-kb-unreadable,
+ * member-kb-other-remote, member-kb-other-token, member-kb-local-store, member-kb-unreadable,
  * secret-file-unavailable, delivery-failed, kb-setup-failed.
  * kb-setup-failed means the secret was stored on the member but its KB was not set up to use it;
  * expiresAt is then the expiry of that stored copy.

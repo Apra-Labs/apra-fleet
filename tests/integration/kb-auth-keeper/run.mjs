@@ -148,6 +148,16 @@ async function onMember(posix, powershell) {
   return { code: typeof r.body.exitCode === 'number' && !r.isError ? r.body.exitCode : null, out: `${r.body.stdout ?? ''}${r.body.stderr ?? ''}`.trim() || r.text };
 }
 
+/**
+ * The expiries of the keeper's SUCCESSFUL pushes for this reason, in order. Only
+ * the success line counts ("... (<why>): token expires <time>."); the failure
+ * line ("WARN: provision_kb_auth for member ... (<why>) failed: ...") never does.
+ */
+function pushed(lines, why) {
+  const re = new RegExp(`^\\[kb-auth\\] provision_kb_auth for member '[^']*' \\(${why}\\): token expires (\\S+)\\.$`);
+  return lines.map((l) => re.exec(l)).filter(Boolean).map((m) => m[1]);
+}
+
 /** One keeper-wrapped dispatch. Returns {value, lines, runs}; each run keeps its own toolErrors. */
 async function keeperDispatch(wf, keeperState, prompt, beforeFirstRun) {
   const lines = [];
@@ -241,8 +251,12 @@ async function main() {
   step(4, `dispatch 1: pre-dispatch push and a timer push while the agent works (token lives ${lifetimeS} s)`);
   const d1 = await keeperDispatch(wf, keeperState, kbPrompt('three times, waiting about 15 seconds between calls (for example with a sleep shell command if you have one)'));
   info(`agent: ${String(d1.value).split('\n').slice(-3).join(' | ')}`);
-  check(d1.lines.some((l) => /provision_kb_auth for member .*no token recorded in this sprint process/.test(l)), 'pushed before the dispatch: no token recorded yet', 'no pre-dispatch push logged');
-  check(d1.lines.some((l) => /provision_kb_auth for member .*refresh time reached during a dispatch/.test(l)), 'pushed again by the timer during the dispatch', 'no timer push logged (a dispatch shorter than the refresh delay? raise the wait or lower --lifetime-s)');
+  const start1 = pushed(d1.lines, 'no token recorded in this sprint process');
+  const timed1 = pushed(d1.lines, 'refresh time reached during a dispatch');
+  check(start1.length > 0, `pushed before the dispatch: no token recorded yet (expires ${start1[0]})`, 'no successful pre-dispatch push logged');
+  check(timed1.length > 0, `pushed again by the timer during the dispatch (expires ${timed1[0]})`, 'no successful timer push logged (a dispatch shorter than the refresh delay? raise the wait or lower --lifetime-s)');
+  check(start1.length > 0 && timed1.length > 0 && Date.parse(timed1[0]) > Date.parse(start1[0]),
+    'the timed push carried a new token: its expiry is later than the first', `the timed push did not bring a later expiry: ${start1[0]} then ${timed1[0]}`);
   check(d1.runs.length === 1, 'no heal was needed', `the dispatch was re-run ${d1.runs.length - 1} time(s)`);
   check(d1.runs[0].toolErrors.some((r) => r.available === true), 'toolErrors were read from the member', `toolErrors not available: ${JSON.stringify(d1.runs[0].toolErrors)}`);
 
@@ -259,7 +273,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 1000));
   });
   info(`agent: ${String(d2.value).split('\n').slice(-3).join(' | ')}`);
-  check(d2.lines.some((l) => /provision_kb_auth for member .*token within its refresh window/.test(l)), `pushed before the dispatch: the ${lifetimeS} s token was due`, 'no pre-dispatch push logged');
+  check(pushed(d2.lines, 'token within its refresh window').length > 0, `pushed before the dispatch: the ${lifetimeS} s token was due`, 'no successful pre-dispatch push logged');
   const resumes = d2.lines.filter((l) => /KB auth restored, resuming session/.test(l));
   check(resumes.length === 1, `healed and resumed once: ${resumes[0] ?? ''}`, `expected exactly one resume, logged ${resumes.length}`);
   check(d2.runs.length === 2 && typeof d2.runs[1].resume === 'string' && d2.runs[1].note, 'the second run resumed the session by id with the note', `runs: ${JSON.stringify(d2.runs)}`);

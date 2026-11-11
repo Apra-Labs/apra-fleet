@@ -1,6 +1,9 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { createKbAuthKeeper, KB_AUTH_RESUME_NOTE, KB_AUTH_PUSH_RETRY_MS } from '../fleet-sprint/kb-auth-keeper.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createKbAuthKeeper, readOrchestratorKbConfig, KB_AUTH_RESUME_NOTE, KB_AUTH_PUSH_RETRY_MS, MAX_TIMER_MS } from '../fleet-sprint/kb-auth-keeper.mjs';
 
 // The KB auth keeper around a dispatch: the pre-dispatch push, the timer push
 // while it runs, and the heal plus one resume when the agent's toolErrors show
@@ -14,14 +17,18 @@ const T0 = Date.parse('2030-01-01T00:00:00Z');
 
 const json = (body) => ({ content: [{ type: 'text', text: JSON.stringify(body) }] });
 
-function fleet({ credential = { kind: 'live', url: REMOTE, secretName: SECRET }, types = {}, provisionAnswers = [] } = {}) {
+/**
+ * A fake orchestrator. credential stands for its KB config: {kind: 'live' |
+ * 'secret', ...} is http with a token_ref (the live/static split is what
+ * provision_kb_auth reports as secretKind), 'literal' a literal token, null none.
+ */
+function fleet({ credential = { kind: 'live', url: REMOTE, secretName: SECRET }, types = {}, provisionAnswers = [], lifetimeMs = HOUR } = {}) {
     const calls = [];
     const clock = { now: T0 };
     let mint = 0;
     let lastExp = null;
     const callTool = async (name, args) => {
         calls.push({ name, args });
-        if (name === 'fleet_status') return json({ members: [], ...(credential ? { kbHealth: { credential } } : { kbHealth: {} }) });
         if (name === 'member_detail') return json({ type: types[args.member_name] ?? 'remote' });
         if (name === 'provision_kb_auth') {
             const answer = provisionAnswers.length ? provisionAnswers.shift() : 'ok';
@@ -31,18 +38,26 @@ function fleet({ credential = { kind: 'live', url: REMOTE, secretName: SECRET },
                 return { isError: true, content: [{ type: 'text', text: `E-PROVISION-AUTH: ${reason}` }], structuredContent: { ok: false, code: 'E-PROVISION-AUTH', reason } };
             }
             // 'same': the previous token again (a refresh that failed, or a static secret).
-            if (answer !== 'same') { mint += 1; lastExp = clock.now + HOUR; }
-            // A token living one hour, refresh due 6 minutes before it expires.
+            if (answer !== 'same') { mint += 1; lastExp = clock.now + lifetimeMs; }
+            // Refresh due 6 minutes before the token expires.
             const exp = lastExp;
             return {
                 content: [{ type: 'text', text: '[OK]' }],
-                structuredContent: { ok: true, expiresAt: new Date(exp).toISOString(), refreshAt: new Date(exp - 360_000).toISOString(), mint },
+                structuredContent: {
+                    ok: true, expiresAt: new Date(exp).toISOString(), refreshAt: new Date(exp - 360_000).toISOString(), mint,
+                    secretKind: credential && credential.kind === 'secret' ? 'static' : 'live',
+                },
             };
         }
         throw new Error(`unexpected tool ${name}`);
     };
     const provisions = () => calls.filter((c) => c.name === 'provision_kb_auth');
-    return { calls, callTool, clock, provisions };
+    const readKbConfig = () => {
+        if (!credential) return null;
+        if (credential.kind === 'literal') return { provider: 'http', url: credential.url, token_encrypted: 'x' };
+        return { provider: 'http', url: credential.url, token_ref: `{{secret.${credential.secretName}}}` };
+    };
+    return { calls, callTool, clock, provisions, readKbConfig };
 }
 
 function timers() {
@@ -66,7 +81,8 @@ function timers() {
 
 function keeperFor(f, tm = timers(), lines = []) {
     const keeper = createKbAuthKeeper({
-        callTool: f.callTool, log: (l) => lines.push(l), now: () => f.clock.now, setTimer: tm.setTimer, clearTimer: tm.clearTimer,
+        callTool: (n, a) => f.callTool(n, a), log: (l) => lines.push(l), now: () => f.clock.now, setTimer: tm.setTimer, clearTimer: tm.clearTimer,
+        readKbConfig: () => f.readKbConfig(),
     });
     return { keeper, tm, lines };
 }
@@ -299,7 +315,7 @@ describe('KB auth keeper: heal after E-KB-HTTP-AUTH', () => {
 });
 
 describe('KB auth keeper: a member whose KB is set up for something else', () => {
-    for (const [reason, why] of [['member-kb-other-remote', 'names another remote'], ['member-kb-local-store', 'uses its local store']]) {
+    for (const [reason, why] of [['member-kb-other-remote', 'names another remote'], ['member-kb-local-store', 'uses its local store'], ['member-kb-other-token', 'names this remote with its own token source'], ['install-too-old', 'missing or too old'], ['not-member-install', 'full fleet install']]) {
         test(`${reason}: skipped for the run, with one log line naming why; no timer, no heal`, async () => {
             const f = fleet({ provisionAnswers: [reason] });
             const tm = timers();
@@ -344,5 +360,124 @@ describe('KB auth keeper: a static secret with the same expiry', () => {
         await dispatchOn(keeper, 'm1', agent());
         assert.equal(f.provisions().length, 2, 'no push at the next dispatch start');
         assert.equal(lines.filter((l) => l.includes("static secret 'kb-token'")).length, 1);
+    });
+});
+
+describe('KB auth keeper: the KB config is read directly, once per run', () => {
+    test('no fleet_status call, and one read for the whole run', async () => {
+        const f = fleet();
+        let reads = 0;
+        const keeper = createKbAuthKeeper({ callTool: (n, a) => f.callTool(n, a), readKbConfig: () => { reads += 1; return f.readKbConfig(); } });
+        await dispatchOn(keeper, 'm1', agent());
+        await dispatchOn(keeper, 'm2', agent());
+        assert.equal(reads, 1);
+        assert.deepEqual([...new Set(f.calls.map((c) => c.name))].sort(), ['member_detail', 'provision_kb_auth']);
+    });
+
+    test('a config that cannot be read is logged once and not read again; nothing is called', async () => {
+        const f = fleet();
+        const lines = [];
+        let reads = 0;
+        const keeper = createKbAuthKeeper({ callTool: (n, a) => f.callTool(n, a), log: (l) => lines.push(l), readKbConfig: () => { reads += 1; throw new Error('EACCES'); } });
+        for (let i = 0; i < 3; i += 1) await dispatchOn(keeper, 'm1', agent());
+        assert.equal(reads, 1);
+        assert.equal(f.calls.length, 0);
+        assert.equal(lines.filter((l) => l.includes("could not read the orchestrator's KB config")).length, 1);
+    });
+
+    test('readOrchestratorKbConfig reads <data dir>/knowledge/config.json, and null when there is none', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-keeper-cfg-'));
+        try {
+            const env = { APRA_FLEET_DATA_DIR: dir };
+            assert.equal(readOrchestratorKbConfig(env), null);
+            fs.mkdirSync(path.join(dir, 'knowledge'));
+            fs.writeFileSync(path.join(dir, 'knowledge', 'config.json'), JSON.stringify({ provider: 'http', url: REMOTE, token_ref: '{{secret.x}}' }));
+            assert.deepEqual(readOrchestratorKbConfig(env), { provider: 'http', url: REMOTE, token_ref: '{{secret.x}}' });
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('KB auth keeper: watchdog, resume failure, heal timer', () => {
+    test('a dispatch the watchdog already abandoned is neither healed nor resumed when it settles', async () => {
+        const f = fleet();
+        const { keeper, lines } = keeperFor(f);
+        const lease = { renew: () => false };
+        const a = agent([{ toolErrors: authReport('rejected'), sessionId: 's1', value: 'late' }]);
+        assert.equal(await keeper.dispatch({ member: 'm1', prompt: 'p', opts: { member_name: 'm1', watchdogLease: lease }, run: a.run }), 'late');
+        assert.equal(a.runs.length, 1, 'no resume');
+        assert.equal(f.provisions().filter((c) => c.args.reason === 'rejected').length, 0, 'no heal');
+        assert.equal(lines.filter((l) => l.includes('already abandoned by the watchdog')).length, 1);
+    });
+
+    test('prepare() does the dispatch-start push before the race; dispatch() does not push again', async () => {
+        const f = fleet({ provisionAnswers: ['fail'] });
+        const { keeper } = keeperFor(f);
+        const lease = {};
+        await keeper.prepare({ member: 'm1', lease });
+        assert.equal(f.provisions().length, 1);
+        await keeper.dispatch({ member: 'm1', prompt: 'p', opts: { member_name: 'm1', watchdogLease: lease }, run: agent().run });
+        assert.equal(f.provisions().length, 1, 'the failed push is not retried inside the race');
+    });
+
+    test('a resume that fails keeps the first answer, with one log line', async () => {
+        const f = fleet();
+        const { keeper, lines } = keeperFor(f);
+        const gone = new Error('session_not_found');
+        const a = agent([{ toolErrors: authReport('expired'), sessionId: 's1', value: 'usable' }, { throws: gone }]);
+        assert.equal(await dispatchOn(keeper, 'm1', a), 'usable');
+        assert.equal(a.runs.length, 2);
+        assert.equal(lines.filter((l) => l.includes('keeping the dispatch\'s first answer')).length, 1);
+    });
+
+    test('a heal moves the running timer to the new token\'s refresh time', async () => {
+        const f = fleet();
+        const tm = timers();
+        const { keeper, lines } = keeperFor(f, tm);
+        let delayAfterHeal;
+        const a = agent([
+            { toolErrors: authReport('rejected'), sessionId: 's1', during: async () => { f.clock.now = T0 + 20 * 60_000; } },
+            { during: async () => { delayAfterHeal = [...tm.pending.values()].map((t) => t.ms); } },
+        ]);
+        await dispatchOn(keeper, 'm1', a);
+        // New token at t=20 min: expires at 80, refresh at 74, so 54 min from now.
+        assert.deepEqual(delayAfterHeal, [54 * 60_000]);
+        assert.equal(lines.filter((l) => l.includes('brought no new token')).length, 0);
+    });
+
+    test('a far expiry caps the timer delay, and an early wake-up only re-arms', async () => {
+        const f = fleet({ lifetimeMs: 90 * 24 * HOUR });
+        const tm = timers();
+        const { keeper } = keeperFor(f, tm);
+        const delays = [];
+        const a = agent([{
+            during: async () => {
+                delays.push([...tm.pending.values()][0].ms);
+                f.clock.now += MAX_TIMER_MS;
+                await tm.fireOnly();
+                delays.push([...tm.pending.values()][0].ms);
+            },
+        }]);
+        await dispatchOn(keeper, 'm1', a);
+        assert.equal(delays[0], MAX_TIMER_MS);
+        assert.equal(f.provisions().length, 1, 'the early wake-up pushed nothing');
+        assert.ok(delays[1] <= MAX_TIMER_MS && delays[1] > 0);
+    });
+
+    test('heals on one member are single-flight', async () => {
+        const f = fleet();
+        let release;
+        const gate = new Promise((r) => { release = r; });
+        const base = f.callTool;
+        f.callTool = async (n, a) => { if (n === 'provision_kb_auth' && a.reason === 'rejected') await gate; return base(n, a); };
+        const { keeper } = keeperFor(f);
+        await dispatchOn(keeper, 'm1', agent());
+        const one = dispatchOn(keeper, 'm1', agent([{ toolErrors: authReport('rejected'), sessionId: 's1' }]));
+        const two = dispatchOn(keeper, 'm1', agent([{ toolErrors: authReport('rejected'), sessionId: 's2' }]));
+        await new Promise((r) => setImmediate(r));
+        release();
+        await Promise.all([one, two]);
+        assert.equal(f.provisions().filter((c) => c.args.reason === 'rejected').length, 1);
     });
 });
