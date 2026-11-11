@@ -43,7 +43,7 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
   if (input.persist === false && hasPersistentRecord(input.name)) {
     return `[FAIL] '${input.name}' is persistent, so it cannot have a session value. Omit persist to change its value. If you really want a session value, delete it first with credential_store_delete.`;
   }
-  const result = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt });
+  const result = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt, storesSecret: true });
 
   if (result.fallback) return result.fallback;
   if (!result.password) return `❌ No secret received for ${input.name}. Please try again.`;

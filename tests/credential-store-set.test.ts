@@ -51,7 +51,7 @@ describe('credentialStoreSet', () => {
     });
 
     expect(result).toBe('Waiting for secret...');
-    expect(authSocket.collectOobApiKey).toHaveBeenCalledWith('test_cred', 'credential_store_set', { prompt: 'Enter key:' });
+    expect(authSocket.collectOobApiKey).toHaveBeenCalledWith('test_cred', 'credential_store_set', { prompt: 'Enter key:', storesSecret: true });
   });
 
   it('returns error if no password received', async () => {

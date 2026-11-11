@@ -439,7 +439,8 @@ async function handleSet(args: string[]): Promise<void> {
   // the OOB delivery succeeded) still has a value to store instead of
   // silently persisting an empty string.
   let persistValue = secretValue;
-  const waitForServer = new Promise<boolean>((resolve) => {
+  // 'stored': the waiting tool stores the value itself, with the policy it was asked for.
+  const waitForServer = new Promise<'stored' | boolean>((resolve) => {
     const client = net.connect(sockPath, () => {
       const msg = JSON.stringify({ type: 'auth', member_name: name, password: secretValue, persist: finalPersist }) + '\n';
       secretValue = '';
@@ -457,7 +458,7 @@ async function handleSet(args: string[]): Promise<void> {
         const resp = JSON.parse(line);
         if (resp.ok) {
           console.error(`✓ Secret delivered for ${name}. You can close this window.`);
-          resolve(true);
+          resolve(resp.stored === true ? 'stored' : true);
         } else {
           resolve(false);
         }
@@ -495,6 +496,12 @@ async function handleSet(args: string[]): Promise<void> {
     } catch (err: any) {
       console.error(`✗ Failed to store secret: ${err.message}`);
       process.exit(1);
+    }
+  } else if (delivered === 'stored') {
+    // A write here would race the waiting tool's own and could replace the
+    // policy it was asked for (deny, members) with this command's.
+    if (persist) {
+      console.error(`  Not stored again by this command: the waiting request stores it with the policy and members it asked for. Change those with: apra-fleet secret --update ${name}`);
     }
   } else if (persist) {
     // OOB delivery + persist: store the secret
