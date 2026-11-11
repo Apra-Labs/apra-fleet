@@ -1,6 +1,7 @@
 import {
   credentialResolve,
   lookupLiveSecret,
+  lookupServerSecretMeta,
   type CredentialMeta,
   type LiveSecretRecord,
 } from './credential-store.js';
@@ -222,15 +223,19 @@ function readSecret(name: string, member: Agent): SecretSource {
     return { live };
   }
   let resolved: ReturnType<typeof credentialResolve>;
+  let found: ReturnType<typeof lookupServerSecretMeta>;
   try {
+    // Read before credentialResolve, which deletes an expired unbound record.
+    found = lookupServerSecretMeta(name);
     resolved = credentialResolve(name, member.friendlyName);
   } catch {
     throw unreadable();
   }
   if (!resolved) throw new ProvisionAuthError('secret-not-found', `secret "${name}" does not exist on the orchestrator`);
+  // Policy before expiry: members, then deny.
   if ('denied' in resolved) throw notShared();
+  if (found.status !== 'missing') refuseIfDenied(name, found.meta.network_policy);
   if ('expired' in resolved) throw new ProvisionAuthError('secret-expired', resolved.expired);
-  refuseIfDenied(name, resolved.meta.network_policy);
   return { value: resolved.plaintext, expiresAt: resolved.meta.expiresAt ?? null };
 }
 

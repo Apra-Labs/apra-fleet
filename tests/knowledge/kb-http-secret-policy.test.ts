@@ -237,6 +237,12 @@ describe('deny', () => {
     await kbSetup({ provider: 'http', remote: stub.url, token: `{{secret.${LIVE}}}` } as never, { folder: tmp });
   }, 30_000);
 
+  it('kb_setup refuses an expired deny secret for its deny, not its expiry', async () => {
+    credentialUpdate(STATIC, { network_policy: 'deny', expiresAt: Date.now() - 1000 });
+    const err = await kbSetup({ provider: 'http', remote: stub.url, token: `{{secret.${STATIC}}}` } as never, { folder: tmp }).then(() => null, (e: Error) => e);
+    expect(err?.message).toContain('network_policy=deny');
+  });
+
   it('the kb_setup contract states the deny refusal, in the tool schema and the generated request schema', () => {
     expect(kbSetupSchema.shape.token.description).toContain('must not have network_policy deny');
     const generated = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', '..', 'memory-contract', 'v1', 'schemas', 'kb_setup.request.json'), 'utf8'));

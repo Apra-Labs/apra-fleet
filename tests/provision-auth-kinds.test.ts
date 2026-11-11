@@ -339,6 +339,14 @@ describe('provisionAuthForKind: prepare', () => {
     expect(delivered).toEqual([]);
   });
 
+  it('an expired static secret still refuses by policy first: member-not-allowed, then policy-deny', async () => {
+    const unshared = staticSecret('expunshared', { members: ['someone-else'], ttl: -1 });
+    expectRefused(await failure(provision(unshared)), 'member-not-allowed');
+    const denied = staticSecret('expdenied', { policy: 'deny', ttl: -1 });
+    expectRefused(await failure(provision(denied)), 'policy-deny');
+    expect(delivered).toEqual([]);
+  });
+
   it('a member unshared during prepare is seen, with no mint', async () => {
     const s = live('unshareduring');
     stub.kb.prepare = async () => { credentialUpdate(s.name, { members: 'someone-else' }); };
