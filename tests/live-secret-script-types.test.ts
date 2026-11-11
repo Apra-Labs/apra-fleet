@@ -20,6 +20,8 @@ import {
   type ScriptLaunchers,
 } from '../src/services/live-secret-runner.js';
 import { isWslLauncherBash, resolveGitBashExecutable } from '../src/os/windows-executable.js';
+import { inlineScriptChanged } from '../src/cli/inline-quote-check.js';
+import { inlineQuoteFailure } from '../src/cli/secret.js';
 
 const WIN = process.platform === 'win32';
 const CLI = path.resolve(__dirname, '..', 'dist', 'index.js');
@@ -179,6 +181,45 @@ describe('secret --live grammar, through the real CLI', () => {
     expect(r.stderr).not.toContain('node -e');
     expect(records().split).toBeUndefined();
   });
+
+  // Raw command lines recorded from Windows PowerShell 5.1 running node with --inline '<script>'.
+  it.each([
+    ['$x = "abc"; Write-Output $x', '"node.exe" i.js --inline "$x = "abc"; Write-Output $x"', '$x = abc; Write-Output $x', true],
+    ["x=\"a\"", '"node.exe" i.js --inline x="a"', 'x=a', true],
+    ["$t = (az --query ''{t:a}'')", `"node.exe" i.js --inline "$t = (az --query '{t:a}')"`, "$t = (az --query '{t:a}')", false],
+    ['say \\"hi\\"', '"node.exe" i.js --inline "say \\"hi\\""', 'say "hi"', false],
+    ['abc', '"node.exe" i.js --inline abc', 'abc', false],
+  ])('the raw command line shows whether the shell changed %s', (_typed, raw, argv, changed) => {
+    expect(inlineScriptChanged(raw, argv)).toBe(changed);
+    const failure = inlineQuoteFailure(argv, raw);
+    if (changed) expect(failure).toMatch(/^FAILED: inline-quotes-changed: /);
+    else expect(failure).toBeNull();
+  });
+
+  it('a raw command line that cannot be read or does not hold the script is refused, not trusted', () => {
+    expect(inlineQuoteFailure('abc', null)).toMatch(/^FAILED: inline-unverified: /);
+    expect(inlineQuoteFailure('abc', '"node.exe" i.js --inline other')).toMatch(/^FAILED: inline-unverified: /);
+  });
+
+  it.runIf(WIN)('Windows PowerShell 5.1: an inline script whose double quotes it removed is refused and saves nothing; doubled single quotes register', () => {
+    const ok = writeScript('ok.js', `process.stdout.write(JSON.stringify({token:${JSON.stringify(TOKEN)},expires_at:new Date(Date.now()+3600000).toISOString()}))`);
+    const ps1 = path.join(sandbox, 'register.ps1');
+    const node = process.execPath.replace(/'/g, "''");
+    const cliPath = CLI.replace(/'/g, "''");
+    const okPath = ok.replace(/'/g, "''");
+    fs.writeFileSync(ps1, [
+      `& '${node}' '${cliPath}' secret --live changed --inline '$x = "abc"; node ''${okPath}'''`,
+      `& '${node}' '${cliPath}' secret --live kept --inline 'node ''${okPath}'''`,
+    ].join('\r\n'));
+    const r = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1], {
+      env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir }, encoding: 'utf-8', timeout: 90_000,
+    });
+    expect(r.stderr).toMatch(/^FAILED: inline-quotes-changed: /m);
+    expect(r.stderr).not.toContain('abc');
+    expect(r.stdout).toMatch(/^OK: expires /m);
+    expect(records().changed).toBeUndefined();
+    expect(records().kept).toBeDefined();
+  }, 90_000);
 
   it('--inline cannot be combined with a script path, with or without --', () => {
     for (const rest of [[script], ['--', script]]) {

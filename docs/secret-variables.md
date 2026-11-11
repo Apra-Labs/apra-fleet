@@ -199,10 +199,12 @@ arguments starting with `-`.
   it: `'--'`.
 - An unknown option before the path is an error, and so is an `--env` value not of the
   form `VAR={{secret.R}}`.
-- `--inline` takes one script and no script path. On Windows PowerShell 5.1 a double
-  quote inside an inline script is stripped and the script split. That fails with
-  `inline-extra-args` and saves nothing: use doubled single quotes, as in the examples,
-  or a script file.
+- `--inline` takes one script and no script path. Windows PowerShell 5.1 removes the
+  double quotes inside an inline script before apra-fleet sees it. A script split by
+  that fails with `inline-extra-args`; one changed without a split (`$x = "abc"` arriving
+  as `$x = abc`) fails with `inline-quotes-changed`, found by checking the command's own
+  command line on Windows. If that line cannot be read the result is `inline-unverified`.
+  Each saves nothing: use doubled single quotes, as in the examples, or a script file.
 
 ### Script types per OS
 
