@@ -726,6 +726,23 @@ only when the capabilities list `demote`. Without it, `kb_demote` and a MEMBER
 fail with `E-KB-HTTP-UNSUPPORTED`, and the sprint engine's reviewer demotion
 loop offers no candidates.
 
+The server validates `evidence_files`. They are untrusted input: paths
+relative to the root of the repository the caller names in `X-Repository`,
+as of the branch it names in `X-Repository-Branch` (section 2.9.2). A server
+refuses an absolute path or one with a `..` segment, and resolves the rest
+only inside its own view of that repository and branch, never elsewhere on
+its filesystem. Fleet checks first that each path is repo-relative with no
+`..` segment (either separator, any drive-letter or UNC form counts as
+absolute) and otherwise refuses with `E-DEMOTE-EVIDENCE-UNRESOLVED` before
+sending anything. The server's refusals:
+
+- 404 with body `code` `ENTRY_NOT_FOUND`: the id is unknown, or outside the
+  caller's scope (the two are not told apart);
+- 422 for a demote refusal, with body `code` the taxonomy code:
+  `E-DEMOTE-NOT-CONFIRMED`, `E-DEMOTE-SUPERSEDED`, `E-DEMOTE-REFUSED-DIRECTIVE`,
+  `E-DEMOTE-REASON-REQUIRED` or `E-DEMOTE-EVIDENCE-UNRESOLVED` (an evidence
+  path that is absolute, has a `..` segment, or does not resolve to a file).
+
 #### 2.9.2 Project and repository headers
 
 Every request carries headers that fleet fills only from the calling

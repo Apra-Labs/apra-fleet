@@ -263,3 +263,29 @@ describe('HttpKbProvider capabilities', () => {
     expect(paths()).toEqual(['GET /api/kb/capabilities']);
   });
 });
+
+// Spec 2.9.1: the server validates kb_demote evidence_files, and fleet checks
+// first that each path is repo-relative with no '..' segment, so an absolute
+// or traversing path is refused before anything is sent.
+describe('HttpKbProvider.demote evidence pre-check', () => {
+  for (const bad of ['/etc/passwd', '\\\\host\\share\\x.ts', 'C:\\repo\\src\\a.ts', 'c:/repo/src/a.ts', '../outside.ts', 'src/../../outside.ts', 'src\\..\\a.ts', 'src/a/..']) {
+    it(`refuses ${JSON.stringify(bad)} with E-DEMOTE-EVIDENCE-UNRESOLVED and sends nothing`, async () => {
+      answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote', 'demote']));
+      answers.set('/api/kb/demote', { status: 200, body: { id: 'id-1', previous_confidence: 'CONFIRMED', new_confidence: 'INFERRED' } });
+      const err = await provider.demote('id-1', 'a reason long enough to pass the floor', ['src/ok.ts', bad])
+        .then(() => null, (e: unknown) => e);
+      expect((err as Error).message).toMatch(/^E-DEMOTE-EVIDENCE-UNRESOLVED: kb_demote evidence is absolute or contains a '\.\.' segment: /);
+      expect((err as Error).message).toContain(bad);
+      expect((err as Error).message).not.toContain('src/ok.ts');
+      expect(paths()).toEqual([]);
+    });
+  }
+
+  it('sends repo-relative evidence (forward or back slashes) as is', async () => {
+    answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote', 'demote']));
+    answers.set('/api/kb/demote', { status: 200, body: { id: 'id-1', previous_confidence: 'CONFIRMED', new_confidence: 'INFERRED' } });
+    const out = await provider.demote('id-1', 'a reason long enough to pass the floor', ['src/ok.ts', 'docs\\notes..md', './src/b.ts']);
+    expect(out).toEqual({ id: 'id-1', confidence_before: 'CONFIRMED', confidence_after: 'INFERRED' });
+    expect(paths()).toEqual(['GET /api/kb/capabilities', 'POST /api/kb/demote']);
+  });
+});

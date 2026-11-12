@@ -21,6 +21,7 @@ import type {
 } from './types.js';
 
 import { DEFAULT_REQUEST_TIMEOUT_MS } from './kb-config.js';
+import { isAbsoluteOrTraversing } from './path-validation.js';
 import { lookupServerSecret } from '../credential-store.js';
 import { recordKbHttpSuccess, recordKbHttpRejected } from './kb-http-auth-state.js';
 import {
@@ -1001,6 +1002,8 @@ export class HttpKbProvider implements MemoryProvider {
    * is changed. Like promote(), sent by id with no fleet-side tag check: the
    * server enforces which ids the caller may demote (opts.ownerTag is not
    * sent). An entry the server does not know is "Entry not found".
+   * The server validates evidence_files (spec 2.9.1); fleet checks first that
+   * each is repo-relative with no '..' segment and sends nothing otherwise.
    */
   async demote(
     id: string,
@@ -1008,6 +1011,13 @@ export class HttpKbProvider implements MemoryProvider {
     evidenceFiles: string[],
     _opts?: { ownerTag?: string },
   ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
+    const outside = evidenceFiles.filter(isAbsoluteOrTraversing);
+    if (outside.length > 0) {
+      throw new Error(
+        `E-DEMOTE-EVIDENCE-UNRESOLVED: kb_demote evidence is absolute or contains a '..' segment: ${outside.join(', ')}. `
+        + `Evidence paths are repo-relative; nothing was sent to the KB server. Entry: ${id}`,
+      );
+    }
     let result: Record<string, unknown>;
     try {
       result = await this.writeRequest<Record<string, unknown>>('demote', '/api/kb/demote', {
