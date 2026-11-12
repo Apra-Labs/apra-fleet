@@ -94,8 +94,8 @@ demote and why, exactly like `kb_promotions`/`kb_discards`.
    issued. The engine logs that the loop is disabled and by which setting. Any
    value other than `on` or `off` is rejected at launch with an error naming
    the value (a 400 from the supervisor API); it never falls back silently.
-6. **Fresh-look limit.** A demoted entry goes back to INFERRED for a fresh
-   look, but the promotion window is `created_at` inside the current sprint.
+6. **Re-promotion limit.** A demoted entry goes back to INFERRED, but the
+   promotion window is `created_at` inside the current sprint.
    An entry created in an earlier sprint that gets demoted is therefore never
    re-offered for promotion by the engine. This is documented, not mitigated;
    no broader re-offer mechanism exists.
@@ -109,6 +109,23 @@ demote and why, exactly like `kb_promotions`/`kb_discards`.
    in-flight record is one entry per member; overlapping maintainer
    operations on the same member overwrite each other's entry (a known,
    tracked limitation shared with the existing operations).
+8. **A failed sprint's demotions are deferred, not dropped (SQLite).** The
+   `demoted_ids` queue lives in the sprint engine's memory, so a sprint that
+   ends before its round bible commit loses it. The demotion itself is not
+   lost: `kb_demote` already wrote it to the maintainer's per-repo KB, and
+   every `kb_bible_commit` tombstones each bible entry that KB holds as
+   demoted, named in `demoted_ids` or not. The next sprint's first bible
+   commit for that repository on the same machine therefore publishes it.
+   Until then the bible still carries the entry as CONFIRMED. Pinned by
+   `tests/knowledge/kb-bible-tombstones.test.ts` scenario 9.
+9. **Over an http KB provider.** The loop uses the KB server's demote only
+   when `GET /api/kb/capabilities` lists the optional `demote` route. Without
+   it, the maintainer's `kb_query` `own_scope` read is refused with
+   `E-KB-HTTP-UNSUPPORTED`, so the reviewer is offered no candidates and no
+   `kb_demote` is sent; a member `kb_demote` fails the same way. With it, the
+   demotion is made on the server. Either way the bible is not used over
+   http: the round bible commit is skipped (`bible_skipped`) and the engine
+   drops both its confirmation and its demotion queue for the repository.
 
 ## One kb_maintainer per repository (writes)
 
