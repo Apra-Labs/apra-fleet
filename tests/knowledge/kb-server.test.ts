@@ -223,6 +223,8 @@ describe('kb-server promote and tag filter', () => {
       expect(overHttp.results.map(r => r.title)).toEqual(overSqlite.results.map(r => r.title));
     } finally {
       provider.dispose();
+      // Release the SQLite handle first: Windows refuses to unlink an open file (EBUSY).
+      local.close();
       fs.rmSync(fallbackDir, { recursive: true, force: true });
     }
   });
