@@ -216,10 +216,10 @@ describe('HttpKbProvider capabilities', () => {
     await listen(sameHost);
     seen = [];
     const err = await provider.query({ query: 'x' }).then(() => null, (e: unknown) => e);
-    expect((err as { code?: string }).code).toBe('E-KB-HTTP-UNREACHABLE');
-    expect((err as Error).message).toMatch(/GET \/api\/kb\/query: .*GET \/api\/kb\/capabilities answered HTTP 503/);
     expect(provider.offlineQueue).toEqual(queued);
     expect(paths().filter(p => p !== 'GET /api/kb/capabilities')).toEqual([]);
+    expect((err as { code?: string }).code).toBe('E-KB-HTTP-UNREACHABLE');
+    expect((err as Error).message).toMatch(/GET \/api\/kb\/query: .*GET \/api\/kb\/capabilities answered HTTP 503/);
 
     // A fresh capture meanwhile is queued behind it, as on a connection error.
     await expect(provider.capture(entry())).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
@@ -245,6 +245,23 @@ describe('HttpKbProvider capabilities', () => {
     expect(err).toBeInstanceOf(KbHttpUnsupportedError);
     expect((err as Error).message).toMatch(/^E-KB-HTTP-UNSUPPORTED: GET \/api\/kb\/capabilities .*answered HTTP 403/);
     expect(provider.offlineQueue.map(o => o.op)).toEqual(['invalidate']);
+  });
+
+  it('a queued write answered 503 on replay (capabilities known) is kept, not dropped', async () => {
+    answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote']));
+    await provider.query({ query: 'read capabilities' });
+    const sameHost = port;
+    await stop();
+    await expect(provider.capture(entry())).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
+    const queued = [...provider.offlineQueue];
+
+    // A gateway in front of the server answers the replayed capture 503.
+    answers.set('/api/kb/capture', { status: 503, body: { error: 'Service unavailable' } });
+    await listen(sameHost);
+    seen = [];
+    await provider.query({ query: 'x' });
+    expect(paths()).toContain('POST /api/kb/capture');
+    expect(provider.offlineQueue).toEqual(queued);
   });
 
   it('a queued write the server refuses on replay is dropped with a logged warning', async () => {

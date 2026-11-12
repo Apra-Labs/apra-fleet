@@ -114,6 +114,15 @@ function isAuthError(err: unknown): err is KbHttpAuthError {
   return err instanceof KbHttpAuthError;
 }
 
+/**
+ * A 5xx or 429: the server (or a gateway in front of it) cannot answer right
+ * now. The state of the server, never the fault of the request that got it.
+ */
+function isServerUnavailable(err: unknown): boolean {
+  const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+  return typeof code === 'string' && (code === 'HTTP_429' || /^HTTP_5\d\d$/.test(code));
+}
+
 function isHttp401(err: unknown): boolean {
   return err instanceof Error && (err as NodeJS.ErrnoException).code === 'HTTP_401';
 }
@@ -672,8 +681,9 @@ export class HttpKbProvider implements MemoryProvider {
   /**
    * A failed capabilities read as the typed error callers see. A 401 (literal
    * token) and the already-typed errors pass through as on any route. Any
-   * other HTTP status is never a raw HTTP error: a 5xx (a restarting server, a
-   * gateway with no backend) is E-KB-HTTP-UNREACHABLE naming the status, so a
+   * other HTTP status is never a raw HTTP error: a 5xx or 429 (a restarting or
+   * rate-limiting server, a gateway with no backend) is E-KB-HTTP-UNREACHABLE
+   * naming the status, so a
    * write is queued as on a connection error; any other status (403/405 from
    * a gateway) is E-KB-HTTP-UNSUPPORTED naming the capabilities read.
    */
@@ -681,7 +691,7 @@ export class HttpKbProvider implements MemoryProvider {
     const code = (err as NodeJS.ErrnoException).code;
     if (typeof code !== 'string' || !code.startsWith('HTTP_') || code === 'HTTP_401') return err;
     const status = Number(code.slice(5));
-    if (status >= 500) {
+    if (isServerUnavailable(err)) {
       return new KbHttpUnreachableError(
         this.displayUrl, 'GET /api/kb/capabilities', `GET /api/kb/capabilities answered ${(err as Error).message}`,
       );
@@ -755,8 +765,9 @@ export class HttpKbProvider implements MemoryProvider {
   // are read first, on their own: a failed read (5xx, 403, 401, a malformed
   // answer) is the server's state, not any op's fault, so the whole queue is
   // kept; the caller's own request reads the capabilities again and throws
-  // that error to the caller. Any other error is specific to that op, which is
-  // dropped with a logged warning.
+  // that error to the caller. A 5xx or 429 answering a replayed op is the
+  // server's state too: the queue is kept. Any other error is specific to that
+  // op, which is dropped with a logged warning.
   private async tryFlushQueue(): Promise<void> {
     if (this.offlineQueue.length === 0) return;
     try {
@@ -785,7 +796,8 @@ export class HttpKbProvider implements MemoryProvider {
         }
         // Unreachable, or the wrong project's server: keep the queue for the
         // right server rather than dropping what could not be sent.
-        if (err instanceof KbHttpUnreachableError || isAuthError(err) || err instanceof KbHttpProjectMismatchError) {
+        if (err instanceof KbHttpUnreachableError || isAuthError(err) || err instanceof KbHttpProjectMismatchError
+          || isServerUnavailable(err)) {
           break;
         }
         process.stderr.write(`[KB] WARNING: dropped a queued ${op.op}: ${(err as Error).message}\n`);

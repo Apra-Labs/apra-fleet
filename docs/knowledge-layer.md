@@ -995,11 +995,12 @@ re-read between two successful calls, so a server upgraded in place keeps
 the route set read before until the next connection error or fleet restart. It never calls a route the answer does not list:
 the tool fails with `E-KB-HTTP-UNSUPPORTED` naming the route. A server without
 the capabilities route is assumed to serve every route but demote. Any other
-failed capabilities read is typed: a 5xx is `E-KB-HTTP-UNREACHABLE` (writes
-are queued), another status but 401 is `E-KB-HTTP-UNSUPPORTED` naming the
-capabilities read; queued writes are kept while it fails and sent once it
-answers. A queued write is dropped only for its own fault (route not listed,
-or refused by the server), with a logged warning. A 404 or 501
+failed capabilities read is typed: a 5xx or 429 is `E-KB-HTTP-UNREACHABLE`
+(writes are queued), another status but 401 and a 409 project mismatch is
+`E-KB-HTTP-UNSUPPORTED` naming the capabilities read; queued writes are kept
+while it fails (and when a replayed write is answered a 5xx or 429) and sent
+once it answers. A queued write is dropped only for its own fault (route not
+listed, or refused by the server), with a logged warning. A 404 or 501
 from an optional route is also `E-KB-HTTP-UNSUPPORTED` (a 404 whose body code is
 `ENTRY_NOT_FOUND` / `E-ENTRY-NOT-FOUND` stays "entry not found"). The bundled
 `kb-server` serves every route but demote, `branch_aware: false`; it lists
