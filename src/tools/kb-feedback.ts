@@ -40,13 +40,14 @@ export type KbFeedbackInput = z.infer<typeof kbFeedbackSchema>;
 // review only (never staled) because directives outrank agent experience and
 // the human decides -- see SqliteProvider.feedback() for the exact guard.
 export async function kbFeedback(input: KbFeedbackInput, anchor?: KbAnchor): Promise<string> {
-  // A MEMBER session reads its checkout bible view, which is read-only: a
-  // typed no-op that touches no store (checked before any provider is opened).
+  // A MEMBER session does not downvote entries in the shared KB, under either
+  // provider: a typed no-op that touches no store (checked before any provider
+  // is opened).
   if (memberOwnerTag(anchor) !== undefined) {
     throw new KbMemberViewError(
       'E-MEMBER-VIEW-READ-ONLY',
       '',
-      `kb_feedback is not available in a member session: member KB reads come from the checkout bible, which is read-only; entry '${input.id}' was not changed.`,
+      `kb_feedback is not available in a member session: a member session does not flag entries in the shared KB (over SQLite its reads come from the read-only checkout bible; under an http KB provider the server's entries are shared by every member); entry '${input.id}' was not changed.`,
       'Run kb_feedback from a FULL session (no member identity), or flag the entry for review through the maintainer.',
     );
   }

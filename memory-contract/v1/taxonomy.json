@@ -665,7 +665,7 @@
         {
           "$anchor": "E-MEMBER-VIEW-READ-ONLY",
           "code": "E-MEMBER-VIEW-READ-ONLY",
-          "meaning": "kb_feedback was called in a MEMBER session. A member's reads come from the in-memory view of its own checkout bible, which is read-only; a downvote would flag an entry the member cannot see in the shared per-repo DB. Nothing is changed.",
+          "meaning": "kb_feedback was called in a MEMBER session. A member does not flag entries in the shared KB, under either provider: over a SQLite project KB its reads come from the read-only in-memory view of its own checkout bible, so a downvote would flag an entry the member cannot see in the shared per-repo DB; under an http KB provider the server's entries are shared by every member. Nothing is changed.",
           "raising_methods": [
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" }
           ],
