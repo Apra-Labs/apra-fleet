@@ -650,7 +650,7 @@ export class HttpKbProvider implements MemoryProvider {
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'HTTP_404' || code === 'HTTP_501') return defaultCapabilities();
-      throw err;
+      throw this.capabilitiesHttpError(err);
     }
     const caps = body as Partial<KbServerCapabilities> | null;
     const isObject = caps !== null && typeof caps === 'object' && !Array.isArray(caps);
@@ -667,6 +667,30 @@ export class HttpKbProvider implements MemoryProvider {
     // Unknown route names are ignored: a newer server may list routes this client does not call.
     const routes = caps.routes.filter((r): r is KbRoute => KNOWN_ROUTES.includes(r));
     return { contract: caps.contract, routes, branch_aware: caps.branch_aware };
+  }
+
+  /**
+   * A failed capabilities read as the typed error callers see. A 401 (literal
+   * token) and the already-typed errors pass through as on any route. Any
+   * other HTTP status is never a raw HTTP error: a 5xx (a restarting server, a
+   * gateway with no backend) is E-KB-HTTP-UNREACHABLE naming the status, so a
+   * write is queued as on a connection error; any other status (403/405 from
+   * a gateway) is E-KB-HTTP-UNSUPPORTED naming the capabilities read.
+   */
+  private capabilitiesHttpError(err: unknown): unknown {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (typeof code !== 'string' || !code.startsWith('HTTP_') || code === 'HTTP_401') return err;
+    const status = Number(code.slice(5));
+    if (status >= 500) {
+      return new KbHttpUnreachableError(
+        this.displayUrl, 'GET /api/kb/capabilities', `GET /api/kb/capabilities answered ${(err as Error).message}`,
+      );
+    }
+    return new KbHttpUnsupportedError(
+      `GET /api/kb/capabilities (the KB server at ${this.displayUrl} answered HTTP ${status})`,
+      'nothing was sent',
+      'fix the KB server (or the gateway in front of it) so GET /api/kb/capabilities answers {contract, routes, branch_aware}, or 404/501 when it has no such route.',
+    );
   }
 
   /** E-KB-HTTP-UNSUPPORTED naming `route`: the server does not serve it. */
@@ -727,9 +751,19 @@ export class HttpKbProvider implements MemoryProvider {
 
   // Stops (keeping the queue) on a connection error AND on E-KB-HTTP-AUTH: an
   // auth failure is not the queued op's fault, and dropping it would lose
-  // every queued capture the moment the secret goes wrong. Any other error is
-  // specific to that op, which is dropped as before.
+  // every queued capture the moment the secret goes wrong. The capabilities
+  // are read first, on their own: a failed read (5xx, 403, 401, a malformed
+  // answer) is the server's state, not any op's fault, so the whole queue is
+  // kept; the caller's own request reads the capabilities again and throws
+  // that error to the caller. Any other error is specific to that op, which is
+  // dropped with a logged warning.
   private async tryFlushQueue(): Promise<void> {
+    if (this.offlineQueue.length === 0) return;
+    try {
+      await this.capabilities();
+    } catch {
+      return;
+    }
     while (this.offlineQueue.length > 0) {
       const op = this.offlineQueue[0];
       try {
@@ -754,6 +788,7 @@ export class HttpKbProvider implements MemoryProvider {
         if (err instanceof KbHttpUnreachableError || isAuthError(err) || err instanceof KbHttpProjectMismatchError) {
           break;
         }
+        process.stderr.write(`[KB] WARNING: dropped a queued ${op.op}: ${(err as Error).message}\n`);
         this.offlineQueue.shift();
       }
     }

@@ -681,6 +681,15 @@ entries per branch (section 2.9.2). Fleet's client:
   route existed: every route above except `demote`, `branch_aware` false;
 - refuses a capabilities body that carries some of the fields but not all,
   well typed, with `E-KB-HTTP-UNSUPPORTED`;
+- treats any other failed capabilities read as the server's state, never as
+  a raw HTTP error: a 5xx (a restarting server, a gateway with no backend) is
+  `E-KB-HTTP-UNREACHABLE` naming the status, so a write is queued as on a
+  connection error; any other status but 401 (e.g. 403/405 from a gateway) is
+  `E-KB-HTTP-UNSUPPORTED` naming the capabilities read. A failed read is not
+  kept: the next call reads the capabilities again. While it fails, queued
+  writes are kept, never dropped; a queued write is dropped only for its own
+  fault (its route is not listed, or the server refuses it), with a logged
+  warning;
 - turns a 404 or 501 from any optional route into `E-KB-HTTP-UNSUPPORTED`
   naming the route, never a raw HTTP error. On an id route a 404 whose body
   `code` is `ENTRY_NOT_FOUND` or `E-ENTRY-NOT-FOUND` means the entry is
