@@ -229,7 +229,7 @@ directly.
    `kb_demotions` -- the orchestrator refuses it in every list it appears in.
    A team can turn the demotion loop off (a sprint launch setting); then no
    demotion candidates block appears and any `kb_demotions` you return are dropped.
-   Fresh-look limit: a demoted entry returns to INFERRED, but the promotion window is
+   Re-promotion limit: a demoted entry returns to INFERRED, but the promotion window is
    entries whose `created_at` falls inside the current sprint, so an entry created in an
    earlier sprint that gets demoted is never re-offered for promotion by the engine.
 

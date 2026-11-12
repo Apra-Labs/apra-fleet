@@ -192,7 +192,7 @@ export function vetKbWork(role, result) {
 
     // kb_demotions: the reviewer's DEMOTE judgement -- a CONFIRMED entry a
     // re-check shows does not hold (less certain, or shown wrong), sent back to
-    // INFERRED for a fresh look. Same role gate and reason bar as kb_promotions
+    // INFERRED. Same role gate and reason bar as kb_promotions
     // and kb_discards, plus at least one evidence file: kb_demote refuses a
     // demotion without one, so it is refused here before any call.
     const rawDemotions = (result && Array.isArray(result.kb_demotions)) ? result.kb_demotions : [];
@@ -2196,7 +2196,7 @@ export function kbDemotionBlock(kbCandidates) {
     if (!Array.isArray(kbCandidates) || kbCandidates.length === 0) return [];
     return [
         'KNOWLEDGE BANK -- demotion candidates. These entries are currently CONFIRMED. You are '
-        + 'the only role that can demote one back to INFERRED for a fresh look. Do NOT call any '
+        + 'the only role that can demote one back to INFERRED. Do NOT call any '
         + 'kb_* tool yourself: return your decisions in your structured output and the '
         + 'orchestrator executes them -- `kb_demotions` as [{id, reason, evidence_files}] for '
         + 'entries to demote back to INFERRED.\n'
