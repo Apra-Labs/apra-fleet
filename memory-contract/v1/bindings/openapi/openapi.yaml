@@ -238,7 +238,7 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-UNREACHABLE",
-      "title": "The project KB is backed by the http provider and the KB server could not be reached (connection refused, DNS failure, timeout, reset), or its capabilities read (GET /api/kb/capabilities) answered a 5xx or 429 (a restarting or rate-limiting server, or a gateway with no backend); the message names the status. The KB server is the only source of truth under http: no read is answered from the checkout bible or a local store, and no write reports success. A capture, invalidate or feedback is kept in the offline queue first (the message says so) and is sent, in order, by the next call that reaches the server; the queue lives in the fleet server process only.",
+      "title": "The project KB is backed by the http provider and the KB server could not be reached (connection refused, DNS failure, timeout, reset), or it answered a 5xx or 429 (a restarting or rate-limiting server, or a gateway with no backend) to its capabilities read (GET /api/kb/capabilities) or to a capture, invalidate (files) or feedback request; the message names the request and the status. The KB server is the only source of truth under http: no read is answered from the checkout bible or a local store, and no write reports success. A capture, invalidate or feedback is kept in the offline queue first (the message says so) and is sent, in order, by the next call that reaches the server; the queue lives in the fleet server process only.",
       "status": 500
     }
   ]

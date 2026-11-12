@@ -936,7 +936,7 @@ Run `kb_setup` with `remote` and `token` to write this. Do not write
 With the http provider, `kb_feedback` is sent to the server as
 `POST /api/kb/feedback` with body `{id, reason, role}` and returns the
 server's answer unchanged; the client never sets confidence. While the server
-is unreachable the feedback is queued offline with captures and invalidates
+is unreachable (or answers 5xx/429) the feedback is queued offline with captures and invalidates
 and the tool fails with `E-KB-HTTP-UNREACHABLE`, whose message says it was
 queued. The bundled `kb-server` command
 serves that route: it validates the role like the tool does, marks the entry
@@ -959,7 +959,8 @@ Write it with `kb_setup ... token={{secret.KB_TOKEN}}`; see
 #### MemoryProvider operations
 
 Every method in the `MemoryProvider` interface is classified as one of:
-- **remote** -- calls the HTTP server. On a connection error a write is
+- **remote** -- calls the HTTP server. On a connection error (or a 5xx/429
+  answer to a capture, invalidate or feedback) a write is
   queued and the call throws `E-KB-HTTP-UNREACHABLE` (saying it was queued);
   a read throws `E-KB-HTTP-UNREACHABLE`. Nothing is ever answered from a
   local store or the checkout bible: the server is the source of truth.
@@ -971,15 +972,15 @@ The provider holds no local store at all.
 | Method | Classification | Notes |
 |--------|---|---|
 | init | local | Nothing to open. |
-| capture | remote | Posts entry to server. On connection error, queued in memory (max 1000) and thrown as `E-KB-HTTP-UNREACHABLE`; queue flushed on reconnect. |
+| capture | remote | Posts entry to server. On connection error or a 5xx/429 answer, queued in memory (max 1000) and thrown as `E-KB-HTTP-UNREACHABLE`; queue flushed on reconnect. |
 | query | remote | Retrieves entries from server. On connection error, `E-KB-HTTP-UNREACHABLE`. |
 | context | remote | Retrieves file context from server. On connection error, `E-KB-HTTP-UNREACHABLE`. |
-| invalidate | remote | Invalidates files on server. On connection error, queued in memory and thrown as `E-KB-HTTP-UNREACHABLE`; queue flushed on reconnect. |
+| invalidate | remote | Invalidates files on server. On connection error or a 5xx/429 answer, queued in memory and thrown as `E-KB-HTTP-UNREACHABLE`; queue flushed on reconnect. |
 | discard | unsupported | Throws E-KB-HTTP-UNSUPPORTED (id-level discard not supported). Use kb_invalidate with files instead. |
 | getLinked | local | No remote route: returns no linked entries. |
 | prime | remote | Retrieves primed context from server. On connection error, `E-KB-HTTP-UNREACHABLE`. `kb_session_prime` does not cold-seed from the checkout bible under http. |
 | promote | remote | POST /api/kb/promote with `{id, reason}`. No offline queue on connection error (the id only exists on the server): `E-KB-HTTP-UNREACHABLE` naming the server URL. Sent by id with no list lookup first: the server refuses an unknown, superseded or out-of-scope id itself. The bundled `kb-server` answers an unknown id 404 with code `ENTRY_NOT_FOUND`; any 404 rejects as `Entry not found: <id>` followed by the server's answer; any other refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's text and code. |
-| feedback | remote | POST /api/kb/feedback with `{id, reason, role}`; returns the server response unchanged. On connection error (or E-KB-HTTP-AUTH) queued offline with captures and invalidates, and the error is thrown. |
+| feedback | remote | POST /api/kb/feedback with `{id, reason, role}`; returns the server response unchanged. On connection error or a 5xx/429 answer (or E-KB-HTTP-AUTH) queued offline with captures and invalidates, and the error is thrown. |
 | demote | remote (optional route) | POST /api/kb/demote with `{id, reason, evidence_files}` -> `{id, previous_confidence, new_confidence}`, sent by id only when `GET /api/kb/capabilities` lists `demote`; otherwise (or on a 404/501 from the route) `E-KB-HTTP-UNSUPPORTED` naming the route, and nothing is changed. The server enforces which ids the caller may demote; a 404 whose body code says the entry is unknown rejects as `Entry not found: <id>`. A MEMBER `kb_query` `own_scope` read (which exists to find what may be demoted) is refused the same way when the server does not list `demote`. |
 | sync | unsupported | Returns {synced: false} (no remote sync over http). |
 | stats | unsupported | Returns supported:false with empty results (stats not supported over http). |
@@ -999,7 +1000,9 @@ failed capabilities read is typed: a 5xx or 429 is `E-KB-HTTP-UNREACHABLE`
 (writes are queued), another status but 401 and a 409 project mismatch is
 `E-KB-HTTP-UNSUPPORTED` naming the capabilities read; queued writes are kept
 while it fails (and when a replayed write is answered a 5xx or 429) and sent
-once it answers. A queued write is dropped only for its own fault (route not
+once it answers. A 5xx or 429 answering a capture, invalidate (files) or
+feedback itself is the same `E-KB-HTTP-UNREACHABLE` naming the status, and
+the write is queued. A queued write is dropped only for its own fault (route not
 listed, or refused by the server), with a logged warning. A 404 or 501
 from an optional route is also `E-KB-HTTP-UNSUPPORTED` (a 404 whose body code is
 `ENTRY_NOT_FOUND` / `E-ENTRY-NOT-FOUND` stays "entry not found"). The bundled

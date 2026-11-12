@@ -691,16 +691,21 @@ export class HttpKbProvider implements MemoryProvider {
     const code = (err as NodeJS.ErrnoException).code;
     if (typeof code !== 'string' || !code.startsWith('HTTP_') || code === 'HTTP_401') return err;
     const status = Number(code.slice(5));
-    if (isServerUnavailable(err)) {
-      return new KbHttpUnreachableError(
-        this.displayUrl, 'GET /api/kb/capabilities', `GET /api/kb/capabilities answered ${(err as Error).message}`,
-      );
-    }
+    if (isServerUnavailable(err)) return this.serverUnavailableError('GET /api/kb/capabilities', err as Error);
     return new KbHttpUnsupportedError(
       `GET /api/kb/capabilities (the KB server at ${this.displayUrl} answered HTTP ${status})`,
       'nothing was sent',
       'fix the KB server (or the gateway in front of it) so GET /api/kb/capabilities answers {contract, routes, branch_aware}, or 404/501 when it has no such route.',
     );
+  }
+
+  /**
+   * E-KB-HTTP-UNREACHABLE for a 5xx or 429 answer to `operation`: the
+   * server's state (restarting, rate limiting, a gateway with no backend),
+   * never the fault of the request.
+   */
+  private serverUnavailableError(operation: string, err: Error): KbHttpUnreachableError {
+    return new KbHttpUnreachableError(this.displayUrl, operation, `${operation} answered ${err.message}`);
   }
 
   /** E-KB-HTTP-UNSUPPORTED naming `route`: the server does not serve it. */
@@ -809,21 +814,29 @@ export class HttpKbProvider implements MemoryProvider {
   // Nothing to open locally: every operation is a request to the server.
   async init(): Promise<void> {}
 
-  async capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }> {
-    await this.tryFlushQueue();
+  /**
+   * One queueable write (capture, invalidate with files, feedback). When the
+   * server cannot take it now -- unreachable, token refused (E-KB-HTTP-AUTH),
+   * or a 5xx/429 answer (E-KB-HTTP-UNREACHABLE naming the status) -- the
+   * write is queued offline and the typed error is thrown marked queued: the
+   * caller must not believe the write reached the KB.
+   */
+  private async writeOrQueue<T>(op: QueuedOperation, pathname: string, body: unknown): Promise<T> {
     try {
-      return await this.routeRequest<{ id: string; audn_decision: AudnDecision }>(
-        'capture', 'POST', '/api/kb/capture', input
-      );
+      return await this.routeRequest<T>(QUEUED_OP_ROUTE[op.op], 'POST', pathname, body);
     } catch (err) {
-      // Queued, and the call still fails with the typed error: the caller
-      // must not believe the capture reached the KB.
-      if (err instanceof KbHttpUnreachableError || isAuthError(err)) {
-        this.enqueue({ op: 'capture', input });
-        throw err.asQueued();
+      const typed = isServerUnavailable(err) ? this.serverUnavailableError(`POST ${pathname}`, err as Error) : err;
+      if (typed instanceof KbHttpUnreachableError || isAuthError(typed)) {
+        this.enqueue(op);
+        throw typed.asQueued();
       }
       throw err;
     }
+  }
+
+  async capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }> {
+    await this.tryFlushQueue();
+    return this.writeOrQueue({ op: 'capture', input }, '/api/kb/capture', input);
   }
 
   async query(opts: QueryOptions): Promise<KBResult> {
@@ -881,17 +894,7 @@ export class HttpKbProvider implements MemoryProvider {
 
   async invalidate(files: string[]): Promise<{ invalidated: number }> {
     await this.tryFlushQueue();
-    try {
-      return await this.routeRequest<{ invalidated: number }>(
-        'invalidate', 'POST', '/api/kb/invalidate', { files }
-      );
-    } catch (err) {
-      if (err instanceof KbHttpUnreachableError || isAuthError(err)) {
-        this.enqueue({ op: 'invalidate', files });
-        throw err.asQueued();
-      }
-      throw err;
-    }
+    return this.writeOrQueue({ op: 'invalidate', files }, '/api/kb/invalidate', { files });
   }
 
   /**
@@ -900,22 +903,14 @@ export class HttpKbProvider implements MemoryProvider {
    * carries the already-validated author). The server owns the entry, so the
    * server decides stale/flagged; this method returns its response as is and
    * never writes or invents confidence, and never touches a local store.
-   * Server unreachable (E-KB-HTTP-UNREACHABLE) or token refused
-   * (E-KB-HTTP-AUTH): the feedback is queued offline (replayed in order with
+   * Server unreachable or answering 5xx/429 (E-KB-HTTP-UNREACHABLE) or token
+   * refused (E-KB-HTTP-AUTH): the feedback is queued offline (replayed in order with
    * queued captures/invalidates) and the error is rethrown as queued.
    */
   async feedback(id: string, reason: string, author: string): Promise<HttpKbFeedbackResult> {
     await this.tryFlushQueue();
     const body = { id, reason, role: author };
-    try {
-      return await this.routeRequest<Record<string, unknown>>('feedback', 'POST', '/api/kb/feedback', body);
-    } catch (err) {
-      if (err instanceof KbHttpUnreachableError || isAuthError(err)) {
-        this.enqueue({ op: 'feedback', ...body });
-        throw err.asQueued();
-      }
-      throw err;
-    }
+    return this.writeOrQueue({ op: 'feedback', ...body }, '/api/kb/feedback', body);
   }
 
   // No remote route for the entry graph, and no local store stands in for the

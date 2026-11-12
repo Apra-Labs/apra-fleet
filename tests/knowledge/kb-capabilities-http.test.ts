@@ -264,6 +264,47 @@ describe('HttpKbProvider capabilities', () => {
     expect(provider.offlineQueue).toEqual(queued);
   });
 
+  for (const status of [503, 429]) {
+    it(`a direct capture answered ${status} (capabilities cached) is queued with a typed error and replayed on the next call`, async () => {
+      answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote']));
+      await provider.query({ query: 'read capabilities' });
+      answers.set('/api/kb/capture', { status, body: { error: 'Server busy' } });
+
+      const err = await provider.capture(entry()).then(() => null, (e: unknown) => e);
+      expect(err).toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
+      expect((err as Error).message).toMatch(new RegExp(`^E-KB-HTTP-UNREACHABLE: POST /api/kb/capture: .*answered HTTP ${status}`));
+      expect(provider.offlineQueue).toEqual([{ op: 'capture', input: entry() }]);
+
+      answers.set('/api/kb/capture', { status: 201, body: { id: 'srv-1', audn_decision: 'add' } });
+      seen = [];
+      await provider.query({ query: 'x' });
+      expect(provider.offlineQueue).toEqual([]);
+      expect(paths()).toEqual(['POST /api/kb/capture', 'GET /api/kb/query']);
+    });
+  }
+
+  it('a direct invalidate(files) or feedback answered 502 is queued with a typed error and replayed in order', async () => {
+    answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote', 'invalidate', 'feedback']));
+    await provider.query({ query: 'read capabilities' });
+    answers.set('/api/kb/invalidate', { status: 502, body: { error: 'Bad gateway' } });
+    answers.set('/api/kb/feedback', { status: 502, body: { error: 'Bad gateway' } });
+
+    await expect(provider.invalidate(['src/a.ts'])).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
+    // The queued invalidate is replayed first, still 502: kept, and the feedback queues behind it.
+    await expect(provider.feedback('id-1', 'wrong in practice', 'doer')).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
+    expect(provider.offlineQueue).toEqual([
+      { op: 'invalidate', files: ['src/a.ts'] },
+      { op: 'feedback', id: 'id-1', reason: 'wrong in practice', role: 'doer' },
+    ]);
+
+    answers.set('/api/kb/invalidate', { status: 200, body: { invalidated: 1 } });
+    answers.set('/api/kb/feedback', { status: 200, body: { id: 'id-1', confidence: 'STALE' } });
+    seen = [];
+    await provider.query({ query: 'x' });
+    expect(provider.offlineQueue).toEqual([]);
+    expect(paths()).toEqual(['POST /api/kb/invalidate', 'POST /api/kb/feedback', 'GET /api/kb/query']);
+  });
+
   it('a queued write the server refuses on replay is dropped with a logged warning', async () => {
     const sameHost = port;
     await stop();

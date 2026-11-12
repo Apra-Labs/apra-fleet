@@ -775,7 +775,7 @@
         {
           "$anchor": "E-KB-HTTP-UNREACHABLE",
           "code": "E-KB-HTTP-UNREACHABLE",
-          "meaning": "The project KB is backed by the http provider and the KB server could not be reached (connection refused, DNS failure, timeout, reset), or its capabilities read (GET /api/kb/capabilities) answered a 5xx or 429 (a restarting or rate-limiting server, or a gateway with no backend); the message names the status. The KB server is the only source of truth under http: no read is answered from the checkout bible or a local store, and no write reports success. A capture, invalidate or feedback is kept in the offline queue first (the message says so) and is sent, in order, by the next call that reaches the server; the queue lives in the fleet server process only.",
+          "meaning": "The project KB is backed by the http provider and the KB server could not be reached (connection refused, DNS failure, timeout, reset), or it answered a 5xx or 429 (a restarting or rate-limiting server, or a gateway with no backend) to its capabilities read (GET /api/kb/capabilities) or to a capture, invalidate (files) or feedback request; the message names the request and the status. The KB server is the only source of truth under http: no read is answered from the checkout bible or a local store, and no write reports success. A capture, invalidate or feedback is kept in the offline queue first (the message says so) and is sent, in order, by the next call that reaches the server; the queue lives in the fleet server process only.",
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
             { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
@@ -789,7 +789,7 @@
             { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
           ],
-          "source": "src/services/knowledge/http-provider.ts (KbHttpUnreachableError), raised by HttpKbProvider.request on a connection error and by HttpKbProvider.capabilities on a 5xx or 429 capabilities answer",
+          "source": "src/services/knowledge/http-provider.ts (KbHttpUnreachableError), raised by HttpKbProvider.request on a connection error, by HttpKbProvider.capabilities on a 5xx or 429 capabilities answer, and by HttpKbProvider.capture/invalidate/feedback (writeOrQueue) on a 5xx or 429 answer",
           "surfaced": "thrown",
           "retryable": false,
           "remediation": "Start the KB server or restore the network path to it, or use a local SQLite KB (kb_setup provider sqlite).",

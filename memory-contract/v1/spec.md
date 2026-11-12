@@ -697,6 +697,10 @@ entries per branch (section 2.9.2). Fleet's client:
   writes are kept, never dropped, as they are when a replayed write is answered
   a 5xx or 429; a queued write is dropped only for its own fault (its route is
   not listed, or the server refuses it), with a logged warning;
+- treats a 5xx or 429 answering the caller's own capture, invalidate (files)
+  or feedback the same way, with the capabilities already read: the write is
+  queued and the tool fails with `E-KB-HTTP-UNREACHABLE` naming the request
+  and the status (marked queued), never a raw HTTP error;
 - turns a 404 or 501 from any optional route into `E-KB-HTTP-UNSUPPORTED`
   naming the route, never a raw HTTP error. On an id route a 404 whose body
   `code` is `ENTRY_NOT_FOUND` or `E-ENTRY-NOT-FOUND` means the entry is
