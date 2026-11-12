@@ -747,7 +747,7 @@
           "source": "src/services/knowledge/http-provider.ts (KbHttpUnsupportedError), raised by HttpKbProvider.discard, HttpKbProvider.capabilities (a capabilities answer that is malformed, or a 4xx other than 401/404/409), HttpKbProvider.routeRequest (route not listed in GET /api/kb/capabilities, or an optional route answered 404/501) and src/tools/kb-query.ts (MEMBER flagged_only; MEMBER own_scope when the server does not list demote)",
           "surfaced": "thrown",
           "retryable": false,
-          "remediation": "Discard by id from a session whose KB is the local SQLite provider (kb_setup provider sqlite), or use kb_invalidate with files instead.",
+          "remediation": "Use a KB server that serves the route the message names (its GET /api/kb/capabilities lists it) and answers that read with {contract, routes, branch_aware}, or run the operation from a session whose KB is the local SQLite provider (kb_setup provider sqlite). For kb_invalidate with ids, use kb_invalidate with files instead; a MEMBER flagged_only read has no http equivalent.",
           "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the configured provider cannot serve this operation at all."
         },
         {
@@ -756,6 +756,7 @@
           "meaning": "The project KB is backed by the http provider and the KB server it points at serves a different project: every request carries the caller project slug (X-KB-Project) and the server answered 409 naming both slugs. Nothing is read or written, and the local fallback store is not used: the server is reachable, it is the wrong one.",
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
             { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "provider" },
             { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
             { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
