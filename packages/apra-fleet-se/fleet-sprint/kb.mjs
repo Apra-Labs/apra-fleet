@@ -434,6 +434,18 @@ function isUnreachableError(err) {
     return !!(err && typeof err.code === 'string' && err.code.length > 0 && !KB_TOOL_REJECTION_CODES.has(err.code));
 }
 
+/**
+ * The retryable error code a remote (http) KB provider throws when the KB
+ * server cannot be reached. The provider queues nothing, so the engine owns
+ * the retry: a write that fails with it stays queued for the next flush.
+ */
+const KB_SERVER_UNREACHABLE_CODE = 'E-KB-HTTP-UNREACHABLE';
+
+/** True when a kb_* tool's error text carries the KB-server-unreachable code. */
+function isKbServerUnreachableText(text) {
+    return typeof text === 'string' && new RegExp(`(^|[^A-Z-])${KB_SERVER_UNREACHABLE_CODE}\\b`).test(text);
+}
+
 /** The member name a kb work call names (a member record or a bare name). */
 function memberNameOf(member) {
     if (typeof member === 'string') return member;
@@ -462,6 +474,9 @@ function memberNameOf(member) {
  *     maintainer and is dropped with a WARN.
  *   - A write the maintainer cannot be reached for mid-batch is put back at
  *     the head of the queue: nothing is lost and nothing is silently dropped.
+ *     The same holds when the maintainer answers but its remote KB server
+ *     cannot be reached (E-KB-HTTP-UNREACHABLE): the http provider queues
+ *     nothing, so the engine keeps the write and retries it next flush.
  *
  * The bible commit (commitRound): every promotion the maintainer applied is
  * remembered per repository as a CONFIRMATION, and every successful demotion
@@ -808,6 +823,12 @@ export function createKbWorkClient(opts = {}) {
             }
         }
         const batch = queue.splice(0, queue.length);
+        // The KB server (not the maintainer) cannot be reached: this write and
+        // every one behind it go back to the head of the queue for the next flush.
+        const keepForServer = (i, spec, op, text) => {
+            queue.unshift(...batch.slice(i));
+            log(`[kb-work] WARN: KB server unreachable during ${spec.tool} for ${spec.subject(op.payload)} on maintainer '${maintainer}' (${text}) -- ${batch.length - i} KB write(s) for ${repo} stay queued`);
+        };
         for (let i = 0; i < batch.length; i++) {
             const op = batch[i];
             if (isBusy(maintainer)) {
@@ -839,6 +860,10 @@ export function createKbWorkClient(opts = {}) {
                     log(`[kb-work] WARN: maintainer '${maintainer}' unreachable during ${spec.tool} for ${spec.subject(op.payload)} (${err.message}) -- ${batch.length - i} KB write(s) for ${repo} stay queued`);
                     break;
                 }
+                if (isKbServerUnreachableText(err && err.message)) {
+                    keepForServer(i, spec, op, err.message);
+                    break;
+                }
                 log(`[kb-work] ${spec.tool} failed for ${spec.subject(op.payload)} (non-fatal): ${err && err.message ? err.message : String(err)}`);
                 continue;
             } finally {
@@ -848,7 +873,12 @@ export function createKbWorkClient(opts = {}) {
             // tool-level failure rather than throwing, so a non-throwing call
             // is not by itself a success.
             if (isToolError(res)) {
-                log(`[kb-work] ${spec.tool} rejected for ${spec.subject(op.payload)} (non-fatal): ${toolErrorText(res)}`);
+                const text = toolErrorText(res);
+                if (isKbServerUnreachableText(text)) {
+                    keepForServer(i, spec, op, text);
+                    break;
+                }
+                log(`[kb-work] ${spec.tool} rejected for ${spec.subject(op.payload)} (non-fatal): ${text}`);
                 continue;
             }
             if (typeof spec.accept === 'function' && !spec.accept(op.payload, res)) continue;
