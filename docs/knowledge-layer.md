@@ -985,6 +985,18 @@ The provider holds no local store at all.
 | touch | local | No remote route: records nothing (returns 0); the per-repo DB is not written. |
 | relatedClaims | local | No remote route: returns no related claims (`related_claims` is empty). |
 
+**Capabilities**: `GET /api/kb/capabilities` (same auth and `X-KB-Project`
+check as every route) answers `{contract, routes, branch_aware}`. capture,
+query and promote are required; context, prime, invalidate, feedback, list and
+demote are optional. The provider reads it once per connection (again after
+the server was unreachable) and never calls a route the answer does not list:
+the tool fails with `E-KB-HTTP-UNSUPPORTED` naming the route. A server without
+the capabilities route is assumed to serve every route but demote. A 404 or 501
+from an optional route is also `E-KB-HTTP-UNSUPPORTED` (a 404 whose body code is
+`ENTRY_NOT_FOUND` / `E-ENTRY-NOT-FOUND` stays "entry not found"). The bundled
+`kb-server` serves every route but demote, `branch_aware: false`. Contract:
+`memory-contract/v1/spec.md` section 2.9.1.
+
 **Named-secret token**: with `token_ref`, the secret is looked up on every
 request; a 401 re-reads it and retries once, then throws `E-KB-HTTP-AUTH`.
 A capture or invalidate that hits it stays in the offline queue.

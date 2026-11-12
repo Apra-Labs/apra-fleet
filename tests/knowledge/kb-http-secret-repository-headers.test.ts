@@ -56,6 +56,13 @@ function countingCommit(): { commitOf: () => string; calls: () => number } {
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
+    // A server without GET /api/kb/capabilities: the route set from before
+    // that route existed. (The capabilities read is tested on its own.)
+    if ((req.url ?? '').startsWith('/api/kb/capabilities')) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found', code: 'NOT_FOUND' }));
+      return;
+    }
     req.resume();
     req.on('end', () => {
       const urlPath = (req.url ?? '').split('?')[0];
@@ -141,7 +148,9 @@ describe('HttpKbProvider: named secret + repository headers', () => {
     for (const c of captures) expect(c.repository).toBe(REPO);
     expect(captures[0].commit).toMatch(/^[0-9a-f]{40}$/);
     expect(captures[1].commit).toBe(captures[0].commit);
-    expect(commit.calls()).toBe(1);
+    // Read once per request: once for the capabilities read, once for the
+    // capture (shared by its 401 retry).
+    expect(commit.calls()).toBe(2);
   });
 
   it('a 401 retry sends the same X-Repository-Branch as the first attempt, even if the branch changed in between', async () => {

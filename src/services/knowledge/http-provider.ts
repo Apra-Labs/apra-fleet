@@ -189,6 +189,19 @@ function describeErrorBody(data: string): string {
   return boundErrorText(parts.length > 0 ? parts.join(' - ') : data);
 }
 
+/** The string `code` of a JSON error body, or undefined. */
+function bodyCodeOf(data: string): string | undefined {
+  try {
+    const body = JSON.parse(data) as unknown;
+    if (body !== null && typeof body === 'object' && typeof (body as { code?: unknown }).code === 'string') {
+      return (body as { code: string }).code;
+    }
+  } catch {
+    // not JSON: no code
+  }
+  return undefined;
+}
+
 /** True when `text` parses as JSON. */
 function isJsonText(text: string): boolean {
   try {
@@ -256,7 +269,8 @@ export class KbHttpUnreachableError extends Error {
   readonly queued: boolean;
   private readonly serverUrl: string;
   private readonly operation: string;
-  private readonly causeText: string;
+  /** The connection error text (e.g. "connect ECONNREFUSED ..."). */
+  readonly causeText: string;
   constructor(serverUrl: string, operation: string, causeText: string, queued = false) {
     const outcome = queued
       ? 'the operation was queued offline and is sent once the server answers again'
@@ -317,6 +331,53 @@ export class KbHttpProjectMismatchError extends Error {
   }
 }
 
+/** Routes every contract KB server serves. */
+export const KB_REQUIRED_ROUTES = ['capture', 'query', 'promote'] as const;
+/** Routes a contract KB server may leave out; it lists the ones it serves in its capabilities. */
+export const KB_OPTIONAL_ROUTES = ['context', 'prime', 'invalidate', 'feedback', 'list', 'demote'] as const;
+export type KbRoute = typeof KB_REQUIRED_ROUTES[number] | typeof KB_OPTIONAL_ROUTES[number];
+const KNOWN_ROUTES: readonly string[] = [...KB_REQUIRED_ROUTES, ...KB_OPTIONAL_ROUTES];
+
+/** GET /api/kb/capabilities: what a KB server serves. */
+export interface KbServerCapabilities {
+  /** Contract version the server implements, e.g. "v1". */
+  contract: string;
+  /** The routes it serves (route names, not paths). */
+  routes: KbRoute[];
+  /** True when the server keeps entries per branch (X-Repository-Branch decides what is true). */
+  branch_aware: boolean;
+}
+
+/**
+ * Assumed for a server that does not serve GET /api/kb/capabilities (404 or
+ * 501): the route set servers had before capabilities existed. demote is not
+ * in it.
+ */
+export const KB_DEFAULT_CAPABILITIES: Readonly<KbServerCapabilities> = Object.freeze({
+  contract: 'v1',
+  routes: ['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list'] as KbRoute[],
+  branch_aware: false,
+});
+
+function defaultCapabilities(): KbServerCapabilities {
+  return { ...KB_DEFAULT_CAPABILITIES, routes: [...KB_DEFAULT_CAPABILITIES.routes] };
+}
+
+/** The route a queued write replays through. */
+const QUEUED_OP_ROUTE: Record<QueuedOperation['op'], KbRoute> = {
+  capture: 'capture',
+  invalidate: 'invalidate',
+  feedback: 'feedback',
+};
+
+/** Body codes meaning "no entry with that id" on a 404 from an id route. */
+const ENTRY_NOT_FOUND_CODES = new Set(['ENTRY_NOT_FOUND', 'E-ENTRY-NOT-FOUND']);
+
+/** The `code` field of an HTTP error's server body, when it had one. */
+function serverCodeOf(err: unknown): string | undefined {
+  return (err as { serverCode?: string }).serverCode;
+}
+
 /** kb_list options, shared with SqliteProvider.list so both halves of a split list take one shape. */
 export type KbListOptions = Parameters<SqliteProvider['list']>[0];
 
@@ -333,6 +394,12 @@ export class HttpKbProvider implements MemoryProvider {
   private readonly repository: RepositoryIdentity | undefined;
   readonly offlineQueue: QueuedOperation[] = [];
   private readonly beforeExitHandler: () => void;
+  /**
+   * The server's capabilities, read once per connection: cleared when a
+   * request finds the server unreachable, so the first request after a
+   * reconnect reads them again.
+   */
+  private capabilitiesRead: Promise<KbServerCapabilities> | undefined;
 
   // The KB server is the only source of truth: no local store or checkout
   // bible answers for it, online or offline.
@@ -454,6 +521,7 @@ export class HttpKbProvider implements MemoryProvider {
         return result;
       } catch (err) {
         if (isConnectionError(err)) {
+          this.capabilitiesRead = undefined;
           throw new KbHttpUnreachableError(this.displayUrl, `${method} ${pathname}`, (err as Error).message);
         }
         if (!isHttp401(err)) throw err;
@@ -526,8 +594,10 @@ export class HttpKbProvider implements MemoryProvider {
             const text = nonJson401IsAuth && status === 401 && !isJsonText(data)
               ? 'KB server rejected the token'
               : describeErrorBody(data);
-            const httpErr = new Error(redactToken(`HTTP ${status}: ${text}`, token)) as NodeJS.ErrnoException;
+            const httpErr = new Error(redactToken(`HTTP ${status}: ${text}`, token)) as NodeJS.ErrnoException & { serverCode?: string };
             httpErr.code = `HTTP_${status}`;
+            const serverCode = bodyCodeOf(data);
+            if (serverCode !== undefined) httpErr.serverCode = serverCode;
             reject(httpErr);
             return;
           }
@@ -554,6 +624,107 @@ export class HttpKbProvider implements MemoryProvider {
     });
   }
 
+  /**
+   * GET /api/kb/capabilities, read once per connection (again after a
+   * reconnect). A server without the route is assumed to serve
+   * KB_DEFAULT_CAPABILITIES: it answers 404 or 501, or (a catch-all handler)
+   * a body carrying none of contract/routes/branch_aware. Auth,
+   * project-mismatch and connection errors are thrown as they are for any
+   * route; a body that carries some of those fields but not all, well typed,
+   * is E-KB-HTTP-UNSUPPORTED.
+   */
+  async capabilities(): Promise<KbServerCapabilities> {
+    this.capabilitiesRead ??= this.readCapabilities();
+    try {
+      return await this.capabilitiesRead;
+    } catch (err) {
+      this.capabilitiesRead = undefined;
+      throw err;
+    }
+  }
+
+  private async readCapabilities(): Promise<KbServerCapabilities> {
+    let body: unknown;
+    try {
+      body = await this.request<unknown>('GET', '/api/kb/capabilities');
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'HTTP_404' || code === 'HTTP_501') return defaultCapabilities();
+      throw err;
+    }
+    const caps = body as Partial<KbServerCapabilities> | null;
+    const isObject = caps !== null && typeof caps === 'object' && !Array.isArray(caps);
+    if (!isObject || !('contract' in caps || 'routes' in caps || 'branch_aware' in caps)) return defaultCapabilities();
+    if (typeof caps.contract !== 'string'
+      || !Array.isArray(caps.routes) || !caps.routes.every(r => typeof r === 'string')
+      || typeof caps.branch_aware !== 'boolean') {
+      throw new KbHttpUnsupportedError(
+        `GET /api/kb/capabilities (the KB server at ${this.displayUrl} answered without {contract, routes, branch_aware})`,
+        'nothing was sent',
+        'fix the KB server so its capabilities answer carries contract (string), routes (array of route names) and branch_aware (boolean).',
+      );
+    }
+    // Unknown route names are ignored: a newer server may list routes this client does not call.
+    const routes = caps.routes.filter((r): r is KbRoute => KNOWN_ROUTES.includes(r));
+    return { contract: caps.contract, routes, branch_aware: caps.branch_aware };
+  }
+
+  /** E-KB-HTTP-UNSUPPORTED naming `route`: the server does not serve it. */
+  private routeUnsupported(route: KbRoute, why: string): KbHttpUnsupportedError {
+    return new KbHttpUnsupportedError(
+      `the ${route} route (the KB server at ${this.displayUrl} ${why})`,
+      'nothing was sent',
+      `use a KB server that serves the ${route} route, or a local SQLite KB (kb_setup provider sqlite).`,
+    );
+  }
+
+  /** Throws E-KB-HTTP-UNSUPPORTED naming `route` unless the server's capabilities list it. */
+  private async requireRoute(route: KbRoute): Promise<void> {
+    const caps = await this.capabilities();
+    if (!caps.routes.includes(route)) throw this.routeUnsupported(route, 'does not list it in GET /api/kb/capabilities');
+  }
+
+  /** True when the server's capabilities list `route`. */
+  async servesRoute(route: KbRoute): Promise<boolean> {
+    return (await this.capabilities()).routes.includes(route);
+  }
+
+  /**
+   * One request to a route: refused before sending when the server's
+   * capabilities do not list it. For an optional route a 404 or 501 also means
+   * "not served" and becomes E-KB-HTTP-UNSUPPORTED, never a raw HTTP error --
+   * except a 404 whose body code says the ENTRY is unknown (ENTRY_NOT_FOUND /
+   * E-ENTRY-NOT-FOUND), which is passed on for the caller to report.
+   */
+  private async routeRequest<T>(
+    route: KbRoute,
+    method: string,
+    pathname: string,
+    body?: unknown,
+    queryParams?: Record<string, string>,
+  ): Promise<T> {
+    try {
+      await this.requireRoute(route);
+    } catch (err) {
+      // Name the operation the caller asked for, not the capabilities read.
+      if (err instanceof KbHttpUnreachableError) {
+        throw new KbHttpUnreachableError(this.displayUrl, `${method} ${pathname}`, err.causeText);
+      }
+      throw err;
+    }
+    try {
+      return await this.request<T>(method, pathname, body, queryParams);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const optional = (KB_OPTIONAL_ROUTES as readonly string[]).includes(route);
+      const entryNotFound = code === 'HTTP_404' && ENTRY_NOT_FOUND_CODES.has(serverCodeOf(err) ?? '');
+      if (optional && !entryNotFound && (code === 'HTTP_404' || code === 'HTTP_501')) {
+        throw this.routeUnsupported(route, `answered ${method} ${pathname} with HTTP ${code.slice(5)}`);
+      }
+      throw err;
+    }
+  }
+
   // Stops (keeping the queue) on a connection error AND on E-KB-HTTP-AUTH: an
   // auth failure is not the queued op's fault, and dropping it would lose
   // every queued capture the moment the secret goes wrong. Any other error is
@@ -563,14 +734,21 @@ export class HttpKbProvider implements MemoryProvider {
       const op = this.offlineQueue[0];
       try {
         if (op.op === 'capture') {
-          await this.request('POST', '/api/kb/capture', op.input);
+          await this.routeRequest(QUEUED_OP_ROUTE.capture, 'POST', '/api/kb/capture', op.input);
         } else if (op.op === 'invalidate') {
-          await this.request('POST', '/api/kb/invalidate', { files: op.files });
+          await this.routeRequest(QUEUED_OP_ROUTE.invalidate, 'POST', '/api/kb/invalidate', { files: op.files });
         } else if (op.op === 'feedback') {
-          await this.request('POST', '/api/kb/feedback', { id: op.id, reason: op.reason, role: op.role });
+          await this.routeRequest(QUEUED_OP_ROUTE.feedback, 'POST', '/api/kb/feedback', { id: op.id, reason: op.reason, role: op.role });
         }
         this.offlineQueue.shift();
       } catch (err) {
+        // Queued while the server's capabilities were unknown; now known, the
+        // server does not serve this op's route. Never sent: dropped, loudly.
+        if (err instanceof KbHttpUnsupportedError) {
+          process.stderr.write(`[KB] WARNING: dropped a queued ${op.op}: ${err.message}\n`);
+          this.offlineQueue.shift();
+          continue;
+        }
         // Unreachable, or the wrong project's server: keep the queue for the
         // right server rather than dropping what could not be sent.
         if (err instanceof KbHttpUnreachableError || isAuthError(err) || err instanceof KbHttpProjectMismatchError) {
@@ -587,8 +765,8 @@ export class HttpKbProvider implements MemoryProvider {
   async capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }> {
     await this.tryFlushQueue();
     try {
-      return await this.request<{ id: string; audn_decision: AudnDecision }>(
-        'POST', '/api/kb/capture', input
+      return await this.routeRequest<{ id: string; audn_decision: AudnDecision }>(
+        'capture', 'POST', '/api/kb/capture', input
       );
     } catch (err) {
       // Queued, and the call still fails with the typed error: the caller
@@ -625,7 +803,7 @@ export class HttpKbProvider implements MemoryProvider {
     const tag = opts.tag ?? opts.owner_tag;
     if (tag) params.tag = tag;
 
-    const result = await this.request<KBResult>('GET', '/api/kb/query', undefined, params);
+    const result = await this.routeRequest<KBResult>('query', 'GET', '/api/kb/query', undefined, params);
     return opts.owner_tag ? this.keepOwned(result, opts.owner_tag, opts.tag) : result;
   }
 
@@ -643,8 +821,8 @@ export class HttpKbProvider implements MemoryProvider {
     // caller's own (as the SQLite provider does in SQL), so another member's
     // newer entry cannot hide it; ownership is re-checked below.
     if (ownerTag) ctxParams.tag = ownerTag;
-    const result = await this.request<{ results: FileContextResult[] }>(
-      'GET', '/api/kb/context', undefined, ctxParams
+    const result = await this.routeRequest<{ results: FileContextResult[] }>(
+      'context', 'GET', '/api/kb/context', undefined, ctxParams
     );
     if (!ownerTag) return result.results;
     return this.keepOwnedSummaries(result.results, await this.ownedIds(ownerTag));
@@ -657,8 +835,8 @@ export class HttpKbProvider implements MemoryProvider {
   async invalidate(files: string[]): Promise<{ invalidated: number }> {
     await this.tryFlushQueue();
     try {
-      return await this.request<{ invalidated: number }>(
-        'POST', '/api/kb/invalidate', { files }
+      return await this.routeRequest<{ invalidated: number }>(
+        'invalidate', 'POST', '/api/kb/invalidate', { files }
       );
     } catch (err) {
       if (err instanceof KbHttpUnreachableError || isAuthError(err)) {
@@ -683,7 +861,7 @@ export class HttpKbProvider implements MemoryProvider {
     await this.tryFlushQueue();
     const body = { id, reason, role: author };
     try {
-      return await this.request<Record<string, unknown>>('POST', '/api/kb/feedback', body);
+      return await this.routeRequest<Record<string, unknown>>('feedback', 'POST', '/api/kb/feedback', body);
     } catch (err) {
       if (err instanceof KbHttpUnreachableError || isAuthError(err)) {
         this.enqueue({ op: 'feedback', ...body });
@@ -724,7 +902,7 @@ export class HttpKbProvider implements MemoryProvider {
     // owner_tag is internal (never part of the contract body); it is applied
     // to the server's answer here instead.
     const { owner_tag: ownerTag, ...body } = opts;
-    const primed = await this.request<PrimedContext>('POST', '/api/kb/prime', body);
+    const primed = await this.routeRequest<PrimedContext>('prime', 'POST', '/api/kb/prime', body);
     if (!ownerTag) return primed;
     const owned = await this.ownedIds(ownerTag);
     return {
@@ -751,7 +929,7 @@ export class HttpKbProvider implements MemoryProvider {
     if (reason !== undefined) body.reason = reason;
     let result: Record<string, unknown>;
     try {
-      result = await this.request<Record<string, unknown>>('POST', '/api/kb/promote', body);
+      result = await this.routeRequest<Record<string, unknown>>('promote', 'POST', '/api/kb/promote', body);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'HTTP_404') {
         throw entryNotFoundOnServer(id, err as NodeJS.ErrnoException);
@@ -774,23 +952,11 @@ export class HttpKbProvider implements MemoryProvider {
   }
 
   /**
-   * GET /api/kb/list. A 404 means the server predates the route (kb-server and
-   * its clients must be upgraded together), which is a typed refusal rather
-   * than a bare HTTP error.
+   * GET /api/kb/list, an optional route: a server that does not list it, or
+   * answers it 404/501, is E-KB-HTTP-UNSUPPORTED rather than a bare HTTP error.
    */
   private async listRequest(params: Record<string, string>): Promise<{ results?: KBEntry[] }> {
-    try {
-      return await this.request<{ results?: KBEntry[] }>('GET', '/api/kb/list', undefined, params);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'HTTP_404') {
-        throw new KbHttpUnsupportedError(
-          `kb_list (the KB server at ${this.displayUrl} has no GET /api/kb/list route)`,
-          'nothing was read',
-          'upgrade the KB server to the same version as this client, or use a local SQLite KB (kb_setup provider sqlite).',
-        );
-      }
-      throw err;
-    }
+    return this.routeRequest<{ results?: KBEntry[] }>('list', 'GET', '/api/kb/list', undefined, params);
   }
 
   /**

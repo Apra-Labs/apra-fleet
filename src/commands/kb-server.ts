@@ -33,6 +33,13 @@ const MAX_BODY_SIZE = 1_048_576; // 1MB
 
 /** Header every HttpKbProvider request carries: the project slug it is for. */
 export const KB_PROJECT_HEADER = 'x-kb-project';
+
+/** What GET /api/kb/capabilities answers: the routes this server serves. */
+export const KB_SERVER_CAPABILITIES = Object.freeze({
+  contract: 'v1',
+  routes: Object.freeze(['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list']),
+  branch_aware: false,
+});
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 100;
 
@@ -241,6 +248,13 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         server_project: serverProject,
         client_project: named,
       });
+    }
+
+    // GET /api/kb/capabilities -- same auth and project check as every route.
+    // This server serves every route but demote, and keeps one KB per project
+    // with no per-branch truth (X-Repository-Branch is not used).
+    if (pathname === '/api/kb/capabilities' && method === 'GET') {
+      return jsonResponse(res, 200, { ...KB_SERVER_CAPABILITIES, routes: [...KB_SERVER_CAPABILITIES.routes] });
     }
 
     try {

@@ -228,7 +228,7 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-UNSUPPORTED",
-      "title": "The project KB is backed by the http provider and the operation cannot be served there: kb_invalidate with ids (id-level discard; the http provider has no discard operation, and nothing is discarded, on the remote or in the local fallback store).",
+      "title": "The project KB is backed by the http provider and the operation cannot be served there. Either the provider has no such operation (kb_invalidate with ids: id-level discard; a MEMBER kb_query flagged_only read), or the KB server does not serve the route the call needs: GET /api/kb/capabilities does not list it, or an optional route answered 404/501 (except a 404 whose body code says the entry is unknown). The message names the route. Nothing is sent to an unlisted route and nothing is changed; no local store stands in.",
       "status": 500
     },
     {

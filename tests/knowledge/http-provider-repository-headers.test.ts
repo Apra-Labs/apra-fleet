@@ -42,6 +42,13 @@ function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
+    // A server without GET /api/kb/capabilities: the route set from before
+    // that route existed. (The capabilities read is tested on its own.)
+    if ((req.url ?? '').startsWith('/api/kb/capabilities')) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found', code: 'NOT_FOUND' }));
+      return;
+    }
     req.resume();
     req.on('end', () => {
       const urlPath = (req.url ?? '').split('?')[0];

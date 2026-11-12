@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { startKbServer, KbServerHttpProviderRefusedError } from '../../src/commands/kb-server.js';
+import { startKbServer, KbServerHttpProviderRefusedError, KB_SERVER_CAPABILITIES } from '../../src/commands/kb-server.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { encryptPassword } from '../../src/utils/crypto.js';
 import { resetKbProviders, getProjectSlug } from '../../src/services/knowledge/kb-providers.js';
@@ -102,6 +102,29 @@ describe('kb-server promote and tag filter', () => {
     const res = await request('POST', '/api/kb/promote', { body: { id, reason: PROMOTE_REASON } });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' });
+  });
+
+  it('GET /api/kb/capabilities answers {contract, routes, branch_aware} behind the same auth as every route', async () => {
+    const res = await request('GET', '/api/kb/capabilities');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      contract: 'v1',
+      routes: ['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list'],
+      branch_aware: false,
+    });
+    const unauthenticated = await request('GET', '/api/kb/capabilities', { token: null });
+    expect(unauthenticated.status).toBe(401);
+  });
+
+  it('HttpKbProvider reads the capabilities of this server: every route but demote', async () => {
+    const provider = new HttpKbProvider(`http://127.0.0.1:${TEST_PORT}`, testToken, { projectSlug: SERVER_PROJECT });
+    try {
+      expect(await provider.capabilities()).toEqual({ ...KB_SERVER_CAPABILITIES, routes: [...KB_SERVER_CAPABILITIES.routes] });
+      expect(await provider.servesRoute('demote')).toBe(false);
+      expect(await provider.servesRoute('list')).toBe(true);
+    } finally {
+      provider.dispose();
+    }
   });
 
   it('answers 404 NOT_FOUND for an unknown id', async () => {
@@ -265,6 +288,7 @@ describe('kb-server refuses a client for another project on every route', () => 
     ['POST', '/api/kb/invalidate', { files: ['src/a.ts'] }],
     ['GET', '/api/kb/context?files=src/a.ts', undefined],
     ['POST', '/api/kb/prime', {}],
+    ['GET', '/api/kb/capabilities', undefined],
   ];
 
   it.each(ROUTES)('%s %s: 409 naming both projects, for another project and for none', async (method, urlPath, body) => {
@@ -344,6 +368,13 @@ describe('HttpKbProvider list against a server without GET /api/kb/list', () => 
   it('surfaces the 404 as E-KB-HTTP-UNSUPPORTED for kb_list; promote never reads the list route', async () => {
     const seen: string[] = [];
     const server = http.createServer((req, res) => {
+      // A server without GET /api/kb/capabilities: the route set from before
+      // that route existed. (The capabilities read is tested on its own.)
+      if ((req.url ?? '').startsWith('/api/kb/capabilities')) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found', code: 'NOT_FOUND' }));
+        return;
+      }
       seen.push(`${req.method} ${(req.url ?? '').split('?')[0]}`);
       req.resume();
       res.writeHead(404, { 'Content-Type': 'application/json' });

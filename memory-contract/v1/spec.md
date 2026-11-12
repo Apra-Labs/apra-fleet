@@ -648,6 +648,47 @@ every project KB call and fleet keeps no second copy:
   server refuses is `E-KB-HTTP-AUTH` (section 3.3a). Both are thrown; neither
   is ever answered from a local store.
 
+#### 2.9.1 Routes and capabilities
+
+A KB server serves these routes, each behind the same bearer-token auth and
+the same `X-KB-Project` check (409 `PROJECT_MISMATCH` naming both projects for
+another project or none):
+
+| Route name | Request | Required |
+|---|---|---|
+| `capture` | `POST /api/kb/capture` | yes |
+| `query` | `GET /api/kb/query` | yes |
+| `promote` | `POST /api/kb/promote` | yes |
+| `context` | `GET /api/kb/context` | no |
+| `prime` | `POST /api/kb/prime` | no |
+| `invalidate` | `POST /api/kb/invalidate` | no |
+| `feedback` | `POST /api/kb/feedback` | no |
+| `list` | `GET /api/kb/list` | no |
+| `demote` | `POST /api/kb/demote` | no |
+
+`GET /api/kb/capabilities` (same auth and project check) answers
+`{contract, routes, branch_aware}`: `contract` is the contract version
+(`"v1"`), `routes` the route names it serves, `branch_aware` whether it keeps
+entries per branch (section 2.9.2). Fleet's client:
+
+- reads it once per connection, and again after the server was unreachable;
+- never calls a route the answer does not list: the tool fails with
+  `E-KB-HTTP-UNSUPPORTED` naming the route and nothing is sent (a write queued
+  while the server was down, whose route the server turns out not to list, is
+  dropped with a logged warning, never sent);
+- assumes a server that has no capabilities route (it answers 404 or 501, or a
+  body with none of the three fields) serves the route set from before this
+  route existed: every route above except `demote`, `branch_aware` false;
+- refuses a capabilities body that carries some of the fields but not all,
+  well typed, with `E-KB-HTTP-UNSUPPORTED`;
+- turns a 404 or 501 from any optional route into `E-KB-HTTP-UNSUPPORTED`
+  naming the route, never a raw HTTP error. On an id route a 404 whose body
+  `code` is `ENTRY_NOT_FOUND` or `E-ENTRY-NOT-FOUND` means the entry is
+  unknown, not that the route is missing.
+
+Fleet's `kb-server` serves every route but `demote` and reports
+`branch_aware: false`.
+
 ## 3. Error model
 
 `taxonomy.json` in this directory is the source of truth: a CLOSED set of

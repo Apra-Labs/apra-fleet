@@ -621,8 +621,9 @@ source of truth and the bible is not used: `kb_import` imports nothing and
 answers `bible_skipped: true` with a `reason`, and a member `kb_query`
 `flagged_only` read is refused. Three more codes from the same file can be
 thrown: `E-KB-HTTP-UNSUPPORTED` (an operation the http provider cannot serve:
-`kb_invalidate` with `ids`, a member `kb_query` `flagged_only` read; nothing is
-changed), `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
+`kb_invalidate` with `ids`, a member `kb_query` `flagged_only` read, or a route
+the KB server does not list in `GET /api/kb/capabilities` or answers 404/501;
+the message names the route and nothing is changed), `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
 different project; nothing is read or written) and `E-KB-HTTP-UNREACHABLE`
 (the KB server cannot be reached; a capture, invalidate or feedback is queued
 offline first and the message says so, and no read is answered from a local

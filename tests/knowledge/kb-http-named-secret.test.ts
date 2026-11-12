@@ -71,6 +71,13 @@ let kbUrl: string;
 
 function startStub(): Promise<void> {
   server = http.createServer((req, res) => {
+    // A server without GET /api/kb/capabilities: the route set from before
+    // that route existed. (The capabilities read is tested on its own.)
+    if ((req.url ?? '').startsWith('/api/kb/capabilities')) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found', code: 'NOT_FOUND' }));
+      return;
+    }
     let body = '';
     req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
     req.on('end', () => {
