@@ -5,15 +5,20 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { kbSetup } from '../../src/tools/kb-setup.js';
 import { kbInvalidate } from '../../src/tools/kb-invalidate.js';
 import { getKbProviders, resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
-import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
+import { HttpKbProvider, KbHttpUnsupportedError } from '../../src/services/knowledge/http-provider.js';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { FLEET_DIR } from '../../src/paths.js';
+import { addAgent } from '../../src/services/registry.js';
+import { runWithSessionMember } from '../../src/services/tool-scope.js';
+import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
-// kb_invalidate {ids} under the http KB provider is a typed refusal. Real
+// kb_invalidate {ids}, and a MEMBER session's kb_invalidate {files}, under
+// the http KB provider are typed refusals. Real
 // kb_setup, real HttpKbProvider / SqliteProvider selected through
 // getKbProviders, and a real local node http server standing in for the KB
 // endpoint. No mocks.
@@ -120,6 +125,33 @@ describe('kb_invalidate {ids} under the http KB provider', () => {
     expect(err.message).toContain('id-level discard');
     expect(requestCount).toBe(requestsBefore);
   });
+});
+
+describe('kb_invalidate {files} from a MEMBER session under the http KB provider', () => {
+  beforeAll(() => backupAndResetRegistry());
+  afterAll(() => restoreRegistry());
+
+  for (const kbMaintainer of [false, true]) {
+    it(`rejects with the typed E-KB-HTTP-UNSUPPORTED error and sends nothing (kb_maintainer ${kbMaintainer})`, async () => {
+      execFileSync('git', ['init', '-q'], { cwd: folder });
+      execFileSync('git', ['remote', 'add', 'origin', remoteUrl], { cwd: folder });
+      const agent = makeTestLocalAgent({ friendlyName: `kb-invalidate-http-${crypto.randomUUID()}`, workFolder: folder });
+      addAgent(agent);
+      await kbSetup({ provider: 'http', remote: `http://127.0.0.1:${port}`, token }, { folder });
+      expect((await getKbProviders(folder)).project).toBeInstanceOf(HttpKbProvider);
+      const requestsBefore = requestCount;
+
+      const err = await runWithSessionMember(agent.id, () => kbInvalidate({ files: ['fixture.ts'] }), { kbMaintainer }).then(
+        () => { throw new Error('expected a MEMBER kbInvalidate {files} to reject under the http provider'); },
+        (e: unknown) => e as Error & { code?: string },
+      );
+
+      expect(err).toBeInstanceOf(KbHttpUnsupportedError);
+      expect(err.code).toBe('E-KB-HTTP-UNSUPPORTED');
+      expect(err.message).toMatch(/^E-KB-HTTP-UNSUPPORTED: kb_invalidate with files in a MEMBER session/);
+      expect(requestCount).toBe(requestsBefore);
+    });
+  }
 });
 
 describe('kb_invalidate {ids} under the sqlite KB provider is unchanged', () => {

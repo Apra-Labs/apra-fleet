@@ -354,7 +354,9 @@ A MEMBER session is served an explicit tool list
 - Under an http project KB, `kb_invalidate {ids}` (id-level discard) is refused
   with `E-KB-HTTP-UNSUPPORTED` (thrown): the http provider has no discard
   operation, and nothing is discarded, on the remote or in the local fallback
-  store. `kb_invalidate {files}` is unaffected.
+  store. In a MEMBER session `kb_invalidate {files}` is refused the same way
+  (the KB server has no own-scope invalidate; nothing is sent or changed);
+  outside a MEMBER session `kb_invalidate {files}` is unaffected.
 - Under an http project KB, every request carries the project slug
   (`X-KB-Project`). Fleet's `kb-server` serves one project and answers a
   request for another project (or naming none) with 409 naming both slugs,

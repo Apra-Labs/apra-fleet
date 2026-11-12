@@ -304,7 +304,7 @@ The KB write policy for member sessions:
 | `kb_export` | never (it auto-commits into the work tree) |
 | `kb_promote`, `kb_resolve_contradiction`, `kb_reconcile_prefilter` | only the kb_maintainer session (they mint CONFIRMED) |
 | `kb_import` | yes; but an explicit `path` (other than the session's own `.fleet/kb-canonical.json`) needs the kb_maintainer grant, else it is refused with `E-KB-MAINTAINER-REQUIRED`; without the grant the own bible is read as committed at `HEAD` (never the work-tree file), with no committed copy nothing is imported (`E-KB-MAINTAINER-REQUIRED`), and a committed bible whose git blob id the maintainer side never recorded (via `kb_bible_commit` or a FULL / kb_maintainer `kb_import`) is refused the same way with nothing imported (see kb-trust-model.md) |
-| `kb_invalidate` | yes; but without the kb_maintainer grant it never retires a CONFIRMED entry (by `ids` or `files`) -- those ids are left untouched and listed in `refused` |
+| `kb_invalidate` | yes; but without the kb_maintainer grant it never retires a CONFIRMED entry (by `ids` or `files`) -- those ids are left untouched and listed in `refused`; under an http KB both forms are refused with `E-KB-HTTP-UNSUPPORTED` |
 | `kb_capture` | yes; but without the kb_maintainer grant `supersedes` never retires a CONFIRMED entry -- the capture links to it (`refines`, both live) and lists it in `refused` |
 | every other `kb_*` (incl. `kb_bible_commit`) | yes |
 
@@ -1137,7 +1137,7 @@ may promote is the server's decision, and its refusal is surfaced.
 **Capabilities over HTTP**: see the [MemoryProvider operations](#memoryprovider-operations)
 table above. In summary:
 - **Supported**: `kb_capture`, `kb_query`, `kb_context`, `kb_invalidate` with
-  `files` (queued offline on connection error), `kb_feedback` (queued offline
+  `files` outside a MEMBER session (queued offline on connection error), `kb_feedback` (queued offline
   on connection error; refused in a MEMBER session), `kb_promote` (server-side
   only, fails on connection error with no fallback), and the member-session read
   tools (`kb_query`, `kb_session_prime`, `kb_context`, `kb_list`), answered by
@@ -1149,8 +1149,10 @@ table above. In summary:
   `kb-server` serves all but demote.
 - **Not supported**: `kb_stats` reports `supported: false`; `kb_import` and
   `kb_bible_commit` answer `bible_skipped: true`; id-level `kb_invalidate` by
-  `ids` and a MEMBER `kb_query` `flagged_only` read throw
-  `E-KB-HTTP-UNSUPPORTED` (use `kb_invalidate` with `files` instead of `ids`).
+  `ids`, a MEMBER `kb_invalidate` with `files` (no own-scope invalidate on the
+  server) and a MEMBER `kb_query` `flagged_only` read throw
+  `E-KB-HTTP-UNSUPPORTED` (use `kb_invalidate` with `files` instead of `ids`,
+  from a non-MEMBER session).
 
 **Repository headers**: kb_* tools take no repository argument, but fleet
 passes the repository it resolved for the calling session to the provider,

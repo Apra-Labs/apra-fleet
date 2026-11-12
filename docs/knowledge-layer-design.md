@@ -601,7 +601,9 @@ unpredictably against a remote provider that does not support them.
 These call sites do not all behave alike. Most fail fast through
 `requireSqliteProject`, among them `kb_freshness_sweep`, `kb_reconcile_prefilter`,
 `kb_resolve_contradiction`, `kb_export` (project scope) and the `kb directives`
-CLI. `kb_import` checks first and, under http, answers `bible_skipped: true`
+CLI. A MEMBER `kb_invalidate` with `files` (own-scope invalidate) checks with
+`isSqliteProject` and, under http, throws the typed `E-KB-HTTP-UNSUPPORTED`
+instead. `kb_import` checks first and, under http, answers `bible_skipped: true`
 without narrowing. `kb_stats` deliberately DEGRADES instead: it asks the type
 question with the non-throwing `isSqliteProject` guard and, over a remote
 provider, reports its bible block as `{ computable: false, reason }` rather
