@@ -205,8 +205,10 @@ stored entry `member:<caller uuid>`; `kb_promote`, `kb_demote` and
 nothing. Under the http project provider `kb_promote` is sent by id with no
 lookup first, and fleet does not check the member tag: the KB server decides
 which ids the caller may promote and refuses an unknown, superseded or
-out-of-scope id itself. A 404 is `E-ENTRY-NOT-FOUND`, thrown as
-`Entry not found: <id>` followed by the server's answer; any other refusal is
+out-of-scope id itself. A server answers an unknown id with 404 and body
+`code` `ENTRY_NOT_FOUND` (the code an optional id route such as `demote` needs,
+section 2.9.1). Promote is a required route, so fleet reports any 404 from it,
+whatever its code, as `E-ENTRY-NOT-FOUND`, thrown as `Entry not found: <id>` followed by the server's answer; any other refusal is
 thrown with its HTTP status and the server's title/code/detail. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
 `{discarded, not_found, already_discarded}`. In a member session without the

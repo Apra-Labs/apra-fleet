@@ -332,7 +332,9 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
       }
 
       // POST /api/kb/promote  {id, reason} -> {id, previous_confidence, new_confidence}
-      // Same reply shape as the kb_promote tool. An unknown id is 404; any
+      // Same reply shape as the kb_promote tool. An unknown id is 404
+      // ENTRY_NOT_FOUND (the code an optional id route such as demote needs
+      // for "entry unknown" rather than "route not served"); any
       // other refusal of the promote ladder (reason, superseded, directive,
       // unresolved basis) is 422 with the provider's message.
       if (pathname === '/api/kb/promote' && method === 'POST') {
@@ -353,7 +355,7 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (message.startsWith('Entry not found')) {
-            return jsonResponse(res, 404, { error: message, code: 'NOT_FOUND' });
+            return jsonResponse(res, 404, { error: message, code: 'ENTRY_NOT_FOUND' });
           }
           return jsonResponse(res, 422, { error: message, code: 'PROMOTE_REFUSED' });
         }

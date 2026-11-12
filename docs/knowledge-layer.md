@@ -978,7 +978,7 @@ The provider holds no local store at all.
 | discard | unsupported | Throws E-KB-HTTP-UNSUPPORTED (id-level discard not supported). Use kb_invalidate with files instead. |
 | getLinked | local | No remote route: returns no linked entries. |
 | prime | remote | Retrieves primed context from server. On connection error, `E-KB-HTTP-UNREACHABLE`. `kb_session_prime` does not cold-seed from the checkout bible under http. |
-| promote | remote | POST /api/kb/promote with `{id, reason}`. No offline queue on connection error (the id only exists on the server): `E-KB-HTTP-UNREACHABLE` naming the server URL. Sent by id with no list lookup first: the server refuses an unknown, superseded or out-of-scope id itself. A 404 rejects as `Entry not found: <id>` followed by the server's answer; any other refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's text and code. |
+| promote | remote | POST /api/kb/promote with `{id, reason}`. No offline queue on connection error (the id only exists on the server): `E-KB-HTTP-UNREACHABLE` naming the server URL. Sent by id with no list lookup first: the server refuses an unknown, superseded or out-of-scope id itself. The bundled `kb-server` answers an unknown id 404 with code `ENTRY_NOT_FOUND`; any 404 rejects as `Entry not found: <id>` followed by the server's answer; any other refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's text and code. |
 | feedback | remote | POST /api/kb/feedback with `{id, reason, role}`; returns the server response unchanged. On connection error (or E-KB-HTTP-AUTH) queued offline with captures and invalidates, and the error is thrown. |
 | demote | remote (optional route) | POST /api/kb/demote with `{id, reason, evidence_files}` -> `{id, previous_confidence, new_confidence}`, sent by id only when `GET /api/kb/capabilities` lists `demote`; otherwise (or on a 404/501 from the route) `E-KB-HTTP-UNSUPPORTED` naming the route, and nothing is changed. The server enforces which ids the caller may demote; a 404 whose body code says the entry is unknown rejects as `Entry not found: <id>`. A MEMBER `kb_query` `own_scope` read (which exists to find what may be demoted) is refused the same way when the server does not list `demote`. |
 | sync | unsupported | Returns {synced: false} (no remote sync over http). |
@@ -1038,7 +1038,9 @@ Design notes:
   id, with no list lookup first (a KB server need not implement the optional
   `GET /api/kb/list` route). Fleet does not check the member's owner tag for it: the
   KB server decides which ids a caller may promote and refuses an unknown,
-  superseded or out-of-scope id itself. A 404 surfaces as
+  superseded or out-of-scope id itself. The bundled `kb-server` answers an
+  unknown id with 404 and code `ENTRY_NOT_FOUND`, the code a server must use
+  on an optional id route such as demote. Any 404 from promote surfaces as
   `Entry not found: <id>` with the server's answer; any other refusal carries
   its HTTP status and the server's text and code. Against the bundled
   `kb-server`, which has no per-member scope, a member can promote any id that
