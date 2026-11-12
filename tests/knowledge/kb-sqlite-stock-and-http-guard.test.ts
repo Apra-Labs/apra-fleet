@@ -293,7 +293,7 @@ describe('kb_stats is the deliberate exception: returns a not-computable bible i
   });
 });
 
-describe('operations MemorEYES X-1 depends on work over http: capture, query, context, prime, promote (my-beads-db-0cd.8 criterion 6)', () => {
+describe('the required contract operations work over http: capture, query, context, prime, promote', () => {
   let server: http.Server;
   let port: number;
   // my-beads-db-0cd.14 criterion 2: this mock server is deliberately NOT a

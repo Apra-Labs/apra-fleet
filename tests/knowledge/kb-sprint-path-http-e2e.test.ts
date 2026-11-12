@@ -138,7 +138,7 @@ function respond(method: string, pathname: string, params: URLSearchParams, body
     return [200, { id: entry.id, previous_confidence: previous, new_confidence: 'CONFIRMED' }];
   }
   if (method === 'GET' && pathname === '/api/kb/list') {
-    // Hosted MemorEYES declares list unsupported: the sprint path must not need it.
+    // A server that does not implement the optional list route: the sprint path must not need it.
     return [501, { title: 'Method not supported', status: 501, code: 'E-METHOD-UNSUPPORTED', detail: 'list is not served by this deployment.' }];
   }
   if (method === 'GET' && pathname === '/api/kb/query') {

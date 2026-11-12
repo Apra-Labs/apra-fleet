@@ -629,7 +629,7 @@ The token is stored AES-256-GCM encrypted. It is never written in plaintext.
 
 #### Named credentials and refreshers
 
-For servers whose token expires (for example an Entra ID access token), store
+For servers whose token expires (for example a short-lived OAuth access token), store
 the token as a fleet secret and give `kb_setup` the placeholder instead of the
 value. The value of `token` is exactly the placeholder:
 
@@ -1014,8 +1014,8 @@ Design notes:
 
 - `kb_promote` stays gated to the `kb_maintainer` grant but no longer needs a
   SQLite project: under http it calls the provider's `promote` directly, by
-  id, with no list lookup first (hosted MemorEYES does not serve
-  `GET /api/kb/list`). Fleet does not check the member's owner tag for it: the
+  id, with no list lookup first (a KB server need not implement the optional
+  `GET /api/kb/list` route). Fleet does not check the member's owner tag for it: the
   KB server decides which ids a caller may promote and refuses an unknown,
   superseded or out-of-scope id itself. A 404 surfaces as
   `Entry not found: <id>` with the server's answer; any other refusal carries

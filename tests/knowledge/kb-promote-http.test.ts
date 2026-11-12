@@ -19,10 +19,11 @@ import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../
 
 // Promote over an http project KB, at provider and kb_promote tool level.
 // Real local http.Server stand-in (stateful: it only promotes ids it has been
-// told about, and refuses ids marked out of scope the way MemorEYES does),
+// told about, and refuses ids marked out of scope with a problem+json refusal),
 // real HttpKbProvider and SqliteProvider, real member sessions.
-// No mocks of code under test. Its GET /api/kb/list answers 501, as hosted
-// MemorEYES does: promote must never depend on the list route.
+// No mocks of code under test. Its GET /api/kb/list answers 501, as a server
+// that does not implement the optional list route does: promote must never
+// depend on the list route.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TOKEN_ENV_VAR = 'APRA_FLEET_TEST_KB_HTTP_TOKEN';
@@ -58,7 +59,7 @@ const requests: RecordedRequest[] = [];
 const serverEntries = new Map<string, string[]>();
 const serverIds = { add: (id: string, tags: string[] = []) => { serverEntries.set(id, tags); } };
 // Ids the server holds but refuses to promote for this caller (out of its
-// scope), answered with the problem+json MemorEYES sends for one.
+// scope), answered with a problem+json refusal.
 const outOfScopeIds = new Set<string>();
 // When set, the promote route answers 200 with a reply missing the contract fields.
 let malformedPromoteReply = false;
@@ -104,7 +105,7 @@ function startServer(listenPort: number): Promise<void> {
         res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id, audn_decision: 'add' }));
       } else if (req.url?.startsWith('/api/kb/list') && req.method === 'GET') {
-        // Hosted MemorEYES declares list unsupported (ExtendedKbRoutes.List).
+        // A server that does not implement the optional list route.
         res.writeHead(501, { 'Content-Type': 'application/problem+json' });
         res.end(JSON.stringify({
           title: 'Method not supported', status: 501, code: 'E-METHOD-UNSUPPORTED',

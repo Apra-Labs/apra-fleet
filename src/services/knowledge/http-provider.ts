@@ -184,8 +184,8 @@ function describeErrorBody(data: string): string {
   if (parsed === null || typeof parsed !== 'object') return boundErrorText(data);
   const body = parsed as Record<string, unknown>;
   if (typeof body.error === 'string') {
-    // A problem+json body that also carries `error` (MemorEYES sends both)
-    // keeps its taxonomy `code` in the text too.
+    // A problem+json body that also carries a flat `error` string (a server
+    // may send both) keeps its taxonomy `code` in the text too.
     const code = typeof body.code === 'string' && body.code.length > 0 && !body.error.includes(body.code)
       ? ` [${body.code}]` : '';
     return boundErrorText(body.error + code);
@@ -529,7 +529,7 @@ export class HttpKbProvider implements MemoryProvider {
             }
           }
           if (status !== undefined && status >= 400) {
-            // An auth proxy in front of the KB (e.g. Entra) answers 401 with
+            // An auth proxy in front of the KB answers 401 with
             // an empty or HTML body. For a named-secret token the message is
             // fixed text, so the proxy's page never reaches the tool result.
             const text = nonJson401IsAuth && status === 401 && !isJsonText(data)

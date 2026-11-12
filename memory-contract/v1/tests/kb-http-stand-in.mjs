@@ -5,7 +5,7 @@
 // that belongs to a member none of the fixture sessions are, and POST
 // <variant>/api/kb/promote, which refuses every id with 404: the one entry it
 // holds is outside every fixture session's scope. The refusal body has the
-// shape MemorEYES's PromoteRefusalRule answers an id it does not serve with
+// shape a contract server may answer an id it does not serve with
 // (problem+json title/status/detail/code plus the flat `error` string).
 // Variants, chosen by the URL path prefix the session's KB config points at:
 //   /tagged    the entry carries its tags (owner tag of another member)
