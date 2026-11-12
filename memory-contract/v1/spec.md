@@ -839,7 +839,10 @@ provider queues nothing: a write (`kb_capture`, `kb_invalidate`,
 local fallback: a silently degraded answer would hide the failure. One owner
 retries, the caller: the sprint engine keeps its own KB write queued on
 `E-KB-HTTP-UNREACHABLE` and repeats it on its next flush; an interactive or
-agent caller decides for itself. Over a SQLite project KB a MEMBER session's CONFIRMED read is answered
+agent caller decides for itself. `kb_harvest` captures many learnings in one
+call, so a failed capture does not stop it: it attempts every learning, logs
+each failure, and reports how many captures failed (`entries_failed`); it
+raises none of these codes itself. Over a SQLite project KB a MEMBER session's CONFIRMED read is answered
 from its checkout bible (2.5) and never reaches the provider; under the http
 project provider member reads go to the server (2.5, 2.9) and are thrown like
 any other read. No message or log line ever

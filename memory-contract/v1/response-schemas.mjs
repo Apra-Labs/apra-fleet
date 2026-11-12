@@ -162,6 +162,9 @@ const KB_RESPONSE_BODIES = {
     entries_updated: z.number(),
     entries_skipped: z.number(),
     entries_rejected: z.number(),
+    // Captures that failed for any reason other than a basis rejection (e.g.
+    // a remote KB server that is down): attempted, not stored, logged.
+    entries_failed: z.number(),
   }),
   kb_promote: z.object({
     id: z.string(),

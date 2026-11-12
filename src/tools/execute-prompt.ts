@@ -2249,9 +2249,10 @@ session: ${parsed.sessionId}`;
         )
         .then((raw: string) => {
           try {
-            const r = JSON.parse(raw) as { entries_captured: number; entries_updated: number; entries_skipped: number; entries_rejected: number };
-            if (r.entries_captured || r.entries_updated || r.entries_skipped || r.entries_rejected) {
-              logLine('kb_harvest', `auto-harvest: captured=${r.entries_captured} updated=${r.entries_updated} skipped=${r.entries_skipped} rejected=${r.entries_rejected}`);
+            const r = JSON.parse(raw) as { entries_captured: number; entries_updated: number; entries_skipped: number; entries_rejected: number; entries_failed?: number };
+            const failed = r.entries_failed ?? 0;
+            if (r.entries_captured || r.entries_updated || r.entries_skipped || r.entries_rejected || failed) {
+              logLine('kb_harvest', `auto-harvest: captured=${r.entries_captured} updated=${r.entries_updated} skipped=${r.entries_skipped} rejected=${r.entries_rejected} failed=${failed}`);
             }
           } catch {
             // A non-JSON payload is not worth failing a fire-and-forget harvest over.

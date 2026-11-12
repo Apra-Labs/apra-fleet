@@ -696,7 +696,6 @@
           "meaning": "The remote (HTTP) KB provider takes its bearer token from a named fleet secret ({{secret.NAME}} token_ref), and that secret is missing, expired or unreadable (no request is sent), or the KB server rejected it with HTTP 401 on the request and again on one retry after re-reading the secret. The message names the secret and the reason (missing / expired / unreadable / rejected), never the value. Nothing is queued: a write that fails this way was not applied, and the caller decides whether to repeat it once the secret is fixed. Reads do not fall back to the local store. A literal-token config never raises this code: its 401 keeps the plain HTTP error it always had.",
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
-            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
             { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "provider" },
             { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "provider" },
             { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
@@ -733,7 +732,6 @@
           "meaning": "The project KB is backed by the http provider and the operation cannot be served there. Either the provider has no such operation (kb_invalidate with ids: id-level discard; a MEMBER kb_invalidate with files: own-scope invalidate; a MEMBER kb_query flagged_only read), the call needs the optional demote route and the server does not list it (kb_demote; a MEMBER kb_query own_scope read, which exists to find what the caller may demote), or the KB server does not serve the route the call needs: GET /api/kb/capabilities does not list it, or an optional route answered 404/501 (except a 404 whose body code says the entry is unknown); or the capabilities read itself answered an error status other than 401, 404, 429, 501, a 5xx or a 409 PROJECT_MISMATCH (e.g. 403/405 from a gateway), or a body with some of {contract, routes, branch_aware} but not all, well typed. The message names the route or the capabilities read. Nothing is sent to an unlisted route and nothing is changed; no local store stands in.",
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
-            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
             { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "provider" },
             { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "provider" },
             { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
@@ -756,7 +754,6 @@
           "meaning": "The project KB is backed by the http provider and the KB server it points at serves a different project: every request carries the caller project slug (X-KB-Project) and the server answered 409 naming both slugs. Nothing is read or written, and the local fallback store is not used: the server is reachable, it is the wrong one.",
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
-            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
             { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "provider" },
             { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
             { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
@@ -778,7 +775,6 @@
           "meaning": "The project KB is backed by the http provider and the KB server could not be reached (connection refused, DNS failure, timeout, reset), or it answered a 5xx or 429 (a restarting or rate-limiting server, or a gateway with no backend) to its capabilities read (GET /api/kb/capabilities), so the request itself was never sent; the message names the request (and the status). The KB server is the only source of truth under http: no read is answered from the checkout bible or a local store, and no write reports success. Nothing is queued by the provider: the caller owns the retry. The sprint engine keeps its own KB write queued on this code and repeats it on its next flush; an interactive or agent caller decides for itself.",
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
-            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
             { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "provider" },
             { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "provider" },
             { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
