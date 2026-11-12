@@ -274,6 +274,23 @@ describe('kb-server promote and tag filter', () => {
       provider.dispose();
     }
   });
+
+  it('a promote from another project is refused by the server and the entry stays INFERRED', async () => {
+    const owner = `member:${crypto.randomUUID()}`;
+    const id = await captureTagged([owner]);
+    // Promote by id from a client for another project, with the right owner tag:
+    // fleet sends it without a tag check, and the server's project scope refuses it.
+    const otherProject = new HttpKbProvider(`http://127.0.0.1:${TEST_PORT}`, testToken, { projectSlug: 'some-other-project-slug' });
+    try {
+      const err = await otherProject.promote(id, PROMOTE_REASON, { ownerTag: owner }).then(() => null, (e: unknown) => e);
+      expect(err).toBeInstanceOf(KbHttpProjectMismatchError);
+      expect((err as { code?: string }).code).toBe('E-KB-HTTP-PROJECT-MISMATCH');
+    } finally {
+      otherProject.dispose();
+    }
+    const after = await request('GET', `/api/kb/query?tag=${encodeURIComponent(owner)}&confidence=INFERRED,CONFIRMED`);
+    expect(after.body.results.map((e: { id: string; confidence: string }) => [e.id, e.confidence])).toEqual([[id, 'INFERRED']]);
+  });
 });
 
 // One server serves one project. Declared before the main suite for the same

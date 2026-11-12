@@ -15,9 +15,11 @@ export type KbPromoteInput = z.infer<typeof kbPromoteSchema>;
 export async function kbPromote(input: KbPromoteInput, anchor?: KbAnchor): Promise<string> {
   const providers = await getSelfKbProviders(anchor);
 
-  // MEMBER session: only the caller's own captures (member:<uuid>) can be
-  // promoted; any other id is the same not-found as an unknown id. Both
-  // providers enforce it (the http one checks the entry's tags fleet-side).
+  // MEMBER session over SQLite: only the caller's own captures (member:<uuid>)
+  // can be promoted; any other id is the same not-found as an unknown id.
+  // Over http fleet does NOT tag-check: the promote is sent by id and the KB
+  // server enforces which ids the caller may promote (its project scope and
+  // any per-caller scope it keeps), refusing the rest itself.
   const ownerTag = memberOwnerTag(anchor);
   const result = ownerTag !== undefined
     ? await providers.project.promote(input.id, input.reason, { ownerTag })

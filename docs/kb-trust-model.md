@@ -152,8 +152,14 @@ guarantees above change:
   server runs in, not the member's checkout.
 - The shared bearer token is the only credential. Anyone holding it can read
   and write every entry on that server. The owner tags that scope a member's
-  reads and promotes (`member:<uuid>`) are asserted by the client, so they
-  keep agent sessions apart; they do not stop a holder of the token.
+  reads (`member:<uuid>`) are asserted by the client, so they keep agent
+  sessions apart; they do not stop a holder of the token.
+- Promote is by id and fleet does not tag-check it over HTTP: `kb_promote`
+  sends the id, and the server enforces project scope (and any per-caller
+  scope it keeps), refusing an id outside it. A promote from another project
+  is refused (409, `E-KB-HTTP-PROJECT-MISMATCH`) and the entry keeps its tier.
+  The bundled `kb-server` has no per-member scope, so within its one project a
+  member can promote any id it holds.
 - A server serves one project; requests carry their project slug
   (`X-KB-Project`) and any other project is refused with 409
   (`E-KB-HTTP-PROJECT-MISMATCH`).
