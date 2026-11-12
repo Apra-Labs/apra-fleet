@@ -991,7 +991,8 @@ The provider holds no local store at all.
 check as every route) answers `{contract, routes, branch_aware}`. capture,
 query and promote are required; context, prime, invalidate, feedback, list and
 demote are optional. The provider reads it once per connection (again after
-the server was unreachable, or after the read itself failed); it is not
+a connection error, or after the read itself failed; a 5xx or 429 answer to
+another request does not trigger a re-read); it is not
 re-read between two successful calls, so a server upgraded in place keeps
 the route set read before until the next connection error or fleet restart. It never calls a route the answer does not list:
 the tool fails with `E-KB-HTTP-UNSUPPORTED` naming the route. A server without

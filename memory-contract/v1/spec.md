@@ -675,8 +675,9 @@ another project or none):
 (`"v1"`), `routes` the route names it serves, `branch_aware` whether it keeps
 entries per branch (section 2.9.2). Fleet's client:
 
-- reads it once per connection, and again after the server was unreachable
-  or the read itself failed. It is not re-read between two successful calls: a
+- reads it once per connection, and again after a connection error or a
+  failed read of it (a 5xx or 429 answer to another request does not trigger
+  a re-read). It is not re-read between two successful calls: a
   server upgraded (or downgraded) in place without dropping the connection
   keeps the route set the client read before, until the next connection
   error or a fleet server restart;
