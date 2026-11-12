@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } 
 // Named-secret token for the HTTP KB provider (kb_setup token {{secret.NAME}}
 // stored as token_ref): the provider looks the secret up on every request,
 // retries once on 401 after re-reading it, and otherwise raises
-// E-KB-HTTP-AUTH -- with captures kept in the offline queue, and a MEMBER
+// E-KB-HTTP-AUTH -- nothing is queued, and a MEMBER
 // session's reads, which go to the server, reporting it too.
 //
 // Real pieces only: a local stub KB server whose accepted token the test
@@ -238,31 +238,26 @@ describe('HTTP KB provider with a named-secret token', () => {
     expect(getKbHttpAuthState(kbUrl).lastRejectedAt).toBeUndefined();
   });
 
-  it('2. server rotated, secret stale: E-KB-HTTP-AUTH, capture queued and kept; one retry per 401; updated secret drains the queue', async () => {
+  it('2. server rotated, secret stale: E-KB-HTTP-AUTH, nothing queued; one retry per 401; the updated secret is used by the next call', async () => {
     const p = await provider();
     stub.accepted = TOKEN_B;
 
-    const err = await expectAuthError(p.capture(entry('Queued gear')), 'rejected');
-    expect(err.queued).toBe(true);
-    expect(err.message).toContain('queued offline');
+    const err = await expectAuthError(p.capture(entry('Refused gear')), 'rejected');
+    expect(err.message).not.toContain('queued');
     expect(count('/api/kb/capture')).toBe(2); // first try + exactly one retry
-    expect(p.offlineQueue).toHaveLength(1);
     expect(getKbHttpAuthState(kbUrl).lastRejectedAt).toBeDefined();
 
-    // A further call flushes first: the auth failure stops the flush and the
-    // queued capture stays (it is not dropped).
+    // A further call sends only itself: the refused capture is not replayed.
     stub.requests.length = 0;
     await expectAuthError(p.query({ query: 'gear' }), 'rejected');
-    expect(p.offlineQueue).toHaveLength(1);
-    expect(count('/api/kb/capture')).toBe(2); // the queued capture: try + retry
+    expect(count('/api/kb/capture')).toBe(0);
     expect(count('/api/kb/query')).toBe(2);
     expect(stub.captures).toHaveLength(0);
 
     setSecret(TOKEN_B);
     stub.requests.length = 0;
     expect((await p.capture(entry('After rotation'))).audn_decision).toBe('add');
-    expect(p.offlineQueue).toHaveLength(0);
-    expect(stub.captures.map(c => c.title)).toEqual(['Queued gear', 'After rotation']);
+    expect(stub.captures.map(c => c.title)).toEqual(['After rotation']);
     expect(stub.requests.every(r => r.authorized)).toBe(true);
   });
 
@@ -273,7 +268,6 @@ describe('HTTP KB provider with a named-secret token', () => {
     expect((await p.capture(entry('Refreshed mid call'))).id).toBe('srv-1');
     expect(count('/api/kb/capture')).toBe(2);
     expect(stub.requests.map(r => r.authorized)).toEqual([false, true]);
-    expect(p.offlineQueue).toHaveLength(0);
   });
 
   it('4a. missing secret: E-KB-HTTP-AUTH (missing) with zero requests sent', async () => {
@@ -284,7 +278,6 @@ describe('HTTP KB provider with a named-secret token', () => {
     await expectAuthError(p.query({ query: 'gear' }), 'missing');
     await expectAuthError(p.invalidate(['src/gear.ts']), 'missing');
     expect(stub.requests).toHaveLength(0);
-    expect(p.offlineQueue).toHaveLength(2); // capture + invalidate kept
   });
 
   it('4b. expired secret: E-KB-HTTP-AUTH (expired) with zero requests sent; the record is kept', async () => {
@@ -322,13 +315,14 @@ describe('HTTP KB provider with a named-secret token', () => {
     await expectAuthError(kbQuery({ query: 'gear' } as never, { folder: repo }), 'rejected');
   });
 
-  it('2b. feedback rejected twice: E-KB-HTTP-AUTH queued, the feedback op stays in the offline queue', async () => {
+  it('2b. feedback rejected twice: E-KB-HTTP-AUTH after exactly one retry, and it is not sent again later', async () => {
     const p = await provider();
     stub.accepted = TOKEN_B;
-    const err = await expectAuthError(p.feedback('entry-1', 'Wrong in practice.', 'doer'), 'rejected');
-    expect(err.queued).toBe(true);
+    await expectAuthError(p.feedback('entry-1', 'Wrong in practice.', 'doer'), 'rejected');
     expect(count('/api/kb/feedback')).toBe(2); // first try + exactly one retry
-    expect(p.offlineQueue).toEqual([{ op: 'feedback', id: 'entry-1', reason: 'Wrong in practice.', role: 'doer' }]);
+    setSecret(TOKEN_B);
+    await p.query({ query: 'gear' });
+    expect(count('/api/kb/feedback')).toBe(2);
   });
 
   it('7. literal token config: unchanged -- no retry on 401, plain HTTP_401 error, nothing queued', async () => {
@@ -344,7 +338,6 @@ describe('HTTP KB provider with a named-secret token', () => {
     expect((caught as NodeJS.ErrnoException).code).toBe('HTTP_401');
     expect((caught as Error).message).toBe('HTTP 401: Unauthorized');
     expect(count('/api/kb/capture')).toBe(1);
-    expect(p.offlineQueue).toHaveLength(0);
 
     // Echoed header: redacted, never the literal value.
     stub.echoAuth = true;
@@ -426,7 +419,7 @@ describe('member session under auth failure', () => {
 
     const write = await call(client, 'kb_capture', {
       type: 'learning', title: 'Member capture under auth failure',
-      summary: 'Member capture is queued and reports the auth error', content: 'x', source_files: ['src/gear.ts'],
+      summary: 'Member capture is refused and reports the auth error', content: 'x', source_files: ['src/gear.ts'],
     });
     expect(write.isError).toBe(true);
     expect(write.text).toContain('E-KB-HTTP-AUTH');

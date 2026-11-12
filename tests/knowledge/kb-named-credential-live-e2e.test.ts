@@ -185,19 +185,16 @@ describe('named KB credential: live rotation against the built kb-server', () =>
     const first = await p.capture(entry('Live gear one'));
     expect(first.id).toBeTruthy();
 
-    // 2. rotate the server file to B: 401 -> E-KB-HTTP-AUTH naming NAME, queued
+    // 2. rotate the server file to B: 401 -> E-KB-HTTP-AUTH naming NAME
     fs.writeFileSync(tokenFile, `${TOKEN_B}\n`);
     await waitFor(async () => (await probe(TOKEN_B)) === 200, 'kb-server to pick up token B');
-    const rejected = await expectAuth(p.capture(entry('Live gear queued')), 'rejected');
-    expect(rejected.queued).toBe(true);
-    expect(p.offlineQueue).toHaveLength(1);
+    await expectAuth(p.capture(entry('Live gear refused')), 'rejected');
 
-    // 3. secret set to B through the CLI process: next capture OK, queue flushes,
+    // 3. secret set to B through the CLI process: next capture OK,
     // same provider instance, same kb-server process
     setSecret(TOKEN_B);
     expect(await provider()).toBe(p);
     await p.capture(entry('Live gear after rotation'));
-    expect(p.offlineQueue).toHaveLength(0);
     expect(child!.pid).toBe(childPid);
     expect(child!.exitCode).toBeNull();
     expect(pidAlive(childPid)).toBe(true);

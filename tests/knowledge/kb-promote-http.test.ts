@@ -222,14 +222,13 @@ describe('HttpKbProvider.promote', () => {
     await expect(provider.promote('any-id', REASON)).rejects.toThrow(/409.*Entry superseded.*KB-SUPERSEDED/);
   });
 
-  it('4. with the server stopped rejects with E-KB-HTTP-UNREACHABLE naming the URL; no queue entry', async () => {
+  it('4. with the server stopped rejects with E-KB-HTTP-UNREACHABLE naming the URL', async () => {
     const { provider } = await httpProject();
     await stopServer();
     try {
       const err = await provider.promote('some-id', REASON).then(() => null, (e: unknown) => e);
       expect((err as { code?: string }).code).toBe('E-KB-HTTP-UNREACHABLE');
       expect((err as Error).message).toContain(remoteUrlFor());
-      expect(provider.offlineQueue).toHaveLength(0);
     } finally {
       await startServer(port);
     }
@@ -244,11 +243,12 @@ describe('HttpKbProvider.promote', () => {
     };
     const err = await provider.promote('any-id', REASON).then(() => null, (e: Error) => e);
     expect(err).toBeInstanceOf(Error);
-    expect(err!.message).toMatch(/^HTTP 502: /);
+    expect(err!.message).toMatch(/^E-KB-HTTP-SERVER-ERROR: POST \/api\/kb\/promote: .* answered HTTP 502: /);
     expect(err!.message).toContain('Bad Gateway');
     expect(err!.message).not.toMatch(/<[a-z!/]/i);
     expect(err!.message).toContain('(truncated, ');
-    expect(err!.message.length).toBeLessThan(MAX_ERROR_TEXT_CHARS + 60);
+    // The server's text is bounded; the rest is the fixed typed-error wording.
+    expect(err!.message.length).toBeLessThan(MAX_ERROR_TEXT_CHARS + 500);
   });
 
   it('7. identifies the caller only by Authorization: Bearer', async () => {

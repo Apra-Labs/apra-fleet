@@ -55,7 +55,7 @@ export async function kbFeedback(input: KbFeedbackInput, anchor?: KbAnchor): Pro
   const author = validateAuthor(input.role);
   // An HTTP-backed KB: the remote server owns the entry and decides its
   // stale/flagged state; its response is returned as is (an unreachable
-  // server is a thrown E-KB-HTTP-UNREACHABLE, after the feedback is queued). Confidence is never written or invented client-side.
+  // server is a thrown E-KB-HTTP-UNREACHABLE; nothing is queued). Confidence is never written or invented client-side.
   if (providers.project instanceof HttpKbProvider) {
     return JSON.stringify(await providers.project.feedback(input.id, input.reason, author));
   }

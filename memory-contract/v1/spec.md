@@ -99,10 +99,8 @@ INCOMPLETE without this set (`INVENTORY.md` section 4.2).
 is not reached through `requireSqliteProject`. Over a remote KB,
 `HttpKbProvider.feedback` POSTs the `kb_feedback` request body
 `{id, reason, role}` to `/api/kb/feedback` and `kb_feedback` returns the
-server's response as is; while the server is unreachable the feedback is kept
-in the offline queue (replayed in order with queued captures and invalidates)
-and the tool fails with `E-KB-HTTP-UNREACHABLE`, whose message says it was
-queued. Either way the client never writes or invents `confidence`
+server's response as is; while the server is unreachable the tool fails with
+`E-KB-HTTP-UNREACHABLE` and nothing is queued. Either way the client never writes or invents `confidence`
 (`methods.json` X-2 `providers_note`).
 
 ### 2.3 `CodeIntelligenceProvider` interface methods (`methods.json` ids C-1..C-9)
@@ -682,9 +680,7 @@ entries per branch (section 2.9.2). Fleet's client:
   keeps the route set the client read before, until the next connection
   error or a fleet server restart;
 - never calls a route the answer does not list: the tool fails with
-  `E-KB-HTTP-UNSUPPORTED` naming the route and nothing is sent (a write queued
-  while the server was down, whose route the server turns out not to list, is
-  dropped with a logged warning, never sent);
+  `E-KB-HTTP-UNSUPPORTED` naming the route and nothing is sent;
 - assumes a server that has no capabilities route (it answers 404 or 501, or a
   body with none of the three fields) serves the route set from before this
   route existed: every route above except `demote`, `branch_aware` false;
@@ -692,18 +688,17 @@ entries per branch (section 2.9.2). Fleet's client:
   well typed, with `E-KB-HTTP-UNSUPPORTED`;
 - treats any other failed capabilities read as the server's state, never as
   a raw HTTP error: a 5xx or 429 (a restarting or rate-limiting server, a
-  gateway with no backend) is `E-KB-HTTP-UNREACHABLE` naming the status, so a
-  write is queued as on a connection error; any other status but 401 and a 409
+  gateway with no backend) is `E-KB-HTTP-UNREACHABLE` naming the status (the
+  caller's own request was never sent); any other status but 401 and a 409
   `PROJECT_MISMATCH` (e.g. 403/405 from a gateway) is
   `E-KB-HTTP-UNSUPPORTED` naming the capabilities read. A failed read is not
-  kept: the next call reads the capabilities again. While it fails, queued
-  writes are kept, never dropped, as they are when a replayed write is answered
-  a 5xx or 429; a queued write is dropped only for its own fault (its route is
-  not listed, or the server refuses it), with a logged warning;
-- treats a 5xx or 429 answering the caller's own capture, invalidate (files)
-  or feedback the same way, with the capabilities already read: the write is
-  queued and the tool fails with `E-KB-HTTP-UNREACHABLE` naming the request
-  and the status (marked queued), never a raw HTTP error;
+  kept: the next call reads the capabilities again;
+- turns a 5xx or 429 answering a write itself (capture, invalidate with
+  files, feedback, promote, demote) into `E-KB-HTTP-SERVER-ERROR` naming the
+  request and the status, never a raw HTTP error. The request reached the
+  server, so whether the write took effect is unknown: it is not retried;
+- queues no write. A write that fails for any reason is thrown to the
+  caller, who owns the retry (section 3.3a);
 - turns a 404 or 501 from any optional route into `E-KB-HTTP-UNSUPPORTED`
   naming the route, never a raw HTTP error. On an id route a 404 whose body
   `code` is `ENTRY_NOT_FOUND` or `E-ENTRY-NOT-FOUND` means the entry is
@@ -805,12 +800,12 @@ deliberately get NO code, each with its reason. They fall into three kinds:
   unsupported, and `kb_bible_commit` returning `bible_skipped: true` under an
   http project KB.
 
-### 3.3 No code in v1 is retryable
+### 3.3 One code in v1 is retryable
 
-Every entry carries `retryable: false`. This is a finding, not a default: the
-transient-failure paths in this surface never propagate to the caller as errors
--- they are converted into structured results at the provider boundary (third
-kind in 3.2) -- so v1 has no retry-with-backoff class at all. `retryable` means
+Every entry but `E-KB-HTTP-UNREACHABLE` carries `retryable: false`. This is a
+finding, not a default: apart from that one code, the transient-failure paths
+in this surface never propagate to the caller as errors -- they are converted
+into structured results at the provider boundary (third kind in 3.2). `retryable` means
 "retrying the identical request unchanged can succeed"; fixing a path or
 supplying a missing reason is a new request, not a retry.
 
@@ -821,29 +816,34 @@ updates the secret, and the identical request then succeeds. It is still
 way, and the provider has already done its one retry (re-read the secret, send
 once more) before raising it.
 
-`E-KB-HTTP-UNREACHABLE` (the KB server cannot be reached) is the same kind:
-the identical request succeeds once the server answers again, which the
-request itself cannot change, so it is `retryable: false` too. It is the one
-transient failure in this surface that is thrown rather than degraded: under
-http the KB server is the only source of truth, and answering from a local
-store or the checkout bible would hide the outage (section 2.9).
+`E-KB-HTTP-UNREACHABLE` (the KB server cannot be reached, or its capabilities
+read answered a 5xx or 429, so the request was never sent) is the one transient
+failure in this surface that reaches the caller, and it is `retryable: true`:
+the identical request succeeds once the server answers again. It is thrown
+rather than degraded because under http the KB server is the only source of
+truth, and answering from a local store or the checkout bible would hide the
+outage (section 2.9). The provider queues nothing behind it, so the caller
+owns the retry (3.3a).
 
-### 3.3a Remote KB auth and outage failures are thrown, and writes are queued first
+`E-KB-HTTP-SERVER-ERROR` (the server answered a write itself with a 5xx or
+429) is `retryable: false`: the write may already have been applied, so
+repeating the identical request could apply it twice.
 
-`E-KB-HTTP-AUTH` and `E-KB-HTTP-UNREACHABLE` are `surfaced: thrown` on every
-tool that reaches the remote provider. A write (`kb_capture`, `kb_harvest`,
-`kb_invalidate`, `kb_feedback`) is first put in the provider's offline queue
-and the thrown message says so; the queue is kept (not flushed, not dropped)
-until the server accepts a request again, and lives in the fleet server
-process only. A read (`kb_query`, `kb_context`, `kb_session_prime`,
-`kb_list`) is thrown with no local fallback: a silently degraded answer would
-hide the failure.
-`kb_promote` is never queued (the id only exists on the server), so it is thrown
-as is. Over a SQLite project KB a MEMBER session's CONFIRMED read is answered
+### 3.3a Remote KB auth and outage failures are thrown; the caller owns the retry
+
+`E-KB-HTTP-AUTH`, `E-KB-HTTP-UNREACHABLE` and `E-KB-HTTP-SERVER-ERROR` are
+`surfaced: thrown` on every tool that reaches the remote provider. The
+provider queues nothing: a write (`kb_capture`, `kb_invalidate`,
+`kb_feedback`, `kb_promote`, `kb_demote`) that fails is thrown, and a read
+(`kb_query`, `kb_context`, `kb_session_prime`, `kb_list`) is thrown with no
+local fallback: a silently degraded answer would hide the failure. One owner
+retries, the caller: the sprint engine keeps its own KB write queued on
+`E-KB-HTTP-UNREACHABLE` and repeats it on its next flush; an interactive or
+agent caller decides for itself. Over a SQLite project KB a MEMBER session's CONFIRMED read is answered
 from its checkout bible (2.5) and never reaches the provider; under the http
 project provider member reads go to the server (2.5, 2.9) and are thrown like
-any other read. No message, log line or
-queue warning ever contains the secret's value.
+any other read. No message or log line ever
+contains the secret's value.
 
 ### 3.4 Silent refusals are named but not projectable
 

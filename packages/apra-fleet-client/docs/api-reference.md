@@ -619,24 +619,25 @@ not a git work tree).
 Under the http KB provider (`kb_setup provider http`) the KB server is the
 source of truth and the bible is not used: `kb_import` imports nothing and
 answers `bible_skipped: true` with a `reason`, and a member `kb_query`
-`flagged_only` read is refused. Three more codes from the same file can be
+`flagged_only` read is refused. Four more codes from the same file can be
 thrown: `E-KB-HTTP-UNSUPPORTED` (an operation the http provider cannot serve:
 `kb_invalidate` with `ids`, a member `kb_query` `flagged_only` read, `kb_demote`
 or a member `kb_query` `own_scope` read when the server does not list `demote`, or a route
 the KB server does not list in `GET /api/kb/capabilities` or answers 404/501;
 the message names the route and nothing is changed), `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
-different project; nothing is read or written) and `E-KB-HTTP-UNREACHABLE`
-(the KB server cannot be reached; a capture, invalidate or feedback is queued
-offline first and the message says so, and no read is answered from a local
-store or the bible).
+different project; nothing is read or written), `E-KB-HTTP-UNREACHABLE`
+(the KB server cannot be reached; nothing is queued, no read is answered from
+a local store or the bible, and the code is retryable: the caller decides
+whether to repeat the call) and `E-KB-HTTP-SERVER-ERROR` (the KB server
+answered a capture, invalidate, feedback, promote or demote with a 5xx or 429;
+whether it took effect is unknown, so it is neither retried nor queued).
 
 `E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_harvest`, `kb_invalidate`,
 `kb_query`, `kb_context`, `kb_session_prime`, `kb_list` and `kb_promote` when the remote (HTTP) KB takes
 its token from a named fleet secret (`kb_setup` token `{{secret.NAME}}`) and that
 secret is missing, expired, or still rejected (HTTP 401) after one re-read and
-retry. The message names the secret and the reason, never the value. A capture
-or invalidate is queued offline first and sent once the secret is accepted.
-Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
+retry. The message names the secret and the reason, never the value. Nothing
+is queued. Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
 restart.
 
 `kb_import` in a member session without the kb_maintainer grant fails with

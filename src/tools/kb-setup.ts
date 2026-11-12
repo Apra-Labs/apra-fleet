@@ -20,7 +20,7 @@ export const kbSetupSchema = z.object({
   token: z.string().optional()
     .describe('Authentication token for remote KB server. Either a literal token (stored encrypted, never logged) or exactly one named fleet secret placeholder of the form {{secret.NAME}} with nothing around it: then only the placeholder is stored and the server looks the secret up on each request, so rotating the secret needs no kb_setup re-run. For provider http the secret must already exist (apra-fleet secret --set NAME --persist -y).'),
   request_timeout_ms: z.number().int().min(MIN_REQUEST_TIMEOUT_MS).max(MAX_REQUEST_TIMEOUT_MS).optional()
-    .describe('Socket idle timeout in milliseconds for each request to the remote KB server, 1000-120000 (default 5000). Not a per-request deadline: a call can wait up to about twice this while queued offline writes flush first.'),
+    .describe('Socket idle timeout in milliseconds for each request to the remote KB server, 1000-120000 (default 5000). Not a per-request deadline: a call can wait up to about twice this when it first reads the server capabilities.'),
   tool_profile: z.enum(['full', 'developer', 'custom']).optional()
     .describe('Install-wide KB tool profile for interactive (non-member) sessions: full (every kb_* tool, the default), developer (kb_session_prime, kb_query, kb_context, kb_capture, kb_feedback) or custom (the kb_* names in tool_profile_tools). Member sessions and sprint roles are unaffected. Takes effect when a session reconnects. A usability control, not a security boundary; developer hides kb_setup, so switch back with the CLI: apra-fleet kb profile full. Can be set alone, without provider/remote/token.'),
   tool_profile_tools: z.array(z.string()).optional()

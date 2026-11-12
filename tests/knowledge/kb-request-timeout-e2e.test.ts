@@ -22,8 +22,8 @@ let port: number;
 let responseDelayMs = 0;
 
 // The private request method, reached through a cast so the typed timeout
-// error can be asserted on the request itself, without any queueing a
-// public write method adds.
+// error can be asserted on the request itself, without the route check a
+// public method adds.
 type RawRequest = (method: string, pathname: string, body?: unknown) => Promise<unknown>;
 function rawRequestOf(provider: HttpKbProvider): RawRequest {
   // `request` (not rawRequest, which now also takes the token to send) keeps
@@ -116,17 +116,15 @@ describe('request_timeout_ms end to end', () => {
     expect(elapsed).toBeLessThan(2900);
   }, 20000);
 
-  it('request_timeout_ms=1500 queues the capture offline and fails typed against a 3 s server; 5000 gets the answer', async () => {
+  it('request_timeout_ms=1500 fails the capture typed against a 3 s server; 5000 gets the answer', async () => {
     responseDelayMs = 3000;
 
     const short = await providerFor(1500);
-    await expect(short.capture(makeEntry())).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
-    expect(short.offlineQueue).toHaveLength(1);
+    await expect(short.capture(makeEntry())).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE' });
 
     const long = await providerFor(5000);
     const answered = await long.capture(makeEntry());
     expect(answered.id).toBe('server-id');
-    expect(long.offlineQueue).toHaveLength(0);
   }, 20000);
 
   it('applies the 5000 ms default when request_timeout_ms is unset', async () => {

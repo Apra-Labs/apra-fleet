@@ -267,8 +267,8 @@ expiring server token can be rotated with `apra-fleet secret --set NAME --persis
 [Named credentials](docs/knowledge-layer.md#named-credentials-and-refreshers)).
 `--request_timeout_ms <ms>` (1000-120000, default 5000) sets the socket idle
 timeout for each request to the remote KB server. It is not a per-request
-deadline: a call can wait up to about twice the value while queued offline
-writes flush first. See
+deadline: a call can wait up to about twice the value when it first reads
+the server capabilities. See
 [docs/knowledge-layer.md](docs/knowledge-layer.md).
 
 **The provider config is install-wide, not per repo.** There is one

@@ -218,7 +218,7 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-AUTH",
-      "title": "The remote (HTTP) KB provider takes its bearer token from a named fleet secret ({{secret.NAME}} token_ref), and that secret is missing, expired or unreadable (no request is sent), or the KB server rejected it with HTTP 401 on the request and again on one retry after re-reading the secret. The message names the secret and the reason (missing / expired / unreadable / rejected), never the value. A capture, invalidate or feedback is kept in the offline queue first (the message says so) and is sent once the secret is accepted; the queue is not drained or dropped while the failure lasts. Reads do not fall back to the local store. A literal-token config never raises this code: its 401 keeps the plain HTTP error it always had.",
+      "title": "The remote (HTTP) KB provider takes its bearer token from a named fleet secret ({{secret.NAME}} token_ref), and that secret is missing, expired or unreadable (no request is sent), or the KB server rejected it with HTTP 401 on the request and again on one retry after re-reading the secret. The message names the secret and the reason (missing / expired / unreadable / rejected), never the value. Nothing is queued: a write that fails this way was not applied, and the caller decides whether to repeat it once the secret is fixed. Reads do not fall back to the local store. A literal-token config never raises this code: its 401 keeps the plain HTTP error it always had.",
       "status": 500
     },
     {
@@ -238,7 +238,12 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-UNREACHABLE",
-      "title": "The project KB is backed by the http provider and the KB server could not be reached (connection refused, DNS failure, timeout, reset), or it answered a 5xx or 429 (a restarting or rate-limiting server, or a gateway with no backend) to its capabilities read (GET /api/kb/capabilities) or to a capture, invalidate (files) or feedback request; the message names the request and the status. The KB server is the only source of truth under http: no read is answered from the checkout bible or a local store, and no write reports success. A capture, invalidate or feedback is kept in the offline queue first (the message says so) and is sent, in order, by the next call that reaches the server; the queue lives in the fleet server process only.",
+      "title": "The project KB is backed by the http provider and the KB server could not be reached (connection refused, DNS failure, timeout, reset), or it answered a 5xx or 429 (a restarting or rate-limiting server, or a gateway with no backend) to its capabilities read (GET /api/kb/capabilities), so the request itself was never sent; the message names the request (and the status). The KB server is the only source of truth under http: no read is answered from the checkout bible or a local store, and no write reports success. Nothing is queued by the provider: the caller owns the retry. The sprint engine keeps its own KB write queued on this code and repeats it on its next flush; an interactive or agent caller decides for itself.",
+      "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-SERVER-ERROR",
+      "title": "The project KB is backed by the http provider and the KB server (or a gateway in front of it) answered a write request itself -- a capture, invalidate (files), feedback, promote or demote -- with a 5xx or 429. The request reached the server, so whether the write took effect is unknown (a 502 or 504 can follow a stored write). The provider does not retry it and queues nothing; the message names the request and the status. Never a raw HTTP error.",
       "status": 500
     }
   ]

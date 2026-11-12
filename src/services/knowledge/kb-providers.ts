@@ -280,15 +280,6 @@ function getBaseProviders(slug: string, repoPath: string, key: string): Promise<
 
 function disposeIfHttp(provider: MemoryProvider): void {
   if (!(provider instanceof HttpKbProvider)) return;
-  // dispose() removes the beforeExit hook that would have reported unsent
-  // captures at exit, so report them now instead of dropping them silently.
-  if (provider.offlineQueue.length > 0) {
-    logWarn(
-      'kb-providers',
-      `KB config changed: the replaced remote KB provider still had ${provider.offlineQueue.length} ` +
-      'unsent captures in its offline queue. Run kb_harvest on the session transcript to recover them.',
-    );
-  }
   provider.dispose();
   const index = _httpProviders.indexOf(provider);
   if (index !== -1) _httpProviders.splice(index, 1);

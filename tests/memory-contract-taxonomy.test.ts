@@ -150,9 +150,9 @@ describe('taxonomy.json structure', () => {
     }
   });
 
-  it('marks no code retryable -- the documented v1 finding', () => {
+  it('marks only E-KB-HTTP-UNREACHABLE retryable -- the documented v1 finding (spec 3.3)', () => {
     for (const { entry } of codesWithGroup()) {
-      expect(entry.retryable, `${entry.code} claims to be retryable`).toBe(false);
+      expect(entry.retryable, `${entry.code} retryable`).toBe(entry.code === 'E-KB-HTTP-UNREACHABLE');
     }
   });
 

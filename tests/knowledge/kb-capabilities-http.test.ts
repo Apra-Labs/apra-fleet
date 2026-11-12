@@ -3,6 +3,7 @@ import http from 'node:http';
 import {
   HttpKbProvider,
   KbHttpUnsupportedError,
+  KbHttpServerError,
   KB_DEFAULT_CAPABILITIES,
 } from '../../src/services/knowledge/http-provider.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
@@ -133,8 +134,6 @@ describe('HttpKbProvider capabilities', () => {
       expect((err as Error).message).toContain(`the ${route} route`);
     }
     expect(paths()).toEqual(['GET /api/kb/capabilities']);
-    // Refused, not queued: the server answered, it just does not serve the route.
-    expect(provider.offlineQueue).toEqual([]);
   });
 
   it('a server without the capabilities route is assumed to serve the pre-capabilities route set (no demote)', async () => {
@@ -182,147 +181,67 @@ describe('HttpKbProvider capabilities', () => {
       .rejects.toThrow(/^Entry not found: missing-id \(the KB server answered HTTP 404/);
   });
 
-  it('a write queued while the server was down is dropped, loudly and unsent, when the server comes back without its route', async () => {
-    const sameHost = port;
-    await stop();
-    await expect(provider.invalidate(['src/a.ts'])).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
-    expect(provider.offlineQueue.map(o => o.op)).toEqual(['invalidate']);
-
-    answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote']));
-    await listen(sameHost);
-    seen = [];
-    const stderr: string[] = [];
-    const write = process.stderr.write.bind(process.stderr);
-    (process.stderr as unknown as { write: (s: string) => boolean }).write = (chunk: string) => { stderr.push(String(chunk)); return true; };
-    try {
-      await provider.capture(entry());
-    } finally {
-      (process.stderr as unknown as { write: typeof write }).write = write;
-    }
-    expect(provider.offlineQueue).toEqual([]);
-    expect(paths()).toEqual(['GET /api/kb/capabilities', 'POST /api/kb/capture']);
-    expect(stderr.join('')).toMatch(/dropped a queued invalidate: E-KB-HTTP-UNSUPPORTED: the invalidate route/);
-  });
-
-  it('a queued capture is kept, not dropped, while the capabilities read answers 503; the caller gets a typed error', async () => {
-    const sameHost = port;
-    await stop();
-    await expect(provider.capture(entry())).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
-    const queued = [...provider.offlineQueue];
-    expect(queued.map(o => o.op)).toEqual(['capture']);
-
-    // Back, but restarting: the capabilities read answers 503.
+  it('a write while the capabilities read answers 503 is E-KB-HTTP-UNREACHABLE and never sent; repeated later it is sent once', async () => {
     answers.set('/api/kb/capabilities', { status: 503, body: { error: 'Service unavailable', code: 'UNAVAILABLE' } });
-    await listen(sameHost);
-    seen = [];
-    const err = await provider.query({ query: 'x' }).then(() => null, (e: unknown) => e);
-    expect(provider.offlineQueue).toEqual(queued);
-    expect(paths().filter(p => p !== 'GET /api/kb/capabilities')).toEqual([]);
+    const err = await provider.capture(entry()).then(() => null, (e: unknown) => e);
     expect((err as { code?: string }).code).toBe('E-KB-HTTP-UNREACHABLE');
-    expect((err as Error).message).toMatch(/GET \/api\/kb\/query: .*GET \/api\/kb\/capabilities answered HTTP 503/);
+    expect((err as Error).message).toMatch(/POST \/api\/kb\/capture: .*GET \/api\/kb\/capabilities answered HTTP 503/);
+    expect((err as Error).message).not.toMatch(/queued/);
+    expect(paths()).toEqual(['GET /api/kb/capabilities']);
 
-    // A fresh capture meanwhile is queued behind it, as on a connection error.
-    await expect(provider.capture(entry())).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
-    expect(provider.offlineQueue.map(o => o.op)).toEqual(['capture', 'capture']);
-
-    // Up: both are sent, in order.
+    // Up again: a read sends only itself (nothing was kept to replay); the
+    // caller repeating its capture sends it exactly once.
     answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote']));
     seen = [];
     await provider.query({ query: 'y' });
-    expect(provider.offlineQueue).toEqual([]);
-    expect(paths()).toEqual([
-      'GET /api/kb/capabilities', 'POST /api/kb/capture', 'POST /api/kb/capture', 'GET /api/kb/query',
-    ]);
+    await provider.capture(entry());
+    expect(paths()).toEqual(['GET /api/kb/capabilities', 'GET /api/kb/query', 'POST /api/kb/capture']);
   });
 
-  it('a capabilities read answering 403 is E-KB-HTTP-UNSUPPORTED naming the read, never a raw HTTP error, and keeps the queue', async () => {
-    const sameHost = port;
-    await stop();
-    await expect(provider.invalidate(['src/a.ts'])).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
+  it('a capabilities read answering 403 is E-KB-HTTP-UNSUPPORTED naming the read, never a raw HTTP error', async () => {
     answers.set('/api/kb/capabilities', { status: 403, body: { error: 'Forbidden' } });
-    await listen(sameHost);
-    const err = await provider.query({ query: 'x' }).then(() => null, (e: unknown) => e);
+    const err = await provider.invalidate(['src/a.ts']).then(() => null, (e: unknown) => e);
     expect(err).toBeInstanceOf(KbHttpUnsupportedError);
     expect((err as Error).message).toMatch(/^E-KB-HTTP-UNSUPPORTED: GET \/api\/kb\/capabilities .*answered HTTP 403/);
-    expect(provider.offlineQueue.map(o => o.op)).toEqual(['invalidate']);
+    expect(paths()).toEqual(['GET /api/kb/capabilities']);
   });
 
-  it('a queued write answered 503 on replay (capabilities known) is kept, not dropped', async () => {
-    answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote']));
-    await provider.query({ query: 'read capabilities' });
-    const sameHost = port;
-    await stop();
-    await expect(provider.capture(entry())).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
-    const queued = [...provider.offlineQueue];
-
-    // A gateway in front of the server answers the replayed capture 503.
-    answers.set('/api/kb/capture', { status: 503, body: { error: 'Service unavailable' } });
-    await listen(sameHost);
-    seen = [];
-    await provider.query({ query: 'x' });
-    expect(paths()).toContain('POST /api/kb/capture');
-    expect(provider.offlineQueue).toEqual(queued);
-  });
-
-  for (const status of [503, 429]) {
-    it(`a direct capture answered ${status} (capabilities cached) is queued with a typed error and replayed on the next call`, async () => {
+  for (const status of [500, 502, 503, 504, 429]) {
+    it(`a capture answered ${status} is E-KB-HTTP-SERVER-ERROR (outcome unknown), sent once and never repeated by the provider`, async () => {
       answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote']));
-      await provider.query({ query: 'read capabilities' });
       answers.set('/api/kb/capture', { status, body: { error: 'Server busy' } });
 
       const err = await provider.capture(entry()).then(() => null, (e: unknown) => e);
-      expect(err).toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
-      expect((err as Error).message).toMatch(new RegExp(`^E-KB-HTTP-UNREACHABLE: POST /api/kb/capture: .*answered HTTP ${status}`));
-      expect(provider.offlineQueue).toEqual([{ op: 'capture', input: entry() }]);
+      expect(err).toBeInstanceOf(KbHttpServerError);
+      expect((err as Error).message).toMatch(new RegExp(`^E-KB-HTTP-SERVER-ERROR: POST /api/kb/capture: .*answered HTTP ${status}.*whether the write took effect is unknown`));
 
       answers.set('/api/kb/capture', { status: 201, body: { id: 'srv-1', audn_decision: 'add' } });
-      seen = [];
       await provider.query({ query: 'x' });
-      expect(provider.offlineQueue).toEqual([]);
-      expect(paths()).toEqual(['POST /api/kb/capture', 'GET /api/kb/query']);
+      expect(paths()).toEqual(['GET /api/kb/capabilities', 'POST /api/kb/capture', 'GET /api/kb/query']);
     });
   }
 
-  it('a direct invalidate(files) or feedback answered 502 is queued with a typed error and replayed in order', async () => {
-    answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote', 'invalidate', 'feedback']));
-    await provider.query({ query: 'read capabilities' });
-    answers.set('/api/kb/invalidate', { status: 502, body: { error: 'Bad gateway' } });
-    answers.set('/api/kb/feedback', { status: 502, body: { error: 'Bad gateway' } });
-
-    await expect(provider.invalidate(['src/a.ts'])).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
-    // The queued invalidate is replayed first, still 502: kept, and the feedback queues behind it.
-    await expect(provider.feedback('id-1', 'wrong in practice', 'doer')).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
-    expect(provider.offlineQueue).toEqual([
-      { op: 'invalidate', files: ['src/a.ts'] },
-      { op: 'feedback', id: 'id-1', reason: 'wrong in practice', role: 'doer' },
-    ]);
-
-    answers.set('/api/kb/invalidate', { status: 200, body: { invalidated: 1 } });
-    answers.set('/api/kb/feedback', { status: 200, body: { id: 'id-1', confidence: 'STALE' } });
-    seen = [];
-    await provider.query({ query: 'x' });
-    expect(provider.offlineQueue).toEqual([]);
-    expect(paths()).toEqual(['POST /api/kb/invalidate', 'POST /api/kb/feedback', 'GET /api/kb/query']);
-  });
-
-  it('a queued write the server refuses on replay is dropped with a logged warning', async () => {
-    const sameHost = port;
-    await stop();
-    await expect(provider.capture(entry())).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
-
-    answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote']));
-    answers.set('/api/kb/capture', { status: 400, body: { error: 'capture has no checkable basis', code: 'CAPTURE_REJECTED' } });
-    await listen(sameHost);
-    const stderr: string[] = [];
-    const write = process.stderr.write.bind(process.stderr);
-    (process.stderr as unknown as { write: (s: string) => boolean }).write = (chunk: string) => { stderr.push(String(chunk)); return true; };
-    try {
-      await provider.query({ query: 'x' });
-    } finally {
-      (process.stderr as unknown as { write: typeof write }).write = write;
+  it('invalidate(files), feedback, promote and demote answered 502 are each E-KB-HTTP-SERVER-ERROR, sent once', async () => {
+    answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote', 'invalidate', 'feedback', 'demote']));
+    for (const route of ['invalidate', 'feedback', 'promote', 'demote']) {
+      answers.set(`/api/kb/${route}`, { status: 502, body: { error: 'Bad gateway' } });
     }
-    expect(provider.offlineQueue).toEqual([]);
-    expect(stderr.join('')).toMatch(/dropped a queued capture: HTTP 400: .*capture has no checkable basis/);
+    const calls: Array<[string, () => Promise<unknown>]> = [
+      ['invalidate', () => provider.invalidate(['src/a.ts'])],
+      ['feedback', () => provider.feedback('id-1', 'wrong in practice', 'doer')],
+      ['promote', () => provider.promote('id-1', 'a reason long enough to pass the floor')],
+      ['demote', () => provider.demote('id-1', 'a reason long enough to pass the floor', ['src/a.ts'])],
+    ];
+    for (const [route, call] of calls) {
+      const err = await call().then(() => null, (e: unknown) => e);
+      expect(err, route).toBeInstanceOf(KbHttpServerError);
+      expect((err as Error).message).toMatch(new RegExp(`^E-KB-HTTP-SERVER-ERROR: POST /api/kb/${route}: .*HTTP 502`));
+    }
+    await provider.query({ query: 'x' });
+    expect(paths()).toEqual([
+      'GET /api/kb/capabilities', 'POST /api/kb/invalidate', 'POST /api/kb/feedback',
+      'POST /api/kb/promote', 'POST /api/kb/demote', 'GET /api/kb/query',
+    ]);
   });
 
   it('a capabilities answer with some fields but not all, well typed, is E-KB-HTTP-UNSUPPORTED', async () => {

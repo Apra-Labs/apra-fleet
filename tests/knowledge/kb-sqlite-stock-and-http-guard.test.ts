@@ -291,9 +291,9 @@ describe('kb_feedback is served by the HTTP provider, not refused, under an http
     writeHttpConfig();
   });
 
-  it('kb_feedback queues offline and fails typed instead of throwing the sqlite-only refusal', async () => {
+  it('kb_feedback fails typed (E-KB-HTTP-UNREACHABLE) instead of throwing the sqlite-only refusal', async () => {
     const err = await kbFeedback({ id: 'anything', reason: 'x' } as any, { folder: makeRepoPath() }).then(() => null, (e: unknown) => e);
-    expect(err).toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
+    expect(err).toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE' });
     expect((err as Error).message).not.toMatch(/not supported when the KB is backed by a remote HTTP provider/);
   });
 });

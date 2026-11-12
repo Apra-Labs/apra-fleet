@@ -229,30 +229,13 @@ describe('kb_setup takes effect within one process (my-beads-db-0d3.1)', () => {
       await kbSetup({ provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN }, { folder: repoPath });
       const remote = await getKbProviders(repoPath, REMOTE_REPO_URL);
       expect(remote.project).toBeInstanceOf(HttpKbProvider);
-      expect(process.listenerCount('beforeExit')).toBe(baseline + 1);
+      expect(process.listenerCount('beforeExit')).toBe(baseline);
 
       await kbSetup({ provider: 'sqlite' }, { folder: repoPath });
       const local = await getKbProviders(repoPath, REMOTE_REPO_URL);
       expect(local.project).not.toBeInstanceOf(HttpKbProvider);
       expect(process.listenerCount('beforeExit')).toBe(baseline);
     }
-  });
-
-  it('warns, naming the count and kb_harvest, when a replaced HttpKbProvider still had queued captures', async () => {
-    const repoPath = makeRepoPath();
-    await kbSetup({ provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN }, { folder: repoPath });
-    const remote = await getKbProviders(repoPath, REMOTE_REPO_URL);
-    const httpProvider = remote.project as HttpKbProvider;
-    httpProvider.offlineQueue.push({ op: 'invalidate', files: ['a.ts'] }, { op: 'invalidate', files: ['b.ts'] });
-
-    await kbSetup({ provider: 'sqlite' }, { folder: repoPath });
-    await getKbProviders(repoPath, REMOTE_REPO_URL);
-
-    await flushLogWithSentinel();
-    const warnings = readLogLines().filter(l => l.level === 'warn' && l.tag === 'kb-providers' && l.msg.includes('offline queue'));
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0].msg).toContain('2 unsent captures');
-    expect(warnings[0].msg).toContain('kb_harvest');
   });
 
   it('re-running kb_setup with a different http config replaces the old HttpKbProvider and disposes it', async () => {
@@ -267,7 +250,7 @@ describe('kb_setup takes effect within one process (my-beads-db-0d3.1)', () => {
 
     expect(second.project).toBeInstanceOf(HttpKbProvider);
     expect(second.project).not.toBe(first.project);
-    expect(process.listenerCount('beforeExit')).toBe(baseline + 1);
+    expect(process.listenerCount('beforeExit')).toBe(baseline);
   });
 });
 
@@ -338,14 +321,14 @@ describe('provider init is idempotent (my-beads-db-u00.4)', () => {
 });
 
 describe('resetKbProviders provider disposal', () => {
-  it('removes the beforeExit listener an HTTP project provider registered', async () => {
+  it('an HTTP project provider registers no beforeExit listener (it holds no queue), and reset is safe', async () => {
     writeHttpConfig();
     const repoPath = makeRepoPath();
     const baseline = process.listenerCount('beforeExit');
 
     const providers = await getKbProviders(repoPath, REMOTE_REPO_URL);
     expect(providers.project).toBeInstanceOf(HttpKbProvider);
-    expect(process.listenerCount('beforeExit')).toBe(baseline + 1);
+    expect(process.listenerCount('beforeExit')).toBe(baseline);
 
     resetKbProviders();
     expect(process.listenerCount('beforeExit')).toBe(baseline);

@@ -23,8 +23,8 @@ const REQUEST_SCHEMA_PATH = path.join(
   __dirname, '..', '..', 'memory-contract', 'v1', 'schemas', 'kb_feedback.request.json',
 );
 
-const QUEUED_FIXTURE_PATH = path.join(
-  __dirname, '..', '..', 'memory-contract', 'v1', 'fixtures', 'kb_feedback', 'refusal-unreachable-queued.json',
+const UNREACHABLE_FIXTURE_PATH = path.join(
+  __dirname, '..', '..', 'memory-contract', 'v1', 'fixtures', 'kb_feedback', 'refusal-unreachable.json',
 );
 
 const TOKEN_ENV_VAR = 'APRA_FLEET_TEST_KB_HTTP_TOKEN';
@@ -181,33 +181,32 @@ describe('kb_feedback over the HTTP KB provider (GitHub #761)', () => {
     expect(recorded.map(r => `${r.method} ${r.url}`)).toEqual(['POST /api/kb/feedback']);
   });
 
-  it('offline: queues the feedback, then sends it exactly once after the server is back', async () => {
+  it('offline: E-KB-HTTP-UNREACHABLE, nothing queued; the server never receives it unless the caller repeats it', async () => {
     const folder = makeRepoPath();
     const provider = await httpProviderFor(folder);
     await stopStub();
 
-    await expect(kbFeedback({ id: 'remote-entry-2', reason: 'Stale advice.', role: 'planner' }, { folder }))
-      .rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
-    expect(provider.offlineQueue).toEqual([
-      { op: 'feedback', id: 'remote-entry-2', reason: 'Stale advice.', role: 'planner' },
-    ]);
+    const err = await kbFeedback({ id: 'remote-entry-2', reason: 'Stale advice.', role: 'planner' }, { folder })
+      .then(() => null, (e: unknown) => e);
+    expect((err as { code?: string }).code).toBe('E-KB-HTTP-UNREACHABLE');
+    expect((err as Error).message).not.toMatch(/queued/);
     expect(recorded).toHaveLength(0);
 
     await startStub();
     await provider.query({ query: 'anything' });
-    expect(provider.offlineQueue).toHaveLength(0);
-    // A further call must not resend it.
-    await provider.query({ query: 'again' });
+    expect(feedbackRequests()).toHaveLength(0);
 
+    // The caller repeating it sends it exactly once.
+    await kbFeedback({ id: 'remote-entry-2', reason: 'Stale advice.', role: 'planner' }, { folder });
     const fb = feedbackRequests();
     expect(fb).toHaveLength(1);
     expect(fb[0].body).toEqual({ id: 'remote-entry-2', reason: 'Stale advice.', role: 'planner' });
   });
 
-  it('the committed refusal-unreachable-queued fixture is what the real tool throws offline', async () => {
-    const fixture = JSON.parse(fs.readFileSync(QUEUED_FIXTURE_PATH, 'utf-8'));
+  it('the committed refusal-unreachable fixture is what the real tool throws offline', async () => {
+    const fixture = JSON.parse(fs.readFileSync(UNREACHABLE_FIXTURE_PATH, 'utf-8'));
     const folder = makeRepoPath();
-    const provider = await httpProviderFor(folder);
+    await httpProviderFor(folder);
     await stopStub();
 
     const err = await kbFeedback(fixture.request, { folder }).then(() => null, (e: unknown) => e);
@@ -219,7 +218,6 @@ describe('kb_feedback over the HTTP KB provider (GitHub #761)', () => {
       .replace(/127\.0\.0\.1:\d+/g, '127.0.0.1:0')
       .replace(/is unreachable \([^)]*\)/, 'is unreachable (<cause>)');
     expect(normalized).toBe(fixture.error.message);
-    expect(provider.offlineQueue).toHaveLength(1);
   });
 
   it('member session: E-MEMBER-VIEW-READ-ONLY and the server receives nothing', async () => {

@@ -198,26 +198,6 @@ describe('HttpKbProvider repository headers', () => {
     expect(seen[0].commit).toBeUndefined();
     expect(seen[0].raw.join('\n')).not.toContain('NOT_A_REAL_KEY@');
   });
-
-  it('carries the headers on an offline-queue replay', async () => {
-    await withProvider(OFFLINE_URL, { repository: { remote: REPO, commitOf: () => SHA } }, async provider => {
-      // Queued, and each call fails with E-KB-HTTP-UNREACHABLE.
-      await expect(provider.capture(makeInput({ title: 'queued capture' }))).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
-      await expect(provider.invalidate(['src/q.ts'])).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
-      expect(provider.offlineQueue).toHaveLength(2);
-
-      // The server comes back: the next request flushes the queue first.
-      (provider as unknown as { baseUrl: string }).baseUrl = baseUrl;
-      await provider.query({});
-      expect(provider.offlineQueue).toHaveLength(0);
-    });
-
-    expect(seen.map(s => s.path)).toEqual(['/api/kb/capture', '/api/kb/invalidate', '/api/kb/query']);
-    for (const request of seen) {
-      expect(request.repository).toBe(REPO);
-      expect(request.commit).toBe(SHA);
-    }
-  });
 });
 
 describe('HttpKbProvider X-Repository-Branch', () => {

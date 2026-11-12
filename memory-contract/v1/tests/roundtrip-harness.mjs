@@ -955,7 +955,7 @@ function assertProviderIdentity(provider) {
  * reachable store, so it cannot produce a response that needs an unreachable one.
  */
 export const FIXTURES_OUTSIDE_SCENARIO = new Map([
-  ['kb_feedback/refusal-unreachable-queued', 'needs an unreachable HTTP KB server; tests/knowledge/kb-feedback-http.test.ts compares it with the real tool error'],
+  ['kb_feedback/refusal-unreachable', 'needs an unreachable HTTP KB server; tests/knowledge/kb-feedback-http.test.ts compares it with the real tool error'],
 ]);
 
 function coverageFailures(rosterTools) {

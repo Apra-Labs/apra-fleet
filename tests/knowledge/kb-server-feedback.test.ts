@@ -125,23 +125,26 @@ describe('kb-server POST /api/kb/feedback', () => {
     expect((gone.body.results as any[]).some(r => r.id === id)).toBe(false); // stale entries are excluded by default
   });
 
-  it('a feedback queued while the server was down is applied after the server starts', async () => {
-    const id = await captureEntry('Queued feedback entry');
+  it('a feedback while the server is down is E-KB-HTTP-UNREACHABLE and is not applied when the server starts again', async () => {
+    const id = await captureEntry('Unsent feedback entry');
     const providers = await getSelfKbProviders({ folder });
     const provider = providers.project as HttpKbProvider;
     expect(provider).toBeInstanceOf(HttpKbProvider);
     const dead = port;
     await stop();
     await expect(kbFeedback({ id, reason: 'Stale advice.', role: 'planner' }, { folder }))
-      .rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
-    expect(provider.offlineQueue).toHaveLength(1);
+      .rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE' });
 
-    // Restart on the same port, same database: the queued op must now land.
+    // Restart on the same port, same database: nothing was kept to replay,
+    // so the entry is untouched until the caller repeats the feedback.
     port = dead;
     await listen();
     await provider.query({ query: 'anything' });
-    expect(provider.offlineQueue).toHaveLength(0);
-    const gone = await call('GET', `/api/kb/query?query=${encodeURIComponent('Queued feedback entry')}&confidence=INFERRED`);
+    const kept = await call('GET', `/api/kb/query?query=${encodeURIComponent('Unsent feedback entry')}&confidence=INFERRED`);
+    expect((kept.body.results as any[]).some(r => r.id === id)).toBe(true);
+
+    await kbFeedback({ id, reason: 'Stale advice.', role: 'planner' }, { folder });
+    const gone = await call('GET', `/api/kb/query?query=${encodeURIComponent('Unsent feedback entry')}&confidence=INFERRED`);
     expect((gone.body.results as any[]).some(r => r.id === id)).toBe(false);
   });
 

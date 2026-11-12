@@ -666,8 +666,8 @@ every 30 minutes or less), so one failed run still leaves a valid token.
 **Failure behaviour.** When the secret is missing, expired or unreadable, or
 the server answers 401 twice (the request, then one retry after re-reading the
 secret), the KB call fails with `E-KB-HTTP-AUTH` naming the secret and the
-reason. Captures, invalidates and feedback are queued offline and sent once
-the secret is accepted; the queue is kept, not dropped. Member reads of CONFIRMED entries
+reason. Nothing is queued: a write that fails this way was not applied, and
+the caller decides whether to repeat it once the secret is fixed. Member reads of CONFIRMED entries
 are still served from the checkout bible. After a refresh nothing needs
 restarting.
 
@@ -701,17 +701,17 @@ default; it does not fail, so the config keeps working.
 
 A request whose socket is idle for longer than the timeout fails with code
 `ETIMEDOUT` and a message naming the timeout in ms; like any
-unreachable-server error, that queues a capture or invalidate offline and
-falls back to the local store for reads.
+unreachable-server error, it is `E-KB-HTTP-UNREACHABLE`: nothing is queued
+and nothing is answered from a local store.
 
 It is a socket idle timeout, not a per-request deadline:
 
 - The timer restarts whenever data arrives, so a server that keeps sending
   bytes slowly can take longer than the value without timing out.
-- When writes are queued offline, capture, query, context, invalidate and
-  prime first try to flush them, and the flush attempt has the same timeout. Against an unresponsive server a call can
-  therefore wait up to about twice the value: one timeout for the flush, one
-  for the call itself.
+- The first call on a connection reads `GET /api/kb/capabilities` first, with
+  the same timeout. Against an unresponsive server that call can therefore
+  wait up to about twice the value: one timeout for the capabilities read,
+  one for the call itself.
 
 Routes the http provider uses (all except `/health` need the bearer token).
 Another server can stand in for `kb-server` by serving the same routes:
@@ -936,9 +936,8 @@ Run `kb_setup` with `remote` and `token` to write this. Do not write
 With the http provider, `kb_feedback` is sent to the server as
 `POST /api/kb/feedback` with body `{id, reason, role}` and returns the
 server's answer unchanged; the client never sets confidence. While the server
-is unreachable (or answers 5xx/429) the feedback is queued offline with captures and invalidates
-and the tool fails with `E-KB-HTTP-UNREACHABLE`, whose message says it was
-queued. The bundled `kb-server` command
+is unreachable the tool fails with `E-KB-HTTP-UNREACHABLE`; a 5xx or 429
+answer is `E-KB-HTTP-SERVER-ERROR`. Nothing is queued. The bundled `kb-server` command
 serves that route: it validates the role like the tool does, marks the entry
 stale and flagged without touching confidence, and answers an unknown id with
 HTTP 404 and code `ENTRY_NOT_FOUND`.
@@ -959,10 +958,12 @@ Write it with `kb_setup ... token={{secret.KB_TOKEN}}`; see
 #### MemoryProvider operations
 
 Every method in the `MemoryProvider` interface is classified as one of:
-- **remote** -- calls the HTTP server. On a connection error (or a 5xx/429
-  answer to a capture, invalidate or feedback) a write is
-  queued and the call throws `E-KB-HTTP-UNREACHABLE` (saying it was queued);
-  a read throws `E-KB-HTTP-UNREACHABLE`. Nothing is ever answered from a
+- **remote** -- calls the HTTP server. On a connection error the call
+  throws `E-KB-HTTP-UNREACHABLE` (retryable) and nothing is queued: the
+  caller owns the retry (the sprint engine keeps its own KB write queued and
+  repeats it on its next flush). A 5xx or 429 answering a write (capture,
+  invalidate, feedback, promote, demote) is `E-KB-HTTP-SERVER-ERROR`: the
+  write may have been applied, so it is neither retried nor queued. Nothing is ever answered from a
   local store or the checkout bible: the server is the source of truth.
 - **local** -- no remote route; answers without any local store.
 - **unsupported** -- returns a documented refusal or throws a typed error.
@@ -972,15 +973,15 @@ The provider holds no local store at all.
 | Method | Classification | Notes |
 |--------|---|---|
 | init | local | Nothing to open. |
-| capture | remote | Posts entry to server. On connection error or a 5xx/429 answer, queued in memory (max 1000) and thrown as `E-KB-HTTP-UNREACHABLE`; queue flushed on reconnect. |
+| capture | remote | Posts entry to server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 5xx/429 answer, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
 | query | remote | Retrieves entries from server. On connection error, `E-KB-HTTP-UNREACHABLE`. |
 | context | remote | Retrieves file context from server. On connection error, `E-KB-HTTP-UNREACHABLE`. |
-| invalidate | remote | Invalidates files on server. On connection error or a 5xx/429 answer, queued in memory and thrown as `E-KB-HTTP-UNREACHABLE`; queue flushed on reconnect. |
+| invalidate | remote | Invalidates files on server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 5xx/429 answer, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
 | discard | unsupported | Throws E-KB-HTTP-UNSUPPORTED (id-level discard not supported). Use kb_invalidate with files instead. |
 | getLinked | local | No remote route: returns no linked entries. |
 | prime | remote | Retrieves primed context from server. On connection error, `E-KB-HTTP-UNREACHABLE`. `kb_session_prime` does not cold-seed from the checkout bible under http. |
-| promote | remote | POST /api/kb/promote with `{id, reason}`. No offline queue on connection error (the id only exists on the server): `E-KB-HTTP-UNREACHABLE` naming the server URL. Sent by id with no list lookup first: the server refuses an unknown, superseded or out-of-scope id itself. The bundled `kb-server` answers an unknown id 404 with code `ENTRY_NOT_FOUND`; any 404 rejects as `Entry not found: <id>` followed by the server's answer; any other refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's text and code. |
-| feedback | remote | POST /api/kb/feedback with `{id, reason, role}`; returns the server response unchanged. On connection error or a 5xx/429 answer (or E-KB-HTTP-AUTH) queued offline with captures and invalidates, and the error is thrown. |
+| promote | remote | POST /api/kb/promote with `{id, reason}`. On connection error, `E-KB-HTTP-UNREACHABLE` naming the server URL; on a 5xx/429 answer, `E-KB-HTTP-SERVER-ERROR`. Sent by id with no list lookup first: the server refuses an unknown, superseded or out-of-scope id itself. The bundled `kb-server` answers an unknown id 404 with code `ENTRY_NOT_FOUND`; any 404 rejects as `Entry not found: <id>` followed by the server's answer; any other refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's text and code. |
+| feedback | remote | POST /api/kb/feedback with `{id, reason, role}`; returns the server response unchanged. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 5xx/429 answer, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
 | demote | remote (optional route) | POST /api/kb/demote with `{id, reason, evidence_files}` -> `{id, previous_confidence, new_confidence}`, sent by id only when `GET /api/kb/capabilities` lists `demote`; otherwise (or on a 404/501 from the route) `E-KB-HTTP-UNSUPPORTED` naming the route, and nothing is changed. The server enforces which ids the caller may demote; a 404 whose body code says the entry is unknown rejects as `Entry not found: <id>`. A MEMBER `kb_query` `own_scope` read (which exists to find what may be demoted) is refused the same way when the server does not list `demote`. |
 | sync | unsupported | Returns {synced: false} (no remote sync over http). |
 | stats | unsupported | Returns supported:false with empty results (stats not supported over http). |
@@ -998,13 +999,10 @@ the route set read before until the next connection error or fleet restart. It n
 the tool fails with `E-KB-HTTP-UNSUPPORTED` naming the route. A server without
 the capabilities route is assumed to serve every route but demote. Any other
 failed capabilities read is typed: a 5xx or 429 is `E-KB-HTTP-UNREACHABLE`
-(writes are queued), another status but 401 and a 409 project mismatch is
-`E-KB-HTTP-UNSUPPORTED` naming the capabilities read; queued writes are kept
-while it fails (and when a replayed write is answered a 5xx or 429) and sent
-once it answers. A 5xx or 429 answering a capture, invalidate (files) or
-feedback itself is the same `E-KB-HTTP-UNREACHABLE` naming the status, and
-the write is queued. A queued write is dropped only for its own fault (route not
-listed, or refused by the server), with a logged warning. A 404 or 501
+(the caller's request was never sent), another status but 401 and a 409
+project mismatch is `E-KB-HTTP-UNSUPPORTED` naming the capabilities read. A
+5xx or 429 answering a write itself is `E-KB-HTTP-SERVER-ERROR` naming the
+status. Nothing is queued in either case. A 404 or 501
 from an optional route is also `E-KB-HTTP-UNSUPPORTED` (a 404 whose body code is
 `ENTRY_NOT_FOUND` / `E-ENTRY-NOT-FOUND` stays "entry not found"). The bundled
 `kb-server` always serves a local SQLite KB and lists every route but demote,
@@ -1013,11 +1011,7 @@ from an optional route is also `E-KB-HTTP-UNSUPPORTED` (a 404 whose body code is
 
 **Named-secret token**: with `token_ref`, the secret is looked up on every
 request; a 401 re-reads it and retries once, then throws `E-KB-HTTP-AUTH`.
-A capture or invalidate that hits it stays in the offline queue.
-
-**Queue overflow**: if 1000 pending writes accumulate, the oldest is dropped
-and a warning is printed to stderr. **Process exit**: if the queue is non-empty
-on exit, a warning is emitted.
+Nothing is queued.
 
 #### Bible commit under HTTP
 
@@ -1066,8 +1060,8 @@ Design notes:
   A non-member flagged read goes to the server: the provider sends
   `flagged_only=true`, `kb-server`'s `GET /api/kb/query` honours it, and
   `kb_query` re-applies the flagged filter to whatever the server returns.
-- Server down: every call fails with `E-KB-HTTP-UNREACHABLE` (writes are queued
-  first and say so). Nothing is answered from the checkout bible or the
+- Server down: every call fails with `E-KB-HTTP-UNREACHABLE` (retryable;
+  nothing is queued). Nothing is answered from the checkout bible or the
   per-repo database; a token the server refuses is `E-KB-HTTP-AUTH`.
 - Every request carries the project slug in `X-KB-Project`. `kb-server` serves
   one project and answers any other (or a missing header) with 409 naming
@@ -1077,8 +1071,8 @@ Design notes:
   `X-KB-Project` header, so a current `kb-server` answers it with 409
   `E-KB-HTTP-PROJECT-MISMATCH` on every call; a current client against an older
   server that lacks `GET /api/kb/list` gets `E-KB-HTTP-UNSUPPORTED` from kb_list.
-- Invariant: promote has no offline queue or local fallback, since the entry id
-  only exists on the server. A malformed or non-JSON error body still surfaces as
+- Invariant: no write is queued and nothing falls back to a local store,
+  since the server is the source of truth. A malformed or non-JSON error body still surfaces as
   a thrown error rather than a silent success.
 - `kb_bible_commit` under http reports the `entry_count` of the existing bible
   file (read without touching the KB) and logs, rather than throws, when the
@@ -1138,9 +1132,9 @@ may promote is the server's decision, and its refusal is surfaced.
 **Capabilities over HTTP**: see the [MemoryProvider operations](#memoryprovider-operations)
 table above. In summary:
 - **Supported**: `kb_capture`, `kb_query`, `kb_context`, `kb_invalidate` with
-  `files` outside a MEMBER session (queued offline on connection error), `kb_feedback` (queued offline
-  on connection error; refused in a MEMBER session), `kb_promote` (server-side
-  only, fails on connection error with no fallback), and the member-session read
+  `files` outside a MEMBER session, `kb_feedback` (refused in a MEMBER
+  session), `kb_promote` (server-side only; every call fails on a connection
+  error with no fallback and nothing queued), and the member-session read
   tools (`kb_query`, `kb_session_prime`, `kb_context`, `kb_list`), answered by
   the server for every tier with fleet re-checking member own-scope.
 - **Optional routes**, used only when `GET /api/kb/capabilities` lists them
@@ -1157,7 +1151,7 @@ table above. In summary:
 
 **Repository headers**: kb_* tools take no repository argument, but fleet
 passes the repository it resolved for the calling session to the provider,
-and `HttpKbProvider` sends it on every request (queued writes included) as
+and `HttpKbProvider` sends it on every request as
 `X-Repository` (the normalised origin remote, `host/path`: no scheme, no
 credentials, no trailing `.git`; Azure DevOps remotes folded to
 `dev.azure.com/<org>/<project>/_git/<repo>`) and `X-Repository-Commit` (the
@@ -1171,13 +1165,10 @@ value is longer than 255 characters). Commit and branch are each cached for
 5 seconds, so a branch switch shows within that time. A shared server can use them to keep repositories apart; a
 server may ignore them. No local path is ever sent, and nothing goes in the
 URL. A remote whose host does not parse as a hostname sends no header at all.
-The commit is best effort: a queued write replayed later carries the HEAD at
-replay time, not at capture time. With a named-secret token the secret is
+The commit is best effort. With a named-secret token the secret is
 looked up first, so a missing secret fails before the commit or branch is
 read; the one 401 retry re-reads the secret but resends the same repository
-headers (same commit and branch),
-and a replayed queued write gets both the current secret and its provider's
-repository headers.
+headers (same commit and branch).
 
 ### Future: Postgres
 
@@ -1277,27 +1268,6 @@ of the ladder). It re-hashes every entry's basis against the current worktree
 and revives freshness-staled entries whose files match again. Superseded,
 feedback-downvoted, and invalidated entries stay retired by design -- see
 [Bidirectional staleness](#bidirectional-staleness).
-
-### Offline queue warning on exit
-
-**Symptom**: at process exit you see:
-```
-[KB] WARNING: offline queue has N unsaved operations (captures, invalidations, feedback). They never reached the KB server and the queue is lost when this process exits. Repeat them once the KB server is reachable.
-```
-
-**Cause**: the HTTP KB server was unreachable while captures, invalidations or feedback were made. The
-queue is in-memory and not persisted.
-
-**Recovery**: start the KB server and repeat the lost calls. Invalidations and
-feedback can only be repeated: `kb_harvest` extracts learnings from a session
-transcript and cannot restore them. For captures, on an install whose KB tool
-profile lists it, you can also run:
-```
-kb_harvest with session_output="<paste session transcript>"
-```
-
-AUDN deduplication ensures entries from the harvest do not create duplicates
-if some were already sent before the server went offline.
 
 ### Token rejected (401)
 

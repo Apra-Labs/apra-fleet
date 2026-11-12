@@ -330,11 +330,9 @@ describe('sprint KB path over http: capture, promote and recall all reach the KB
     expect(requests.filter(r => r.path === '/api/kb/list')).toEqual([]);
 
     // 2. Nothing fell back to the local store: the per-repo SQLite DB holds no
-    // row for the id or the title, and the provider's offline queue is empty.
+    // row for the id or the title.
     const providers = await runWithSessionMember(maintainer.id, () => getSelfKbProviders());
     expect(providers.project).toBeInstanceOf(HttpKbProvider);
-    const httpProvider = providers.project as HttpKbProvider;
-    expect(httpProvider.offlineQueue).toEqual([]);
     // The per-repo SQLite DB fleet keeps for this project, opened read-only here.
     const dbPath = path.join(FLEET_DIR, 'knowledge', providers.projectSlug, 'kb.sqlite');
     if (fs.existsSync(dbPath)) {

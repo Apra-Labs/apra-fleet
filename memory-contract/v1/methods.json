@@ -58,7 +58,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "New row per call unless AUDN dedupes to E-DEDUP-NONE.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-BIBLE-MALFORMED", "E-KB-MAINTAINER-REQUIRED", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-KB-HTTP-AUTH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-BIBLE-MALFORMED", "E-KB-MAINTAINER-REQUIRED", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-KB-HTTP-AUTH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-SERVER-ERROR", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-CLAMP", "E-CONTRADICTION-FLAGGED", "E-DEDUP-NONE", "E-DIRECTIVE-QUARANTINE"],
       "see_also": ["Capture provenance and confidence clamp", "Directive quarantine", "Superseding and AUDN matching", "Freshness and content hashing"]
     },
@@ -106,7 +106,7 @@
       ],
       "side_effect_class": "trust-mutating",
       "idempotent": true,
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-KB-HTTP-AUTH", "E-KB-HTTP-UNREACHABLE", "E-PROVIDER-UNINITIALIZED", "E-KB-HTTP-UNSUPPORTED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-KB-HTTP-AUTH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-SERVER-ERROR", "E-PROVIDER-UNINITIALIZED", "E-KB-HTTP-UNSUPPORTED"],
       "see_also": ["Freshness and content hashing"]
     },
     {
@@ -151,7 +151,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "No-op only at the CONFIRMED ceiling; below it every call advances one tier.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-PROMOTE-SUPERSEDED", "E-PROMOTE-REFUSED-DIRECTIVE", "E-PROMOTE-REASON-REQUIRED", "E-PROMOTE-BASIS-UNRESOLVED", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-PROMOTE-SUPERSEDED", "E-PROMOTE-REFUSED-DIRECTIVE", "E-PROMOTE-REASON-REQUIRED", "E-PROMOTE-BASIS-UNRESOLVED", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-SERVER-ERROR", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Directive quarantine"]
     },
     {
@@ -167,7 +167,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "Not a ladder and never a no-op: only CONFIRMED is demotable, so a second call on the now-INFERRED entry is REFUSED with E-DEMOTE-NOT-CONFIRMED rather than returning unchanged.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-DEMOTE-SUPERSEDED", "E-DEMOTE-REFUSED-DIRECTIVE", "E-DEMOTE-NOT-CONFIRMED", "E-DEMOTE-REASON-REQUIRED", "E-DEMOTE-EVIDENCE-UNRESOLVED", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-DEMOTE-SUPERSEDED", "E-DEMOTE-REFUSED-DIRECTIVE", "E-DEMOTE-NOT-CONFIRMED", "E-DEMOTE-REASON-REQUIRED", "E-DEMOTE-EVIDENCE-UNRESOLVED", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-SERVER-ERROR", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Directive quarantine"]
     },
     {
@@ -261,14 +261,14 @@
       "interface": "SqliteProvider and HttpKbProvider (not declared on MemoryProvider)",
       "signature": "feedback(id: string, reason: string, author): Promise<KBEntry>",
       "purpose": "Downvote an entry that proved wrong in practice: sets stale + flagged_for_review, appends a note; never deletes, never touches confidence.",
-      "providers_note": "Served by both providers; it is not behind requireSqliteProject. SqliteProvider.feedback writes the local store and returns the KBEntry (the tool answers {id, stale, flagged_for_review, confidence}). HttpKbProvider.feedback(id, reason, author): Promise<server response | {id, queued: true}> POSTs the kb_feedback request body {id, reason, role} (role carries the validated author) to /api/kb/feedback with the same auth and X-Repository* headers as the other routes, and the tool returns the server response as is. When the server is unreachable (E-KB-HTTP-UNREACHABLE) or refuses the token (E-KB-HTTP-AUTH) the feedback is kept in the offline queue, replayed in order with queued captures and invalidates, and the error is thrown saying so. The HTTP client never writes or invents confidence and never writes a local store.",
+      "providers_note": "Served by both providers; it is not behind requireSqliteProject. SqliteProvider.feedback writes the local store and returns the KBEntry (the tool answers {id, stale, flagged_for_review, confidence}). HttpKbProvider.feedback(id, reason, author): Promise<server response> POSTs the kb_feedback request body {id, reason, role} (role carries the validated author) to /api/kb/feedback with the same auth and X-Repository* headers as the other routes, and the tool returns the server response as is. Nothing is queued: an unreachable server (E-KB-HTTP-UNREACHABLE), a 5xx or 429 answer (E-KB-HTTP-SERVER-ERROR) or a refused token (E-KB-HTTP-AUTH) is thrown, and the caller decides whether to repeat the feedback. The HTTP client never writes or invents confidence and never writes a local store.",
       "tools": [
         { "name": "kb_feedback", "request_schema_ref": "schemas/kb_feedback.request.json", "response_schema_ref": "schemas/kb_feedback.response.json", "anchor_validation": "self-validated" }
       ],
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "Each call appends another note.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-MEMBER-VIEW-READ-ONLY", "E-ENTRY-NOT-FOUND", "E-KB-HTTP-AUTH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-MEMBER-VIEW-READ-ONLY", "E-ENTRY-NOT-FOUND", "E-KB-HTTP-AUTH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-SERVER-ERROR", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-ROLE-UNKNOWN-DEGRADED"],
       "see_also": []
     },

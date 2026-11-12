@@ -35,7 +35,6 @@ import {
 
 export { DEFAULT_REQUEST_TIMEOUT_MS };
 
-const MAX_QUEUE_SIZE = 1000;
 // Most entries one owner-tag lookup reads back. An owned entry beyond it is
 // reported not-found (a refusal, never a wrong promote).
 const OWNED_LOOKUP_LIMIT = 1000;
@@ -77,46 +76,30 @@ export type KbHttpAuthReason = 'missing' | 'expired' | 'rejected' | 'unreadable'
  * E-KB-HTTP-AUTH: the remote KB's token comes from a named fleet secret and
  * that secret is missing, expired, unreadable, or was rejected by the server
  * (HTTP 401) on the request and on one retry after re-reading it. The message
- * names the secret and the reason, never the value. `queued` is true when the
- * operation (a capture, invalidate or feedback) was kept in the offline queue and will
- * be sent once the secret is accepted.
+ * names the secret and the reason, never the value. Nothing is queued: the
+ * caller decides whether to repeat the operation once the secret is fixed.
  */
 export class KbHttpAuthError extends Error {
   readonly code = 'E-KB-HTTP-AUTH' as const;
   readonly secretName: string;
   readonly reason: KbHttpAuthReason;
   readonly remediation: string;
-  readonly queued: boolean;
   /** The problem sentence, without the code prefix and remediation. */
   readonly problem: string;
-  constructor(secretName: string, reason: KbHttpAuthReason, problem: string, queued = false) {
+  constructor(secretName: string, reason: KbHttpAuthReason, problem: string) {
     const remediation = `apra-fleet secret --set ${secretName} --persist -y (the next KB call uses the new value; no restart needed)`;
-    const queuedNote = queued
-      ? ' The operation was queued offline and is sent once the secret is accepted.'
-      : '';
-    super(`E-KB-HTTP-AUTH: ${problem}${queuedNote} Remediation: ${remediation}`);
+    super(`E-KB-HTTP-AUTH: ${problem} Remediation: ${remediation}`);
     this.name = 'KbHttpAuthError';
     this.secretName = secretName;
     this.reason = reason;
     this.remediation = remediation;
-    this.queued = queued;
     this.problem = problem;
   }
-
-  /** The same error, marked as having left its operation in the offline queue. */
-  asQueued(): KbHttpAuthError {
-    if (this.queued) return this;
-    return new KbHttpAuthError(this.secretName, this.reason, this.problem, true);
-  }
-}
-
-function isAuthError(err: unknown): err is KbHttpAuthError {
-  return err instanceof KbHttpAuthError;
 }
 
 /**
- * A 5xx or 429: the server (or a gateway in front of it) cannot answer right
- * now. The state of the server, never the fault of the request that got it.
+ * A 5xx or 429: the server (or a gateway in front of it) answered, but could
+ * not serve the request now.
  */
 function isServerUnavailable(err: unknown): boolean {
   const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
@@ -131,11 +114,6 @@ function isHttp401(err: unknown): boolean {
 function redactToken(text: string, token: string): string {
   return token ? text.split(token).join('[REDACTED]') : text;
 }
-
-type QueuedOperation =
-  | { op: 'capture'; input: KBEntryInput }
-  | { op: 'invalidate'; files: string[] }
-  | { op: 'feedback'; id: string; reason: string; role: string };
 
 /**
  * What HttpKbProvider.feedback returns: the remote server's response body as
@@ -267,39 +245,45 @@ function hasTag(entry: { tags?: unknown }, tag: string): boolean {
 
 /**
  * E-KB-HTTP-UNREACHABLE: the KB server could not be reached (connection
- * refused, DNS failure, timeout, reset). Over http the server is the only
- * source of truth, so nothing is answered from a local store or the checkout
- * bible instead. `queued` is true when the operation (a capture, invalidate
- * or feedback) was kept in the offline queue and will be sent once the server
- * answers again.
+ * refused, DNS failure, timeout, reset), or its capabilities read answered a
+ * 5xx or 429, so the request itself was never sent. Over http the server is
+ * the only source of truth, so nothing is answered from a local store or the
+ * checkout bible instead. Nothing is queued: the error is retryable, and the
+ * caller decides whether to repeat the call (the sprint engine keeps its own
+ * KB write queued and repeats it on its next flush).
  */
 export class KbHttpUnreachableError extends Error {
   readonly code = 'E-KB-HTTP-UNREACHABLE' as const;
-  readonly queued: boolean;
-  private readonly serverUrl: string;
-  private readonly operation: string;
   /** The connection error text (e.g. "connect ECONNREFUSED ..."). */
   readonly causeText: string;
-  constructor(serverUrl: string, operation: string, causeText: string, queued = false) {
-    const outcome = queued
-      ? 'the operation was queued offline and is sent once the server answers again'
-      : 'nothing was read or written';
+  constructor(serverUrl: string, operation: string, causeText: string) {
     super(
       `E-KB-HTTP-UNREACHABLE: ${operation}: the KB server at ${serverUrl} is unreachable (${causeText}); `
-      + `${outcome}, and no local store or bible is used instead. `
-      + 'Remediation: start the KB server or restore the network path to it, or use a local SQLite KB (kb_setup provider sqlite).',
+      + 'nothing was read or written, and no local store or bible is used instead. '
+      + 'Remediation: start the KB server or restore the network path to it, then repeat the call; or use a local SQLite KB (kb_setup provider sqlite).',
     );
     this.name = 'KbHttpUnreachableError';
-    this.queued = queued;
-    this.serverUrl = serverUrl;
-    this.operation = operation;
     this.causeText = causeText;
   }
+}
 
-  /** The same error, marked as having left its operation in the offline queue. */
-  asQueued(): KbHttpUnreachableError {
-    if (this.queued) return this;
-    return new KbHttpUnreachableError(this.serverUrl, this.operation, this.causeText, true);
+/**
+ * E-KB-HTTP-SERVER-ERROR: the KB server (or a gateway in front of it) answered
+ * a write request itself with a 5xx or 429. The request reached the server,
+ * so whether the write took effect is unknown (a 502 or 504 can follow a
+ * stored write). It is not retried and nothing is queued: repeating it
+ * blindly could apply it twice, and a server that always answers 500 would
+ * be retried forever.
+ */
+export class KbHttpServerError extends Error {
+  readonly code = 'E-KB-HTTP-SERVER-ERROR' as const;
+  constructor(serverUrl: string, operation: string, answer: string) {
+    super(
+      `E-KB-HTTP-SERVER-ERROR: ${operation}: the KB server at ${serverUrl} answered ${answer}; `
+      + 'whether the write took effect is unknown, so it was not retried or queued. '
+      + 'Remediation: check the KB server (or the gateway in front of it); once it answers normally, read the entry back (kb_query) before repeating the write.',
+    );
+    this.name = 'KbHttpServerError';
   }
 }
 
@@ -372,13 +356,6 @@ function defaultCapabilities(): KbServerCapabilities {
   return { ...KB_DEFAULT_CAPABILITIES, routes: [...KB_DEFAULT_CAPABILITIES.routes] };
 }
 
-/** The route a queued write replays through. */
-const QUEUED_OP_ROUTE: Record<QueuedOperation['op'], KbRoute> = {
-  capture: 'capture',
-  invalidate: 'invalidate',
-  feedback: 'feedback',
-};
-
 /** Body codes meaning "no entry with that id" on a 404 from an id route. */
 const ENTRY_NOT_FOUND_CODES = new Set(['ENTRY_NOT_FOUND', 'E-ENTRY-NOT-FOUND']);
 
@@ -401,8 +378,6 @@ export class HttpKbProvider implements MemoryProvider {
   private readonly projectSlug: string | undefined;
   private readonly requestTimeoutMs: number;
   private readonly repository: RepositoryIdentity | undefined;
-  readonly offlineQueue: QueuedOperation[] = [];
-  private readonly beforeExitHandler: () => void;
   /**
    * The server's capabilities, read once per connection: cleared when a
    * request finds the server unreachable, so the first request after a
@@ -421,29 +396,11 @@ export class HttpKbProvider implements MemoryProvider {
     this.displayUrl = redactUrlUserinfo(this.baseUrl);
     this.tokenSource = token;
     this.projectSlug = options.projectSlug;
-
-    this.beforeExitHandler = () => {
-      if (this.offlineQueue.length > 0) {
-        process.stderr.write(
-          `[KB] WARNING: offline queue has ${this.offlineQueue.length} unsaved operations (captures, invalidations, feedback). ` +
-          `They never reached the KB server and the queue is lost when this process exits. Repeat them once the KB server is reachable.\n`
-        );
-      }
-    };
-    process.on('beforeExit', this.beforeExitHandler);
   }
 
-  dispose(): void {
-    process.removeListener('beforeExit', this.beforeExitHandler);
-  }
-
-  private enqueue(op: QueuedOperation): void {
-    if (this.offlineQueue.length >= MAX_QUEUE_SIZE) {
-      this.offlineQueue.shift();
-      process.stderr.write('[KB] WARNING: offline queue full (1000), dropping oldest entry\n');
-    }
-    this.offlineQueue.push(op);
-  }
+  // Nothing to release: the provider holds no queue, listener or handle.
+  // Kept so callers that retire a provider need not know its type.
+  dispose(): void {}
 
   // The repository headers for one request. The commit and branch are best
   // effort: an unreadable, throwing or malformed value omits that header and
@@ -683,9 +640,9 @@ export class HttpKbProvider implements MemoryProvider {
    * token) and the already-typed errors pass through as on any route. Any
    * other HTTP status is never a raw HTTP error: a 5xx or 429 (a restarting or
    * rate-limiting server, a gateway with no backend) is E-KB-HTTP-UNREACHABLE
-   * naming the status, so a
-   * write is queued as on a connection error; any other status (403/405 from
-   * a gateway) is E-KB-HTTP-UNSUPPORTED naming the capabilities read.
+   * naming the status (the caller's own request was never sent, so it is safe
+   * to retry); any other status (403/405 from a gateway) is
+   * E-KB-HTTP-UNSUPPORTED naming the capabilities read.
    */
   private capabilitiesHttpError(err: unknown): unknown {
     const code = (err as NodeJS.ErrnoException).code;
@@ -764,83 +721,34 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
-  // Stops (keeping the queue) on a connection error AND on E-KB-HTTP-AUTH: an
-  // auth failure is not the queued op's fault, and dropping it would lose
-  // every queued capture the moment the secret goes wrong. The capabilities
-  // are read first, on their own: a failed read (5xx, 403, 401, a malformed
-  // answer) is the server's state, not any op's fault, so the whole queue is
-  // kept; the caller's own request reads the capabilities again and throws
-  // that error to the caller. A 5xx or 429 answering a replayed op is the
-  // server's state too: the queue is kept. Any other error is specific to that
-  // op, which is dropped with a logged warning.
-  private async tryFlushQueue(): Promise<void> {
-    if (this.offlineQueue.length === 0) return;
-    try {
-      await this.capabilities();
-    } catch {
-      return;
-    }
-    while (this.offlineQueue.length > 0) {
-      const op = this.offlineQueue[0];
-      try {
-        if (op.op === 'capture') {
-          await this.routeRequest(QUEUED_OP_ROUTE.capture, 'POST', '/api/kb/capture', op.input);
-        } else if (op.op === 'invalidate') {
-          await this.routeRequest(QUEUED_OP_ROUTE.invalidate, 'POST', '/api/kb/invalidate', { files: op.files });
-        } else if (op.op === 'feedback') {
-          await this.routeRequest(QUEUED_OP_ROUTE.feedback, 'POST', '/api/kb/feedback', { id: op.id, reason: op.reason, role: op.role });
-        }
-        this.offlineQueue.shift();
-      } catch (err) {
-        // Queued while the server's capabilities were unknown; now known, the
-        // server does not serve this op's route. Never sent: dropped, loudly.
-        if (err instanceof KbHttpUnsupportedError) {
-          process.stderr.write(`[KB] WARNING: dropped a queued ${op.op}: ${err.message}\n`);
-          this.offlineQueue.shift();
-          continue;
-        }
-        // Unreachable, or the wrong project's server: keep the queue for the
-        // right server rather than dropping what could not be sent.
-        if (err instanceof KbHttpUnreachableError || isAuthError(err) || err instanceof KbHttpProjectMismatchError
-          || isServerUnavailable(err)) {
-          break;
-        }
-        process.stderr.write(`[KB] WARNING: dropped a queued ${op.op}: ${(err as Error).message}\n`);
-        this.offlineQueue.shift();
-      }
-    }
-  }
-
   // Nothing to open locally: every operation is a request to the server.
   async init(): Promise<void> {}
 
   /**
-   * One queueable write (capture, invalidate with files, feedback). When the
-   * server cannot take it now -- unreachable, token refused (E-KB-HTTP-AUTH),
-   * or a 5xx/429 answer (E-KB-HTTP-UNREACHABLE naming the status) -- the
-   * write is queued offline and the typed error is thrown marked queued: the
-   * caller must not believe the write reached the KB.
+   * One write request (capture, invalidate with files, feedback, promote,
+   * demote). Nothing is queued. A 5xx or 429 answering the write itself is
+   * E-KB-HTTP-SERVER-ERROR, never a raw HTTP error: the request reached the
+   * server, so whether it took effect is unknown and it must not be retried
+   * blindly. A server that cannot be reached (or whose capabilities read
+   * answers 5xx/429, so the write is never sent) is E-KB-HTTP-UNREACHABLE,
+   * thrown as is for the caller to retry.
    */
-  private async writeOrQueue<T>(op: QueuedOperation, pathname: string, body: unknown): Promise<T> {
+  private async writeRequest<T>(route: KbRoute, pathname: string, body: unknown): Promise<T> {
     try {
-      return await this.routeRequest<T>(QUEUED_OP_ROUTE[op.op], 'POST', pathname, body);
+      return await this.routeRequest<T>(route, 'POST', pathname, body);
     } catch (err) {
-      const typed = isServerUnavailable(err) ? this.serverUnavailableError(`POST ${pathname}`, err as Error) : err;
-      if (typed instanceof KbHttpUnreachableError || isAuthError(typed)) {
-        this.enqueue(op);
-        throw typed.asQueued();
+      if (isServerUnavailable(err)) {
+        throw new KbHttpServerError(this.displayUrl, `POST ${pathname}`, (err as Error).message);
       }
       throw err;
     }
   }
 
   async capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }> {
-    await this.tryFlushQueue();
-    return this.writeOrQueue({ op: 'capture', input }, '/api/kb/capture', input);
+    return this.writeRequest('capture', '/api/kb/capture', input);
   }
 
   async query(opts: QueryOptions): Promise<KBResult> {
-    await this.tryFlushQueue();
     const params: Record<string, string> = {};
     if (opts.query) params.query = opts.query;
     if (opts.type) params.type = opts.type;
@@ -873,7 +781,6 @@ export class HttpKbProvider implements MemoryProvider {
     excludeDisputed?: boolean,
     ownerTag?: string,
   ): Promise<FileContextResult[]> {
-    await this.tryFlushQueue();
     const ctxParams: Record<string, string> = { files: files.join(',') };
     if (confidence?.length) ctxParams.confidence = confidence.join(',');
     if (excludeDisputed) ctxParams.exclude_disputed = 'true';
@@ -893,8 +800,7 @@ export class HttpKbProvider implements MemoryProvider {
   }
 
   async invalidate(files: string[]): Promise<{ invalidated: number }> {
-    await this.tryFlushQueue();
-    return this.writeOrQueue({ op: 'invalidate', files }, '/api/kb/invalidate', { files });
+    return this.writeRequest('invalidate', '/api/kb/invalidate', { files });
   }
 
   /**
@@ -903,14 +809,12 @@ export class HttpKbProvider implements MemoryProvider {
    * carries the already-validated author). The server owns the entry, so the
    * server decides stale/flagged; this method returns its response as is and
    * never writes or invents confidence, and never touches a local store.
-   * Server unreachable or answering 5xx/429 (E-KB-HTTP-UNREACHABLE) or token
-   * refused (E-KB-HTTP-AUTH): the feedback is queued offline (replayed in order with
-   * queued captures/invalidates) and the error is rethrown as queued.
+   * Nothing is queued: an unreachable server (E-KB-HTTP-UNREACHABLE), a
+   * 5xx/429 answer (E-KB-HTTP-SERVER-ERROR) or a refused token
+   * (E-KB-HTTP-AUTH) is thrown for the caller to handle.
    */
   async feedback(id: string, reason: string, author: string): Promise<HttpKbFeedbackResult> {
-    await this.tryFlushQueue();
-    const body = { id, reason, role: author };
-    return this.writeOrQueue({ op: 'feedback', ...body }, '/api/kb/feedback', body);
+    return this.writeRequest('feedback', '/api/kb/feedback', { id, reason, role: author });
   }
 
   // No remote route for the entry graph, and no local store stands in for the
@@ -940,7 +844,6 @@ export class HttpKbProvider implements MemoryProvider {
   }
 
   async prime(opts: PrimeOptions): Promise<PrimedContext> {
-    await this.tryFlushQueue();
     // owner_tag is internal (never part of the contract body); it is applied
     // to the server's answer here instead.
     const { owner_tag: ownerTag, ...body } = opts;
@@ -955,7 +858,7 @@ export class HttpKbProvider implements MemoryProvider {
   }
 
   // Remote-only: the id exists on the server, so a connection error is
-  // surfaced instead of falling back to the local store or queueing.
+  // surfaced instead of falling back to the local store.
   // Promote by id, with no list lookup first: the server refuses an unknown,
   // superseded or out-of-scope id itself, and that refusal is surfaced (a 404
   // as the same "Entry not found: <id>" the SQLite provider throws, any other
@@ -971,7 +874,7 @@ export class HttpKbProvider implements MemoryProvider {
     if (reason !== undefined) body.reason = reason;
     let result: Record<string, unknown>;
     try {
-      result = await this.routeRequest<Record<string, unknown>>('promote', 'POST', '/api/kb/promote', body);
+      result = await this.writeRequest<Record<string, unknown>>('promote', '/api/kb/promote', body);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'HTTP_404') {
         throw entryNotFoundOnServer(id, err as NodeJS.ErrnoException);
@@ -1097,7 +1000,7 @@ export class HttpKbProvider implements MemoryProvider {
   ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
     let result: Record<string, unknown>;
     try {
-      result = await this.routeRequest<Record<string, unknown>>('demote', 'POST', '/api/kb/demote', {
+      result = await this.writeRequest<Record<string, unknown>>('demote', '/api/kb/demote', {
         id, reason, evidence_files: evidenceFiles,
       });
     } catch (err) {
