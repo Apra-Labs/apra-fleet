@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { startKbServer, KbServerHttpProviderRefusedError, KB_SERVER_CAPABILITIES } from '../../src/commands/kb-server.js';
+import { startKbServer, KbServerHttpProviderRefusedError, KB_SERVER_CAPABILITIES, kbServerCapabilities } from '../../src/commands/kb-server.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { encryptPassword } from '../../src/utils/crypto.js';
 import { resetKbProviders, getProjectSlug } from '../../src/services/knowledge/kb-providers.js';
@@ -124,6 +124,24 @@ describe('kb-server promote and tag filter', () => {
       expect(await provider.servesRoute('list')).toBe(true);
     } finally {
       provider.dispose();
+    }
+  });
+
+  it('advertises only the routes it serves for its provider: no list or feedback without a SQLite KB', async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-caps-'));
+    const sqlite = new SqliteProvider(path.join(scratch, 'kb.sqlite'));
+    // A provider that is not SQLite: list and feedback answer 501 then.
+    const remote = new HttpKbProvider('http://127.0.0.1:9', 'NOT_A_REAL_KEY');
+    try {
+      expect(kbServerCapabilities(sqlite).routes)
+        .toEqual(['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list']);
+      expect(kbServerCapabilities(remote)).toEqual({
+        contract: 'v1', routes: ['capture', 'query', 'promote', 'context', 'prime', 'invalidate'], branch_aware: false,
+      });
+    } finally {
+      remote.dispose();
+      sqlite.close();
+      fs.rmSync(scratch, { recursive: true, force: true });
     }
   });
 

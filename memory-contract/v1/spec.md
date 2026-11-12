@@ -698,7 +698,8 @@ entries per branch (section 2.9.2). Fleet's client:
   unknown, not that the route is missing.
 
 Fleet's `kb-server` serves every route but `demote` and reports
-`branch_aware: false`.
+`branch_aware: false`. Its capabilities list only what it serves: `list` and
+`feedback` are listed only over a local SQLite KB (otherwise they answer 501).
 
 `demote` is `POST /api/kb/demote` `{id, reason, evidence_files}`, answered
 `{id, previous_confidence, new_confidence}`; like `promote` it is sent by id
