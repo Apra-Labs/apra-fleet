@@ -702,6 +702,8 @@
             { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
             { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
             { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
           ],
           "source": "src/services/knowledge/http-provider.ts (KbHttpAuthError, HttpKbProvider.request / resolveToken)",
@@ -756,7 +758,9 @@
             { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
             { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
             { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
-            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
           ],
           "source": "src/services/knowledge/http-provider.ts (KbHttpProjectMismatchError), raised by HttpKbProvider on a kb-server 409 PROJECT_MISMATCH reply",
           "surfaced": "thrown",

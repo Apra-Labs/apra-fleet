@@ -184,9 +184,10 @@ export const ENVIRONMENT = {
     // recorder's path sanitiser would rewrite that prefix.)
     { key: 'BARE', dir: 'bare-repo', placeholder: null, git: true, bare: true, remote: 'BARE', files: {} },
     // A repository whose project KB is the http provider: its sessions scope an
-    // http KB config to each call, pointed at kb-http-stand-in.mjs (which holds
-    // one INFERRED entry owned by a member outside every session).
-    { key: 'HTTP', dir: 'repo-http', placeholder: PATH_PLACEHOLDERS.REPO_HTTP, git: true, remote: 'HTTP', files: {} },
+    // http KB config to each call, pointed at fleet's sample kb-server
+    // (kb-sample-servers.mjs; it holds one INFERRED entry owned by a member
+    // outside every session).
+    { key: 'HTTP', dir: 'repo-http', placeholder: PATH_PLACEHOLDERS.REPO_HTTP, git: true, remote: 'HTTP', files: { 'src/widget.ts': 'export const widget = 1;' } },
   ],
   remotes: {
     A: RECORDED_REMOTE_A,
@@ -236,13 +237,13 @@ export const ENVIRONMENT = {
     // writes go to the live KB, not a member's read-only checkout bible view.
     FULL_A: { kind: 'full', repo: 'A' },
     // A kb_maintainer member session over an http project KB (kbHttp names the
-    // stand-in variant): records kb_bible_commit's bible_skipped, kb_invalidate
-    // ids' E-KB-HTTP-UNSUPPORTED, and member own-scope over http (the server
-    // refuses a promote of another member's entry as not found, and that entry
-    // is absent from kb_query).
+    // sample-server variant): records kb_bible_commit's bible_skipped,
+    // kb_invalidate ids' E-KB-HTTP-UNSUPPORTED, and member own-scope over http
+    // (another member's entry is absent from kb_query).
     HTTP_A: { member: 'contract-http-a', kind: 'local', repo: 'HTTP', kbMaintainer: true, kbHttp: 'tagged' },
     // The same over a server for a DIFFERENT project (409 PROJECT_MISMATCH on
-    // every route): a read is refused with E-KB-HTTP-PROJECT-MISMATCH.
+    // every route): a read and a promote are refused with
+    // E-KB-HTTP-PROJECT-MISMATCH.
     HTTP_MISMATCH: { member: 'contract-http-mismatch', kind: 'local', repo: 'HTTP', kbMaintainer: true, kbHttp: 'other-project' },
   },
   defaultSession: 'A',
@@ -314,7 +315,7 @@ function assertRemovedInvalidated(parsed, ctx) {
   return parsed?.committed === true ? null : `expected committed === true, got ${JSON.stringify(parsed?.committed)}`;
 }
 
-// kb_query INFERRED over an http project KB: the stand-in returns another
+// kb_query INFERRED over an http project KB: the server holds another
 // member's entry; a member read must not show it.
 function assertNoForeignEntry(parsed) {
   const rows = [...(parsed?.l1_results ?? []), ...(parsed?.l2_expanded ?? [])];
@@ -657,15 +658,14 @@ export const SCENARIO = [
   // committed) and kb_invalidate {ids} is refused with a typed code.
   { tool: 'kb_bible_commit', case: 'http-skip', assertParsed: assertBibleSkipped },
   { tool: 'kb_invalidate', case: 'refusal-kb-http-unsupported' },
-  // Member own-scope over an http project KB: kb_promote is sent by id and
-  // the server's refusal of an entry outside the caller's scope surfaces as
-  // not found; another member's entry is absent from an INFERRED kb_query
-  // (fleet filters member reads on the entries' tags).
-  { tool: 'kb_promote', case: 'refusal-http-not-own' },
+  // Member own-scope over an http project KB: another member's entry is
+  // absent from an INFERRED kb_query (a member read asks the server for the
+  // entries carrying its own tag).
   { tool: 'kb_query', case: 'http-own-scope', assertParsed: assertNoForeignEntry },
-  // A server for another project is reachable but wrong: a read is refused,
-  // never answered from the local store.
+  // A server for another project is reachable but wrong: a read and a
+  // promote by id are refused, never answered from a local store.
   { tool: 'kb_query', case: 'refusal-http-project-mismatch' },
+  { tool: 'kb_promote', case: 'refusal-http-project-mismatch' },
 ];
 
 // ---------------------------------------------------------------------------

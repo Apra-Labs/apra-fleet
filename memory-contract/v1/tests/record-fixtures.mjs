@@ -142,21 +142,29 @@ const { addAgent, removeAgent } = await import(pathToFileURL(path.join(DIST, 'se
 const { kbSetup } = await import(pathToFileURL(path.join(DIST, 'tools', 'kb-setup.js')).href);
 const { resetKbProviders } = await import(pathToFileURL(path.join(DIST, 'services', 'knowledge', 'kb-providers.js')).href);
 
-// The http-backed sessions' KB server is kb-http-stand-in.mjs (one entry owned
-// by another member); the token is the committed obviously-fake test value.
-// The config is scoped to each of those sessions' calls and the prior one
-// restored afterwards.
-const { startKbHttpStandIn, HTTP_FOREIGN_ENTRY_ID, HTTP_STAND_IN_RECORDED_OTHER_URL } =
-  await import(pathToFileURL(path.join(HERE, 'kb-http-stand-in.mjs')).href);
-const kbHttpStandIn = await startKbHttpStandIn();
+// The http-backed sessions' KB servers are fleet's sample kb-server
+// (kb-sample-servers.mjs: one serving the http sessions' project, holding one
+// entry another member captured, and one serving a different project); the
+// token is the committed obviously-fake test value. The config is scoped to
+// each of those sessions' calls and the prior one restored afterwards.
+const { createKbSampleServers, HTTP_KB_RECORDED_OTHER_URL } =
+  await import(pathToFileURL(path.join(HERE, 'kb-sample-servers.mjs')).href);
+const { startKbServer } = await import(pathToFileURL(path.join(DIST, 'commands', 'kb-server.js')).href);
 const HTTP_KB_CONFIG_PATH = path.join(process.env.APRA_FLEET_DATA_DIR, 'knowledge', 'config.json');
 const HTTP_KB_TOKEN_PATH = path.join(REPO_ROOT, 'tests', 'knowledge', 'fixtures', 'kb-http-test-token.txt');
+const kbSampleServers = createKbSampleServers({
+  startKbServer,
+  tokenFile: HTTP_KB_TOKEN_PATH,
+  scratchDir: path.join(SCRATCH_ROOT, 'kb-sample-servers'),
+  servedFolder: () => world.repoPaths.get('HTTP'),
+});
 async function withHttpKb(fn, variant) {
+  const remote = await kbSampleServers.urlFor(variant);
   const prior = fs.existsSync(HTTP_KB_CONFIG_PATH) ? fs.readFileSync(HTTP_KB_CONFIG_PATH) : null;
   resetKbProviders();
   try {
     const token = fs.readFileSync(HTTP_KB_TOKEN_PATH, 'utf-8').trim();
-    await kbSetup({ provider: 'http', remote: kbHttpStandIn.urlFor(variant), token }, { folder: os.tmpdir() });
+    await kbSetup({ provider: 'http', remote, token }, { folder: os.tmpdir() });
     return await fn();
   } finally {
     if (prior === null) fs.rmSync(HTTP_KB_CONFIG_PATH, { force: true });
@@ -1139,23 +1147,24 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
   }, 'E-KB-HTTP-UNSUPPORTED'));
 }
 
-// Member own-scope over an http project KB: the stand-in's only entry belongs
-// to another member. kb_promote is sent by id and the server's 404 refusal is
-// surfaced as not found; a member read keeps only entries carrying its tag.
+// Member own-scope over an http project KB: the server's only entry belongs
+// to another member, so a member read keeps nothing.
+await withSession('HTTP_A', () => recordHappy('kb_query', 'http-own-scope', {
+  query: 'widget batching', confidence: ['INFERRED'],
+}));
+// A server for a different project: a read and a promote by id are both
+// refused with the server's 409, not answered locally.
 {
-  const reason = 'Attempting to promote an entry another member captured.';
-  await withSession('HTTP_A', () => recordRefusal('kb_promote', 'refusal-http-not-own', {
-    id: HTTP_FOREIGN_ENTRY_ID, reason,
-  }, 'E-ENTRY-NOT-FOUND'));
-  await withSession('HTTP_A', () => recordHappy('kb_query', 'http-own-scope', {
-    query: 'widget batching', confidence: ['INFERRED'],
-  }));
+  const otherUrl = await kbSampleServers.urlFor('other-project');
+  await withSession('HTTP_MISMATCH', () => recordRefusal('kb_query', 'refusal-http-project-mismatch', {
+    query: 'widget batching',
+  }, 'E-KB-HTTP-PROJECT-MISMATCH', [[otherUrl, HTTP_KB_RECORDED_OTHER_URL]]));
+  await withSession('HTTP_MISMATCH', () => recordRefusal('kb_promote', 'refusal-http-project-mismatch', {
+    id: '9d4e7a10-3b2c-4f5e-8a61-2c7d0e9b4f13',
+    reason: 'Attempting to promote an entry through a server for another project.',
+  }, 'E-KB-HTTP-PROJECT-MISMATCH', [[otherUrl, HTTP_KB_RECORDED_OTHER_URL]]));
 }
-// A server for a different project: the read is refused, not answered locally.
-await withSession('HTTP_MISMATCH', () => recordRefusal('kb_query', 'refusal-http-project-mismatch', {
-  query: 'widget batching',
-}, 'E-KB-HTTP-PROJECT-MISMATCH', [[kbHttpStandIn.urlFor('other-project'), HTTP_STAND_IN_RECORDED_OTHER_URL]]));
-await kbHttpStandIn.close();
+await kbSampleServers.close();
 
 // ===========================================================================
 // Summary + named T7 gaps

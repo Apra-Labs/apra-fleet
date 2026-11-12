@@ -38,7 +38,7 @@ function git(cwd, args) {
  * @param {(server: object, scope?: object) => Promise<void>} deps.registerAllTools  (no scope = FULL)
  * @param {(memberId: string, channelCapable: boolean, engineOrigin?: boolean, kbMaintainer?: boolean) => object} deps.memberToolScope
  * @param {<T>(fn: () => Promise<T>, variant: string) => Promise<T>} [deps.withHttpKb]  runs fn with the
- *   project KB provider configured as http against that stand-in variant (restoring the prior config
+ *   project KB provider configured as http against that KB server variant (restoring the prior config
  *   after); required when a session sets `kbHttp` (the variant name)
  */
 export async function materializeSessionWorld(env, root, deps) {

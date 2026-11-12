@@ -6,7 +6,7 @@
     "query": "widget batching"
   },
   "error": {
-    "message": "E-KB-HTTP-PROJECT-MISMATCH: the KB server at http://127.0.0.1:0/other-project serves project \"contract-other-project\", not \"exampletest-memory-contract-fixtures-http\"; nothing was read or written. Remediation: point this repo at the KB server for its own project (kb_setup provider http), or use a local SQLite KB (kb_setup provider sqlite).",
+    "message": "E-KB-HTTP-PROJECT-MISMATCH: the KB server at http://other-project.kb.example.test serves project \"exampletest-memory-contract-other-project\", not \"exampletest-memory-contract-fixtures-http\"; nothing was read or written. Remediation: point this repo at the KB server for its own project (kb_setup provider http), or use a local SQLite KB (kb_setup provider sqlite).",
     "thrown": true
   },
   "expected_error_code": "E-KB-HTTP-PROJECT-MISMATCH",

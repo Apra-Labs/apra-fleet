@@ -41,7 +41,8 @@ import {
   RECORDED_REMOTE_HTTP,
 } from '../memory-contract/v1/tests/roundtrip-harness.mjs';
 import { materializeSessionWorld } from '../memory-contract/v1/tests/session-world.mjs';
-import { startKbHttpStandIn, HTTP_STAND_IN_RECORDED_OTHER_URL } from '../memory-contract/v1/tests/kb-http-stand-in.mjs';
+import { createKbSampleServers, HTTP_KB_RECORDED_OTHER_URL } from '../memory-contract/v1/tests/kb-sample-servers.mjs';
+import { startKbServer } from '../src/commands/kb-server.js';
 import { KB_MODULES, CODE_EXPORTS } from '../memory-contract/v1/generate-contract.mjs';
 
 type ToolHandler = (input: unknown, extra?: unknown) => Promise<{ content: { type: string; text: string }[] }>;
@@ -76,20 +77,22 @@ const RECORDED_REMOTES: Record<string, string> = {
   HTTP: RECORDED_REMOTE_HTTP,
 };
 
-// The http-backed sessions' KB server is kb-http-stand-in.mjs, started for
-// the suite. The token is the committed obviously-fake fixture value.
-let kbHttpStandIn: Awaited<ReturnType<typeof startKbHttpStandIn>> | null = null;
+// The http-backed sessions' KB servers are fleet's sample kb-server
+// (kb-sample-servers.mjs). Each provider owns its own pair: the 'tagged'
+// server serves that provider's HTTP repo, whose per-run remote decides the
+// project slug. The token is the committed obviously-fake fixture value.
+type KbSampleServers = ReturnType<typeof createKbSampleServers>;
 const HTTP_KB_TOKEN_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'knowledge', 'fixtures', 'kb-http-test-token.txt');
 const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
 
-/** Runs fn with the project KB configured as http (stand-in variant), then restores the prior config and provider cache. */
-async function withHttpKb<T>(fn: () => Promise<T>, variant: string): Promise<T> {
-  if (!kbHttpStandIn) throw new Error('withHttpKb: the kb-http stand-in was not started');
+/** Runs fn with the project KB configured as http (sample-server variant), then restores the prior config and provider cache. */
+async function withHttpKb<T>(kbSampleServers: KbSampleServers, fn: () => Promise<T>, variant: string): Promise<T> {
+  const remote = await kbSampleServers.urlFor(variant);
   const prior = fs.existsSync(KB_CONFIG_PATH) ? fs.readFileSync(KB_CONFIG_PATH) : null;
   resetKbProviders();
   try {
     const token = fs.readFileSync(HTTP_KB_TOKEN_PATH, 'utf-8').trim();
-    await kbSetup({ provider: 'http', remote: kbHttpStandIn.urlFor(variant), token }, { folder: os.tmpdir() });
+    await kbSetup({ provider: 'http', remote, token }, { folder: os.tmpdir() });
     return await fn();
   } finally {
     if (prior === null) fs.rmSync(KB_CONFIG_PATH, { force: true });
@@ -121,6 +124,7 @@ class SqliteContractProvider {
   private repoPaths = new Map<string, string>();
   private sessionHandlers = new Map<string, Map<string, ToolHandler>>();
   private cleanupWorld: (() => void) | null = null;
+  private kbSampleServers: KbSampleServers | null = null;
   private runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
   liveRemote(key: string): string {
@@ -132,13 +136,20 @@ class SqliteContractProvider {
     // symlinks resolved (macOS /var -> /private/var), so substitutions must
     // use that same spelling.
     this.root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memory-contract-roundtrip-')));
+    const servers = createKbSampleServers({
+      startKbServer,
+      tokenFile: HTTP_KB_TOKEN_PATH,
+      scratchDir: path.join(this.root, 'kb-sample-servers'),
+      servedFolder: () => this.repoPaths.get('HTTP') as string,
+    });
+    this.kbSampleServers = servers;
     const world = await materializeSessionWorld(env, this.root, {
       remoteUrl: (key: string) => this.liveRemote(key),
       addAgent,
       removeAgent,
       registerAllTools,
       memberToolScope,
-      withHttpKb,
+      withHttpKb: <T>(fn: () => Promise<T>, variant: string) => withHttpKb(servers, fn, variant),
     });
     this.repoPaths = world.repoPaths;
     this.sessionHandlers = world.sessionHandlers as Map<string, Map<string, ToolHandler>>;
@@ -155,7 +166,7 @@ class SqliteContractProvider {
     const literals: Record<string, string> = {};
     for (const [key, recorded] of Object.entries(RECORDED_REMOTES)) literals[recorded] = this.liveRemote(key);
     for (const [recorded, live] of world.memberLiterals as [string, string][]) literals[recorded] = live;
-    literals[HTTP_STAND_IN_RECORDED_OTHER_URL] = (kbHttpStandIn as NonNullable<typeof kbHttpStandIn>).urlFor('other-project');
+    literals[HTTP_KB_RECORDED_OTHER_URL] = await servers.urlFor('other-project');
     // The http sessions' project slug is part of the project-mismatch message.
     literals['exampletest-memory-contract-fixtures-http'] = resolveProjectSlug(this.repoPaths.get('HTTP') as string);
 
@@ -194,21 +205,14 @@ class SqliteContractProvider {
     return handler(request);
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
+    await this.kbSampleServers?.close();
+    this.kbSampleServers = null;
     this.cleanupWorld?.();
     if (this.root) fs.rmSync(this.root, { recursive: true, force: true });
   }
 }
 
-// File level: every describe below runs the full round trip, http sessions included.
-beforeAll(async () => {
-  kbHttpStandIn = await startKbHttpStandIn();
-});
-
-afterAll(async () => {
-  await kbHttpStandIn?.close();
-  kbHttpStandIn = null;
-});
 
 describe('memory-contract/v1 round trip (sqlite provider)', () => {
   let report: Awaited<ReturnType<typeof runRoundTrip>>;
@@ -218,8 +222,8 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
     report = await runRoundTrip(provider, ROSTER);
   }, 120_000);
 
-  afterAll(() => {
-    provider.dispose();
+  afterAll(async () => {
+    await provider.dispose();
   });
 
   it('round-trips every inventoried tool green against sqlite', () => {
@@ -303,8 +307,8 @@ class AdmitsDriftedEntryProvider extends SqliteContractProvider {
 describe('memory-contract/v1 round trip: a provider that admits a drifted id fails the basis-mismatch step', () => {
   const provider = new AdmitsDriftedEntryProvider();
 
-  afterAll(() => {
-    provider.dispose();
+  afterAll(async () => {
+    await provider.dispose();
   });
 
   it('reports exactly the kb_bible_commit/basis-mismatch step as failed', async () => {
