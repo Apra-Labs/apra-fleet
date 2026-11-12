@@ -702,7 +702,17 @@ entries per branch (section 2.9.2). Fleet's client:
 - turns a 404 or 501 from any optional route into `E-KB-HTTP-UNSUPPORTED`
   naming the route, never a raw HTTP error. On an id route a 404 whose body
   `code` is `ENTRY_NOT_FOUND` or `E-ENTRY-NOT-FOUND` means the entry is
-  unknown, not that the route is missing.
+  unknown, not that the route is missing;
+- turns a 404 from `promote` (a required route) whose body `code` is not
+  `ENTRY_NOT_FOUND` / `E-ENTRY-NOT-FOUND` into `E-KB-HTTP-UNSUPPORTED` naming
+  the promote route, with the remediation to upgrade the KB server: a server
+  from before the capabilities route may not serve promote at all, and its
+  catch-all 404 must not read as "Entry not found".
+
+A server answers an id route (`promote`, `demote`, `feedback`) naming an
+entry it does not hold, or one outside the caller's scope, with 404 and body
+`code` `ENTRY_NOT_FOUND`. That body code is required: it is the only thing
+that tells an unknown entry from a missing route.
 
 Fleet's `kb-server` always serves a local SQLite KB: it serves, and its
 capabilities list, every route but `demote`, and it reports

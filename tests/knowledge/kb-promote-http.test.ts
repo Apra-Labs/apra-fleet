@@ -90,7 +90,7 @@ function startServer(listenPort: number): Promise<void> {
         }
         if (!serverEntries.has(id)) {
           res.writeHead(404, { 'Content-Type': 'application/problem+json' });
-          res.end(JSON.stringify({ title: 'Entry not found', status: 404, code: 'KB-NOT-FOUND', detail: id }));
+          res.end(JSON.stringify({ title: 'Entry not found', status: 404, code: 'ENTRY_NOT_FOUND', detail: id }));
           return;
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -215,7 +215,7 @@ describe('HttpKbProvider.promote', () => {
     const { provider } = await httpProject();
     const notFound = await provider.promote('unknown-id', REASON).then(() => null, (e: NodeJS.ErrnoException) => e);
     expect(notFound).toBeInstanceOf(Error);
-    expect(notFound!.message).toMatch(/^Entry not found: unknown-id \(the KB server answered HTTP 404: .*Entry not found.*KB-NOT-FOUND/);
+    expect(notFound!.message).toMatch(/^Entry not found: unknown-id \(the KB server answered HTTP 404: .*Entry not found.*ENTRY_NOT_FOUND/);
     expect(notFound!.code).toBe('HTTP_404');
 
     refusalOverride = { status: 409, body: { title: 'Entry superseded', status: 409, code: 'KB-SUPERSEDED' } };

@@ -877,7 +877,17 @@ export class HttpKbProvider implements MemoryProvider {
       result = await this.writeRequest<Record<string, unknown>>('promote', '/api/kb/promote', body);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'HTTP_404') {
-        throw entryNotFoundOnServer(id, err as NodeJS.ErrnoException);
+        if (ENTRY_NOT_FOUND_CODES.has(serverCodeOf(err) ?? '')) {
+          throw entryNotFoundOnServer(id, err as NodeJS.ErrnoException);
+        }
+        // Spec 2.9.1: an unknown entry is 404 with body code ENTRY_NOT_FOUND.
+        // Any other 404 is the route itself missing (a server older than
+        // the capabilities route that never served promote), not the entry.
+        throw new KbHttpUnsupportedError(
+          `the promote route (the KB server at ${this.displayUrl} answered POST /api/kb/promote with ${(err as Error).message}, without body code ENTRY_NOT_FOUND)`,
+          'nothing was promoted',
+          'upgrade the KB server to one that serves POST /api/kb/promote and answers an unknown entry 404 with body code ENTRY_NOT_FOUND (memory-contract v1 spec 2.9.1).',
+        );
       }
       throw err;
     }

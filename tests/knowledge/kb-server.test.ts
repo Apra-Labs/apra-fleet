@@ -436,9 +436,9 @@ describe('HttpKbProvider list against a server without GET /api/kb/list', () => 
         expect((err as Error).message).toMatch(/^E-KB-HTTP-UNSUPPORTED: .*\/api\/kb\/list/);
       }
       // A member promote goes straight to POST /api/kb/promote; this server's
-      // 404 there is the entry's not-found, not a missing route.
+      // 404 there carries no ENTRY_NOT_FOUND code, so it is the route missing.
       await expect(provider.promote('x', 'a reason long enough to pass the floor', { ownerTag: 'member:x' }))
-        .rejects.toThrow(/^Entry not found: x \(the KB server answered HTTP 404: not found \[NOT_FOUND\]\)$/);
+        .rejects.toThrow(/^E-KB-HTTP-UNSUPPORTED: the promote route .*HTTP 404: not found \[NOT_FOUND\], without body code ENTRY_NOT_FOUND/);
       expect(seen).toEqual(['GET /api/kb/list', 'GET /api/kb/list', 'POST /api/kb/promote']);
     } finally {
       provider.dispose();

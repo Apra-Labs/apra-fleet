@@ -175,10 +175,21 @@ describe('HttpKbProvider capabilities', () => {
     expect((err as Error).message).toMatch(/Entry not found: id-9/);
   });
 
-  it('a required route is not converted: a 404 from promote stays the entry not-found', async () => {
+  it('a promote 404 whose body code is ENTRY_NOT_FOUND is the entry not-found', async () => {
     answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote']));
+    answers.set('/api/kb/promote', { status: 404, body: { error: 'Entry not found: missing-id', code: 'ENTRY_NOT_FOUND' } });
     await expect(provider.promote('missing-id', 'a reason long enough to pass the floor'))
       .rejects.toThrow(/^Entry not found: missing-id \(the KB server answered HTTP 404/);
+  });
+
+  it('a server with no promote route (404 without ENTRY_NOT_FOUND, as kb-server v0.4.4 answers) is E-KB-HTTP-UNSUPPORTED: upgrade the KB server', async () => {
+    // No capabilities route and no promote route: every path answers
+    // 404 {error: 'Not found', code: 'NOT_FOUND'}, the v0.4.4 kb-server reply.
+    const err = await provider.promote('some-id', 'a reason long enough to pass the floor').then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(KbHttpUnsupportedError);
+    expect((err as Error).message).toMatch(/^E-KB-HTTP-UNSUPPORTED: the promote route .*HTTP 404.*nothing was promoted.*Remediation: upgrade the KB server/);
+    expect((err as Error).message).not.toMatch(/Entry not found/);
+    expect(paths()).toEqual(['GET /api/kb/capabilities', 'POST /api/kb/promote']);
   });
 
   it('a write while the capabilities read answers 503 is E-KB-HTTP-UNREACHABLE and never sent; repeated later it is sent once', async () => {
