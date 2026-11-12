@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
-import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 export const kbDemoteSchema = z.object({
   id: z.string().min(1).describe('ID of the KB entry to demote'),
@@ -20,16 +19,19 @@ export type KbDemoteInput = z.infer<typeof kbDemoteSchema>;
 // turned out to be LESS CERTAIN than its CONFIRMED grade claims -- not when it
 // turned out to be WRONG (that is kb_feedback / kb_resolve_contradiction).
 //
-// Mirrors kb-promote.ts exactly on scoping: in a MEMBER session only the
-// caller's own captures (member:<uuid>) are reachable, and any other id is the
-// same not-found an unknown id gets, so an entry's existence is never
-// disclosed. The provider enforces that; this layer only supplies the tag.
+// Mirrors kb-promote.ts exactly on scoping: in a MEMBER session over SQLite
+// only the caller's own captures (member:<uuid>) are reachable, and any other
+// id is the same not-found an unknown id gets, so an entry's existence is
+// never disclosed. The provider enforces that; this layer only supplies the
+// tag. Over http the demote is sent by id only when the KB server lists the
+// optional demote route in its capabilities (E-KB-HTTP-UNSUPPORTED otherwise),
+// and the server enforces which ids the caller may demote.
 export async function kbDemote(input: KbDemoteInput, anchor?: KbAnchor): Promise<string> {
   const providers = await getSelfKbProviders(anchor);
 
   const ownerTag = memberOwnerTag(anchor);
   const result = ownerTag !== undefined
-    ? await requireSqliteProject(providers.project, 'kb_demote').demote(input.id, input.reason, input.evidence_files, { ownerTag })
+    ? await providers.project.demote(input.id, input.reason, input.evidence_files, { ownerTag })
     : await providers.project.demote(input.id, input.reason, input.evidence_files);
   return JSON.stringify({
     id: result.id,

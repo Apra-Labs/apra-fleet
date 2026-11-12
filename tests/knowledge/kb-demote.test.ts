@@ -526,7 +526,7 @@ describe('the kb_demote tool handler', () => {
 // ---------------------------------------------------------------------------
 
 describe('HttpKbProvider.demote', () => {
-  it('refuses with a not-supported error and writes NOTHING to the local fallback', async () => {
+  it('with the KB server unreachable: a typed E-KB-HTTP-UNREACHABLE, and NOTHING is written to a local store', async () => {
     const fallback = new SqliteProvider(':memory:', repo);
     await fallback.init();
     const { id } = await fallback.capture(entryInput());
@@ -539,11 +539,13 @@ describe('HttpKbProvider.demote', () => {
     const before = readBack();
     expect(before.confidence).toBe('CONFIRMED');
 
-    // Nothing listens on this port: the refusal must come from demote() itself,
-    // never from a failed request falling back to the local store.
+    // Nothing listens on this port. The KB server is the only source of truth
+    // over http: the demote fails with the typed error, never falling back to
+    // a local store.
     const http = new HttpKbProvider('http://127.0.0.1:17777', 'token');
 
-    await expect(http.demote(id, REASON, EVIDENCE)).rejects.toThrow(/not supported for an HTTP KB/);
+    await expect(http.demote(id, REASON, EVIDENCE)).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE' });
+    http.dispose();
 
     const after = readBack();
     expect(after.confidence).toBe('CONFIRMED');

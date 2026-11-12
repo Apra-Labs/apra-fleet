@@ -167,7 +167,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "Not a ladder and never a no-op: only CONFIRMED is demotable, so a second call on the now-INFERRED entry is REFUSED with E-DEMOTE-NOT-CONFIRMED rather than returning unchanged.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-DEMOTE-SUPERSEDED", "E-DEMOTE-REFUSED-DIRECTIVE", "E-DEMOTE-NOT-CONFIRMED", "E-DEMOTE-REASON-REQUIRED", "E-DEMOTE-EVIDENCE-UNRESOLVED", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-DEMOTE-SUPERSEDED", "E-DEMOTE-REFUSED-DIRECTIVE", "E-DEMOTE-NOT-CONFIRMED", "E-DEMOTE-REASON-REQUIRED", "E-DEMOTE-EVIDENCE-UNRESOLVED", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Directive quarantine"]
     },
     {

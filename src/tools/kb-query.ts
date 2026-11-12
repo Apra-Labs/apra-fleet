@@ -221,6 +221,17 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
     input.flagged_only ? undefined : input.confidence,
     { ownScope: input.flagged_only ? undefined : input.own_scope },
   );
+  // own_scope exists to find what the caller may kb_demote. Over http that is
+  // only possible when the KB server serves the optional demote route, so
+  // without it a MEMBER own_scope read is refused with the route named.
+  if (input.own_scope && !input.flagged_only && memberOwnerTag(anchor) !== undefined
+    && providers.project instanceof HttpKbProvider && !(await providers.project.servesRoute('demote'))) {
+    throw new KbHttpUnsupportedError(
+      'kb_query own_scope in a MEMBER session (the KB server does not list the demote route in GET /api/kb/capabilities)',
+      'nothing was read',
+      'use a KB server that serves the demote route, or a local SQLite KB (kb_setup provider sqlite).',
+    );
+  }
   if (input.flagged_only && memberOwnerTag(anchor) !== undefined && providers.project instanceof HttpKbProvider) {
     throw new KbHttpUnsupportedError(
       'kb_query flagged_only in a MEMBER session',

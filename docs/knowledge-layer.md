@@ -725,6 +725,7 @@ Another server can stand in for `kb-server` by serving the same routes:
 | `POST /api/kb/prime` | kb_session_prime |
 | `POST /api/kb/invalidate` (`{files}`) | kb_invalidate with files |
 | `POST /api/kb/promote` (`{id, reason}` -> `{id, previous_confidence, new_confidence}`; 404 unknown id, 422 refused) | kb_promote |
+| `POST /api/kb/demote` (`{id, reason, evidence_files}` -> `{id, previous_confidence, new_confidence}`; optional, not served by the bundled `kb-server`) | kb_demote, and the gate for a MEMBER `kb_query` `own_scope` read |
 
 ### 3. GitNexus (optional, codebase plane)
 
@@ -979,7 +980,7 @@ The provider holds no local store at all.
 | prime | remote | Retrieves primed context from server. On connection error, `E-KB-HTTP-UNREACHABLE`. `kb_session_prime` does not cold-seed from the checkout bible under http. |
 | promote | remote | POST /api/kb/promote with `{id, reason}`. No offline queue on connection error (the id only exists on the server): `E-KB-HTTP-UNREACHABLE` naming the server URL. Sent by id with no list lookup first: the server refuses an unknown, superseded or out-of-scope id itself. A 404 rejects as `Entry not found: <id>` followed by the server's answer; any other refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's text and code. |
 | feedback | remote | POST /api/kb/feedback with `{id, reason, role}`; returns the server response unchanged. On connection error (or E-KB-HTTP-AUTH) queued offline with captures and invalidates, and the error is thrown. |
-| demote | unsupported | Throws: the remote has no demote route, and demoting the local fallback store would snapshot the wrong tree. Nothing is changed. |
+| demote | remote (optional route) | POST /api/kb/demote with `{id, reason, evidence_files}` -> `{id, previous_confidence, new_confidence}`, sent by id only when `GET /api/kb/capabilities` lists `demote`; otherwise (or on a 404/501 from the route) `E-KB-HTTP-UNSUPPORTED` naming the route, and nothing is changed. The server enforces which ids the caller may demote; a 404 whose body code says the entry is unknown rejects as `Entry not found: <id>`. A MEMBER `kb_query` `own_scope` read (which exists to find what may be demoted) is refused the same way when the server does not list `demote`. |
 | sync | unsupported | Returns {synced: false} (no remote sync over http). |
 | stats | unsupported | Returns supported:false with empty results (stats not supported over http). |
 | touch | local | No remote route: records nothing (returns 0); the per-repo DB is not written. |

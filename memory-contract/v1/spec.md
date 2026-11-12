@@ -689,6 +689,14 @@ entries per branch (section 2.9.2). Fleet's client:
 Fleet's `kb-server` serves every route but `demote` and reports
 `branch_aware: false`.
 
+`demote` is `POST /api/kb/demote` `{id, reason, evidence_files}`, answered
+`{id, previous_confidence, new_confidence}`; like `promote` it is sent by id
+and the server enforces which ids the caller may demote. `kb_demote` is sent
+only when the capabilities list `demote`. Without it, `kb_demote` and a MEMBER
+`kb_query` `own_scope` read (which exists to find what the caller may demote)
+fail with `E-KB-HTTP-UNSUPPORTED`, and the sprint engine's reviewer demotion
+loop offers no candidates.
+
 #### 2.9.2 Project and repository headers
 
 Every request carries headers that fleet fills only from the calling

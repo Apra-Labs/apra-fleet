@@ -703,6 +703,7 @@
             { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
             { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
           ],
@@ -729,7 +730,7 @@
         {
           "$anchor": "E-KB-HTTP-UNSUPPORTED",
           "code": "E-KB-HTTP-UNSUPPORTED",
-          "meaning": "The project KB is backed by the http provider and the operation cannot be served there. Either the provider has no such operation (kb_invalidate with ids: id-level discard; a MEMBER kb_query flagged_only read), or the KB server does not serve the route the call needs: GET /api/kb/capabilities does not list it, or an optional route answered 404/501 (except a 404 whose body code says the entry is unknown). The message names the route. Nothing is sent to an unlisted route and nothing is changed; no local store stands in.",
+          "meaning": "The project KB is backed by the http provider and the operation cannot be served there. Either the provider has no such operation (kb_invalidate with ids: id-level discard; a MEMBER kb_query flagged_only read), the call needs the optional demote route and the server does not list it (kb_demote; a MEMBER kb_query own_scope read, which exists to find what the caller may demote), or the KB server does not serve the route the call needs: GET /api/kb/capabilities does not list it, or an optional route answered 404/501 (except a 404 whose body code says the entry is unknown). The message names the route. Nothing is sent to an unlisted route and nothing is changed; no local store stands in.",
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
             { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
@@ -739,10 +740,11 @@
             { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
             { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
           ],
-          "source": "src/services/knowledge/http-provider.ts (KbHttpUnsupportedError), raised by HttpKbProvider.discard, HttpKbProvider.routeRequest (route not listed in GET /api/kb/capabilities, or an optional route answered 404/501) and src/tools/kb-query.ts (MEMBER flagged_only)",
+          "source": "src/services/knowledge/http-provider.ts (KbHttpUnsupportedError), raised by HttpKbProvider.discard, HttpKbProvider.routeRequest (route not listed in GET /api/kb/capabilities, or an optional route answered 404/501) and src/tools/kb-query.ts (MEMBER flagged_only; MEMBER own_scope when the server does not list demote)",
           "surfaced": "thrown",
           "retryable": false,
           "remediation": "Discard by id from a session whose KB is the local SQLite provider (kb_setup provider sqlite), or use kb_invalidate with files instead.",
@@ -759,6 +761,7 @@
             { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
             { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
           ],
@@ -781,6 +784,7 @@
             { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
             { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
           ],

@@ -1040,21 +1040,43 @@ export class HttpKbProvider implements MemoryProvider {
   }
 
   /**
-   * kb_demote is NOT delegated to the local fallback the way promote() is, and
-   * that asymmetry is deliberate. A demotion's whole value is its
-   * demoted_basis_hashes snapshot of the cited files as they are on disk at
-   * demote time; the fallback store is this host's local cache, not the remote
-   * KB that owns the entry, so a "successful" demote here would stamp a basis
-   * taken from the wrong tree onto a row nobody else ever sees. Refuse loudly
-   * and write NOTHING, as discard() does for the same class of operation.
+   * POST /api/kb/demote {id, reason, evidence_files}: an OPTIONAL route. Only
+   * sent when the server's capabilities list demote; otherwise (or on a 404 /
+   * 501 from the route) E-KB-HTTP-UNSUPPORTED naming the route, and nothing
+   * is changed. Like promote(), sent by id with no fleet-side tag check: the
+   * server enforces which ids the caller may demote (opts.ownerTag is not
+   * sent). An entry the server does not know is "Entry not found".
    */
   async demote(
-    _id: string,
-    _reason: string,
-    _evidenceFiles: string[],
+    id: string,
+    reason: string,
+    evidenceFiles: string[],
     _opts?: { ownerTag?: string },
   ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
-    throw new Error('kb_demote is not supported for an HTTP KB: the remote provider has no demote route, and demoting against the local fallback store would snapshot the wrong tree. Nothing was changed.');
+    let result: Record<string, unknown>;
+    try {
+      result = await this.routeRequest<Record<string, unknown>>('demote', 'POST', '/api/kb/demote', {
+        id, reason, evidence_files: evidenceFiles,
+      });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'HTTP_404') {
+        throw entryNotFoundOnServer(id, err as NodeJS.ErrnoException);
+      }
+      throw err;
+    }
+    const before = result?.previous_confidence;
+    const after = result?.new_confidence;
+    if (typeof before !== 'string' || typeof after !== 'string') {
+      throw new Error(
+        `kb_demote: KB server at ${this.displayUrl} returned a demote response without `
+        + `previous_confidence/new_confidence: ${JSON.stringify(result)}`,
+      );
+    }
+    return {
+      id: typeof result.id === 'string' ? result.id : id,
+      confidence_before: before as Confidence,
+      confidence_after: after as Confidence,
+    };
   }
 
   async sync(_opts?: SyncOptions): Promise<SyncResult> {
