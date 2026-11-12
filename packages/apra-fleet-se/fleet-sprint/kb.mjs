@@ -1126,12 +1126,15 @@ export function createKbWorkClient(opts = {}) {
             if (outcome.bibleSkipped) {
                 // The skip is provider-wide, so a retry cannot succeed: drop the
                 // repo's queue state (as for any non-retryable skip) so later
-                // rounds do not repeat the call or warn about pending ids.
+                // rounds do not repeat the call or warn about pending ids. The
+                // demotion queue goes too: over a KB server the demotion already
+                // happened on the server, and there is no bible to tombstone.
                 const reason = typeof outcome.result.reason === 'string' && outcome.result.reason ? outcome.result.reason : 'no reason given';
                 confirmations.delete(repo);
+                demotedPending.delete(repo);
                 skipRounds.delete(repo);
                 retirements.delete(repo);
-                log(`[kb-work] kb_bible_commit skipped for ${repo} on maintainer '${maintainer}': ${reason} -- ${ids.length} confirmation(s) dropped from the bible queue.`);
+                log(`[kb-work] kb_bible_commit skipped for ${repo} on maintainer '${maintainer}': ${reason} -- ${ids.length} confirmation(s) and ${demoteIds.length} demotion(s) dropped from the bible queue.`);
                 return { committed: 0, pending: 0 };
             }
             // The call succeeded: whatever retirements the maintainer held were
@@ -1229,7 +1232,14 @@ export function createKbWorkClient(opts = {}) {
         try {
             const res = await memberCall(target.record, 'kb_query', buildDemotionCandidateQuery(target.record.id));
             if (isToolError(res)) {
-                log(`[kb-work] kb_query for demotion candidates rejected on maintainer '${target.member}' (non-fatal): ${toolErrorText(res)}`);
+                const text = toolErrorText(res);
+                // A KB server that does not serve the optional demote route:
+                // there is nothing the reviewer could demote, so offer nothing.
+                if (/E-KB-HTTP-UNSUPPORTED/.test(text)) {
+                    log(`[kb-work] the KB server for ${target.repo} does not serve demote: offering no demotion candidates (${text})`);
+                    return [];
+                }
+                log(`[kb-work] kb_query for demotion candidates rejected on maintainer '${target.member}' (non-fatal): ${text}`);
                 return [];
             }
             const parsed = parseResult(res);
