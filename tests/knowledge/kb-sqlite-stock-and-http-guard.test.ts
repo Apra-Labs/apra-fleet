@@ -279,8 +279,8 @@ describe('kb_import under an http config imports nothing and reports bible_skipp
 
 // GitHub #761: kb_feedback is no longer SqliteProvider-only -- it is served by
 // HttpKbProvider.feedback (POST /api/kb/feedback). Against the unreachable
-// remote above it must not refuse; it queues the feedback offline and fails
-// with E-KB-HTTP-UNREACHABLE.
+// remote above it must not refuse; it fails with E-KB-HTTP-UNREACHABLE
+// (nothing is queued).
 describe('kb_feedback is served by the HTTP provider, not refused, under an http config', () => {
   beforeAll(() => {
     token = loadTestToken();
