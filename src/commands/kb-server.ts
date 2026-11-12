@@ -10,8 +10,8 @@ import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { validateAuthor } from '../tools/kb-feedback.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
-import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
-import type { KBEntry, KBEntryInput, Confidence, MemoryProvider } from '../services/knowledge/types.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import type { KBEntry, KBEntryInput, Confidence } from '../services/knowledge/types.js';
 
 // my-beads-db-0cd.15 (reopened): startKbServer is an exported library function
 // that tests/knowledge/kb-server.test.ts imports and calls IN-PROCESS. The
@@ -34,7 +34,7 @@ const MAX_BODY_SIZE = 1_048_576; // 1MB
 /** Header every HttpKbProvider request carries: the project slug it is for. */
 export const KB_PROJECT_HEADER = 'x-kb-project';
 
-/** What GET /api/kb/capabilities answers over a local SQLite KB: every route but demote. */
+/** What GET /api/kb/capabilities answers: every route but demote (the server always serves a local SQLite KB). */
 export const KB_SERVER_CAPABILITIES = Object.freeze({
   contract: 'v1',
   routes: Object.freeze(['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list']),
@@ -46,19 +46,6 @@ export const KB_SERVER_CAPABILITIES = Object.freeze({
  * are 422 PROMOTE_REFUSED; any other promote error is a server fault (500).
  */
 const PROMOTE_REFUSAL_PREFIXES = ['Cannot promote ', 'kb_promote requires a reason'];
-/** Routes this server serves only from a local SQLite KB (501 otherwise). */
-const SQLITE_ONLY_ROUTES: readonly string[] = ['list', 'feedback'];
-
-/**
- * What GET /api/kb/capabilities answers for `provider`: the routes this
- * server will actually serve, so a client never calls one that answers 501.
- */
-export function kbServerCapabilities(provider: MemoryProvider): { contract: string; routes: string[]; branch_aware: boolean } {
-  const routes = isSqliteProject(provider)
-    ? [...KB_SERVER_CAPABILITIES.routes]
-    : KB_SERVER_CAPABILITIES.routes.filter(route => !SQLITE_ONLY_ROUTES.includes(route));
-  return { ...KB_SERVER_CAPABILITIES, routes };
-}
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 100;
 
@@ -223,7 +210,9 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
     (providers as any).project = overrideProvider;
     ownedProvider = overrideProvider;
   }
-  const provider = providers.project;
+  // Always a SqliteProvider here: an http config is refused above unless --db
+  // replaced it, and the project provider is otherwise SQLite.
+  const provider = requireSqliteProject(providers.project, 'kb serve');
   const serverProject = providers.projectSlug;
   process.stderr.write('[kb-server] project=' + serverProject + '\n');
 
@@ -270,11 +259,10 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
     }
 
     // GET /api/kb/capabilities -- same auth and project check as every route.
-    // Lists the routes this server serves for its provider (every route but
-    // demote over SQLite), and keeps one KB per project
+    // Lists every route but demote, and keeps one KB per project
     // with no per-branch truth (X-Repository-Branch is not used).
     if (pathname === '/api/kb/capabilities' && method === 'GET') {
-      return jsonResponse(res, 200, kbServerCapabilities(provider));
+      return jsonResponse(res, 200, KB_SERVER_CAPABILITIES);
     }
 
     try {
@@ -286,7 +274,7 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         if (input.source_files?.length) validateFilePaths(input.source_files);
 
         const result = await provider.capture(input);
-        return jsonResponse(res, 201, result);
+        return jsonResponse(res, 201, result as unknown as Record<string, unknown>);
       }
 
       // GET /api/kb/query
@@ -330,9 +318,6 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
       // last_accessed are left alone. HttpKbProvider's member own-scope lookup
       // uses it, so checking ownership is not counted as a retrieval.
       if (pathname === '/api/kb/list' && method === 'GET') {
-        if (!isSqliteProject(provider)) {
-          return jsonResponse(res, 501, { error: 'list is served only from a local SQLite KB', code: 'NOT_IMPLEMENTED' });
-        }
         const confidence = url.searchParams.get('confidence')
           ?.split(',')
           .filter((c): c is Confidence => c === 'CONFIRMED' || c === 'INFERRED' || c === 'UNVERIFIED');
@@ -439,9 +424,6 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         if (typeof input.id !== 'string' || input.id.length === 0 ||
             typeof input.reason !== 'string' || input.reason.length === 0) {
           return jsonResponse(res, 400, { error: 'id and reason must be non-empty strings', code: 'BAD_REQUEST' });
-        }
-        if (!isSqliteProject(provider)) {
-          return jsonResponse(res, 501, { error: 'feedback is served only from a local SQLite KB', code: 'NOT_IMPLEMENTED' });
         }
         const author = validateAuthor(typeof input.role === 'string' ? input.role : undefined);
         let entry;

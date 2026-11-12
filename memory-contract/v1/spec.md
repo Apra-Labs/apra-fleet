@@ -706,9 +706,9 @@ entries per branch (section 2.9.2). Fleet's client:
   `code` is `ENTRY_NOT_FOUND` or `E-ENTRY-NOT-FOUND` means the entry is
   unknown, not that the route is missing.
 
-Fleet's `kb-server` serves every route but `demote` and reports
-`branch_aware: false`. Its capabilities list only what it serves: `list` and
-`feedback` are listed only over a local SQLite KB (otherwise they answer 501).
+Fleet's `kb-server` always serves a local SQLite KB: it serves, and its
+capabilities list, every route but `demote`, and it reports
+`branch_aware: false`.
 
 `demote` is `POST /api/kb/demote` `{id, reason, evidence_files}`, answered
 `{id, previous_confidence, new_confidence}`; like `promote` it is sent by id

@@ -1006,9 +1006,8 @@ the write is queued. A queued write is dropped only for its own fault (route not
 listed, or refused by the server), with a logged warning. A 404 or 501
 from an optional route is also `E-KB-HTTP-UNSUPPORTED` (a 404 whose body code is
 `ENTRY_NOT_FOUND` / `E-ENTRY-NOT-FOUND` stays "entry not found"). The bundled
-`kb-server` serves every route but demote, `branch_aware: false`; it lists
-`list` and `feedback` only over a local SQLite KB, the only routes it cannot
-serve otherwise. Contract:
+`kb-server` always serves a local SQLite KB and lists every route but demote,
+`branch_aware: false`. Contract:
 `memory-contract/v1/spec.md` section 2.9.1.
 
 **Named-secret token**: with `token_ref`, the secret is looked up on every
