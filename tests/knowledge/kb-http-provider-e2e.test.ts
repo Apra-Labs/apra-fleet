@@ -158,7 +158,7 @@ describe('kb_setup selects the http provider, reachable from getKbProviders (my-
     expect(captureResult.id).toBe('kb-http-e2e-server-id');
   });
 
-  it('resetKbProviders removes the beforeExit listener the HTTP project provider registered', async () => {
+  it('an HTTP project provider registers no beforeExit listener (it holds no queue), and reset is safe', async () => {
     const repoPath = makeRepoPath();
     const remoteUrl = `https://example.invalid/kb-http-e2e-${crypto.randomUUID()}.git`;
     await kbSetup({ provider: 'http', remote: `http://127.0.0.1:${port}`, token }, { folder: repoPath });
@@ -166,7 +166,7 @@ describe('kb_setup selects the http provider, reachable from getKbProviders (my-
     const baseline = process.listenerCount('beforeExit');
     const providers = await getKbProviders(repoPath, remoteUrl);
     expect(providers.project).toBeInstanceOf(HttpKbProvider);
-    expect(process.listenerCount('beforeExit')).toBe(baseline + 1);
+    expect(process.listenerCount('beforeExit')).toBe(baseline);
 
     resetKbProviders();
     expect(process.listenerCount('beforeExit')).toBe(baseline);
