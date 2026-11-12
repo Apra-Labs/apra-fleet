@@ -689,6 +689,44 @@ entries per branch (section 2.9.2). Fleet's client:
 Fleet's `kb-server` serves every route but `demote` and reports
 `branch_aware: false`.
 
+#### 2.9.2 Project and repository headers
+
+Every request carries headers that fleet fills only from the calling
+session's resolved KB anchor (section 2.4), never from tool input:
+
+| Header | Value |
+|---|---|
+| `X-KB-Project` | the project slug |
+| `X-Repository` | the normalised origin remote, `host/path` (no scheme, credentials, port or `.git`) |
+| `X-Repository-Branch` | the checked-out branch of a local folder, percent-encoded UTF-8; absent when HEAD is detached or unknown |
+| `X-Repository-Commit` | the HEAD sha of a local folder; absent when unknown |
+
+A server uses them as follows:
+
+- **They are context, not identity.** They say which repository and branch a
+  request is about. They never authenticate or authorise the caller: who the
+  caller is, and what it may read or write, comes from the bearer token and
+  the server's own scope rules.
+- **Entries are kept per project and repository.** `X-KB-Project` selects the
+  KB; within it, `X-Repository` keeps repositories apart, so one server can
+  hold several repositories without mixing their entries. A server that
+  serves one project refuses any other `X-KB-Project` (409, section 2.9.1).
+- **The branch decides what is true.** A server that keeps entries per branch
+  answers a read with what is true on `X-Repository-Branch` and records a
+  write against it. Such a server reports `branch_aware: true` in its
+  capabilities; a server that keeps one truth per repository reports
+  `branch_aware: false` and ignores the branch.
+- **The commit is only a hint.** `X-Repository-Commit` is the caller's local
+  HEAD, which can trail the branch tip (unpushed, or not yet fetched). A
+  server must not treat it as the branch tip or reject a request because the
+  commit is behind; it may use it, for example, to judge how fresh the
+  caller's view of a file is.
+- **The branch is percent-decoded before matching.** Fleet sends the branch
+  percent-encoded (UTF-8), so a server decodes it before comparing it with
+  branch names it holds; a value that is not valid percent-encoding is
+  treated as absent.
+- `branch_aware` is reported in `GET /api/kb/capabilities` (section 2.9.1).
+
 ## 3. Error model
 
 `taxonomy.json` in this directory is the source of truth: a CLOSED set of
