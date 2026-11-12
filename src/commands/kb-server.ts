@@ -40,6 +40,12 @@ export const KB_SERVER_CAPABILITIES = Object.freeze({
   routes: Object.freeze(['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list']),
   branch_aware: false,
 });
+/**
+ * How SqliteProvider.promote's refusals of the promote ladder begin
+ * (superseded, user-directive, unresolved basis; trivial reason). Only these
+ * are 422 PROMOTE_REFUSED; any other promote error is a server fault (500).
+ */
+const PROMOTE_REFUSAL_PREFIXES = ['Cannot promote ', 'kb_promote requires a reason'];
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 100;
 
@@ -357,7 +363,11 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
           if (message.startsWith('Entry not found')) {
             return jsonResponse(res, 404, { error: message, code: 'ENTRY_NOT_FOUND' });
           }
-          return jsonResponse(res, 422, { error: message, code: 'PROMOTE_REFUSED' });
+          if (PROMOTE_REFUSAL_PREFIXES.some(prefix => message.startsWith(prefix))) {
+            return jsonResponse(res, 422, { error: message, code: 'PROMOTE_REFUSED' });
+          }
+          // Not a refusal (e.g. a database failure): the generic 500 below.
+          throw err;
         }
       }
 

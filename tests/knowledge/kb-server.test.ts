@@ -24,7 +24,7 @@ const SERVER_PROJECT = getProjectSlug();
 function request(
   method: string,
   urlPath: string,
-  opts?: { body?: any; raw?: string; token?: string | null; project?: string | null }
+  opts?: { body?: any; raw?: string; token?: string | null; project?: string | null; port?: number }
 ): Promise<{ status: number; body: any; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const data = opts?.raw ?? (opts?.body ? JSON.stringify(opts.body) : undefined);
@@ -38,7 +38,7 @@ function request(
     if (data) headers['Content-Length'] = Buffer.byteLength(data).toString();
 
     const req = http.request(
-      { hostname: '127.0.0.1', port: TEST_PORT, path: urlPath, method, headers },
+      { hostname: '127.0.0.1', port: opts?.port ?? TEST_PORT, path: urlPath, method, headers },
       (res) => {
         let body = '';
         res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
@@ -170,6 +170,27 @@ describe('kb-server promote and tag filter', () => {
     expect(res.body.error).toMatch(/requires a reason/);
     const after = await request('GET', `/api/kb/query?tag=${encodeURIComponent(tag)}&confidence=INFERRED,CONFIRMED`);
     expect(after.body.results.map((e: { id: string; confidence: string }) => [e.id, e.confidence])).toEqual([[id, 'INFERRED']]);
+  });
+
+  it('answers 500 INTERNAL_ERROR, not 422 PROMOTE_REFUSED, when promote fails for a reason that is not a refusal', async () => {
+    // Its own server on a scratch --db, whose entries table is then dropped
+    // through a second handle: the promote's read fails inside the database.
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-promote-500-'));
+    const dbFile = path.join(scratch, 'kb.sqlite');
+    const own = await startKbServer(0, false, dbFile);
+    const ownPort = (own.address() as { port: number }).port;
+    const store = new SqliteProvider(dbFile);
+    try {
+      await store.init();
+      (store as any).getDb().exec('DROP TABLE entries');
+      const res = await request('POST', '/api/kb/promote', { body: { id: 'any-id', reason: PROMOTE_REASON }, port: ownPort });
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: 'Internal server error', code: 'INTERNAL_ERROR' });
+    } finally {
+      store.close();
+      await new Promise<void>(resolve => own.close(() => resolve()));
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
   });
 
   it('answers 400 BAD_REQUEST for a promote body that is not JSON', async () => {
