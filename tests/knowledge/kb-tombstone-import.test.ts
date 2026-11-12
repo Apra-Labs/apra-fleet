@@ -665,6 +665,47 @@ describe('a re-promotion on one clone is not undone by another', () => {
     expect(fs.readFileSync(biblePathOf(cloneB), 'utf-8')).toBe(before);
     expect(readBible(cloneB).entries.map(e => e.id)).toContain(y);
   });
+
+  // The same no-flap rule from the DEMOTING clone's side: A demotes Y with its
+  // own kb_demote, B re-promotes Y and commits it. A's local row stays demoted
+  // (an import never raises an existing row), so only the rule -- a bible
+  // entry promoted after this clone's demotion is not tombstoned again --
+  // keeps A's next bible commit from undoing B's re-promotion.
+  it('A demotes, B re-promotes and commits; A\'s next bible commit does not tombstone the entry again', async () => {
+    const y = await confirmedCiting(providerA, cloneA, 'Ypsilon', 'src/y.ts');
+    await kbBibleCommit({ ids: [y], ...BASE }, { folder: cloneA });
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+
+    await kbDemote({ id: y, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
+    await kbBibleCommit({ ids: [], demoted_ids: [y], ...BASE }, { folder: cloneA });
+    const demotedAt = row(providerA, y)!.demoted_at!;
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+    expect(row(providerB, y)!.confidence).toBe('INFERRED');
+
+    // B re-promotes Y (INFERRED -> CONFIRMED), strictly after A's demotion, and commits it.
+    while (Date.now() <= Date.parse(demotedAt)) { /* wait out clock resolution */ }
+    await providerB.promote(y, 'test fixture: re-verified on B after the demotion');
+    const recommit = JSON.parse(await kbBibleCommit({ ids: [y], ...BASE }, { folder: cloneB }));
+    expect(recommit.merged).toEqual([y]);
+    expect(readBible(cloneB).demotions ?? []).toEqual([]);
+
+    // B's bible reaches A. A's own row is still the demoted one.
+    fs.copyFileSync(biblePathOf(cloneB), biblePathOf(cloneA));
+    commitWorkTree(cloneA);
+    await kbImport({ skip_sweep: true }, { folder: cloneA });
+    expect(row(providerA, y)!.confidence).toBe('INFERRED');
+    expect(row(providerA, y)!.demoted_at).toBe(demotedAt);
+
+    const before = fs.readFileSync(biblePathOf(cloneA), 'utf-8');
+    const commit = JSON.parse(await kbBibleCommit({ ids: [], ...BASE }, { folder: cloneA }));
+    expect(commit.demoted).toEqual([]);
+    expect(commit.committed).toBe(false);
+    expect(fs.readFileSync(biblePathOf(cloneA), 'utf-8')).toBe(before);
+    expect(readBible(cloneA).entries.map(e => e.id)).toContain(y);
+    expect(readBible(cloneA).demotions ?? []).toEqual([]);
+  });
 });
 
 describe('a bible-carried updated_at is clamped to the import time', () => {

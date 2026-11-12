@@ -159,7 +159,7 @@
       "member": "demote",
       "kind": "interface-method",
       "interface": "MemoryProvider",
-      "signature": "demote(id: string, reason: string, evidenceFiles?: string[], opts?: {ownerTag?: string}): Promise<{id, confidence_before, confidence_after}>",
+      "signature": "demote(id: string, reason: string, evidenceFiles: string[], opts?: {ownerTag?: string}): Promise<{id, confidence_before, confidence_after}>",
       "purpose": "Withdraw trust from a CONFIRMED entry, lowering it to INFERRED, appending the reason and the required evidence files as an audit note and snapshotting the sha256 of each cited source file as it is on disk at demote time.",
       "tools": [
         { "name": "kb_demote", "request_schema_ref": "schemas/kb_demote.request.json", "response_schema_ref": "schemas/kb_demote.response.json", "anchor_validation": "self-validated" }

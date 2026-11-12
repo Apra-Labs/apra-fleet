@@ -15,7 +15,7 @@
 import { wrapUntrustedBlock } from './contracts.mjs';
 import { PR_DESCRIPTION_MAX_LENGTH } from './vcs-module.mjs';
 import { formatStalenessBlock } from './parent-notes-staleness.mjs';
-import { buildRejectedNewTaskResurfaceLines, kbKnowledgeBlock, kbPromotionBlock } from './runner.js';
+import { buildRejectedNewTaskResurfaceLines, kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock } from './runner.js';
 
 /**
  * Deterministic hard cap on the code-reviewer findings text threaded into a
@@ -421,7 +421,7 @@ function reviewDiffRangeLine(range, baseBranch) {
         `do not diff against the local '${baseBranch}' branch or origin/${baseBranch} directly.`;
 }
 
-export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, mergeBaseSha, goal, kbCandidates, kbKnowledge, kbBlock }) {
+export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, mergeBaseSha, goal, kbCandidates, kbDemoteCandidates, kbKnowledge, kbBlock }) {
     const range = reviewDiffRange(mergeBaseSha, branch);
     const ids = Array.isArray(beadIds) ? beadIds : [];
     const scopeWide = ids.length === 0;
@@ -470,6 +470,7 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
         // which of this sprint's captures earned CONFIRMED.
         ...(Array.isArray(kbBlock) ? kbBlock : kbKnowledgeBlock(kbKnowledge)),
         ...kbPromotionBlock(kbCandidates),
+        ...kbDemotionBlock(kbDemoteCandidates),
         'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
         '`reopenIds` via `bd update <id> --status=open` and creates your `newTasks` via ' +
@@ -503,7 +504,7 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
  * }} opts
  * @returns {string}
  */
-export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, mergeBaseSha, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [], deferredAtGoalIds = [], kbCandidates, kbKnowledge, kbBlock }) {
+export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, mergeBaseSha, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [], deferredAtGoalIds = [], kbCandidates, kbDemoteCandidates, kbKnowledge, kbBlock }) {
     const range = reviewDiffRange(mergeBaseSha, branch);
     const lines = [
         `Final review for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
@@ -613,6 +614,7 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, merg
     // and was stranded at INFERRED forever.
     lines.push(...(Array.isArray(kbBlock) ? kbBlock : kbKnowledgeBlock(kbKnowledge)));
     lines.push(...kbPromotionBlock(kbCandidates));
+    lines.push(...kbDemotionBlock(kbDemoteCandidates));
     return lines.join('\n\n');
 }
 

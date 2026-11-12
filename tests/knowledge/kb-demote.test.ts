@@ -380,7 +380,7 @@ describe('kb_demote snapshots the basis from DISK, not from the capture-time col
 
     // The tree moves on AFTER the entry was captured and promoted. This is the
     // whole point: a demotion must record the tree it actually judged, so the
-    // record can answer "has anything changed since we demoted?".
+    // later ping-pong guard can ask "has anything changed since we demoted?".
     fs.writeFileSync(basisFile, 'export const real = 2; // edited after promotion\n');
     const editedSha = sha256Of(basisFile);
     expect(editedSha).not.toBe(originalSha);
