@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,7 +20,6 @@ import { kbList } from '../../src/tools/kb-list.js';
 import { kbStats } from '../../src/tools/kb-stats.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
-import * as logHelpers from '../../src/utils/log-helpers.js';
 
 // MEMBER-session recall under the http project provider. kb_query,
 // kb_session_prime and kb_context must reach the KB server for every tier
@@ -317,15 +316,16 @@ describe('routing that must not change', () => {
     expect(requests).toEqual([]);
   });
 
-  it('6. kb_list and kb_stats under http keep the bible view and do not throw', async () => {
+  it('6. kb_list and kb_stats under http never read the bible: list is the server list route, stats is unsupported', async () => {
     await configureHttp();
     requests.length = 0;
     const list = JSON.parse(await asMember(() => kbList({})));
-    expect(ids(list.results).sort()).toEqual(['bible-1', 'bible-ctx']);
+    expect(ids(list.results).sort()).toEqual(['srv-c1', 'srv-c2']);
+    expect(requests.map(r => `${r.method} ${r.path}`)).toEqual(['GET /api/kb/list']);
     const stats = JSON.parse(await asMember(() => kbStats({})));
-    expect(stats.totals.by_confidence.CONFIRMED).toBe(2);
-    expect(stats.bible).toMatchObject({ present: true, entries: 2 });
-    expect(requests).toEqual([]);
+    expect(stats.supported).toBe(false);
+    expect(stats.totals.by_confidence.CONFIRMED).toBe(0);
+    expect(stats.bible).toMatchObject({ computable: false });
   });
 
   it('8. SQLite provider: a MEMBER read decides the provider from the config and creates no per-repo kb.sqlite', async () => {
@@ -348,18 +348,18 @@ describe('routing that must not change', () => {
     expect(requests).toEqual([]);
   });
 
-  it('7. server stopped: MEMBER CONFIRMED kb_query under http answers from the checkout bible, with a warning, never the per-repo DB', async () => {
+  it('7. server stopped: every MEMBER read under http fails with E-KB-HTTP-UNREACHABLE, never answered from the checkout bible or the per-repo DB', async () => {
     await configureHttp();
     await stopServer();
-    const warnSpy = vi.spyOn(logHelpers, 'logWarn');
-    try {
-      const out = JSON.parse(await asMember(() => kbQuery({ query: 'gizmo', confidence: ['CONFIRMED'] })));
-      expect(ids(out.l1_results)).toContain('bible-1');
-      expect(ids(out.l1_results)).not.toContain(FALLBACK_ENTRY_ID);
-      expect(requests).toEqual([]);
-      expect(warnSpy).toHaveBeenCalledWith('kb-http', expect.stringMatching(/KB server unreachable: .*checkout bible/));
-    } finally {
-      warnSpy.mockRestore();
+    for (const read of [
+      () => kbQuery({ query: 'gizmo', confidence: ['CONFIRMED'] }),
+      () => kbSessionPrime({ hint_modules: ['gizmo'] }),
+      () => kbContext({ files: ['src/gizmo.ts'], confidence: ['CONFIRMED'] }),
+      () => kbList({}),
+    ]) {
+      const err = await asMember(read).then(() => null, (e: unknown) => e);
+      expect((err as { code?: string }).code).toBe('E-KB-HTTP-UNREACHABLE');
     }
+    expect(requests).toEqual([]);
   });
 });

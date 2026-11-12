@@ -6,7 +6,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
-import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 import { headBranchReader } from '../../src/services/knowledge/repository-header.js';
 
@@ -103,12 +102,10 @@ beforeEach(() => {
 
 async function withProvider(
   url: string,
-  options: ConstructorParameters<typeof HttpKbProvider>[3],
+  options: ConstructorParameters<typeof HttpKbProvider>[2],
   body: (provider: HttpKbProvider) => Promise<void>,
 ): Promise<void> {
-  const fallback = new SqliteProvider(':memory:');
-  await fallback.init();
-  const provider = new HttpKbProvider(url, TOKEN, fallback, options);
+  const provider = new HttpKbProvider(url, TOKEN, options);
   await provider.init();
   try {
     await body(provider);
@@ -197,8 +194,9 @@ describe('HttpKbProvider repository headers', () => {
 
   it('carries the headers on an offline-queue replay', async () => {
     await withProvider(OFFLINE_URL, { repository: { remote: REPO, commitOf: () => SHA } }, async provider => {
-      await provider.capture(makeInput({ title: 'queued capture' }));
-      await provider.invalidate(['src/q.ts']);
+      // Queued, and each call fails with E-KB-HTTP-UNREACHABLE.
+      await expect(provider.capture(makeInput({ title: 'queued capture' }))).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
+      await expect(provider.invalidate(['src/q.ts'])).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
       expect(provider.offlineQueue).toHaveLength(2);
 
       // The server comes back: the next request flushes the queue first.

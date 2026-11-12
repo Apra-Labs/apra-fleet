@@ -235,6 +235,11 @@
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-PROJECT-MISMATCH",
       "title": "The project KB is backed by the http provider and the KB server it points at serves a different project: every request carries the caller project slug (X-KB-Project) and the server answered 409 naming both slugs. Nothing is read or written, and the local fallback store is not used: the server is reachable, it is the wrong one.",
       "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-UNREACHABLE",
+      "title": "The project KB is backed by the http provider and the KB server could not be reached (connection refused, DNS failure, timeout, reset). The KB server is the only source of truth under http: no read is answered from the checkout bible or a local store, and no write reports success. A capture, invalidate or feedback is kept in the offline queue first (the message says so) and is sent, in order, by the next call that reaches the server; the queue lives in the fleet server process only.",
+      "status": 500
     }
   ]
 }

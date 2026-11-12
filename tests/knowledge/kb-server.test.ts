@@ -191,12 +191,12 @@ describe('kb-server promote and tag filter', () => {
 
   it('HttpKbProvider forwards fts_terms: the neighbour query returns the FTS-matched ids, the same as a SQLite KB seeded alike', async () => {
     const term = `quuxneighbour${crypto.randomBytes(6).toString('hex')}`;
-    const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-fts-terms-'));
+    const localDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-fts-terms-'));
     const provider = new HttpKbProvider(
-      `http://127.0.0.1:${TEST_PORT}`, testToken, new SqliteProvider(path.join(fallbackDir, 'kb.sqlite')),
+      `http://127.0.0.1:${TEST_PORT}`, testToken,
       { projectSlug: SERVER_PROJECT },
     );
-    const local = new SqliteProvider(path.join(fallbackDir, 'local.sqlite'));
+    const local = new SqliteProvider(path.join(localDir, 'local.sqlite'));
     const entry = (title: string, summary: string) => ({
       type: 'knowledge', title, summary, content: `${summary} Extra body text for the capture floor.`,
       source_files: ['src/commands/kb-server.ts'], symbols: [], tags: [], content_hash: '',
@@ -225,16 +225,15 @@ describe('kb-server promote and tag filter', () => {
       provider.dispose();
       // Release the SQLite handle first: Windows refuses to unlink an open file (EBUSY).
       local.close();
-      fs.rmSync(fallbackDir, { recursive: true, force: true });
+      fs.rmSync(localDir, { recursive: true, force: true });
     }
   });
 
   it('HttpKbProvider against this server: promote is sent by id and the server decides (unknown id is not found, a known id promotes)', async () => {
     const owner = `member:${crypto.randomUUID()}`;
     const id = await captureTagged([owner]);
-    const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-http-provider-'));
     const provider = new HttpKbProvider(
-      `http://127.0.0.1:${TEST_PORT}`, testToken, new SqliteProvider(path.join(fallbackDir, 'kb.sqlite')),
+      `http://127.0.0.1:${TEST_PORT}`, testToken,
       { projectSlug: SERVER_PROJECT },
     );
     try {
@@ -250,7 +249,6 @@ describe('kb-server promote and tag filter', () => {
         .resolves.toEqual({ id, confidence_before: 'INFERRED', confidence_after: 'CONFIRMED' });
     } finally {
       provider.dispose();
-      fs.rmSync(fallbackDir, { recursive: true, force: true });
     }
   });
 });
@@ -281,10 +279,8 @@ describe('kb-server refuses a client for another project on every route', () => 
     }
   });
 
-  it('an HttpKbProvider for another project gets E-KB-HTTP-PROJECT-MISMATCH from every call, never its fallback store', async () => {
-    const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-other-project-'));
-    const fallback = new SqliteProvider(path.join(fallbackDir, 'kb.sqlite'));
-    const provider = new HttpKbProvider(`http://127.0.0.1:${TEST_PORT}`, testToken, fallback, { projectSlug: OTHER });
+  it('an HttpKbProvider for another project gets E-KB-HTTP-PROJECT-MISMATCH from every call, never a local store', async () => {
+    const provider = new HttpKbProvider(`http://127.0.0.1:${TEST_PORT}`, testToken, { projectSlug: OTHER });
     try {
       await provider.init();
       const calls: Array<[string, () => Promise<unknown>]> = [
@@ -309,29 +305,24 @@ describe('kb-server refuses a client for another project on every route', () => 
       expect(provider.offlineQueue).toEqual([]);
     } finally {
       provider.dispose();
-      fallback.close();
-      fs.rmSync(fallbackDir, { recursive: true, force: true });
     }
   });
 
   it('a capture queued while offline stays queued when the client then reaches a server for another project, and the server store gets nothing', async () => {
     const marker = `queuedmismatch${crypto.randomBytes(6).toString('hex')}`;
-    const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-queued-mismatch-'));
-    const fallback = new SqliteProvider(path.join(fallbackDir, 'kb.sqlite'));
     // A closed port: the capture is queued, nothing is reachable.
     const closed = http.createServer();
     await new Promise<void>(resolve => closed.listen(0, '127.0.0.1', resolve));
     const closedPort = (closed.address() as { port: number }).port;
     await new Promise<void>(resolve => closed.close(() => resolve()));
-    const provider = new HttpKbProvider(`http://127.0.0.1:${closedPort}`, testToken, fallback, { projectSlug: OTHER });
+    const provider = new HttpKbProvider(`http://127.0.0.1:${closedPort}`, testToken, { projectSlug: OTHER });
     try {
       await provider.init();
-      const queued = await provider.capture({
+      await expect(provider.capture({
         type: 'knowledge', title: `Queued ${marker}`, summary: `Entry ${marker} queued while the server was down.`,
         content: `Body of ${marker}.`, source_files: [], symbols: [], tags: [], content_hash: '',
         content_hash_type: 'sha256', flagged_for_review: false, author: 'test', source: 'doer', confidence: 'INFERRED',
-      } as any);
-      expect(queued.id).toMatch(/^offline-/);
+      } as any)).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
       expect(provider.offlineQueue).toHaveLength(1);
 
       // The client's server URL now reaches a server for a different project.
@@ -345,8 +336,6 @@ describe('kb-server refuses a client for another project on every route', () => 
       expect(store.body.results).toEqual([]);
     } finally {
       provider.dispose();
-      fallback.close();
-      fs.rmSync(fallbackDir, { recursive: true, force: true });
     }
   });
 });
@@ -362,9 +351,7 @@ describe('HttpKbProvider list against a server without GET /api/kb/list', () => 
     });
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as { port: number }).port;
-    const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-list-404-'));
-    const fallback = new SqliteProvider(path.join(fallbackDir, 'kb.sqlite'));
-    const provider = new HttpKbProvider(`http://127.0.0.1:${port}`, testToken, fallback, { projectSlug: SERVER_PROJECT });
+    const provider = new HttpKbProvider(`http://127.0.0.1:${port}`, testToken, { projectSlug: SERVER_PROJECT });
     try {
       for (const call of [
         () => provider.list({ confidence: ['CONFIRMED'] } as any),
@@ -381,8 +368,6 @@ describe('HttpKbProvider list against a server without GET /api/kb/list', () => 
       expect(seen).toEqual(['GET /api/kb/list', 'GET /api/kb/list', 'POST /api/kb/promote']);
     } finally {
       provider.dispose();
-      fallback.close();
-      fs.rmSync(fallbackDir, { recursive: true, force: true });
       server.closeAllConnections();
       await new Promise<void>(resolve => server.close(() => resolve()));
     }

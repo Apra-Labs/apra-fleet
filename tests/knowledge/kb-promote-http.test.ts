@@ -143,16 +143,12 @@ async function configureHttp(folder: string): Promise<void> {
   expect(result.success).toBe(true);
 }
 
-async function httpProject(): Promise<{ provider: HttpKbProvider; fallback: SqliteProvider; rows: () => number }> {
+async function httpProject(): Promise<{ provider: HttpKbProvider }> {
   const repo = makeCheckout(`provider-${crypto.randomUUID()}`, `https://example.test/kb-promote-http-${crypto.randomUUID()}.git`);
   await configureHttp(repo);
   const providers = await getKbProviders(repo, `https://example.test/kb-promote-http-${crypto.randomUUID()}.git`);
   expect(providers.project).toBeInstanceOf(HttpKbProvider);
-  const provider = providers.project as HttpKbProvider;
-  const fallback = (provider as unknown as { fallback: SqliteProvider }).fallback;
-  const db = (fallback as unknown as { getDb(): { prepare(s: string): { get(): unknown } } }).getDb();
-  const rows = () => (db.prepare('SELECT COUNT(*) AS n FROM entries').get() as { n: number }).n;
-  return { provider, fallback, rows };
+  return { provider: providers.project as HttpKbProvider };
 }
 
 beforeAll(async () => {
@@ -207,19 +203,16 @@ describe('HttpKbProvider.promote', () => {
       .rejects.toThrow(/without previous_confidence\/new_confidence/);
   });
 
-  it('2. promotes a server-only id and leaves the fallback store without a row', async () => {
-    const { provider, rows } = await httpProject();
+  it('2. promotes a server-only id', async () => {
+    const { provider } = await httpProject();
     serverIds.add('server-only-id');
-    const before = rows();
     await expect(provider.promote('server-only-id', REASON)).resolves.toMatchObject({
       id: 'server-only-id', confidence_after: 'CONFIRMED',
     });
-    expect(rows()).toBe(before);
   });
 
-  it('3. surfaces status plus title/code for refusals; fallback unchanged', async () => {
-    const { provider, rows } = await httpProject();
-    const before = rows();
+  it('3. surfaces status plus title/code for refusals', async () => {
+    const { provider } = await httpProject();
     const notFound = await provider.promote('unknown-id', REASON).then(() => null, (e: NodeJS.ErrnoException) => e);
     expect(notFound).toBeInstanceOf(Error);
     expect(notFound!.message).toMatch(/^Entry not found: unknown-id \(the KB server answered HTTP 404: .*Entry not found.*KB-NOT-FOUND/);
@@ -227,17 +220,16 @@ describe('HttpKbProvider.promote', () => {
 
     refusalOverride = { status: 409, body: { title: 'Entry superseded', status: 409, code: 'KB-SUPERSEDED' } };
     await expect(provider.promote('any-id', REASON)).rejects.toThrow(/409.*Entry superseded.*KB-SUPERSEDED/);
-    expect(rows()).toBe(before);
   });
 
-  it('4. with the server stopped rejects naming the URL; no queue entry, fallback unchanged', async () => {
-    const { provider, rows } = await httpProject();
-    const before = rows();
+  it('4. with the server stopped rejects with E-KB-HTTP-UNREACHABLE naming the URL; no queue entry', async () => {
+    const { provider } = await httpProject();
     await stopServer();
     try {
-      await expect(provider.promote('some-id', REASON)).rejects.toThrow(remoteUrlFor());
+      const err = await provider.promote('some-id', REASON).then(() => null, (e: unknown) => e);
+      expect((err as { code?: string }).code).toBe('E-KB-HTTP-UNREACHABLE');
+      expect((err as Error).message).toContain(remoteUrlFor());
       expect(provider.offlineQueue).toHaveLength(0);
-      expect(rows()).toBe(before);
     } finally {
       await startServer(port);
     }

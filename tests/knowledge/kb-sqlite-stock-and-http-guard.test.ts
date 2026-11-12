@@ -195,7 +195,7 @@ describe('sqlite path stays byte-identical (my-beads-db-0cd.8 criterion 1-2)', (
   });
 });
 
-describe('seven SqliteProvider-only entrypoints fail fast and named under an http config (my-beads-db-0cd.8 criterion 4)', () => {
+describe('five SqliteProvider-only entrypoints fail fast and named under an http config (my-beads-db-0cd.8 criterion 4)', () => {
   beforeAll(() => {
     token = loadTestToken();
     remote = 'http://127.0.0.1:1'; // never dialed: every entrypoint below must throw before any network call
@@ -206,10 +206,6 @@ describe('seven SqliteProvider-only entrypoints fail fast and named under an htt
   });
 
   const REFUSAL_SUFFIX = 'this operation is not supported when the KB is backed by a remote HTTP provider';
-
-  it('kb_list', async () => {
-    await expect(kbList({} as any, { folder: makeRepoPath() })).rejects.toThrow(`kb_list: ${REFUSAL_SUFFIX}`);
-  });
 
   it('kb_freshness_sweep', async () => {
     await expect(kbFreshnessSweep({} as any, { folder: makeRepoPath() })).rejects.toThrow(
@@ -229,12 +225,6 @@ describe('seven SqliteProvider-only entrypoints fail fast and named under an htt
     ).rejects.toThrow(`kb_resolve_contradiction: ${REFUSAL_SUFFIX}`);
   });
 
-  it('kb_import', async () => {
-    const importDir = makeRepoPath();
-    fs.mkdirSync(path.join(importDir, '.fleet'), { recursive: true });
-    fs.writeFileSync(path.join(importDir, '.fleet', 'kb-canonical.json'), '[]');
-    await expect(kbImport({} as any, { folder: importDir })).rejects.toThrow(`kb_import: ${REFUSAL_SUFFIX}`);
-  });
 
   it('kb_export', async () => {
     await expect(kbExport({} as any, { folder: makeRepoPath() })).rejects.toThrow(`kb_export: ${REFUSAL_SUFFIX}`);
@@ -245,9 +235,52 @@ describe('seven SqliteProvider-only entrypoints fail fast and named under an htt
   });
 });
 
+// kb_import is not refused under http: the KB server is the source of truth,
+// so it imports nothing and says so, before it reads the bible at all (an
+// unparseable bible file is not even looked at).
+// kb_list is served by the http provider's list route (an optional route):
+// against the unreachable remote it fails with the typed outage error, not the
+// sqlite-only refusal.
+describe('kb_list is served by the HTTP provider under an http config', () => {
+  beforeAll(() => {
+    token = loadTestToken();
+    remote = 'http://127.0.0.1:1';
+  });
+
+  beforeEach(() => {
+    writeHttpConfig();
+  });
+
+  it('kb_list reaches the server (here unreachable) instead of the sqlite-only refusal', async () => {
+    const err = await kbList({} as any, { folder: makeRepoPath() }).then(() => null, (e: unknown) => e);
+    expect(err).toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE' });
+  });
+});
+
+describe('kb_import under an http config imports nothing and reports bible_skipped', () => {
+  beforeAll(() => {
+    token = loadTestToken();
+    remote = 'http://127.0.0.1:1'; // never dialed: the import skips before any provider call
+  });
+
+  beforeEach(() => {
+    writeHttpConfig();
+  });
+
+  it('answers bible_skipped with a reason and zero counts, without reading the bible', async () => {
+    const importDir = makeRepoPath();
+    fs.mkdirSync(path.join(importDir, '.fleet'), { recursive: true });
+    fs.writeFileSync(path.join(importDir, '.fleet', 'kb-canonical.json'), 'not json at all');
+    const out = JSON.parse(await kbImport({} as any, { folder: importDir }));
+    expect(out).toMatchObject({ imported: 0, skipped: 0, rejected: 0, demoted: 0, bible_skipped: true });
+    expect(out.reason).toMatch(/KB server is the source of truth/);
+  });
+});
+
 // GitHub #761: kb_feedback is no longer SqliteProvider-only -- it is served by
 // HttpKbProvider.feedback (POST /api/kb/feedback). Against the unreachable
-// remote above it must not refuse; it queues the feedback offline instead.
+// remote above it must not refuse; it queues the feedback offline and fails
+// with E-KB-HTTP-UNREACHABLE.
 describe('kb_feedback is served by the HTTP provider, not refused, under an http config', () => {
   beforeAll(() => {
     token = loadTestToken();
@@ -258,9 +291,10 @@ describe('kb_feedback is served by the HTTP provider, not refused, under an http
     writeHttpConfig();
   });
 
-  it('kb_feedback queues offline instead of throwing the sqlite-only refusal', async () => {
-    const out = JSON.parse(await kbFeedback({ id: 'anything', reason: 'x' } as any, { folder: makeRepoPath() }));
-    expect(out).toEqual({ id: 'anything', queued: true });
+  it('kb_feedback queues offline and fails typed instead of throwing the sqlite-only refusal', async () => {
+    const err = await kbFeedback({ id: 'anything', reason: 'x' } as any, { folder: makeRepoPath() }).then(() => null, (e: unknown) => e);
+    expect(err).toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
+    expect((err as Error).message).not.toMatch(/not supported when the KB is backed by a remote HTTP provider/);
   });
 });
 

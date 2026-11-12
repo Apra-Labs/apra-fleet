@@ -9,7 +9,6 @@ import { addAgent } from '../../src/services/registry.js';
 import { runWithSessionMember } from '../../src/services/tool-scope.js';
 import { resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { resetMemberBibleViews } from '../../src/services/knowledge/member-bible-view.js';
-import { KbBibleError } from '../../src/services/knowledge/bible-import.js';
 import { kbSetup } from '../../src/tools/kb-setup.js';
 import { kbQuery } from '../../src/tools/kb-query.js';
 import { kbList } from '../../src/tools/kb-list.js';
@@ -19,18 +18,15 @@ import { FLEET_DIR } from '../../src/paths.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
 
 // A MEMBER mixed-tier read (confidence [CONFIRMED, INFERRED]) with the KB
-// config selecting the http project provider. kb_query, kb_session_prime and
-// kb_context pass serverRecall, so getMemberSplitRead splits the read across
-// the KB server: a CONFIRMED request without the owner tag, plus a request for
-// every listed tier with the member owner tag. kb_list does not pass it: its
-// CONFIRMED half is the checkout bible view, as for its CONFIRMED-only read.
+// config selecting the http project provider. getMemberSplitRead splits the
+// read of every read tool (kb_query, kb_session_prime, kb_context, kb_list)
+// across the KB server: a CONFIRMED request without the owner tag, plus a
+// request for every listed tier with the member owner tag. The bible is never
+// used under http.
 //
 // The member's checkout bible is deliberately MALFORMED: loading the member
-// bible view throws E-BIBLE-MALFORMED. The serverRecall assertions below
-// therefore also prove the split never loads the bible view while the server
-// answers -- on a remote member that load is an SSH round trip that fails when
-// the member is unreachable -- and kb_list proves its bible half fails loudly
-// rather than being dropped.
+// bible view throws E-BIBLE-MALFORMED. The assertions below therefore also
+// prove the split never loads the bible view.
 //
 // What is real: the tool handlers, kb-self routing, kb_setup, the KB config,
 // HttpKbProvider, and a local http.Server stand-in for the KB server. No
@@ -58,7 +54,6 @@ const RUN = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)
 const MIXED = ['CONFIRMED', 'INFERRED'] as const;
 const CITED_FILE = 'src/gear.ts';
 const OTHER_TAG = 'member:00000000-0000-4000-8000-000000000000';
-const REFUSAL = /: this operation is not supported when the KB is backed by a remote HTTP provider/;
 
 interface RecordedRequest { method: string; path: string; params: URLSearchParams; body: Record<string, unknown> | null }
 type ServerEntry = Record<string, unknown> & { id: string; confidence: string; tags: string[] };
@@ -240,11 +235,11 @@ describe('MEMBER mixed-tier read over the http project KB: split across the serv
     expect(own.fresh.map((r: { entry_id: string }) => r.entry_id)).toEqual(['own-inferred']);
   });
 
-  it('kb_list reads its CONFIRMED half from the checkout bible: a malformed bible fails loudly, never answered from the server alone', async () => {
-    const err = await asMember(() => kbList({ confidence: [...MIXED] })).catch(e => e as Error);
-    expect(err).toBeInstanceOf(KbBibleError);
-    expect((err as KbBibleError).code).toBe('E-BIBLE-MALFORMED');
-    expect(err.message).not.toMatch(REFUSAL);
-    expect(requests.filter(r => r.path === '/api/kb/list')).toEqual([]);
+  it('kb_list splits into a CONFIRMED and an owner-tagged list request on the server; the bible is never read', async () => {
+    const out = JSON.parse(await asMember(() => kbList({ confidence: [...MIXED] })));
+    const listed = out.results as Array<{ id: string }>;
+    expect(listed.map(e => e.id).sort()).toEqual(['other-confirmed', 'own-confirmed', 'own-inferred']);
+    expectSplitRequests(r => (r.method === 'GET' && r.path === '/api/kb/list'
+      ? { tiers: r.params.get('confidence'), tag: r.params.get('tag') } : null));
   });
 });

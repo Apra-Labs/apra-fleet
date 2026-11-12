@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import { getSelfReadKb, getMemberSplitRead, mergeSplitById, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { HttpKbProvider } from '../services/knowledge/http-provider.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 
@@ -57,8 +58,8 @@ export async function kbList(input: KbListInput, anchor?: KbAnchor): Promise<str
   // the checkout bible view, plus every requested tier from the per-repo DB,
   // own captures only (kb-self.ts getMemberSplitRead). Merged by id (bible copy
   // wins), re-sorted into list()'s id order, then limited. Under an http
-  // project provider the own half is the KB server's list, owner-tagged; the
-  // CONFIRMED half stays the checkout bible, as kb_list's CONFIRMED-only read.
+  // project provider both halves are the KB server's list route (the own half
+  // owner-tagged); the bible is not used.
   const split = await getMemberSplitRead(anchor, confidence, 'kb_list');
   if (split) {
     const [fromBible, fromOwn] = await Promise.all([
@@ -72,9 +73,14 @@ export async function kbList(input: KbListInput, anchor?: KbAnchor): Promise<str
   } else {
     // MEMBER session -> the checkout bible view (kb-self.ts getSelfReadKb).
     // A request naming only INFERRED/UNVERIFIED goes to the per-repo DB, own
-    // captures only (ownerTag).
+    // captures only (ownerTag). Under an http project provider every session
+    // reads the server's list route (an optional route: a server without it
+    // is E-KB-HTTP-UNSUPPORTED).
     const { providers, ownerTag } = await getSelfReadKb(anchor, confidence);
-    entries = await requireSqliteProject(providers.project, 'kb_list').list({
+    const project = providers.project instanceof HttpKbProvider
+      ? providers.project
+      : requireSqliteProject(providers.project, 'kb_list');
+    entries = await project.list({
       ...filters,
       confidence: confidence?.length ? confidence : DEFAULT_CONFIDENCE,
       owner_tag: ownerTag,

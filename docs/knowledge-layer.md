@@ -271,10 +271,8 @@ returned before it reaches the bible. Results merge by id and the bible copy win
 duplicate. Under the http project provider the split still applies, with the
 KB server in place of the per-repo DB: the own half is the server, owner-tagged
 (checked by fleet on the entry tags the server returns). The CONFIRMED half is
-the source the tool's CONFIRMED-only read uses: the KB server for `kb_query`,
-`kb_session_prime` and `kb_context` (they pass `serverRecall`; the checkout
-bible answers only while the server is unreachable), the checkout bible for
-`kb_list`. A mixed read over http therefore has the same shape as over SQLite
+the KB server too, for every read tool (`kb_query`, `kb_session_prime`,
+`kb_context`, `kb_list`): the bible is not used under http. A mixed read over http therefore has the same shape as over SQLite
 and never shows another member's unconfirmed captures. One difference follows
 from the store, not the split: on the server the member's own promoted capture
 is part of the CONFIRMED set, so it arrives in the CONFIRMED half (and counts
@@ -938,7 +936,8 @@ With the http provider, `kb_feedback` is sent to the server as
 `POST /api/kb/feedback` with body `{id, reason, role}` and returns the
 server's answer unchanged; the client never sets confidence. While the server
 is unreachable the feedback is queued offline with captures and invalidates
-and the tool answers `{id, queued: true}`. The bundled `kb-server` command
+and the tool fails with `E-KB-HTTP-UNREACHABLE`, whose message says it was
+queued. The bundled `kb-server` command
 serves that route: it validates the role like the tool does, marks the entry
 stale and flagged without touching confidence, and answers an unknown id with
 HTTP 404 and code `ENTRY_NOT_FOUND`.
@@ -959,28 +958,32 @@ Write it with `kb_setup ... token={{secret.KB_TOKEN}}`; see
 #### MemoryProvider operations
 
 Every method in the `MemoryProvider` interface is classified as one of:
-- **remote** -- calls the HTTP server; on connection error, may queue (writes)
-  or fall back to local store (reads).
-- **local-fallback** -- delegates to the local SQLite fallback store.
+- **remote** -- calls the HTTP server. On a connection error a write is
+  queued and the call throws `E-KB-HTTP-UNREACHABLE` (saying it was queued);
+  a read throws `E-KB-HTTP-UNREACHABLE`. Nothing is ever answered from a
+  local store or the checkout bible: the server is the source of truth.
+- **local** -- no remote route; answers without any local store.
 - **unsupported** -- returns a documented refusal or throws a typed error.
+
+The provider holds no local store at all.
 
 | Method | Classification | Notes |
 |--------|---|---|
-| init | local-fallback | Initializes the local fallback store. |
-| capture | remote | Posts entry to server. On connection error, queued in memory (max 1000); queue flushed on reconnect. |
-| query | remote | Retrieves entries from server. On connection error, falls back to the offline store: the checkout bible for a MEMBER CONFIRMED read (`withOfflineReads`, with a warning), otherwise the per-repo local store. |
-| context | remote | Retrieves file context from server. On connection error, falls back to the offline store, as for query: a MEMBER CONFIRMED read gets the checkout bible's summaries, never the per-repo DB's. |
-| invalidate | remote | Invalidates files on server. On connection error, queued in memory; queue flushed on reconnect. |
+| init | local | Nothing to open. |
+| capture | remote | Posts entry to server. On connection error, queued in memory (max 1000) and thrown as `E-KB-HTTP-UNREACHABLE`; queue flushed on reconnect. |
+| query | remote | Retrieves entries from server. On connection error, `E-KB-HTTP-UNREACHABLE`. |
+| context | remote | Retrieves file context from server. On connection error, `E-KB-HTTP-UNREACHABLE`. |
+| invalidate | remote | Invalidates files on server. On connection error, queued in memory and thrown as `E-KB-HTTP-UNREACHABLE`; queue flushed on reconnect. |
 | discard | unsupported | Throws E-KB-HTTP-UNSUPPORTED (id-level discard not supported). Use kb_invalidate with files instead. |
-| getLinked | local-fallback | Retrieves linked entries from the local fallback store, or from the offline store once a read of the same provider view fell back to it (the checkout bible for a MEMBER CONFIRMED read). |
-| prime | remote | Retrieves primed context from server. On connection error, falls back to the offline store, as for query. Its cold-seed `touch` is then skipped, so an offline MEMBER prime writes nothing to the per-repo DB. |
-| promote | remote | POST /api/kb/promote with `{id, reason}`. No local fallback and no offline queue on connection error (the id only exists on the server): a connection error rejects naming the server URL. Sent by id with no list lookup first: the server refuses an unknown, superseded or out-of-scope id itself. A 404 rejects as `Entry not found: <id>` followed by the server's answer; any other refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's text and code. |
-| feedback | remote | POST /api/kb/feedback with `{id, reason, role}`; returns the server response unchanged. On connection error (or E-KB-HTTP-AUTH) queued offline with captures and invalidates. |
+| getLinked | local | No remote route: returns no linked entries. |
+| prime | remote | Retrieves primed context from server. On connection error, `E-KB-HTTP-UNREACHABLE`. `kb_session_prime` does not cold-seed from the checkout bible under http. |
+| promote | remote | POST /api/kb/promote with `{id, reason}`. No offline queue on connection error (the id only exists on the server): `E-KB-HTTP-UNREACHABLE` naming the server URL. Sent by id with no list lookup first: the server refuses an unknown, superseded or out-of-scope id itself. A 404 rejects as `Entry not found: <id>` followed by the server's answer; any other refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's text and code. |
+| feedback | remote | POST /api/kb/feedback with `{id, reason, role}`; returns the server response unchanged. On connection error (or E-KB-HTTP-AUTH) queued offline with captures and invalidates, and the error is thrown. |
 | demote | unsupported | Throws: the remote has no demote route, and demoting the local fallback store would snapshot the wrong tree. Nothing is changed. |
 | sync | unsupported | Returns {synced: false} (no remote sync over http). |
 | stats | unsupported | Returns supported:false with empty results (stats not supported over http). |
-| touch | local-fallback | Records entry access in local fallback store (telemetry only). Skipped (returns 0) once a read of the same provider view was answered offline by a store other than the fallback, e.g. the checkout bible: those ids are not the per-repo DB's. |
-| relatedClaims | local-fallback | Retrieves related entries from local fallback store (graph queries only), or from the offline store once a read of the same provider view fell back to it, so an offline MEMBER `kb_query` with `expand_related` never reads the per-repo DB. |
+| touch | local | No remote route: records nothing (returns 0); the per-repo DB is not written. |
+| relatedClaims | local | No remote route: returns no related claims (`related_claims` is empty). |
 
 **Named-secret token**: with `token_ref`, the secret is looked up on every
 request; a 401 re-reads it and retries once, then throws `E-KB-HTTP-AUTH`.
@@ -1022,20 +1025,22 @@ Design notes:
   its HTTP status and the server's text and code. Against the bundled
   `kb-server`, which has no per-member scope, a member can promote any id that
   server holds.
-- Member reads of every tier (`kb_query`, `kb_session_prime`, `kb_context`) are
-  routed to the http provider (`serverRecall` in
-  `src/services/knowledge/kb-self.ts`), because the server, not a local store,
-  holds the confirmed entries. `kb_list` and `kb_stats` are unchanged.
-- Exception: a member `kb_query({flagged_only: true})` does not take
-  `serverRecall`. It reads the checkout bible view plus the global KB under
-  either provider, exactly as over SQLite. A flagged listing carries no owner
-  tag, so on the server it would show other members' entries. A non-member
-  flagged read goes to the server: the provider sends `flagged_only=true`,
-  `kb-server`'s `GET /api/kb/query` honours it, and `kb_query` re-applies the
-  flagged filter to whatever the server returns.
-- Server down: a member CONFIRMED read falls back to the checkout bible (the
-  same view a SQLite member reads) and logs a warning; it never falls back to
-  the per-repo database. Other reads keep the per-repo fallback store.
+- HTTP mode does not use the bible: the KB server is the source of truth.
+  Member reads of every tier (`kb_query`, `kb_session_prime`, `kb_context`,
+  `kb_list`, `kb_stats`) go to the http provider
+  (`src/services/knowledge/kb-self.ts`); `kb_session_prime` does not cold-seed
+  from the checkout bible; `kb_import` imports nothing and answers
+  `bible_skipped: true` (so the sprint start imports nothing); and
+  `kb_bible_commit` answers `bible_skipped: true`.
+- Exception: a member `kb_query({flagged_only: true})` is refused under http
+  with `E-KB-HTTP-UNSUPPORTED`. A flagged listing carries no owner tag, so on
+  the server it would show other members' entries, and the bible is not used.
+  A non-member flagged read goes to the server: the provider sends
+  `flagged_only=true`, `kb-server`'s `GET /api/kb/query` honours it, and
+  `kb_query` re-applies the flagged filter to whatever the server returns.
+- Server down: every call fails with `E-KB-HTTP-UNREACHABLE` (writes are queued
+  first and say so). Nothing is answered from the checkout bible or the
+  per-repo database; a token the server refuses is `E-KB-HTTP-AUTH`.
 - Every request carries the project slug in `X-KB-Project`. `kb-server` serves
   one project and answers any other (or a missing header) with 409 naming
   both slugs, surfaced as `E-KB-HTTP-PROJECT-MISMATCH`, never as a fallback

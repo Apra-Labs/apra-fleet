@@ -33,14 +33,15 @@ import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../
 //   SQLite: CONFIRMED from the member's checkout bible view, every listed tier
 //           from the per-repo DB, own captures only.
 //   http:   the KB server holds the bible's CONFIRMED entries and the same
-//           captures; CONFIRMED comes from the server (kb_list: the checkout
-//           bible, as its CONFIRMED-only read), every listed tier from the
-//           server, own captures only.
+//           captures; CONFIRMED comes from the server (the bible is not
+//           used under http), every listed tier from the server, own
+//           captures only.
 //
 // The parity table also covers another member's CONFIRMED entry (promoted to
-// the bible: returned by a mixed-tier read under either provider), a MEMBER
-// flagged_only read (the checkout bible view under either provider) and
-// kb_session_prime's fts_terms neighbour query on each half of the split.
+// the bible: returned by a mixed-tier read under either provider) and
+// kb_session_prime's fts_terms neighbour query on each half of the split. A
+// MEMBER flagged_only read is answered from the checkout bible over SQLite and
+// refused under http (E-KB-HTTP-UNSUPPORTED), so it is not in the table.
 //
 // Both stores also hold another member's unconfirmed captures, which must
 // never appear (the cross-member leak a mixed-tier read once had). The other member's
@@ -197,11 +198,6 @@ const NORMALISE: Record<string, (out: Row) => unknown> = {
     fresh_summaries: (out.fresh_summaries as Row[]).map(r => pick(r, ['file', 'entry_id', 'status'])).sort(byId),
   }),
   kb_context: out => out,
-  kb_query_flagged: out => ({
-    keys: Object.keys(out).sort(),
-    total: out.total,
-    flagged: (out.flagged_entries as Row[]).map(e => pick(e, [...ENTRY_KEYS, 'flagged_for_review'])).sort(byId),
-  }),
   neighbour_query: out => (out.results as Row[]).map(e => pick(e, ENTRY_KEYS)).sort(byId),
 };
 
@@ -230,7 +226,6 @@ const READS: Array<{ tool: string; run: () => Promise<string> }> = [
   { tool: 'kb_context', run: () => kbContext({ files: FILES }) },
   // Another member's CONFIRMED entry is part of a mixed-tier result.
   { tool: 'kb_query', run: () => kbQuery({ query: 'pinion', confidence: MIXED }) },
-  { tool: 'kb_query_flagged', run: () => kbQuery({ flagged_only: true }) },
   { tool: 'neighbour_query', run: neighbourQuery },
 ];
 
@@ -336,7 +331,7 @@ describe('MEMBER mixed-tier split read: SQLite and http (real kb-server) return 
       for (const id of otherIds) expect(ids, `${read.tool} leaked ${id}`).not.toContain(id);
       ids.forEach(id => seen.add(id));
     }
-    for (const id of ['bible-a', 'bible-ctx', 'own-inferred', 'own-confirmed', 'own-ctx', 'own-neighbour', 'bible-directive']) {
+    for (const id of ['bible-a', 'bible-ctx', 'own-inferred', 'own-confirmed', 'own-ctx', 'own-neighbour']) {
       expect([...seen]).toContain(id);
     }
   });
@@ -350,12 +345,9 @@ describe('MEMBER mixed-tier split read: SQLite and http (real kb-server) return 
     expect(neighbours.results.map(e => e.id).sort()).toEqual(['other-confirmed', 'own-neighbour']);
   });
 
-  it('over http a member flagged_only read contains only flagged entries', async () => {
+  it('over http a member flagged_only read is refused with E-KB-HTTP-UNSUPPORTED', async () => {
     await useHttp();
-    const out = JSON.parse(await asMember(() => kbQuery({ flagged_only: true }))) as { flagged_entries: Row[] };
-    expect(out.flagged_entries.length).toBeGreaterThan(0);
-    for (const e of out.flagged_entries) {
-      expect(Boolean(e.flagged_for_review || e.contradiction_of), `${String(e.id)} is not flagged`).toBe(true);
-    }
+    const err = await asMember(() => kbQuery({ flagged_only: true })).then(() => null, (e: unknown) => e);
+    expect((err as { code?: string }).code).toBe('E-KB-HTTP-UNSUPPORTED');
   });
 });

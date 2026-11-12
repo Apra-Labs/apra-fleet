@@ -7,7 +7,6 @@ import crypto from 'node:crypto';
 import { kbSetup } from '../../src/tools/kb-setup.js';
 import { getKbProviders, resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { HttpKbProvider, DEFAULT_REQUEST_TIMEOUT_MS } from '../../src/services/knowledge/http-provider.js';
-import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
@@ -23,8 +22,8 @@ let port: number;
 let responseDelayMs = 0;
 
 // The private request method, reached through a cast so the typed timeout
-// error can be asserted directly: every public method deliberately turns a
-// timeout into offline-queue or local-fallback behaviour.
+// error can be asserted on the request itself, without any queueing a
+// public write method adds.
 type RawRequest = (method: string, pathname: string, body?: unknown) => Promise<unknown>;
 function rawRequestOf(provider: HttpKbProvider): RawRequest {
   // `request` (not rawRequest, which now also takes the token to send) keeps
@@ -72,10 +71,10 @@ async function providerFor(requestTimeoutMs?: number): Promise<HttpKbProvider> {
 
 async function expectTimeout(provider: HttpKbProvider, timeoutMs: number): Promise<number> {
   const started = Date.now();
-  await expect(rawRequestOf(provider)('POST', '/api/kb/capture', makeEntry())).rejects.toMatchObject({
-    code: 'ETIMEDOUT',
-    message: `ETIMEDOUT: KB server request timed out after ${timeoutMs} ms`,
-  });
+  // A timeout is an unreachable server: the typed error carries the timeout text.
+  const err = await rawRequestOf(provider)('POST', '/api/kb/capture', makeEntry()).then(() => null, (e: unknown) => e);
+  expect((err as { code?: string }).code).toBe('E-KB-HTTP-UNREACHABLE');
+  expect((err as Error).message).toContain(`(ETIMEDOUT: KB server request timed out after ${timeoutMs} ms)`);
   return Date.now() - started;
 }
 
@@ -109,7 +108,7 @@ afterEach(async () => {
 });
 
 describe('request_timeout_ms end to end', () => {
-  it('a request slower than request_timeout_ms fails with ETIMEDOUT naming the timeout', async () => {
+  it('a request slower than request_timeout_ms fails with E-KB-HTTP-UNREACHABLE naming the timeout', async () => {
     responseDelayMs = 3000;
     const provider = await providerFor(1500);
     const elapsed = await expectTimeout(provider, 1500);
@@ -117,12 +116,11 @@ describe('request_timeout_ms end to end', () => {
     expect(elapsed).toBeLessThan(2900);
   }, 20000);
 
-  it('request_timeout_ms=1500 queues the capture offline against a 3 s server; 5000 gets the answer', async () => {
+  it('request_timeout_ms=1500 queues the capture offline and fails typed against a 3 s server; 5000 gets the answer', async () => {
     responseDelayMs = 3000;
 
     const short = await providerFor(1500);
-    const queued = await short.capture(makeEntry());
-    expect(queued.id).toMatch(/^offline-/);
+    await expect(short.capture(makeEntry())).rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
     expect(short.offlineQueue).toHaveLength(1);
 
     const long = await providerFor(5000);
@@ -142,16 +140,13 @@ describe('request_timeout_ms end to end', () => {
 
   it('the constructor takes the timeout in an options object', async () => {
     responseDelayMs = 3000;
-    const fallback = new SqliteProvider(':memory:');
-    await fallback.init();
-    const provider = new HttpKbProvider(`http://127.0.0.1:${port}`, 'static-token', fallback, { requestTimeoutMs: 1200 });
+    const provider = new HttpKbProvider(`http://127.0.0.1:${port}`, 'static-token', { requestTimeoutMs: 1200 });
     try {
       const elapsed = await expectTimeout(provider, 1200);
       expect(elapsed).toBeGreaterThanOrEqual(1100);
       expect(elapsed).toBeLessThan(2900);
     } finally {
       provider.dispose();
-      fallback.close();
     }
   }, 20000);
 });

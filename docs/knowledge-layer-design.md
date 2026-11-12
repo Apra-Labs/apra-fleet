@@ -615,9 +615,10 @@ throw as a type test, since that would also swallow any unrelated error.
 `/api/kb/feedback` with the same auth and `X-Repository*` headers as every
 other route, and the tool returns the server's response as is. While the
 server is unreachable the feedback joins the offline queue (replayed in order
-with queued captures and invalidates) and the tool answers
-`{id, queued: true}`. The client never writes or invents `confidence` and
-never writes the local fallback store; the server owns the entry's state.
+with queued captures and invalidates) and the tool throws
+`E-KB-HTTP-UNREACHABLE`, saying the feedback was queued. The client
+never writes or invents `confidence` and never writes a local store; the
+server owns the entry's state.
 
 **Known gap left open:** the `kb_stats` "bible" response is now a union of
 the sqlite and remote-provider shapes, and not every consumer has been audited

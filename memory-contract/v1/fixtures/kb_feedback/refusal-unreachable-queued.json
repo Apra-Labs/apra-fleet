@@ -1,0 +1,16 @@
+{
+  "tool": "kb_feedback",
+  "case": "refusal-unreachable-queued",
+  "kind": "refusal",
+  "request": {
+    "id": "5dfe9670-72fc-4231-b4f4-a0cd99137775",
+    "reason": "On re-check, the summary overstated precision -- exampleFn is untyped-input tolerant, unlike the note implies.",
+    "role": "reviewer"
+  },
+  "error": {
+    "message": "E-KB-HTTP-UNREACHABLE: POST /api/kb/feedback: the KB server at http://127.0.0.1:0 is unreachable (<cause>); the operation was queued offline and is sent once the server answers again, and no local store or bible is used instead. Remediation: start the KB server or restore the network path to it, or use a local SQLite KB (kb_setup provider sqlite).",
+    "thrown": true
+  },
+  "expected_error_code": "E-KB-HTTP-UNREACHABLE",
+  "session": "FULL_A"
+}

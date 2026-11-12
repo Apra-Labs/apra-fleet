@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import {
-  getSelfReadKb, getMemberSplitRead, mergeSplitById, type KbAnchor, type MemberSplitRead,
+  getSelfReadKb, getMemberSplitRead, mergeSplitById, memberOwnerTag, type KbAnchor, type MemberSplitRead,
 } from '../services/knowledge/kb-self.js';
+import { HttpKbProvider, KbHttpUnsupportedError } from '../services/knowledge/http-provider.js';
 import type { MemoryProvider } from '../services/knowledge/types.js';
 
 const L2_CONTENT_CAP = 3200;
@@ -190,7 +191,7 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // A MEMBER request naming CONFIRMED plus another tier is split: CONFIRMED
   // from the checkout bible view, plus the per-repo DB at every requested
   // tier, own captures only (kb-self.ts getMemberSplitRead). flagged_only
-  // never splits. Under an http project provider (serverRecall) both halves
+  // never splits. Under an http project provider both halves
   // are the KB server: its CONFIRMED set, plus the member's own captures.
   // own_scope never splits either: it asks for the OWN half of that read
   // alone -- every requested tier, CONFIRMED included, from the per-repo KB
@@ -198,7 +199,7 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // whose rows are untagged and not the caller's to kb_demote, must not be
   // merged in.
   if (!input.flagged_only && !input.own_scope) {
-    const split = await getMemberSplitRead(anchor, input.confidence, 'kb_query', { serverRecall: true });
+    const split = await getMemberSplitRead(anchor, input.confidence, 'kb_query');
     if (split) return splitQuery(split, input);
   }
 
@@ -209,18 +210,24 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // An explicit INFERRED/UNVERIFIED request, or own_scope, in a MEMBER
   // session goes to the per-repo KB and sees only the caller's own captures
   // (ownerTag).
-  // Under an http project provider (serverRecall) a MEMBER CONFIRMED-only or
-  // INFERRED/UNVERIFIED-only read goes to the server; ownerTag is enforced
-  // the same way, fleet-side. A flagged_only read never takes serverRecall: a MEMBER flagged read is
-  // answered from the checkout bible view (plus the global KB) under either
-  // provider, exactly as over SQLite. The KB server holds every member's
-  // captures at every tier, and a flagged listing carries no owner tag, so
-  // sending it there would show the member other members' entries.
+  // Under an http project provider every MEMBER read goes to the server;
+  // ownerTag is enforced the same way, fleet-side. A MEMBER flagged_only read
+  // is refused there: the bible is not used over http, and the KB server
+  // holds every member's captures at every tier while a flagged listing
+  // carries no owner tag, so sending it there would show the member other
+  // members' entries.
   const { providers, ownerTag } = await getSelfReadKb(
     anchor,
     input.flagged_only ? undefined : input.confidence,
-    { serverRecall: !input.flagged_only, ownScope: input.flagged_only ? undefined : input.own_scope },
+    { ownScope: input.flagged_only ? undefined : input.own_scope },
   );
+  if (input.flagged_only && memberOwnerTag(anchor) !== undefined && providers.project instanceof HttpKbProvider) {
+    throw new KbHttpUnsupportedError(
+      'kb_query flagged_only in a MEMBER session',
+      'nothing was read',
+      'list contradiction-flagged pairs from a FULL session, or use a local SQLite KB (kb_setup provider sqlite).',
+    );
+  }
 
   if (input.flagged_only) {
     const flaggedOpts = {

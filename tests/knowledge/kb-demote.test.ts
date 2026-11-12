@@ -541,7 +541,7 @@ describe('HttpKbProvider.demote', () => {
 
     // Nothing listens on this port: the refusal must come from demote() itself,
     // never from a failed request falling back to the local store.
-    const http = new HttpKbProvider('http://127.0.0.1:17777', 'token', fallback);
+    const http = new HttpKbProvider('http://127.0.0.1:17777', 'token');
 
     await expect(http.demote(id, REASON, EVIDENCE)).rejects.toThrow(/not supported for an HTTP KB/);
 

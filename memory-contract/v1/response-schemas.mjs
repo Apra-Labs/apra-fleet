@@ -210,6 +210,10 @@ const KB_RESPONSE_BODIES = {
     // E-KB-MAINTAINER-REQUIRED, so no field here reports the trust check.
     bible_source: z.string().optional(),
     worktree_ignored: z.boolean().optional(),
+    // Present exactly under an http project KB: the KB server is the source
+    // of truth, the bible is neither read nor imported, every count is 0.
+    bible_skipped: z.literal(true).optional(),
+    reason: z.string().optional(),
   }),
   kb_resolve_contradiction: z.object({
     winnerId: z.string(),
@@ -292,22 +296,16 @@ const KB_RESPONSE_BODIES = {
     coverage: z.unknown().optional(),
     bible: z.unknown(),
   }),
-  // Applied form: the entry's resulting state (sqlite, or the remote HTTP KB
-  // server's answer, returned as is). Queued form: a remote HTTP KB was
-  // unreachable, so the feedback waits in the offline queue -- no state is
-  // reported and no confidence is invented (spec.md section 2.2).
-  kb_feedback: z.union([
-    z.object({
-      id: z.string(),
-      stale: z.boolean(),
-      flagged_for_review: z.boolean(),
-      confidence: z.string(),
-    }),
-    z.object({
-      id: z.string(),
-      queued: z.literal(true),
-    }),
-  ]),
+  // The entry's resulting state (sqlite, or the remote HTTP KB server's
+  // answer, returned as is). A remote HTTP KB that cannot be reached is a
+  // thrown E-KB-HTTP-UNREACHABLE (the feedback is queued first), never a
+  // response (spec.md section 2.2).
+  kb_feedback: z.object({
+    id: z.string(),
+    stale: z.boolean(),
+    flagged_for_review: z.boolean(),
+    confidence: z.string(),
+  }),
 };
 
 const CODE_TOOLS = [

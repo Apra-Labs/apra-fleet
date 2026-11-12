@@ -21,11 +21,12 @@ import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../
 // kb_query flagged_only over the http project provider, against fleet's own
 // KB server (startKbServer, serving a scratch SQLite file).
 //
-// A MEMBER flagged read must keep main's SQLite behaviour exactly: it is
-// answered from the member's checkout bible view plus the global KB, never by
-// the KB server -- the server holds every member's captures at every tier,
-// and a flagged listing carries no owner tag. A FULL (non-member) flagged read
-// is answered by the server, which now honours flagged_only on the wire.
+// A MEMBER flagged read is answered from the member's checkout bible view
+// plus the global KB over SQLite. Over http the bible is not used, and the KB
+// server holds every member's captures at every tier while a flagged listing
+// carries no owner tag, so a MEMBER flagged read is refused with
+// E-KB-HTTP-UNSUPPORTED and the server is not asked. A FULL (non-member)
+// flagged read is answered by the server, which honours flagged_only on the wire.
 //
 // The server is seeded through its own /api/kb/capture route: a user-directive
 // capture becomes a flagged pending proposal, so each member gets one flagged
@@ -192,26 +193,18 @@ afterAll(async () => {
 });
 
 describe('kb_query flagged_only over the http provider (real kb-server)', () => {
-  it('a MEMBER flagged read never returns another member\'s entries or non-flagged entries', async () => {
-    await configureHttp();
-    const flagged = await memberFlaggedRead();
-    const ids = flagged.map(e => e.id);
-    expect(flagged.filter(e => (e.tags ?? []).includes(OTHER_TAG))).toEqual([]);
-    expect(ids).not.toContain(seeded.otherFlagged);
-    expect(ids).not.toContain(seeded.otherPlain);
-    expect(ids).not.toContain('bible-plain');
-    expect(ids).not.toContain(seeded.ownPlain);
-    expect(flagged.filter(e => !isFlagged(e))).toEqual([]);
+  it('over SQLite a MEMBER flagged read is answered from the checkout bible', async () => {
+    useSqlite();
+    const ids = idsOf(await memberFlaggedRead());
     expect(ids).toContain('bible-directive');
+    expect(ids).not.toContain('bible-plain');
   });
 
-  it('the same MEMBER flagged read returns the same ids over SQLite and over http', async () => {
-    useSqlite();
-    const overSqlite = idsOf(await memberFlaggedRead());
+  it('over http a MEMBER flagged read is refused with E-KB-HTTP-UNSUPPORTED: neither the bible nor the server answers it', async () => {
     await configureHttp();
-    const overHttp = idsOf(await memberFlaggedRead());
-    expect(overSqlite).toContain('bible-directive');
-    expect(overHttp).toEqual(overSqlite);
+    const err = await asMember(() => kbQuery({ flagged_only: true })).then(() => null, (e: unknown) => e);
+    expect((err as { code?: string }).code).toBe('E-KB-HTTP-UNSUPPORTED');
+    expect((err as Error).message).toMatch(/kb_query flagged_only in a MEMBER session/);
   });
 
   it('a FULL (non-member) flagged read over http returns only the server\'s flagged entries', async () => {
@@ -226,7 +219,7 @@ describe('kb_query flagged_only over the http provider (real kb-server)', () => 
   });
 
   it('HttpKbProvider forwards flagged_only and the kb-server answers with flagged entries only', async () => {
-    const provider = new HttpKbProvider(`http://127.0.0.1:${port}`, token, new SqliteProvider(':memory:'), { projectSlug });
+    const provider = new HttpKbProvider(`http://127.0.0.1:${port}`, token, { projectSlug });
     try {
       const result = await provider.query({ flagged_only: true, include_stale: true, limit: 100 });
       const ids = result.results.map(e => e.id);

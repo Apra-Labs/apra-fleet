@@ -392,20 +392,16 @@ export interface SelfReadKb {
  * INFERRED/UNVERIFIED request. Default false/omitted: the routing above is
  * unchanged, so no existing caller's result shape moves.
  *
- * `opts.serverRecall` (passed only by kb_query, kb_session_prime and
- * kb_context): when the KB config selects a non-SQLite (http) project
- * provider, a MEMBER session reads that provider for every tier, CONFIRMED
- * included -- the checkout bible is not fed from the server. A request naming
- * INFERRED/UNVERIFIED (or opting into ownScope) carries ownerTag exactly as on
- * SQLite; the http provider enforces it fleet-side on the entries' tags. A
- * CONFIRMED read whose server is unreachable is answered from the checkout
- * bible (withOfflineReads), never the per-repo database. kb_list and kb_stats
- * do not pass it and keep the routing above under either provider, and
- * neither does a kb_query flagged_only read (a MEMBER one stays on the bible
- * view, as over SQLite).
+ * Under an http project provider (decided from the KB config) the bible is
+ * not used at all: the KB server is the source of truth. A MEMBER session
+ * reads the server for every tier and every read tool, CONFIRMED included; a
+ * request naming INFERRED/UNVERIFIED, or opting into ownScope, carries
+ * ownerTag exactly as on SQLite, and the http provider enforces it fleet-side
+ * on the entries' tags. A server that cannot be reached is a typed error
+ * (E-KB-HTTP-UNREACHABLE), never an answer from the checkout bible or the
+ * per-repo database.
  */
 export interface SelfReadKbOptions {
-  serverRecall?: boolean;
   ownScope?: boolean;
 }
 
@@ -418,19 +414,11 @@ export async function getSelfReadKb(
   const isMemberSelf = anchor === undefined && getSessionMemberId() !== undefined;
   const namesUnconfirmedTier = (confidence ?? []).some(c => c !== 'CONFIRMED');
   // Decided from the config, so the default (SQLite) path opens no store here.
-  if (isMemberSelf && opts.serverRecall && kbConfigSelectsHttp()) {
+  if (isMemberSelf && kbConfigSelectsHttp()) {
     const providers = await getKbProviders(resolved.folder, resolved.remoteUrl);
     if (!isSqliteProject(providers.project)) {
-      if (namesUnconfirmedTier || opts.ownScope) {
-        const ownerTag = memberOwnerTag(anchor);
-        return { providers, anchor: resolved, memberView: false, ...(ownerTag !== undefined ? { ownerTag } : {}) };
-      }
-      // A CONFIRMED read whose server is unreachable is answered from the
-      // checkout bible (with a warning), never from the per-repo database.
-      const project = providers.project instanceof HttpKbProvider
-        ? memberConfirmedServerView(providers.project, resolved)
-        : providers.project;
-      return { providers: { ...providers, project }, anchor: resolved, memberView: false };
+      const ownerTag = namesUnconfirmedTier || opts.ownScope ? memberOwnerTag(anchor) : undefined;
+      return { providers, anchor: resolved, memberView: false, ...(ownerTag !== undefined ? { ownerTag } : {}) };
     }
   }
   if (isMemberSelf && !namesUnconfirmedTier && !opts.ownScope) {
@@ -460,9 +448,8 @@ export type SplitProjectProvider = SqliteProvider | HttpKbProvider;
  *
  * `bible` answers the CONFIRMED tier from exactly the source a CONFIRMED-only
  * member read of the same tool uses, plus the global KB, with NO owner tag:
- * the member's checkout bible view over a SQLite project (and for kb_list
- * under http), the KB server under http for kb_query, kb_session_prime and
- * kb_context (the bible view only when the server is unreachable). `own`
+ * the member's checkout bible view over a SQLite project, the KB server under
+ * http (the bible is never read then). `own`
  * answers EVERY requested tier (CONFIRMED included) from the per-repo KB --
  * the per-repo DB, or the KB server under http -- and the global KB, both
  * restricted to `ownerTag`, so a member never sees another member's
@@ -478,18 +465,6 @@ export interface MemberSplitRead {
 }
 
 /**
- * The http provider as a MEMBER CONFIRMED read sees it: answered by the KB
- * server, and from the checkout bible (with a warning) when the server is
- * unreachable, never from the per-repo database.
- */
-function memberConfirmedServerView(http: HttpKbProvider, resolved: KbAnchor): HttpKbProvider {
-  return http.withOfflineReads(
-    () => getMemberBibleView(resolved),
-    'KB server unreachable: answering this MEMBER CONFIRMED read from the checkout bible',
-  );
-}
-
-/**
  * The shared split read for a MEMBER session whose explicit tier list names
  * CONFIRMED together with at least one other tier. Returns null for every other
  * request, which then keeps its existing path through getSelfReadKb: a FULL
@@ -500,13 +475,9 @@ function memberConfirmedServerView(http: HttpKbProvider, resolved: KbAnchor): Ht
  * mergeSplitById (bible copy wins) and apply their limit after the merge.
  *
  * HTTP per-repo provider: the own half is the KB server, owner-tagged (the
- * http provider re-checks the tag on every entry it returns). The CONFIRMED
- * half follows `opts.serverRecall` (the option getSelfReadKb takes, passed by
- * kb_query, kb_session_prime and kb_context): with it, the KB server (the
- * checkout bible only while the server is unreachable), so the mixed read is
- * a superset of the CONFIRMED-only read, which the server also answers;
- * without it (kb_list), the checkout bible view, as kb_list's CONFIRMED-only
- * read. Any other non-sqlite provider is refused with requireSqliteProject's
+ * http provider re-checks the tag on every entry it returns), and the
+ * CONFIRMED half is the KB server too, with no owner tag, so the mixed read is
+ * a superset of the CONFIRMED-only read, which the server also answers. Any other non-sqlite provider is refused with requireSqliteProject's
  * error naming `callerLabel`: answering with the bible half alone would
  * silently drop tiers the caller asked for.
  */
@@ -514,7 +485,6 @@ export async function getMemberSplitRead(
   anchor: KbAnchor | undefined,
   confidence: readonly string[] | undefined,
   callerLabel: string,
-  opts: SelfReadKbOptions = {},
 ): Promise<MemberSplitRead | null> {
   if (anchor !== undefined || getSessionMemberId() === undefined) return null;
   const tiers = [...new Set(confidence ?? [])] as KbTier[];
@@ -526,11 +496,10 @@ export async function getMemberSplitRead(
   const ownProject: SplitProjectProvider = repo.project instanceof HttpKbProvider
     ? repo.project
     : requireSqliteProject(repo.project, callerLabel);
-  // Under serverRecall the server view loads the bible only when the server is
-  // unreachable: on a remote member that load is an SSH round trip, which must
-  // not break a read the KB server answers.
-  const confirmedProject: Promise<SplitProjectProvider> = ownProject instanceof HttpKbProvider && opts.serverRecall
-    ? Promise.resolve(memberConfirmedServerView(ownProject, resolved))
+  // Under http the server answers the CONFIRMED half as well: the bible is
+  // never loaded (on a remote member that load would also be an SSH round trip).
+  const confirmedProject: Promise<SplitProjectProvider> = ownProject instanceof HttpKbProvider
+    ? Promise.resolve(ownProject)
     : getMemberBibleView(resolved);
   const [bibleProject, global] = await Promise.all([confirmedProject, getGlobalKbProvider()]);
   return {

@@ -115,7 +115,7 @@ async function withProvider(
 ): Promise<void> {
   const fallback = new SqliteProvider(':memory:');
   await fallback.init();
-  const provider = new HttpKbProvider(baseUrl, { secretName: NAME }, fallback, {
+  const provider = new HttpKbProvider(baseUrl, { secretName: NAME }, {
     repository: { remote: REPO, commitOf: commit.commitOf, branchOf },
   });
   try {

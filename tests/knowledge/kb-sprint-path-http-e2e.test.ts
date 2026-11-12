@@ -319,7 +319,7 @@ describe('sprint KB path over http: capture, promote and recall all reach the KB
     expect(confirmedPrimeAt).toBeGreaterThan(promoteAt);
     expect(requests.find(r => r.path === '/api/kb/promote')!.body?.reason).toBe(REASON);
     expect(requests.every(r => r.response && !(r.response as { error?: string }).error)).toBe(true);
-    // Candidates, promote and recall never read the list route (hosted: 501).
+    // Candidates, promote and recall never read the list route (this server answers it 501).
     expect(requests.filter(r => r.path === '/api/kb/list')).toEqual([]);
 
     // 2. Nothing fell back to the local store: the per-repo SQLite DB holds no
@@ -328,10 +328,19 @@ describe('sprint KB path over http: capture, promote and recall all reach the KB
     expect(providers.project).toBeInstanceOf(HttpKbProvider);
     const httpProvider = providers.project as HttpKbProvider;
     expect(httpProvider.offlineQueue).toEqual([]);
-    const fallback = (httpProvider as unknown as { fallback: SqliteProvider }).fallback;
-    const localRows = await fallback.list({ limit: 1000 });
-    expect(localRows.map(e => e.id)).not.toContain(serverId);
-    expect(localRows.map(e => e.title)).not.toContain(ENTRY_TITLE);
+    // The per-repo SQLite DB fleet keeps for this project, opened read-only here.
+    const dbPath = path.join(FLEET_DIR, 'knowledge', providers.projectSlug, 'kb.sqlite');
+    if (fs.existsSync(dbPath)) {
+      const local = new SqliteProvider(dbPath);
+      try {
+        await local.init();
+        const localRows = await local.list({ limit: 1000 });
+        expect(localRows.map(e => e.id)).not.toContain(serverId);
+        expect(localRows.map(e => e.title)).not.toContain(ENTRY_TITLE);
+      } finally {
+        local.close();
+      }
+    }
 
     expect(logs.filter(l => /failed|rejected|WARN/.test(l))).toEqual([]);
   });

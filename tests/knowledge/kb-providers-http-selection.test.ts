@@ -64,11 +64,9 @@ function writeHttpConfigMissingToken(): void {
   fs.writeFileSync(KB_CONFIG_PATH, JSON.stringify({ provider: 'http', url: REMOTE_KB_URL }, null, 2));
 }
 
-// `fallback` is private on HttpKbProvider -- a compile-time marker only. Reading
-// it through a cast is how this suite proves the fallback is the project
-// SqliteProvider getKbProviders built, with no mock or subclass involved.
-function fallbackOf(provider: HttpKbProvider): SqliteProvider {
-  return (provider as unknown as { fallback: SqliteProvider }).fallback;
+/** True when the provider holds any SqliteProvider: over http none may stand in for the server. */
+function holdsLocalStore(provider: HttpKbProvider): boolean {
+  return Object.values(provider as object).some(v => v instanceof SqliteProvider);
 }
 
 // Real fleet log file logWarn writes (no console spy). It is an async
@@ -142,20 +140,13 @@ describe('getKbProviders project provider selection', () => {
     expect(providers.project).toBeInstanceOf(HttpKbProvider);
   });
 
-  it('passes the project SqliteProvider as the HTTP provider fallback, never a no-arg one', async () => {
+  it('gives the HTTP provider no local store: the KB server is the source of truth', async () => {
     writeHttpConfig();
     const repoPath = makeRepoPath();
 
     const providers = await getKbProviders(repoPath, REMOTE_REPO_URL);
-    const fallback = fallbackOf(providers.project as HttpKbProvider);
-
-    expect(fallback).toBeInstanceOf(SqliteProvider);
-    // The load-bearing assertion: a no-arg `new SqliteProvider()` leaves
-    // repoPath undefined and resolves its database from process.cwd(). Both of
-    // these can only hold for the instance createKbProvidersForSlug built for
-    // this (slug, repoPath) pair.
-    expect(fallback.repoPath).toBe(repoPath);
-    expect(fallback.dbPath).toBe(path.join(FLEET_DIR, 'knowledge', providers.projectSlug, 'kb.sqlite'));
+    expect(providers.project).toBeInstanceOf(HttpKbProvider);
+    expect(holdsLocalStore(providers.project as HttpKbProvider)).toBe(false);
   });
 
   it('keeps global a SqliteProvider and projectSlug identical in both modes', async () => {
@@ -207,9 +198,7 @@ describe('kb_setup takes effect within one process (my-beads-db-0d3.1)', () => {
     await kbSetup({ provider: 'http', remote: REMOTE_KB_URL, token: FAKE_TOKEN }, { folder: repoPath });
     const remote = await getKbProviders(repoPath, REMOTE_REPO_URL);
     expect(remote.project).toBeInstanceOf(HttpKbProvider);
-    // The remote provider falls back to the SAME project SqliteProvider the
-    // sqlite-mode call returned: the switch reselects, it does not reopen.
-    expect(fallbackOf(remote.project as HttpKbProvider)).toBe(before.project);
+    expect(holdsLocalStore(remote.project as HttpKbProvider)).toBe(false);
     expect(remote.global).toBe(before.global);
     expect(remote.projectSlug).toBe(before.projectSlug);
 
@@ -334,24 +323,17 @@ describe('provider init is idempotent (my-beads-db-u00.4)', () => {
     }
   });
 
-  it('getKbProviders http mode: the returned provider is init-safe to init again, keeps its fallback handle and data, and adds no listener', async () => {
+  it('getKbProviders http mode: the returned provider is init-safe to init again and adds no listener', async () => {
     writeHttpConfig();
     const repoPath = makeRepoWithFixture();
 
     const providers = await getKbProviders(repoPath, REMOTE_REPO_URL);
     const httpProvider = providers.project as HttpKbProvider;
-    const fallback = fallbackOf(httpProvider);
-    const handle = dbOf(fallback);
-    expect(handle).not.toBeNull();
-    const { id } = await fallback.capture(entryFor('idempotentHttpInit'));
     const listenersBefore = process.listenerCount('beforeExit');
 
     await expect(httpProvider.init()).resolves.toBeUndefined();
 
-    expect(dbOf(fallback)).toBe(handle);
     expect(process.listenerCount('beforeExit')).toBe(listenersBefore);
-    const result = await fallback.query({ query: 'idempotentHttpInit' });
-    expect(result.results.some(e => e.id === id)).toBe(true);
   });
 });
 

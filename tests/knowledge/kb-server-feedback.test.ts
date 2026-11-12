@@ -132,8 +132,8 @@ describe('kb-server POST /api/kb/feedback', () => {
     expect(provider).toBeInstanceOf(HttpKbProvider);
     const dead = port;
     await stop();
-    const queued = JSON.parse(await kbFeedback({ id, reason: 'Stale advice.', role: 'planner' }, { folder }));
-    expect(queued).toEqual({ id, queued: true });
+    await expect(kbFeedback({ id, reason: 'Stale advice.', role: 'planner' }, { folder }))
+      .rejects.toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE', queued: true });
     expect(provider.offlineQueue).toHaveLength(1);
 
     // Restart on the same port, same database: the queued op must now land.

@@ -616,10 +616,17 @@ session's `kb_query` / `kb_session_prime` / `kb_stats`), `E-MEMBER-VIEW-REMOTE`
 and `E-BIBLE-BASIS-NOT-GIT` (`kb_export` / `kb_bible_commit` in a folder that is
 not a git work tree).
 
-Under the http KB provider (`kb_setup provider http`), two more codes from the
-same file can be thrown: `E-KB-HTTP-UNSUPPORTED` (an operation the http
-provider cannot serve: `kb_invalidate` with `ids`; nothing is changed) and `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
-different project; nothing is read or written).
+Under the http KB provider (`kb_setup provider http`) the KB server is the
+source of truth and the bible is not used: `kb_import` imports nothing and
+answers `bible_skipped: true` with a `reason`, and a member `kb_query`
+`flagged_only` read is refused. Three more codes from the same file can be
+thrown: `E-KB-HTTP-UNSUPPORTED` (an operation the http provider cannot serve:
+`kb_invalidate` with `ids`, a member `kb_query` `flagged_only` read; nothing is
+changed), `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
+different project; nothing is read or written) and `E-KB-HTTP-UNREACHABLE`
+(the KB server cannot be reached; a capture, invalidate or feedback is queued
+offline first and the message says so, and no read is answered from a local
+store or the bible).
 
 `E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_harvest`, `kb_invalidate`,
 `kb_query`, `kb_context`, `kb_session_prime`, `kb_list` and `kb_promote` when the remote (HTTP) KB takes

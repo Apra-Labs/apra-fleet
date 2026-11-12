@@ -101,8 +101,9 @@ is not reached through `requireSqliteProject`. Over a remote KB,
 `{id, reason, role}` to `/api/kb/feedback` and `kb_feedback` returns the
 server's response as is; while the server is unreachable the feedback is kept
 in the offline queue (replayed in order with queued captures and invalidates)
-and the tool answers `{id, queued: true}`. Either way the client never writes
-or invents `confidence` (`methods.json` X-2 `providers_note`).
+and the tool fails with `E-KB-HTTP-UNREACHABLE`, whose message says it was
+queued. Either way the client never writes or invents `confidence`
+(`methods.json` X-2 `providers_note`).
 
 ### 2.3 `CodeIntelligenceProvider` interface methods (`methods.json` ids C-1..C-9)
 
@@ -186,10 +187,11 @@ before they reach the bible (the bible copy wins on a shared id); a
 `[CONFIRMED, INFERRED]` read is a superset of the CONFIRMED-only result
 (except `kb_list` with a `limit`, which applies the limit after merging) and
 never exposes another member's captures. The bible view and this split apply
-to a SQLite project KB: under the http project provider a MEMBER `kb_query`,
-`kb_session_prime` or `kb_context` read of any tier, CONFIRMED included, goes to
-the server (`kb_list` and `kb_stats` keep the SQLite routing, except that the
-own half of a mixed `kb_list` is the server). A mixed request is split the same
+to a SQLite project KB: under the http project provider the bible is not used
+at all (section 2.9), and every MEMBER read (`kb_query`, `kb_session_prime`,
+`kb_context`, `kb_list`, `kb_stats`) of any tier, CONFIRMED included, goes to
+the server; a MEMBER `kb_query` `flagged_only` read is refused there with
+`E-KB-HTTP-UNSUPPORTED` (a flagged listing carries no owner tag). A mixed request is split the same
 way there: the server's CONFIRMED set, plus every listed tier from the
 server restricted to the caller's own captures, merged by id. Own-scope holds
 there too, enforced by fleet on the entry tags the server returns: a read
@@ -356,10 +358,9 @@ A MEMBER session is served an explicit tool list
   request for another project (or naming none) with 409 naming both slugs,
   surfaced by every provider call (capture, query, context, invalidate, prime,
   promote) as `E-KB-HTTP-PROJECT-MISMATCH` (thrown); nothing is read or written
-  and the local fallback store is not used. When the server is unreachable, a
-  MEMBER CONFIRMED read (`kb_query`, `kb_session_prime`, `kb_context`) is
-  answered from the checkout bible with a logged warning, never from the
-  per-repo database.
+  and no local store is used. When the server is unreachable every call fails
+  with `E-KB-HTTP-UNREACHABLE` (section 2.9); no read is answered from the
+  checkout bible or the per-repo database.
 - `kb_invalidate` retires entries (`ids` discards them; `files` marks
   context-cache entries invalidated), and `kb_bible_commit` removes retired
   entries from the bible, so in a member session WITHOUT the grant neither
@@ -629,6 +630,24 @@ for every accepted shape live in `bible/examples/`.
   `kb_bible_commit`'s `backfilled` count (above); otherwise the format change is
   confined to the bible file.
 
+### 2.9 Remote (HTTP) KB: the server is the source of truth
+
+When the KB config selects the http project provider, the KB server answers
+every project KB call and fleet keeps no second copy:
+
+- The bible (`.fleet/kb-canonical.json`) is not used. No read is answered
+  from it, `kb_session_prime` does not cold-seed from it, `kb_import` imports
+  nothing (it answers `bible_skipped: true` with a `reason` before reading the
+  bible, so a sprint start imports nothing), and `kb_bible_commit` answers
+  `bible_skipped: true` (section 2.6).
+- The per-repo SQLite database is not used either: nothing is read from it
+  when the server is down, and delivery telemetry (`touch`) is not written
+  to it. `getLinked` and `relatedClaims` have no remote route and answer
+  empty (`related_claims` is then empty, as for any graph miss).
+- A server that cannot be reached is `E-KB-HTTP-UNREACHABLE`, and a token the
+  server refuses is `E-KB-HTTP-AUTH` (section 3.3a). Both are thrown; neither
+  is ever answered from a local store.
+
 ## 3. Error model
 
 `taxonomy.json` in this directory is the source of truth: a CLOSED set of
@@ -691,21 +710,28 @@ updates the secret, and the identical request then succeeds. It is still
 way, and the provider has already done its one retry (re-read the secret, send
 once more) before raising it.
 
-### 3.3a Remote KB auth failure is thrown, and writes are queued first
+`E-KB-HTTP-UNREACHABLE` (the KB server cannot be reached) is the same kind:
+the identical request succeeds once the server answers again, which the
+request itself cannot change, so it is `retryable: false` too. It is the one
+transient failure in this surface that is thrown rather than degraded: under
+http the KB server is the only source of truth, and answering from a local
+store or the checkout bible would hide the outage (section 2.9).
 
-`E-KB-HTTP-AUTH` is `surfaced: thrown` on every tool that reaches the remote
-provider. A write (`kb_capture`, `kb_harvest`, `kb_invalidate`,
-`kb_feedback`) is first put
-in the provider's offline queue -- the same queue a server-down write uses --
+### 3.3a Remote KB auth and outage failures are thrown, and writes are queued first
+
+`E-KB-HTTP-AUTH` and `E-KB-HTTP-UNREACHABLE` are `surfaced: thrown` on every
+tool that reaches the remote provider. A write (`kb_capture`, `kb_harvest`,
+`kb_invalidate`, `kb_feedback`) is first put in the provider's offline queue
 and the thrown message says so; the queue is kept (not flushed, not dropped)
-until the secret is accepted. A read (`kb_query`, `kb_context`,
-`kb_session_prime`) is thrown with no local fallback: unlike an outage, this
-needs the operator to act, and a silently degraded answer would hide that.
+until the server accepts a request again, and lives in the fleet server
+process only. A read (`kb_query`, `kb_context`, `kb_session_prime`,
+`kb_list`) is thrown with no local fallback: a silently degraded answer would
+hide the failure.
 `kb_promote` is never queued (the id only exists on the server), so it is thrown
 as is. Over a SQLite project KB a MEMBER session's CONFIRMED read is answered
 from its checkout bible (2.5) and never reaches the provider; under the http
-project provider member reads go to the server (2.5) and are thrown like any
-other read. No message, log line or
+project provider member reads go to the server (2.5, 2.9) and are thrown like
+any other read. No message, log line or
 queue warning ever contains the secret's value.
 
 ### 3.4 Silent refusals are named but not projectable

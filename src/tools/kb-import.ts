@@ -5,7 +5,7 @@ import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { parseBibleDocument, importBibleEntries, type BibleDocument } from '../services/knowledge/bible-import.js';
-import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { requireSqliteProject, isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import {
   OWN_BIBLE_REL, BibleBlobIntegrityError, bibleBytesBlobId, isSafeBibleRef, readCommittedBibleBlob,
@@ -158,13 +158,34 @@ export interface KbImportReport {
    * uncommitted content was not imported.
    */
   worktree_ignored?: boolean;
+  /**
+   * Present (true) exactly when the project KB is the http provider: the KB
+   * server is the source of truth, so the bible is neither read nor imported
+   * and every count is 0. `reason` says why.
+   */
+  bible_skipped?: true;
+  reason?: string;
 }
+
+export const KB_IMPORT_HTTP_SKIP_REASON = 'bible import is not used over the http KB provider: the KB server is the source of truth';
 
 export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise<string> {
   const resolved = resolveKbAnchor(anchor);
   const repoAnchor = requireLocalFolder(resolved.folder);
   const ownBible = path.join(repoAnchor, '.fleet', 'kb-canonical.json');
   const biblePath = input.path ?? ownBible;
+
+  // Over http the KB server is the source of truth: the bible is not read
+  // and nothing is imported (decided before any bible read or grant check).
+  const providers = await getKbProviders(repoAnchor, resolved.remoteUrl);
+  if (!isSqliteProject(providers.project)) {
+    const skipped: KbImportReport = {
+      imported: 0, skipped: 0, linked: 0, flagged: 0, rejected: 0, demoted: 0,
+      sweep: { checked: 0, staled: 0, unstaled: 0 },
+      bible_skipped: true, reason: KB_IMPORT_HTTP_SKIP_REASON,
+    };
+    return JSON.stringify(skipped);
+  }
 
   const lacksGrant = memberLacksKbMaintainer(anchor);
   const namesOwnBible = input.path === undefined || path.resolve(input.path) === path.resolve(ownBible);
@@ -237,7 +258,6 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
 
   // repoAnchor (resolved above) selects the KB, so an import 'for' repo B can
   // never land in whichever repo the server process happens to sit in.
-  const providers = await getKbProviders(repoAnchor, resolved.remoteUrl);
   const provider = requireSqliteProject(providers.project, 'kb_import');
 
   // Trust anchor (see the header): a committed bible is imported by a member

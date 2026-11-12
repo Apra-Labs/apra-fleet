@@ -2008,7 +2008,11 @@ export function createKbPrimingClient(opts = {}) {
                         } else {
                             log(`[kb-prime] no base branch -- bible import skipped for '${member}' (the kb_maintainer imports only the base branch's committed bible)`);
                         }
-                        if (imported && typeof imported.imported === 'number' && imported.imported > 0) {
+                        if (imported && imported.bible_skipped === true) {
+                            // An http project KB: the KB server is the source of
+                            // truth, so the member imported nothing.
+                            log(`[kb-prime] no bible import for '${member}': ${imported.reason || 'the KB is served over http'}`);
+                        } else if (imported && typeof imported.imported === 'number' && imported.imported > 0) {
                             log(`[kb-prime] imported ${imported.imported} bible entr(ies) into the warm KB for '${member}'`);
                         }
                     } catch (err) {

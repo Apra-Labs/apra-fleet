@@ -137,11 +137,8 @@ function kbConfigFingerprint(): string {
  * after a warning, once per distinct config content -- see the note above
  * _warnedKbConfigFailures.
  *
- * The HTTP branch passes that same SqliteProvider as the explicit fallback:
- * HttpKbProvider's default is a NO-ARG `new SqliteProvider()`, which resolves its
- * database from process.cwd() rather than this repo's path.
- *
- * It also passes the resolved repository (repoPath's origin remote and HEAD,
+ * The HTTP branch gives HttpKbProvider no local store: over http the KB
+ * server is the only source of truth. It passes the resolved repository (repoPath's origin remote and HEAD,
  * or the remote member's remoteUrl), which HttpKbProvider sends as the
  * X-Repository / X-Repository-Commit / X-Repository-Branch headers (commit and
  * branch only for a local folder) so a shared remote KB can keep
@@ -171,12 +168,8 @@ async function selectProjectProvider(
     return projectProvider;
   }
   // my-beads-db-u00.4: the HTTP provider is init'd like any other provider,
-  // rather than relying on HttpKbProvider.init() doing nothing beyond
-  // re-init'ing its fallback. That fallback is the already-init'd
-  // projectProvider, and SqliteProvider.init() returns early once its db is
-  // open, so the double init is harmless (pinned in
-  // tests/knowledge/kb-providers-http-selection.test.ts) -- and any setup
-  // HttpKbProvider.init() grows later runs here instead of being skipped.
+  // so any setup HttpKbProvider.init() grows later runs here instead of being
+  // skipped.
   // readKbConfigFromDisk throws on http-without-url/token, so the url and one
   // token source are present here. A token_ref config hands the provider the
   // secret NAME, never a value: the provider looks it up on every request, so a
@@ -188,7 +181,7 @@ async function selectProjectProvider(
   const repository = resolveRepositoryIdentity(repoPath, remoteUrl);
   // The slug goes on every request (X-KB-Project) so a server for another
   // project refuses it instead of answering with that project's KB.
-  const httpProvider = new HttpKbProvider(config.url!, tokenSource, projectProvider, {
+  const httpProvider = new HttpKbProvider(config.url!, tokenSource, {
     requestTimeoutMs: config.requestTimeoutMs,
     projectSlug: slug,
     ...(repository ? { repository } : {}),

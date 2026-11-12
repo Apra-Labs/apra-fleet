@@ -56,18 +56,17 @@ export async function kbContext(input: KbContextInput, anchor?: KbAnchor): Promi
   // file (best status wins) with the member's OWN captures from the per-repo
   // DB, so the other tiers never expose another member's captures and never
   // hide the bible's. This is also the MEMBER default read. Under an http
-  // project provider (serverRecall) both halves are the KB server: every
+  // project provider both halves are the KB server: every
   // CONFIRMED summary, plus the member's own.
-  const split = await getMemberSplitRead(anchor, confidence, 'kb_context', { serverRecall: true });
+  const split = await getMemberSplitRead(anchor, confidence, 'kb_context');
   if (split) return JSON.stringify(partition(await splitContext(split, input.files, explicit, excludeDisputed)));
 
   // Everything else (kb-self.ts getSelfReadKb): a MEMBER CONFIRMED-only
   // request reads the checkout bible view; a MEMBER request naming only
   // INFERRED/UNVERIFIED goes to the per-repo DB, own captures only (ownerTag).
-  // Under an http project provider (serverRecall) such a MEMBER read goes to
-  // the server; an INFERRED/UNVERIFIED request keeps ownerTag, enforced by
+  // Under an http project provider every MEMBER read goes to the server; an INFERRED/UNVERIFIED request keeps ownerTag, enforced by
   // either provider.
-  const read = await getSelfReadKb(anchor, explicit, { serverRecall: true });
+  const read = await getSelfReadKb(anchor, explicit);
   const { providers } = read;
   let results: FileResult[];
   if (read.ownerTag !== undefined) {

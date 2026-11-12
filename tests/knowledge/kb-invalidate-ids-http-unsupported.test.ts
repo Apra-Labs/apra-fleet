@@ -103,12 +103,11 @@ afterEach(() => {
 });
 
 describe('kb_invalidate {ids} under the http KB provider', () => {
-  it('rejects with the typed E-KB-HTTP-UNSUPPORTED error and discards nothing, remotely or locally', async () => {
+  it('rejects with the typed E-KB-HTTP-UNSUPPORTED error and sends nothing to the server', async () => {
     await kbSetup({ provider: 'http', remote: `http://127.0.0.1:${port}`, token }, { folder });
     const providers = await getKbProviders(folder, remoteUrl);
     expect(providers.project).toBeInstanceOf(HttpKbProvider);
-    const fallback = (providers.project as unknown as { fallback: SqliteProvider }).fallback;
-    const { id } = await fallback.capture(entryInput('HttpDiscardRefused'));
+    const id = 'an-entry-the-server-holds';
     const requestsBefore = requestCount;
 
     const err = await kbInvalidate({ ids: [id] }, { folder, remoteUrl }).then(
@@ -120,7 +119,6 @@ describe('kb_invalidate {ids} under the http KB provider', () => {
     expect(err.message.startsWith('E-KB-HTTP-UNSUPPORTED: ')).toBe(true);
     expect(err.message).toContain('id-level discard');
     expect(requestCount).toBe(requestsBefore);
-    expect(supersededCount(fallback)).toBe(0);
   });
 });
 

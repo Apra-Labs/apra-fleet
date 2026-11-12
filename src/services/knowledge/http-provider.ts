@@ -1,8 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
-import { randomBytes } from 'node:crypto';
-import { SqliteProvider } from './sqlite-provider.js';
-import { logWarn } from '../../utils/log-helpers.js';
+import type { SqliteProvider } from './sqlite-provider.js';
 import type {
   MemoryProvider,
   KBEntry,
@@ -132,13 +130,9 @@ type QueuedOperation =
 
 /**
  * What HttpKbProvider.feedback returns: the remote server's response body as
- * is, or -- when the server could not be reached -- a marker that the
- * feedback was kept in the offline queue. The queued form carries no
- * confidence/stale fields: the client never invents them.
+ * is. The client never invents confidence/stale fields.
  */
-export type HttpKbFeedbackResult =
-  | Record<string, unknown>
-  | { id: string; queued: true };
+export type HttpKbFeedbackResult = Record<string, unknown>;
 
 function isConnectionError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
@@ -250,8 +244,45 @@ function hasTag(entry: { tags?: unknown }, tag: string): boolean {
 }
 
 /**
+ * E-KB-HTTP-UNREACHABLE: the KB server could not be reached (connection
+ * refused, DNS failure, timeout, reset). Over http the server is the only
+ * source of truth, so nothing is answered from a local store or the checkout
+ * bible instead. `queued` is true when the operation (a capture, invalidate
+ * or feedback) was kept in the offline queue and will be sent once the server
+ * answers again.
+ */
+export class KbHttpUnreachableError extends Error {
+  readonly code = 'E-KB-HTTP-UNREACHABLE' as const;
+  readonly queued: boolean;
+  private readonly serverUrl: string;
+  private readonly operation: string;
+  private readonly causeText: string;
+  constructor(serverUrl: string, operation: string, causeText: string, queued = false) {
+    const outcome = queued
+      ? 'the operation was queued offline and is sent once the server answers again'
+      : 'nothing was read or written';
+    super(
+      `E-KB-HTTP-UNREACHABLE: ${operation}: the KB server at ${serverUrl} is unreachable (${causeText}); `
+      + `${outcome}, and no local store or bible is used instead. `
+      + 'Remediation: start the KB server or restore the network path to it, or use a local SQLite KB (kb_setup provider sqlite).',
+    );
+    this.name = 'KbHttpUnreachableError';
+    this.queued = queued;
+    this.serverUrl = serverUrl;
+    this.operation = operation;
+    this.causeText = causeText;
+  }
+
+  /** The same error, marked as having left its operation in the offline queue. */
+  asQueued(): KbHttpUnreachableError {
+    if (this.queued) return this;
+    return new KbHttpUnreachableError(this.serverUrl, this.operation, this.causeText, true);
+  }
+}
+
+/**
  * Typed refusal for an operation the http KB provider does not support (and
- * deliberately does not emulate through the local fallback store).
+ * deliberately does not emulate through a local store).
  */
 export class KbHttpUnsupportedError extends Error {
   readonly code = 'E-KB-HTTP-UNSUPPORTED';
@@ -270,8 +301,8 @@ export class KbHttpUnsupportedError extends Error {
 
 /**
  * Typed refusal for a KB server that serves a different project than the one
- * the request is for (HTTP 409). Never answered from the local fallback store:
- * the server is reachable, it is just the wrong one.
+ * the request is for (HTTP 409). Never answered from a local store: the
+ * server is reachable, it is just the wrong one.
  */
 export class KbHttpProjectMismatchError extends Error {
   readonly code = 'E-KB-HTTP-PROJECT-MISMATCH';
@@ -298,27 +329,14 @@ export class HttpKbProvider implements MemoryProvider {
   private readonly displayUrl: string;
   private readonly tokenSource: KbHttpTokenSource;
   private readonly projectSlug: string | undefined;
-  private readonly fallback: SqliteProvider;
   private readonly requestTimeoutMs: number;
   private readonly repository: RepositoryIdentity | undefined;
   readonly offlineQueue: QueuedOperation[] = [];
   private readonly beforeExitHandler: () => void;
-  /**
-   * Where query/context/prime are answered when the server is unreachable:
-   * the per-repo fallback store, unless withOfflineReads() replaced it.
-   */
-  private offlineReads: () => Promise<MemoryProvider>;
-  private offlineReadWarning: string | undefined;
-  /**
-   * The store that answered a read of this provider (or view) while the
-   * server was unreachable; undefined until that happens. relatedClaims and
-   * getLinked then read that store, and touch is skipped when it is not the
-   * per-repo fallback store, so an offline MEMBER read (answered from the
-   * checkout bible) never reads or writes the per-repo DB.
-   */
-  private offlineStore: MemoryProvider | undefined;
 
-  constructor(url: string, token: KbHttpTokenSource, fallback?: SqliteProvider, options: HttpKbProviderOptions = {}) {
+  // The KB server is the only source of truth: no local store or checkout
+  // bible answers for it, online or offline.
+  constructor(url: string, token: KbHttpTokenSource, options: HttpKbProviderOptions = {}) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.repository = options.repository && isValidRepositoryValue(options.repository.remote)
       ? options.repository
@@ -327,9 +345,6 @@ export class HttpKbProvider implements MemoryProvider {
     this.displayUrl = redactUrlUserinfo(this.baseUrl);
     this.tokenSource = token;
     this.projectSlug = options.projectSlug;
-    this.fallback = fallback ?? new SqliteProvider();
-    const fallbackStore = this.fallback;
-    this.offlineReads = async () => fallbackStore;
 
     this.beforeExitHandler = () => {
       if (this.offlineQueue.length > 0) {
@@ -344,33 +359,6 @@ export class HttpKbProvider implements MemoryProvider {
 
   dispose(): void {
     process.removeListener('beforeExit', this.beforeExitHandler);
-  }
-
-  /**
-   * This provider, with query/context/prime answered by `reads` (and a
-   * warning logged) when the server is unreachable, instead of by the per-repo
-   * fallback store. Used for MEMBER CONFIRMED reads, whose offline answer is
-   * the checkout bible. The view shares this provider's connection settings,
-   * offline queue and exit hook (prototype delegation), so it is not a second
-   * client.
-   */
-  withOfflineReads(reads: () => Promise<MemoryProvider>, warning: string): HttpKbProvider {
-    const view = Object.create(this) as HttpKbProvider;
-    view.offlineReads = reads;
-    view.offlineReadWarning = warning;
-    return view;
-  }
-
-  private async offlineReadProvider(): Promise<MemoryProvider> {
-    if (this.offlineReadWarning !== undefined) logWarn('kb-http', this.offlineReadWarning);
-    const store = await this.offlineReads();
-    this.offlineStore = store;
-    return store;
-  }
-
-  /** True once an offline read was answered by a store other than the per-repo fallback. */
-  private answeredOutsideFallback(): boolean {
-    return this.offlineStore !== undefined && this.offlineStore !== this.fallback;
   }
 
   private enqueue(op: QueuedOperation): void {
@@ -465,6 +453,9 @@ export class HttpKbProvider implements MemoryProvider {
         recordKbHttpSuccess(this.baseUrl);
         return result;
       } catch (err) {
+        if (isConnectionError(err)) {
+          throw new KbHttpUnreachableError(this.displayUrl, `${method} ${pathname}`, (err as Error).message);
+        }
         if (!isHttp401(err)) throw err;
         recordKbHttpRejected(this.baseUrl);
         if (secretName === undefined) throw err;
@@ -582,7 +573,7 @@ export class HttpKbProvider implements MemoryProvider {
       } catch (err) {
         // Unreachable, or the wrong project's server: keep the queue for the
         // right server rather than dropping what could not be sent.
-        if (isConnectionError(err) || isAuthError(err) || err instanceof KbHttpProjectMismatchError) {
+        if (err instanceof KbHttpUnreachableError || isAuthError(err) || err instanceof KbHttpProjectMismatchError) {
           break;
         }
         this.offlineQueue.shift();
@@ -590,9 +581,8 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
-  async init(): Promise<void> {
-    await this.fallback.init();
-  }
+  // Nothing to open locally: every operation is a request to the server.
+  async init(): Promise<void> {}
 
   async capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }> {
     await this.tryFlushQueue();
@@ -601,13 +591,9 @@ export class HttpKbProvider implements MemoryProvider {
         'POST', '/api/kb/capture', input
       );
     } catch (err) {
-      if (isConnectionError(err)) {
-        this.enqueue({ op: 'capture', input });
-        return { id: `offline-${randomBytes(8).toString('hex')}`, audn_decision: 'add' };
-      }
-      if (isAuthError(err)) {
-        // Queued exactly as for server-down, but the call still fails with
-        // E-KB-HTTP-AUTH: unlike an outage, this needs the operator to act.
+      // Queued, and the call still fails with the typed error: the caller
+      // must not believe the capture reached the KB.
+      if (err instanceof KbHttpUnreachableError || isAuthError(err)) {
         this.enqueue({ op: 'capture', input });
         throw err.asQueued();
       }
@@ -639,15 +625,8 @@ export class HttpKbProvider implements MemoryProvider {
     const tag = opts.tag ?? opts.owner_tag;
     if (tag) params.tag = tag;
 
-    try {
-      const result = await this.request<KBResult>('GET', '/api/kb/query', undefined, params);
-      return opts.owner_tag ? this.keepOwned(result, opts.owner_tag, opts.tag) : result;
-    } catch (err) {
-      if (isConnectionError(err)) {
-        return (await this.offlineReadProvider()).query(opts);
-      }
-      throw err;
-    }
+    const result = await this.request<KBResult>('GET', '/api/kb/query', undefined, params);
+    return opts.owner_tag ? this.keepOwned(result, opts.owner_tag, opts.tag) : result;
   }
 
   async context(
@@ -657,25 +636,18 @@ export class HttpKbProvider implements MemoryProvider {
     ownerTag?: string,
   ): Promise<FileContextResult[]> {
     await this.tryFlushQueue();
-    try {
-      const ctxParams: Record<string, string> = { files: files.join(',') };
-      if (confidence?.length) ctxParams.confidence = confidence.join(',');
-      if (excludeDisputed) ctxParams.exclude_disputed = 'true';
-      // MEMBER own-scope: the server picks each file's newest entry among the
-      // caller's own (as the SQLite provider does in SQL), so another member's
-      // newer entry cannot hide it; ownership is re-checked below.
-      if (ownerTag) ctxParams.tag = ownerTag;
-      const result = await this.request<{ results: FileContextResult[] }>(
-        'GET', '/api/kb/context', undefined, ctxParams
-      );
-      if (!ownerTag) return result.results;
-      return this.keepOwnedSummaries(result.results, await this.ownedIds(ownerTag));
-    } catch (err) {
-      if (isConnectionError(err)) {
-        return (await this.offlineReadProvider()).context(files, confidence, excludeDisputed, ownerTag);
-      }
-      throw err;
-    }
+    const ctxParams: Record<string, string> = { files: files.join(',') };
+    if (confidence?.length) ctxParams.confidence = confidence.join(',');
+    if (excludeDisputed) ctxParams.exclude_disputed = 'true';
+    // MEMBER own-scope: the server picks each file's newest entry among the
+    // caller's own (as the SQLite provider does in SQL), so another member's
+    // newer entry cannot hide it; ownership is re-checked below.
+    if (ownerTag) ctxParams.tag = ownerTag;
+    const result = await this.request<{ results: FileContextResult[] }>(
+      'GET', '/api/kb/context', undefined, ctxParams
+    );
+    if (!ownerTag) return result.results;
+    return this.keepOwnedSummaries(result.results, await this.ownedIds(ownerTag));
   }
 
   async discard(_ids: string[], _opts?: RetireOptions): Promise<DiscardResult> {
@@ -689,11 +661,7 @@ export class HttpKbProvider implements MemoryProvider {
         'POST', '/api/kb/invalidate', { files }
       );
     } catch (err) {
-      if (isConnectionError(err)) {
-        this.enqueue({ op: 'invalidate', files });
-        return { invalidated: 0 };
-      }
-      if (isAuthError(err)) {
+      if (err instanceof KbHttpUnreachableError || isAuthError(err)) {
         this.enqueue({ op: 'invalidate', files });
         throw err.asQueued();
       }
@@ -706,10 +674,10 @@ export class HttpKbProvider implements MemoryProvider {
    * memory-contract v1 kb_feedback request body {id, reason, role} (role
    * carries the already-validated author). The server owns the entry, so the
    * server decides stale/flagged; this method returns its response as is and
-   * never writes or invents confidence, and never touches the fallback store.
-   * Server unreachable: the feedback is queued offline (replayed in order with
-   * queued captures/invalidates) and a { id, queued: true } result returned.
-   * E-KB-HTTP-AUTH: queued too, and the error is rethrown as queued.
+   * never writes or invents confidence, and never touches a local store.
+   * Server unreachable (E-KB-HTTP-UNREACHABLE) or token refused
+   * (E-KB-HTTP-AUTH): the feedback is queued offline (replayed in order with
+   * queued captures/invalidates) and the error is rethrown as queued.
    */
   async feedback(id: string, reason: string, author: string): Promise<HttpKbFeedbackResult> {
     await this.tryFlushQueue();
@@ -717,11 +685,7 @@ export class HttpKbProvider implements MemoryProvider {
     try {
       return await this.request<Record<string, unknown>>('POST', '/api/kb/feedback', body);
     } catch (err) {
-      if (isConnectionError(err)) {
-        this.enqueue({ op: 'feedback', ...body });
-        return { id, queued: true };
-      }
-      if (isAuthError(err)) {
+      if (err instanceof KbHttpUnreachableError || isAuthError(err)) {
         this.enqueue({ op: 'feedback', ...body });
         throw err.asQueued();
       }
@@ -729,49 +693,30 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
-  // No remote route: the graph is read from the local store the entries came
-  // from -- the offline store once a read fell back to it (the checkout bible
-  // for a MEMBER CONFIRMED view), else the per-repo fallback store.
-  async getLinked(id: string): Promise<KBEntry[]> {
-    return (this.offlineStore ?? this.fallback).getLinked(id);
+  // No remote route for the entry graph, and no local store stands in for the
+  // server: an entry's links are not known here.
+  async getLinked(_id: string): Promise<KBEntry[]> {
+    return [];
   }
 
-  // Delegated to the local fallback store like getLinked: delivery telemetry is
-  // a property of the KB the entries were read out of, and there is no remote
-  // route for it. Never throws -- a telemetry write must not fail a prime.
-  // Skipped (0 touched) once an offline read was answered by another store:
-  // those ids are not the per-repo DB's, and the read must not write it.
-  async touch(ids: string[]): Promise<number> {
-    if (this.answeredOutsideFallback()) return 0;
-    try {
-      return await this.fallback.touch(ids);
-    } catch {
-      return 0;
-    }
+  // Delivery telemetry has no remote route. Nothing is written locally: the
+  // per-repo DB is not this KB.
+  async touch(_ids: string[]): Promise<number> {
+    return 0;
   }
 
-  // Delegated to the local fallback store like touch: "is the row I hold still
-  // live CONFIRMED" is a question about the LOCAL store by definition, and
-  // there is no remote route for it. An unreadable local store degrades to an
-  // empty map, i.e. "no local row for any of these" -- the cold seed then
-  // behaves exactly as it did before this predicate existed.
-  getLiveConfirmedState(ids: string[]): Map<string, boolean> {
-    try {
-      return this.fallback.getLiveConfirmedState(ids);
-    } catch {
-      return new Map();
-    }
+  // "Is the row I hold still live CONFIRMED" is a question about a local
+  // store; over http there is none. The prime cold seed (the only caller)
+  // never runs under an http provider, so reaching this is a bug: refuse
+  // rather than answer from a local store.
+  getLiveConfirmedState(_ids: string[]): Map<string, boolean> {
+    throw new KbHttpUnsupportedError('the bible liveness check', 'nothing was read', 'this is an internal call that must not run under the http KB provider; report it.');
   }
 
-  // Delegated to the local store like getLinked: the graph lives alongside the
-  // entries, and there is no remote route for it. Never throws -- a graph miss
-  // must degrade to "no related claims", not fail a prime.
-  async relatedClaims(ids: string[], limit?: number, filter?: EntryTrustFilter): Promise<KBEntry[]> {
-    try {
-      return await (this.offlineStore ?? this.fallback).relatedClaims(ids, limit, filter);
-    } catch {
-      return [];
-    }
+  // No remote route for related claims: degrade to "no related claims"
+  // rather than reading a local store.
+  async relatedClaims(_ids: string[], _limit?: number, _filter?: EntryTrustFilter): Promise<KBEntry[]> {
+    return [];
   }
 
   async prime(opts: PrimeOptions): Promise<PrimedContext> {
@@ -779,21 +724,14 @@ export class HttpKbProvider implements MemoryProvider {
     // owner_tag is internal (never part of the contract body); it is applied
     // to the server's answer here instead.
     const { owner_tag: ownerTag, ...body } = opts;
-    try {
-      const primed = await this.request<PrimedContext>('POST', '/api/kb/prime', body);
-      if (!ownerTag) return primed;
-      const owned = await this.ownedIds(ownerTag);
-      return {
-        ...primed,
-        top_entries: (primed.top_entries ?? []).filter(e => hasTag(e, ownerTag)),
-        fresh_summaries: this.keepOwnedSummaries(primed.fresh_summaries ?? [], owned),
-      };
-    } catch (err) {
-      if (isConnectionError(err)) {
-        return (await this.offlineReadProvider()).prime(opts);
-      }
-      throw err;
-    }
+    const primed = await this.request<PrimedContext>('POST', '/api/kb/prime', body);
+    if (!ownerTag) return primed;
+    const owned = await this.ownedIds(ownerTag);
+    return {
+      ...primed,
+      top_entries: (primed.top_entries ?? []).filter(e => hasTag(e, ownerTag)),
+      fresh_summaries: this.keepOwnedSummaries(primed.fresh_summaries ?? [], owned),
+    };
   }
 
   // Remote-only: the id exists on the server, so a connection error is
@@ -817,12 +755,6 @@ export class HttpKbProvider implements MemoryProvider {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'HTTP_404') {
         throw entryNotFoundOnServer(id, err as NodeJS.ErrnoException);
-      }
-      if (isConnectionError(err)) {
-        throw new Error(
-          `kb_promote failed: KB server at ${this.displayUrl} is unreachable (${(err as Error).message}); `
-          + 'nothing was promoted and no offline fallback is used for promote.',
-        );
       }
       throw err;
     }

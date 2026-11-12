@@ -44,15 +44,6 @@ function loadTestToken(): string {
 const KB_CONFIG_DIR = path.join(FLEET_DIR, 'knowledge');
 const KB_CONFIG_PATH = path.join(KB_CONFIG_DIR, 'config.json');
 
-// `fallback` is private on HttpKbProvider -- reading it through a cast is how
-// this suite proves the fallback is the project SqliteProvider getKbProviders
-// built. getKbProviders never exposes that instance directly (confirmed KB
-// entry: tests/knowledge/kb-providers-http-selection.test.ts), so identity is
-// asserted via the repoPath/dbPath discriminator instead of a direct `===`.
-function fallbackOf(provider: HttpKbProvider): SqliteProvider {
-  return (provider as unknown as { fallback: SqliteProvider }).fallback;
-}
-
 function makeEntry(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
   return {
     type: 'knowledge',
@@ -134,7 +125,7 @@ afterAll(() => {
 });
 
 describe('kb_setup selects the http provider, reachable from getKbProviders (my-beads-db-0cd.7)', () => {
-  it('kb_setup + getKbProviders yields an HttpKbProvider that reaches the real server, with the project SqliteProvider as its fallback', async () => {
+  it('kb_setup + getKbProviders yields an HttpKbProvider that reaches the real server, and holds no local store', async () => {
     const repoPath = makeRepoPath();
     const remoteUrl = `https://example.invalid/kb-http-e2e-${crypto.randomUUID()}.git`;
     const remote = `http://127.0.0.1:${port}`;
@@ -153,13 +144,9 @@ describe('kb_setup selects the http provider, reachable from getKbProviders (my-
     expect(typeof providers.projectSlug).toBe('string');
     expect(providers.projectSlug.length).toBeGreaterThan(0);
 
-    // Criterion 2: fallback is the SAME SqliteProvider instance getKbProviders
-    // built for this (slug, repoPath) -- asserted via the repoPath/dbPath
-    // discriminator (see fallbackOf's doc comment above).
-    const fallback = fallbackOf(providers.project as HttpKbProvider);
-    expect(fallback).toBeInstanceOf(SqliteProvider);
-    expect(fallback.repoPath).toBe(repoPath);
-    expect(fallback.dbPath).toBe(path.join(FLEET_DIR, 'knowledge', providers.projectSlug, 'kb.sqlite'));
+    // The KB server is the only source of truth: the http provider carries
+    // no local store to answer for it.
+    expect(Object.values(providers.project as object).some(v => v instanceof SqliteProvider)).toBe(false);
 
     // Criterion 1 (continued): a capture through the returned provider produces
     // a real HTTP request observed by the local test server -- proving the
@@ -169,11 +156,6 @@ describe('kb_setup selects the http provider, reachable from getKbProviders (my-
     expect(capturedBodies[0].title).toBe('kb-http-provider-e2e entry');
     expect(capturedAuthHeaders[0]).toBe(`Bearer ${token}`);
     expect(captureResult.id).toBe('kb-http-e2e-server-id');
-
-    // No sqlite file was written by that capture (it went to the server, not
-    // the fallback) -- the fallback's db file gets created by init(), not by
-    // a remote-routed capture.
-    expect(fs.existsSync(fallback.dbPath)).toBe(true); // created by createKbProvidersForSlug's init()
   });
 
   it('resetKbProviders removes the beforeExit listener the HTTP project provider registered', async () => {
@@ -245,8 +227,7 @@ describe('kb_setup selects the http provider, reachable from getKbProviders (my-
       expect(after[i], `no new .sqlite files should appear in ${dir}`).toEqual(before[i]);
     });
 
-    // Positive control: the fallback's db file DOES land inside FLEET_DIR.
-    const fallback = fallbackOf(providers.project as HttpKbProvider);
-    expect(fallback.dbPath.startsWith(FLEET_DIR)).toBe(true);
+    // Positive control: the capture reached the server.
+    expect(capturedBodies.some(b => (b.symbols ?? []).includes('kbHttpProviderE2eNoStray'))).toBe(true);
   });
 });

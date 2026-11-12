@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getSelfReadKb, getMemberSplitRead, mergeSplitById, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
+import { HttpKbProvider } from '../services/knowledge/http-provider.js';
 import { extractBibleDemotions, tombstonedIds } from '../services/knowledge/bible-import.js';
 import { getProvider } from './code-intelligence.js';
 import type { KBEntry, MemoryProvider } from '../services/knowledge/types.js';
@@ -189,9 +190,9 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
   // half exactly as a CONFIRMED-only request (bible view, cold-seeds included,
   // decided on that half's own entries), every requested tier from the
   // per-repo DB owner-tagged (no cold-seed). The two results are then merged.
-  // Under an http project provider (serverRecall) both halves are primed by
+  // Under an http project provider both halves are primed by
   // the KB server: the CONFIRMED half unfiltered, the own half owner-tagged.
-  const split = await getMemberSplitRead(anchor, input.confidence, 'kb_session_prime', { serverRecall: true });
+  const split = await getMemberSplitRead(anchor, input.confidence, 'kb_session_prime');
   if (split) {
     const fromBible = await primeFrom(
       { project: split.bible.project, global: split.bible.global, folder: split.anchor.folder },
@@ -204,9 +205,9 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
     return JSON.stringify(mergePrimed(fromBible, fromOwn, input));
   }
 
-  // Under an http project provider (serverRecall) a MEMBER prime of any tier
+  // Under an http project provider a MEMBER prime of any tier
   // is answered by the server; ownerTag is enforced the same way, fleet-side.
-  const { providers, anchor: resolved, ownerTag } = await getSelfReadKb(anchor, input.confidence, { serverRecall: true });
+  const { providers, anchor: resolved, ownerTag } = await getSelfReadKb(anchor, input.confidence);
 
   // Default-trusted reads: CONFIRMED + undisputed unless the caller lists tiers.
   const confidence = input.confidence?.length ? input.confidence : (['CONFIRMED'] as Tier[]);
@@ -393,7 +394,9 @@ async function primeFrom(
   // live-KB hit gathered above. Non-fatal: the entire block is a hard skip --
   // missing file, unreadable/malformed JSON, or a bad shape leaves `result`
   // exactly as built above (same contract as the neighbor block).
-  if (ownerTag === undefined && (result.top_entries ?? []).length < COLD_KB_MAX) {
+  // Never under an http project provider: the KB server is the source of
+  // truth there, and the checkout bible is not read.
+  if (ownerTag === undefined && !(providers.project instanceof HttpKbProvider) && (result.top_entries ?? []).length < COLD_KB_MAX) {
     try {
       const repoRoot = localDirOrNull(resolved.folder);
       const canonicalPath = repoRoot ? path.join(repoRoot, '.fleet', 'kb-canonical.json') : null;

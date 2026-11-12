@@ -12,27 +12,27 @@ import { requireSqliteProject } from '../../src/services/knowledge/require-sqlit
 import { importBibleEntries } from '../../src/services/knowledge/bible-import.js';
 import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
 import type { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
-import { getMemberBibleView, memberBiblePath, resetMemberBibleViews } from '../../src/services/knowledge/member-bible-view.js';
+import { memberBiblePath, resetMemberBibleViews } from '../../src/services/knowledge/member-bible-view.js';
 import { kbSetup } from '../../src/tools/kb-setup.js';
 import { kbQuery } from '../../src/tools/kb-query.js';
 import { kbSessionPrime } from '../../src/tools/kb-session-prime.js';
 import { kbContext } from '../../src/tools/kb-context.js';
+import { kbList } from '../../src/tools/kb-list.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
 
-// MEMBER CONFIRMED reads under the http project provider while the KB server
-// is unreachable. They are answered from the member's checkout bible, and the
-// per-repo DB (the http provider's local fallback store) must be neither read
-// nor written -- including by the methods with no remote route:
-// relatedClaims (kb_query expand_related), touch (kb_session_prime's
-// cold-seed delivery telemetry) and getLinked.
+// MEMBER reads under the http project provider while the KB server is
+// unreachable. The KB server is the only source of truth: every read fails
+// with E-KB-HTTP-UNREACHABLE, and neither the member's checkout bible nor the
+// per-repo DB answers -- the per-repo DB is neither read nor written,
+// including by the methods with no remote route (relatedClaims, touch,
+// getLinked), which answer empty without touching any local store.
 //
 // The unreachable server is real: a TCP port bound and then closed, so every
-// request fails with ECONNREFUSED. The per-repo DB is seeded with the bible's
-// entries plus entries the bible does not have -- one linked to a bible entry
-// by a refines edge, and a context-cache entry for a file the bible does not
-// cover. Reads are checked by those ids never appearing; writes by every
-// per-repo use_count staying unchanged (read through the no-bump list()).
+// request fails with ECONNREFUSED. The checkout bible and the per-repo DB are
+// both seeded, so a read answered from either would succeed; writes are
+// checked by every per-repo use_count staying unchanged (read through the
+// no-bump list()).
 //
 // Real member session (runWithSessionMember), real git checkout with an origin
 // remote, real kb_setup, real HttpKbProvider, real SQLite stores. No mocks.
@@ -110,7 +110,7 @@ function closedPort(): Promise<number> {
     probe.listen(0, '127.0.0.1', () => {
       const address = probe.address();
       if (address === null || typeof address === 'string') {
-        reject(new Error('kb-member-offline-bible-http: probe server did not bind a TCP port'));
+        reject(new Error('kb-member-unreachable-http: probe server did not bind a TCP port'));
         return;
       }
       probe.close(() => resolve(address.port));
@@ -154,7 +154,7 @@ beforeAll(async () => {
   await importBibleEntries(perRepo, [...BIBLE, REPO_REFINER, REPO_CTX]);
   const seeded = await perRepo.list({ confidence: [...ALL_TIERS], include_stale: true, limit: 1000 });
   const refiner = seeded.find(e => e.title === REPO_REFINER.title);
-  if (!refiner) throw new Error('kb-member-offline-bible-http: the refiner entry was not imported into the per-repo DB');
+  if (!refiner) throw new Error('kb-member-unreachable-http: the refiner entry was not imported into the per-repo DB');
   refinerId = refiner.id;
   repoOnlyIds = [refinerId, 'repo-ctx'];
   expect(idsOf(seeded)).toEqual(expect.arrayContaining([...BIBLE_IDS, ...repoOnlyIds]));
@@ -177,56 +177,32 @@ afterAll(() => {
   fs.rmSync(scratch, { recursive: true, force: true });
 });
 
-describe('MEMBER CONFIRMED reads with the KB server unreachable stay on the checkout bible', () => {
-  it('kb_query expand_related: related_claims come from the bible, never the per-repo DB', async () => {
+describe('MEMBER reads with the KB server unreachable fail with E-KB-HTTP-UNREACHABLE', () => {
+  it('kb_query, kb_session_prime, kb_context and kb_list: typed error, never the checkout bible or the per-repo DB', async () => {
     const before = await useCounts();
-    const out = JSON.parse(await asMember(() => kbQuery({ query: 'sprocket', confidence: ['CONFIRMED'], expand_related: true })));
-    expect(idsOf(out.l1_results)).toContain('bible-1');
-    expect(idsOf(out.related_claims)).not.toContain(refinerId);
-    const returned = [...idsOf(out.l1_results), ...idsOf(out.l2_expanded), ...idsOf(out.related_claims)];
-    for (const id of repoOnlyIds) expect(returned).not.toContain(id);
-    expect(await useCounts()).toEqual(before);
-  });
-
-  it('kb_session_prime: top_entries come from the bible and the cold-seed touch does not write the per-repo DB', async () => {
-    const before = await useCounts();
-    const out = JSON.parse(await asMember(() => kbSessionPrime({ hint_modules: ['sprocket'] })));
-    const top = out.top_entries as Array<{ id: string; via?: string }>;
-    expect(idsOf(top)).toContain('bible-1');
-    // The cold-seed block ran, so touch() was called for its additions.
-    expect(top.some(e => e.via === 'canonical-bible')).toBe(true);
-    for (const id of repoOnlyIds) expect(idsOf(top)).not.toContain(id);
-    expect(await useCounts()).toEqual(before);
-  });
-
-  it('kb_context: summaries come from the bible; a file only the per-repo DB covers is missing', async () => {
-    const before = await useCounts();
-    const files = ['src/sprocket.ts', 'src/only-repo.ts'];
-    // Explicit CONFIRMED, and the MEMBER default (CONFIRMED plus own captures).
     const reads = [
-      () => kbContext({ files, confidence: ['CONFIRMED'] }),
-      () => kbContext({ files }),
+      () => kbQuery({ query: 'sprocket', confidence: ['CONFIRMED'], expand_related: true }),
+      () => kbQuery({ query: 'sprocket', confidence: ['CONFIRMED', 'INFERRED'] }),
+      () => kbSessionPrime({ hint_modules: ['sprocket'] }),
+      () => kbContext({ files: ['src/sprocket.ts', 'src/only-repo.ts'], confidence: ['CONFIRMED'] }),
+      () => kbContext({ files: ['src/sprocket.ts'] }),
+      () => kbList({}),
     ];
     for (const read of reads) {
-      const out = JSON.parse(await asMember(read));
-      expect(out.missing).toContain('src/only-repo.ts');
-      expect(out.missing).not.toContain('src/sprocket.ts');
-      const entryIds = [...out.fresh, ...out.stale].map((r: { entry_id?: string }) => r.entry_id);
-      expect(entryIds).toContain('bible-ctx');
-      expect(entryIds).not.toContain('repo-ctx');
+      const err = await asMember(read).then(() => null, (e: unknown) => e);
+      expect((err as { code?: string }).code).toBe('E-KB-HTTP-UNREACHABLE');
+      expect((err as Error).message).toMatch(/no local store or bible is used instead/);
     }
     expect(await useCounts()).toEqual(before);
   });
 
-  it('HttpKbProvider view: after an offline read, getLinked and relatedClaims read the offline store', async () => {
-    const base = (await getKbProviders(repo)).project as HttpKbProvider;
-    const bibleView = await getMemberBibleView({ folder: repo });
-    const view = base.withOfflineReads(async () => bibleView, 'test: offline read answered from the bible view');
+  it('HttpKbProvider: getLinked, relatedClaims and touch answer empty and never read or write the per-repo DB', async () => {
+    const http = (await getKbProviders(repo)).project as HttpKbProvider;
     const before = await useCounts();
-    expect(idsOf((await view.query({ query: 'sprocket', confidence: ['CONFIRMED'], limit: 10 })).results)).toContain('bible-1');
-    expect(idsOf(await view.relatedClaims(['bible-1'], undefined, { confidence: ['CONFIRMED'] }))).not.toContain(refinerId);
-    expect(idsOf(await view.getLinked('bible-1'))).not.toContain(refinerId);
-    expect(await view.touch(['bible-1', 'bible-cold-a'])).toBe(0);
+    expect(await http.relatedClaims(['bible-1'], undefined, { confidence: ['CONFIRMED'] })).toEqual([]);
+    expect(await http.getLinked('bible-1')).toEqual([]);
+    expect(await http.touch(['bible-1', 'bible-cold-a'])).toBe(0);
+    expect(() => http.getLiveConfirmedState(['bible-1'])).toThrow(/E-KB-HTTP-UNSUPPORTED/);
     expect(await useCounts()).toEqual(before);
   });
 });
