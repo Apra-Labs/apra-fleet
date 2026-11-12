@@ -725,7 +725,7 @@ Another server can stand in for `kb-server` by serving the same routes:
 | `POST /api/kb/prime` | kb_session_prime |
 | `POST /api/kb/invalidate` (`{files}`) | kb_invalidate with files |
 | `POST /api/kb/promote` (`{id, reason}` -> `{id, previous_confidence, new_confidence}`; 404 unknown id, 422 refused) | kb_promote |
-| `POST /api/kb/demote` (`{id, reason, evidence_files}` -> `{id, previous_confidence, new_confidence}`; optional, not served by the bundled `kb-server`) | kb_demote, and the gate for a MEMBER `kb_query` `own_scope` read |
+| `POST /api/kb/demote` (`{id, reason, evidence_files}` -> `{id, previous_confidence, new_confidence}`; optional, served by the bundled `kb-server`: 404 `ENTRY_NOT_FOUND` for an unknown id, 422 with the `E-DEMOTE-*` code for a demote refusal, an absolute or `..` evidence path refused with 422 `E-DEMOTE-EVIDENCE-UNRESOLVED`) | kb_demote, and the gate for a MEMBER `kb_query` `own_scope` read |
 
 ### 3. GitNexus (optional, codebase plane)
 
@@ -1005,7 +1005,7 @@ project mismatch is `E-KB-HTTP-UNSUPPORTED` naming the capabilities read. A
 status. Nothing is queued in either case. A 404 or 501
 from an optional route is also `E-KB-HTTP-UNSUPPORTED` (a 404 whose body code is
 `ENTRY_NOT_FOUND` / `E-ENTRY-NOT-FOUND` stays "entry not found"). The bundled
-`kb-server` always serves a local SQLite KB and lists every route but demote,
+`kb-server` always serves a local SQLite KB and lists every route, demote included,
 `branch_aware: false`. Contract:
 `memory-contract/v1/spec.md` section 2.9.1.
 
@@ -1141,7 +1141,7 @@ table above. In summary:
   (otherwise `E-KB-HTTP-UNSUPPORTED` naming the route): context (`kb_context`),
   prime (`kb_session_prime`), invalidate, feedback, list (`kb_list`) and demote
   (`kb_demote`, and a MEMBER `kb_query` `own_scope` read). The bundled
-  `kb-server` serves all but demote.
+  `kb-server` serves all of them.
 - **Not supported**: `kb_stats` reports `supported: false`; `kb_import` and
   `kb_bible_commit` answer `bible_skipped: true`; id-level `kb_invalidate` by
   `ids`, a MEMBER `kb_invalidate` with `files` (no own-scope invalidate on the

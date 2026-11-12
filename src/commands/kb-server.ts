@@ -6,7 +6,7 @@ import { FLEET_DIR } from '../paths.js';
 import { createKbProviders } from '../services/knowledge/kb-providers.js';
 import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
 import { HttpKbProvider } from '../services/knowledge/http-provider.js';
-import { validateFilePaths } from '../services/knowledge/path-validation.js';
+import { validateFilePaths, isAbsoluteOrTraversing } from '../services/knowledge/path-validation.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { validateAuthor } from '../tools/kb-feedback.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
@@ -34,12 +34,15 @@ const MAX_BODY_SIZE = 1_048_576; // 1MB
 /** Header every HttpKbProvider request carries: the project slug it is for. */
 export const KB_PROJECT_HEADER = 'x-kb-project';
 
-/** What GET /api/kb/capabilities answers: every route but demote (the server always serves a local SQLite KB). */
+/** What GET /api/kb/capabilities answers: every contract route (the server always serves a local SQLite KB). */
 export const KB_SERVER_CAPABILITIES = Object.freeze({
   contract: 'v1',
-  routes: Object.freeze(['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list']),
+  routes: Object.freeze(['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list', 'demote']),
   branch_aware: false,
 });
+
+/** A demote refusal's taxonomy code at the start of SqliteProvider.demote's message (answered 422). */
+const DEMOTE_REFUSAL_CODE = /^(E-DEMOTE-[A-Z-]+):/;
 /**
  * How SqliteProvider.promote's refusals of the promote ladder begin
  * (superseded, user-directive, unresolved basis; trivial reason). Only these
@@ -259,7 +262,7 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
     }
 
     // GET /api/kb/capabilities -- same auth and project check as every route.
-    // Lists every route but demote, and keeps one KB per project
+    // Lists every contract route, and keeps one KB per project
     // with no per-branch truth (X-Repository-Branch is not used).
     if (pathname === '/api/kb/capabilities' && method === 'GET') {
       return jsonResponse(res, 200, KB_SERVER_CAPABILITIES);
@@ -365,6 +368,50 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
           if (PROMOTE_REFUSAL_PREFIXES.some(prefix => message.startsWith(prefix))) {
             return jsonResponse(res, 422, { error: message, code: 'PROMOTE_REFUSED' });
           }
+          // Not a refusal (e.g. a database failure): the generic 500 below.
+          throw err;
+        }
+      }
+
+      // POST /api/kb/demote  {id, reason, evidence_files} -> {id, previous_confidence, new_confidence}
+      // Backed by SqliteProvider.demote. evidence_files are untrusted:
+      // repo-relative to the repository this server serves (spec 2.9.1). An
+      // absolute or '..' path is refused first, before the id is looked up,
+      // whatever the platform's own path rules; the rest resolve against the
+      // served checkout. An unknown id is 404 ENTRY_NOT_FOUND; every demote
+      // refusal is 422 with its E-DEMOTE-* code; anything else is a 500.
+      if (pathname === '/api/kb/demote' && method === 'POST') {
+        const { id, reason, evidence_files: evidence } = JSON.parse(await readBody(req)) as {
+          id?: unknown; reason?: unknown; evidence_files?: unknown;
+        };
+        if (typeof id !== 'string' || id.length === 0 || typeof reason !== 'string'
+          || !Array.isArray(evidence) || !evidence.every((f): f is string => typeof f === 'string')) {
+          return jsonResponse(res, 400, {
+            error: 'id must be a non-empty string, reason a string and evidence_files an array of strings',
+            code: 'BAD_REQUEST',
+          });
+        }
+        const outside = evidence.filter(isAbsoluteOrTraversing);
+        if (outside.length > 0) {
+          return jsonResponse(res, 422, {
+            error: `E-DEMOTE-EVIDENCE-UNRESOLVED: kb_demote evidence is absolute or contains a '..' segment: ${outside.join(', ')}. Entry: ${id}`,
+            code: 'E-DEMOTE-EVIDENCE-UNRESOLVED',
+          });
+        }
+        try {
+          const result = await provider.demote(id, reason, evidence);
+          return jsonResponse(res, 200, {
+            id: result.id,
+            previous_confidence: result.confidence_before,
+            new_confidence: result.confidence_after,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.startsWith('Entry not found')) {
+            return jsonResponse(res, 404, { error: message, code: 'ENTRY_NOT_FOUND' });
+          }
+          const refusal = DEMOTE_REFUSAL_CODE.exec(message);
+          if (refusal) return jsonResponse(res, 422, { error: message, code: refusal[1] });
           // Not a refusal (e.g. a database failure): the generic 500 below.
           throw err;
         }

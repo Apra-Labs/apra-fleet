@@ -715,8 +715,9 @@ entry it does not hold, or one outside the caller's scope, with 404 and body
 that tells an unknown entry from a missing route.
 
 Fleet's `kb-server` always serves a local SQLite KB: it serves, and its
-capabilities list, every route but `demote`, and it reports
-`branch_aware: false`.
+capabilities list, every route above, `demote` included, and it reports
+`branch_aware: false`. It is the reference implementation of these routes;
+the http fixtures under `fixtures/` are recorded against it.
 
 `demote` is `POST /api/kb/demote` `{id, reason, evidence_files}`, answered
 `{id, previous_confidence, new_confidence}`; like `promote` it is sent by id

@@ -662,6 +662,14 @@ export const SCENARIO = [
   // absent from an INFERRED kb_query (a member read asks the server for the
   // entries carrying its own tag).
   { tool: 'kb_query', case: 'http-own-scope', assertParsed: assertNoForeignEntry },
+  // kb_demote over an http project KB, served by the sample kb-server's
+  // POST /api/kb/demote: the session's own entry is captured, promoted to
+  // CONFIRMED and demoted; demoting it again is the server's 422
+  // E-DEMOTE-NOT-CONFIRMED. After http-own-scope, which must not see it.
+  { tool: 'kb_capture', case: 'setup-for-http-demote', captureId: 'HTTP_DEMOTED' },
+  { tool: 'kb_promote', case: 'setup-first-promote-for-http-demote', derive: { id: 'HTTP_DEMOTED' } },
+  { tool: 'kb_demote', case: 'http-happy', derive: { id: 'HTTP_DEMOTED' } },
+  { tool: 'kb_demote', case: 'refusal-http-not-confirmed', derive: { id: 'HTTP_DEMOTED' } },
   // A server for another project is reachable but wrong: a read and a
   // promote by id are refused, never answered from a local store.
   { tool: 'kb_query', case: 'refusal-http-project-mismatch' },

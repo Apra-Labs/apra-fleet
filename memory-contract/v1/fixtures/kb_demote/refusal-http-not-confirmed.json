@@ -1,0 +1,18 @@
+{
+  "tool": "kb_demote",
+  "case": "refusal-http-not-confirmed",
+  "kind": "refusal",
+  "request": {
+    "id": "4593e2f8-a104-40cb-acf1-3dc41afa8f4b",
+    "reason": "Re-checked src/widget.ts: the export is a constant only in this fixture, so CONFIRMED overstates it.",
+    "evidence_files": [
+      "src/widget.ts"
+    ]
+  },
+  "error": {
+    "message": "HTTP 422: E-DEMOTE-NOT-CONFIRMED: kb_demote lowers CONFIRMED to INFERRED only; this entry is INFERRED. Entry: 4593e2f8-a104-40cb-acf1-3dc41afa8f4b",
+    "thrown": true
+  },
+  "expected_error_code": "E-DEMOTE-NOT-CONFIRMED",
+  "session": "HTTP_A"
+}

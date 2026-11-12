@@ -1152,6 +1152,39 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
 await withSession('HTTP_A', () => recordHappy('kb_query', 'http-own-scope', {
   query: 'widget batching', confidence: ['INFERRED'],
 }));
+// kb_demote over an http project KB, against the sample kb-server's real
+// POST /api/kb/demote: the session captures its own entry on the server,
+// promotes it to CONFIRMED (a member capture lands INFERRED), demotes it (happy), and a second demote of the
+// now-INFERRED entry is the server's 422 E-DEMOTE-NOT-CONFIRMED. Recorded
+// after http-own-scope, which must not see this entry.
+{
+  const captureHttpDemote = await withSession('HTTP_A', () => recordHappy('kb_capture', 'setup-for-http-demote', {
+    type: 'knowledge',
+    title: 'Widget export is a constant',
+    summary: 'src/widget.ts exports widget as a numeric constant; set up for the http demote fixtures.',
+    content: 'widget in src/widget.ts is exported as the constant 1. Captured as a synthetic fixture for kb_demote over http.',
+    source_files: ['src/widget.ts'],
+    symbols: ['widget'],
+    role: 'doer',
+  }));
+  const idHttpDemote = parseEnvelopeText(captureHttpDemote)?.id;
+  if (idHttpDemote) {
+    await withSession('HTTP_A', () => recordHappy('kb_promote', 'setup-first-promote-for-http-demote', {
+      id: idHttpDemote,
+      reason: 'Promotion of the entry used by the http demote fixtures to CONFIRMED (checked against src/widget.ts).',
+    }));
+    const demoteRequest = {
+      id: idHttpDemote,
+      reason: 'Re-checked src/widget.ts: the export is a constant only in this fixture, so CONFIRMED overstates it.',
+      evidence_files: ['src/widget.ts'],
+    };
+    await withSession('HTTP_A', () => recordHappy('kb_demote', 'http-happy', demoteRequest));
+    await withSession('HTTP_A', () => recordRefusal('kb_demote', 'refusal-http-not-confirmed', demoteRequest, 'E-DEMOTE-NOT-CONFIRMED'));
+  } else {
+    failures++;
+    console.log('  [FAIL] kb_capture/setup-for-http-demote returned no id');
+  }
+}
 // A server for a different project: a read and a promote by id are both
 // refused with the server's 409, not answered locally.
 {

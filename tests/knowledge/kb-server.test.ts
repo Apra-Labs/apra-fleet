@@ -109,18 +109,18 @@ describe('kb-server promote and tag filter', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       contract: 'v1',
-      routes: ['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list'],
+      routes: ['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list', 'demote'],
       branch_aware: false,
     });
     const unauthenticated = await request('GET', '/api/kb/capabilities', { token: null });
     expect(unauthenticated.status).toBe(401);
   });
 
-  it('HttpKbProvider reads the capabilities of this server: every route but demote', async () => {
+  it('HttpKbProvider reads the capabilities of this server: every contract route, demote included', async () => {
     const provider = new HttpKbProvider(`http://127.0.0.1:${TEST_PORT}`, testToken, { projectSlug: SERVER_PROJECT });
     try {
       expect(await provider.capabilities()).toEqual({ ...KB_SERVER_CAPABILITIES, routes: [...KB_SERVER_CAPABILITIES.routes] });
-      expect(await provider.servesRoute('demote')).toBe(false);
+      expect(await provider.servesRoute('demote')).toBe(true);
       expect(await provider.servesRoute('list')).toBe(true);
     } finally {
       provider.dispose();
@@ -140,34 +140,6 @@ describe('kb-server promote and tag filter', () => {
     const res = await request('POST', '/api/kb/promote', { body: { id: 'no-such-entry', reason: PROMOTE_REASON } });
     expect(res.status).toBe(404);
     expect(res.body).toMatchObject({ code: 'ENTRY_NOT_FOUND', error: 'Entry not found: no-such-entry' });
-  });
-
-  it('its unknown-id reply, served by a listed optional id route (demote), is entry-not-found, not E-KB-HTTP-UNSUPPORTED', async () => {
-    // A server that copies this server's promote reply onto its demote route:
-    // the reply is recorded from the real server, then replayed verbatim.
-    const recorded = await request('POST', '/api/kb/promote', { body: { id: 'no-such-entry', reason: PROMOTE_REASON } });
-    const standIn = http.createServer((req, res) => {
-      req.resume();
-      req.on('end', () => {
-        const isCapabilities = req.url === '/api/kb/capabilities';
-        res.writeHead(isCapabilities ? 200 : recorded.status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(isCapabilities
-          ? { contract: 'v1', routes: ['capture', 'query', 'promote', 'demote'], branch_aware: false }
-          : recorded.body));
-      });
-    });
-    await new Promise<void>(resolve => standIn.listen(0, '127.0.0.1', () => resolve()));
-    const provider = new HttpKbProvider(`http://127.0.0.1:${(standIn.address() as { port: number }).port}`, testToken);
-    try {
-      const err = await provider.demote('no-such-entry', 'evidence says otherwise', ['src/commands/kb-server.ts'])
-        .then(() => null, (e: unknown) => e);
-      expect(err).not.toBeInstanceOf(KbHttpUnsupportedError);
-      expect((err as Error).message).toMatch(/^Entry not found: no-such-entry \(the KB server answered HTTP 404/);
-    } finally {
-      provider.dispose();
-      standIn.closeAllConnections();
-      await new Promise<void>(resolve => standIn.close(() => resolve()));
-    }
   });
 
   it('answers 422 PROMOTE_REFUSED when the promote ladder refuses (trivial reason) and leaves the entry INFERRED', async () => {
