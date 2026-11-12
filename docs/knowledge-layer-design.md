@@ -598,16 +598,17 @@ narrowing point: it throws naming the caller when the project provider is an
 `HttpKbProvider`, so those operations refuse cleanly instead of behaving
 unpredictably against a remote provider that does not support them.
 
-There are seven such call sites, with two distinct behaviours. Six fail fast
-through `requireSqliteProject`: `kb_freshness_sweep`, `kb_reconcile_prefilter`,
-`kb_resolve_contradiction`, `kb_import`, `kb_export` (project scope), and the
-`kb directives` CLI. `kb_stats` is the seventh and deliberately DEGRADES instead: it asks the type
+These call sites do not all behave alike. Most fail fast through
+`requireSqliteProject`, among them `kb_freshness_sweep`, `kb_reconcile_prefilter`,
+`kb_resolve_contradiction`, `kb_export` (project scope) and the `kb directives`
+CLI. `kb_import` checks first and, under http, answers `bible_skipped: true`
+without narrowing. `kb_stats` deliberately DEGRADES instead: it asks the type
 question with the non-throwing `isSqliteProject` guard and, over a remote
 provider, reports its bible block as `{ computable: false, reason }` rather
 than failing the whole stats call. It must not catch `requireSqliteProject`'s
 throw as a type test, since that would also swallow any unrelated error.
 
-`kb_list` is not one of them either: it narrows through `requireSqliteProject`
+`kb_list` does not fail under http either: it narrows through `requireSqliteProject`
 only when the provider is not an `HttpKbProvider`. Under an http project provider
 every `kb_list` (FULL or MEMBER, any tier) is answered by `HttpKbProvider.list`
 from the KB server's optional list route, and a server that does not serve that
