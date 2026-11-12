@@ -598,16 +598,20 @@ narrowing point: it throws naming the caller when the project provider is an
 `HttpKbProvider`, so those operations refuse cleanly instead of behaving
 unpredictably against a remote provider that does not support them.
 
-There are eight such call sites, with two distinct behaviours. Seven fail fast
-through `requireSqliteProject`: `kb_list` (except a MEMBER mixed-tier list,
-whose own half `HttpKbProvider.list` serves from the KB server),
-`kb_freshness_sweep`, `kb_reconcile_prefilter`, `kb_resolve_contradiction`,
-`kb_import`, `kb_export` (project scope), and the `kb directives` CLI.
-`kb_stats` is the eighth and deliberately DEGRADES instead: it asks the type
+There are seven such call sites, with two distinct behaviours. Six fail fast
+through `requireSqliteProject`: `kb_freshness_sweep`, `kb_reconcile_prefilter`,
+`kb_resolve_contradiction`, `kb_import`, `kb_export` (project scope), and the
+`kb directives` CLI. `kb_stats` is the seventh and deliberately DEGRADES instead: it asks the type
 question with the non-throwing `isSqliteProject` guard and, over a remote
 provider, reports its bible block as `{ computable: false, reason }` rather
 than failing the whole stats call. It must not catch `requireSqliteProject`'s
 throw as a type test, since that would also swallow any unrelated error.
+
+`kb_list` is not one of them either: it narrows through `requireSqliteProject`
+only when the provider is not an `HttpKbProvider`. Under an http project provider
+every `kb_list` (FULL or MEMBER, any tier) is answered by `HttpKbProvider.list`
+from the KB server's optional list route, and a server that does not serve that
+route fails with `E-KB-HTTP-UNSUPPORTED`.
 
 `kb_feedback` is NOT one of these call sites: both providers serve it
 (GitHub #761). Over a remote KB, `HttpKbProvider.feedback` POSTs

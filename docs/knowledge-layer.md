@@ -990,7 +990,9 @@ The provider holds no local store at all.
 check as every route) answers `{contract, routes, branch_aware}`. capture,
 query and promote are required; context, prime, invalidate, feedback, list and
 demote are optional. The provider reads it once per connection (again after
-the server was unreachable) and never calls a route the answer does not list:
+the server was unreachable, or after the read itself failed); it is not
+re-read between two successful calls, so a server upgraded in place keeps
+the route set read before until the next connection error or fleet restart. It never calls a route the answer does not list:
 the tool fails with `E-KB-HTTP-UNSUPPORTED` naming the route. A server without
 the capabilities route is assumed to serve every route but demote. Any other
 failed capabilities read is typed: a 5xx is `E-KB-HTTP-UNREACHABLE` (writes
@@ -1131,14 +1133,21 @@ may promote is the server's decision, and its refusal is surfaced.
 
 **Capabilities over HTTP**: see the [MemoryProvider operations](#memoryprovider-operations)
 table above. In summary:
-- **Supported**: `kb_capture`, `kb_query`, `kb_context`, `kb_invalidate` (with
-  offline queueing on connection error), `kb_feedback` (queued offline on
-  connection error), `kb_promote` (server-side only,
-  fails on connection error with no fallback), and member-session read tools
-  (`kb_query`, `kb_session_prime`, `kb_context` via the `serverRecall` path).
-- **Not supported**: `kb_bible_commit` returns `bible_skipped` instead of
-  committing; id-level `kb_invalidate` by `ids` throws
-  `E-KB-HTTP-UNSUPPORTED` (use `kb_invalidate` with `files` instead).
+- **Supported**: `kb_capture`, `kb_query`, `kb_context`, `kb_invalidate` with
+  `files` (queued offline on connection error), `kb_feedback` (queued offline
+  on connection error; refused in a MEMBER session), `kb_promote` (server-side
+  only, fails on connection error with no fallback), and the member-session read
+  tools (`kb_query`, `kb_session_prime`, `kb_context`, `kb_list`), answered by
+  the server for every tier with fleet re-checking member own-scope.
+- **Optional routes**, used only when `GET /api/kb/capabilities` lists them
+  (otherwise `E-KB-HTTP-UNSUPPORTED` naming the route): context (`kb_context`),
+  prime (`kb_session_prime`), invalidate, feedback, list (`kb_list`) and demote
+  (`kb_demote`, and a MEMBER `kb_query` `own_scope` read). The bundled
+  `kb-server` serves all but demote.
+- **Not supported**: `kb_stats` reports `supported: false`; `kb_import` and
+  `kb_bible_commit` answer `bible_skipped: true`; id-level `kb_invalidate` by
+  `ids` and a MEMBER `kb_query` `flagged_only` read throw
+  `E-KB-HTTP-UNSUPPORTED` (use `kb_invalidate` with `files` instead of `ids`).
 
 **Repository headers**: kb_* tools take no repository argument, but fleet
 passes the repository it resolved for the calling session to the provider,
