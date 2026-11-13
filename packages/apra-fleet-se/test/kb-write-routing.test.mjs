@@ -1,6 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKbWorkClient } from '../fleet-sprint/kb.mjs';
+import { MemberCallError } from '../fleet-sprint/member-call.mjs';
 import { fakeMaintainerSelector } from './helpers/kb-maintainer-fakes.mjs';
 
 // =============================================================================
@@ -263,5 +264,55 @@ describe('KB write routing: unreachable maintainer', () => {
         const later = await h.client.flushAll();
         assert.equal(later.captured, 2);
         assert.deepEqual(h.calls().slice(before).map((c) => c.args.title), ['second', 'third']);
+    });
+});
+
+// The http KB provider queues nothing: a write to a KB server that cannot be
+// reached fails with E-KB-HTTP-UNREACHABLE (retryable), and the engine owns
+// the retry -- it keeps that write, and the rest of the batch, queued and
+// applies them on the next flush.
+describe('KB write routing: KB server unreachable (E-KB-HTTP-UNREACHABLE)', () => {
+    const UNREACHABLE_TEXT = 'E-KB-HTTP-UNREACHABLE: POST /api/kb/capture: the KB server at http://127.0.0.1:7878 is unreachable '
+        + '(connect ECONNREFUSED 127.0.0.1:7878); nothing was read or written, and no local store or bible is used instead.';
+
+    for (const [shape, fail] of [
+        ['a resolved isError result', () => ({ isError: true, content: [{ type: 'text', text: UNREACHABLE_TEXT }] })],
+        ['a thrown E-TOOL error', () => { throw new MemberCallError('E-TOOL', UNREACHABLE_TEXT, { tool: 'kb_capture' }); }],
+    ]) {
+        test(`${shape} keeps that write and the rest queued, in order; the next flush applies them`, async () => {
+            let serverDown = false;
+            let tripped = false;
+            const h = harness({
+                memberCall: async (m, tool, args) => {
+                    if (!tripped && args.title === 'second') { tripped = true; serverDown = true; }
+                    return serverDown ? fail() : {};
+                },
+            });
+            const out = await h.client.apply('doer', 'doer-a', { kb_captures: [capture('first'), capture('second'), capture('third')] });
+            assert.equal(out.captured, 1);
+            assert.equal(h.client.pendingCount(REPO_A), 2, 'the failed write and the one behind it stay queued');
+            assert.ok(h.logs.some((l) => l.startsWith("[kb-work] WARN: KB server unreachable during kb_capture for \"second\" on maintainer 'maint-a'")
+                && l.endsWith('2 KB write(s) for github.com/org/repo-a stay queued')), JSON.stringify(h.logs));
+            assert.ok(!h.logs.some((l) => /non-fatal/.test(l)), 'not consumed as a rejection');
+
+            serverDown = false;
+            const before = h.calls().length;
+            const later = await h.client.flushAll();
+            assert.equal(later.captured, 2);
+            assert.equal(h.client.pendingCount(), 0);
+            assert.deepEqual(h.calls().slice(before).map((c) => c.args.title), ['second', 'third']);
+        });
+    }
+
+    test('E-KB-HTTP-SERVER-ERROR (the write may have landed) is consumed, not re-queued', async () => {
+        const h = harness({
+            memberCall: async (m, tool, args) => (args.title === 'maybe stored'
+                ? { isError: true, content: [{ type: 'text', text: 'E-KB-HTTP-SERVER-ERROR: POST /api/kb/capture: the KB server at http://127.0.0.1:7878 answered HTTP 502: Bad gateway' }] }
+                : {}),
+        });
+        const out = await h.client.apply('doer', 'doer-a', { kb_captures: [capture('maybe stored'), capture('next')] });
+        assert.equal(out.captured, 1);
+        assert.equal(h.client.pendingCount(), 0);
+        assert.ok(h.logs.some((l) => l.startsWith('[kb-work] kb_capture rejected for "maybe stored" (non-fatal): E-KB-HTTP-SERVER-ERROR')), JSON.stringify(h.logs));
     });
 });

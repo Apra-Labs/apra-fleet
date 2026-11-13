@@ -7,7 +7,7 @@ import net from 'node:net';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { HttpKbProvider, KbHttpAuthError } from '../../src/services/knowledge/http-provider.js';
-import { getKbProviders, resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
+import { getKbProviders, getProjectSlug, resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { KB_CONFIG_PATH } from '../../src/services/knowledge/kb-config.js';
 import { resetKbHttpAuthState } from '../../src/services/knowledge/kb-http-auth-state.js';
 import { kbHealthSummary, kbCredentialCompactLine } from '../../src/tools/check-status.js';
@@ -80,7 +80,10 @@ const setSecret = (value: string) => secretCli(['--set', NAME, '--persist', '-y'
 
 function probe(token: string): Promise<number> {
   return new Promise((resolve) => {
-    const req = http.get(`${kbUrl}/api/kb/query?query=probe`, { headers: { Authorization: `Bearer ${token}` } }, (res) => {
+    const req = http.get(`${kbUrl}/api/kb/query?query=probe`, {
+      // The server runs in repo, so it serves repo's project and refuses any other (409).
+      headers: { Authorization: `Bearer ${token}`, 'X-KB-Project': getProjectSlug(repo) },
+    }, (res) => {
       res.resume();
       res.on('end', () => resolve(res.statusCode ?? 0));
     });
@@ -182,19 +185,16 @@ describe('named KB credential: live rotation against the built kb-server', () =>
     const first = await p.capture(entry('Live gear one'));
     expect(first.id).toBeTruthy();
 
-    // 2. rotate the server file to B: 401 -> E-KB-HTTP-AUTH naming NAME, queued
+    // 2. rotate the server file to B: 401 -> E-KB-HTTP-AUTH naming NAME
     fs.writeFileSync(tokenFile, `${TOKEN_B}\n`);
     await waitFor(async () => (await probe(TOKEN_B)) === 200, 'kb-server to pick up token B');
-    const rejected = await expectAuth(p.capture(entry('Live gear queued')), 'rejected');
-    expect(rejected.queued).toBe(true);
-    expect(p.offlineQueue).toHaveLength(1);
+    await expectAuth(p.capture(entry('Live gear refused')), 'rejected');
 
-    // 3. secret set to B through the CLI process: next capture OK, queue flushes,
+    // 3. secret set to B through the CLI process: next capture OK,
     // same provider instance, same kb-server process
     setSecret(TOKEN_B);
     expect(await provider()).toBe(p);
     await p.capture(entry('Live gear after rotation'));
-    expect(p.offlineQueue).toHaveLength(0);
     expect(child!.pid).toBe(childPid);
     expect(child!.exitCode).toBeNull();
     expect(pidAlive(childPid)).toBe(true);

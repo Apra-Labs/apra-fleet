@@ -15,8 +15,8 @@ import { headBranchReader } from '../../src/services/knowledge/repository-header
 // Named-secret token and repository headers together, against a real local
 // HTTP server: the 401 retry re-reads the secret but resends the SAME
 // repository headers, a missing secret fails before the commit is read, and
-// an auth-blocked queued capture replays with the fresh secret and the
-// provider's repository headers. Real credential store (per-run
+// a capture repeated after an auth failure carries the fresh secret and the
+// provider's repository headers (the failed one is never replayed). Real credential store (per-run
 // APRA_FLEET_DATA_DIR from tests/setup.ts); no mocks of the provider or http.
 
 const RUN = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -56,6 +56,13 @@ function countingCommit(): { commitOf: () => string; calls: () => number } {
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
+    // A server without GET /api/kb/capabilities: the route set from before
+    // that route existed. (The capabilities read is tested on its own.)
+    if ((req.url ?? '').startsWith('/api/kb/capabilities')) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found', code: 'NOT_FOUND' }));
+      return;
+    }
     req.resume();
     req.on('end', () => {
       const urlPath = (req.url ?? '').split('?')[0];
@@ -115,7 +122,7 @@ async function withProvider(
 ): Promise<void> {
   const fallback = new SqliteProvider(':memory:');
   await fallback.init();
-  const provider = new HttpKbProvider(baseUrl, { secretName: NAME }, fallback, {
+  const provider = new HttpKbProvider(baseUrl, { secretName: NAME }, {
     repository: { remote: REPO, commitOf: commit.commitOf, branchOf },
   });
   try {
@@ -133,7 +140,6 @@ describe('HttpKbProvider: named secret + repository headers', () => {
     await withProvider(commit, async (p) => {
       const result = await p.capture(makeInput('rotated'));
       expect(result.id).toBeTruthy();
-      expect(p.offlineQueue).toHaveLength(0);
     });
     const captures = stub.seen.filter(s => s.path === '/api/kb/capture');
     expect(captures).toHaveLength(2);
@@ -141,7 +147,9 @@ describe('HttpKbProvider: named secret + repository headers', () => {
     for (const c of captures) expect(c.repository).toBe(REPO);
     expect(captures[0].commit).toMatch(/^[0-9a-f]{40}$/);
     expect(captures[1].commit).toBe(captures[0].commit);
-    expect(commit.calls()).toBe(1);
+    // Read once per request: once for the capabilities read, once for the
+    // capture (shared by its 401 retry).
+    expect(commit.calls()).toBe(2);
   });
 
   it('a 401 retry sends the same X-Repository-Branch as the first attempt, even if the branch changed in between', async () => {
@@ -181,15 +189,13 @@ describe('HttpKbProvider: named secret + repository headers', () => {
     expect(stub.seen).toHaveLength(0);
   });
 
-  it('an auth-blocked queued capture replays with the fixed secret and its repository headers', async () => {
+  it('a capture repeated after an auth failure carries the fixed secret and its repository headers; the failed one is not replayed', async () => {
     setSecret(TOKEN_A);
     const commit = countingCommit();
     await withProvider(commit, async (p) => {
-      const err = await p.capture(makeInput('queued')).catch((e: unknown) => e);
+      const err = await p.capture(makeInput('refused')).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(KbHttpAuthError);
       expect((err as KbHttpAuthError).reason).toBe('rejected');
-      expect((err as KbHttpAuthError).queued).toBe(true);
-      expect(p.offlineQueue).toHaveLength(1);
       const blocked = stub.seen.filter(s => s.path === '/api/kb/capture');
       expect(blocked).toHaveLength(2);
       for (const b of blocked) expect(b.repository).toBe(REPO);
@@ -197,7 +203,8 @@ describe('HttpKbProvider: named secret + repository headers', () => {
       stub.seen.length = 0;
       setSecret(TOKEN_B);
       await p.query({ query: 'after fix' });
-      expect(p.offlineQueue).toHaveLength(0);
+      expect(stub.seen.filter(s => s.path === '/api/kb/capture')).toHaveLength(0);
+      await p.capture(makeInput('repeated'));
     });
     const replay = stub.seen.filter(s => s.path === '/api/kb/capture');
     expect(replay).toHaveLength(1);

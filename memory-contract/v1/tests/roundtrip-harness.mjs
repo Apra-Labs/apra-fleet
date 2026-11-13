@@ -118,6 +118,7 @@ export const PATH_PLACEHOLDERS = {
   REPO_A: '<SCRATCH_REPO_A>',
   REPO_B: '<SCRATCH_REPO_B>',
   REPO_CODE: '<SCRATCH_REPO_CODE>',
+  REPO_HTTP: '<SCRATCH_REPO_HTTP>',
 };
 
 export const RECORDED_REMOTE_A = 'https://example.test/memory-contract-fixtures-a.git';
@@ -131,6 +132,7 @@ export const RECORDED_REMOTE_B = 'https://example.test/memory-contract-fixtures-
  */
 export const RECORDED_REMOTE_IMPORT_REJECTED = 'https://example.test/memory-contract-fixtures-import-rejected.git';
 export const RECORDED_REMOTE_BARE = 'https://example.test/memory-contract-fixtures-bare.git';
+export const RECORDED_REMOTE_HTTP = 'https://example.test/memory-contract-fixtures-http.git';
 
 /**
  * A bible committed only in a member's own checkout -- never written or
@@ -181,12 +183,18 @@ export const ENVIRONMENT = {
     // name must not start with another repo's dir name, e.g. repo-b: the
     // recorder's path sanitiser would rewrite that prefix.)
     { key: 'BARE', dir: 'bare-repo', placeholder: null, git: true, bare: true, remote: 'BARE', files: {} },
+    // A repository whose project KB is the http provider: its sessions scope an
+    // http KB config to each call, pointed at fleet's sample kb-server
+    // (kb-sample-servers.mjs; it holds one INFERRED entry owned by a member
+    // outside every session).
+    { key: 'HTTP', dir: 'repo-http', placeholder: PATH_PLACEHOLDERS.REPO_HTTP, git: true, remote: 'HTTP', files: { 'src/widget.ts': 'export const widget = 1;' } },
   ],
   remotes: {
     A: RECORDED_REMOTE_A,
     B: RECORDED_REMOTE_B,
     IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED,
     BARE: RECORDED_REMOTE_BARE,
+    HTTP: RECORDED_REMOTE_HTTP,
   },
   // Each session is one registered member. `repo` names a scratch repo above;
   // `dir` names a folder under the scratch root that is never created. A
@@ -228,6 +236,15 @@ export const ENVIRONMENT = {
     // shares repo A's KB with session A (same origin remote), but its reads and
     // writes go to the live KB, not a member's read-only checkout bible view.
     FULL_A: { kind: 'full', repo: 'A' },
+    // A kb_maintainer member session over an http project KB (kbHttp names the
+    // sample-server variant): records kb_bible_commit's bible_skipped,
+    // kb_invalidate ids' E-KB-HTTP-UNSUPPORTED, and member own-scope over http
+    // (another member's entry is absent from kb_query).
+    HTTP_A: { member: 'contract-http-a', kind: 'local', repo: 'HTTP', kbMaintainer: true, kbHttp: 'tagged' },
+    // The same over a server for a DIFFERENT project (409 PROJECT_MISMATCH on
+    // every route): a read and a promote are refused with
+    // E-KB-HTTP-PROJECT-MISMATCH.
+    HTTP_MISMATCH: { member: 'contract-http-mismatch', kind: 'local', repo: 'HTTP', kbMaintainer: true, kbHttp: 'other-project' },
   },
   defaultSession: 'A',
 };
@@ -298,6 +315,23 @@ function assertRemovedInvalidated(parsed, ctx) {
   return parsed?.committed === true ? null : `expected committed === true, got ${JSON.stringify(parsed?.committed)}`;
 }
 
+// kb_query INFERRED over an http project KB: the server holds another
+// member's entry; a member read must not show it.
+function assertNoForeignEntry(parsed) {
+  const rows = [...(parsed?.l1_results ?? []), ...(parsed?.l2_expanded ?? [])];
+  return rows.length === 0 ? null : `expected no entries (the only server entry is another member's), got ${JSON.stringify(rows.map((r) => r.id))}`;
+}
+
+// kb_bible_commit over an http project KB: skipped, with nothing merged,
+// removed or committed. A schema-valid ordinary response (no bible_skipped)
+// would otherwise pass.
+function assertBibleSkipped(parsed) {
+  if (parsed?.bible_skipped !== true) return `expected bible_skipped === true, got ${JSON.stringify(parsed?.bible_skipped)}`;
+  if (typeof parsed?.reason !== 'string' || parsed.reason.length === 0) return 'expected a non-empty reason';
+  const empty = ['merged', 'skipped', 'removed'].every((k) => Array.isArray(parsed[k]) && parsed[k].length === 0);
+  return empty && parsed.committed === false ? null : `expected nothing merged, skipped, removed or committed, got ${JSON.stringify(parsed)}`;
+}
+
 // E-RETIRE-NEEDS-KB-MAINTAINER (response field): the CONFIRMED GATE entry is
 // listed in refused, so it was left live. A schema-valid response with an
 // empty or missing refused list would otherwise pass.
@@ -330,6 +364,25 @@ function assertConfirmedOnly(parsed, ctx) {
   return (parsed?.l1_results ?? []).some((e) => e?.id === fooId)
     ? null
     : `the promoted entry ${fooId} is missing from the CONFIRMED-only l1_results`;
+}
+
+// kb_query own_scope (spec section 2.5): a member session reads back its OWN
+// CONFIRMED row from the per-repo DB. The member's checkout bible view, which
+// answers the same CONFIRMED read without own_scope, holds that row untagged,
+// so the member:<uuid> owner tag is what proves the own half answered. Every
+// row must be CONFIRMED and owned (own_scope returns no bible rows).
+function assertOwnConfirmedRow(parsed, ctx) {
+  const rows = parsed?.l1_results ?? [];
+  for (const e of rows) {
+    if (e?.confidence !== 'CONFIRMED') return `entry ${e?.id} has confidence ${JSON.stringify(e?.confidence)}, expected CONFIRMED only`;
+    if (!(e?.tags ?? []).some((t) => typeof t === 'string' && t.startsWith('member:'))) {
+      return `entry ${e?.id} carries no member: owner tag -- own_scope returned a bible-view row`;
+    }
+  }
+  const fooId = ctx.ids.get('FOO')?.live;
+  return rows.some((e) => e?.id === fooId)
+    ? null
+    : `the member's own CONFIRMED entry ${fooId} is missing from the own_scope l1_results`;
 }
 
 function assertDirectiveQuarantined(parsed, ctx) {
@@ -415,6 +468,7 @@ export const SCENARIO = [
   // with not_demoted_or_unknown. ids is empty, so this round only tombstones.
   { tool: 'kb_bible_commit', case: 'tombstone', derive: { demoted_ids: ['DEMOTED', 'FOO'] } },
   { tool: 'kb_query', case: 'happy-confirmed-only', assertParsed: assertConfirmedOnly },
+  { tool: 'kb_query', case: 'happy-own-scope', assertParsed: assertOwnConfirmedRow },
   { tool: 'kb_stats', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },
   // Bible v3 round trip: the basis carried in A's exported bible travels to B.
@@ -600,6 +654,26 @@ export const SCENARIO = [
   { tool: 'kb_promote', case: 'setup-second-promote-for-retire-refused', derive: { id: 'GATE' } },
   { tool: 'kb_capture', case: 'refusal-retire-needs-kb-maintainer', derive: { supersedes: 'GATE' }, assertParsed: assertRefusedGate },
   { tool: 'kb_invalidate', case: 'refusal-retire-needs-kb-maintainer', derive: { ids: ['GATE'] }, assertParsed: assertRefusedGate },
+  // Over an http project KB: kb_bible_commit skips (nothing merged or
+  // committed) and kb_invalidate {ids} is refused with a typed code.
+  { tool: 'kb_bible_commit', case: 'http-skip', assertParsed: assertBibleSkipped },
+  { tool: 'kb_invalidate', case: 'refusal-kb-http-unsupported' },
+  // Member own-scope over an http project KB: another member's entry is
+  // absent from an INFERRED kb_query (a member read asks the server for the
+  // entries carrying its own tag).
+  { tool: 'kb_query', case: 'http-own-scope', assertParsed: assertNoForeignEntry },
+  // kb_demote over an http project KB, served by the sample kb-server's
+  // POST /api/kb/demote: the session's own entry is captured, promoted to
+  // CONFIRMED and demoted; demoting it again is the server's 422
+  // E-DEMOTE-NOT-CONFIRMED. After http-own-scope, which must not see it.
+  { tool: 'kb_capture', case: 'setup-for-http-demote', captureId: 'HTTP_DEMOTED' },
+  { tool: 'kb_promote', case: 'setup-first-promote-for-http-demote', derive: { id: 'HTTP_DEMOTED' } },
+  { tool: 'kb_demote', case: 'http-happy', derive: { id: 'HTTP_DEMOTED' } },
+  { tool: 'kb_demote', case: 'refusal-http-not-confirmed', derive: { id: 'HTTP_DEMOTED' } },
+  // A server for another project is reachable but wrong: a read and a
+  // promote by id are refused, never answered from a local store.
+  { tool: 'kb_query', case: 'refusal-http-project-mismatch' },
+  { tool: 'kb_promote', case: 'refusal-http-project-mismatch' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -889,7 +963,7 @@ function assertProviderIdentity(provider) {
  * reachable store, so it cannot produce a response that needs an unreachable one.
  */
 export const FIXTURES_OUTSIDE_SCENARIO = new Map([
-  ['kb_feedback/happy-queued-offline', 'needs an unreachable HTTP KB server; tests/knowledge/kb-feedback-http.test.ts compares it with the real tool response'],
+  ['kb_feedback/refusal-unreachable', 'needs an unreachable HTTP KB server; tests/knowledge/kb-feedback-http.test.ts compares it with the real tool error'],
 ]);
 
 function coverageFailures(rosterTools) {

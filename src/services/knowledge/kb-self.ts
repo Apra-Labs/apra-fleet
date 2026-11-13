@@ -30,9 +30,10 @@ import { getSelfMemoSlot, getSessionMemberId, getSessionRoots, type SessionRoots
 import { getAgent } from '../registry.js';
 import type { Agent } from '../../types.js';
 import { knownRepoRemoteUrl } from '../member-remote-url.js';
-import { getKbProviders, getGlobalKbProvider, getProjectSlug, type KbProviders } from './kb-providers.js';
+import { getKbProviders, getGlobalKbProvider, getProjectSlug, kbConfigSelectsHttp, type KbProviders } from './kb-providers.js';
 import { getMemberBibleView } from './member-bible-view.js';
-import { requireSqliteProject } from './require-sqlite-project.js';
+import { isSqliteProject, requireSqliteProject } from './require-sqlite-project.js';
+import { HttpKbProvider } from './http-provider.js';
 import type { SqliteProvider } from './sqlite-provider.js';
 import { gitExecutable } from '../../os/git-executable.js';
 
@@ -373,18 +374,54 @@ export interface SelfReadKb {
  * checkout bible through the in-memory view (member-bible-view.ts); the
  * per-repo DB is shared by every member of the repo, whichever branch each is
  * on. Everything else keeps the per-repo DB: FULL sessions, in-process callers
- * passing an explicit KbAnchor, and a MEMBER request that explicitly names the
+ * passing an explicit KbAnchor, a MEMBER request that explicitly names the
  * INFERRED or UNVERIFIED tier (a bible carries the CONFIRMED set, so those
- * tiers are not the view's to answer). The global KB is unchanged either way.
- * That last MEMBER case carries `ownerTag`: it sees only its own captures.
+ * tiers are not the view's to answer), and a MEMBER request that opts into
+ * `opts.ownScope` (see below). The global KB is unchanged either way. Both of
+ * those last two MEMBER cases carry `ownerTag`: the caller sees only its own
+ * captures.
+ *
+ * `opts.ownScope` is the opt-in escape hatch from the bible view for a
+ * CONFIRMED read: the bible view is built by importBibleEntries, which stamps
+ * every row `tags: []` (bible-import.ts), so a bible-view read can never
+ * satisfy a `tag: 'member:<uuid>'` filter -- there is no row in that view
+ * carrying any member tag to match. A caller that needs to read back its OWN
+ * promoted CONFIRMED rows (e.g. kb_demote's candidate list, which must only
+ * ever offer ids kb_demote's ownerTag check can actually act on) sets
+ * `ownScope: true` to route to the per-repo KB instead, same as an explicit
+ * INFERRED/UNVERIFIED request. Default false/omitted: the routing above is
+ * unchanged, so no existing caller's result shape moves.
+ *
+ * Under an http project provider (decided from the KB config) the bible is
+ * not used at all: the KB server is the source of truth. A MEMBER session
+ * reads the server for every tier and every read tool, CONFIRMED included; a
+ * request naming INFERRED/UNVERIFIED, or opting into ownScope, carries
+ * ownerTag exactly as on SQLite, and the http provider enforces it fleet-side
+ * on the entries' tags. A server that cannot be reached is a typed error
+ * (E-KB-HTTP-UNREACHABLE), never an answer from the checkout bible or the
+ * per-repo database.
  */
+export interface SelfReadKbOptions {
+  ownScope?: boolean;
+}
+
 export async function getSelfReadKb(
   anchor?: KbAnchor,
   confidence?: readonly string[],
+  opts: SelfReadKbOptions = {},
 ): Promise<SelfReadKb> {
   const resolved = resolveKbAnchor(anchor);
+  const isMemberSelf = anchor === undefined && getSessionMemberId() !== undefined;
   const namesUnconfirmedTier = (confidence ?? []).some(c => c !== 'CONFIRMED');
-  if (anchor === undefined && getSessionMemberId() !== undefined && !namesUnconfirmedTier) {
+  // Decided from the config, so the default (SQLite) path opens no store here.
+  if (isMemberSelf && kbConfigSelectsHttp()) {
+    const providers = await getKbProviders(resolved.folder, resolved.remoteUrl);
+    if (!isSqliteProject(providers.project)) {
+      const ownerTag = namesUnconfirmedTier || opts.ownScope ? memberOwnerTag(anchor) : undefined;
+      return { providers, anchor: resolved, memberView: false, ...(ownerTag !== undefined ? { ownerTag } : {}) };
+    }
+  }
+  if (isMemberSelf && !namesUnconfirmedTier && !opts.ownScope) {
     const [project, global] = await Promise.all([getMemberBibleView(resolved), getGlobalKbProvider()]);
     return {
       providers: { project, global, projectSlug: getProjectSlug(resolved.folder, resolved.remoteUrl) },
@@ -403,22 +440,28 @@ export async function getSelfReadKb(
 
 export type KbTier = 'CONFIRMED' | 'INFERRED' | 'UNVERIFIED';
 
+/** A split-read project provider: both implement list() for kb_list. */
+export type SplitProjectProvider = SqliteProvider | HttpKbProvider;
+
 /**
  * The two halves of a MEMBER mixed-tier read (see getMemberSplitRead).
  *
  * `bible` answers the CONFIRMED tier from exactly the source a CONFIRMED-only
- * member read uses: the member's checkout bible view plus the global KB, with
- * NO owner tag. `own` answers EVERY requested tier (CONFIRMED included) from
- * the per-repo DB and the global KB, both restricted to `ownerTag`, so a member
- * never sees another member's DB-only captures at any tier, while its own
- * capture promoted to CONFIRMED in the per-repo DB stays visible before it
- * reaches the bible (the bible copy wins on a shared id).
+ * member read of the same tool uses, plus the global KB, with NO owner tag:
+ * the member's checkout bible view over a SQLite project, the KB server under
+ * http (the bible is never read then). `own`
+ * answers EVERY requested tier (CONFIRMED included) from the per-repo KB --
+ * the per-repo DB, or the KB server under http -- and the global KB, both
+ * restricted to `ownerTag`, so a member never sees another member's
+ * unconfirmed captures at any tier, while its own capture promoted to
+ * CONFIRMED stays visible before it reaches the bible (the bible copy wins on
+ * a shared id).
  */
 export interface MemberSplitRead {
   anchor: KbAnchor;
   projectSlug: string;
-  bible: { project: SqliteProvider; global: SqliteProvider; tiers: KbTier[] };
-  own: { project: SqliteProvider; global: SqliteProvider; tiers: KbTier[]; ownerTag: string };
+  bible: { project: SplitProjectProvider; global: SqliteProvider; tiers: KbTier[] };
+  own: { project: SplitProjectProvider; global: SqliteProvider; tiers: KbTier[]; ownerTag: string };
 }
 
 /**
@@ -431,11 +474,12 @@ export interface MemberSplitRead {
  * Callers query each half with its own tiers and owner tag, then merge with
  * mergeSplitById (bible copy wins) and apply their limit after the merge.
  *
- * Non-sqlite per-repo provider (a remote HTTP KB): the own half is refused
- * with requireSqliteProject's error naming `callerLabel`, exactly as the
- * same request was refused before the split existed. Answering with the bible
- * half alone would silently drop tiers the caller asked for, so the request
- * fails loudly instead.
+ * HTTP per-repo provider: the own half is the KB server, owner-tagged (the
+ * http provider re-checks the tag on every entry it returns), and the
+ * CONFIRMED half is the KB server too, with no owner tag, so the mixed read is
+ * a superset of the CONFIRMED-only read, which the server also answers. Any other non-sqlite provider is refused with requireSqliteProject's
+ * error naming `callerLabel`: answering with the bible half alone would
+ * silently drop tiers the caller asked for.
  */
 export async function getMemberSplitRead(
   anchor: KbAnchor | undefined,
@@ -448,16 +492,21 @@ export async function getMemberSplitRead(
   const ownerTag = memberOwnerTag(anchor);
   if (ownerTag === undefined) return null;
   const resolved = resolveKbAnchor(anchor);
-  const [view, global, repo] = await Promise.all([
-    getMemberBibleView(resolved),
-    getGlobalKbProvider(),
-    getKbProviders(resolved.folder, resolved.remoteUrl),
-  ]);
+  const repo = await getKbProviders(resolved.folder, resolved.remoteUrl);
+  const ownProject: SplitProjectProvider = repo.project instanceof HttpKbProvider
+    ? repo.project
+    : requireSqliteProject(repo.project, callerLabel);
+  // Under http the server answers the CONFIRMED half as well: the bible is
+  // never loaded (on a remote member that load would also be an SSH round trip).
+  const confirmedProject: Promise<SplitProjectProvider> = ownProject instanceof HttpKbProvider
+    ? Promise.resolve(ownProject)
+    : getMemberBibleView(resolved);
+  const [bibleProject, global] = await Promise.all([confirmedProject, getGlobalKbProvider()]);
   return {
     anchor: resolved,
     projectSlug: repo.projectSlug,
-    bible: { project: view, global, tiers: ['CONFIRMED'] },
-    own: { project: requireSqliteProject(repo.project, callerLabel), global: repo.global, tiers, ownerTag },
+    bible: { project: bibleProject, global, tiers: ['CONFIRMED'] },
+    own: { project: ownProject, global: repo.global, tiers, ownerTag },
   };
 }
 

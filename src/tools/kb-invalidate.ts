@@ -4,7 +4,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
-import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { KbHttpUnsupportedError } from '../services/knowledge/http-provider.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import { gitExecutable } from '../os/git-executable.js';
@@ -133,10 +134,19 @@ export async function kbInvalidate(input: KbInvalidateInput, anchor?: KbAnchor):
 
   const providers = await getSelfKbProviders(anchor);
   // MEMBER session: only the caller's own captures (member:<uuid>) for these
-  // files are invalidated; other members' entries are left untouched.
+  // files are invalidated; other members' entries are left untouched. The
+  // KB server has no own-scope invalidate route, so over http a MEMBER
+  // invalidate is refused before anything is sent.
   const ownerTag = memberOwnerTag(anchor);
   if (ownerTag !== undefined) {
-    const { invalidated, refused } = await requireSqliteProject(providers.project, 'kb_invalidate')
+    if (!isSqliteProject(providers.project)) {
+      throw new KbHttpUnsupportedError(
+        'kb_invalidate with files in a MEMBER session (own-scope invalidate)',
+        'nothing was invalidated',
+        'invalidate the files from a FULL session, or use a local SQLite KB (kb_setup provider sqlite).',
+      );
+    }
+    const { invalidated, refused } = await providers.project
       .invalidate(input.files!, { ownerTag, ...(keepConfirmed ? { keepConfirmed: true } : {}) });
     return JSON.stringify(refused !== undefined ? { invalidated, files: input.files, refused } : { invalidated, files: input.files });
   }

@@ -208,7 +208,7 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-MEMBER-VIEW-READ-ONLY",
-      "title": "kb_feedback was called in a MEMBER session. A member's reads come from the in-memory view of its own checkout bible, which is read-only; a downvote would flag an entry the member cannot see in the shared per-repo DB. Nothing is changed.",
+      "title": "kb_feedback was called in a MEMBER session. A member does not flag entries in the shared KB, under either provider: over a SQLite project KB its reads come from the read-only in-memory view of its own checkout bible, so a downvote would flag an entry the member cannot see in the shared per-repo DB; under an http KB provider the server's entries are shared by every member. Nothing is changed.",
       "status": 500
     },
     {
@@ -218,12 +218,32 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-AUTH",
-      "title": "The remote (HTTP) KB provider takes its bearer token from a named fleet secret ({{secret.NAME}} token_ref), and that secret is missing, expired or unreadable (no request is sent), or the KB server rejected it with HTTP 401 on the request and again on one retry after re-reading the secret. The message names the secret and the reason (missing / expired / unreadable / rejected), never the value. A capture, invalidate or feedback is kept in the offline queue first (the message says so) and is sent once the secret is accepted; the queue is not drained or dropped while the failure lasts. Reads do not fall back to the local store. A literal-token config never raises this code: its 401 keeps the plain HTTP error it always had.",
+      "title": "The remote (HTTP) KB provider takes its bearer token from a named fleet secret ({{secret.NAME}} token_ref), and that secret is missing, expired or unreadable (no request is sent), or the KB server rejected it with HTTP 401 on the request and again on one retry after re-reading the secret. The message names the secret and the reason (missing / expired / unreadable / rejected), never the value. Nothing is queued: a write that fails this way was not applied, and the caller decides whether to repeat it once the secret is fixed. Reads do not fall back to the local store. A literal-token config never raises this code: its 401 keeps the plain HTTP error it always had.",
       "status": 500
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-BASIS-NOT-GIT",
       "title": "The folder is not inside a git work tree, so file content at HEAD cannot be read and the bible's file hashes cannot be computed. Nothing is written.",
+      "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-UNSUPPORTED",
+      "title": "The project KB is backed by the http provider and the operation cannot be served there. Either the provider has no such operation (kb_invalidate with ids: id-level discard; a MEMBER kb_invalidate with files: own-scope invalidate; a MEMBER kb_query flagged_only read), the call needs the optional demote route and the server does not list it (kb_demote; a MEMBER kb_query own_scope read, which exists to find what the caller may demote), or the KB server does not serve the route the call needs: GET /api/kb/capabilities does not list it, or an optional route answered 404/501 (except a 404 whose body code says the entry is unknown), or promote answered 404 without body code ENTRY_NOT_FOUND (a server that does not serve promote: upgrade it); or the capabilities read itself answered an error status other than 401, 404, 429, 501, a 5xx or a 409 PROJECT_MISMATCH (e.g. 403/405 from a gateway), or a body with some of {contract, routes, branch_aware} but not all, well typed. The message names the route or the capabilities read. Nothing is sent to an unlisted route and nothing is changed; no local store stands in.",
+      "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-PROJECT-MISMATCH",
+      "title": "The project KB is backed by the http provider and the KB server it points at serves a different project: every request carries the caller project slug (X-KB-Project) and the server answered 409 naming both slugs. Nothing is read or written, and the local fallback store is not used: the server is reachable, it is the wrong one.",
+      "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-UNREACHABLE",
+      "title": "The project KB is backed by the http provider and the KB server could not be reached (connection refused, DNS failure, timeout, reset), or it answered a 5xx or 429 (a restarting or rate-limiting server, or a gateway with no backend) to its capabilities read (GET /api/kb/capabilities), so the request itself was never sent; the message names the request (and the status). The KB server is the only source of truth under http: no read is answered from the checkout bible or a local store, and no write reports success. Nothing is queued by the provider: the caller owns the retry. The sprint engine keeps its own KB write queued on this code and repeats it on its next flush; an interactive or agent caller decides for itself.",
+      "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-SERVER-ERROR",
+      "title": "The project KB is backed by the http provider and the KB server (or a gateway in front of it) answered a write request itself -- a capture, invalidate (files), feedback, promote or demote -- with a 5xx or 429. The request reached the server, so whether the write took effect is unknown (a 502 or 504 can follow a stored write). The provider does not retry it and queues nothing; the message names the request and the status. Never a raw HTTP error.",
       "status": 500
     }
   ]

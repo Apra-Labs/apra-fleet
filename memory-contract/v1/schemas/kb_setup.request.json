@@ -30,7 +30,7 @@
           "type": "integer",
           "minimum": 1000,
           "maximum": 120000,
-          "description": "Socket idle timeout in milliseconds for each request to the remote KB server, 1000-120000 (default 5000). Not a per-request deadline: a call can wait up to about twice this while queued offline writes flush first."
+          "description": "Socket idle timeout in milliseconds for each request to the remote KB server, 1000-120000 (default 5000). Not a per-request deadline: a call can wait up to about twice this when it first reads the server capabilities."
         },
         "tool_profile": {
           "type": "string",

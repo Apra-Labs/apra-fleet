@@ -99,10 +99,9 @@ INCOMPLETE without this set (`INVENTORY.md` section 4.2).
 is not reached through `requireSqliteProject`. Over a remote KB,
 `HttpKbProvider.feedback` POSTs the `kb_feedback` request body
 `{id, reason, role}` to `/api/kb/feedback` and `kb_feedback` returns the
-server's response as is; while the server is unreachable the feedback is kept
-in the offline queue (replayed in order with queued captures and invalidates)
-and the tool answers `{id, queued: true}`. Either way the client never writes
-or invents `confidence` (`methods.json` X-2 `providers_note`).
+server's response as is; while the server is unreachable the tool fails with
+`E-KB-HTTP-UNREACHABLE` and nothing is queued. Either way the client never writes or invents `confidence`
+(`methods.json` X-2 `providers_note`).
 
 ### 2.3 `CodeIntelligenceProvider` interface methods (`methods.json` ids C-1..C-9)
 
@@ -185,11 +184,30 @@ the member's own captures promoted to CONFIRMED in the per-repo DB are returned
 before they reach the bible (the bible copy wins on a shared id); a
 `[CONFIRMED, INFERRED]` read is a superset of the CONFIRMED-only result
 (except `kb_list` with a `limit`, which applies the limit after merging) and
-never exposes another member's captures. `kb_capture` tags the
+never exposes another member's captures. The bible view and this split apply
+to a SQLite project KB: under the http project provider the bible is not used
+at all (section 2.9), and every MEMBER read (`kb_query`, `kb_session_prime`,
+`kb_context`, `kb_list`, `kb_stats`) of any tier, CONFIRMED included, goes to
+the server; a MEMBER `kb_query` `flagged_only` read is refused there with
+`E-KB-HTTP-UNSUPPORTED` (a flagged listing carries no owner tag). A mixed request is split the same
+way there: the server's CONFIRMED set, plus every listed tier from the
+server restricted to the caller's own captures, merged by id. Own-scope holds
+there too, enforced by fleet on the entry tags the server returns: a read
+naming INFERRED/UNVERIFIED returns only entries tagged `member:<caller uuid>`
+(an entry returned without tags counts as not the caller's), and the default
+`kb_context` read merges every CONFIRMED summary with the caller's own
+CONFIRMED/INFERRED ones. Filtering happens after the server's `limit`, so such a
+read can return fewer entries than asked for. `kb_capture` tags the
 stored entry `member:<caller uuid>`; `kb_promote`, `kb_demote` and
-`kb_invalidate` act only on entries carrying that tag and report any other id
-as not found, changing nothing. `kb_invalidate` takes exactly one of `files`
-or `ids`; `ids` discards
+`kb_invalidate` act only on entries carrying that tag and report any other id as not found, changing
+nothing. Under the http project provider `kb_promote` is sent by id with no
+lookup first, and fleet does not check the member tag: the KB server decides
+which ids the caller may promote and refuses an unknown, superseded or
+out-of-scope id itself. A server answers an unknown id with 404 and body
+`code` `ENTRY_NOT_FOUND` (the code an optional id route such as `demote` needs,
+section 2.9.1). Promote is a required route, so fleet reports any 404 from it,
+whatever its code, as `E-ENTRY-NOT-FOUND`, thrown as `Entry not found: <id>` followed by the server's answer; any other refusal is
+thrown with its HTTP status and the server's title/code/detail. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
 `{discarded, not_found, already_discarded}`. In a member session without the
 kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the
@@ -207,6 +225,49 @@ entry the member's checkout holds only because it was imported from the bible
 is reported not found, same as an unknown id, and is left unchanged. A FULL
 session carries no ownerTag at all and may demote any CONFIRMED row,
 bible-imported or not.
+
+Because the default CONFIRMED read is answered from the bible view, and every
+bible-view row is imported with `tags: []`, a MEMBER session has no way to
+read back its OWN promoted CONFIRMED rows from a default `kb_query`/`kb_list`
+call -- a `tag: "member:<id>"` filter can never match a bible-view row. `kb_query`
+accepts an opt-in `own_scope: true` to escape the bible view for exactly this
+case: it routes to the per-repo DB with the caller's own `ownerTag` applied,
+same as an explicit INFERRED/UNVERIFIED request, so the caller sees only its
+own rows regardless of which tier they are in. `own_scope` is ignored when
+`flagged_only` is set (that branch already reads the view unconditionally),
+has no effect for a FULL session or an in-process caller passing an explicit
+anchor (both already read the per-repo DB), and defaults to false/omitted so
+every other caller's routing and result shape is unchanged.
+
+`own_scope` is the OWN HALF of the member split read on its own. A member
+request naming CONFIRMED together with another tier is answered by the split
+read: the bible half (CONFIRMED, checkout bible view, untagged) merged by id
+with the own half (every requested tier, CONFIRMED included, per-repo DB,
+caller's `ownerTag`), the bible copy winning on a shared id. With
+`own_scope: true` the same request skips the bible half: it returns the own
+half alone, so a member's own promoted CONFIRMED row appears exactly once and
+as the per-repo copy `kb_demote` acts on, and no untagged bible row is ever
+offered to a caller that can only demote its own entries.
+
+`own_scope` changes WHICH STORE answers and nothing else -- it moves no other
+default. That matters to the caller building a demotion candidate list,
+because `demote()` refuses an unknown or un-owned id, a superseded entry, a
+user-directive, a non-CONFIRMED entry and a too-thin reason, but it has NO
+stale refusal and no disputed refusal: staleness is a freshness verdict while
+trust is a separate axis, and a row the sweep has already staled, or that
+something now contradicts, is exactly the kind most worth demoting. The
+default read path drops both -- stale rows unless `include_stale` is set, and
+disputed rows while `exclude_disputed` is on (its default whenever no explicit
+`confidence` list is given). So an own-scope read that must span everything
+`kb_demote` will accept asks for all three together:
+`{ own_scope: true, confidence: ["CONFIRMED"], include_stale: true }` -- the
+explicit `confidence` list is what turns `exclude_disputed` off.
+
+That widened read also returns SUPERSEDED rows, because `include_stale`
+admits superseded entries alongside stale ones. `kb_demote` refuses those
+(`E-DEMOTE-SUPERSEDED`), and this read path deliberately does not filter them
+out: dropping a superseded row is the CALLER's job, stated here so it is not
+left implicit.
 
 ### 2.5a MEMBER-session tool exposure (KB write policy)
 
@@ -230,7 +291,8 @@ A MEMBER session is served an explicit tool list
   `?member=<uuid>` entry -- gets an unknown-tool error.
 - `kb_demote` withdraws CONFIRMED (CONFIRMED -> INFERRED) and is served on the
   same terms as `kb_promote`: only to a member session carrying the
-  kb_maintainer grant.
+  kb_maintainer grant. The engine applies every reviewer demotion through that
+  session; no other member session needs it.
 - Every other `kb_*` tool (including `kb_bible_commit` and `kb_import`) and
   every `code_*` tool is served to every member session.
 - `kb_import` with an explicit `path` keeps the named bible's confidence (and a
@@ -287,6 +349,20 @@ A MEMBER session is served an explicit tool list
   boundary against a process on the member's host). FULL sessions and the
   kb_maintainer session without `ref` are otherwise unchanged (they read the
   named or work-tree file).
+- Under an http project KB, `kb_invalidate {ids}` (id-level discard) is refused
+  with `E-KB-HTTP-UNSUPPORTED` (thrown): the http provider has no discard
+  operation, and nothing is discarded, on the remote or in the local fallback
+  store. In a MEMBER session `kb_invalidate {files}` is refused the same way
+  (the KB server has no own-scope invalidate; nothing is sent or changed);
+  outside a MEMBER session `kb_invalidate {files}` is unaffected.
+- Under an http project KB, every request carries the project slug
+  (`X-KB-Project`). Fleet's `kb-server` serves one project and answers a
+  request for another project (or naming none) with 409 naming both slugs,
+  surfaced by every provider call (capture, query, context, invalidate, prime,
+  promote) as `E-KB-HTTP-PROJECT-MISMATCH` (thrown); nothing is read or written
+  and no local store is used. When the server is unreachable every call fails
+  with `E-KB-HTTP-UNREACHABLE` (section 2.9); no read is answered from the
+  checkout bible or the per-repo database.
 - `kb_invalidate` retires entries (`ids` discards them; `files` marks
   context-cache entries invalidated), and `kb_bible_commit` removes retired
   entries from the bible, so in a member session WITHOUT the grant neither
@@ -358,7 +434,14 @@ working folder, which is typically a feature branch.
   nothing removed, or an unchanged entry set, makes no write and no commit. Re-running with
   the same ids after resetting to a newer HEAD re-merges at entry level, so a
   rejected push can be retried with no manual merge. An existing bible that
-  cannot be parsed is refused (thrown), never overwritten.
+  cannot be parsed is refused (thrown), never overwritten. Under a non-SQLite
+  (http) project KB there is no local store to build a bible from, so the call
+  is skipped before any KB read, write or git commit (the bible file itself may be read, leniently: an
+  unparseable one is logged and counted as 0, never thrown over): it returns `bible_skipped:
+  true` with a `reason`, nothing merged, skipped, removed or committed
+  (`committed` false, `entry_count` the number of entries in the existing parseable
+  bible, 0 when it is absent or unparseable); it is an answer, not an error, and has
+  no code.
 
 The v3 envelope also carries an OPTIONAL top-level `demotions` array of
 `{id, at, reason}` tombstones, sorted by id: the id left the bible at `at` for
@@ -549,6 +632,156 @@ for every accepted shape live in `bible/examples/`.
   `kb_bible_commit`'s `backfilled` count (above); otherwise the format change is
   confined to the bible file.
 
+### 2.9 Remote (HTTP) KB: the server is the source of truth
+
+When the KB config selects the http project provider, the KB server answers
+every project KB call and fleet keeps no second copy:
+
+- The bible (`.fleet/kb-canonical.json`) is not used. No read is answered
+  from it, `kb_session_prime` does not cold-seed from it, `kb_import` imports
+  nothing (it answers `bible_skipped: true` with a `reason` before reading the
+  bible, so a sprint start imports nothing), and `kb_bible_commit` answers
+  `bible_skipped: true` (section 2.6).
+- The per-repo SQLite database is not used either: nothing is read from it
+  when the server is down, and delivery telemetry (`touch`) is not written
+  to it. `getLinked` and `relatedClaims` have no remote route and answer
+  empty (`related_claims` is then empty, as for any graph miss).
+- A server that cannot be reached is `E-KB-HTTP-UNREACHABLE`, and a token the
+  server refuses is `E-KB-HTTP-AUTH` (section 3.3a). Both are thrown; neither
+  is ever answered from a local store.
+
+#### 2.9.1 Routes and capabilities
+
+A KB server serves these routes, each behind the same bearer-token auth and
+the same `X-KB-Project` check (409 `PROJECT_MISMATCH` naming both projects for
+another project or none):
+
+| Route name | Request | Required |
+|---|---|---|
+| `capture` | `POST /api/kb/capture` | yes |
+| `query` | `GET /api/kb/query` | yes |
+| `promote` | `POST /api/kb/promote` | yes |
+| `context` | `GET /api/kb/context` | no |
+| `prime` | `POST /api/kb/prime` | no |
+| `invalidate` | `POST /api/kb/invalidate` | no |
+| `feedback` | `POST /api/kb/feedback` | no |
+| `list` | `GET /api/kb/list` | no |
+| `demote` | `POST /api/kb/demote` | no |
+
+`GET /api/kb/capabilities` (same auth and project check) answers
+`{contract, routes, branch_aware}`: `contract` is the contract version
+(`"v1"`), `routes` the route names it serves, `branch_aware` whether it keeps
+entries per branch (section 2.9.2). Fleet's client:
+
+- reads it once per connection, and again after a connection error or a
+  failed read of it (a 5xx or 429 answer to another request does not trigger
+  a re-read). It is not re-read between two successful calls: a
+  server upgraded (or downgraded) in place without dropping the connection
+  keeps the route set the client read before, until the next connection
+  error or a fleet server restart;
+- never calls a route the answer does not list: the tool fails with
+  `E-KB-HTTP-UNSUPPORTED` naming the route and nothing is sent;
+- assumes a server that has no capabilities route (it answers 404 or 501, or a
+  body with none of the three fields) serves the route set from before this
+  route existed: every route above except `demote`, `branch_aware` false;
+- refuses a capabilities body that carries some of the fields but not all,
+  well typed, with `E-KB-HTTP-UNSUPPORTED`;
+- treats any other failed capabilities read as the server's state, never as
+  a raw HTTP error: a 5xx or 429 (a restarting or rate-limiting server, a
+  gateway with no backend) is `E-KB-HTTP-UNREACHABLE` naming the status (the
+  caller's own request was never sent); any other status but 401 and a 409
+  `PROJECT_MISMATCH` (e.g. 403/405 from a gateway) is
+  `E-KB-HTTP-UNSUPPORTED` naming the capabilities read. A failed read is not
+  kept: the next call reads the capabilities again;
+- turns a 5xx or 429 answering a write itself (capture, invalidate with
+  files, feedback, promote, demote) into `E-KB-HTTP-SERVER-ERROR` naming the
+  request and the status, never a raw HTTP error. The request reached the
+  server, so whether the write took effect is unknown: it is not retried;
+- queues no write. A write that fails for any reason is thrown to the
+  caller, who owns the retry (section 3.3a);
+- turns a 404 or 501 from any optional route into `E-KB-HTTP-UNSUPPORTED`
+  naming the route, never a raw HTTP error. On an id route a 404 whose body
+  `code` is `ENTRY_NOT_FOUND` or `E-ENTRY-NOT-FOUND` means the entry is
+  unknown, not that the route is missing;
+- turns a 404 from `promote` (a required route) whose body `code` is not
+  `ENTRY_NOT_FOUND` / `E-ENTRY-NOT-FOUND` into `E-KB-HTTP-UNSUPPORTED` naming
+  the promote route, with the remediation to upgrade the KB server: a server
+  from before the capabilities route may not serve promote at all, and its
+  catch-all 404 must not read as "Entry not found".
+
+A server answers an id route (`promote`, `demote`, `feedback`) naming an
+entry it does not hold, or one outside the caller's scope, with 404 and body
+`code` `ENTRY_NOT_FOUND`. That body code is required: it is the only thing
+that tells an unknown entry from a missing route.
+
+Fleet's `kb-server` always serves a local SQLite KB: it serves, and its
+capabilities list, every route above, `demote` included, and it reports
+`branch_aware: false`. It is the reference implementation of these routes;
+the http fixtures under `fixtures/` are recorded against it.
+
+`demote` is `POST /api/kb/demote` `{id, reason, evidence_files}`, answered
+`{id, previous_confidence, new_confidence}`; like `promote` it is sent by id
+and the server enforces which ids the caller may demote. `kb_demote` is sent
+only when the capabilities list `demote`. Without it, `kb_demote` and a MEMBER
+`kb_query` `own_scope` read (which exists to find what the caller may demote)
+fail with `E-KB-HTTP-UNSUPPORTED`, and the sprint engine's reviewer demotion
+loop offers no candidates.
+
+The server validates `evidence_files`. They are untrusted input: paths
+relative to the root of the repository the caller names in `X-Repository`,
+as of the branch it names in `X-Repository-Branch` (section 2.9.2). A server
+refuses an absolute path or one with a `..` segment, and resolves the rest
+only inside its own view of that repository and branch, never elsewhere on
+its filesystem. Fleet checks first that each path is repo-relative with no
+`..` segment (either separator, any drive-letter or UNC form counts as
+absolute) and otherwise refuses with `E-DEMOTE-EVIDENCE-UNRESOLVED` before
+sending anything. The server's refusals:
+
+- 404 with body `code` `ENTRY_NOT_FOUND`: the id is unknown, or outside the
+  caller's scope (the two are not told apart);
+- 422 for a demote refusal, with body `code` the taxonomy code:
+  `E-DEMOTE-NOT-CONFIRMED`, `E-DEMOTE-SUPERSEDED`, `E-DEMOTE-REFUSED-DIRECTIVE`,
+  `E-DEMOTE-REASON-REQUIRED` or `E-DEMOTE-EVIDENCE-UNRESOLVED` (an evidence
+  path that is absolute, has a `..` segment, or does not resolve to a file).
+
+#### 2.9.2 Project and repository headers
+
+Every request carries headers that fleet fills only from the calling
+session's resolved KB anchor (section 2.4), never from tool input:
+
+| Header | Value |
+|---|---|
+| `X-KB-Project` | the project slug |
+| `X-Repository` | the normalised origin remote, `host/path` (no scheme, credentials, port or `.git`) |
+| `X-Repository-Branch` | the checked-out branch of a local folder, percent-encoded UTF-8; absent when HEAD is detached or unknown |
+| `X-Repository-Commit` | the HEAD sha of a local folder; absent when unknown |
+
+A server uses them as follows:
+
+- **They are context, not identity.** They say which repository and branch a
+  request is about. They never authenticate or authorise the caller: who the
+  caller is, and what it may read or write, comes from the bearer token and
+  the server's own scope rules.
+- **Entries are kept per project and repository.** `X-KB-Project` selects the
+  KB; within it, `X-Repository` keeps repositories apart, so one server can
+  hold several repositories without mixing their entries. A server that
+  serves one project refuses any other `X-KB-Project` (409, section 2.9.1).
+- **The branch decides what is true.** A server that keeps entries per branch
+  answers a read with what is true on `X-Repository-Branch` and records a
+  write against it. Such a server reports `branch_aware: true` in its
+  capabilities; a server that keeps one truth per repository reports
+  `branch_aware: false` and ignores the branch.
+- **The commit is only a hint.** `X-Repository-Commit` is the caller's local
+  HEAD, which can trail the branch tip (unpushed, or not yet fetched). A
+  server must not treat it as the branch tip or reject a request because the
+  commit is behind; it may use it, for example, to judge how fresh the
+  caller's view of a file is.
+- **The branch is percent-decoded before matching.** Fleet sends the branch
+  percent-encoded (UTF-8), so a server decodes it before comparing it with
+  branch names it holds; a value that is not valid percent-encoding is
+  treated as absent.
+- `branch_aware` is reported in `GET /api/kb/capabilities` (section 2.9.1).
+
 ## 3. Error model
 
 `taxonomy.json` in this directory is the source of truth: a CLOSED set of
@@ -591,15 +824,16 @@ deliberately get NO code, each with its reason. They fall into three kinds:
   that branch is the one with a code.
 - **A failure was degraded into an answer** -- the `code_*` adapters' offline
   result, the swallowed bible read, the emptied
-  `related_claims`, the unknown author role, and a provider reporting stats as
-  unsupported.
+  `related_claims`, the unknown author role, a provider reporting stats as
+  unsupported, and `kb_bible_commit` returning `bible_skipped: true` under an
+  http project KB.
 
-### 3.3 No code in v1 is retryable
+### 3.3 One code in v1 is retryable
 
-Every entry carries `retryable: false`. This is a finding, not a default: the
-transient-failure paths in this surface never propagate to the caller as errors
--- they are converted into structured results at the provider boundary (third
-kind in 3.2) -- so v1 has no retry-with-backoff class at all. `retryable` means
+Every entry but `E-KB-HTTP-UNREACHABLE` carries `retryable: false`. This is a
+finding, not a default: apart from that one code, the transient-failure paths
+in this surface never propagate to the caller as errors -- they are converted
+into structured results at the provider boundary (third kind in 3.2). `retryable` means
 "retrying the identical request unchanged can succeed"; fixing a path or
 supplying a missing reason is a new request, not a retry.
 
@@ -610,19 +844,37 @@ updates the secret, and the identical request then succeeds. It is still
 way, and the provider has already done its one retry (re-read the secret, send
 once more) before raising it.
 
-### 3.3a Remote KB auth failure is thrown, and writes are queued first
+`E-KB-HTTP-UNREACHABLE` (the KB server cannot be reached, or its capabilities
+read answered a 5xx or 429, so the request was never sent) is the one transient
+failure in this surface that reaches the caller, and it is `retryable: true`:
+the identical request succeeds once the server answers again. It is thrown
+rather than degraded because under http the KB server is the only source of
+truth, and answering from a local store or the checkout bible would hide the
+outage (section 2.9). The provider queues nothing behind it, so the caller
+owns the retry (3.3a).
 
-`E-KB-HTTP-AUTH` is `surfaced: thrown` on every tool that reaches the remote
-provider. A write (`kb_capture`, `kb_harvest`, `kb_invalidate`,
-`kb_feedback`) is first put
-in the provider's offline queue -- the same queue a server-down write uses --
-and the thrown message says so; the queue is kept (not flushed, not dropped)
-until the secret is accepted. A read (`kb_query`, `kb_context`,
-`kb_session_prime`) is thrown with no local fallback: unlike an outage, this
-needs the operator to act, and a silently degraded answer would hide that. A
-MEMBER session's CONFIRMED read is answered from its checkout bible (2.5) and
-never reaches the provider, so it keeps working. No message, log line or
-queue warning ever contains the secret's value.
+`E-KB-HTTP-SERVER-ERROR` (the server answered a write itself with a 5xx or
+429) is `retryable: false`: the write may already have been applied, so
+repeating the identical request could apply it twice.
+
+### 3.3a Remote KB auth and outage failures are thrown; the caller owns the retry
+
+`E-KB-HTTP-AUTH`, `E-KB-HTTP-UNREACHABLE` and `E-KB-HTTP-SERVER-ERROR` are
+`surfaced: thrown` on every tool that reaches the remote provider. The
+provider queues nothing: a write (`kb_capture`, `kb_invalidate`,
+`kb_feedback`, `kb_promote`, `kb_demote`) that fails is thrown, and a read
+(`kb_query`, `kb_context`, `kb_session_prime`, `kb_list`) is thrown with no
+local fallback: a silently degraded answer would hide the failure. One owner
+retries, the caller: the sprint engine keeps its own KB write queued on
+`E-KB-HTTP-UNREACHABLE` and repeats it on its next flush; an interactive or
+agent caller decides for itself. `kb_harvest` captures many learnings in one
+call, so a failed capture does not stop it: it attempts every learning, logs
+each failure, and reports how many captures failed (`entries_failed`); it
+raises none of these codes itself. Over a SQLite project KB a MEMBER session's CONFIRMED read is answered
+from its checkout bible (2.5) and never reaches the provider; under the http
+project provider member reads go to the server (2.5, 2.9) and are thrown like
+any other read. No message or log line ever
+contains the secret's value.
 
 ### 3.4 Silent refusals are named but not projectable
 

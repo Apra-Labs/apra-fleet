@@ -55,49 +55,28 @@
           "additionalProperties": {}
         },
         "parsed": {
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "stale": {
-                  "type": "boolean"
-                },
-                "flagged_for_review": {
-                  "type": "boolean"
-                },
-                "confidence": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id",
-                "stale",
-                "flagged_for_review",
-                "confidence"
-              ],
-              "additionalProperties": false
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
             },
-            {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "queued": {
-                  "type": "boolean",
-                  "const": true
-                }
-              },
-              "required": [
-                "id",
-                "queued"
-              ],
-              "additionalProperties": false
+            "stale": {
+              "type": "boolean"
+            },
+            "flagged_for_review": {
+              "type": "boolean"
+            },
+            "confidence": {
+              "type": "string"
             }
-          ]
+          },
+          "required": [
+            "id",
+            "stale",
+            "flagged_for_review",
+            "confidence"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [

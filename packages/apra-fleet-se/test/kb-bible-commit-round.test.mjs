@@ -24,7 +24,7 @@ const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
  * A fake maintainer: records every event in order. `pushFailures` is how many
  * G-pushes fail before one succeeds.
  */
-function harness({ pushFailures = 0, committed = true, unpushed = false, skipped = [], removed, bibleSkipRetryRounds } = {}) {
+function harness({ pushFailures = 0, committed = true, unpushed = false, skipped = [], removed, bibleSkipRetryRounds, httpSkip = false } = {}) {
     const events = [];
     const logs = [];
     let pushesLeftToFail = pushFailures;
@@ -33,6 +33,7 @@ function harness({ pushFailures = 0, committed = true, unpushed = false, skipped
         // not part of the round's call order.
         if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
         events.push({ ev: tool, member: member.name, args });
+        if (tool === 'kb_bible_commit' && httpSkip) return { content: [{ text: JSON.stringify(HTTP_SKIP_RESULT) }] };
         if (tool === 'kb_bible_commit') {
             // `skipped` is a fixed list, or a function of the call's ids (a
             // per-round answer); only skips for ids actually sent are returned.
@@ -370,6 +371,139 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
         assert.ok(!events.includes('G-push'));
         assert.deepEqual(out, { committed: 0, pending: 1 });
         assert.ok(logs.some((l) => /WARN: bible commit .* failed at base resolution/.test(l)));
+    });
+});
+
+// =============================================================================
+// demoted_ids: a round's successful kb_demote()s travel in the SAME
+// kb_bible_commit call as that round's confirmed ids (never a second call),
+// including through the G-push retry path above. See
+// kb-demotion-apply.test.mjs for the demotion-execution lane itself (apply()
+// routing, evidence_files, a failing kb_demote, the ping-pong guard); this
+// block only covers the bible-commit INTEGRATION this file already exercises
+// for promotions.
+// =============================================================================
+
+describe('commitRound: demoted_ids travels with ids in one kb_bible_commit call', () => {
+    /** Like harness() above, plus demotionCandidates' own_scope kb_query branch. */
+    function harnessWithDemotions({ pushFailures = 0, httpSkip = false, ownScopeUnsupported = false } = {}) {
+        const events = [];
+        const logs = [];
+        let offeredDemote = [];
+        let pushesLeftToFail = pushFailures;
+        const memberCall = async (member, tool, args) => {
+            if (tool === 'kb_query') {
+                if (args.own_scope && ownScopeUnsupported) {
+                    events.push({ ev: 'kb_query(own_scope)', member: member.name, args });
+                    return { isError: true, content: [{ type: 'text', text: 'E-KB-HTTP-UNSUPPORTED: kb_query own_scope in a MEMBER session (the KB server does not list the demote route in GET /api/kb/capabilities) is not supported by the http KB provider; nothing was read.' }] };
+                }
+                return args.own_scope ? { l1_results: offeredDemote } : { l1_results: offeredEntries.map((id) => ({ id })) };
+            }
+            events.push({ ev: tool, member: member.name, args });
+            if (tool === 'kb_bible_commit' && httpSkip) return { content: [{ text: JSON.stringify(HTTP_SKIP_RESULT) }] };
+            if (tool === 'kb_bible_commit') {
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            path: '.fleet/kb-canonical.json',
+                            merged: args.ids || [],
+                            demoted: args.demoted_ids || [],
+                            skipped: [],
+                            entry_count: (args.ids || []).length,
+                            committed: true,
+                        }),
+                    }],
+                };
+            }
+            return {};
+        };
+        const client = createKbWorkClient({
+            memberCall,
+            maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
+            gPull: async (m, opts = {}) => { events.push({ ev: opts.resetToRemoteTip ? 'G-pull(reset)' : 'G-pull', member: m }); },
+            gPush: async (m) => {
+                events.push({ ev: 'G-push', member: m });
+                if (pushesLeftToFail > 0) { pushesLeftToFail--; throw new Error('! [rejected] (non-fast-forward)'); }
+            },
+            abortRebase: async (m) => { events.push({ ev: 'rebase--abort', member: m }); return false; },
+            bibleBase: async () => BASE,
+            roundChangedFiles: async () => ['x.js'],
+            log: (m) => logs.push(m),
+        });
+        const confirmAndDemote = async ({ promote = [], demote = [] }) => {
+            await confirm(client, promote);
+            offeredDemote = demote.map((id) => ({ id, type: 'knowledge', confidence: 'CONFIRMED', source_files: ['x.js'] }));
+            await client.demotionCandidates('reviewer-1');
+            offeredDemote = [];
+            await client.apply('reviewer', 'reviewer-1', { kb_demotions: demote.map((id) => ({ id, reason: REASON, evidence_files: ['src/a.ts'] })) });
+        };
+        return { client, events, logs, confirmAndDemote };
+    }
+
+    test('a skipped bible commit (http KB provider) drops the demotion queue too: no later call, nothing reported pending', async () => {
+        const { client, events, logs, confirmAndDemote } = harnessWithDemotions({ httpSkip: true });
+        await confirmAndDemote({ promote: ['e1'], demote: ['d1'] });
+
+        const out = await client.commitRound('review C1');
+
+        assert.deepEqual(out, { committed: 0, pending: 0 });
+        const skipLine = logs.find((l) => l.includes('kb_bible_commit skipped') && l.includes(HTTP_SKIP_REASON));
+        assert.ok(skipLine, logs.join('\n'));
+        assert.match(skipLine, /1 confirmation\(s\) and 1 demotion\(s\) dropped/);
+        const mark = events.length;
+        const second = await client.commitRound('review C2');
+        assert.deepEqual(second, { committed: 0, pending: 0 });
+        assert.equal(events.slice(mark).filter((e) => e.ev === 'kb_bible_commit').length, 0);
+        const before = logs.length;
+        client.warnPending();
+        assert.ok(!logs.slice(before).some((l) => /demotion\(s\)/.test(l)), logs.slice(before).join('\n'));
+    });
+
+    test('a KB server without the demote route: the own_scope read is refused, so the reviewer is offered nothing and no kb_demote is sent', async () => {
+        const { client, events, logs } = harnessWithDemotions({ ownScopeUnsupported: true });
+
+        const offered = await client.demotionCandidates('reviewer-1');
+
+        assert.deepEqual(offered, []);
+        assert.equal(events.filter((e) => e.ev === 'kb_query(own_scope)').length, 1);
+        assert.ok(logs.some((l) => /does not serve demote: offering no demotion candidates/.test(l)), logs.join('\n'));
+        const out = await client.apply('reviewer', 'reviewer-1', { kb_demotions: [{ id: 'd1', reason: REASON, evidence_files: ['src/a.ts'] }] });
+        assert.equal(out.demoted, 0);
+        assert.equal(events.filter((e) => e.ev === 'kb_demote').length, 0);
+    });
+
+    test('a round that both confirms and demotes produces exactly one kb_bible_commit call carrying both lists', async () => {
+        const { client, events, confirmAndDemote } = harnessWithDemotions();
+        await confirmAndDemote({ promote: ['e1'], demote: ['d1'] });
+
+        const out = await client.commitRound();
+
+        const commits = events.filter((e) => e.ev === 'kb_bible_commit');
+        assert.equal(commits.length, 1);
+        assert.deepEqual(commits[0].args.ids, ['e1']);
+        assert.deepEqual(commits[0].args.demoted_ids, ['d1']);
+        assert.deepEqual(out, { committed: 2, pending: 0 });
+    });
+
+    test('a rejected G-push is retried with BOTH ids and demoted_ids, the same as the promotion-only retry path', async () => {
+        const { client, events, logs, confirmAndDemote } = harnessWithDemotions({ pushFailures: 1 });
+        await confirmAndDemote({ promote: ['e1'], demote: ['d1'] });
+        const before = events.length;
+
+        const out = await client.commitRound();
+
+        assert.deepEqual(events.slice(before).map((e) => e.ev), [
+            'G-pull', 'kb_bible_commit', 'G-push',
+            'rebase--abort', 'G-pull(reset)', 'kb_bible_commit', 'G-push',
+        ]);
+        const commits = events.filter((e) => e.ev === 'kb_bible_commit');
+        assert.equal(commits.length, 2);
+        for (const c of commits) {
+            assert.deepEqual(c.args.ids, ['e1']);
+            assert.deepEqual(c.args.demoted_ids, ['d1']);
+        }
+        assert.deepEqual(out, { committed: 2, pending: 0 });
+        assert.ok(logs.some((l) => /retrying once/.test(l)));
     });
 });
 
@@ -790,4 +924,58 @@ describe('bibleUnpushed: does origin hold the maintainer checkout\'s bible?', ()
             assert.ok(r.reason);
         });
     }
+});
+
+// =============================================================================
+// An http-backed maintainer KB: kb_bible_commit answers with a structured skip
+// (bible_skipped) instead of an error. The round must finish, log one line,
+// and drop the queue -- retrying cannot help, the skip is provider-wide.
+// =============================================================================
+
+// The exact result src/tools/kb-bible-commit.ts returns under the http KB
+// provider. The reason literal MUST stay in sync with
+// KB_BIBLE_COMMIT_HTTP_SKIP_REASON in that file.
+const HTTP_SKIP_REASON = 'bible commit is not supported over the http KB provider';
+const HTTP_SKIP_RESULT = {
+    path: '.fleet/kb-canonical.json',
+    merged: [],
+    skipped: [],
+    removed: [],
+    entry_count: 0,
+    backfilled: 0,
+    committed: false,
+    bible_skipped: true,
+    reason: HTTP_SKIP_REASON,
+};
+
+describe('commitRound: a maintainer whose kb_bible_commit is skipped (http KB provider)', () => {
+    test('the round completes with one skip line, no push, no publication check, no reset, and an empty queue', async () => {
+        const { client, events, logs } = harness({ httpSkip: true });
+        await confirm(client, ['e1', 'e2']);
+
+        const out = await client.commitRound('review C1');
+
+        assert.deepEqual(out, { committed: 0, pending: 0 });
+        const skipLines = logs.filter((l) => l.includes('kb_bible_commit skipped') && l.includes(HTTP_SKIP_REASON));
+        assert.equal(skipLines.length, 1, logs.join('\n'));
+        assert.match(skipLines[0], /2 confirmation\(s\) and 0 demotion\(s\) dropped/);
+        assert.ok(!logs.some((l) => /failed at kb_bible_commit|publication check/.test(l)), logs.join('\n'));
+        const kinds = events.map((e) => e.ev);
+        assert.ok(!kinds.includes('G-push'), kinds.join(','));
+        assert.ok(!kinds.includes('G-pull(reset)'), kinds.join(','));
+        assert.ok(!kinds.includes('publication-check'), kinds.join(','));
+        assert.deepEqual(client.pendingConfirmations(), []);
+    });
+
+    test('a second round with no new confirmations makes no kb_bible_commit call', async () => {
+        const { client, events } = harness({ httpSkip: true });
+        await confirm(client, ['e1']);
+        await client.commitRound('review C1');
+        const mark = events.length;
+
+        const out = await client.commitRound('review C2');
+
+        assert.deepEqual(out, { committed: 0, pending: 0 });
+        assert.equal(events.slice(mark).filter((e) => e.ev === 'kb_bible_commit').length, 0);
+    });
 });

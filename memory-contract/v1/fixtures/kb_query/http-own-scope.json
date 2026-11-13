@@ -1,0 +1,20 @@
+{
+  "tool": "kb_query",
+  "case": "http-own-scope",
+  "kind": "happy",
+  "request": {
+    "query": "widget batching",
+    "confidence": [
+      "INFERRED"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"l1_results\":[],\"l2_expanded\":[]}"
+      }
+    ]
+  },
+  "session": "HTTP_A"
+}

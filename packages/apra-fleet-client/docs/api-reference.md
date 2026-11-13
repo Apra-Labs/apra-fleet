@@ -616,14 +616,28 @@ session's `kb_query` / `kb_session_prime` / `kb_stats`), `E-MEMBER-VIEW-REMOTE`
 and `E-BIBLE-BASIS-NOT-GIT` (`kb_export` / `kb_bible_commit` in a folder that is
 not a git work tree).
 
-`E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_harvest`, `kb_invalidate`,
-`kb_query`, `kb_context` and `kb_session_prime` when the remote (HTTP) KB takes
+Under the http KB provider (`kb_setup provider http`) the KB server is the
+source of truth and the bible is not used: `kb_import` imports nothing and
+answers `bible_skipped: true` with a `reason`, and a member `kb_query`
+`flagged_only` read is refused. Four more codes from the same file can be
+thrown: `E-KB-HTTP-UNSUPPORTED` (an operation the http provider cannot serve:
+`kb_invalidate` with `ids`, a member `kb_query` `flagged_only` read, `kb_demote`
+or a member `kb_query` `own_scope` read when the server does not list `demote`, or a route
+the KB server does not list in `GET /api/kb/capabilities` or answers 404/501;
+the message names the route and nothing is changed), `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
+different project; nothing is read or written), `E-KB-HTTP-UNREACHABLE`
+(the KB server cannot be reached; nothing is queued, no read is answered from
+a local store or the bible, and the code is retryable: the caller decides
+whether to repeat the call) and `E-KB-HTTP-SERVER-ERROR` (the KB server
+answered a capture, invalidate, feedback, promote or demote with a 5xx or 429;
+whether it took effect is unknown, so it is neither retried nor queued).
+
+`E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_invalidate`,
+`kb_query`, `kb_context`, `kb_session_prime`, `kb_list` and `kb_promote` when the remote (HTTP) KB takes
 its token from a named fleet secret (`kb_setup` token `{{secret.NAME}}`) and that
 secret is missing, expired, or still rejected (HTTP 401) after one re-read and
-retry. The message names the secret and the reason, never the value. A capture
-or invalidate is queued offline first and sent once the secret is accepted; a
-member session's CONFIRMED read comes from its checkout bible and is unaffected.
-Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
+retry. The message names the secret and the reason, never the value. Nothing
+is queued. Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
 restart.
 
 `kb_import` in a member session without the kb_maintainer grant fails with
@@ -692,6 +706,11 @@ re-committing a tombstoned id through `ids` (a re-promotion) restores its entry
 and clears its tombstone. `provenance.entry_count` counts entries only.
 
 Result JSON: `{path, merged, demoted, skipped, removed, entry_count, committed}`.
+Under the http KB provider the call is skipped, never an error: the result is
+`{path, merged: [], demoted: [], skipped: [], removed: [], entry_count,
+backfilled: 0, committed: false, bible_skipped: true, reason}`, where
+`entry_count` counts the entries of the existing bible file (0 when it is
+absent or unreadable); the KB is not read and nothing is written or committed.
 
 #### `kbDemote(options: KbDemoteOptions)`
 

@@ -69,7 +69,9 @@ already follow applies: in a MEMBER session, `kb_capture` tags every stored
 entry `member:<caller uuid>`, and `kb_demote` (like `kb_promote` and
 `kb_invalidate`) acts only on entries carrying the caller's own tag -- any
 other id is reported not found, exactly like an unknown id, so an entry's mere
-existence is never disclosed to a session that does not own it. The
+existence is never disclosed to a session that does not own it. (Over an http
+project KB, `kb_promote` leaves this to the KB server: fleet sends the id with
+no lookup first and surfaces the server's refusal.) The
 consequence worth stating explicitly: a row that reached this clone through
 `kb_import` (the project bible) carries NO member tag at all, because the
 bible is not scoped to any one contributor. So inside a MEMBER session, only
@@ -135,6 +137,32 @@ Enforcement applies only to captures made from the gate onward.
 - Auto-harvest: entries produced by the kb_harvest autowire are regex-extracted
   from session transcripts, unreviewed, and always captured at UNVERIFIED. Harvest
   can never mint CONFIRMED -- the same gate covers it.
+
+## HTTP provider
+
+With `kb_setup provider http` the project KB lives on a KB server, and the
+guarantees above change:
+
+- Promotes are live for every member at once. A `kb_promote` on the server is
+  read by every member's next query; there is no bible in between, and no
+  basis-at-HEAD check (the check `kb_export` / `kb_bible_commit` apply) before
+  other members see the entry.
+- Basis and freshness are checked against the SERVER's checkout: capture's
+  basis check and context-cache freshness hash the files in the folder the
+  server runs in, not the member's checkout.
+- The shared bearer token is the only credential. Anyone holding it can read
+  and write every entry on that server. The owner tags that scope a member's
+  reads (`member:<uuid>`) are asserted by the client, so they keep agent
+  sessions apart; they do not stop a holder of the token.
+- Promote is by id and fleet does not tag-check it over HTTP: `kb_promote`
+  sends the id, and the server enforces project scope (and any per-caller
+  scope it keeps), refusing an id outside it. A promote from another project
+  is refused (409, `E-KB-HTTP-PROJECT-MISMATCH`) and the entry keeps its tier.
+  The bundled `kb-server` has no per-member scope, so within its one project a
+  member can promote any id it holds.
+- A server serves one project; requests carry their project slug
+  (`X-KB-Project`) and any other project is refused with 409
+  (`E-KB-HTTP-PROJECT-MISMATCH`).
 
 ## Routing guidance: which tool for which situation
 

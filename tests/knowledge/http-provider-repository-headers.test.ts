@@ -6,7 +6,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
-import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 import { headBranchReader } from '../../src/services/knowledge/repository-header.js';
 
@@ -43,6 +42,13 @@ function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
+    // A server without GET /api/kb/capabilities: the route set from before
+    // that route existed. (The capabilities read is tested on its own.)
+    if ((req.url ?? '').startsWith('/api/kb/capabilities')) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found', code: 'NOT_FOUND' }));
+      return;
+    }
     req.resume();
     req.on('end', () => {
       const urlPath = (req.url ?? '').split('?')[0];
@@ -103,12 +109,10 @@ beforeEach(() => {
 
 async function withProvider(
   url: string,
-  options: ConstructorParameters<typeof HttpKbProvider>[3],
+  options: ConstructorParameters<typeof HttpKbProvider>[2],
   body: (provider: HttpKbProvider) => Promise<void>,
 ): Promise<void> {
-  const fallback = new SqliteProvider(':memory:');
-  await fallback.init();
-  const provider = new HttpKbProvider(url, TOKEN, fallback, options);
+  const provider = new HttpKbProvider(url, TOKEN, options);
   await provider.init();
   try {
     await body(provider);
@@ -193,25 +197,6 @@ describe('HttpKbProvider repository headers', () => {
     expect(seen[0].repository).toBeUndefined();
     expect(seen[0].commit).toBeUndefined();
     expect(seen[0].raw.join('\n')).not.toContain('NOT_A_REAL_KEY@');
-  });
-
-  it('carries the headers on an offline-queue replay', async () => {
-    await withProvider(OFFLINE_URL, { repository: { remote: REPO, commitOf: () => SHA } }, async provider => {
-      await provider.capture(makeInput({ title: 'queued capture' }));
-      await provider.invalidate(['src/q.ts']);
-      expect(provider.offlineQueue).toHaveLength(2);
-
-      // The server comes back: the next request flushes the queue first.
-      (provider as unknown as { baseUrl: string }).baseUrl = baseUrl;
-      await provider.query({});
-      expect(provider.offlineQueue).toHaveLength(0);
-    });
-
-    expect(seen.map(s => s.path)).toEqual(['/api/kb/capture', '/api/kb/invalidate', '/api/kb/query']);
-    for (const request of seen) {
-      expect(request.repository).toBe(REPO);
-      expect(request.commit).toBe(SHA);
-    }
   });
 });
 

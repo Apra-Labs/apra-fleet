@@ -31,7 +31,7 @@ afterEach(() => {
 describe('kb_harvest', () => {
   it('returns zero counts when no transcript is provided', async () => {
     const result = JSON.parse(await kbHarvest({}));
-    expect(result).toEqual({ entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0 });
+    expect(result).toEqual({ entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0, entries_failed: 0 });
   });
 
   it('extracts learnings from transcript with pattern markers', async () => {

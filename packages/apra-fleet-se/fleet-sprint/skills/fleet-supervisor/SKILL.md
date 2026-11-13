@@ -348,6 +348,7 @@ Field names, exactly as the API expects them:
 | `roleMap` | no | `{"doer":["m1","m2"], "reviewer":["m3"]}`. Leave out `backlog`: the supervisor injects its own backlog member; naming any other member there is a 400. `orchestrator` is the deprecated alias of `backlog` (removed in v0.5). |
 | `budget` | no | USD cap. |
 | `phases` | no | `{"regression": "skip"}` skips the regression pass (`"run"` is the default). Any other key or value is a 400. |
+| `kbDemotionLoop` | no | `"on"` (default) or `"off"`: the reviewer KB demotion loop switch, forwarded as `--kb-demotion-loop`. Any other value is a 400. |
 | `overrideRelaunchGate` | no | bool. See below. |
 
 Response has `sprintId`, `pid`, `port` (its own dashboard), `logPath`, and

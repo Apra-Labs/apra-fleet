@@ -402,7 +402,8 @@ POST http://127.0.0.1:8787/api/sprints
   "maxCycles": 5,                     // optional
   "budget":  25,                      // optional: USD ceiling for the run
   "requirementsFile": "docs/checkout-v2-requirements.md",  // optional, see Section 5
-  "phases":  {"regression": "skip"}   // optional: skip the regression pass this once
+  "phases":  {"regression": "skip"},  // optional: skip the regression pass this once
+  "kbDemotionLoop": "off"             // optional: turn the reviewer KB demotion loop off ("on" is the default)
 }
 ```
 

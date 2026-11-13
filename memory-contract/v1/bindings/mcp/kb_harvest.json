@@ -26,9 +26,6 @@
     },
     {
       "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-SELF-NO-REMOTE"
-    },
-    {
-      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-AUTH"
     }
   ]
 }

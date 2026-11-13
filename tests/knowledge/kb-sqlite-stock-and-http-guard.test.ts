@@ -195,7 +195,7 @@ describe('sqlite path stays byte-identical (my-beads-db-0cd.8 criterion 1-2)', (
   });
 });
 
-describe('seven SqliteProvider-only entrypoints fail fast and named under an http config (my-beads-db-0cd.8 criterion 4)', () => {
+describe('five SqliteProvider-only entrypoints fail fast and named under an http config (my-beads-db-0cd.8 criterion 4)', () => {
   beforeAll(() => {
     token = loadTestToken();
     remote = 'http://127.0.0.1:1'; // never dialed: every entrypoint below must throw before any network call
@@ -206,10 +206,6 @@ describe('seven SqliteProvider-only entrypoints fail fast and named under an htt
   });
 
   const REFUSAL_SUFFIX = 'this operation is not supported when the KB is backed by a remote HTTP provider';
-
-  it('kb_list', async () => {
-    await expect(kbList({} as any, { folder: makeRepoPath() })).rejects.toThrow(`kb_list: ${REFUSAL_SUFFIX}`);
-  });
 
   it('kb_freshness_sweep', async () => {
     await expect(kbFreshnessSweep({} as any, { folder: makeRepoPath() })).rejects.toThrow(
@@ -229,12 +225,6 @@ describe('seven SqliteProvider-only entrypoints fail fast and named under an htt
     ).rejects.toThrow(`kb_resolve_contradiction: ${REFUSAL_SUFFIX}`);
   });
 
-  it('kb_import', async () => {
-    const importDir = makeRepoPath();
-    fs.mkdirSync(path.join(importDir, '.fleet'), { recursive: true });
-    fs.writeFileSync(path.join(importDir, '.fleet', 'kb-canonical.json'), '[]');
-    await expect(kbImport({} as any, { folder: importDir })).rejects.toThrow(`kb_import: ${REFUSAL_SUFFIX}`);
-  });
 
   it('kb_export', async () => {
     await expect(kbExport({} as any, { folder: makeRepoPath() })).rejects.toThrow(`kb_export: ${REFUSAL_SUFFIX}`);
@@ -245,9 +235,52 @@ describe('seven SqliteProvider-only entrypoints fail fast and named under an htt
   });
 });
 
+// kb_import is not refused under http: the KB server is the source of truth,
+// so it imports nothing and says so, before it reads the bible at all (an
+// unparseable bible file is not even looked at).
+// kb_list is served by the http provider's list route (an optional route):
+// against the unreachable remote it fails with the typed outage error, not the
+// sqlite-only refusal.
+describe('kb_list is served by the HTTP provider under an http config', () => {
+  beforeAll(() => {
+    token = loadTestToken();
+    remote = 'http://127.0.0.1:1';
+  });
+
+  beforeEach(() => {
+    writeHttpConfig();
+  });
+
+  it('kb_list reaches the server (here unreachable) instead of the sqlite-only refusal', async () => {
+    const err = await kbList({} as any, { folder: makeRepoPath() }).then(() => null, (e: unknown) => e);
+    expect(err).toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE' });
+  });
+});
+
+describe('kb_import under an http config imports nothing and reports bible_skipped', () => {
+  beforeAll(() => {
+    token = loadTestToken();
+    remote = 'http://127.0.0.1:1'; // never dialed: the import skips before any provider call
+  });
+
+  beforeEach(() => {
+    writeHttpConfig();
+  });
+
+  it('answers bible_skipped with a reason and zero counts, without reading the bible', async () => {
+    const importDir = makeRepoPath();
+    fs.mkdirSync(path.join(importDir, '.fleet'), { recursive: true });
+    fs.writeFileSync(path.join(importDir, '.fleet', 'kb-canonical.json'), 'not json at all');
+    const out = JSON.parse(await kbImport({} as any, { folder: importDir }));
+    expect(out).toMatchObject({ imported: 0, skipped: 0, rejected: 0, demoted: 0, bible_skipped: true });
+    expect(out.reason).toMatch(/KB server is the source of truth/);
+  });
+});
+
 // GitHub #761: kb_feedback is no longer SqliteProvider-only -- it is served by
 // HttpKbProvider.feedback (POST /api/kb/feedback). Against the unreachable
-// remote above it must not refuse; it queues the feedback offline instead.
+// remote above it must not refuse; it fails with E-KB-HTTP-UNREACHABLE
+// (nothing is queued).
 describe('kb_feedback is served by the HTTP provider, not refused, under an http config', () => {
   beforeAll(() => {
     token = loadTestToken();
@@ -258,9 +291,10 @@ describe('kb_feedback is served by the HTTP provider, not refused, under an http
     writeHttpConfig();
   });
 
-  it('kb_feedback queues offline instead of throwing the sqlite-only refusal', async () => {
-    const out = JSON.parse(await kbFeedback({ id: 'anything', reason: 'x' } as any, { folder: makeRepoPath() }));
-    expect(out).toEqual({ id: 'anything', queued: true });
+  it('kb_feedback fails typed (E-KB-HTTP-UNREACHABLE) instead of throwing the sqlite-only refusal', async () => {
+    const err = await kbFeedback({ id: 'anything', reason: 'x' } as any, { folder: makeRepoPath() }).then(() => null, (e: unknown) => e);
+    expect(err).toMatchObject({ code: 'E-KB-HTTP-UNREACHABLE' });
+    expect((err as Error).message).not.toMatch(/not supported when the KB is backed by a remote HTTP provider/);
   });
 });
 
@@ -293,7 +327,7 @@ describe('kb_stats is the deliberate exception: returns a not-computable bible i
   });
 });
 
-describe('operations MemorEYES X-1 depends on work over http: capture, query, context, prime, promote (my-beads-db-0cd.8 criterion 6)', () => {
+describe('the required contract operations work over http: capture, query, context, prime, promote', () => {
   let server: http.Server;
   let port: number;
   // my-beads-db-0cd.14 criterion 2: this mock server is deliberately NOT a
@@ -303,6 +337,7 @@ describe('operations MemorEYES X-1 depends on work over http: capture, query, co
   // on OUR side (the handler) before the request left the process, not
   // because the remote happened to enforce it.
   let lastCaptureBody: Record<string, unknown> | null = null;
+  let lastPromoteBody: Record<string, unknown> | null = null;
 
   beforeAll(async () => {
     token = loadTestToken();
@@ -316,6 +351,14 @@ describe('operations MemorEYES X-1 depends on work over http: capture, query, co
           lastCaptureBody = JSON.parse(body);
           res.writeHead(201, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ id: 'guard-e2e-server-id', audn_decision: 'add' }));
+        } else if (url === '/api/kb/promote' && method === 'POST') {
+          lastPromoteBody = JSON.parse(body);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            id: lastPromoteBody?.id,
+            previous_confidence: 'INFERRED',
+            new_confidence: 'CONFIRMED',
+          }));
         } else if (url.startsWith('/api/kb/query') && method === 'GET') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ results: [], total: 0, l1_only: false }));
@@ -401,24 +444,19 @@ describe('operations MemorEYES X-1 depends on work over http: capture, query, co
     await expect(providers.project.prime({})).resolves.toMatchObject({ session_warm: true });
   });
 
-  it('promote does not raise over an http-configured project (delegates to the local fallback, per http-provider.ts design)', async () => {
+  it('promote does not raise over an http-configured project (goes to the server, no local fallback)', async () => {
     const repoPath = makeRepoPath();
     const remoteUrl = `https://example.invalid/kb-http-ops-promote-${crypto.randomUUID()}.git`;
     const providers = await getKbProviders(repoPath, remoteUrl);
     expect(providers.project).toBeInstanceOf(HttpKbProvider);
 
-    // promote() is delegated straight to the fallback (http-provider.ts),
-    // so the entry must exist there -- captured directly against the
-    // fallback, not through the remote server, to seed it.
-    const fallback = (providers.project as unknown as { fallback: SqliteProvider }).fallback;
-    const { id } = await fallback.capture(seedEntry({ symbols: ['httpOpsPromote'] }));
-
-    await expect(
-      providers.project.promote(id, 'kb-sqlite-http-guard test: verified against the fallback fixture directly'),
-    ).resolves.toMatchObject({
+    const id = 'guard-e2e-promote-id';
+    const reason = 'kb-sqlite-http-guard test: promoted on the server';
+    await expect(providers.project.promote(id, reason)).resolves.toEqual({
       id,
       confidence_before: 'INFERRED',
       confidence_after: 'CONFIRMED',
     });
+    expect(lastPromoteBody).toEqual({ id, reason });
   });
 });
