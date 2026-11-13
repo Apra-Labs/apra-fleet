@@ -4,9 +4,12 @@ import {
   HttpKbProvider,
   KbHttpUnsupportedError,
   KbHttpServerError,
+  KbHttpUnreachableError,
   KB_DEFAULT_CAPABILITIES,
 } from '../../src/services/knowledge/http-provider.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
+import { createKbWorkClient } from '../../packages/apra-fleet-se/fleet-sprint/kb.mjs';
+import { fakeMaintainerSelector } from '../../packages/apra-fleet-se/test/helpers/kb-maintainer-fakes.mjs';
 
 // GET /api/kb/capabilities on the client side: HttpKbProvider reads it once
 // per connection (again after a reconnect), never calls a route the server
@@ -217,7 +220,24 @@ describe('HttpKbProvider capabilities', () => {
     expect(paths()).toEqual(['GET /api/kb/capabilities']);
   });
 
-  for (const status of [500, 502, 503, 504, 429]) {
+  for (const status of [429, 503]) {
+    it(`a capture answered ${status} is E-KB-HTTP-UNREACHABLE naming the status (refused before it was handled, safe to repeat), sent once`, async () => {
+      answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote']));
+      answers.set('/api/kb/capture', { status, body: { error: 'Slow down' } });
+
+      const err = await provider.capture(entry()).then(() => null, (e: unknown) => e);
+      expect(err).toBeInstanceOf(KbHttpUnreachableError);
+      expect((err as Error).message).toMatch(new RegExp(`^E-KB-HTTP-UNREACHABLE: POST /api/kb/capture: .*POST /api/kb/capture answered HTTP ${status}`));
+      expect((err as Error).message).not.toMatch(/queued/);
+
+      // Nothing kept to replay; the caller's repeat is sent once.
+      answers.set('/api/kb/capture', { status: 201, body: { id: 'srv-1', audn_decision: 'add' } });
+      await provider.capture(entry());
+      expect(paths()).toEqual(['GET /api/kb/capabilities', 'POST /api/kb/capture', 'POST /api/kb/capture']);
+    });
+  }
+
+  for (const status of [500, 502, 504]) {
     it(`a capture answered ${status} is E-KB-HTTP-SERVER-ERROR (outcome unknown), sent once and never repeated by the provider`, async () => {
       answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote']));
       answers.set('/api/kb/capture', { status, body: { error: 'Server busy' } });
@@ -255,6 +275,35 @@ describe('HttpKbProvider capabilities', () => {
     ]);
   });
 
+  // Reads answered 5xx or 429: never a raw HTTP error. 429/503 are
+  // E-KB-HTTP-UNREACHABLE, any other 5xx E-KB-HTTP-SERVER-ERROR; each names
+  // the request and the status.
+  for (const [status, Expected, code] of [
+    [429, KbHttpUnreachableError, 'E-KB-HTTP-UNREACHABLE'],
+    [503, KbHttpUnreachableError, 'E-KB-HTTP-UNREACHABLE'],
+    [500, KbHttpServerError, 'E-KB-HTTP-SERVER-ERROR'],
+    [502, KbHttpServerError, 'E-KB-HTTP-SERVER-ERROR'],
+  ] as const) {
+    it(`query, context, prime and list answered ${status} are each ${code} naming the request and the status`, async () => {
+      answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote', 'context', 'prime', 'list']));
+      for (const route of ['query', 'context', 'prime', 'list']) {
+        answers.set(`/api/kb/${route}`, { status, body: { error: 'Server busy' } });
+      }
+      const calls: Array<[string, string, () => Promise<unknown>]> = [
+        ['GET', 'query', () => provider.query({ query: 'x' })],
+        ['GET', 'context', () => provider.context(['src/a.ts'])],
+        ['POST', 'prime', () => provider.prime({} as never)],
+        ['GET', 'list', () => provider.list({})],
+      ];
+      for (const [method, route, call] of calls) {
+        const err = await call().then(() => null, (e: unknown) => e);
+        expect(err, route).toBeInstanceOf(Expected);
+        expect((err as Error).message, route).toMatch(new RegExp(`^${code}: ${method} /api/kb/${route}: .*HTTP ${status}`));
+        if (code === 'E-KB-HTTP-SERVER-ERROR') expect((err as Error).message, route).toMatch(/nothing was read/);
+      }
+    });
+  }
+
   it('a capabilities answer with some fields but not all, well typed, is E-KB-HTTP-UNSUPPORTED', async () => {
     answers.set('/api/kb/capabilities', { status: 200, body: { contract: 'v1', routes: 'capture,query' } });
     const err = await provider.query({ query: 'x' }).then(() => null, (e: unknown) => e);
@@ -287,5 +336,69 @@ describe('HttpKbProvider.demote evidence pre-check', () => {
     const out = await provider.demote('id-1', 'a reason long enough to pass the floor', ['src/ok.ts', 'docs\\notes..md', './src/b.ts']);
     expect(out).toEqual({ id: 'id-1', confidence_before: 'CONFIRMED', confidence_after: 'INFERRED' });
     expect(paths()).toEqual(['GET /api/kb/capabilities', 'POST /api/kb/demote']);
+  });
+});
+
+// Provider and sprint engine together: a capture the KB server answers 429
+// (fleet's own kb serve rate-limits per IP) is E-KB-HTTP-UNREACHABLE, so the
+// engine keeps it, and the writes behind it, queued and applies them on the
+// next flush; a 502 stays E-KB-HTTP-SERVER-ERROR and is consumed.
+describe('sprint engine over HttpKbProvider: a rate-limited capture stays queued', () => {
+  const REPO = 'github.com/org/repo-a';
+  const MAINT = Object.freeze({ id: 'id-maint-a', name: 'maint-a', type: 'remote' });
+
+  function engine(logs: string[]) {
+    return createKbWorkClient({
+      maintainers: fakeMaintainerSelector({
+        repoOf: { 'doer-a': REPO, 'maint-a': REPO },
+        maintainerOf: { [REPO]: MAINT },
+      }),
+      // The maintainer's kb_capture tool, reduced to the provider call: a
+      // thrown provider error is the tool's isError result.
+      memberCall: async (_member: unknown, tool: string, args: Record<string, unknown>) => {
+        if (tool !== 'kb_capture') return {};
+        try {
+          return await provider.capture({ ...entry(), title: String(args.title) });
+        } catch (e) {
+          return { isError: true, content: [{ type: 'text', text: (e as Error).message }] };
+        }
+      },
+      gPull: async () => {},
+      log: (m: string) => logs.push(m),
+    });
+  }
+  const capture = (title: string) => ({
+    type: 'knowledge', title, summary: 'The widget cache is keyed per tenant id.',
+    content: 'src/widget-cache.ts builds its key from the tenant and the id.', source_files: ['src/widget-cache.ts'],
+  });
+
+  it('429: kept queued with the write behind it; the next flush sends both once', async () => {
+    answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote']));
+    answers.set('/api/kb/capture', { status: 429, body: { error: 'Rate limit exceeded', code: 'RATE_LIMIT' } });
+    const logs: string[] = [];
+    const kb = engine(logs);
+
+    const out = await kb.apply('doer', 'doer-a', { kb_captures: [capture('first'), capture('second')] });
+    expect(out.captured).toBe(0);
+    expect(kb.pendingCount(REPO)).toBe(2);
+    expect(logs.some(l => l.startsWith('[kb-work] WARN: KB server unreachable during kb_capture for "first"') && /HTTP 429/.test(l)), JSON.stringify(logs)).toBe(true);
+    expect(logs.some(l => /non-fatal/.test(l))).toBe(false);
+
+    answers.set('/api/kb/capture', { status: 201, body: { id: 'srv-1', audn_decision: 'add' } });
+    const later = await kb.flushAll();
+    expect(later.captured).toBe(2);
+    expect(kb.pendingCount()).toBe(0);
+    expect(paths().filter(p => p === 'POST /api/kb/capture')).toHaveLength(3);
+  });
+
+  it('502: consumed as rejected, not queued', async () => {
+    answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote']));
+    answers.set('/api/kb/capture', { status: 502, body: { error: 'Bad gateway' } });
+    const logs: string[] = [];
+    const kb = engine(logs);
+
+    await kb.apply('doer', 'doer-a', { kb_captures: [capture('maybe stored')] });
+    expect(kb.pendingCount()).toBe(0);
+    expect(logs.some(l => l.startsWith('[kb-work] kb_capture rejected for "maybe stored" (non-fatal): E-KB-HTTP-SERVER-ERROR')), JSON.stringify(logs)).toBe(true);
   });
 });

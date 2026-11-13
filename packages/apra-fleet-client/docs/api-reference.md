@@ -626,11 +626,13 @@ or a member `kb_query` `own_scope` read when the server does not list `demote`, 
 the KB server does not list in `GET /api/kb/capabilities` or answers 404/501;
 the message names the route and nothing is changed), `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
 different project; nothing is read or written), `E-KB-HTTP-UNREACHABLE`
-(the KB server cannot be reached; nothing is queued, no read is answered from
-a local store or the bible, and the code is retryable: the caller decides
-whether to repeat the call) and `E-KB-HTTP-SERVER-ERROR` (the KB server
-answered a capture, invalidate, feedback, promote or demote with a 5xx or 429;
-whether it took effect is unknown, so it is neither retried nor queued).
+(the KB server cannot be reached, or answered 429 or 503; nothing is queued,
+no read is answered from a local store or the bible, and the code is
+retryable: the caller decides whether to repeat the call) and
+`E-KB-HTTP-SERVER-ERROR` (the KB server answered with another 5xx: for a
+capture, invalidate, feedback, promote or demote whether it took effect is
+unknown, so it is neither retried nor queued; for a query, context, prime or
+list nothing was read).
 
 `E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_invalidate`,
 `kb_query`, `kb_context`, `kb_session_prime`, `kb_list` and `kb_promote` when the remote (HTTP) KB takes

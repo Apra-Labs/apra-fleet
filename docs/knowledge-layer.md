@@ -936,8 +936,8 @@ Run `kb_setup` with `remote` and `token` to write this. Do not write
 With the http provider, `kb_feedback` is sent to the server as
 `POST /api/kb/feedback` with body `{id, reason, role}` and returns the
 server's answer unchanged; the client never sets confidence. While the server
-is unreachable the tool fails with `E-KB-HTTP-UNREACHABLE`; a 5xx or 429
-answer is `E-KB-HTTP-SERVER-ERROR`. Nothing is queued. The bundled `kb-server` command
+is unreachable, or answers 429 or 503, the tool fails with
+`E-KB-HTTP-UNREACHABLE`; any other 5xx answer is `E-KB-HTTP-SERVER-ERROR`. Nothing is queued. The bundled `kb-server` command
 serves that route: it validates the role like the tool does, marks the entry
 stale and flagged without touching confidence, and answers an unknown id with
 HTTP 404 and code `ENTRY_NOT_FOUND`.
@@ -960,10 +960,14 @@ Write it with `kb_setup ... token={{secret.KB_TOKEN}}`; see
 Every method in the `MemoryProvider` interface is classified as one of:
 - **remote** -- calls the HTTP server. On a connection error the call
   throws `E-KB-HTTP-UNREACHABLE` (retryable) and nothing is queued: the
-  caller owns the retry (the sprint engine keeps its own KB write queued and
-  repeats it on its next flush). A 5xx or 429 answering a write (capture,
+  caller owns the retry (the sprint engine keeps its own KB write queued on
+  this code and on `E-KB-HTTP-AUTH`, and repeats it on its next flush). A 429
+  or 503 answering a request is also `E-KB-HTTP-UNREACHABLE`: the server
+  refused it before handling it. Any other 5xx answering a write (capture,
   invalidate, feedback, promote, demote) is `E-KB-HTTP-SERVER-ERROR`: the
-  write may have been applied, so it is neither retried nor queued. Nothing is ever answered from a
+  write may have been applied, so it is neither retried nor queued. Any other
+  5xx answering a read (query, context, prime, list) is
+  `E-KB-HTTP-SERVER-ERROR` too, never a raw HTTP error. Nothing is ever answered from a
   local store or the checkout bible: the server is the source of truth.
 - **local** -- no remote route; answers without any local store.
 - **unsupported** -- returns a documented refusal or throws a typed error.
@@ -973,15 +977,15 @@ The provider holds no local store at all.
 | Method | Classification | Notes |
 |--------|---|---|
 | init | local | Nothing to open. |
-| capture | remote | Posts entry to server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 5xx/429 answer, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
-| query | remote | Retrieves entries from server. On connection error, `E-KB-HTTP-UNREACHABLE`. |
-| context | remote | Retrieves file context from server. On connection error, `E-KB-HTTP-UNREACHABLE`. |
-| invalidate | remote | Invalidates files on server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 5xx/429 answer, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
+| capture | remote | Posts entry to server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
+| query | remote | Retrieves entries from server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. |
+| context | remote | Retrieves file context from server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. |
+| invalidate | remote | Invalidates files on server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
 | discard | unsupported | Throws E-KB-HTTP-UNSUPPORTED (id-level discard not supported). Use kb_invalidate with files instead. |
 | getLinked | local | No remote route: returns no linked entries. |
-| prime | remote | Retrieves primed context from server. On connection error, `E-KB-HTTP-UNREACHABLE`. `kb_session_prime` does not cold-seed from the checkout bible under http. |
-| promote | remote | POST /api/kb/promote with `{id, reason}`. On connection error, `E-KB-HTTP-UNREACHABLE` naming the server URL; on a 5xx/429 answer, `E-KB-HTTP-SERVER-ERROR`. Sent by id with no list lookup first: the server refuses an unknown, superseded or out-of-scope id itself. The bundled `kb-server` answers an unknown id 404 with code `ENTRY_NOT_FOUND`, and that body code is required: such a 404 rejects as `Entry not found: <id>` followed by the server's answer, and a 404 without it (a server that does not serve promote, such as `kb-server` from v0.4.4) is `E-KB-HTTP-UNSUPPORTED` naming the promote route, with the remediation to upgrade the KB server; any other refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's text and code. |
-| feedback | remote | POST /api/kb/feedback with `{id, reason, role}`; returns the server response unchanged. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 5xx/429 answer, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
+| prime | remote | Retrieves primed context from server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. `kb_session_prime` does not cold-seed from the checkout bible under http. |
+| promote | remote | POST /api/kb/promote with `{id, reason}`. On connection error, `E-KB-HTTP-UNREACHABLE` naming the server URL; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. Sent by id with no list lookup first: the server refuses an unknown, superseded or out-of-scope id itself. The bundled `kb-server` answers an unknown id 404 with code `ENTRY_NOT_FOUND`, and that body code is required: such a 404 rejects as `Entry not found: <id>` followed by the server's answer, and a 404 without it (a server that does not serve promote, such as `kb-server` from v0.4.4) is `E-KB-HTTP-UNSUPPORTED` naming the promote route, with the remediation to upgrade the KB server; any other refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's text and code. |
+| feedback | remote | POST /api/kb/feedback with `{id, reason, role}`; returns the server response unchanged. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
 | demote | remote (optional route) | POST /api/kb/demote with `{id, reason, evidence_files}` -> `{id, previous_confidence, new_confidence}`, sent by id only when `GET /api/kb/capabilities` lists `demote`; otherwise (or on a 404/501 from the route) `E-KB-HTTP-UNSUPPORTED` naming the route, and nothing is changed. The server enforces which ids the caller may demote; a 404 whose body code says the entry is unknown rejects as `Entry not found: <id>`. A MEMBER `kb_query` `own_scope` read (which exists to find what may be demoted) is refused the same way when the server does not list `demote`. |
 | sync | unsupported | Returns {synced: false} (no remote sync over http). |
 | stats | unsupported | Returns supported:false with empty results (stats not supported over http). |
@@ -1001,8 +1005,9 @@ the capabilities route is assumed to serve every route but demote. Any other
 failed capabilities read is typed: a 5xx or 429 is `E-KB-HTTP-UNREACHABLE`
 (the caller's request was never sent), another status but 401 and a 409
 project mismatch is `E-KB-HTTP-UNSUPPORTED` naming the capabilities read. A
-5xx or 429 answering a write itself is `E-KB-HTTP-SERVER-ERROR` naming the
-status. Nothing is queued in either case. A 404 or 501
+429 or 503 answering a request itself is `E-KB-HTTP-UNREACHABLE` naming the
+status; any other 5xx is `E-KB-HTTP-SERVER-ERROR` naming the status. Nothing
+is queued in either case. A 404 or 501
 from an optional route is also `E-KB-HTTP-UNSUPPORTED` (a 404 whose body code is
 `ENTRY_NOT_FOUND` / `E-ENTRY-NOT-FOUND` stays "entry not found"). The bundled
 `kb-server` always serves a local SQLite KB and lists every route, demote included,

@@ -676,7 +676,7 @@ describe('KB write routing with fakes: busy and unreachable maintainer', () => {
         assert.equal(h.client.pendingCount(REPO), 2);
         assert.ok(h.logs.some((l) => l.startsWith("[kb-work] WARN: G-pull on maintainer 'maint' failed") && l.endsWith(`2 KB write(s) for ${REPO} stay queued`)), JSON.stringify(h.logs));
         h.client.warnPending();
-        assert.ok(h.logs.includes(`[kb-work] WARN: 2 KB write(s) for ${REPO} are still queued (maintainer busy or unreachable) -- not applied`));
+        assert.ok(h.logs.includes(`[kb-work] WARN: 2 KB write(s) for ${REPO} are still queued (maintainer busy or unreachable, or KB server unreachable or its token refused) -- not applied`));
 
         // Back again: the queued writes land, in order, after a G-pull.
         h.down.delete('maint');

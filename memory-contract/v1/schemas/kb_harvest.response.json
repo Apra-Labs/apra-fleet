@@ -71,6 +71,9 @@
             },
             "entries_failed": {
               "type": "number"
+            },
+            "first_error": {
+              "type": "string"
             }
           },
           "required": [

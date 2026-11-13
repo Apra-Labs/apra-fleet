@@ -179,9 +179,8 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
   // and never self-proxies -- the hazard this refusal exists for cannot arise.
   // The check therefore reads the CONFIG-selected provider, before the --db
   // override replaces it, and only refuses when there is no --db. Either way
-  // the HttpKbProvider createKbProviders() already built is disposed first:
-  // its constructor registers a process 'beforeExit' listener that only
-  // dispose() removes, so dropping it undisposed would leak one per start.
+  // the HttpKbProvider createKbProviders() already built is disposed first, as
+  // every retired provider is.
   if (providers.project instanceof HttpKbProvider) {
     providers.project.dispose();
     if (!dbPath) {

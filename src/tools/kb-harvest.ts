@@ -31,6 +31,9 @@ const LEARNING_PATTERNS = [
   /(?:^|\n)\s*(?:Important:|Key insight:|Lesson learned:|TIL:)\s*(.+?)(?:\n\n|\n(?=[A-Z])|$)/gis,
 ];
 
+/** Longest first_error text carried into the kb_harvest response. */
+const MAX_FIRST_ERROR_CHARS = 500;
+
 const FILE_PATH_RE = /(?:^|\s)((?:src|lib|tests?|docs?)\/[\w./-]+\.\w+)/g;
 const SYMBOL_RE = /`(\w{2,}(?:\.\w+)?(?:\(\))?)`/g;
 
@@ -116,6 +119,10 @@ export async function kbHarvest(input: KbHarvestInput, anchor?: KbAnchor): Promi
   let entries_skipped = 0;
   let entries_rejected = 0;
   let entries_failed = 0;
+  // The first non-rejection failure, reported only when nothing landed, so a
+  // harvest whose every capture failed (a broken DB, a server that is down)
+  // says why instead of hiding it in the count.
+  let first_error: string | undefined;
 
   // D5 + revised D7 (T2.3): harvested entries are UNVERIFIED, regex-extracted,
   // low-trust captures from the execute_prompt autowire -- distinct provenance
@@ -157,7 +164,9 @@ export async function kbHarvest(input: KbHarvestInput, anchor?: KbAnchor): Promi
         continue;
       }
       entries_failed++;
-      logWarn('kb-harvest', `capture of "${entryInput.title}" failed and was not stored: ${err instanceof Error ? err.message : String(err)}`);
+      const message = err instanceof Error ? err.message : String(err);
+      first_error ??= message.length > MAX_FIRST_ERROR_CHARS ? `${message.slice(0, MAX_FIRST_ERROR_CHARS)}...` : message;
+      logWarn('kb-harvest', `capture of "${entryInput.title}" failed and was not stored: ${message}`);
       continue;
     }
 
@@ -170,5 +179,9 @@ export async function kbHarvest(input: KbHarvestInput, anchor?: KbAnchor): Promi
     }
   }
 
-  return JSON.stringify({ entries_captured, entries_updated, entries_skipped, entries_rejected, entries_failed });
+  const landed = entries_captured + entries_updated + entries_skipped;
+  return JSON.stringify({
+    entries_captured, entries_updated, entries_skipped, entries_rejected, entries_failed,
+    ...(landed === 0 && first_error !== undefined ? { first_error } : {}),
+  });
 }
