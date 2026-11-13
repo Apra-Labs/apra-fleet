@@ -435,15 +435,27 @@ function isUnreachableError(err) {
 }
 
 /**
- * The retryable error code a remote (http) KB provider throws when the KB
- * server cannot be reached. The provider queues nothing, so the engine owns
- * the retry: a write that fails with it stays queued for the next flush.
+ * The error codes a remote (http) KB provider throws for a write the server
+ * never handled, each with the reason the engine logs:
+ *   - E-KB-HTTP-UNREACHABLE: the KB server cannot be reached, or refused the
+ *     request before handling it (429, 503);
+ *   - E-KB-HTTP-AUTH: the KB server token (a named secret) is missing,
+ *     expired or refused; the identical write succeeds once it is fixed.
+ * The provider queues nothing, so the engine owns the retry: a write that
+ * fails with one of these stays queued for the next flush.
  */
-const KB_SERVER_UNREACHABLE_CODE = 'E-KB-HTTP-UNREACHABLE';
+const KB_SERVER_KEEP_CODES = Object.freeze([
+    ['E-KB-HTTP-UNREACHABLE', 'KB server unreachable'],
+    ['E-KB-HTTP-AUTH', 'KB server token refused'],
+]);
 
-/** True when a kb_* tool's error text carries the KB-server-unreachable code. */
-function isKbServerUnreachableText(text) {
-    return typeof text === 'string' && new RegExp(`(^|[^A-Z-])${KB_SERVER_UNREACHABLE_CODE}\\b`).test(text);
+/** The keep-queued reason when a kb_* tool's error text carries one of KB_SERVER_KEEP_CODES, else null. */
+function kbServerKeepReason(text) {
+    if (typeof text !== 'string') return null;
+    for (const [code, reason] of KB_SERVER_KEEP_CODES) {
+        if (new RegExp(`(^|[^A-Z-])${code}\\b`).test(text)) return reason;
+    }
+    return null;
 }
 
 /** The member name a kb work call names (a member record or a bare name). */
@@ -475,8 +487,10 @@ function memberNameOf(member) {
  *   - A write the maintainer cannot be reached for mid-batch is put back at
  *     the head of the queue: nothing is lost and nothing is silently dropped.
  *     The same holds when the maintainer answers but its remote KB server
- *     cannot be reached (E-KB-HTTP-UNREACHABLE): the http provider queues
- *     nothing, so the engine keeps the write and retries it next flush.
+ *     cannot be reached or refuses the request before handling it
+ *     (E-KB-HTTP-UNREACHABLE), or refuses its token (E-KB-HTTP-AUTH): the
+ *     http provider queues nothing, so the engine keeps the write and
+ *     retries it next flush.
  *
  * The bible commit (commitRound): every promotion the maintainer applied is
  * remembered per repository as a CONFIRMATION, and every successful demotion
@@ -823,11 +837,12 @@ export function createKbWorkClient(opts = {}) {
             }
         }
         const batch = queue.splice(0, queue.length);
-        // The KB server (not the maintainer) cannot be reached: this write and
-        // every one behind it go back to the head of the queue for the next flush.
-        const keepForServer = (i, spec, op, text) => {
+        // The KB server (not the maintainer) cannot be reached or refused the
+        // token: this write and every one behind it go back to the head of the
+        // queue for the next flush.
+        const keepForServer = (i, spec, op, text, reason) => {
             queue.unshift(...batch.slice(i));
-            log(`[kb-work] WARN: KB server unreachable during ${spec.tool} for ${spec.subject(op.payload)} on maintainer '${maintainer}' (${text}) -- ${batch.length - i} KB write(s) for ${repo} stay queued`);
+            log(`[kb-work] WARN: ${reason} during ${spec.tool} for ${spec.subject(op.payload)} on maintainer '${maintainer}' (${text}) -- ${batch.length - i} KB write(s) for ${repo} stay queued`);
         };
         for (let i = 0; i < batch.length; i++) {
             const op = batch[i];
@@ -860,8 +875,9 @@ export function createKbWorkClient(opts = {}) {
                     log(`[kb-work] WARN: maintainer '${maintainer}' unreachable during ${spec.tool} for ${spec.subject(op.payload)} (${err.message}) -- ${batch.length - i} KB write(s) for ${repo} stay queued`);
                     break;
                 }
-                if (isKbServerUnreachableText(err && err.message)) {
-                    keepForServer(i, spec, op, err.message);
+                const thrownReason = kbServerKeepReason(err && err.message);
+                if (thrownReason) {
+                    keepForServer(i, spec, op, err.message, thrownReason);
                     break;
                 }
                 log(`[kb-work] ${spec.tool} failed for ${spec.subject(op.payload)} (non-fatal): ${err && err.message ? err.message : String(err)}`);
@@ -874,8 +890,9 @@ export function createKbWorkClient(opts = {}) {
             // is not by itself a success.
             if (isToolError(res)) {
                 const text = toolErrorText(res);
-                if (isKbServerUnreachableText(text)) {
-                    keepForServer(i, spec, op, text);
+                const resultReason = kbServerKeepReason(text);
+                if (resultReason) {
+                    keepForServer(i, spec, op, text, resultReason);
                     break;
                 }
                 log(`[kb-work] ${spec.tool} rejected for ${spec.subject(op.payload)} (non-fatal): ${text}`);
@@ -1349,7 +1366,7 @@ export function createKbWorkClient(opts = {}) {
         /** Log a WARN for every repository that still has queued writes, confirmations or demotions. */
         warnPending() {
             for (const [repo, q] of queues) {
-                if (q.length > 0) log(`[kb-work] WARN: ${q.length} KB write(s) for ${repo} are still queued (maintainer busy or unreachable) -- not applied`);
+                if (q.length > 0) log(`[kb-work] WARN: ${q.length} KB write(s) for ${repo} are still queued (maintainer busy or unreachable, or KB server unreachable or its token refused) -- not applied`);
             }
             for (const [repo, ids] of confirmations) {
                 if (ids.size > 0) log(`[kb-work] WARN: ${ids.size} confirmation(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}`);

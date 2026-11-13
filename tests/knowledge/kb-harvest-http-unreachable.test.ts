@@ -129,9 +129,12 @@ describe('kb_harvest with the KB server down', () => {
     tempDirs.push(folder);
 
     const down = JSON.parse(await kbHarvest({ session_transcript: TRANSCRIPT }, { folder }));
-    expect(down).toEqual({
+    const { first_error: firstError, ...downCounts } = down;
+    expect(downCounts).toEqual({
       entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0, entries_failed: 3,
     });
+    // Nothing landed, so the response says why.
+    expect(firstError).toMatch(/^E-KB-HTTP-UNREACHABLE: /);
 
     await startServer();
     const up = JSON.parse(await kbHarvest({ session_transcript: TRANSCRIPT }, { folder }));

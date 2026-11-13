@@ -165,6 +165,10 @@ const KB_RESPONSE_BODIES = {
     // Captures that failed for any reason other than a basis rejection (e.g.
     // a remote KB server that is down): attempted, not stored, logged.
     entries_failed: z.number(),
+    // Present only when nothing landed (captured + updated + skipped is 0)
+    // and entries_failed > 0: the first such failure's message (bounded), so
+    // a harvest whose every capture failed says why.
+    first_error: z.string().optional(),
   }),
   kb_promote: z.object({
     id: z.string(),

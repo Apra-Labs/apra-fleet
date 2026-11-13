@@ -693,10 +693,18 @@ entries per branch (section 2.9.2). Fleet's client:
   `PROJECT_MISMATCH` (e.g. 403/405 from a gateway) is
   `E-KB-HTTP-UNSUPPORTED` naming the capabilities read. A failed read is not
   kept: the next call reads the capabilities again;
-- turns a 5xx or 429 answering a write itself (capture, invalidate with
+- turns a 429 or 503 answering a request itself, a write or a read, into
+  `E-KB-HTTP-UNREACHABLE` naming the request and the status: both refuse a
+  request before handling it (rate limiting, a restarting server, a gateway
+  with no backend), so the identical request is safe to repeat. Fleet's own
+  `kb serve` answers 429 above its per-IP request rate;
+- turns any other 5xx answering a write itself (capture, invalidate with
   files, feedback, promote, demote) into `E-KB-HTTP-SERVER-ERROR` naming the
   request and the status, never a raw HTTP error. The request reached the
   server, so whether the write took effect is unknown: it is not retried;
+- turns any other 5xx answering a read (query, context, prime, list) into
+  `E-KB-HTTP-SERVER-ERROR` naming the request and the status, never a raw
+  HTTP error; nothing is answered from a local store or the bible instead;
 - queues no write. A write that fails for any reason is thrown to the
   caller, who owns the retry (section 3.3a);
 - turns a 404 or 501 from any optional route into `E-KB-HTTP-UNSUPPORTED`
@@ -844,8 +852,10 @@ updates the secret, and the identical request then succeeds. It is still
 way, and the provider has already done its one retry (re-read the secret, send
 once more) before raising it.
 
-`E-KB-HTTP-UNREACHABLE` (the KB server cannot be reached, or its capabilities
-read answered a 5xx or 429, so the request was never sent) is the one transient
+`E-KB-HTTP-UNREACHABLE` (the KB server cannot be reached, its capabilities
+read answered a 5xx or 429 so the request was never sent, or it answered the
+request itself with 429 or 503, which refuse a request before handling it) is
+the one transient
 failure in this surface that reaches the caller, and it is `retryable: true`:
 the identical request succeeds once the server answers again. It is thrown
 rather than degraded because under http the KB server is the only source of
@@ -853,9 +863,9 @@ truth, and answering from a local store or the checkout bible would hide the
 outage (section 2.9). The provider queues nothing behind it, so the caller
 owns the retry (3.3a).
 
-`E-KB-HTTP-SERVER-ERROR` (the server answered a write itself with a 5xx or
-429) is `retryable: false`: the write may already have been applied, so
-repeating the identical request could apply it twice.
+`E-KB-HTTP-SERVER-ERROR` (the server answered a request itself with a 5xx
+other than 503) is `retryable: false`: a write may already have been applied,
+so repeating the identical request could apply it twice.
 
 ### 3.3a Remote KB auth and outage failures are thrown; the caller owns the retry
 
@@ -866,11 +876,14 @@ provider queues nothing: a write (`kb_capture`, `kb_invalidate`,
 (`kb_query`, `kb_context`, `kb_session_prime`, `kb_list`) is thrown with no
 local fallback: a silently degraded answer would hide the failure. One owner
 retries, the caller: the sprint engine keeps its own KB write queued on
-`E-KB-HTTP-UNREACHABLE` and repeats it on its next flush; an interactive or
-agent caller decides for itself. `kb_harvest` captures many learnings in one
+`E-KB-HTTP-UNREACHABLE` and on `E-KB-HTTP-AUTH` (the server never handled
+the write, and the identical write succeeds once the server answers or the
+secret is fixed) and repeats it on its next flush; an interactive or agent
+caller decides for itself. `kb_harvest` captures many learnings in one
 call, so a failed capture does not stop it: it attempts every learning, logs
-each failure, and reports how many captures failed (`entries_failed`); it
-raises none of these codes itself. Over a SQLite project KB a MEMBER session's CONFIRMED read is answered
+each failure, and reports how many captures failed (`entries_failed`); when
+none landed and at least one failed, the response also carries the first
+failure's message (`first_error`); it raises none of these codes itself. Over a SQLite project KB a MEMBER session's CONFIRMED read is answered
 from its checkout bible (2.5) and never reaches the provider; under the http
 project provider member reads go to the server (2.5, 2.9) and are thrown like
 any other read. No message or log line ever

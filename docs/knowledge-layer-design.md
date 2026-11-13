@@ -643,8 +643,7 @@ it and both remedies: set that file's provider to `sqlite`, or pass
 `--db` names the local database to serve, so no self-proxy can arise, and the
 check therefore only refuses when `--db` is absent. In both cases the
 `HttpKbProvider` built during provider selection is disposed before the server
-continues or throws, so a refused start does not leak its `beforeExit`
-listener.
+continues or throws.
 
 ---
 

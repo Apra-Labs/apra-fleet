@@ -189,7 +189,7 @@ async function selectProjectProvider(
   try {
     await httpProvider.init();
   } catch (err) {
-    // Not yet tracked in _httpProviders, so release its beforeExit listener here.
+    // Not yet tracked in _httpProviders, so dispose it here.
     httpProvider.dispose();
     throw err;
   }
@@ -285,10 +285,9 @@ function disposeIfHttp(provider: MemoryProvider): void {
   if (index !== -1) _httpProviders.splice(index, 1);
 }
 
-// A superseded selection's HttpKbProvider is disposed so its beforeExit
-// listener does not outlive it (the leak my-beads-db-u00.2 fixed in kb-server).
-// dispose() only removes that listener, so a caller still holding the old
-// provider mid-call keeps a working provider.
+// A superseded selection's HttpKbProvider is disposed. dispose() releases
+// nothing today (the provider holds no queue, listener or handle), so a caller
+// still holding the old provider mid-call keeps a working provider.
 function retireSelection(selection: KbSelection): void {
   selection.providers.then(
     providers => disposeIfHttp(providers.project),
@@ -365,9 +364,8 @@ export async function getKbProviders(cwd?: string, remoteUrl?: string): Promise<
 }
 
 export function resetKbProviders(): void {
-  // HttpKbProvider registers a process 'beforeExit' listener in its constructor;
-  // clearing the maps alone leaks one listener per reset, and a suite that resets
-  // repeatedly hits MaxListenersExceededWarning.
+  // Every tracked HttpKbProvider is disposed before the maps are cleared, so a
+  // provider that ever holds a resource releases it on reset.
   for (const httpProvider of _httpProviders) {
     httpProvider.dispose();
   }

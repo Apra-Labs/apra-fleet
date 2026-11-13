@@ -257,7 +257,7 @@ describe('KB write routing: unreachable maintainer', () => {
         assert.ok(h.logs.some((l) => l.startsWith("[kb-work] WARN: maintainer 'maint-a' unreachable during kb_capture for \"second\"") && l.endsWith('2 KB write(s) for github.com/org/repo-a stay queued')), JSON.stringify(h.logs));
 
         h.client.warnPending();
-        assert.ok(h.logs.includes('[kb-work] WARN: 2 KB write(s) for github.com/org/repo-a are still queued (maintainer busy or unreachable) -- not applied'));
+        assert.ok(h.logs.includes('[kb-work] WARN: 2 KB write(s) for github.com/org/repo-a are still queued (maintainer busy or unreachable, or KB server unreachable or its token refused) -- not applied'));
 
         down = false;
         const before = h.calls().length;
@@ -315,4 +315,41 @@ describe('KB write routing: KB server unreachable (E-KB-HTTP-UNREACHABLE)', () =
         assert.equal(h.client.pendingCount(), 0);
         assert.ok(h.logs.some((l) => l.startsWith('[kb-work] kb_capture rejected for "maybe stored" (non-fatal): E-KB-HTTP-SERVER-ERROR')), JSON.stringify(h.logs));
     });
+});
+
+// A named secret that expires mid-sprint: the server never handled the write,
+// and the identical write succeeds once the secret is fixed, so the engine
+// keeps it queued exactly as for an unreachable server.
+describe('KB write routing: KB server token refused (E-KB-HTTP-AUTH)', () => {
+    const AUTH_TEXT = 'E-KB-HTTP-AUTH: the KB server rejected the token from fleet secret "kb-token" (HTTP 401), also on one retry after re-reading the secret. '
+        + 'Remediation: apra-fleet secret --set kb-token --persist -y (the next KB call uses the new value; no restart needed)';
+
+    for (const [shape, fail] of [
+        ['a resolved isError result', () => ({ isError: true, content: [{ type: 'text', text: AUTH_TEXT }] })],
+        ['a thrown E-TOOL error', () => { throw new MemberCallError('E-TOOL', AUTH_TEXT, { tool: 'kb_capture' }); }],
+    ]) {
+        test(`${shape} keeps that write and the rest queued, in order; the next flush applies them`, async () => {
+            let expired = false;
+            let tripped = false;
+            const h = harness({
+                memberCall: async (m, tool, args) => {
+                    if (!tripped && args.title === 'second') { tripped = true; expired = true; }
+                    return expired ? fail() : {};
+                },
+            });
+            const out = await h.client.apply('doer', 'doer-a', { kb_captures: [capture('first'), capture('second'), capture('third')] });
+            assert.equal(out.captured, 1);
+            assert.equal(h.client.pendingCount(REPO_A), 2, 'the refused write and the one behind it stay queued');
+            assert.ok(h.logs.some((l) => l.startsWith("[kb-work] WARN: KB server token refused during kb_capture for \"second\" on maintainer 'maint-a'")
+                && l.endsWith('2 KB write(s) for github.com/org/repo-a stay queued')), JSON.stringify(h.logs));
+            assert.ok(!h.logs.some((l) => /non-fatal/.test(l)), 'not consumed as a rejection');
+
+            expired = false;
+            const before = h.calls().length;
+            const later = await h.client.flushAll();
+            assert.equal(later.captured, 2);
+            assert.equal(h.client.pendingCount(), 0);
+            assert.deepEqual(h.calls().slice(before).map((c) => c.args.title), ['second', 'third']);
+        });
+    }
 });
