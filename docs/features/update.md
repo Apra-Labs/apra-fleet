@@ -27,16 +27,20 @@ needed.
    suffix is stripped first). If the tag is a pre-release (`-alpha`, `-beta`,
    `-rc`) or is not newer than the installed version, it prints an
    "up to date" message and stops.
-4. Selects the installer asset for the current platform:
+4. Selects the installer asset for the current OS and CPU architecture
+   (`process.platform` and `process.arch`):
 
    | Platform | Asset |
    |----------|-------|
    | Windows x64 | `apra-fleet-installer-win-x64.exe` |
    | macOS ARM | `apra-fleet-installer-darwin-arm64` |
+   | macOS Intel x64 | `apra-fleet-installer-darwin-x64` |
    | Linux x64 | `apra-fleet-installer-linux-x64` |
+   | Linux ARM64 | `apra-fleet-installer-linux-arm64` |
 
-   If no matching asset is found it prints
-   `Error: Could not find installer for platform <platform>` and stops.
+   Any other OS/arch prints `Error: no apra-fleet installer is published for
+   <platform>/<arch> ...` and stops. If the release lacks the asset it prints
+   `Error: Could not find installer <asset> in release <tag>` and stops.
 5. Prints `Updating to <tag> -- restarting...`, downloads the installer into the
    system temp directory, and (on macOS/Linux) marks it executable.
 6. Spawns the installer detached, then exits with status 0:

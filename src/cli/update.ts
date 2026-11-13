@@ -11,6 +11,20 @@ import { selfInvocationLines } from './install-guard.js';
 import { detectRunningFleetSe, fleetSeRefusalText, IGNORE_RUNNING_SPRINTS_FLAG } from './fleet-se-guard.js';
 import { showPendingServiceNotice } from '../services/service-notice.js';
 
+/** Release installer published by ci.yml for each `process.platform/process.arch`. */
+export const INSTALLER_ASSETS: Record<string, string> = {
+  'linux/x64': 'apra-fleet-installer-linux-x64',
+  'linux/arm64': 'apra-fleet-installer-linux-arm64',
+  'darwin/arm64': 'apra-fleet-installer-darwin-arm64',
+  'darwin/x64': 'apra-fleet-installer-darwin-x64',
+  'win32/x64': 'apra-fleet-installer-win-x64.exe',
+};
+
+/** The installer asset for this host's OS AND CPU arch, or null when none is published. */
+export function installerAssetName(platform: string, arch: string): string | null {
+  return INSTALLER_ASSETS[`${platform}/${arch}`] ?? null;
+}
+
 export async function runUpdate(): Promise<void> {
   // Guidance the previous (detached) install could not show.
   showPendingServiceNotice();
@@ -60,12 +74,16 @@ export async function runUpdate(): Promise<void> {
       return;
     }
 
-    const platform = process.platform === 'win32' ? 'win-x64' : (process.platform === 'darwin' ? 'darwin-arm64' : 'linux-x64');
-    const assetName = `apra-fleet-installer-${platform}${process.platform === 'win32' ? '.exe' : ''}`;
+    const assetName = installerAssetName(process.platform, process.arch);
+    if (!assetName) {
+      console.error(`Error: no apra-fleet installer is published for ${process.platform}/${process.arch} ` +
+        `(published: ${Object.keys(INSTALLER_ASSETS).join(', ')}). Install from source instead.`);
+      return;
+    }
     const asset = data.assets?.find(a => a.name === assetName);
 
     if (!asset) {
-      console.error(`Error: Could not find installer for platform ${platform}`);
+      console.error(`Error: Could not find installer ${assetName} in release ${tagName}`);
       return;
     }
 
