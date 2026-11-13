@@ -789,7 +789,7 @@
           "surfaced": "thrown",
           "retryable": true,
           "remediation": "Start the KB server or restore the network path to it, then repeat the call; or use a local SQLite KB (kb_setup provider sqlite).",
-          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the configured server cannot be reached. Retryable in the 3.3 sense: the failure is transient, the identical request succeeds once the server answers again, and nothing is queued behind it, so repeating it cannot apply a write twice through fleet."
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the configured server cannot be reached. Retryable in the 3.3 sense: the failure is transient, the identical request succeeds once the server answers again, and the provider queues nothing behind it. A timeout or reset after the request was sent is also reported under this code, so a write repeated after one may already have been applied once."
         },
         {
           "$anchor": "E-KB-HTTP-SERVER-ERROR",

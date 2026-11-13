@@ -632,7 +632,7 @@ whether to repeat the call) and `E-KB-HTTP-SERVER-ERROR` (the KB server
 answered a capture, invalidate, feedback, promote or demote with a 5xx or 429;
 whether it took effect is unknown, so it is neither retried nor queued).
 
-`E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_harvest`, `kb_invalidate`,
+`E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_invalidate`,
 `kb_query`, `kb_context`, `kb_session_prime`, `kb_list` and `kb_promote` when the remote (HTTP) KB takes
 its token from a named fleet secret (`kb_setup` token `{{secret.NAME}}`) and that
 secret is missing, expired, or still rejected (HTTP 401) after one re-read and
