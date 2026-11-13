@@ -129,7 +129,7 @@ describe('install source choice', () => {
   });
 
   it('unsupported platform yields unavailable(unsupported-platform) without throwing', async () => {
-    const m = newMember({ arch: 'aarch64' }); // linux/arm64: no release asset, differs from orchestrator
+    const m = newMember({ arch: 'riscv64' }); // linux/riscv64: no release asset, differs from orchestrator
     const agent = makeTestAgent({ os: 'linux' });
     const r = await ensureMemberFleetInstall(agent, fakeDeps(m, { orchestrator: LINUX_X64, executable: '/opt/fleet/apra-fleet' }));
     expect(r.state).toBe('unavailable');
