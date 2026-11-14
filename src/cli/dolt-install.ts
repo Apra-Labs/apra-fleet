@@ -42,7 +42,7 @@ export class UnsupportedDoltPlatformError extends Error {
 /**
  * Resolves the dolthub/dolt v2.2.0 release asset for the given platform/arch.
  * Throws UnsupportedDoltPlatformError rather than silently no-op'ing on an
- * unsupported combo (e.g. win32/arm64, linux/arm64 -- not published upstream
+ * unsupported combo (e.g. win32/arm64 -- not published upstream
  * for this pinned version).
  */
 export function resolveDoltAsset(platform: string, arch: string): DoltAsset {
@@ -56,6 +56,9 @@ export function resolveDoltAsset(platform: string, arch: string): DoltAsset {
     archiveType = 'zip';
   } else if (platform === 'linux' && arch === 'x64') {
     assetName = 'dolt-linux-amd64.tar.gz';
+    archiveType = 'tar.gz';
+  } else if (platform === 'linux' && arch === 'arm64') {
+    assetName = 'dolt-linux-arm64.tar.gz';
     archiveType = 'tar.gz';
   } else if (platform === 'darwin' && arch === 'x64') {
     assetName = 'dolt-darwin-amd64.tar.gz';

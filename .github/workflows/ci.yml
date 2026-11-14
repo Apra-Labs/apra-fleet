@@ -211,6 +211,10 @@ jobs:
         include:
           - os: ubuntu-latest
             binary: apra-fleet-installer-linux-x64
+          # Linux ARM64 (aarch64): GitHub-hosted arm runner; setup-node installs
+          # an arm64 node, so package-sea.mjs names the output linux-arm64.
+          - os: ubuntu-24.04-arm
+            binary: apra-fleet-installer-linux-arm64
           - os: macos-latest
             binary: apra-fleet-installer-darwin-arm64
           # Intel macOS: macos-15-intel is GitHub's Intel runner label (macos-13
@@ -620,7 +624,7 @@ jobs:
           # Member installs download these assets and verify them against
           # SHA256SUMS before running them (src/services/member-fleet-install.ts).
           cd release-binaries
-          sha256sum apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe BUILD_INFO > SHA256SUMS
+          sha256sum apra-fleet-installer-linux-x64 apra-fleet-installer-linux-arm64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe BUILD_INFO > SHA256SUMS
           cat SHA256SUMS
 
       - name: Read the previous stable release
@@ -644,6 +648,7 @@ jobs:
             release-binaries/BUILD_INFO
             ${{ env.TARBALL_NAME }}
             release-binaries/apra-fleet-installer-linux-x64
+            release-binaries/apra-fleet-installer-linux-arm64
             release-binaries/apra-fleet-installer-darwin-arm64
             release-binaries/apra-fleet-installer-darwin-x64
             release-binaries/apra-fleet-installer-win-x64.exe
@@ -709,7 +714,7 @@ jobs:
         run: |
           cd prerelease
           printf 'version=%s\ncommit=%s\n' "$TAG" "$GITHUB_SHA" > BUILD_INFO
-          sha256sum apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe BUILD_INFO > SHA256SUMS
+          sha256sum apra-fleet-installer-linux-x64 apra-fleet-installer-linux-arm64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe BUILD_INFO > SHA256SUMS
           cat BUILD_INFO SHA256SUMS
           ls -l
 
@@ -720,7 +725,7 @@ jobs:
         run: |
           MARKER="apra-fleet-prerelease-channel: $GITHUB_REF"
           cd prerelease
-          FILES="apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe SHA256SUMS BUILD_INFO"
+          FILES="apra-fleet-installer-linux-x64 apra-fleet-installer-linux-arm64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe SHA256SUMS BUILD_INFO"
           for t in apra-fleet-*.tar.gz; do if [ -f "$t" ]; then FILES="$FILES $t"; fi; done
           if gh release view "$TAG" >/dev/null 2>&1; then
             STATE=$(gh release view "$TAG" --json isPrerelease,isDraft --jq '"\(.isPrerelease) \(.isDraft)"')
@@ -730,7 +735,7 @@ jobs:
                 # commit on the other branch). It was published only after all
                 # its assets were uploaded, so it is complete: leave it as is.
                 HAVE=$(gh release view "$TAG" --json assets --jq '[.assets[].name] | join(" ")')
-                for f in apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe SHA256SUMS BUILD_INFO; do
+                for f in apra-fleet-installer-linux-x64 apra-fleet-installer-linux-arm64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe SHA256SUMS BUILD_INFO; do
                   case " $HAVE " in *" $f "*) ;; *) echo "::error::published prerelease $TAG lacks $f; delete it (gh release delete $TAG --cleanup-tag) and re-run"; exit 1 ;; esac
                 done
                 echo "$TAG is already published and complete; not re-uploading"

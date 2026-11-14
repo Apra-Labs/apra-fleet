@@ -54,11 +54,14 @@ test('resolveDoltAsset: known platform/arch combos resolve to the pinned v2.2.0 
 
     const macArm = resolveDoltAsset('darwin', 'arm64');
     check(macArm.url.endsWith('dolt-darwin-arm64.tar.gz'), 'darwin/arm64 asset URL');
+
+    const linuxArm = resolveDoltAsset('linux', 'arm64');
+    check(linuxArm.url.endsWith('dolt-linux-arm64.tar.gz'), 'linux/arm64 asset URL');
+    check(linuxArm.archiveType === 'tar.gz', 'linux/arm64 archive type');
 });
 
 test('resolveDoltAsset: unsupported platform/arch throws rather than silently no-op', () => {
     assert.throws(() => resolveDoltAsset('win32', 'arm64'), /unsupported platform\/arch/i);
-    assert.throws(() => resolveDoltAsset('linux', 'arm64'), /unsupported platform\/arch/i);
     assert.throws(() => resolveDoltAsset('freebsd', 'x64'), /unsupported platform\/arch/i);
 });
 
