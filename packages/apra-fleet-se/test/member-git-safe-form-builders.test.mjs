@@ -135,6 +135,11 @@ const EXPECTED_ENGINE_COMMANDS = [
     `git fetch origin ${BRANCH} --quiet`,
     `git rev-parse --verify --quiet refs/heads/${BRANCH}`,
     `git checkout -B ${BRANCH} origin/${BASE}`,
+    // Clock Skew Check (runs inside Ensure Sprint Branch's Sprint Setup
+    // group). The stub answers the POSIX probe with empty output, so the
+    // PowerShell fallback probe runs too.
+    'date +%s',
+    '[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()',
 ];
 
 test('engine git command strings are unchanged for every member, POSIX included (pinned exactly)', async () => {
@@ -155,7 +160,7 @@ test('every collected git invocation for PowerShell and Git Bash members uses th
         const gitTokens = assertSafeForm(m.name, emitted);
         // Non-vacuous: the run really did collect git invocations, including
         // from the per-shell builders' decoded -EncodedCommand layers.
-        assert.ok(gitTokens >= EXPECTED_ENGINE_COMMANDS.length + 2, `${m.name}: only ${gitTokens} git invocations collected`);
+        assert.ok(gitTokens >= EXPECTED_ENGINE_COMMANDS.filter((c) => c.startsWith('git ')).length + 2, `${m.name}: only ${gitTokens} git invocations collected`);
     }
     // The PowerShell member's builders really are PowerShell-encoded, and the
     // git inside them is the bare PATH-resolved token.
