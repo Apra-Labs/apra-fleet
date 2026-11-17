@@ -429,6 +429,12 @@ so point-and-click and API launches can never diverge.
 > an explicit override flag. The system prefers telling you "this will fail again"
 > over silently burning another run.
 
+> **A launch takes over in-scope `in_progress` beads.** Any bead in the sprint's
+> issue scope that is `in_progress` with no unmet blockers, claimed before the
+> launch, is reset to `open` with its assignee cleared and dispatched to this
+> sprint -- even if a person or a CLI-launched sprint is working on it. Leave such
+> beads out of the issue scope, or wait until they are closed, before launching.
+
 ---
 
 ## 4. How do I know what's happening
