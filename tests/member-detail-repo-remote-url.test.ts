@@ -1,8 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { memberDetail } from '../src/tools/member-detail.js';
 import type { SSHExecResult } from '../src/types.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, '..');
 
 /**
  * member_detail is the ONLY MCP surface the fleet-sprint engine has for member
@@ -88,5 +94,142 @@ describe('member_detail reports the member repo origin URL for KB scoping', () =
   it('still reports the work folder, which the KB scope needs alongside the URL', async () => {
     const result = await detailJson(['https://github.com/acme/repo.git']);
     expect(result.folder).toBe('/home/testuser/project');
+  });
+});
+
+describe('member_detail surfaces the shell field (apra-fleet-7dir.1.1)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    setupDefaultMock();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('reports shell when set on the member', async () => {
+    const member = makeTestAgent({ friendlyName: 'shell-member', shell: 'gitbash' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.shell).toBe('gitbash');
+  });
+
+  it('omits shell when unset on the member', async () => {
+    const member = makeTestAgent({ friendlyName: 'no-shell-member' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.shell).toBeUndefined();
+  });
+});
+
+/**
+ * apra-fleet-rp7a.5 -- paired [test] bead for apra-fleet-rp7a.4's fix.
+ *
+ * member_detail's `gitAccess` field is the fleet-sprint engine's ONLY source
+ * for the level a member's VCS credentials are ACTUALLY minted at
+ * (register_member/update_member's git_access, stored as Agent.gitAccess).
+ * Before apra-fleet-rp7a.4 the Sync-step workflows-permission preflight had
+ * no way to read that level at all and could only compare the engine's own
+ * provisioning default against itself -- a check that was always true. This
+ * field is what makes the registered-vs-default distinction observable.
+ */
+describe('member_detail surfaces the member\'s registered git access level (apra-fleet-rp7a.4/.5)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    setupDefaultMock();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('reports gitAccess when set on the member', async () => {
+    const member = makeTestAgent({ friendlyName: 'git-access-member', gitAccess: 'push+pr' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.gitAccess).toBe('push+pr');
+  });
+
+  it('omits gitAccess when the member was registered without an explicit level', async () => {
+    const member = makeTestAgent({ friendlyName: 'no-git-access-member' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.gitAccess).toBeUndefined();
+  });
+
+  // Guards apra-fleet-client's src/client/api.mjs (the thin wrapper other
+  // packages, including fleet-sprint, use to call member_detail) against
+  // drifting from what this tool actually returns -- per this repo's
+  // CLAUDE.md, that client is not optional cleanup, it is part of the tool
+  // change itself. packages/apra-fleet-client/test/client-server-typedef-
+  // parity.test.mjs already asserts FULL field-for-field parity generically
+  // (any field either side gains/loses), but that suite runs under its own
+  // package's `npm test` (node:test), not the repo-root `npm test` this file
+  // is part of -- so this reads the real typedef source directly (never a
+  // copied fixture) and pins the ONE field this bead is about, inside the
+  // suite that IS part of the repo-root run.
+  it('the client wrapper\'s MemberDetailResult typedef declares gitAccess, matching the field member_detail.ts surfaces above', () => {
+    const apiMjsSrc = fs.readFileSync(
+      path.join(repoRoot, 'packages', 'apra-fleet-client', 'src', 'client', 'api.mjs'),
+      'utf8',
+    );
+    const typedefStart = apiMjsSrc.indexOf('@typedef {Object} MemberDetailResult');
+    expect(typedefStart, 'MemberDetailResult typedef not found in apra-fleet-client/src/client/api.mjs').not.toBe(-1);
+    const typedefEnd = apiMjsSrc.indexOf('*/', typedefStart);
+    expect(typedefEnd, 'unterminated MemberDetailResult typedef block').not.toBe(-1);
+    const typedefBlock = apiMjsSrc.slice(typedefStart, typedefEnd);
+
+    expect(typedefBlock).toMatch(/@property\s+\{[^}]*\}\s+\[gitAccess\]/);
+  });
+});
+
+/**
+ * The fleet-sprint member preflight re-composes a dispatch member's per-folder
+ * permission config when it is missing (re-clone, git clean -xdf). It has no
+ * provider layer of its own, so member_detail reports which files the
+ * member's provider composes -- straight from the ProviderAdapter, never an
+ * engine-side guess that assumes Claude.
+ */
+describe('member_detail reports the provider permission config paths', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    setupDefaultMock();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('a Claude member reports .claude/settings.local.json', async () => {
+    const member = makeTestAgent({ friendlyName: 'perm-claude', llmProvider: 'claude' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.permissionConfigPaths).toEqual(['.claude/settings.local.json']);
+  });
+
+  it('a Codex member reports its own provider path, not Claude\'s', async () => {
+    const member = makeTestAgent({ friendlyName: 'perm-codex', llmProvider: 'codex' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.permissionConfigPaths).toEqual(['.codex/config.toml']);
+  });
+
+  it('an agy member with no provisioned project reports [] instead of failing member_detail', async () => {
+    const member = makeTestAgent({ friendlyName: 'perm-agy', llmProvider: 'agy' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.permissionConfigPaths).toEqual([]);
+  });
+
+  it('is reported for an offline member too (a static provider fact)', async () => {
+    mockTestConnection.mockResolvedValue({ ok: false, latencyMs: 0, error: 'unreachable' });
+    const member = makeTestAgent({ friendlyName: 'perm-offline', llmProvider: 'claude' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.offline).toBe(true);
+    expect(result.permissionConfigPaths).toEqual(['.claude/settings.local.json']);
   });
 });

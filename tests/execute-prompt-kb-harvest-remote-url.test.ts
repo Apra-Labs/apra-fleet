@@ -1,6 +1,6 @@
 /**
- * apra-fleet-b4g.6: execute_prompt's auto-harvest must forward repo_remote_url
- * to kb_harvest whenever the dispatched member's registration record already
+ * apra-fleet-b4g.6: execute_prompt's auto-harvest must forward the member's
+ * origin URL (the explicit KB anchor's remoteUrl) to kb_harvest whenever the dispatched member's registration record already
  * carries a genuine git remote URL (agent.gitRepos[0] already looks like a
  * URL) -- and must NOT forward anything, guess, or derive one, when it does
  * not (the common case today: gitRepos holds a bare "owner/repo" access
@@ -109,9 +109,9 @@ describe('execute_prompt auto-harvest repo_remote_url wiring (apra-fleet-b4g.6)'
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // The forwarded-when-known assertion: must go red if the repo_remote_url
-  // argument is dropped from the kb-harvest call site.
-  it('forwards repo_remote_url when the member registration record already carries a genuine URL', async () => {
+  // The forwarded-when-known assertion: must go red if the anchor remoteUrl
+  // is dropped from the kb-harvest call site.
+  it('forwards the anchor remoteUrl when the member registration record already carries a genuine URL', async () => {
     const member = makeTestAgent({
       friendlyName: 'kb-harvest-remote-known-url',
       workFolder: 'C:\\Users\\member\\work\\repo',
@@ -124,14 +124,14 @@ describe('execute_prompt auto-harvest repo_remote_url wiring (apra-fleet-b4g.6)'
     await flushMicrotasks();
 
     expect(mockKbHarvest).toHaveBeenCalledTimes(1);
-    expect(mockKbHarvest.mock.calls[0][0]).toMatchObject({
-      repo_path: 'C:\\Users\\member\\work\\repo',
-      repo_remote_url: 'https://github.com/acme/repo.git',
-      session_id: 'sess-harvest',
+    expect(mockKbHarvest.mock.calls[0][0]).toMatchObject({ session_id: 'sess-harvest' });
+    expect(mockKbHarvest.mock.calls[0][1]).toEqual({
+      folder: 'C:\\Users\\member\\work\\repo',
+      remoteUrl: 'https://github.com/acme/repo.git',
     });
   });
 
-  it('omits repo_remote_url when the member only carries a bare "owner/repo" access identifier', async () => {
+  it('omits the anchor remoteUrl when the member only carries a bare "owner/repo" access identifier', async () => {
     const member = makeTestAgent({
       friendlyName: 'kb-harvest-remote-bare-repo',
       workFolder: 'C:\\Users\\member\\work\\repo',
@@ -144,10 +144,10 @@ describe('execute_prompt auto-harvest repo_remote_url wiring (apra-fleet-b4g.6)'
     await flushMicrotasks();
 
     expect(mockKbHarvest).toHaveBeenCalledTimes(1);
-    expect(mockKbHarvest.mock.calls[0][0].repo_remote_url).toBeUndefined();
+    expect(mockKbHarvest.mock.calls[0][1].remoteUrl).toBeUndefined();
   });
 
-  it('omits repo_remote_url when the member has no gitRepos at all (today\'s behaviour preserved)', async () => {
+  it('omits the anchor remoteUrl when the member has no gitRepos at all (today\'s behaviour preserved)', async () => {
     const member = makeTestLocalAgent({
       friendlyName: 'kb-harvest-local-no-url',
       workFolder: tmpDir,
@@ -161,7 +161,7 @@ describe('execute_prompt auto-harvest repo_remote_url wiring (apra-fleet-b4g.6)'
     await flushMicrotasks();
 
     expect(mockKbHarvest).toHaveBeenCalledTimes(1);
-    expect(mockKbHarvest.mock.calls[0][0]).toMatchObject({ repo_path: tmpDir });
-    expect(mockKbHarvest.mock.calls[0][0].repo_remote_url).toBeUndefined();
+    expect(mockKbHarvest.mock.calls[0][1]).toMatchObject({ folder: tmpDir });
+    expect(mockKbHarvest.mock.calls[0][1].remoteUrl).toBeUndefined();
   });
 });

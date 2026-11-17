@@ -13,6 +13,9 @@ export function classifySshError(error: string): string {
   if (/ETIMEDOUT|ENOTFOUND|EHOSTUNREACH/i.test(msg)) {
     return 'Host unreachable — check hostname and network';
   }
+  if (/Channel open failure/i.test(msg)) {
+    return "The member's sshd refused a new SSH session - its per-connection session limit (sshd MaxSessions, default 10) is likely exhausted by concurrent or leaked sessions";
+  }
   if (/password prompt could not be opened|OOB|auth-socket/i.test(msg)) {
     return "Password prompt could not be opened. Try passing the password directly via the 'password' field.";
   }

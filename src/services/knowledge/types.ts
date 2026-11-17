@@ -84,6 +84,13 @@ export interface KBEntry {
   created_at: string;
   superseded_at?: string;
   promoted_at?: string;
+  // kb_demote. demoted_at is the ISO time trust was last withdrawn;
+  // demoted_basis_hashes is source_file -> sha256 of that file AS IT WAS ON
+  // DISK AT DEMOTE TIME -- NOT a copy of the capture-time source_file_hashes.
+  // Both are read-only on this interface (only demote() writes them), and both
+  // survive a later re-promotion so the demotion stays auditable.
+  demoted_at?: string;
+  demoted_basis_hashes?: Record<string, string>;
   use_count: number;
   last_accessed?: string;
 }
@@ -103,6 +110,52 @@ export type KBEntryInput = Omit<KBEntry, 'id' | 'stale' | 'created_at' | 'supers
 export interface CaptureOpts {
   importMode?: boolean;
   preferredId?: string;
+  // Member bible view only (member-bible-view.ts): load the entry VERBATIM --
+  // skip AUDN dedupe/update/contradiction entirely, so an already-reviewed
+  // bible is reproduced as-is (every entry under its bible id, its bible
+  // confidence, never flagged/disputed by a sibling entry). Honoured only
+  // together with importMode and preferredId; the directive gate and the basis
+  // check still run. Never use it for a live per-repo DB: there AUDN is the
+  // point.
+  verbatim?: boolean;
+  // Bible format v3 (kb_import / member bible view only): the per-file hash
+  // basis the bible CARRIES for this entry. Honoured only together with
+  // importMode. When set (even to null), capture() stores exactly this map as
+  // the entry's basis and does NOT hash local files: a basis must never be
+  // laundered from the importing clone's tree. null (a v1/v2 entry, or an
+  // invalid carried map) hashes this clone's files into a LOCAL freshness-only
+  // basis (local_basis_only): staleness checks use it, but the bible predicate,
+  // export and the reconcile prefilter read it as no basis, so the entry is not
+  // re-exported until it is recaptured. Left undefined, capture()
+  // computes the basis from local files as for every normal capture.
+  carriedBasis?: Record<string, string> | null;
+  // kb_import / member bible view only, honoured only together with importMode:
+  // the bible entry's updated_at, i.e. when the exporting clone promoted it.
+  // Stored (bible_updated_at) on the 'add' path so a later tombstone is judged
+  // against when the entry was promoted, never against the local import time.
+  carriedUpdatedAt?: string;
+  // A member session without the kb_maintainer grant (kb_capture sets it):
+  // an explicit `supersedes` whose matched target is CONFIRMED does NOT retire
+  // it -- the capture takes the implicit path instead (new entry linked
+  // 'refines', both live) and the target id comes back in `refused`.
+  keepConfirmed?: boolean;
+}
+
+/** SqliteProvider.capture() result. */
+export interface CaptureResult {
+  id: string;
+  audn_decision: AudnDecision;
+  /** CONFIRMED supersede targets left live (keepConfirmed); present only when non-empty. */
+  refused?: string[];
+}
+
+export interface EntryTrustFilter {
+  confidence?: Confidence[];
+  exclude_disputed?: boolean;
+  // MEMBER own-scope (kb-self.ts memberOwnerTag): only entries whose tags carry
+  // this exact value (member:<uuid>). Internal only -- set by the tool handlers
+  // from the session identity, never from a deserialized route.
+  owner_tag?: string;
 }
 
 export interface QueryOptions {
@@ -129,6 +182,16 @@ export interface QueryOptions {
   include_stale?: boolean;
   include_superseded?: boolean;
   flagged_only?: boolean;
+  // Retrieval-trust filters (kb_query confidence / exclude_disputed). Both are
+  // opt-in and default-off, so an existing caller's result is unchanged.
+  // `confidence` is an allow-list of tiers; `exclude_disputed` drops entries
+  // carrying either half of a contradiction pair (flagged_for_review=1 or a
+  // contradiction_of pointer). Ignored by the flagged_only branch, which exists
+  // to list exactly the disputed entries.
+  confidence?: Confidence[];
+  exclude_disputed?: boolean;
+  // MEMBER own-scope tag filter (see EntryTrustFilter.owner_tag). Internal only.
+  owner_tag?: string;
   l1_only?: boolean;
   limit?: number;
   ids?: string[];
@@ -154,6 +217,12 @@ export interface PrimeOptions {
   hint_symbols?: string[];
   hint_modules?: string[];
   decay_after_days?: number;
+  // Tier allow-list for the entries prime surfaces. Absent = no tier filter at
+  // this layer (the kb_session_prime tool applies the CONFIRMED-undisputed default).
+  confidence?: Confidence[];
+  exclude_disputed?: boolean;
+  // MEMBER own-scope tag filter (see EntryTrustFilter.owner_tag). Internal only.
+  owner_tag?: string;
 }
 
 export interface PrimedContext {
@@ -227,15 +296,57 @@ export interface ProviderConfig {
   dbPath?: string;
 }
 
+export interface DiscardResult {
+  discarded: string[];
+  not_found: string[];
+  already_discarded: string[];
+  /**
+   * Live CONFIRMED ids left untouched because the call asked to keep CONFIRMED
+   * entries (keepConfirmed: a member session without the kb_maintainer grant).
+   * Present only when keepConfirmed was set.
+   */
+  refused?: string[];
+}
+
+/** Options for id-level discard / file invalidation. */
+export interface RetireOptions {
+  /** MEMBER own-scope: act only on entries carrying this tag. */
+  ownerTag?: string;
+  /**
+   * Leave CONFIRMED entries untouched and report them as refused (a member
+   * session without the kb_maintainer grant may not retire CONFIRMED).
+   */
+  keepConfirmed?: boolean;
+}
+
 export interface MemoryProvider {
   init(): Promise<void>;
   capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }>;
   query(opts: QueryOptions): Promise<KBResult>;
-  context(files: string[]): Promise<FileContextResult[]>;
+  // ownerTag (MEMBER own-scope): only summaries from entries carrying that tag.
+  context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean, ownerTag?: string): Promise<FileContextResult[]>;
   invalidate(files: string[]): Promise<{ invalidated: number }>;
+  // Id-level DISCARD: sets superseded_at (and stale) so the entry drops from every
+  // read path; the row is kept. ownerTag restricts the call to entries carrying
+  // that tag (MEMBER own-scope); any other id is reported as not_found.
+  // keepConfirmed leaves live CONFIRMED entries untouched (reported in refused).
+  discard(ids: string[], opts?: RetireOptions): Promise<DiscardResult>;
   getLinked(id: string): Promise<KBEntry[]>;
   prime(opts: PrimeOptions): Promise<PrimedContext>;
-  promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
+  // opts.ownerTag is the MEMBER own-scope restriction: an entry not carrying
+  // the tag is refused with the SAME "Entry not found" message an unknown id
+  // gets, so existence is never disclosed. Declared here (not only on
+  // SqliteProvider) because the kb_promote/kb_demote tools pass it through the
+  // MemoryProvider-typed project provider.
+  promote(id: string, reason?: string, opts?: { ownerTag?: string }): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
+  // kb_demote: CONFIRMED -> INFERRED. `reason` is REQUIRED (unlike promote's,
+  // which is optional for backwards compatibility): withdrawing trust is only
+  // useful if why is recorded. evidenceFiles are REQUIRED (at least one), each
+  // of which must resolve inside the provider's anchor; none is refused with
+  // E-DEMOTE-EVIDENCE-UNRESOLVED. The kb_demote tool's input schema (min(1))
+  // refuses an absent or empty list before the provider is reached; the
+  // provider's own refusal covers an untyped direct caller.
+  demote(id: string, reason: string, evidenceFiles: string[], opts?: { ownerTag?: string }): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
   sync(opts?: SyncOptions): Promise<SyncResult>;
   // T2.1 (F5, D4): dedicated no-bump aggregation read (kb_list pattern -- never
   // touches use_count/last_accessed). Part of the interface (not just
@@ -250,10 +361,21 @@ export interface MemoryProvider {
   // another machine's bible has no local row and is silently skipped. Returns
   // the number of rows actually bumped.
   touch(ids: string[]): Promise<number>;
+  // For each given id that EXISTS locally, whether that row is LIVE CONFIRMED
+  // (CONFIRMED and not stale, not superseded, not flagged_for_review). An id
+  // with no local row is ABSENT from the map, so a caller can tell "I hold a
+  // row I no longer trust" from "I have never seen this id" -- the cold-seed
+  // in kb_session_prime needs exactly that distinction. On the interface (like
+  // touch) because that cold seed runs on whichever project provider is
+  // configured, not only the SQLite one.
+  getLiveConfirmedState(ids: string[]): Map<string, boolean>;
   // KB audit 2026-08-11: one hop across the KB's own graph, limited to the two
   // edge kinds FTS cannot substitute for -- `refines` ("there is a newer
   // framing of this claim") and `contradiction_of` ("something disputes it").
   // shares_file/shares_symbol are deliberately NOT traversed: they encode
   // topicality, which an FTS match over the same fields already surfaces.
-  relatedClaims(ids: string[], limit?: number): Promise<KBEntry[]>;
+  // `filter` applies the same retrieval-trust filters as QueryOptions so a
+  // caller that restricted its direct hits is not handed an unfiltered claim
+  // through the graph instead.
+  relatedClaims(ids: string[], limit?: number, filter?: EntryTrustFilter): Promise<KBEntry[]>;
 }

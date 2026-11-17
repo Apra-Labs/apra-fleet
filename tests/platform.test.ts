@@ -4,7 +4,11 @@ import { detectOS, isContainedInWorkFolder } from '../src/utils/platform.js';
 import { getSSHConfig } from '../src/services/ssh.js';
 import { getOsCommands } from '../src/os/index.js';
 import type { OsCommands } from '../src/os/index.js';
+import type { ForkDescriptor } from '../src/os/os-commands.js';
 import { getProvider } from '../src/providers/index.js';
+
+// agy refuses to build a prompt command without the member's bound project id.
+const AGY_PROJECT_ID = '1afd6dbb-498f-4918-a9d9-6da64b75a204';
 
 describe('detectOS', () => {
   it('detects OS from uname and ver output', () => {
@@ -107,6 +111,7 @@ describe('OsCommands via getOsCommands', () => {
 
     describe('buildAgentPromptCommand', () => {
       const opts = { folder: '/tmp/work', promptFile: '.fleet-task.md' };
+      const agyOpts = { ...opts, projectId: AGY_PROJECT_ID };
 
       for (const [name, cmds] of all) {
         it(`${name}: claude provider buildAgentPromptCommand includes prompt file reference and flags`, () => {
@@ -117,7 +122,7 @@ describe('OsCommands via getOsCommands', () => {
         });
 
         it(`${name}: agy provider uses agy binary`, () => {
-          const cmd = cmds.buildAgentPromptCommand(agyProvider, opts);
+          const cmd = cmds.buildAgentPromptCommand(agyProvider, agyOpts);
           expect(cmd).toContain('agy');
           expect(cmd).toContain('.fleet-task.md');
           expect(cmd).toContain('--output-format json');
@@ -126,7 +131,7 @@ describe('OsCommands via getOsCommands', () => {
       }
 
       it('windows: agy prompt command uses PowerShell syntax', () => {
-        const cmd = windows.buildAgentPromptCommand(agyProvider, opts);
+        const cmd = windows.buildAgentPromptCommand(agyProvider, agyOpts);
         expect(cmd).toContain('Set-Location');
         expect(cmd).toContain('.fleet-task.md');
         expect(cmd).toContain('agy');
@@ -168,6 +173,47 @@ describe('OsCommands via getOsCommands', () => {
         });
       }
     });
+
+    // apra-fleet-lmtg.3: fork descriptor threaded through buildAgentPromptCommand
+    // (apra-fleet-lmtg.2). Covers both the linux/macos and windows builders via
+    // the shared `all` fixture -- the two paths must not diverge.
+    describe('buildAgentPromptCommand with fork descriptor', () => {
+      const opts = { folder: '/tmp/work', promptFile: '.fleet-task.md' };
+      const fork: ForkDescriptor = { sourceSessionId: 'src-sess-1', newSessionId: 'new-sess-2' };
+
+      for (const [name, cmds] of all) {
+        it(`${name}: emits the provider's fork invocation (--resume <source> --fork-session) when a fork descriptor is supplied`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, fork });
+          expect(cmd).toContain('--resume "src-sess-1"');
+          expect(cmd).toContain('--fork-session');
+        });
+
+        it(`${name}: emits --session-id with the pre-minted forked output id -- the caller controls the forked id, not the CLI`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, fork });
+          expect(cmd).toContain(`--session-id "${fork.newSessionId}"`);
+          // the emitted new id must be distinct from the source id
+          expect(fork.newSessionId).not.toBe(fork.sourceSessionId);
+        });
+
+        it(`${name}: suppresses the ordinary sessionId/resuming flags when a fork descriptor is present (mutually exclusive intents)`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, fork, sessionId: 'should-be-ignored', resuming: true });
+          expect(cmd).not.toContain('should-be-ignored');
+          expect(cmd).toContain('--resume "src-sess-1"');
+          expect(cmd).toContain('--fork-session');
+        });
+
+        it(`${name}: is unchanged (no fork flags) when the fork descriptor is absent`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, opts);
+          expect(cmd).not.toContain('--fork-session');
+        });
+
+        it(`${name}: a non-fork-capable provider ignores a supplied fork descriptor rather than crashing or leaking it`, () => {
+          const cmd = cmds.buildAgentPromptCommand(agyProvider, { ...opts, fork, projectId: AGY_PROJECT_ID });
+          expect(cmd).not.toContain('--fork-session');
+          expect(cmd).not.toContain('src-sess-1');
+        });
+      }
+    });
   });
 
   describe('filesystem commands', () => {
@@ -179,19 +225,23 @@ describe('OsCommands via getOsCommands', () => {
   });
 
   describe('env commands', () => {
-    it('generates setenv commands for each OS', () => {
-      const linuxCmds = linux.setEnv('MY_VAR', 'value');
-      expect(linuxCmds.length).toBe(3);
-      expect(linuxCmds[0]).toContain('.bashrc');
+    it('persists an env var from a staged file; the command carries only the path', () => {
+      // Profile line keeps the historical shape unsetEnv's sed matches.
+      expect(linux.persistEnvFileContent('MY_VAR', 'value')).toBe('export MY_VAR="value"\n');
+      const linuxCmd = linux.persistEnvFromFile('MY_VAR', '/home/u/.apra-fleet-persist-1');
+      expect(linuxCmd).toContain(`cat '/home/u/.apra-fleet-persist-1' >> ~/.bashrc`);
+      expect(linuxCmd).toContain(`cat '/home/u/.apra-fleet-persist-1' >> ~/.profile`);
+      expect(linuxCmd).toContain(`rm -f '/home/u/.apra-fleet-persist-1'`);
+      expect(linuxCmd).not.toContain('value');
 
-      const macosCmds = macos.setEnv('MY_VAR', 'value');
-      expect(macosCmds.length).toBe(5);
-      expect(macosCmds.some(c => c.includes('.zshrc'))).toBe(true);
-      expect(macosCmds.some(c => c.includes('.zshenv'))).toBe(true);
+      const macosCmd = macos.persistEnvFromFile('MY_VAR', '/Users/u/.f');
+      for (const f of ['.bashrc', '.zshrc', '.zshenv', '.profile']) expect(macosCmd).toContain(`>> ~/${f}`);
 
-      const winCmds = windows.setEnv('MY_VAR', 'value');
-      expect(winCmds.length).toBe(1);
-      expect(winCmds[0]).toContain('SetEnvironmentVariable');
+      expect(windows.persistEnvFileContent('MY_VAR', 'value')).toBe(Buffer.from('value').toString('base64'));
+      const winCmd = windows.persistEnvFromFile('MY_VAR', 'C:/Users/u/.f');
+      expect(winCmd).toContain("SetEnvironmentVariable('MY_VAR', $v, 'User')");
+      expect(winCmd).toContain("Remove-Item -LiteralPath $f");
+      expect(winCmd).not.toContain('value');
     });
 
     it('generates unsetenv commands for each OS', () => {
@@ -287,14 +337,14 @@ describe('OsCommands via getOsCommands', () => {
   });
 
   describe('wrapInWorkFolder', () => {
-    it('linux: wraps with cd and &&', () => {
+    it('linux: wraps with cd and && and appends the member fleet bin dir to PATH', () => {
       expect(linux.wrapInWorkFolder('/home/user/project', 'echo hi'))
-        .toBe('cd "/home/user/project" && echo hi');
+        .toBe('cd "/home/user/project" && export PATH="$PATH:$HOME/.apra-fleet/bin" && echo hi');
     });
 
     it('macos: inherits linux wrapInWorkFolder', () => {
       expect(macos.wrapInWorkFolder('/opt/app', 'ls -la'))
-        .toBe('cd "/opt/app" && ls -la');
+        .toBe('cd "/opt/app" && export PATH="$PATH:$HOME/.apra-fleet/bin" && ls -la');
     });
 
     it('windows: wraps with Set-Location', () => {
@@ -302,6 +352,9 @@ describe('OsCommands via getOsCommands', () => {
         .toContain('Set-Location');
       expect(windows.wrapInWorkFolder('C:\\Users\\dev\\project', 'Get-ChildItem'))
         .toContain('Get-ChildItem');
+      // The member fleet bin dir (bd, dolt) is appended, after the user's own PATH.
+      expect(windows.wrapInWorkFolder('C:\\Users\\dev\\project', 'Get-ChildItem'))
+        .toContain('$env:Path = "$env:Path;$env:USERPROFILE\\.apra-fleet\\bin"; Get-ChildItem');
     });
 
     it('escapes folder injection in linux', () => {
@@ -440,7 +493,8 @@ describe('OsCommands via getOsCommands', () => {
     it.skipIf(process.platform !== 'win32')('windows: returns pristine env and powershell shell', () => {
       const { command, env, shell } = windows.cleanExec('echo hello');
       expect(command).toBe('echo hello');
-      expect(shell).toBe('powershell.exe');
+      // Absolute path: LocalStrategy spawns it with cwd = the work folder.
+      expect(shell).toMatch(/^[A-Za-z]:\\.*\\powershell\.exe$/i);
       expect(env).toBeDefined();
       expect(env!['Path'] ?? env!['PATH']).toBeTruthy();
       expect(env!['USERPROFILE']).toBeTruthy();
@@ -453,6 +507,22 @@ describe('OsCommands via getOsCommands', () => {
         expect(env!['__FLEET_TEST_MARKER__']).toBeUndefined();
       } finally {
         delete process.env.__FLEET_TEST_MARKER__;
+      }
+    });
+  });
+
+  describe('fleetProcessCheck POSIX regex compatibility', () => {
+    it('linux and macos: uses POSIX [[:space:]] character class instead of \\s for BSD/macOS pgrep compatibility', () => {
+      for (const [name, cmds] of [['linux', linux], ['macos', macos]] as const) {
+        const cmd = cmds.fleetProcessCheck('/home/user/project', undefined, 'claude');
+        expect(cmd).toContain('[[:space:]]');
+        expect(cmd).not.toContain('\\s');
+        expect(cmd).toContain('[c]laude');
+
+        const agyCmd = cmds.fleetProcessCheck('/home/user/project', undefined, 'agy');
+        expect(agyCmd).toContain('[[:space:]]');
+        expect(agyCmd).not.toContain('\\s');
+        expect(agyCmd).toContain('[a]gy');
       }
     });
   });
@@ -597,16 +667,13 @@ describe('injection prevention', () => {
     expect(winCmd).toContain('^&');
   });
 
-  it('escapes injection in setenv values', () => {
-    const linuxCmds = linux.setEnv('MY_VAR', '"; rm -rf / #');
-    for (const cmd of linuxCmds) {
-      expect(cmd).toContain('\\"');
-    }
-
-    // PowerShell single-quote escaping: values are wrapped in '...', no shell metachar expansion
-    const winCmds = windows.setEnv('MY_VAR', "test'injection");
-    expect(winCmds[0]).toContain("''");
-    expect(winCmds[0]).toContain('SetEnvironmentVariable');
+  it('escapes injection in persisted env values and staged file paths', () => {
+    // The profile line is sourced later by the member shell -- value stays double-quote escaped.
+    expect(linux.persistEnvFileContent('MY_VAR', '"; rm -rf / #')).toContain('\\"');
+    expect(linux.persistEnvFromFile('MY_VAR', "/home/o'neil/.f")).toContain(`'/home/o'\\''neil/.f'`);
+    // PowerShell: the value is base64 (no quoting surface); the path is single-quote escaped.
+    expect(windows.persistEnvFromFile('MY_VAR', "C:/Users/o'neil/.f")).toContain("'C:/Users/o''neil/.f'");
+    expect(() => linux.persistEnvFromFile('BAD;NAME', '/f')).toThrow();
   });
 });
 

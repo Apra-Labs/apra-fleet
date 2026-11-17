@@ -66,6 +66,17 @@ const CORRECTED_TITLE = 'Fix the env leak';
 const GOOD_BRACKET_TITLE = '[test] foo';
 const GOOD_BRACKET_DESCRIPTION = 'A bracketed-title newTask using the planner.md [test] convention.';
 
+// Final Review findings: one whose title only needs the arrow/comparison
+// table, and one whose title cannot be sanitised at all (", $ and non-ASCII)
+// -- the latter must still land as a bead under a stripped fallback title,
+// with the original title ASCII-escaped into its description.
+const FINAL_ARROW_TITLE = 'Retry a -> b when x >= 3';
+const FINAL_ARROW_TITLE_SANITISED = 'Retry a to b when x at least 3';
+const FINAL_ARROW_DESCRIPTION = 'Flow: queue \u2192 worker.';
+const FINAL_UNSAFE_TITLE = 'Leak in "$HOME" path \u2192 caf\u00E9';
+const FINAL_UNSAFE_FALLBACK_TITLE = 'Leak in HOME path to caf';
+const FINAL_UNSAFE_DESCRIPTION = 'Final Review finding with an unsanitisable title.';
+
 const TASK_A_TITLE = 'Task: A closes normally (19o3 resurface scenario)';
 const TASK_B_TITLE = 'Task: B never closes (19o3 resurface scenario)';
 
@@ -154,12 +165,26 @@ describe('apra-fleet-19o.3: bracketed titles validate and rejected newTasks reap
                     };
                 };
 
+                const finalReviewHandler = async () => ({
+                    content: [{
+                        text: JSON.stringify({
+                            verdict: 'FAIL',
+                            notes: 'Task B is still open.',
+                            newTasks: [
+                                { title: FINAL_ARROW_TITLE, description: FINAL_ARROW_DESCRIPTION, priority: 'P3' },
+                                { title: FINAL_UNSAFE_TITLE, description: FINAL_UNSAFE_DESCRIPTION, priority: 'P3' },
+                            ],
+                        }),
+                    }],
+                });
+
                 const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, {
                     planReviewerMode: 'approve-immediately',
                     addExtraTaskDuringPlan: false,
                     doerHandler,
                     reviewerHandler,
                     plannerHandler,
+                    finalReviewHandler,
                 });
                 const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
                 workflow.on('log', (e) => logs.push(e.msg));
@@ -215,6 +240,75 @@ describe('apra-fleet-19o.3: bracketed titles validate and rejected newTasks reap
 
                 const badBead = finalBeads.find((b) => b.title === BAD_TITLE);
                 assert.ok(!badBead, `the rejected title must never itself land as a bead, got: ${JSON.stringify(titles)}`);
+
+                // ---- Final Review findings: arrow title sanitised, unsanitisable title filed under a fallback ----
+                const arrowBead = finalBeads.find((b) => b.title === FINAL_ARROW_TITLE_SANITISED);
+                assert.ok(arrowBead, `expected the Final Review arrow-title finding to land as '${FINAL_ARROW_TITLE_SANITISED}', got: ${JSON.stringify(titles)}`);
+                assert.equal(
+                    arrowBead.description,
+                    `Original title (JSON-escaped, non-ASCII as \\uXXXX): "${FINAL_ARROW_TITLE}"\n\nFlow: queue -> worker.`,
+                );
+                const fallbackBead = finalBeads.find((b) => b.title === FINAL_UNSAFE_FALLBACK_TITLE);
+                assert.ok(fallbackBead, `expected the unsanitisable Final Review finding to land under fallback title '${FINAL_UNSAFE_FALLBACK_TITLE}', got: ${JSON.stringify(titles)}`);
+                assert.equal(
+                    fallbackBead.description,
+                    `Original title (JSON-escaped, non-ASCII as \\uXXXX): "Leak in \\"$HOME\\" path \\u2192 caf\\u00E9"\n\n${FINAL_UNSAFE_DESCRIPTION}`,
+                );
+
+                // These two ids just pin bd's own native sequential id derivation
+                // under this mock-sprint harness's no-op allocator (childId always
+                // null here, see runner.js's childIdAllocator fallback chain -- every
+                // newTask create below carries `--parent <epic>`, never `--id`). They
+                // are NOT end-to-end coverage of computeChildFloor's floor VALUE:
+                // the no-op allocator's allocate() ignores the `floor` argument
+                // entirely, so these ids would come out identical even if
+                // computeChildFloor always returned 0. (Corrected per apra-fleet-
+                // btj9.3 review: an earlier version of this comment claimed the
+                // `--all` read was "the only thing" keeping these sequential -- false,
+                // proven by mutation: forcing computeChildFloor to return 0
+                // unconditionally still passes this test.)
+                assert.equal(goodBead.id, `${epicBead.id}.1`, `expected the first newTask to mint '${epicBead.id}.1', got: ${goodBead.id}`);
+                assert.equal(correctedBead.id, `${epicBead.id}.2`, `expected the second newTask to mint a FRESH '${epicBead.id}.2' (never re-minting the closed '${epicBead.id}.1'), got: ${correctedBead.id}`);
+
+                // ---- apra-fleet-btj9.3 AC3: genuine end-to-end coverage that
+                // computeChildFloor's closed-children read (`bd list --parent <id>
+                // --json --all`) reaches a NON-ZERO floor through the REPLAYED
+                // fixture, not just the unit test in
+                // child-floor-includes-closed-children.test.mjs. By the time cycle
+                // 2's Review round creates the corrected resubmission, the first
+                // newTask ('[test] foo') already exists AND is closed under the
+                // epic, so computeChildFloor's `--all` read must find it and report
+                // a non-zero floor -- computeChildFloor logs this (and ONLY a
+                // non-zero result, to stay non-noisy) as
+                // "computeChildFloor: parent <id> closed-children read found floor
+                // N". Observing that log line, with N > 0, for THIS epic is the
+                // actual proof the fixed flag order reaches a real closed child via
+                // replay; the sequential-id assertions above cannot serve as that
+                // proof because the no-op allocator ignores the floor value they'd
+                // be indirectly gated on.
+                const floorLogs = logs.filter(
+                    (l) => l.includes('computeChildFloor') && l.includes(`parent ${epicBead.id} closed-children read found floor`),
+                );
+                assert.ok(
+                    floorLogs.length > 0,
+                    `expected at least one computeChildFloor success log naming a non-zero floor for parent ${epicBead.id}, got logs: ${JSON.stringify(logs.filter((l) => l.includes('computeChildFloor')))}`,
+                );
+                const floorValues = floorLogs.map((l) => Number(l.match(/found floor (\d+)/)[1]));
+                assert.ok(
+                    floorValues.some((n) => n > 0),
+                    `expected at least one non-zero floor reached via the replayed closed-children read, got: ${JSON.stringify(floorValues)}`,
+                );
+
+                // The computeChildFloor read must never have silently swallowed a
+                // failure and fallen back to floor 0 -- if it had, the non-zero-floor
+                // assertion above would already have failed, but pin the absence of
+                // the fallback's own log line too so a future flag/format drift is
+                // caught here even if it happens not to cause a visible id collision
+                // in this particular scenario.
+                assert.ok(
+                    !logs.some((l) => l.includes('computeChildFloor') && l.includes('falling back to floor 0')),
+                    `computeChildFloor must not have degraded to floor 0 in this scenario, got logs: ${JSON.stringify(logs.filter((l) => l.includes('computeChildFloor')))}`,
+                );
             } finally {
                 await teardown(tempDir);
             }

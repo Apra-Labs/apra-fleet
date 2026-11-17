@@ -92,26 +92,26 @@ Two guards run before the child process is ever touched:
 in the provider config, but is no longer the default. Joern was evaluated and
 rejected (see above); no `JoernProvider` ships.
 
-## Per-member provider selection (schema only; routing not yet wired)
+## Per-member provider selection
 
 The `Agent` interface carries an optional `codeIntelProvider` field
 (`'codebase-memory' | 'gitnexus' | 'none'`), and `register_member` /
 `update_member` accept a matching `code_intel_provider` input so an
 individual member's preferred provider can be set at registration time or
-changed later. The intent is per-member override of the fleet-wide default
-selected by `getProvider()`: a member with `codeIntelProvider: 'none'`
-should be able to opt out of code intelligence entirely, and a member with
-an explicit provider name should route to that provider regardless of the
-global config.
+changed later. It is a per-member override of the fleet-wide default: a
+member with `codeIntelProvider: 'none'` opts out of code intelligence
+entirely, and a member with an explicit provider name routes to that
+provider regardless of the global config.
 
-As things stand, the field is only persisted to the agent registry -- no
-downstream logic reads it yet. `getProvider()` still resolves purely from
-the global config file, and no code-intel tool dispatch path consults the
-calling member's `codeIntelProvider`. The routing half of this feature
-(resolving `getProvider()` per-member and wiring member context into the
-`code_graph`/`code_impact`/etc. tool handlers) is a separate, not-yet-built
-increment. Until that lands, setting `code_intel_provider` on a member has
-no observable effect.
+Routing is wired end to end. `getProvider(memberId)`
+(`src/tools/code-intelligence.ts`) resolves the calling member's
+`codeIntelProvider` first and only falls back to the global config file when
+the member has no override; an override naming a provider that is not
+configured is a loud error, not a silent fallback. Every code-intel handler
+(`handleCodeGraph`, `handleCodeImpact`, `handleCodeQuery`,
+`handleCodeContext`, `handleCodeMap`, `handleCodeFlow`, `handleCodeTests`)
+takes a `memberId` and passes it through, and `src/services/tool-registry.ts`
+supplies it from `getActiveMemberId()`.
 
 ## KB initialization lifecycle: pre-init phase
 

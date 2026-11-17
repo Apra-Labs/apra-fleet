@@ -7,6 +7,13 @@ import { credentialSet, credentialList, credentialDelete, credentialUpdate, type
 const NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
 export async function runSecret(args: string[]): Promise<void> {
+  // Title the OOB credential-entry console the server opened on Windows
+  // (env name = OOB_WINDOW_TITLE_ENV in services/auth-socket.ts).
+  const oobTitle = process.env.APRA_FLEET_OOB_WINDOW_TITLE;
+  if (oobTitle && process.platform === 'win32') {
+    try { process.title = oobTitle; } catch { /* cosmetic only */ }
+  }
+
   if (args.includes('--help') || args.includes('-h') || args.length === 0) {
     console.error('Usage:');
     console.error('  apra-fleet secret --set <name> [--persist] [-y]');

@@ -76,21 +76,19 @@ describe('kb_session_prime from a repo path that does not exist on this host (ap
       content: `Entry about anchorHealthySymbol${tok} that must survive a remote member's prime.`,
       symbols: [`anchorHealthySymbol${tok}`],
       source_files: ['src/fixture.ts'],
-      repo_path: localClone,
-    } as any);
+    } as any, { folder: localClone });
 
     expect(await rawStale(localClone, title)).toBe(0);
 
     // The remote member's session begins with a prime against the shared KB.
     await kbSessionPrime({
-      repo_path: fakeRemotePath,
-      repo_remote_url: remoteUrl,
+      confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'],
       hint_symbols: [`anchorHealthySymbol${tok}`],
-    } as any);
+    } as any, { folder: fakeRemotePath, remoteUrl: remoteUrl });
 
     expect(await rawStale(localClone, title)).toBe(0);
 
-    const listed = JSON.parse(await kbList({ repo_path: localClone, limit: 50 } as any));
+    const listed = JSON.parse(await kbList({ limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any, { folder: localClone }));
     expect(listed.results.some((e: any) => e.title === title)).toBe(true);
   });
 
@@ -106,18 +104,16 @@ describe('kb_session_prime from a repo path that does not exist on this host (ap
       content: `Entry about anchorChangedSymbol${tok} whose basis must go stale on a real edit.`,
       symbols: [`anchorChangedSymbol${tok}`],
       source_files: ['src/fixture.ts'],
-      repo_path: localClone,
-    } as any);
+    } as any, { folder: localClone });
 
     expect(await rawStale(localClone, title)).toBe(0);
 
     fs.writeFileSync(path.join(localClone, 'src', 'fixture.ts'), 'export const fixture = 2; // changed\n');
 
     await kbSessionPrime({
-      repo_path: localClone,
-      repo_remote_url: remoteUrl,
+      confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'],
       hint_symbols: [`anchorChangedSymbol${tok}`],
-    } as any);
+    } as any, { folder: localClone, remoteUrl: remoteUrl });
 
     expect(await rawStale(localClone, title)).toBe(1);
   });
@@ -136,8 +132,7 @@ describe('freshnessSweep anchoring (apra-fleet-b4g.4 criterion 5)', () => {
       content: `Entry about anchorSweepSymbol${tok} used to pin freshnessSweep's default root.`,
       symbols: [`anchorSweepSymbol${tok}`],
       source_files: ['src/fixture.ts'],
-      repo_path: localClone,
-    } as any);
+    } as any, { folder: localClone });
 
     // Unchanged tree: a sweep anchored at the provider's repo must NOT stale it.
     // Anchored at process.cwd() (this repo) the relative basis path does not
@@ -167,8 +162,7 @@ describe('freshnessSweep anchoring (apra-fleet-b4g.4 criterion 5)', () => {
       content: `Entry about anchorSweepMissingSymbol${tok} that a missing-anchor sweep must not touch.`,
       symbols: [`anchorSweepMissingSymbol${tok}`],
       source_files: ['src/fixture.ts'],
-      repo_path: localClone,
-    } as any);
+    } as any, { folder: localClone });
 
     const remote = await getKbProviders(fakeRemotePath, remoteUrl);
     expect(await remote.project.freshnessSweep()).toEqual({ checked: 0, staled: 0, unstaled: 0 });

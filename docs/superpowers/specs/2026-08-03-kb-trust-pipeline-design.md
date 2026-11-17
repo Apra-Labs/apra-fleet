@@ -1,8 +1,11 @@
 # KB trust pipeline: make capture and promote deterministic, then rebuild the bible -- design
 
 Date: 2026-08-03
-Branch: chore/merge-main-into-code-intel
-Status: design proposed, not approved, not implemented
+Status: implemented. `kb_capture` clamps to INFERRED with a
+`confidence_clamped` flag (`src/tools/kb-capture.ts`), `kb_promote` is the only
+upward path, and the canonical bible was rebuilt on top of the fixed pipeline.
+Retained as the design record for that pipeline; the Problem/Evidence sections
+below describe the pre-fix state.
 
 ## Problem
 

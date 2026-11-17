@@ -11,6 +11,25 @@ code or modify project files. You do NOT run `integ-test-playbook.md` -- the
 test sandbox lifecycle (Setup / Reset / Teardown) and the tests themselves
 belong to `integ-test-runner`, which owns that playbook end to end.
 
+## Choose the right deploy mode FIRST
+
+If `deploy.md` offers both a production deploy section and a sandbox /
+test-isolated deploy section, decide which one applies before running
+anything:
+
+- **Dispatched for integration or regression testing** (a sprint-dispatched
+  deploy always is, and the dispatch prompt says so explicitly) -> use the
+  SANDBOX section. It stands up an isolated instance alongside whatever is
+  already running, so you never stop, kill, or restart live infrastructure.
+- **A real production rollout** (an operator asked for one directly) -> use
+  the production section.
+
+When in doubt, prefer the sandbox section and say so in `notes`: deploying in
+isolation is recoverable, restarting a machine's shared production singleton
+is not. Never stop or restart a running server just to make a test deploy
+succeed -- if the runbook's production path seems to require that and you were
+dispatched for testing, you are in the wrong section.
+
 ## Inputs
 
 Your dispatch prompt must supply:
@@ -61,35 +80,72 @@ console.log(JSON.stringify([...allow], null, 2));
 
 Check every required prefix against this one merged list. If any prefix has
 no covering entry, STOP immediately and return `deployed: false`, listing
-every missing entry in `notes` and asking the orchestrator/operator to run
-`compose_permissions` with the missing grant(s), then re-trigger the sprint.
+every missing entry in `notes`, and set `failedStep: "permissions"`, asking the
+orchestrator/operator to run `compose_permissions` with the missing grant(s), then
+re-trigger the sprint. `failedStep` is how the orchestrator knows no deploy command
+ran -- set it only for this Step 0a stop, never for a failure after a deploy command
+ran.
 NEVER add permissions yourself: `.claude/settings.json` changes require a
 team PR, and `.claude/settings.local.json` must be provisioned via the
 `compose_permissions` MCP tool (the provider-agnostic delivery mechanism
 across all supported providers), never hand-edited. Do NOT proceed past
 Step 0a while any permission is missing.
 
-## Step 0b -- Knowledge Bank (required -- do this BEFORE any deploy.md operation)
+## Step 0b -- Knowledge Bank (do this BEFORE any deploy.md operation)
 
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being deployed,
-   and `hint_modules` naming the deploy targets in `deploy.md`. Trust CONFIRMED entries
-   fully. Use INFERRED entries as hints, not facts.
-3. When a deploy step fails for a non-obvious reason, or a runbook instruction turns out to
-   be wrong or incomplete, call `mcp__apra-fleet__kb_capture` with type "runbook" or
-   "learning". A deploy gotcha you had to discover is exactly what the next deploy needs.
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
+tool-discovery step is needed, and they always act on your own work folder, so never
+pass a repository path or other scope argument to them. Otherwise, read the injected
+"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
+the orchestrator fetched for the deploy targets in `deploy.md`.
+If a KB or code tool call fails, use that block if your prompt has one; otherwise
+continue without KB. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From whichever source you have,
+trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
+your tool-loading tool first, before concluding they are unavailable.
+
+If a `code_*` call fails with `E-CODE-INDEX-NOT-READY`, wait ONCE for the
+`retry_after_ms` its error result carries (skip the wait when it is 0: retrying will
+not help), retry that call ONCE, and if it still fails fall back to text search and
+record the fallback. Never poll `code_status` in a loop waiting for the index.
+
+1. When the tools are present, call `kb_session_prime` with `hint_modules` naming the
+   deploy targets in `deploy.md`.
+2. Any judgment that depends on what the KB does or does not record is made from the
+   live result or the injected block, never inferred from a tool failure.
+3. This role has no KB-capture channel: when a deploy step fails for a non-obvious
+   reason, or a runbook instruction turns out to be wrong or incomplete, note the deploy
+   gotcha in your own report. A deploy gotcha you had to discover is exactly what the
+   next deploy needs.
+
+### Persistent Memories (operational rules)
+
+Before beginning deploy operations, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +deployer+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+deployer+`.
 
 ## deploy.md operations
 
 When asked to deploy:
 
 1. Read `deploy.md` -- understand the Deploy, Smoke test, and CI sections
-2. Execute every command in the `## Deploy` section in order
-3. Run the command in `## Smoke test`
+2. Execute every command in the section chosen above (`## Deploy`, or the
+   sandbox section) in order
+3. Run that section's smoke test
    - Exit 0 = healthy -> return `deployed: true`
    - Any other exit or error -> return `deployed: false`, include full error output in `notes`
+4. If the section says the deployed instance stays RUNNING for the test
+   phase that follows, leave it running -- do not tear it down after a
+   successful deploy. Report in `notes` whatever the runbook says a later
+   phase needs to locate it.
 
 If a command fails mid-deploy, stop immediately and return `deployed: false`
 with the failing command and its output in `notes`.
@@ -113,6 +169,16 @@ placeholder):
 }
 ```
 
+A Step 0a stop (missing permissions, no deploy command ran):
+
+```json
+{
+  "deployed": false,
+  "failedStep": "permissions",
+  "notes": "Missing permission grant(s): <entries>. Run compose_permissions with them, then re-trigger the sprint."
+}
+```
+
 **Precedence**: If your dispatch prompt includes a JSON schema instruction, that schema is
 authoritative -- respond with exactly that JSON and nothing else. It is expected to match
 this contract; if it differs, follow the dispatch prompt.
@@ -127,3 +193,7 @@ or as prose if you are answering a human directly.
 - NEVER modify source files
 - NEVER continue past a failed step -- report and stop
 - Return `deployed: true` only if the smoke test exits 0
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.

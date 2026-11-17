@@ -5,9 +5,10 @@ import { getTokenIssuer } from '../services/token-issuer.js';
 import { logLine } from '../utils/log-helpers.js';
 
 export const sendMessageSchema = z.object({
-  member_id: z.string().describe('ID (UUID) of the target member session'),
+  member_id: z.string().describe('ID (UUID) of the target member session, or "orchestrator" for the operator\'s own channel-capable orchestrating session'),
   content: z.string().describe('Message content to send to the member'),
   reply_to: z.string().optional().describe('Optional message ID this is in reply to'),
+  probe: z.boolean().optional().describe('When true, send nothing: only report whether a session holds member_id ({ probe: true, member_id, connected, channel_capable }). channel_capable is true only for a session that declared the claude/channel capability (for "orchestrator": a Claude Code session launched with --dangerously-load-development-channels), i.e. one that can actually receive a message. content is ignored.'),
 });
 
 export type SendMessageInput = z.infer<typeof sendMessageSchema>;
@@ -23,8 +24,21 @@ export type SendMessageInput = z.infer<typeof sendMessageSchema>;
  * scoped, so cross-workspace sends cannot happen and existence is not leaked.
  */
 export async function sendMessage(input: SendMessageInput, senderWorkspaceId?: string): Promise<string> {
-  const { member_id, content, reply_to } = input;
+  const { member_id, content, reply_to, probe } = input;
   const workspaceId = senderWorkspaceId ?? getTokenIssuer().workspaceId();
+
+  // Read-only probe: the same workspace-scoped lookup a send makes, with no
+  // notification and no status change. A session counts as able to receive
+  // only when it is connected (has a live server) AND declared the
+  // claude/channel capability -- a plain connect-back without it can never
+  // receive notifications/claude/channel.
+  if (probe) {
+    const target = sessionRegistry.get(workspaceId, member_id);
+    const connected = !!(target && target.server);
+    const channelCapable = connected && !!target?.channelCapable;
+    logLine('send_message', `probe member_id=${member_id} workspace_id=${workspaceId} connected=${connected} channel_capable=${channelCapable}`);
+    return JSON.stringify({ probe: true, member_id, connected, channel_capable: channelCapable });
+  }
 
   const registeredKeys = sessionRegistry.list(workspaceId).map(s => s.member_id);
   logLine('send_message', `lookup member_id=${member_id} workspace_id=${workspaceId} registry_keys=[${registeredKeys.join(',')}]`);

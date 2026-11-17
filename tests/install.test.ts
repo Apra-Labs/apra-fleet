@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runInstall, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
+import { BEADS_PACKAGE } from '../src/cli/beads-pin.js';
 
 vi.mock('node:os', () => ({
   default: {
@@ -417,6 +418,9 @@ describe('install step 8 — Beads task tracker', () => {
 
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(logs).toContain('Installing Beads task tracker...');
+    expect(vi.mocked(execFileSync).mock.calls.some(
+      c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes(BEADS_PACKAGE)
+    )).toBe(true);
 
     logSpy.mockRestore();
   });
@@ -432,9 +436,9 @@ describe('install step 8 — Beads task tracker', () => {
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(logs).toContain('Installing Beads task tracker...');
 
-    // npm install -g @beads/bd@1.1.2 should NOT have been called
+    // npm install -g <pinned bd> should NOT have been called
     const npmCall = vi.mocked(execFileSync).mock.calls.find(
-      c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes('@beads/bd@1.1.2')
+      c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes(BEADS_PACKAGE)
     );
     expect(npmCall).toBeUndefined();
 

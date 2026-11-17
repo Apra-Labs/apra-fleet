@@ -77,6 +77,13 @@ describe('list_members -- tags filter', () => {
     expect(result).toBe('No members registered.');
   });
 
+  it('json format on an empty registry returns valid JSON with total 0 and members []', async () => {
+    const parsed = JSON.parse(await listMembers({ format: 'json' }));
+    expect(parsed.total).toBe(0);
+    expect(parsed.members).toEqual([]);
+    expect(await listMembers({ format: 'compact' })).toBe('No members registered.');
+  });
+
   it('works with json format and applies the same AND filter', async () => {
     addAgent(makeTestAgent({ id: 'member-gpu', friendlyName: 'gpu-worker', tags: ['gpu'] }));
     addAgent(makeTestAgent({ id: 'member-doer', friendlyName: 'doer-worker', tags: ['doer'] }));

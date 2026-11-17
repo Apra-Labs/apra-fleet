@@ -1,6 +1,21 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { FleetWorkflow } from '../src/workflow/index.mjs';
+import { createSchemaValidatedFakeApi } from './schema-validated-fake-api.mjs';
+
+// apra-fleet-j918.8.11: every `new FleetWorkflow({})` in THIS file passes a
+// literally empty `fleetApi` -- deliberately kept that way for
+// sequential()/pipeline()/parallel()/transform()/createContext(), which are
+// verified below to be pure workflow-primitive tests: none of them ever call
+// `wf.agent()`, `wf.command()`, or trigger `_getMemberPricing()` (the only
+// three places FleetWorkflow touches `this.fleetApi`, per
+// src/workflow/index.mjs), so an empty object is exactly as good as any
+// schema-validated fake for them -- there is nothing on `fleetApi` for these
+// tests to ever call. The describe block at the bottom of this file
+// ("FleetWorkflow.agent()/command() against a schema-validated fleetApi") is
+// the one place in this file that actually dispatches through `fleetApi`,
+// and it is wired to `createSchemaValidatedFakeApi()` (schema-validated-fake-api.mjs)
+// instead of `{}` for exactly that reason.
 
 // NOTE: sequential()/parallel() used to accept a variadic list of per-stage
 // processors (sequential) or an array of thunks (parallel). That contract was
@@ -246,5 +261,36 @@ describe('FleetWorkflow.createContext()', () => {
         assert.strictEqual(ctx.budget.total, null);
         assert.strictEqual(ctx.budget.remaining(), Infinity);
         assert.strictEqual(ctx.budget.spent(), 0);
+    });
+});
+
+// apra-fleet-j918.8.11: the only call sites in this file that actually
+// dispatch through `fleetApi` -- wired to createSchemaValidatedFakeApi()
+// (not `{}`) so a rename or a newly-required/dropped field on the real
+// execute_prompt/execute_command MCP tools (src/tools/*) makes these tests
+// fail loudly instead of silently continuing to pass against a stale shape.
+describe('FleetWorkflow.agent()/command() against a schema-validated fleetApi', () => {
+    test('agent() builds a payload that still matches the real execute_prompt tool schema', async () => {
+        const fakeApi = createSchemaValidatedFakeApi();
+        const wf = new FleetWorkflow(fakeApi);
+
+        const result = await wf.agent('hello there', { member_name: 'fake-member' });
+
+        assert.strictEqual(result, 'fake response');
+        assert.strictEqual(fakeApi.calls.executePrompt.length, 1);
+        assert.strictEqual(fakeApi.calls.executePrompt[0].member_name, 'fake-member');
+        assert.strictEqual(fakeApi.calls.executePrompt[0].prompt, 'hello there');
+    });
+
+    test('command() builds a payload that still matches the real execute_command tool schema', async () => {
+        const fakeApi = createSchemaValidatedFakeApi();
+        const wf = new FleetWorkflow(fakeApi);
+
+        const result = await wf.command('echo hi', { member_name: 'fake-member' });
+
+        assert.strictEqual(result, 'fake command output');
+        assert.strictEqual(fakeApi.calls.executeCommand.length, 1);
+        assert.strictEqual(fakeApi.calls.executeCommand[0].member_name, 'fake-member');
+        assert.strictEqual(fakeApi.calls.executeCommand[0].command, 'echo hi');
     });
 });

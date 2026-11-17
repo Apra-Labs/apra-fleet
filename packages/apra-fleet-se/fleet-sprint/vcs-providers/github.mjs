@@ -26,45 +26,11 @@
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';
+import { shQuote, shQuoteJson, curlBinary, assertToken } from './shell-helpers.mjs';
 
 const GITHUB_API = 'https://api.github.com';
 const REDACTED = '***REDACTED***';
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
-
-/** Single-quote a string for embedding in a shell command. The built curl
- *  command is dispatched through the member's own shell -- POSIX sh/bash
- *  closes/reopens the quote around an embedded single quote ('\''), but
- *  Windows PowerShell (the shell every Windows member's commands actually
- *  run through -- see wrapPowerShellEncoded()/isWindows in
- *  src/tools/remove-member.ts) escapes an embedded single quote inside a
- *  single-quoted string by DOUBLING it (''), not by backslash-closing. Using
- *  the POSIX form on a Windows member breaks the quoting outright (observed
- *  live: Publish PR crashing on any title/body containing an apostrophe).
- *  `os` is one of resolveMemberOs()'s return values ('windows'/'linux'/
- *  'darwin'); anything other than 'windows' keeps the POSIX behavior
- *  byte-identical to before this branch existed. */
-function shQuote(value, os) {
-    if (os === 'windows') {
-        return `'${String(value).replace(/'/g, "''")}'`;
-    }
-    return `'${String(value).replace(/'/g, `'\\''`)}'`;
-}
-
-/** Which curl binary token to emit for a given member OS. On Windows the bare
- *  word `curl` is a built-in PowerShell alias for Invoke-WebRequest, NOT the
- *  real curl -- Invoke-WebRequest's -Headers parameter wants a hashtable, not
- *  curl's repeatable `-H 'k: v'` string syntax, so a bare `curl -H ...`
- *  command sent to a Windows/PowerShell member fails with a parameter-bind
- *  error (observed live on the Publish PR step). The real curl.exe binary has
- *  shipped in %SystemRoot%\System32 since Windows 10 1803 and is resolvable
- *  from PowerShell's default PATH (verified locally: `where curl.exe` and
- *  `Get-Command curl.exe` both resolve on a live Windows box), so emitting
- *  the explicit `curl.exe` token sidesteps the alias entirely without
- *  needing a different request mechanism. Non-Windows os values keep the
- *  bare `curl` token byte-identical to before this branch existed. */
-function curlBinary(os) {
-    return os === 'windows' ? 'curl.exe' : 'curl';
-}
 
 function assertRepo(repo) {
     const value = String(repo ?? '').trim();
@@ -74,18 +40,10 @@ function assertRepo(repo) {
     return value;
 }
 
-function assertToken(token) {
-    const value = String(token ?? '');
-    if (!value) {
-        throw new Error('ERROR: VCSModule: no token supplied -- caller must mint one via provision_vcs_auth before calling VCSModule.');
-    }
-    return value;
-}
-
 /** Build the GitHub REST "create pull request" curl command.
  *  POST /repos/{owner}/{repo}/pulls -- see
  *  https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request */
-function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os }) {
+function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os, shell }) {
     const safeRepo = assertRepo(repo);
     const safeToken = assertToken(token);
     if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a create-pull-request command.');
@@ -99,12 +57,12 @@ function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os }
 
     const buildCurl = (authToken) => [
         `${curlBinary(os)} -sS -X POST`,
-        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os)}`,
-        `-H ${shQuote('Accept: application/vnd.github+json', os)}`,
-        `-H ${shQuote('Content-Type: application/json', os)}`,
-        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os)}`,
-        `-d ${shQuote(payloadJson, os)}`,
-        `-w ${shQuote('\n%{http_code}', os)}`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
+        `-H ${shQuote('Content-Type: application/json', os, shell)}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
+        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
 
@@ -132,7 +90,7 @@ function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os }
  *  raised (rather than opening a second PR for the same head).
  *  POST /repos/{owner}/{repo}/issues/{issue_number}/comments -- see
  *  https://docs.github.com/en/rest/issues/comments#create-an-issue-comment */
-function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, token, os }) {
+function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, token, os, shell }) {
     const safeRepo = assertRepo(repo);
     const safeToken = assertToken(token);
     if (!issueNumber) throw new Error('ERROR: VCSModule: "issue_number" is required to build a comment command.');
@@ -143,12 +101,12 @@ function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, toke
 
     const buildCurl = (authToken) => [
         `${curlBinary(os)} -sS -X POST`,
-        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os)}`,
-        `-H ${shQuote('Accept: application/vnd.github+json', os)}`,
-        `-H ${shQuote('Content-Type: application/json', os)}`,
-        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os)}`,
-        `-d ${shQuote(payloadJson, os)}`,
-        `-w ${shQuote('\n%{http_code}', os)}`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
+        `-H ${shQuote('Content-Type: application/json', os, shell)}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
+        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
 
@@ -162,6 +120,130 @@ function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, toke
         },
     };
 }
+
+/** Map one GitHub pull object (list or single) to the provider-neutral
+ *  { id, title, body, url } shape the existing-PR update path reads. */
+function mapGitHubPull(pr) {
+    const src = (pr && typeof pr === 'object') ? pr : {};
+    const id = typeof src.number === 'number' && Number.isFinite(src.number) ? src.number : null;
+    return {
+        id,
+        title: typeof src.title === 'string' ? src.title : '',
+        body: typeof src.body === 'string' ? src.body : '',
+        url: typeof src.html_url === 'string' ? src.html_url : null,
+    };
+}
+
+/** Build the GitHub REST "find the open pull request for head -> base" curl
+ *  command, used on the already-exists path to learn the existing PR's
+ *  number and current body (the create call's 422 carries neither).
+ *  GET /repos/{owner}/{repo}/pulls?head={owner}:{branch}&base={base}&state=open
+ *  -- see https://docs.github.com/en/rest/pulls/pulls#list-pull-requests
+ *  The URL carries '&', so it is quoted like every other argument. */
+function buildGitHubFindPrCommand({ repo, base, head, token, os, shell }) {
+    const safeRepo = assertRepo(repo);
+    const safeToken = assertToken(token);
+    if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a find-pull-request command.');
+    if (!head) throw new Error('ERROR: VCSModule: "head" branch is required to build a find-pull-request command.');
+    const owner = safeRepo.split('/')[0];
+    const query = `head=${encodeURIComponent(`${owner}:${head}`)}&base=${encodeURIComponent(base)}&state=open&per_page=10`;
+    const url = `${GITHUB_API}/repos/${safeRepo}/pulls?${query}`;
+
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X GET`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        shQuote(url, os, shell),
+    ].join(' ');
+
+    return {
+        provider: 'github',
+        action: 'find-pull-request',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        interpret: { successStatusRange: [200, 299] },
+        /** 2xx body (an array of pulls) -> [{ id, title, body, url }]. */
+        mapResponse: (respBody) => (Array.isArray(respBody) ? respBody.map(mapGitHubPull).filter((p) => p.id !== null) : []),
+    };
+}
+
+/** Build the GitHub REST "update a pull request" curl command (title + body).
+ *  PATCH /repos/{owner}/{repo}/pulls/{pull_number} -- see
+ *  https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request */
+function buildGitHubUpdatePrCommand({ repo, pull_request_id: pullRequestId, title, body, token, os, shell }) {
+    const safeRepo = assertRepo(repo);
+    const safeToken = assertToken(token);
+    const id = String(pullRequestId ?? '').trim();
+    if (!/^\d+$/.test(id)) throw new Error('ERROR: VCSModule: a numeric "pull_request_id" is required to build an update-pull-request command.');
+    if (!title) throw new Error('ERROR: VCSModule: "title" is required to build an update-pull-request command.');
+
+    const payload = { title };
+    if (body !== undefined) payload.body = body;
+    const payloadJson = JSON.stringify(payload);
+    const url = `${GITHUB_API}/repos/${safeRepo}/pulls/${id}`;
+
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X PATCH`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
+        `-H ${shQuote('Content-Type: application/json', os, shell)}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
+        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        url,
+    ].join(' ');
+
+    return {
+        provider: 'github',
+        action: 'update-pull-request',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        interpret: { successStatusRange: [200, 299] },
+        mapResponse: (respBody) => mapGitHubPull(respBody),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Pull-request RESPONSE mapping (apra-fleet-lzfv.4)
+// ---------------------------------------------------------------------------
+//
+// GitHub's create-pull-request 2xx body carries the PR number as `number` and
+// the browsable page as `html_url`. That mapping was previously IMPLICIT -- a
+// consumer (runner.js's raiseVcsPrForMember) read `html_url` off the body
+// directly, which is a GitHub dialect literal living in a provider-agnostic
+// caller. It is declared here instead, so a provider whose body speaks a
+// different dialect (see ./azure-devops.mjs: `pullRequestId`, and no web-URL
+// field at all) is read through the SAME descriptor hook rather than a caller
+// branch. See ./index.mjs for the contract.
+
+const PR_ID_FIELD = 'number';
+const PR_WEB_URL_FIELD = 'html_url';
+
+/** Map a GitHub create-pull-request response body to { id, url }. Reads the
+ *  DECLARED field names above rather than hardcoding them a second time, and
+ *  reproduces runner.js's historical behavior exactly: a missing or non-string
+ *  `html_url` yields `url: null` rather than a guessed URL. `ctx` is unused --
+ *  GitHub's body already carries the browsable URL. */
+function mapPullRequestResponse(body, _ctx) {
+    const source = (body && typeof body === 'object') ? body : {};
+    const rawId = source[PR_ID_FIELD];
+    let id = null;
+    if (typeof rawId === 'number' && Number.isFinite(rawId)) id = rawId;
+    else if (typeof rawId === 'string' && /^\d+$/.test(rawId.trim())) id = Number(rawId.trim());
+    const rawUrl = source[PR_WEB_URL_FIELD];
+    return { id, url: typeof rawUrl === 'string' ? rawUrl : null };
+}
+
+const pullRequestResponse = Object.freeze({
+    idField: PR_ID_FIELD,
+    webUrlField: PR_WEB_URL_FIELD,
+    // The web URL is READ from the body, never constructed, so there is no
+    // template -- contrast ./azure-devops.mjs.
+    webUrlTemplate: null,
+    map: mapPullRequestResponse,
+});
 
 /** GitHub's credential-rejection literals. "remote: Invalid username or
  *  token/password" is what a git push over HTTPS gets back from GitHub with a
@@ -183,6 +265,101 @@ const AUTH_EXPIRED = [
 // self-heal. Widening the taxonomy is a real behavior change and belongs in its
 // own bead with its own tests, not smuggled in under a no-verdict-change
 // consolidation.
+//
+// The ONE exception, added deliberately and with its own tests: the
+// workflow-file permission refusal below. It is not merely "unknown today" --
+// it is actively MISREAD today (see the block comment on
+// WORKFLOW_PERMISSION_REFUSAL), which is a different situation from the
+// under-matched texts listed above.
+
+// ---------------------------------------------------------------------------
+// Workflow-file permission refusal (the permission-scope axis)
+// ---------------------------------------------------------------------------
+//
+// git's stderr for a push that touches .github/workflows/** with a credential
+// that was never granted the Workflows permission looks like:
+//
+//   ! [remote rejected] feat/x -> feat/x (refusing to allow a GitHub App to
+//       create or update workflow .github/workflows/ci.yml without workflows
+//       permission)
+//   error: failed to push some refs to 'https://github.com/owner/repo.git'
+//
+// Two things about that text matter, and both are why this rule needs the
+// `permissionScope` hook below rather than a plain entry in `rules`:
+//
+//  1. The trailing "error: failed to push some refs to ..." line is git's
+//     UNIVERSAL reaction to ANY rejected push -- a non-fast-forward, a
+//     protected-branch refusal, a hook rejection, this. GenericGitVCS's
+//     DIVERGED table matches it, and DIVERGED outranks both AUTH kinds in
+//     KIND_PRECEDENCE, so precedence alone reads this as a divergence and the
+//     caller answers a permission refusal with a doomed `pull --rebase`.
+//  2. The identity was understood perfectly; the PRINCIPAL simply was never
+//     granted the permission. Re-minting the SAME credential (which is all the
+//     provision_vcs_auth self-heal does) produces a token with the SAME
+//     permission set and the SAME refusal, forever.
+//
+// So this is AUTH_DENIED ("identity understood, access refused" -- errors.mjs)
+// and it must WIN over the DIVERGED tail, and it must NOT be self-healed. Both
+// of those follow from declaring it under `permissionScope` (see
+// ./index.mjs's descriptor contract); the SAME array is also listed under
+// rules[AUTH_DENIED] so the kind is discoverable by pattern-table readers and
+// by any caller that walks `rules` directly.
+//
+// Wordings: GitHub emits a different subject noun per credential type. The
+// GitHub App and Personal Access Token wordings are the two the fleet can
+// actually produce (fleet-minted installation tokens, and an operator-supplied
+// PAT); the OAuth App wording is the same refusal from a credential type the
+// fleet does not mint but a member may nonetheless be configured with, and
+// leaving it out would silently return it to the DIVERGED misreading above.
+// The trailing noun differs too ("without workflows permission" for an App,
+// "without workflow scope" for a PAT/OAuth App), so the patterns stop at the
+// stable "to create or update workflow" stem rather than pinning the tail.
+const WORKFLOW_PERMISSION_REFUSAL = [
+    /refusing to allow a GitHub App to create or update workflow/i,
+    /refusing to allow a Personal Access Token to create or update workflow/i,
+    /refusing to allow an? OAuth App to create or update workflow/i,
+];
+
+/** The operator referral for a workflow-permission refusal: WHICH workflow
+ *  file(s) were refused, WHAT the credential is missing, and the remedy --
+ *  stated as an operator action, never as "it will retry", because nothing
+ *  here retries.
+ *
+ *  Stateless: the /g regex is constructed fresh on every call (a hoisted /g
+ *  regex would carry `lastIndex` between classifyFailure calls and make the
+ *  same input describe differently on a second call -- see the PURITY note in
+ *  this file's header and in ./generic-git.mjs).
+ *
+ *  @param {string} raw - the raw stderr the refusal was classified from
+ *  @returns {string} an ASCII operator-facing referral
+ */
+function describeWorkflowPermissionRefusal(raw) {
+    const text = String(raw == null ? '' : raw);
+    const matched = text.match(/\.github\/workflows\/[A-Za-z0-9._/-]+/g) || [];
+    // Strip punctuation git/GitHub wraps the path in (a quote, a closing
+    // paren's neighbouring period, ...) and de-duplicate while preserving the
+    // order the refusal listed them in.
+    const paths = [...new Set(matched.map((p) => p.replace(/[.,'"]+$/, '')))];
+    const which = paths.length > 0
+        ? `workflow file(s) ${paths.join(', ')}`
+        : 'one or more files under .github/workflows/';
+    return (
+        `GitHub refused this push because the credential the member is pushing with was never granted the 'workflows' permission, ` +
+        `so it may not create or update ${which}. This is a permission-scope refusal, not a stale credential and not a divergence: ` +
+        `re-minting the same credential yields the same permission set and the same refusal, so no self-heal, no retry and no pull --rebase is attempted. ` +
+        'OPERATOR REMEDY (required before this push can ever succeed): grant the fleet GitHub App the "Workflows" repository permission ' +
+        '(Read and write) in its App settings, accept the updated permission request on the repository installation, then re-register/re-provision ' +
+        'the member with a git_access level that requests that permission. Until an operator does that, re-running the sprint will not help.'
+    );
+}
+
+/** The permission-scope axis for GitHub (see ./index.mjs's descriptor
+ *  contract). Declared as the SAME array that rules[AUTH_DENIED] carries, so
+ *  the two can never drift apart. */
+const permissionScope = Object.freeze({
+    rules: Object.freeze(WORKFLOW_PERMISSION_REFUSAL),
+    describe: describeWorkflowPermissionRefusal,
+});
 
 /** Best-effort GitHub provider code, purely DIAGNOSTIC: never branch on it --
  *  branch on `kind`. Returns the HTTP status git/curl surfaced (e.g. '403'
@@ -217,6 +394,34 @@ function matchesHost(host) {
     return typeof host === 'string' && /github/i.test(host);
 }
 
+/** github.com and its ssh/www aliases -- ANCHORED. Kept character-for-
+ *  character in step with src/utils/vcs-provider-detect.ts's
+ *  GITHUB_HOST_RE (the registration-time half of the same decision). */
+const AUTH_HOST_RE = /^(?:www\.|ssh\.)?github\.com$/i;
+
+/** Host-recognition for the CREDENTIAL-PROVISIONING axis
+ *  (resolveVcsAuthProviderForHost() in ./index.mjs), deliberately NARROWER
+ *  than matchesHost() above.
+ *
+ *  matchesHost() is a substring test on purpose: it answers "can this host
+ *  open a pull request?" for capabilities(), and a GitHub Enterprise Server
+ *  install has no fixed domain, so the vendor name in the hostname is the
+ *  only portable signal (pinned by test/vcs-capabilities-table.test.mjs).
+ *  Answering YES there costs nothing -- the worst case is a PR attempt that
+ *  fails.
+ *
+ *  Auto-PROVISIONING is a different risk class entirely: it mints a real
+ *  GitHub App push credential and points it at the host. A substring test
+ *  would let a lookalike domain ("mygithubmirror.attacker.io",
+ *  "github.com.evil.example") claim this provider and receive that
+ *  credential -- exactly the leak src/utils/vcs-provider-detect.ts anchors
+ *  against on the registration-time path. So GitHub Enterprise is NOT
+ *  auto-detected for auth on either side: an operator registers a GHE
+ *  member with an explicit `vcs_provider`. */
+function matchesHostForAuth(host) {
+    return typeof host === 'string' && AUTH_HOST_RE.test(host.trim());
+}
+
 /** Every host this provider matches can open a PR via the REST call
  *  buildGitHubCreatePrCommand() builds -- github.com and GitHub Enterprise
  *  Server alike speak the same `/repos/{owner}/{repo}/pulls` shape. */
@@ -224,14 +429,157 @@ function capabilitiesForHost(_host) {
     return { canOpenPullRequest: true };
 }
 
+// ---------------------------------------------------------------------------
+// Engine CI gate axis (see ../ci-gate.mjs and ./index.mjs's `ciGate` contract)
+// ---------------------------------------------------------------------------
+//
+// The orchestrator -- never a doer -- triggers and awaits the target repo's
+// CI workflow on the sprint branch head, so "CI is green" becomes an
+// engine-verified fact handed to the reviewer instead of an acceptance
+// criterion a doer dispatch cannot satisfy (a doer's credential is refused
+// workflow_dispatch with HTTP 403 "Resource not accessible by integration").
+//
+// Every GitHub REST literal the gate needs lives HERE; ../ci-gate.mjs only
+// sequences the five actions below and reads their answers through the parse
+// hooks, so it never learns a GitHub field name. All five are plain curl
+// commands built the same way as the PR builders above (token placeholder
+// substituted server-side by vcs_credential_exec, -w '\n%{http_code}' status
+// trailer), so they run through the same credential handoff.
+//
+// REST endpoints:
+//   branch-head GET  /repos/{r}/branches/{branch}
+//   find-runs   GET  /repos/{r}/actions/workflows/{wf}/runs?head_sha={sha}
+//   dispatch    POST /repos/{r}/actions/workflows/{wf}/dispatches {ref}
+//   get-run     GET  /repos/{r}/actions/runs/{id}
+//   list-jobs   GET  /repos/{r}/actions/runs/{id}/jobs
+
+const CI_WORKFLOW_RE = /^[A-Za-z0-9._-]+$/;
+const CI_SHA_RE = /^[0-9a-f]{7,64}$/i;
+const CI_BRANCH_RE = /^[A-Za-z0-9._/-]+$/;
+
+function assertCiParam(value, re, label) {
+    const text = String(value ?? '');
+    if (!re.test(text)) {
+        throw new Error(`ERROR: VCSModule: invalid CI gate ${label} "${value}".`);
+    }
+    return text;
+}
+
+/** Build one CI-gate curl command. `action` is one of the five above. */
+function buildGitHubCiCommand(action, { repo, workflow, branch, sha, runId, token, os, shell }) {
+    const safeRepo = assertRepo(repo);
+    const safeToken = assertToken(token);
+    const base = `${GITHUB_API}/repos/${safeRepo}`;
+    let method = 'GET';
+    let url;
+    let payloadJson = null;
+    switch (action) {
+        case 'branch-head':
+            url = `${base}/branches/${assertCiParam(branch, CI_BRANCH_RE, 'branch')}`;
+            break;
+        case 'find-runs':
+            url = `${base}/actions/workflows/${assertCiParam(workflow, CI_WORKFLOW_RE, 'workflow')}/runs?head_sha=${assertCiParam(sha, CI_SHA_RE, 'head sha')}&per_page=20`;
+            break;
+        case 'dispatch':
+            method = 'POST';
+            url = `${base}/actions/workflows/${assertCiParam(workflow, CI_WORKFLOW_RE, 'workflow')}/dispatches`;
+            payloadJson = JSON.stringify({ ref: assertCiParam(branch, CI_BRANCH_RE, 'branch') });
+            break;
+        case 'get-run':
+            url = `${base}/actions/runs/${assertCiParam(runId, /^\d+$/, 'run id')}`;
+            break;
+        case 'list-jobs':
+            url = `${base}/actions/runs/${assertCiParam(runId, /^\d+$/, 'run id')}/jobs?per_page=100`;
+            break;
+        default:
+            throw new Error(`ERROR: VCSModule: unknown CI gate action "${action}".`);
+    }
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X ${method}`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
+        ...(payloadJson !== null
+            ? [`-H ${shQuote('Content-Type: application/json', os, shell)}`, `-d ${shQuoteJson(payloadJson, os, shell)}`]
+            : []),
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        shQuote(url, os, shell),
+    ].join(' ');
+    return {
+        provider: 'github',
+        action: `ci-${action}`,
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+    };
+}
+
+function normalizeGitHubRun(run) {
+    if (!run || typeof run !== 'object') return null;
+    const id = typeof run.id === 'number' || (typeof run.id === 'string' && /^\d+$/.test(run.id)) ? String(run.id) : null;
+    if (!id) return null;
+    return {
+        id,
+        url: typeof run.html_url === 'string' ? run.html_url : null,
+        headSha: typeof run.head_sha === 'string' ? run.head_sha : null,
+        status: typeof run.status === 'string' ? run.status : null,
+        conclusion: typeof run.conclusion === 'string' ? run.conclusion : null,
+        createdAt: typeof run.created_at === 'string' ? run.created_at : null,
+    };
+}
+
+const githubCiGate = Object.freeze({
+    /** What an operator must grant for the gate to trigger a run. Quoted
+     *  verbatim into the FAILED-TO-RUN log line. */
+    requiredPermission: "actions:write on the workflow (GitHub App 'Actions' repository permission: Read and write)",
+    build: buildGitHubCiCommand,
+    /** A trigger/read refusal that is a missing permission, not a transient
+     *  failure: 403, or GitHub's integration-scope wording at any status. */
+    isPermissionRefusal(status, text) {
+        return status === 403 || /Resource not accessible by (integration|personal access token)/i.test(String(text || ''));
+    },
+    parseBranchHead(body) {
+        const sha = body && body.commit && typeof body.commit.sha === 'string' ? body.commit.sha : null;
+        return sha && CI_SHA_RE.test(sha) ? sha : null;
+    },
+    /** Newest run in a find-runs listing whose head sha is exactly `sha`. */
+    parseFindRuns(body, sha) {
+        const runs = body && Array.isArray(body.workflow_runs) ? body.workflow_runs : [];
+        const matching = runs.map(normalizeGitHubRun).filter((r) => r && r.headSha === sha);
+        matching.sort((a, b) => Number(b.id) - Number(a.id));
+        return matching[0] || null;
+    },
+    parseRun: normalizeGitHubRun,
+    isRunComplete(run) {
+        return !!run && run.status === 'completed';
+    },
+    isRunSuccess(run) {
+        return !!run && run.conclusion === 'success';
+    },
+    parseJobs(body) {
+        const jobs = body && Array.isArray(body.jobs) ? body.jobs : [];
+        return jobs.map((j) => ({
+            name: typeof j.name === 'string' ? j.name : '(unnamed job)',
+            conclusion: typeof j.conclusion === 'string' ? j.conclusion : (typeof j.status === 'string' ? j.status : 'unknown'),
+        }));
+    },
+});
+
 export const GitHubVCS = Object.freeze({
     name: 'github',
     extends: 'generic-git',
     rules: Object.freeze({
         [K.AUTH_EXPIRED]: AUTH_EXPIRED,
+        // apra-fleet: the workflow-file permission refusal. AUTH_DENIED
+        // because the identity was understood and the PRINCIPAL lacks the
+        // permission -- see WORKFLOW_PERMISSION_REFUSAL above. The same array
+        // is declared under `permissionScope` below, which is what makes it
+        // outrank git's generic DIVERGED tail and skip the auth self-heal.
+        [K.AUTH_DENIED]: WORKFLOW_PERMISSION_REFUSAL,
     }),
+    permissionScope,
     extractProviderCode,
     matchesHost,
+    matchesHostForAuth,
     capabilitiesForHost,
     // apra-fleet-647.1.5.1: GitHub's own default auth mode (App, never PAT --
     // see vcs-module.mjs resolveProvider()'s header note on why this must stay
@@ -242,9 +590,16 @@ export const GitHubVCS = Object.freeze({
     // makes a provider part of resolveProvider()'s/buildVcsCommand()'s known
     // vocabulary -- see ./index.mjs's isAuthBackend().
     defaultAuthMode: 'github-app',
+    // apra-fleet-lzfv.4: GitHub's create-pull-request response dialect, stated
+    // explicitly instead of left implicit in a caller (see above).
+    pullRequestResponse,
+    // Engine CI gate axis (see above and ./index.mjs supportsCiGate()).
+    ciGate: githubCiGate,
     builders: Object.freeze({
         'create-pull-request': buildGitHubCreatePrCommand,
         comment: buildGitHubCommentCommand,
+        'find-pull-request': buildGitHubFindPrCommand,
+        'update-pull-request': buildGitHubUpdatePrCommand,
     }),
 });
 

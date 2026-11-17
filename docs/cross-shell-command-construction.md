@@ -1,5 +1,15 @@
 # Cross-shell command construction for member-bound commands
 
+> **Note on granularity**: the examples below frame branch points as
+> `agent.os` (POSIX vs PowerShell), but a member also carries a registered
+> `shell` (`gitbash | pwsh7 | powershell5` on Windows), which is
+> finer-grained than `os` -- a Windows member whose registered shell is
+> `gitbash` is a POSIX command-construction target, not a PowerShell one.
+> Branch on the registered shell (via `isPosixShell(os, shell)`) rather than
+> on `os` alone. See
+> [docs/windows-shell-selection.md](windows-shell-selection.md) for the
+> probe design and the shell-vs-os distinction in full.
+
 ## The invariant
 
 Any command string sent to a fleet member over the exec transport
@@ -84,6 +94,20 @@ Every Windows-bound PowerShell script construction site should route through
 this helper rather than hand-rolling its own base64/`-EncodedCommand`
 wrapping, so the exit-code and quoting guarantees stay centralized in one
 place instead of drifting per call site.
+
+**This applies even to wrappers that exist to serve a `gitbash` member.** A
+member registered with `shell: 'gitbash'` still has some of its host-side
+work executed as a PowerShell script body -- for example, anything built on
+`Invoke-CimMethod`/`Win32_Process`, which is a Windows host-management
+mechanism with no POSIX equivalent, invoked in PowerShell regardless of
+which shell the target member itself runs. Any helper that emits such a
+script must still carry the full `$ErrorActionPreference = 'Stop'` +
+try/catch + `$LASTEXITCODE`/`exit 0` envelope described above. An unguarded
+`powershell -EncodedCommand <base64>` invocation runs under PowerShell's
+default `Continue` mode and can exit 0 on a non-terminating error --
+precisely the false-success class this pattern exists to eliminate,
+regardless of which member shell the surrounding feature is nominally
+"for."
 
 ## OS-detection caching pitfall
 
@@ -191,3 +215,25 @@ or via a tool handler) is a potential instance of this bug class if it:
 New command-construction call sites should resolve the OS-appropriate
 command explicitly (via the OS-command abstraction or an explicit `agent.os`
 branch) rather than writing one string and hoping it works on every shell.
+
+## Windows system executables resolve to absolute paths, never the cwd
+
+On Windows, spawning a bare `powershell` / `cmd` / `bash` / `git` lets the OS
+search the process cwd first, so a planted `powershell.exe` in a repo or work
+folder would run in place of the system one. Fleet-server code therefore never
+spawns these by bare name. `src/os/windows-executable.ts` is the single resolver:
+
+- `powershell` and `cmd` resolve from `SystemRoot` / `ComSpec` first, then only
+  from absolute PATH entries; the cwd and relative PATH entries are never searched.
+- PATH lookups accept only `.EXE` / `.COM`; only successful lookups are cached.
+- `git-executable.ts` delegates to it; `WindowsCommands.cleanExec`, `getCleanEnv`,
+  the auth socket, `cli/auth`, process utilities and supervisor service cleanup
+  all use it.
+- `resolveGitBashPath` accepts an absolute PATH `bash` only after a `uname` check
+  confirms it is a real Git Bash, not WSL's launcher.
+
+When testing this, the planted-exe test must delete `NoDefaultCurrentDirectoryInExePath`
+from the environment, otherwise the OS ignores the cwd and the test proves nothing.
+Known remaining class members (CLI-side spawns that still use bare `cmd.exe`):
+`run()` in `src/cli/install.ts` / `uninstall.ts`, the `WindowsServiceManager.start`
+detached fallback, and the claude-mod ComSpec fallback.

@@ -28,14 +28,19 @@
  * "refuse" would reinstate the original bug precisely in the constrained
  * environments this fix exists for.
  *
- * isApraFleetRunning() itself is intentionally untouched: waitForApraFleetToStop()
- * and uninstall.ts depend on its OS-global semantics.
+ * isApraFleetRunning() itself stays OS-global (the guard's cheap first filter
+ * and uninstall.ts use it). Stopping, however, is scoped: install --force
+ * signals only the pids relevantServerPids() returns, by pid, never by process
+ * name -- a name-based kill also matches the installer itself when it is named
+ * apra-fleet (the member upgrade path, or an installed binary running install)
+ * and every unrelated apra-fleet server of the same user (apra-fleet-b4g.72).
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
-import { isPidAlive } from '../utils/process-utils.js';
+import { FULL_INSTALL_PORT_FILE, validPort } from '../paths.js';
+import { isPidAlive, isApraFleetProcess } from '../utils/process-utils.js';
 
 export interface RunningApraFleetProcess {
   pid: number;
@@ -58,7 +63,7 @@ export function getInstallDataDir(): string {
 
 function runCapture(cmd: string): string | null {
   try {
-    return execSync(cmd, { encoding: 'utf-8', stdio: 'pipe' }) as unknown as string;
+    return execSync(cmd, { encoding: 'utf-8', stdio: 'pipe', windowsHide: true }) as unknown as string;
   } catch {
     return null;
   }
@@ -169,4 +174,159 @@ export function classifyRunningServer(installPrefixDir: string): RunningServerSc
   }
 
   return { relevant: false, reason: null, detail: describeProcesses(procs) };
+}
+
+function inPrefixPids(procs: RunningApraFleetProcess[], installPrefixDir: string): number[] {
+  return procs
+    .filter(p => p.pid !== process.pid && isUnderInstallPrefix(p.exePath, installPrefixDir))
+    .map(p => p.pid);
+}
+
+/**
+ * The pids install --force may stop for an install into `installPrefixDir`,
+ * re-derived on every call so a poll also sees a server a supervisor relaunched
+ * under a NEW pid (it re-records itself in server.json and runs from the prefix):
+ *
+ *   - the live pid recorded in the targeted data dir, when it is still an
+ *     apra-fleet process (pids are reused: a stale server.json pid that now
+ *     belongs to something else is never returned), and
+ *   - every apra-fleet process whose executable lives under the install prefix.
+ *
+ * This process is never included -- the installer may itself be named
+ * apra-fleet. Unrelated apra-fleet servers (other data dir, other prefix,
+ * unresolvable executable) are never included either.
+ */
+export function relevantServerPids(installPrefixDir: string): number[] {
+  const procs = getRunningApraFleetProcesses();
+  const pids = new Set<number>(inPrefixPids(procs, installPrefixDir));
+  const livePid = liveInstancePidForDataDir();
+  if (livePid !== null && livePid !== process.pid) {
+    const namedApraFleet = procs.some(p => p.pid === livePid);
+    if (namedApraFleet || isApraFleetProcess(livePid) === true) pids.add(livePid);
+  }
+  return [...pids].sort((a, b) => a - b);
+}
+
+// ---------------------------------------------------------------------------
+// Member-install ownership marker (apra-fleet-b4g.69.4)
+//
+// `install --member --force` is what fleet runs on a REMOTE member to upgrade
+// it. --force stops the running server first, which is right for the member
+// server a previous member install left behind but wrong for a human's own
+// full-install server on a shared box. A member install therefore records a
+// marker in the data dir it targets; a later `--member --force` stops a running
+// server only when that marker is present. Without it the server was not
+// started by a member install, and stopping it needs an explicit override.
+// A non-member (full) install clears the marker, so it never inherits ownership.
+// ---------------------------------------------------------------------------
+
+/** Name of the explicit override that lets a member install stop a full-install server. */
+export const FORCE_STOP_FULL_INSTALL_FLAG = '--force-stop-full-install';
+
+/** Machine-readable code printed on the refusal (the fleet-side install maps it to a typed status). */
+export const FULL_INSTALL_RUNNING_CODE = 'E-FULL-INSTALL-RUNNING';
+
+export function memberInstallMarkerPath(): string {
+  return path.join(getInstallDataDir(), 'member-install.json');
+}
+
+export function hasMemberInstallMarker(): boolean {
+  try {
+    return fs.existsSync(memberInstallMarkerPath());
+  } catch {
+    return false;
+  }
+}
+
+/** Writes the marker. `port` is the port this member install's server listens
+ *  on (the server reads it back at launch, see resolveServerPort, and the
+ *  orchestrator reads it to build the member's MCP URL). */
+export function writeMemberInstallMarker(version: string, port?: number): void {
+  try {
+    fs.mkdirSync(getInstallDataDir(), { recursive: true });
+    const marker = { version, installedAt: new Date().toISOString(), ...(port !== undefined ? { port } : {}) };
+    fs.writeFileSync(memberInstallMarkerPath(), JSON.stringify(marker) + '\n');
+  } catch {
+    // Best effort: a missing marker only makes the next forced member install refuse loudly.
+  }
+}
+
+/**
+ * Records the port a FULL install was run with so `apra-fleet start`, the
+ * service launch and logon autostart (none of which carry APRA_FLEET_PORT)
+ * bind the port the MCP registration points at. A full install run without a
+ * valid APRA_FLEET_PORT removes the record: install is declarative, and a
+ * surviving record would keep serving a stale port while the registration it
+ * just wrote points at the default.
+ */
+export function recordFullInstallPort(version: string, env: string | undefined = process.env.APRA_FLEET_PORT): void {
+  const file = path.join(getInstallDataDir(), FULL_INSTALL_PORT_FILE);
+  const port = validPort(env ?? '');
+  try {
+    if (port === undefined) { fs.rmSync(file, { force: true }); return; }
+    fs.mkdirSync(getInstallDataDir(), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ version, installedAt: new Date().toISOString(), port }) + '\n');
+  } catch {
+    // Best effort: without the record start falls back to the default port.
+  }
+}
+
+export function clearMemberInstallMarker(): void {
+  try { fs.rmSync(memberInstallMarkerPath(), { force: true }); } catch { /* best effort */ }
+}
+
+/**
+ * Whether a `--member --force` install may stop the relevant running server.
+ * Allowed when the server is a member install's own (marker present) or the
+ * caller passed the explicit override; not applicable to a non-member install.
+ */
+export function memberForceMayStop(opts: { memberMode: boolean; overridden: boolean }): boolean {
+  if (!opts.memberMode) return true;
+  return opts.overridden || hasMemberInstallMarker();
+}
+
+/** The refusal text: names the running server and the override. */
+export function fullInstallRefusalText(serverDetail: string): string {
+  return `
+Error: ${FULL_INSTALL_RUNNING_CODE}: a running apra-fleet server was not started by a member install, so a member install will not stop it.
+  Running server: ${serverDetail}
+
+  This looks like a full install (for example a person's own server on a shared machine).
+  To stop it anyway and install the member server over it, re-run with:
+    apra-fleet install --member --force ${FORCE_STOP_FULL_INSTALL_FLAG}
+`;
+}
+
+/** True when `s` can be typed as-is: Windows (cmd and PowerShell) allows `\`;
+ *  POSIX does not (it is an escape there). */
+function needsNoQuoting(s: string, platform: NodeJS.Platform): boolean {
+  return platform === 'win32' ? /^[A-Za-z0-9_\-.:=/\\+]+$/.test(s) : /^[A-Za-z0-9_\-.:=/+]+$/.test(s);
+}
+
+/**
+ * The exact command line that re-runs THIS executable with `args`, for a hint
+ * the user copies: a downloaded installer is usually not on PATH, so
+ * "apra-fleet ..." can name a missing (or an older, installed) binary. SEA:
+ * the executable itself; npm/dev: node plus the entry script. One line per
+ * shell: POSIX single-quotes when needed; Windows prints the bare words when
+ * none needs quoting (valid in cmd and PowerShell), else a PowerShell
+ * `& '...'` line and a cmd `"..."` line (a quoted path followed by arguments
+ * is a PowerShell parse error without `&`).
+ */
+export function selfInvocationLines(opts: {
+  platform: NodeJS.Platform;
+  execPath: string;
+  scriptPath?: string;
+  sea: boolean;
+  args: string[];
+}): string[] {
+  const words = [opts.execPath, ...(!opts.sea && opts.scriptPath ? [opts.scriptPath] : []), ...opts.args];
+  const bare = (w: string) => needsNoQuoting(w, opts.platform);
+  if (opts.platform !== 'win32') {
+    return [words.map(w => (bare(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`)).join(' ')];
+  }
+  if (words.every(bare)) return [words.join(' ')];
+  const ps = words.map(w => (bare(w) ? w : `'${w.replace(/'/g, "''")}'`));
+  const cmd = words.map(w => (bare(w) ? w : `"${w}"`));
+  return [`PowerShell: & ${ps.join(' ')}`, `cmd:        ${cmd.join(' ')}`];
 }

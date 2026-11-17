@@ -26,7 +26,7 @@
     },
     "kb_captures": {
       "type": "array",
-      "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
+      "description": "IGNORED FOR THIS ROLE -- the planner has no apply path, so anything sent here is silently dropped rather than captured. Declared only for forward compatibility and shape-parity with the roles that do capture; always omit it or send []. Do not spend planning effort producing entries for it.",
       "items": {
         "type": "object",
         "required": ["type", "title", "summary", "content", "source_files"],

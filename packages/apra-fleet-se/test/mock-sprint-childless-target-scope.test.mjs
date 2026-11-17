@@ -90,6 +90,13 @@ test('childless leaf target: bdListScoped(\'\') includes the target itself, pre-
             // target and this list would never contain it).
             const beadsStates = publishedStates.filter((e) => e.namespace === 'beads');
             assert.ok(beadsStates.length > 0, 'expected at least one publishState("beads", ...) call');
+            // Every beads publish carries fetchedAt -- the ISO time the
+            // sprint-tree bd fetch completed -- which the beads extension's
+            // summarize() reports as computed_at.
+            for (const e of beadsStates) {
+                assert.strictEqual(typeof e.data.fetchedAt, 'string', `beads payload must carry fetchedAt: ${JSON.stringify(Object.keys(e.data))}`);
+                assert.ok(/^\d{4}-\d{2}-\d{2}T/.test(e.data.fetchedAt) && !Number.isNaN(Date.parse(e.data.fetchedAt)), `fetchedAt must be ISO: ${e.data.fetchedAt}`);
+            }
             const sawTargetInSprintTasks = beadsStates.some((e) => (e.data.sprintTasks || []).some((t) => t.id === epicBead.id));
             assert.ok(
                 sawTargetInSprintTasks,

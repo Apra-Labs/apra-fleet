@@ -1,0 +1,26 @@
+{
+  "tool": "kb_capture",
+  "case": "happy-context-cache",
+  "kind": "happy",
+  "request": {
+    "type": "context-cache",
+    "title": "src/example.ts summary",
+    "summary": "File summary cache entry for src/example.ts.",
+    "content": "src/example.ts exports exampleFn, a one-line increment helper.",
+    "source_files": [
+      "src/example.ts"
+    ],
+    "source_file": "src/example.ts",
+    "symbols": [
+      "exampleFn"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"a1a87a93-adde-444e-9fcd-ce5d8f314132\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -9,6 +9,7 @@ import {
     doltPushAfter,
     verifyDoerStreakClosed,
 } from '../fleet-sprint/runner.js';
+import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 import { createDoltMutex } from '../src/supervisor/dolt-mutex.mjs';
 import { createIdAllocator } from '../src/supervisor/id-allocator.mjs';
 
@@ -40,6 +41,16 @@ import { createIdAllocator } from '../src/supervisor/id-allocator.mjs';
 // =============================================================================
 // (a) All three brackets present, incl. the pre-verification D-pull.
 // =============================================================================
+
+// dolt-sync.mjs keeps two PROCESS-GLOBAL maps keyed by member name (the
+// sync.remote memo and the remote-tip fingerprint). Tests in this file reuse
+// member names, so without this reset a later test can inherit an earlier
+// test's cached remote/tip and pass (or fail) purely on execution order.
+beforeEach(() => {
+    invalidateSyncRemoteCache();
+    clearLastSyncedTip();
+    clearTipProbeFailures();
+});
 
 // A tiny scripted command() mock recording every call with its opts.
 function makeCommandMock(handler) {
@@ -89,7 +100,7 @@ test('(a) all three D-pull/D-push brackets fire, including the pre-`bd show` D-p
         return OK;
     };
     const unclosed = await verifyDoerStreakClosed({
-        command, orchestratorMember: 'orch', beadIds: ['BD-1', 'BD-2'],
+        command, backlogMember: 'orch', beadIds: ['BD-1', 'BD-2'],
     });
     assert.deepEqual(unclosed, [], 'a remote doer close is NOT falsely reported FAILED');
 

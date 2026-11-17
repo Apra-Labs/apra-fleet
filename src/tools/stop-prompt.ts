@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { getStoredPid, getAgentOS } from '../utils/agent-helpers.js';
+import { getStoredPid, getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
@@ -22,7 +22,7 @@ export async function stopPrompt(input: StopPromptInput): Promise<string> {
   const agent = agentOrError;
 
   const strategy = getStrategy(agent);
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
 
   const pid = getStoredPid(agent.id);
 
@@ -41,8 +41,10 @@ export async function stopPrompt(input: StopPromptInput): Promise<string> {
 
   // Unconditionally clear busy state — handles pid=none case where inFlightAgents
   // still holds the agent but the process never recorded a PID.
+  // An explicit 'idle' -- a bare writeStatusline() only re-renders and would
+  // leave a stored busy in place.
   inFlightAgents.delete(agent.id);
-  writeStatusline();
+  writeStatusline(new Map([[agent.id, 'idle']]));
 
   logLine('stop_prompt', `pid=${pid ?? 'none'}`, agent);
 

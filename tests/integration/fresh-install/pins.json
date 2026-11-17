@@ -1,0 +1,67 @@
+{
+  "_comment": "Pinned downloads for the fresh-install harness. run.mjs fetches each into the cache dir and refuses a sha256 mismatch; the box re-verifies. Bump deliberately. The upgrade passes (U, U2) default to the newest baselines key (semver order); run.mjs checks it against the latest GitHub release and reports INCONCLUSIVE when a newer release exists. Baseline sha256 values are the release API's asset digests.",
+  "node": {
+    "version": "v22.23.3",
+    "windows": {
+      "file": "node-v22.23.3-x64.msi",
+      "url": "https://nodejs.org/dist/v22.23.3/node-v22.23.3-x64.msi",
+      "sha256": "1c0efc8449987e7da5d184786a0a96da83ffa11d334421201e5c09b93017cb8d"
+    },
+    "linux": {
+      "file": "node-v22.23.3-linux-x64.tar.gz",
+      "url": "https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-x64.tar.gz",
+      "sha256": "1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af"
+    },
+    "macos": {
+      "file": "node-v22.23.3-darwin-arm64.tar.gz",
+      "url": "https://nodejs.org/dist/v22.23.3/node-v22.23.3-darwin-arm64.tar.gz",
+      "sha256": "23b25245dcfb9af7262f8ff142e9e2e0af025368117329e7a7458a51e5922f53"
+    }
+  },
+  "baselines": {
+    "v0.4.2": {
+      "repo": "Apra-Labs/apra-fleet",
+      "version": "v0.4.2_2b2a2f",
+      "windows": {
+        "asset": "apra-fleet-installer-win-x64.exe",
+        "sha256": "4680c97bd0ddb2b803b31325522005bc4c25c7db62ba8e71ae811fa1e9e97efb"
+      },
+      "linux": {
+        "asset": "apra-fleet-installer-linux-x64",
+        "sha256": "b39b79b36eb43c6a85f4ee91fc6f97e5f8abdf0f1916f050aa797783836a6bdb"
+      }
+    },
+    "v0.4.3": {
+      "repo": "Apra-Labs/apra-fleet",
+      "version": "v0.4.3_f390e2",
+      "windows": {
+        "asset": "apra-fleet-installer-win-x64.exe",
+        "sha256": "24fffea0570ffa78cd221a26946130809fc486e0d04e17c9713d63dd5ce9e00f"
+      },
+      "linux": {
+        "asset": "apra-fleet-installer-linux-x64",
+        "sha256": "4fb70abd47df62b732aabc6f5482d32d37a253961054bdb6915d77ab50547fd8"
+      },
+      "macos": {
+        "asset": "apra-fleet-installer-darwin-arm64",
+        "sha256": "592683ccb77d596a359dee9559949d54a9b30bc6ecf437f742d08d773b43d5c0"
+      }
+    },
+    "v0.4.4": {
+      "repo": "Apra-Labs/apra-fleet",
+      "version": "v0.4.4_09382a",
+      "windows": {
+        "asset": "apra-fleet-installer-win-x64.exe",
+        "sha256": "f0d2ea93b5c31b62eed2b6721a47d5d0f8143bfe451196c7b2a4eab32afd97a7"
+      },
+      "linux": {
+        "asset": "apra-fleet-installer-linux-x64",
+        "sha256": "8ceb519358f291fd0eb72ee63cc130bb811adba53865fe46a600ff69654adecb"
+      },
+      "macos": {
+        "asset": "apra-fleet-installer-darwin-arm64",
+        "sha256": "989850ea431e3fad3b51b5df78bc0795705b4ea1c31529054b21c11160c6c3e1"
+      }
+    }
+  }
+}

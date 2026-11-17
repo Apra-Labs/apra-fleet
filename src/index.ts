@@ -40,21 +40,25 @@ Usage:
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet register-member --name <name> --path <folder> [options]  Register a fleet member from the shell (see 'register-member --help')
+  apra-fleet remove-member --id <uuid> [--force]   Remove a member registration from this install (see 'remove-member --help')
+  apra-fleet call --member <uuid> <tool> [--args-file <path>] Call a tool as a member session (see 'call --help')
+  apra-fleet call --member <uuid> --list-tools                List the member session's tools
   apra-fleet uninstall                 Remove binary, hooks, and MCP registration
   apra-fleet secret --set <name>       Deliver a secret to a waiting request
   apra-fleet secret --list             List secrets
   apra-fleet secret --delete <name>    Delete a secret
   apra-fleet secret --confirm <credential-name>               Confirm network egress for that credential (interactive)
   apra-fleet auth --oauth [--llm <provider>] <token>          Write OAuth token to provider credential file
-  apra-fleet auth --oauth [--llm <provider>] secure.<name>    Resolve token from persistent credential store
-  apra-fleet auth --oauth --member <name> secure.<name>       Provision a member's encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN directly (no credential file)
+  apra-fleet auth --oauth [--llm <provider>] secret.<name>    Resolve token from persistent credential store
+  apra-fleet auth --oauth --member <name> secret.<name>       Provision a member's encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN directly (no credential file)
   apra-fleet auth --api-key [--llm <provider>] <token>        Set API key in shell profiles / system env
-  apra-fleet auth --api-key [--llm <provider>] secure.<name>  Resolve API key from persistent credential store
+  apra-fleet auth --api-key [--llm <provider>] secret.<name>  Resolve API key from persistent credential store
   apra-fleet kb directives                             List pending + active user-directives
   apra-fleet kb approve-directive <id>                 Activate a pending directive proposal (human-only)
   apra-fleet kb reject-directive <id>                  Reject a proposal or retire an active directive
   apra-fleet kb add-directive "<text>" [--symbols a,b] Create an already-active directive (human-only)
   apra-fleet kb commit [--repo <path>] [--global]      Re-export + auto-commit the canonical bible (manual/recovery)
+  apra-fleet kb profile [full|developer|custom <a,b>]  Show or set the KB tool profile for interactive sessions
   apra-fleet join <member-jwt> [--hub-url <url>]  Activate a device using a member JWT obtained out-of-band from fleet-dashboard
   apra-fleet spoke <origin-member-id>        Run as an outbound hub-connected spoke; requires apra-fleet join first
   apra-fleet --version        Print version
@@ -75,6 +79,14 @@ if (arg === 'install') {
   import('./cli/register-member.js')
     .then(m => m.runRegisterMember(process.argv.slice(3)))
     .catch(err => { logError('cli', `Register-member failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'remove-member') {
+  import('./cli/remove-member.js')
+    .then(m => m.runRemoveMember(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Remove-member failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'call') {
+  import('./cli/call.js')
+    .then(m => m.runCallCli(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Call failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'uninstall') {
   import('./cli/uninstall.js')
     .then(m => m.runUninstall(process.argv.slice(3)))
@@ -124,7 +136,7 @@ Usage:
   import('./commands/kb-server.js')
     .then(async m => {
       const opts = m.parseKbServerArgs(process.argv.slice(3));
-      await m.startKbServer(opts.port, opts.generateToken, opts.dbPath);
+      await m.startKbServer(opts.port, opts.generateToken, opts.dbPath, opts.tokenFile);
     })
     .catch(err => { logError('cli', `kb-server failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'kb') {
@@ -159,6 +171,12 @@ Usage:
       .then(m => m.runKbCommit(process.argv.slice(4)))
       .then(code => process.exit(code))
       .catch(err => { logError('cli', `kb commit failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'profile') {
+    // GitHub #759: show/set the install-wide KB tool profile. Required because
+    // the developer profile hides kb_setup from interactive sessions.
+    import('./cli/kb-profile.js')
+      .then(m => process.exit(m.runKbProfile(process.argv.slice(4))))
+      .catch(err => { logError('cli', `kb profile failed: ${err.message}`); process.exit(1); });
   } else if (subCmd === 'import') {
     // T2.2 (F4, D3): post-merge entry point for absorbing a merged bible into
     // the local KB. Thin wrapper over the same kbImport the MCP tool uses.
@@ -236,6 +254,32 @@ Usage:
   process.exit(1);
 }
 
+/**
+ * Exit code for "refusing to start because another/foreign server holds the
+ * port or data dir" (GitHub #584). Under a service manager (systemd
+ * Restart=on-failure, launchd KeepAlive SuccessfulExit=false) a non-zero exit
+ * restarts the server every few seconds -- each attempt a new fleet-<pid>.log
+ * that `apra-fleet watch` then follows -- while the cause persists. Only a
+ * launch by such a service manager (launchedByServiceManager: the
+ * APRA_FLEET_SERVICE marker, systemd INVOCATION_ID, launchd XPC_SERVICE_NAME)
+ * exits 0, like the already-running case. Every other launch (terminal, CI,
+ * nohup, containers, scripts) exits 1 so the refusal stays visible.
+ */
+// Captured once by startHttpServer (which also strips our markers from the
+// env so children never inherit them). Still "any service-manager hint":
+// installs predating the APRA_FLEET_SERVICE marker rely on systemd/launchd
+// vars, and for a refusal the only cost of a false positive (a hand-run shell
+// under systemd) is exit code 0 instead of 1 -- the refusal is still printed.
+let serviceManagedLaunch: boolean | null = null;
+
+async function refusalExitCode(): Promise<number> {
+  if (serviceManagedLaunch === null) {
+    const { launchedByServiceManager } = await import('./services/service-manager/types.js');
+    serviceManagedLaunch = launchedByServiceManager();
+  }
+  return serviceManagedLaunch ? 0 : 1;
+}
+
 function resolveTransport(args: string[]): 'http' | 'stdio' | 'invalid' {
   if (args.length === 0) return 'http';
   if (args[0] === '--stdio') return 'stdio';
@@ -246,6 +290,18 @@ function resolveTransport(args: string[]): 'http' | 'stdio' | 'invalid' {
     return 'invalid';
   }
   return 'invalid';
+}
+
+/** Clear busy statuses persisted by a server that died mid-task. */
+async function reconcileStartupBusyImpl(): Promise<void> {
+  const { reconcileStaleBusy } = await import('./services/statusline.js');
+  const cleared = reconcileStaleBusy();
+  if (cleared.length > 0) {
+    logLine('startup', `reset stale busy status for ${cleared.length} member(s) left by a previous server: ${cleared.join(', ')}`);
+  }
+}
+function reconcileStartupBusy(): void {
+  void reconcileStartupBusyImpl().catch(() => { /* best-effort */ });
 }
 
 async function startStdioServer() {
@@ -318,23 +374,76 @@ async function startStdioServer() {
 
   idleManager.start();
   void cleanupStaleTasks();
+  reconcileStartupBusy();
   purgeExpiredCredentials();
   void checkForUpdate();
 
+  // GitHub #562: leave a trace when the event loop freezes.
+  const { startEventLoopWatchdog } = await import('./services/event-loop-watchdog.js');
+  const { getActiveLogFile } = await import('./utils/log-helpers.js');
+  const watchdog = startEventLoopWatchdog({ logFile: getActiveLogFile() });
+
   const { cleanupAuthSocket } = await import('./services/auth-socket.js');
-  process.on('SIGINT', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
-  process.on('SIGTERM', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
+  // GitHub #585: every exit path (SIGINT/SIGTERM/SIGHUP/SIGBREAK, crashes)
+  // writes one synchronous shutdown record before the process exits.
+  const { installShutdownHandlers } = await import('./services/server-lifecycle.js');
+  let stdioStopping = false;
+  installShutdownHandlers(() => {
+    if (stdioStopping) return;
+    stdioStopping = true;
+    void watchdog.stop();
+    cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); });
+  });
 }
 
 async function startHttpServer() {
+  // GitHub #585 recovery: a service launch (logon, the Windows task's repeating
+  // revive trigger) that keeps failing backs off instead of retrying -- and
+  // writing a new fleet-<pid>.log -- every interval. See service-start-guard.ts.
+  const { consumeLaunchMarkers } = await import('./services/service-manager/types.js');
+  const launch = consumeLaunchMarkers();
+  serviceManagedLaunch = launch.managed;
+  // The stopped-by-user skip and the start backoff decide whether to start at
+  // all, so they apply ONLY to our own service templates (APRA_FLEET_SERVICE=1,
+  // set by the task wrapper, the plist and the unit) -- never to a hand-run
+  // `apra-fleet run` in a shell that merely inherited INVOCATION_ID or
+  // XPC_SERVICE_NAME (systemd-run --shell, tmux from a user unit, CI runners).
+  const startGuard = launch.service ? await import('./services/service-start-guard.js') : null;
+  if (startGuard) {
+    // A deliberate `apra-fleet stop` must stick across logon/boot on every OS:
+    // launchd RunAtLoad, an enabled systemd unit, the Windows HKCU Run
+    // fallback, or an old task that could not be disabled all launch us here.
+    // Exit 0 (launchd SuccessfulExit=false / systemd Restart=on-failure do not
+    // restart it) and KEEP the marker -- only `apra-fleet start`/install clear it.
+    const { readStoppedMarker, describeStoppedMarker } = await import('./services/stopped-marker.js');
+    const stopped = readStoppedMarker();
+    if (stopped) {
+      const line = `${new Date().toISOString()} apra-fleet service launch skipped: ${describeStoppedMarker(stopped)}`;
+      // Someone is watching (a console, or stderr on a mintty/Git Bash tty
+      // while stdout is piped): always say why.
+      if (process.stdout.isTTY || process.stderr.isTTY) console.error(line);
+      else if (startGuard.shouldLogServiceNotice('stopped-by-user')) console.log(line);
+      process.exit(0);
+    }
+    const skip = startGuard.serviceStartBackoff();
+    if (skip) {
+      console.log(`${new Date().toISOString()} ${skip}`);
+      process.exit(0);
+    }
+    startGuard.recordServiceStartAttempt();
+  }
+
   const { loadOnboardingState, resetSessionFlags } = await import('./services/onboarding.js');
   const { getAllAgents: getAgentsForStartup } = await import('./services/registry.js');
   // Pass current member count so upgrade detection works: existing registry + no onboarding.json -> skip banner
   loadOnboardingState(getAgentsForStartup().length);
   resetSessionFlags();
 
-  const { checkRunningInstance, claimStartupLock } = await import('./services/singleton.js');
-  const { createHttpTransport } = await import('./services/http-transport.js');
+  const {
+    checkRunningInstance, claimStartupLock, unresponsiveInstanceMessage, portInUseMessage, readServerInfoPid,
+    describePreviousServer,
+  } = await import('./services/singleton.js');
+  const { createHttpTransport, PortInUseError } = await import('./services/http-transport.js');
   const { registerAllTools } = await import('./services/tool-registry.js');
   const { FLEET_DIR, SERVER_INFO_PATH } = await import('./paths.js');
   const { closeAllConnections } = await import('./services/ssh.js');
@@ -349,8 +458,29 @@ async function startHttpServer() {
   // Detect already-running instance before starting
   const instance = await checkRunningInstance();
   if (instance.running) {
-    logLine('startup', `apra-fleet already running at ${instance.url} pid=${instance.pid} -- exiting`);
+    const msg = `apra-fleet already running at ${instance.url} pid=${instance.pid} -- exiting`;
+    if (startGuard) {
+      // Service launches (a revive-trigger tick) go to the service log only,
+      // not a fresh fleet-<pid>.log per tick, and at most once an hour (a
+      // server running outside the task would otherwise log ~288 lines/day).
+      if (startGuard.shouldLogServiceNotice('already-running')) {
+        console.log(`${new Date().toISOString()} ${msg}`);
+      }
+      startGuard.clearServiceStartFailures();
+    } else {
+      logLine('startup', msg);
+    }
     process.exit(0);
+  }
+  if (instance.state === 'gone') {
+    const previousNote = describePreviousServer(instance.previous);
+    if (previousNote) logLine('startup', `${previousNote}; removed its stale server.json`);
+  }
+  if (instance.state === 'unresponsive') {
+    // A live server with a blocked event loop is not dead: starting a second
+    // one would split the fleet (GitHub #584). Refuse; the operator stops it.
+    logError('startup', unresponsiveInstanceMessage(instance));
+    process.exit(await refusalExitCode());
   }
 
   // Atomic startup lock to prevent concurrent double-start race
@@ -360,7 +490,20 @@ async function startHttpServer() {
     process.exit(0);
   }
 
-  const handle = await createHttpTransport({ registerTools: registerAllTools });
+  let handle: Awaited<ReturnType<typeof createHttpTransport>>;
+  try {
+    handle = await createHttpTransport({ registerTools: registerAllTools });
+  } catch (err) {
+    lock.release();
+    if (err instanceof PortInUseError) {
+      const { findPortHolder, describePortConflict } = await import('./services/port-holder.js');
+      const { hasMemberInstallMarker } = await import('./cli/install-guard.js');
+      const conflict = describePortConflict(err.port, portInUseMessage(err.port, readServerInfoPid()), await findPortHolder(err.port), hasMemberInstallMarker() ? 'member' : 'full');
+      logError('startup', conflict.message);
+      process.exit(await refusalExitCode());
+    }
+    throw err;
+  }
 
   // Write server.json so other processes can detect this instance
   fs.mkdirSync(FLEET_DIR, { recursive: true });
@@ -377,6 +520,12 @@ async function startHttpServer() {
 
   // Release startup lock now that server.json is written (server.json is the long-lived detection mechanism)
   lock.release();
+  // The stopped-by-user marker is NOT cleared here: only an explicit
+  // `apra-fleet start` / `apra-fleet install` ends a deliberate stop. (A
+  // service launch never gets this far while it exists; a manual `run`
+  // leaves it, so if this server later dies clients still do not
+  // auto-start -- the conservative side.)
+  startGuard?.clearServiceStartFailures();
 
   // Make HTTP handle available to shutdown_server tool
   setHttpHandle(handle);
@@ -394,12 +543,19 @@ async function startHttpServer() {
 
   idleManager.start();
   void cleanupStaleTasks();
+  reconcileStartupBusy();
   purgeExpiredCredentials();
   void checkForUpdate();
+
+  // GitHub #562: leave a trace when the event loop freezes.
+  const { startEventLoopWatchdog } = await import('./services/event-loop-watchdog.js');
+  const { getActiveLogFile } = await import('./utils/log-helpers.js');
+  const watchdog = startEventLoopWatchdog({ logFile: getActiveLogFile() });
 
   async function shutdown() {
     try { lock.release(); } catch {}
     try { fs.unlinkSync(SERVER_INFO_PATH); } catch {}
+    try { await watchdog.stop(); } catch {}
     try { await handle.close(); } catch {}
     try { await cleanupAuthSocket(); } catch {}
     try { closeAllConnections(); } catch {}
@@ -407,6 +563,14 @@ async function startHttpServer() {
     process.exit(0);
   }
 
-  process.on('SIGINT', () => void shutdown());
-  process.on('SIGTERM', () => void shutdown());
+  // GitHub #585: every exit path (SIGINT/SIGTERM/SIGHUP/SIGBREAK, POST
+  // /shutdown, shutdown_server, crashes) writes one synchronous shutdown
+  // record to fleet-<pid>.log before the process exits.
+  const { installShutdownHandlers } = await import('./services/server-lifecycle.js');
+  let stopping = false;
+  installShutdownHandlers(() => {
+    if (stopping) return;
+    stopping = true;
+    void shutdown();
+  });
 }

@@ -54,15 +54,16 @@ describe('sprint-logs ignore policy', () => {
       expect(isIgnored(`${dir}/calibration.json`)).toBe(false);
     });
 
-    // cost.md:115 tells the harvester to write and commit this summary.
-    it('keeps the analysis summary stageable', () => {
-      expect(isIgnored(`${dir}/feat-example-20260818_120000.analysis.md`)).toBe(false);
+    // The analysis summary is written locally and never committed (cost.md
+    // Harvest); auto-sprint also git-excludes it in each target clone.
+    it('ignores the analysis summary', () => {
+      expect(isIgnored(`${dir}/feat-example-20260818_120000.analysis.md`)).toBe(true);
     });
   });
 
   /**
    * A directory-level ignore shadows everything inside it, so a blanket
-   * '/sprint-logs/' rule makes calibration.json and the analysis summaries
+   * '/sprint-logs/' rule makes calibration.json
    * unstageable no matter what a narrower pattern elsewhere says. That rule
    * existed on main and is exactly what forced `git add -f` on every sprint.
    */

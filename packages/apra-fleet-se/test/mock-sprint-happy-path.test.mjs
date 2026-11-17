@@ -86,11 +86,24 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // no-remote skip), so this asserts on the first GIT command's
         // position rather than a fixed index, and that everything before it
         // is exactly this gate's own bd command(s).
-        const firstGitIdx = run1.commandLog.findIndex((c) => /^git /.test(c));
-        check(firstGitIdx > 0, `Expected at least one pre-flight beads-health-gate command before the first git command, got commandLog: ${JSON.stringify(run1.commandLog)}`);
+        // The beads identity precondition (fleet-sprint/beads-identity-
+        // check.mjs) now runs FIRST of all: its three read-only probes per
+        // member (`bd where --json`, `bd config get sync.remote --json`,
+        // `git remote get-url origin`) precede even the beads-health gate,
+        // so they are skipped here before locating the first REAL git
+        // command (the branch-ensure fetch).
+        // Exactly three here: run1 is a single-member sprint.
+        const IDENTITY_PROBES = ['bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
+        const identityEnd = IDENTITY_PROBES.length;
+        assert.deepEqual(run1.commandLog.slice(0, identityEnd), IDENTITY_PROBES, `Expected the beads identity probes to open the commandLog, got: ${JSON.stringify(run1.commandLog.slice(0, 4))}`);
+        // The backlog member's VCS-credential preflight (before its first
+        // beads D-pull) adds one `git remote get-url origin` repo probe.
+        const PREFLIGHT_PROBE = 'git remote get-url origin';
+        const firstGitIdx = run1.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c) && c !== PREFLIGHT_PROBE);
+        check(firstGitIdx > identityEnd, `Expected at least one pre-flight beads-health-gate command before the first git command, got commandLog: ${JSON.stringify(run1.commandLog)}`);
         check(
-            run1.commandLog.slice(0, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull'),
-            `Expected only the pre-flight beads-health gate's own bd command(s) before the first git command, got: ${JSON.stringify(run1.commandLog.slice(0, firstGitIdx))}`
+            run1.commandLog.slice(identityEnd, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull' || c === PREFLIGHT_PROBE),
+            `Expected only the pre-flight beads-health gate's own bd command(s) before the first git command, got: ${JSON.stringify(run1.commandLog.slice(identityEnd, firstGitIdx))}`
         );
         // apra-fleet-co4: the branch-fetch succeeded (this mock's git/gh
         // interceptor succeeds by default), so Ensure Sprint Branch now also
@@ -128,39 +141,55 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // `originUrl` option), so the PR-raise path is still exercised, just
         // with this extra probe command in between.
         // apra-fleet-tfx.8/tfx.8.4: the reverted gh-based `gh pr create` path
-        // is gone. raiseVcsPrForMember() now (1) re-derives 'owner/repo' via
-        // its OWN `git remote get-url origin` call (provisionPrCapableAuthForMember
-        // -> provisionVcsAuthForMember), (2) reads back the just-provisioned
-        // push+pr credential's token from the git-credential-helper script,
-        // then (3) dispatches VCSModule's `curl ... /pulls` create-pull-
-        // request command -- so the last 5 commandLog entries are: push,
-        // the classification probe, the repo-derivation probe (a SECOND
-        // `git remote get-url origin`), the credential-token read, and the
+        // is gone. raiseVcsPrForMember() dispatches VCSModule's
+        // `curl ... /pulls` create-pull-request command -- so the last 3
+        // commandLog entries are: push, the classification probe, and the
         // curl POST itself.
-        const pushIdx = run1.commandLog.length - 5;
-        const originUrlIdx = run1.commandLog.length - 4;
-        const repoDerivationUrlIdx = run1.commandLog.length - 3;
-        const credReadIdx = run1.commandLog.length - 2;
-        const prIdx = run1.commandLog.length - 1;
+        // apra-fleet-3swo.7.6: that tail used to be 4 entries, with a
+        // `$HOME/.fleet-git-credential-*` token read sitting between the probe
+        // and the curl. The credential read MOVED SERVER-SIDE: the create-PR
+        // command now goes out through the vcs_credential_exec handoff, which
+        // reads and substitutes the credential inside the server, so the
+        // orchestrator dispatches no credential-read command at all and the
+        // tail is one entry shorter.
+        // raiseVcsPrForMember's `remoteUrlOverride` param (fed with the
+        // origin URL the Publish PR step already resolved a few lines
+        // earlier) makes provisionVcsAuthForMember skip its own internal
+        // `git remote get-url origin` re-derivation -- eliminating what
+        // used to be a second, redundant classification-shaped probe here.
+        // The G-push landed check's read-only reads (member-sync.mjs
+        // checkGitPushLanded: rev-parse/ls-remote/fetch/rev-list) follow the
+        // push; they are verification, not part of the publish sequence this
+        // tail pins, so they are skipped here.
+        const isLandedCheckRead = (c) => typeof c === 'string' && (c === 'git rev-parse HEAD' || /^git (ls-remote|fetch|rev-list --count) /.test(c));
+        const publishTail = run1.commandLog.filter((c) => !isLandedCheckRead(c));
+        const pushIdx = publishTail.length - 3;
+        const originUrlIdx = publishTail.length - 2;
+        const prIdx = publishTail.length - 1;
         check(
-            run1.commandLog[pushIdx] && run1.commandLog[pushIdx].startsWith(`git push -u origin ${RUN1_BRANCH}`),
-            `Expected fifth-to-last commandLog entry to be the branch push, got: ${JSON.stringify(run1.commandLog[pushIdx])}`
+            publishTail[pushIdx] && publishTail[pushIdx].startsWith(`git push -u origin ${RUN1_BRANCH}`),
+            `Expected third-to-last commandLog entry to be the branch push, got: ${JSON.stringify(publishTail[pushIdx])}`
         );
         check(
-            run1.commandLog[originUrlIdx] === 'git remote get-url origin',
-            `Expected fourth-to-last commandLog entry to be the origin-remote classification probe, got: ${JSON.stringify(run1.commandLog[originUrlIdx])}`
+            run1.commandLog.includes('git rev-parse HEAD'),
+            'Expected the G-push landed check to read the local HEAD after the push'
         );
         check(
-            run1.commandLog[repoDerivationUrlIdx] === 'git remote get-url origin',
-            `Expected third-to-last commandLog entry to be the JIT push+pr credential's own repo-derivation probe, got: ${JSON.stringify(run1.commandLog[repoDerivationUrlIdx])}`
+            publishTail[originUrlIdx] === 'git remote get-url origin',
+            `Expected second-to-last commandLog entry to be the origin-remote classification probe, got: ${JSON.stringify(publishTail[originUrlIdx])}`
+        );
+        // apra-fleet-3swo.7.6: replaces the retired "second-to-last entry is
+        // the credential-token read" assertion. Strictly stronger than what it
+        // replaces -- it pins this bead's headline property, that the
+        // orchestrator NEVER reads the plaintext credential itself, anywhere
+        // in the run rather than merely at one tail position.
+        check(
+            !run1.commandLog.some((c) => typeof c === 'string' && c.startsWith('$HOME/.fleet-git-credential-')),
+            `Expected NO credential-token read to be dispatched by the orchestrator (the vcs_credential_exec handoff reads it server-side), got: ${JSON.stringify(run1.commandLog.filter((c) => typeof c === 'string' && c.startsWith('$HOME/.fleet-git-credential-')))}`
         );
         check(
-            run1.commandLog[credReadIdx] && run1.commandLog[credReadIdx].startsWith('$HOME/.fleet-git-credential-'),
-            `Expected second-to-last commandLog entry to be the just-provisioned credential-token read, got: ${JSON.stringify(run1.commandLog[credReadIdx])}`
-        );
-        check(
-            run1.commandLog[prIdx] && run1.commandLog[prIdx].startsWith('curl -sS -X POST') && run1.commandLog[prIdx].includes('/pulls') && run1.commandLog[prIdx].includes('"base":"main"') && run1.commandLog[prIdx].includes(`"head":"${RUN1_BRANCH}"`),
-            `Expected last commandLog entry to be the VCSModule PR-raise (not merge) command, got: ${JSON.stringify(run1.commandLog[prIdx])}`
+            publishTail[prIdx] && publishTail[prIdx].startsWith('curl -sS -X POST') && publishTail[prIdx].includes('/pulls') && publishTail[prIdx].includes('"base":"main"') && publishTail[prIdx].includes(`"head":"${RUN1_BRANCH}"`),
+            `Expected last commandLog entry to be the VCSModule PR-raise (not merge) command, got: ${JSON.stringify(publishTail[prIdx])}`
         );
         // apra-fleet-eft.8.x (syncMemberBefore/G-pull) legitimately issues
         // `git merge --ff-only <remote>/<branch>` to bring a member's own
@@ -174,7 +203,8 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // Exclude the safe, ff-only self-sync explicitly rather than
         // widening the check to miss a genuine violation.
         check(
-            !run1.commandLog.some((c) => (/^git\s+merge/.test(c) && !/^git\s+merge\s+--ff-only\b/.test(c)) || /gh\s+pr\s+merge/.test(c)),
+            // `git merge-base` (the read-only review diff base) is not a merge.
+            !run1.commandLog.some((c) => (/^git\s+merge(?:\s|$)/.test(c) && !/^git\s+merge\s+--ff-only\b/.test(c)) || /gh\s+pr\s+merge/.test(c)),
             `Runner must never auto-merge (pm skill R12); found a merge command in the log: ${JSON.stringify(run1.commandLog)}`
         );
 
@@ -377,8 +407,8 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // inside the `-d '{...}'` payload, not `gh pr create`'s `--title`/
         // `--body` flags -- match the new JSON shape.
         check(
-            run1.commandLog[prIdx] && /"title":"[^"]*PASS[^"]*"/.test(run1.commandLog[prIdx]) && /Final Verdict: PASS/.test(run1.commandLog[prIdx]),
-            `Expected the PR title AND body to include the PASS verdict, got: ${run1.commandLog[prIdx]}`
+            publishTail[prIdx] && /"title":"[^"]*PASS[^"]*"/.test(publishTail[prIdx]) && /## Sprint verdict: PASS/.test(publishTail[prIdx]),
+            `Expected the PR title AND body to include the PASS verdict, got: ${publishTail[prIdx]}`
         );
 
         // apra-fleet-eft.1.3 regression (folded in from the former
@@ -386,8 +416,8 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // whole extra runOnce() sprint on this single negative): a successful
         // sprint's PR must never carry the abort path's [ABORTED] prefix.
         check(
-            run1.commandLog[prIdx] && !run1.commandLog[prIdx].includes('[ABORTED]'),
-            `A successful sprint's PR must NOT carry the [ABORTED] prefix, got: ${run1.commandLog[prIdx]}`
+            publishTail[prIdx] && !publishTail[prIdx].includes('[ABORTED]'),
+            `A successful sprint's PR must NOT carry the [ABORTED] prefix, got: ${publishTail[prIdx]}`
         );
     });
 });
@@ -441,12 +471,12 @@ test('mock sprint: multi-member doer pool distributes work and ensures branch on
 
         // apra-fleet-unw2.4 (N4): branch-ensure must be dispatched to EVERY member
         // in the union of the orchestrator/doer/reviewer pools, not just the
-        // orchestrator member. With 2 distinct members configured, the sprint-
+        // backlog member. With 2 distinct members configured, the sprint-
         // branch ensure (`git checkout -B <branch> origin/<base>`) must land on
         // BOTH members' checkouts before the first doer round.
         //
         // This is the regression tripwire for N4: against the PRE-FIX runner
-        // (which dispatched the ensure to `orchestratorMember` only) the second
+        // (which dispatched the ensure to `backlogMember` only) the second
         // member's checkout is never ensured, so both the per-member command-log
         // assertion and the per-member git-state assertion below FAIL; against the
         // fixed runner (ensure over the union of the pools) both PASS.
@@ -463,7 +493,7 @@ test('mock sprint: multi-member doer pool distributes work and ensures branch on
         );
         // The modeled per-member git state must agree: BOTH members' checkouts had
         // the sprint branch ensured (this is the state the pre-fix runner failed
-        // to establish on the non-orchestrator member).
+        // to establish on the non-backlog member).
         const m1Git = multiDoer.memberGitState.get('m1');
         const m2Git = multiDoer.memberGitState.get('m2');
         check(

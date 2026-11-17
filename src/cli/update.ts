@@ -6,9 +6,28 @@ import { serverVersion } from '../version.js';
 import { parseVersion, isNewer } from '../services/update-check.js';
 import { FLEET_DIR } from '../paths.js';
 import { readInstallConfig } from './config.js';
-import { isSea, isNpmGlobalInstall } from './install.js';
+import { isSea, isNpmGlobalInstall, fleetSeGuardEnabled, currentFleetSeProbes } from './install.js';
+import { selfInvocationLines } from './install-guard.js';
+import { detectRunningFleetSe, fleetSeRefusalText, IGNORE_RUNNING_SPRINTS_FLAG } from './fleet-se-guard.js';
+import { showPendingServiceNotice } from '../services/service-notice.js';
+
+/** Release installer published by ci.yml for each `process.platform/process.arch`. */
+export const INSTALLER_ASSETS: Record<string, string> = {
+  'linux/x64': 'apra-fleet-installer-linux-x64',
+  'linux/arm64': 'apra-fleet-installer-linux-arm64',
+  'darwin/arm64': 'apra-fleet-installer-darwin-arm64',
+  'darwin/x64': 'apra-fleet-installer-darwin-x64',
+  'win32/x64': 'apra-fleet-installer-win-x64.exe',
+};
+
+/** The installer asset for this host's OS AND CPU arch, or null when none is published. */
+export function installerAssetName(platform: string, arch: string): string | null {
+  return INSTALLER_ASSETS[`${platform}/${arch}`] ?? null;
+}
 
 export async function runUpdate(): Promise<void> {
+  // Guidance the previous (detached) install could not show.
+  showPendingServiceNotice();
   if (!isSea()) {
     if (isNpmGlobalInstall()) {
       console.log('apra-fleet is installed via npm. To update, run:');
@@ -55,12 +74,16 @@ export async function runUpdate(): Promise<void> {
       return;
     }
 
-    const platform = process.platform === 'win32' ? 'win-x64' : (process.platform === 'darwin' ? 'darwin-arm64' : 'linux-x64');
-    const assetName = `apra-fleet-installer-${platform}${process.platform === 'win32' ? '.exe' : ''}`;
+    const assetName = installerAssetName(process.platform, process.arch);
+    if (!assetName) {
+      console.error(`Error: no apra-fleet installer is published for ${process.platform}/${process.arch} ` +
+        `(published: ${Object.keys(INSTALLER_ASSETS).join(', ')}). Install from source instead.`);
+      return;
+    }
     const asset = data.assets?.find(a => a.name === assetName);
 
     if (!asset) {
-      console.error(`Error: Could not find installer for platform ${platform}`);
+      console.error(`Error: Could not find installer ${assetName} in release ${tagName}`);
       return;
     }
 
@@ -115,8 +138,30 @@ export async function runUpdate(): Promise<void> {
     // `--workflows none` choice survives an update instead of silently
     // reverting to the `all` default on re-install (apra-fleet-7pm.10).
     const args = ['install', '--force', '--llm', targetLlm, '--skill', targetSkill, '--workflows', targetWorkflowsMode];
-    const installer = spawn(tmpPath, args, { detached: true, stdio: 'ignore' });
+    // The detached installer refuses while fleet-sprint work is running, but
+    // nobody would see it: refuse here, in the console, first.
+    if (fleetSeGuardEnabled()) {
+      let found: Awaited<ReturnType<typeof detectRunningFleetSe>> | null = null;
+      try { found = await detectRunningFleetSe(currentFleetSeProbes()); } catch (err) {
+        console.warn(`WARNING: could not check for a running fleet-sprint supervisor or sprint (${(err as Error).message}). If one is running, stop it before upgrading.`);
+      }
+      for (const w of found?.warnings ?? []) console.warn(`WARNING: ${w}`);
+      if (found && (found.supervisor || found.sprints.length > 0)) {
+        const lines = (exe: string, a: string[]) => selfInvocationLines({ platform: process.platform, execPath: exe, sea: true, args: a });
+        console.error(fleetSeRefusalText(found, {
+          platform: process.platform,
+          rerunLines: lines(process.execPath, ['update']),
+          ignoreLines: lines(tmpPath, [...args, IGNORE_RUNNING_SPRINTS_FLAG]),
+        }));
+        process.exitCode = 1;
+        return;
+      }
+    }
+    const installer = spawn(tmpPath, args, { detached: true, stdio: 'ignore', windowsHide: true });
     installer.unref();
+    // The installer runs detached with no console: anything it has to tell
+    // the user about the service is shown by the next status/stop/update.
+    console.log("The update is installing in the background. Run 'apra-fleet status' in a minute to check the service.");
     process.exit(0);
 
   } catch (e) {

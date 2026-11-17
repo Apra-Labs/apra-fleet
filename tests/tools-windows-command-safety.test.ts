@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
-import { addAgent } from '../src/services/registry.js';
+import { addAgent, getKeysDir } from '../src/services/registry.js';
 import type { SSHExecResult } from '../src/types.js';
 
 // ---------------------------------------------------------------------------
@@ -217,7 +217,8 @@ describe('remove_member authorized_keys cleanup command safety', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
     mockReadMemberStatus.mockReturnValue('idle');
 
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-key-test-'));
+    // Inside the fleet keys dir: only fleet-generated keys get authorized_keys cleanup.
+    tmpDir = fs.mkdtempSync(path.join(getKeysDir(), 'fleet-key-test-'));
     keyPath = path.join(tmpDir, 'id_ed25519');
     fs.writeFileSync(`${keyPath}.pub`, `${pubKeyLine}\n`, 'utf-8');
   });
@@ -256,6 +257,22 @@ describe('remove_member authorized_keys cleanup command safety', () => {
     const keyMatch = pubKeyLine.split(/\s+/).slice(0, 2).join(' ');
     const escaped = keyMatch.replace(/\//g, '\\/');
     expect(akCmd).toBe(`sed -i '/${escaped}/d' ~/.ssh/authorized_keys`);
+  });
+
+  it('item 4 (linux): a hostile .pub file cannot break out of the sed quoting or regex', async () => {
+    // key_path is caller-supplied, so the .pub content is untrusted input.
+    fs.writeFileSync(`${keyPath}.pub`, "ssh-ed25519 AAAA'$(touch${IFS}/tmp/pwn)'.*\\x fleet@apra\n", 'utf-8');
+    const member = makeTestAgent({ friendlyName: 'linux-remove-hostile', os: 'linux' as any, keyPath });
+    addAgent(member);
+
+    await removeMember({ member_id: member.id });
+
+    const cmds = mockExecCommand.mock.calls.map((c) => c[0] as string);
+    const akCmd = cmds.find((c) => c.includes('authorized_keys'));
+    // Each ' closes/escapes/reopens the shell quote; $ / . * \ are escaped for the BRE.
+    expect(akCmd).toBe(
+      "sed -i '/ssh-ed25519 AAAA'\\''\\$(touch\\${IFS}\\/tmp\\/pwn)'\\''\\.\\*\\\\x/d' ~/.ssh/authorized_keys",
+    );
   });
 
   it('item 5 (windows): cleanup command failure is surfaced as a warning, not swallowed', async () => {

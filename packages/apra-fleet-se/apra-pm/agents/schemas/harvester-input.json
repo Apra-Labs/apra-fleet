@@ -5,7 +5,7 @@
   "title": "harvester input",
   "description": "Required dispatch-context keys for the harvester role, per agents/harvester.md Inputs section. Consumed by callers for pre-dispatch validation only -- never appended to the prompt or shown to the LLM.",
   "type": "object",
-  "required": ["analysisArtifactFile", "analysisText", "costAnalysis", "base-branch", "branch"],
+  "required": ["analysisArtifactFile", "analysisText", "base-branch", "branch"],
   "properties": {
     "analysisArtifactFile": {
       "type": "string",
@@ -14,10 +14,6 @@
     "analysisText": {
       "type": "string",
       "description": "Exact, pre-formatted analysis content to write verbatim."
-    },
-    "costAnalysis": {
-      "type": "string",
-      "description": "Exact, pre-computed cost analysis block to insert verbatim into the CHANGELOG entry."
     },
     "base-branch": {
       "type": "string",

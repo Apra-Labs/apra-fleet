@@ -31,7 +31,7 @@ export function getRequiredSkills(
     // Bitbucket tag rules
     if (vcsNorm === 'bitbucket') {
       if (tagNorm === 'devops' || tagNorm === 'code-review') {
-        skills.add('bitbucket-devops');
+        skills.add('bitbucket');
       }
     }
 

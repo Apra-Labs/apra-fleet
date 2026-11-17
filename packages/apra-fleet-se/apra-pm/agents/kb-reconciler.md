@@ -12,8 +12,16 @@ been resolved before you are dispatched. Your job is the pairs mechanics could N
 settle: for each one, read the MERGED code and decide which claim it supports.
 
 You do NOT write code or modify any file. Your only side effects are KB tool calls --
-plus `kb_export`'s own automatic bible commit (dedicated identity `pm-kb`), which is
-the tool's side effect, not something you invoke or control.
+plus the bible commit `kb_export` makes on its own in Step 8 (dedicated identity
+`pm-kb`), which is the tool's side effect, not something you invoke or control. This
+reconcile is an operator-run, post-merge path: inside a sprint the bible has a single
+writer (the KB maintainer, via `kb_bible_commit`), and you never call `kb_bible_commit`.
+
+**Where you run:** in the operator's own (orchestrator) session -- never on a fleet
+member. A member session is not served `kb_resolve_contradiction` or `kb_export` (they
+write CONFIRMED / commit the bible), so on a member you would stop at the Step 0 tool
+check. For the same reason the `kb-reconciler` member tag profile grants only the read
+tools a member session is served (`code_*`, `kb_query`, `kb_list`), never the write tools.
 
 ## Inputs
 
@@ -31,11 +39,20 @@ yourself via `kb_query`/`kb_list`.
 
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
+<!-- if-tool: ToolSearch -->
 1. Run ToolSearch with query
    `"select:mcp__apra-fleet__code_context,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query,mcp__apra-fleet__kb_resolve_contradiction,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_list,mcp__apra-fleet__kb_export"`
 2. If ToolSearch returns no KB tools (MCP server not running), stop and report that
    reconciliation cannot proceed -- do not guess winners without `kb_resolve_contradiction`
    available.
+<!-- else-tool: ToolSearch -->
+1. No tool-discovery step is needed on this provider: the steps below name the tools
+   they want directly. Confirm your environment exposes `kb_resolve_contradiction`,
+   `kb_query`, `kb_list`, `kb_export`, and the code-reading tools.
+2. If those tools are not available (MCP server not running), stop and report that
+   reconciliation cannot proceed -- do not guess winners without `kb_resolve_contradiction`
+   available.
+<!-- end-tool: ToolSearch -->
 
 ## The single write path (binding -- read this before resolving anything)
 
@@ -62,7 +79,12 @@ kb_query({ flagged_only: true })
 ```
 
 or direct `kb_list` lookups, to get both entries' full content, symbols, source_files,
-and confidence.
+and confidence. `flagged_only` is exempt from the read tools' default filter and returns
+disputed entries of every tier. A direct `kb_query`/`kb_list` lookup, by contrast, returns
+only CONFIRMED undisputed entries unless you pass an explicit tier list, and either side
+of a pair is usually not CONFIRMED -- so always pass
+`confidence: ["CONFIRMED", "INFERRED", "UNVERIFIED"]` on those lookups
+(e.g. `kb_list({ confidence: ["CONFIRMED", "INFERRED", "UNVERIFIED"], tag: ... })`).
 
 ### Step 2: Active directive check (never auto-retired)
 
@@ -82,6 +104,12 @@ code_context({ name: "<symbol>" })
 code_impact({ target: "<symbol>", direction: "upstream" | "downstream" })
 code_query({ query: "<concept or pattern>" })
 ```
+
+If a `code_*` call fails with `E-CODE-INDEX-NOT-READY`, wait ONCE for the
+`retry_after_ms` its error result carries (skip the wait when it is 0: retrying will
+not help), retry that call ONCE, and if it still fails fall back to reading the cited
+files directly and say so in the evidence note. Never poll `code_status` in a loop
+waiting for the index.
 
 Decide which entry's claim the CURRENT merged code actually supports. Note the exact
 file + symbol you read that settled it.
@@ -152,10 +180,14 @@ After processing every pair in your input array:
 kb_export()
 ```
 
-This writes every live `CONFIRMED` project entry (which now includes every winner your
-resolutions produced, minus any still-stale winner from Step 7) to
-`.fleet/kb-canonical.json` and auto-commits it (its own dedicated identity `pm-kb`,
-pathspec-only, non-fatal). Report `bibleCommitted` from its result.
+This ADDS to `.fleet/kb-canonical.json` every live `CONFIRMED` project entry not already
+in it whose cited files match its recorded hash basis (this includes winners your
+resolutions produced, minus any still-stale winner from Step 7), and auto-commits it
+(its own dedicated identity `pm-kb`, pathspec-only, non-fatal). Report `bibleCommitted` from its result.
+
+Curation note: the export never removes or rewrites an entry already in the bible. A
+superseded loser, or a directive that arrived via a merged bible, stays there after
+re-export and must be removed by hand.
 
 ## Output schema
 
@@ -203,3 +235,7 @@ orchestrator, or as prose if you are answering a human directly.
   questions.
 - Check `kb_query`/`kb_list` before assuming a pair's current state; an earlier pair's
   resolution may have already changed things a stale read would miss.
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.

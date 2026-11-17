@@ -1,5 +1,5 @@
 // Token grammar: {{ optional_ws name optional_ws }}
-// name must match [A-Za-z_][A-Za-z0-9_]* (no dots, so {{secure.NAME}} is never a token)
+// name must match [A-Za-z_][A-Za-z0-9_]* (no dots, so {{secret.NAME}} / legacy {{secure.NAME}} are never tokens here)
 const TOKEN_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
 
 // Key grammar enforced on substitutions map keys
@@ -105,7 +105,7 @@ function buildKeyRejectionError(callerName: string, badKeys: string[]): string {
   let msg = `${callerName}: invalid substitutions\n\n`;
   msg += `Reserved or malformed keys (must match [A-Za-z_][A-Za-z0-9_]*):\n`;
   for (const k of badKeys) msg += `  - ${k}\n`;
-  msg += `\nSecrets must use {{secure.NAME}} in execute_command -- never substitutions.`;
+  msg += `\nSecrets must use {{secret.NAME}} in execute_command -- never substitutions.`;
   return msg;
 }
 

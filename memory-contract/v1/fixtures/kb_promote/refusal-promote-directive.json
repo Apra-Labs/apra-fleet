@@ -1,0 +1,14 @@
+{
+  "tool": "kb_promote",
+  "case": "refusal-promote-directive",
+  "kind": "refusal",
+  "request": {
+    "id": "95ede0ae-4ade-47e6-9b73-3957a02c0e04",
+    "reason": "Attempting to promote a user-directive proposal directly, bypassing CLI activation."
+  },
+  "error": {
+    "message": "Cannot promote a user-directive via kb_promote (F1/D1): directive activation is human-terminal only. Run `apra-fleet kb approve-directive 95ede0ae-4ade-47e6-9b73-3957a02c0e04` (or `reject-directive 95ede0ae-4ade-47e6-9b73-3957a02c0e04` to discard).",
+    "thrown": true
+  },
+  "expected_error_code": "E-PROMOTE-REFUSED-DIRECTIVE"
+}

@@ -1,0 +1,13 @@
+{
+  "tool": "kb_import",
+  "case": "refusal-bible-not-json",
+  "kind": "refusal",
+  "request": {
+    "path": "<SCRATCH_REPO_A>/.fleet/not-json.json"
+  },
+  "error": {
+    "message": "kb_import: bible file is not valid JSON: <SCRATCH_REPO_A>/.fleet/not-json.json",
+    "thrown": true
+  },
+  "expected_error_code": "E-BIBLE-NOT-JSON"
+}

@@ -1,17 +1,18 @@
 import { z } from 'zod';
-import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
+import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
+import { logWarn } from '../utils/log-helpers.js';
 import type { KBEntryInput, CaptureSource, AudnDecision } from '../services/knowledge/types.js';
 
 export const kbHarvestSchema = z.object({
-  ...kbScopeFields,
-  repo_path: z.string().optional()
-    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   session_transcript: z.string().optional()
     .describe('Full session transcript text to scan for learnings'),
   session_id: z.string().optional()
     .describe('Session ID for attribution'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbHarvestInput = z.infer<typeof kbHarvestSchema>;
@@ -29,6 +30,9 @@ const LEARNING_PATTERNS = [
   /(?:^|\n)\s*(?:The (?:issue|problem|fix|solution|root cause) (?:is|was))\s*[:\-]?\s*(.+?)(?:\n\n|\n(?=[A-Z])|$)/gis,
   /(?:^|\n)\s*(?:Important:|Key insight:|Lesson learned:|TIL:)\s*(.+?)(?:\n\n|\n(?=[A-Z])|$)/gis,
 ];
+
+/** Longest first_error text carried into the kb_harvest response. */
+const MAX_FIRST_ERROR_CHARS = 500;
 
 const FILE_PATH_RE = /(?:^|\s)((?:src|lib|tests?|docs?)\/[\w./-]+\.\w+)/g;
 const SYMBOL_RE = /`(\w{2,}(?:\.\w+)?(?:\(\))?)`/g;
@@ -101,12 +105,12 @@ function extractLearnings(transcript: string): ExtractedLearning[] {
 // entry captured here is forced to
 // confidence='UNVERIFIED' (never CONFIRMED, covered by the D1 clamp) with
 // author='harvest', source='harvest' so it is distinguishable in queries.
-export async function kbHarvest(input: KbHarvestInput): Promise<string> {
+export async function kbHarvest(input: KbHarvestInput, anchor?: KbAnchor): Promise<string> {
   if (!input.session_transcript) {
-    return JSON.stringify({ entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0 });
+    return JSON.stringify({ entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0, entries_failed: 0 });
   }
 
-  const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
+  const providers = await getSelfKbProviders(anchor);
   const provider = providers.project;
 
   const learnings = extractLearnings(input.session_transcript);
@@ -114,6 +118,11 @@ export async function kbHarvest(input: KbHarvestInput): Promise<string> {
   let entries_updated = 0;
   let entries_skipped = 0;
   let entries_rejected = 0;
+  let entries_failed = 0;
+  // The first non-rejection failure, reported only when nothing landed, so a
+  // harvest whose every capture failed (a broken DB, a server that is down)
+  // says why instead of hiding it in the count.
+  let first_error: string | undefined;
 
   // D5 + revised D7 (T2.3): harvested entries are UNVERIFIED, regex-extracted,
   // low-trust captures from the execute_prompt autowire -- distinct provenance
@@ -137,12 +146,15 @@ export async function kbHarvest(input: KbHarvestInput): Promise<string> {
       confidence: 'UNVERIFIED',
     };
 
-    // KB-TRUST PHASE 1: capture now fails closed on an uncheckable basis, and
-    // harvest is the highest-volume writer -- its regex extraction frequently
-    // yields no file paths at all. Isolate each capture so one rejected entry
-    // is counted and the loop continues; an unhandled throw here would abort
-    // the remaining entries and die silently, because auto-harvest is
-    // dispatched fire-and-forget with a bare .catch() in execute-prompt.ts.
+    // Isolate each capture so one failure never costs the learnings after
+    // it: an unhandled throw here would abort the remaining entries and die
+    // silently, because auto-harvest is dispatched fire-and-forget with a bare
+    // .catch() in execute-prompt.ts. A capture refused for its basis
+    // (KB-TRUST PHASE 1: harvest's regex extraction often yields no file
+    // paths) is counted as rejected. Any other failure -- e.g. a remote KB
+    // server that is down, where the http provider queues nothing -- is
+    // logged with the entry title and counted as failed, so the caller sees
+    // that the harvest must be repeated.
     let audn_decision: AudnDecision;
     try {
       ({ audn_decision } = await provider.capture(entryInput));
@@ -151,7 +163,11 @@ export async function kbHarvest(input: KbHarvestInput): Promise<string> {
         entries_rejected++;
         continue;
       }
-      throw err;
+      entries_failed++;
+      const message = err instanceof Error ? err.message : String(err);
+      first_error ??= message.length > MAX_FIRST_ERROR_CHARS ? `${message.slice(0, MAX_FIRST_ERROR_CHARS)}...` : message;
+      logWarn('kb-harvest', `capture of "${entryInput.title}" failed and was not stored: ${message}`);
+      continue;
     }
 
     if (audn_decision === 'add' || audn_decision === 'flagged') {
@@ -163,5 +179,9 @@ export async function kbHarvest(input: KbHarvestInput): Promise<string> {
     }
   }
 
-  return JSON.stringify({ entries_captured, entries_updated, entries_skipped, entries_rejected });
+  const landed = entries_captured + entries_updated + entries_skipped;
+  return JSON.stringify({
+    entries_captured, entries_updated, entries_skipped, entries_rejected, entries_failed,
+    ...(landed === 0 && first_error !== undefined ? { first_error } : {}),
+  });
 }

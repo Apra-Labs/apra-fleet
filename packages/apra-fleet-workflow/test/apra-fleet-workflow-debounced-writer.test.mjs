@@ -50,7 +50,7 @@ function httpGet(port, urlPath) {
 
 function httpPost(port, urlPath) {
     return new Promise((resolve, reject) => {
-        const req = http.request(`http://127.0.0.1:${port}${urlPath}`, { method: 'POST' }, (res) => {
+        const req = http.request(`http://127.0.0.1:${port}${urlPath}`, { method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
             let data = '';
             res.on('data', (chunk) => { data += chunk; });
             res.on('end', () => resolve({ statusCode: res.statusCode, body: data }));

@@ -1,8 +1,11 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import { defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+import type { MemberShell } from '../os/os-commands.js';
 import { logWarn } from '../utils/log-helpers.js';
+import { transformAgentForClaude } from '../cli/agent-transform.js';
 
 // Known exception: Copilot CLI cannot take a caller-supplied session ID.
 // It uses --continue (no ID); session discovery relies on the mtime-scan fallback
@@ -22,7 +25,12 @@ export class CopilotProvider implements ProviderAdapter {
     return 'copilot --version 2>&1';
   }
 
-  installCommand(os: 'linux' | 'macos' | 'windows'): string {
+  // `shell` is intentionally unused: `winget install ...` is a plain exe
+  // invocation with no PowerShell-only syntax, so it runs unchanged whether
+  // the member's registered shell is gitbash or PowerShell
+  // (apra-fleet-7dir.2.7 -- named here as a windows-branch adapter that needs
+  // no per-shell variant, not skipped silently).
+  installCommand(os: 'linux' | 'macos' | 'windows', _shell?: MemberShell): string {
     if (os === 'macos') {
       return 'brew install --cask copilot';
     }
@@ -93,6 +101,15 @@ export class CopilotProvider implements ProviderAdapter {
     }
   }
 
+  // apra-fleet-hzeb.1: Copilot has no distinct usage-limit event surface, so key off
+  // the raw output using the shared quota detector (guessed resume window).
+  // A successful dispatch (code 0 and !isError) must NEVER be classified as a
+  // usage limit, even if stdout transcripts happen to mention 429 in token metrics.
+  detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null {
+    if (result.code === 0 && !parsed.isError) return null;
+    return defaultUsageLimitSignal(result.stderr || (parsed.isError ? parsed.result : ''));
+  }
+
   supportsResume(): boolean {
     return true;
   }
@@ -103,6 +120,17 @@ export class CopilotProvider implements ProviderAdapter {
 
   sessionIdStrategy(): SessionIdStrategy {
     return { type: 'provider-minted' };
+  }
+
+  // apra-fleet-25yl.2.1: 'inactivity_timeout' here means PRESERVE CURRENT
+  // BEHAVIOUR, not "the exec channel is a proven mid-turn signal for Copilot".
+  // Copilot was deliberately left out of scope for the per-provider decoupling:
+  // resolveSessionLogDir() below returns null, so it has no file-side signal
+  // either way, and that gap is tracked as its own separate work item. Changing
+  // this value is a behaviour change for Copilot -- do it there, not casually
+  // here.
+  execTimeoutSource(): ExecTimeoutSource {
+    return 'inactivity_timeout';
   }
 
   resolveSessionLogPath(_sessionId: string, _workFolder: string, _homeDir?: string | null, _targetOs?: TargetOS): string {
@@ -140,8 +168,9 @@ export class CopilotProvider implements ProviderAdapter {
     return { project: rel, home: rel };
   }
 
-  transformAgent(content: string, _relPath: string): string {
-    return content;
+  transformAgent(content: string, relPath: string): string {
+    // Same resolver the local install uses for this provider, so remote == local.
+    return transformAgentForClaude(content, relPath);
   }
 
   agentNameFlag(_agentName: string): string {
@@ -224,7 +253,7 @@ export class CopilotProvider implements ProviderAdapter {
     return `-p "${promptLiteral}"`;
   }
 
-  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
     // apra-fleet-eft.40 was scoped to the Claude workspace-trust gate (see the
     // provider-trust-matrix note on the parent bug); Copilot was not part of that
     // investigation and no equivalent per-project trust gate is known. No-op until a

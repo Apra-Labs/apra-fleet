@@ -269,7 +269,7 @@ describe('execute_command: credential scoping rejection', () => {
 
     const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `echo {{secure.${name}}}`,
+      command: `echo {{secret.${name}}}`,
       timeout_s: 5,
     }));
 
@@ -290,7 +290,7 @@ describe('execute_command: credential scoping rejection', () => {
 
     const result = resultText(await executeCommand({
       member_id: member.id,
-      command: `echo {{secure.${name}}}`,
+      command: `echo {{secret.${name}}}`,
       timeout_s: 5,
     }));
 

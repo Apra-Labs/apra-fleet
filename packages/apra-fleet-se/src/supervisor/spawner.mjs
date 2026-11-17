@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- detached child-per-sprint spawner (apra-fleet-eft.4.2,
+// fleet-sprint supervisor -- detached child-per-sprint spawner (apra-fleet-eft.4.2,
 // Plan Part 2.1, process model B)
 // =============================================================================
 //
@@ -36,7 +36,7 @@ import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -59,6 +59,10 @@ export function defaultDataDir() {
         : path.join(os.homedir(), '.apra-fleet-se');
 }
 
+/** Max length of a sprint log file's stem (basename without '.log'), identical on every OS. */
+export const MAX_LOG_STEM_LENGTH = 80;
+const LOG_STEM_HASH_LENGTH = 12;
+
 /** Subdirectory (under the SE data dir) that per-sprint raw stdout/stderr log files live in. */
 export const SPRINT_LOG_SUBDIR = 'logs';
 
@@ -79,7 +83,16 @@ export const SPRINT_LOG_SUBDIR = 'logs';
  * @returns {string}
  */
 export function resolveSprintLogPath(dataDir, stem) {
-    const safeStem = String(stem ?? '').replace(/[^A-Za-z0-9._-]/g, '_');
+    let safeStem = String(stem ?? '').replace(/[^A-Za-z0-9._-]/g, '_');
+    // Bound the stem on EVERY OS (not just Windows) so the file name -- and
+    // so the full path under a long Windows-style dataDir -- never depends on
+    // how many issue ids a caller's runId happens to embed. An over-long stem
+    // keeps its head for readability and appends a hash of the WHOLE original
+    // stem, so two different long stems never collide.
+    if (safeStem.length > MAX_LOG_STEM_LENGTH) {
+        const digest = createHash('sha256').update(String(stem)).digest('hex').slice(0, LOG_STEM_HASH_LENGTH);
+        safeStem = `${safeStem.slice(0, MAX_LOG_STEM_LENGTH - LOG_STEM_HASH_LENGTH - 1)}-${digest}`;
+    }
     const fileName = `${safeStem.length > 0 ? safeStem : 'sprint'}.log`;
     // Defense in depth: even after sanitizing, refuse anything that is not
     // a single plain filename (e.g. a sanitized-to-'..'-only stem).
@@ -108,13 +121,12 @@ export function defaultCliPath(deps = {}) {
  * real OS-level availability, not just what this supervisor process itself
  * has handed out.
  *
- * The real viewer binds the wildcard address (`server.listen(port, cb)`, no
- * host -- see apra-fleet-workflow/src/viewer/index.mjs). On Windows, a
- * loopback-only bind and a pre-existing wildcard bind on the same port can
- * coexist without either side erroring, so a plain `host` bind-test alone
- * can report a port "free" when a real viewer already owns it via a
- * wildcard bind -- allocateFreePort would then hand that port to a second
- * process, and inbound connections would silently split between the two.
+ * The real viewer and the supervisor both bind loopback (127.0.0.1) by
+ * default, so a bind test on the same host reliably conflicts with them. The
+ * connect probe remains because it also detects a FOREIGN process that owns
+ * the port -- e.g. one bound to the wildcard address, which on Windows can
+ * coexist with a loopback-only bind on the same port without either side
+ * erroring, splitting inbound connections between the two.
  *
  * This is deliberately NOT fixed by making the probe itself bind the
  * wildcard address: doing so opens this process up to inbound connections
@@ -194,13 +206,15 @@ export async function allocateFreePort(opts = {}) {
  *   issue: string, members: string, branch: string, base: string,
  *   goal?: string, maxCycles?: number|string, allowMissingMembers?: boolean,
  *   requirementsFile?: string, roleMap?: object|string, budget?: number|string,
- *   viewerPort: number, serviceUrl?: string, runId?: string, extraArgs?: string[],
+ *   viewerPort: number, serviceUrl?: string, runId?: string, expectBeads?: string,
+ *   extraArgs?: string[], skipRegression?: boolean, kbDemotionLoop?: 'on'|'off',
+ *   decisionNotify?: string|object,
  * }} opts
  * @returns {string[]}
  */
 export function buildSprintArgv(opts = {}) {
     const { issue, members, branch, base, goal, maxCycles, allowMissingMembers,
-        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, extraArgs } = opts;
+        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs, skipRegression, kbDemotionLoop, decisionNotify } = opts;
 
     if (!issue || !members || !branch || !base) {
         throw new Error('buildSprintArgv requires issue, members, branch, and base');
@@ -224,6 +238,9 @@ export function buildSprintArgv(opts = {}) {
         args.push('--role-map', typeof roleMap === 'string' ? roleMap : JSON.stringify(roleMap));
     }
     if (budget !== undefined) args.push('--budget', String(budget));
+    if (skipRegression === true) args.push('--skip-regression');
+    if (kbDemotionLoop !== undefined) args.push('--kb-demotion-loop', kbDemotionLoop);
+    if (decisionNotify !== undefined) args.push('--decision-notify', typeof decisionNotify === 'string' ? decisionNotify : JSON.stringify(decisionNotify));
     // apra-fleet-f34.1: when this supervisor instance has a known --service-url
     // (its own HTTP listen address, wired in from createSpawner()'s deps.serviceUrl
     // below), forward it so the spawned cli.mjs child threads it into
@@ -241,6 +258,13 @@ export function buildSprintArgv(opts = {}) {
     // direct/standalone CLI launch never goes through this spawner) means
     // cli.mjs falls back to the branch name itself.
     if (runId !== undefined) args.push('--run-id', runId);
+    // The beads identity this supervisor resolved at startup (see
+    // beads-identity.mjs / bin/serve.mjs), serialized by the shared
+    // fleet-sprint/beads-identity.mjs serializeExpectedIdentity(), forwarded
+    // so the engine can verify every member's `bd where` against the SAME
+    // database this supervisor reads. Omitted when the caller has none (a
+    // direct/test spawner) -- the engine then skips the verification.
+    if (expectBeads !== undefined) args.push('--expect-beads', expectBeads);
     if (Array.isArray(extraArgs)) args.push(...extraArgs);
     return args;
 }
@@ -261,6 +285,7 @@ export function buildSprintArgv(opts = {}) {
  *   isPortAvailable?: (port: number) => Promise<boolean>,
  *   logger?: { log?: Function, error?: Function },
  *   serviceUrl?: string,
+ *   expectBeads?: string|(() => string|undefined),
  *   onChildExit?: (info: { pid: number, runId: string|null, exitCode: number|null, signal: string|null, at: string, logPath: string }) => void,
  *   now?: () => string,
  *   dataDir?: string,
@@ -302,6 +327,15 @@ export function createSpawner(deps = {}) {
     // one, spawned children simply omit --service-url and fall back exactly
     // as before -- no crash, unchanged behavior.
     const serviceUrl = deps.serviceUrl;
+    // The serialized beads identity (fleet-sprint/beads-identity.mjs's
+    // serializeExpectedIdentity() JSON) every child receives as
+    // `--expect-beads`; threaded exactly like serviceUrl above -- optional,
+    // and a per-call opts.expectBeads wins over the instance default. May be
+    // a function (bin/serve.mjs passes one) so it is read at each spawn:
+    // the supervisor's identity can start out unknown and be recovered
+    // later by GET /api/health?refresh=1. undefined -> the flag is omitted.
+    const expectBeadsDep = deps.expectBeads;
+    const resolveExpectBeads = () => (typeof expectBeadsDep === 'function' ? expectBeadsDep() : expectBeadsDep);
     // apra-fleet-k7b.3: optional same-instance child-exit notification (see
     // the 'exit' listener below) and its injectable clock (test determinism,
     // matching ledger.mjs/history.mjs's own `now` seam convention).
@@ -339,7 +373,12 @@ export function createSpawner(deps = {}) {
      */
     async function spawnSprint(opts = {}) {
         const port = await allocateFreePort({ startPort: basePort, excludedPorts: livePortSet(), isAvailable });
-        const args = [cliPath, ...buildSprintArgv({ ...opts, viewerPort: port, serviceUrl: opts.serviceUrl ?? serviceUrl })];
+        const args = [cliPath, ...buildSprintArgv({
+            ...opts,
+            viewerPort: port,
+            serviceUrl: opts.serviceUrl ?? serviceUrl,
+            expectBeads: opts.expectBeads ?? resolveExpectBeads(),
+        })];
 
         // apra-fleet-ou7.1: opts.runId is the SAME sprintId createSprintController
         // generates and claims in the ledger BEFORE spawning (apra-fleet-k7b.1) --
@@ -364,6 +403,7 @@ export function createSpawner(deps = {}) {
         try {
             child = spawnImpl(command, args, {
                 detached: true,
+                windowsHide: true,
                 stdio: ['ignore', logFd, logFd],
                 ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
                 ...(deps.env !== undefined ? { env: deps.env } : {}),

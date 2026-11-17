@@ -1,0 +1,26 @@
+{
+  "tool": "kb_capture",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "type": "knowledge",
+    "title": "exampleFn returns x + 1",
+    "summary": "exampleFn in src/example.ts is a trivial increment helper used by the fixture corpus.",
+    "content": "exampleFn(x) returns x + 1. Captured as a synthetic fixture for the memory-contract round-trip corpus.",
+    "source_files": [
+      "src/example.ts"
+    ],
+    "symbols": [
+      "exampleFn"
+    ],
+    "role": "doer"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"5dfe9670-72fc-4231-b4f4-a0cd99137775\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

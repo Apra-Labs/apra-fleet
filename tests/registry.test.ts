@@ -175,8 +175,8 @@ describe('registry - duplicate folder validation', () => {
   });
 
   it('allows same host+folder on different ports (RPort scenario)', () => {
-    addAgent(makeTestAgent({ id: 'remote-1', host: '10.0.0.1', port: 24091, workFolder: '/home/blub0x' }));
-    expect(hasDuplicateFolder('remote', '/home/blub0x', '10.0.0.1', 21870)).toBe(false);
+    addAgent(makeTestAgent({ id: 'remote-1', host: '10.0.0.1', port: 24091, workFolder: '/home/sample' }));
+    expect(hasDuplicateFolder('remote', '/home/sample', '10.0.0.1', 21870)).toBe(false);
   });
 
   it('detects duplicate remote host+port+folder', () => {
@@ -197,6 +197,26 @@ describe('registry - duplicate folder validation', () => {
   it('excludes member by ID (for updates)', () => {
     addAgent(makeAgent({ id: 'local-1', agentType: 'local', workFolder: '/home/user/project', host: undefined }));
     expect(hasDuplicateFolder('local', '/home/user/project', undefined, undefined, 'local-1')).toBe(false);
+  });
+
+  it('allows one LLM-less member to share a folder with an LLM member', () => {
+    addAgent(makeAgent({ id: 'local-1', agentType: 'local', workFolder: '/home/user/project', host: undefined, llmProvider: 'claude' }));
+    expect(hasDuplicateFolder('local', '/home/user/project', undefined, undefined, undefined, 'none')).toBe(false);
+  });
+
+  it('allows an LLM member to share a folder with an LLM-less member', () => {
+    addAgent(makeAgent({ id: 'local-1', agentType: 'local', workFolder: '/home/user/project', host: undefined, llmProvider: 'none' }));
+    expect(hasDuplicateFolder('local', '/home/user/project', undefined, undefined, undefined, 'claude')).toBe(false);
+  });
+
+  it('rejects a second LLM-less member in the same folder', () => {
+    addAgent(makeAgent({ id: 'local-1', agentType: 'local', workFolder: '/home/user/project', host: undefined, llmProvider: 'none' }));
+    expect(hasDuplicateFolder('local', '/home/user/project', undefined, undefined, undefined, 'none')).toBe(true);
+  });
+
+  it('rejects a second LLM member in the same folder (an unset provider counts as LLM)', () => {
+    addAgent(makeAgent({ id: 'local-1', agentType: 'local', workFolder: '/home/user/project', host: undefined, llmProvider: undefined }));
+    expect(hasDuplicateFolder('local', '/home/user/project', undefined, undefined, undefined, 'claude')).toBe(true);
   });
 
   it('rejects update_agent folder change when duplicate exists', () => {

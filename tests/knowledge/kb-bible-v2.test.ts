@@ -60,12 +60,20 @@ function readBible(): any {
   return JSON.parse(fs.readFileSync(path.join(repo, '.fleet', 'kb-canonical.json'), 'utf-8'));
 }
 
+// The suite shells out to git twice per case (init + commit) and re-seeds a
+// fresh in-memory SqliteProvider. Each op is sub-100ms in isolation, but under
+// full-suite host contention on Windows this reliably blows past the 5000ms
+// vitest default and the 10000ms default hook timeout -- see
+// tests/register-member.test.ts / tests/task-wrapper.test.ts for the same
+// per-test-timeout pattern applied to other git/subprocess-heavy suites.
 beforeEach(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-bible-v2-'));
   repo = path.join(tmp, 'repo');
   fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
   fs.writeFileSync(path.join(repo, 'src', 'real.ts'), 'export const real = 1;\n');
   execFileSync('git', ['init', '-q', '.'], { cwd: repo });
+  // The cited file is committed: bible admission reads it at HEAD.
+  execFileSync('git', ['add', '-A'], { cwd: repo });
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'seed'], { cwd: repo });
 
   provider = new SqliteProvider(':memory:', repo);
@@ -75,13 +83,17 @@ beforeEach(async () => {
     global: provider,
     projectSlug: 'test',
   } as any);
-});
+}, 20000);
 
 afterEach(() => {
   provider.close();
   vi.restoreAllMocks();
-  fs.rmSync(tmp, { recursive: true, force: true });
-});
+  // maxRetries/retryDelay let Node's own rmSync retry through the Windows
+  // EBUSY window (antivirus/git holding a handle on .git files right after
+  // the process exits) instead of throwing and cascading into the next
+  // case's beforeEach hook timeout.
+  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+}, 20000);
 
 describe('kb_export writes the v2 envelope with its export commit', () => {
   it('records version, commit, branch and entry_count', async () => {
@@ -92,63 +104,79 @@ describe('kb_export writes the v2 envelope with its export commit', () => {
     // that stored them (see the note above nextEntriesJson in kb-export.ts).
     // Reading HEAD afterwards would assert the opposite of that contract.
     const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim();
-    await kbExport({ repo_path: repo });
+    await kbExport({}, { folder: repo });
 
     const bible = readBible();
 
-    expect(bible.version).toBe(2);
+    expect(bible.version).toBe(3);
     expect(bible.provenance.commit).toBe(head);
     expect(bible.provenance.commit).toMatch(/^[0-9a-f]{40}$/);
     expect(bible.provenance.entry_count).toBe(2);
     expect(bible.entries).toHaveLength(2);
     expect(typeof bible.provenance.branch).toBe('string');
-  });
+  }, 20000);
+
+  it('writes an explicit target base branch and base commit into provenance, not the HEAD branch', async () => {
+    await seedConfirmed(['Target claim']);
+    execFileSync('git', ['checkout', '-q', '-b', 'feature/not-the-target'], { cwd: repo });
+    await kbExport({ baseBranch: 'release/main-target', baseCommit: 'feedface' }, { folder: repo });
+
+    const bible = readBible();
+    expect(bible.provenance.branch).toBe('release/main-target');
+    expect(bible.provenance.commit).toBe('feedface');
+  }, 20000);
+
+  it('omitting baseBranch keeps the export HEAD branch (unchanged behaviour)', async () => {
+    await seedConfirmed(['Head claim']);
+    execFileSync('git', ['checkout', '-q', '-b', 'feature/head-branch'], { cwd: repo });
+    await kbExport({}, { folder: repo });
+
+    expect(readBible().provenance.branch).toBe('feature/head-branch');
+  }, 20000);
 
   it('entry_count matches the entry array, making truncation visible in a diff', async () => {
     await seedConfirmed(['One claim', 'Two claim', 'Three claim']);
-    await kbExport({ repo_path: repo });
+    await kbExport({}, { folder: repo });
 
     const bible = readBible();
     expect(bible.provenance.entry_count).toBe(bible.entries.length);
-  });
+  }, 20000);
 
-  it('degrades to a null commit rather than throwing when the repo has no git', async () => {
+  it('refuses with E-BIBLE-BASIS-NOT-GIT, writing nothing, when the folder has no git', async () => {
+    // Bible admission reads cited files at HEAD; with no git there is no HEAD,
+    // and hashing the files on disk instead would be a silent fallback.
     fs.rmSync(path.join(repo, '.git'), { recursive: true, force: true });
     await seedConfirmed(['Gitless claim']);
 
-    await kbExport({ repo_path: repo });
-
-    const bible = readBible();
-    expect(bible.version).toBe(2);
-    expect(bible.provenance.commit).toBeNull();
-    expect(bible.entries).toHaveLength(1);
-  });
+    await expect(kbExport({}, { folder: repo })).rejects.toMatchObject({ code: 'E-BIBLE-BASIS-NOT-GIT' });
+    expect(fs.existsSync(path.join(repo, '.fleet', 'kb-canonical.json'))).toBe(false);
+  }, 20000);
 });
 
 describe('two exports at the same commit are byte-identical (the no-timestamp property)', () => {
   it('produces an identical file when nothing changed', async () => {
     await seedConfirmed(['Stable claim']);
 
-    await kbExport({ repo_path: repo });
+    await kbExport({}, { folder: repo });
     const first = fs.readFileSync(path.join(repo, '.fleet', 'kb-canonical.json'), 'utf-8');
-    await kbExport({ repo_path: repo });
+    await kbExport({}, { folder: repo });
     const second = fs.readFileSync(path.join(repo, '.fleet', 'kb-canonical.json'), 'utf-8');
 
     expect(second).toBe(first);
-  });
+  }, 20000);
 
   it('changes only when the entry set changes', async () => {
     await seedConfirmed(['First claim']);
-    await kbExport({ repo_path: repo });
+    await kbExport({}, { folder: repo });
     const before = fs.readFileSync(path.join(repo, '.fleet', 'kb-canonical.json'), 'utf-8');
 
     await seedConfirmed(['Second claim']);
-    await kbExport({ repo_path: repo });
+    await kbExport({}, { folder: repo });
     const after = fs.readFileSync(path.join(repo, '.fleet', 'kb-canonical.json'), 'utf-8');
 
     expect(after).not.toBe(before);
     expect(JSON.parse(after).entries).toHaveLength(2);
-  });
+  }, 20000);
 });
 
 describe('kb_import accepts BOTH bible shapes identically', () => {
@@ -179,11 +207,11 @@ describe('kb_import accepts BOTH bible shapes identically', () => {
     const p = path.join(tmp, 'legacy.json');
     fs.writeFileSync(p, JSON.stringify(ENTRIES));
 
-    const report = JSON.parse(await kbImport({ repo: repo, path: p }));
+    const report = JSON.parse(await kbImport({ path: p }, { folder: repo }));
 
     expect(report.imported).toBe(2);
     expect(report.rejected).toBe(0);
-  });
+  }, 20000);
 
   it('imports a v2 object bible', async () => {
     const p = path.join(tmp, 'v2.json');
@@ -193,16 +221,16 @@ describe('kb_import accepts BOTH bible shapes identically', () => {
       entries: ENTRIES,
     }));
 
-    const report = JSON.parse(await kbImport({ repo: repo, path: p }));
+    const report = JSON.parse(await kbImport({ path: p }, { folder: repo }));
 
     expect(report.imported).toBe(2);
     expect(report.rejected).toBe(0);
-  });
+  }, 20000);
 
   it('both shapes produce the same stored entry set', async () => {
     const legacyPath = path.join(tmp, 'legacy2.json');
     fs.writeFileSync(legacyPath, JSON.stringify(ENTRIES));
-    await kbImport({ repo: repo, path: legacyPath });
+    await kbImport({ path: legacyPath }, { folder: repo });
     const fromLegacy = (await provider.query({ ids: ['shape-a', 'shape-b'] })).results
       .map((e) => `${e.id}:${e.title}:${e.confidence}`).sort();
 
@@ -220,28 +248,28 @@ describe('kb_import accepts BOTH bible shapes identically', () => {
       provenance: { commit: 'b'.repeat(40), branch: 'main', entry_count: 2 },
       entries: ENTRIES,
     }));
-    await kbImport({ repo: repo, path: v2Path });
+    await kbImport({ path: v2Path }, { folder: repo });
     const fromV2 = (await provider.query({ ids: ['shape-a', 'shape-b'] })).results
       .map((e) => `${e.id}:${e.title}:${e.confidence}`).sort();
 
     expect(fromV2).toEqual(fromLegacy);
-  });
+  }, 20000);
 
   it('still refuses a shape that is neither an array nor an entries object', async () => {
     const p = path.join(tmp, 'bogus.json');
     fs.writeFileSync(p, JSON.stringify({ version: 2, provenance: {} }));
 
-    await expect(kbImport({ repo: repo, path: p })).rejects.toThrow(/not a JSON array of entries/);
-  });
+    await expect(kbImport({ path: p }, { folder: repo })).rejects.toThrow(/not a JSON array of entries/);
+  }, 20000);
 });
 
 describe('a v2 export round-trips back through import', () => {
   it('preserves the entry set across export -> import', async () => {
     await seedConfirmed(['Round trip claim', 'Second round trip claim']);
-    await kbExport({ repo_path: repo });
+    await kbExport({}, { folder: repo });
 
     const exported = readBible();
-    expect(exported.version).toBe(2);
+    expect(exported.version).toBe(3);
     const exportedIds = exported.entries.map((e: any) => e.id).sort();
 
     // Re-import into a fresh KB and confirm the same ids land.
@@ -252,13 +280,13 @@ describe('a v2 export round-trips back through import', () => {
       project: provider, global: provider, projectSlug: 'test',
     } as any);
 
-    const report = JSON.parse(await kbImport({ repo: repo }));
+    const report = JSON.parse(await kbImport({}, { folder: repo }));
     expect(report.imported).toBe(exportedIds.length);
     expect(report.rejected).toBe(0);
 
     const stored = (await provider.query({ ids: exportedIds })).results.map((e) => e.id).sort();
     expect(stored).toEqual(exportedIds);
-  });
+  }, 20000);
 });
 
 describe('every bible reader handles both shapes', () => {
@@ -269,13 +297,13 @@ describe('every bible reader handles both shapes', () => {
   it('kb_stats reports a v2 bible as present with the right entry count', async () => {
     const { kbStats } = await import('../../src/tools/kb-stats.js');
     await seedConfirmed(['Stats claim one', 'Stats claim two']);
-    await kbExport({ repo_path: repo });
+    await kbExport({}, { folder: repo });
 
-    const stats = JSON.parse(await kbStats({ repo: repo } as any));
+    const stats = JSON.parse(await kbStats({} as any, { folder: repo }));
 
     expect(stats.bible.present).toBe(true);
     expect(stats.bible.entries).toBe(2);
-  });
+  }, 20000);
 
   it('kb_stats still reports a legacy bare-array bible as present', async () => {
     const { kbStats } = await import('../../src/tools/kb-stats.js');
@@ -288,9 +316,9 @@ describe('every bible reader handles both shapes', () => {
       },
     ]));
 
-    const stats = JSON.parse(await kbStats({ repo: repo } as any));
+    const stats = JSON.parse(await kbStats({} as any, { folder: repo }));
 
     expect(stats.bible.present).toBe(true);
     expect(stats.bible.entries).toBe(1);
-  });
+  }, 20000);
 });

@@ -6,9 +6,8 @@ here so the track survives agent restarts, context compaction, and acts of
 god. A fresh agent (or human) must be able to execute from this file alone.
 Update statuses and the log in place as items land.
 
-Companion file: [readme-rewrite-draft.md](readme-rewrite-draft.md) -- the
-actual draft copy. This file is the WHY and the WHAT-NEXT; the draft is the
-current text.
+The draft this track produced was promoted to the repository root
+[README.md](../../README.md); this file is the WHY and the WHAT-NEXT.
 
 ---
 
@@ -72,7 +71,7 @@ Target audiences: VCs, ProductHunt, YC, high-profile people in agentic AI.
    orchestration: supervisor, member reservations, watchdogs, atomic
    state, live dashboard. Temporal-class rigor applied to agents, not a
    prompt chain.
-4. **The unsexy 20% moat**: OOB credential store ({{secure.NAME}}, TTL,
+4. **The unsexy 20% moat**: OOB credential store ({{secret.NAME}}, TTL,
    egress policy allow/deny/confirm), per-provider permission
    composition, VCS auth provisioning/revocation, session liveness,
    dispatch locks. Boring in a feature list, decisive in diligence.

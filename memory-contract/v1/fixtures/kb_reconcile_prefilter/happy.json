@@ -1,0 +1,14 @@
+{
+  "tool": "kb_reconcile_prefilter",
+  "case": "happy",
+  "kind": "happy",
+  "request": {},
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"pairs\":1,\"resolved\":[],\"left_for_agent\":[{\"originalId\":\"5b730253-c162-449f-9d2a-7e92397d2725\",\"challengerId\":\"e7446900-9cfe-46d4-8d5b-caa4133104fb\"}],\"skipped_directive\":0}"
+      }
+    ]
+  }
+}

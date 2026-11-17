@@ -31,7 +31,7 @@ afterEach(() => {
 describe('kb_harvest', () => {
   it('returns zero counts when no transcript is provided', async () => {
     const result = JSON.parse(await kbHarvest({}));
-    expect(result).toEqual({ entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0 });
+    expect(result).toEqual({ entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0, entries_failed: 0 });
   });
 
   it('extracts learnings from transcript with pattern markers', async () => {
@@ -67,6 +67,39 @@ Bug: The cleanup handler in src/services/registry.ts does not close the database
       expect(entry.author).toBe('harvest');
       expect(entry.source).toBe('harvest');
     }
+  });
+
+  // A SQLite DB failure must not hide in entries_failed: when nothing landed,
+  // the response carries the first failure's message.
+  it('a harvest whose every capture fails on a broken SQLite DB reports first_error', async () => {
+    vi.spyOn(provider, 'capture').mockRejectedValue(new Error('SQLITE_IOERR: disk I/O error'));
+    const transcript = `Note: The registry uses lazy initialization and must be called before other operations in src/registry.ts.`;
+
+    const result = JSON.parse(await kbHarvest({ session_transcript: transcript }));
+    expect(result.entries_captured).toBe(0);
+    expect(result.entries_failed).toBe(1);
+    expect(result.first_error).toBe('SQLITE_IOERR: disk I/O error');
+  });
+
+  it('first_error is absent when at least one capture landed', async () => {
+    const real = provider.capture.bind(provider);
+    // The first capture fails; the learnings after it land.
+    vi.spyOn(provider, 'capture')
+      .mockImplementationOnce(async () => { throw new Error('disk I/O error'); })
+      .mockImplementation(real);
+    const transcript = `Working on the registry module.
+
+I found that the registry uses a singleton pattern and lazy initialization via getOrCreate in src/services/registry.ts
+
+Bug: The cleanup handler in src/services/registry.ts does not close the database connection properly when called twice
+
+Gotcha: src/services/registry.ts caches the parsed file, so an edit on disk is not seen until the next restart
+`;
+
+    const result = JSON.parse(await kbHarvest({ session_transcript: transcript }));
+    expect(result.entries_failed).toBe(1);
+    expect(result.entries_captured).toBeGreaterThanOrEqual(1);
+    expect(result).not.toHaveProperty('first_error');
   });
 
   it('deduplicates already-captured learnings via AUDN', async () => {
@@ -137,10 +170,10 @@ describe('kb_harvest routes per repo_path (two repos, one process)', () => {
     const transcriptA = `Note: Repo alpha's registry module in src/registry.ts uses a lazy singleton via getOrCreate.`;
     const transcriptB = `Bug: Repo beta's cleanup handler in src/registry.ts leaks a database connection on double-close.`;
 
-    const resultA = JSON.parse(await kbHarvest({ repo_path: repoA, session_transcript: transcriptA }));
+    const resultA = JSON.parse(await kbHarvest({ session_transcript: transcriptA }, { folder: repoA }));
     expect(resultA.entries_captured).toBeGreaterThanOrEqual(1);
 
-    const resultB = JSON.parse(await kbHarvest({ repo_path: repoB, session_transcript: transcriptB }));
+    const resultB = JSON.parse(await kbHarvest({ session_transcript: transcriptB }, { folder: repoB }));
     expect(resultB.entries_captured).toBeGreaterThanOrEqual(1);
 
     const slugA = resolveProjectSlug(repoA);
@@ -153,8 +186,8 @@ describe('kb_harvest routes per repo_path (two repos, one process)', () => {
     expect(fs.existsSync(dbB)).toBe(true);
     expect(dbA).not.toBe(dbB);
 
-    const fromA = JSON.parse(await kbList({ repo_path: repoA, limit: 50 }));
-    const fromB = JSON.parse(await kbList({ repo_path: repoB, limit: 50 }));
+    const fromA = JSON.parse(await kbList({ limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }, { folder: repoA }));
+    const fromB = JSON.parse(await kbList({ limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }, { folder: repoB }));
 
     expect(fromA.results.some((e: any) => e.summary.includes('alpha'))).toBe(true);
     expect(fromA.results.some((e: any) => e.summary.includes('beta'))).toBe(false);

@@ -22,7 +22,7 @@ function request(port, method, path, body) {
         const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
         const req = http.request(
             { host: '127.0.0.1', port, method, path,
-              headers: payload ? { 'content-type': 'application/json', 'content-length': payload.length } : {} },
+              headers: payload ? { 'content-type': 'application/json', 'content-length': payload.length } : (method === 'GET' ? {} : { 'content-type': 'application/json' }) },
             (res) => {
                 const chunks = [];
                 res.on('data', (c) => chunks.push(c));
@@ -185,6 +185,13 @@ describe('parseServeArgs', () => {
         assert.throws(() => parseServeArgs(['--nope']), /Invalid command-line arguments/);
     });
 
+    test('accepts --beads-dir <path> (the explicit project-folder override for beads discovery)', () => {
+        assert.equal(parseServeArgs(['--beads-dir', '/some/project']).values['beads-dir'], '/some/project');
+        assert.equal(parseServeArgs(['--port', '9000', '--beads-dir', '/p/.beads']).values['beads-dir'], '/p/.beads');
+        assert.equal(parseServeArgs([]).values['beads-dir'], undefined);
+        assert.throws(() => parseServeArgs(['--beads-dir']), /Invalid command-line arguments/);
+    });
+
     test('DEFAULT_SERVICE_PORT is a valid port', () => {
         assert.ok(Number.isInteger(DEFAULT_SERVICE_PORT) && DEFAULT_SERVICE_PORT > 0 && DEFAULT_SERVICE_PORT < 65536);
     });
@@ -314,6 +321,25 @@ describe('serveMain', () => {
             console.error = origErr;
         }
     });
+
+    // A --beads-dir that does not exist is an operator typo: still a startup
+    // ERROR (exit 1 before any port is bound). Contrast: NO .beads reachable
+    // from cwd is an environment condition and only a warning (the server
+    // starts with the identity unknown) -- covered at the unit level by
+    // supervisor-beads-identity / supervisor-api / spawner tests, since which
+    // tracker an arbitrary cwd walks up to is host-dependent.
+    test('--beads-dir pointing at a nonexistent path returns exit 1 with a clear error', async () => {
+        const origErr = console.error;
+        const errors = [];
+        console.error = (...a) => errors.push(a.join(' '));
+        try {
+            const { exitCode } = await serveMain(['--beads-dir', '/definitely/not/here/.beads']);
+            assert.equal(exitCode, 1);
+            assert.ok(errors.some((e) => /--beads-dir '.*not.here.*' does not exist or is not a directory/.test(e)), JSON.stringify(errors));
+        } finally {
+            console.error = origErr;
+        }
+    });
 });
 
 // -- minimal fake IncomingMessage for readJsonBody --------------------------
@@ -340,4 +366,45 @@ test('sendJson writes a JSON response with content-length', async () => {
     assert.equal(res.status, 201);
     assert.deepEqual(res.json, { ok: true });
     await new Promise((r) => server.close(r));
+});
+
+import { createSupervisor as createSupervisorForShutdownBounds } from '../src/supervisor/server.mjs';
+
+describe('shutdown bounds (per-seam timeout and forced exit)', () => {
+    test('a seam whose stop() never settles is bounded, named, and does not block shutdownRequested', async () => {
+        const errors = [];
+        const stopped = [];
+        const sup = createSupervisorForShutdownBounds({
+            port: 0,
+            logger: { log() {}, error: (...a) => errors.push(a.join(' ')) },
+            seamStopTimeoutMs: 100,
+            dashboard: { name: 'dashboard', start() {}, stop: () => new Promise(() => {}) },
+            ledger: { name: 'ledger', start() {}, stop: async () => { stopped.push('ledger'); } },
+        });
+        await sup.start();
+        await sup.stop('test');
+        await sup.shutdownRequested;
+        assert.deepEqual(sup.hungSeams, ['dashboard']);
+        assert.ok(errors.some((e) => /dashboard did not stop within 100ms/.test(e)));
+        assert.deepEqual(stopped, ['ledger'], 'later seams still stop after a hung one');
+    });
+
+    test('forced exit fires with code 0 and names the hung seam when shutdown stalls', async () => {
+        const errors = [];
+        let exitCode;
+        const sup = createSupervisorForShutdownBounds({
+            port: 0,
+            logger: { log() {}, error: (...a) => errors.push(a.join(' ')) },
+            seamStopTimeoutMs: 50,
+            forcedExitMs: 300,
+            exit: (c) => { exitCode = c; },
+            dashboard: { name: 'dashboard', start() {}, stop: () => new Promise(() => {}) },
+            ledger: { name: 'ledger', start() {}, stop: () => new Promise(() => {}) },
+        });
+        await sup.start();
+        void sup.stop('test');
+        await new Promise((r) => setTimeout(r, 700));
+        assert.equal(exitCode, 0);
+        assert.ok(errors.some((e) => /forcing exit/.test(e) && /dashboard/.test(e)));
+    });
 });

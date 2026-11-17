@@ -52,7 +52,7 @@ describe('kbImportCmd (handler unit)', () => {
     );
     const code = await kbImportCmd(importFn, ['--repo', '/some/repo']);
     expect(code).toBe(0);
-    expect(importFn).toHaveBeenCalledWith({ repo: '/some/repo', path: undefined });
+    expect(importFn).toHaveBeenCalledWith({ path: undefined }, { folder: '/some/repo' });
     const out = logSpy.mock.calls.flat().join('\n');
     expect(out).toContain('Imported 3, skipped 1, linked 2, flagged 1.');
     expect(out).toContain('Freshness sweep: checked 5, staled 2, unstaled 1.');
@@ -63,7 +63,7 @@ describe('kbImportCmd (handler unit)', () => {
       JSON.stringify({ imported: 0, skipped: 0, linked: 0, flagged: 0, sweep: { checked: 0, staled: 0, unstaled: 0 } })
     );
     await kbImportCmd(importFn, ['--path', '/some/bible.json']);
-    expect(importFn).toHaveBeenCalledWith({ repo: undefined, path: '/some/bible.json' });
+    expect(importFn).toHaveBeenCalledWith({ path: '/some/bible.json' }, undefined);
   });
 
   it('exits 1 and prints the message on a resolution failure (missing bible / invalid repo)', async () => {

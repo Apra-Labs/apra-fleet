@@ -1,0 +1,25 @@
+{
+  "tool": "kb_capture",
+  "case": "happy-contradiction-a",
+  "kind": "happy",
+  "request": {
+    "type": "learning",
+    "title": "helperBar is broken",
+    "summary": "helperBar in src/helper.ts is broken under concurrent calls.",
+    "content": "helperBar is broken: it silently drops the second concurrent call.",
+    "source_files": [
+      "src/helper.ts"
+    ],
+    "symbols": [
+      "helperBar"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"5b730253-c162-449f-9d2a-7e92397d2725\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

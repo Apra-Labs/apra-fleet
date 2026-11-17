@@ -1,0 +1,17 @@
+{
+  "tool": "kb_promote",
+  "case": "setup-first-promote-for-demote",
+  "kind": "happy",
+  "request": {
+    "id": "212a4796-bc68-497d-bdf9-b5aeeafa9970",
+    "reason": "First promotion (UNVERIFIED -> INFERRED) of the entry the kb_demote fixtures act on."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"212a4796-bc68-497d-bdf9-b5aeeafa9970\",\"previous_confidence\":\"INFERRED\",\"new_confidence\":\"CONFIRMED\"}"
+      }
+    ]
+  }
+}

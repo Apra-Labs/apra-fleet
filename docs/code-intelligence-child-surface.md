@@ -31,7 +31,7 @@ provider does not throw; the error is surfaced as a normal isError result).
 The other three fleet mappings are correct and were confirmed working:
 `impact -> impact`, `query -> query`, `context -> context`.
 
-RESOLUTION (fix branch feat/code-intelligence-abstraction): `graph()` was
+RESOLUTION: `graph()` is
 retargeted to compose two depth-bounded `cypher` traversals over `CALLS` edges
 -- one for callers, one for callees -- returning a structured multi-hop call
 graph `{ symbol, maxDepth, callers[], callees[] }` (rung 2, same compose
@@ -46,7 +46,7 @@ from `code_context`. `code_context` (child `context`) is the depth-1 360-degree
 view of a single symbol (direct in/out calls, accesses, KB enrichment);
 `code_graph` is the transitive caller/callee graph.
 
-Live verification (re-run during the fix, 2026-07, spawning the child exactly
+Live verification (spawning the child exactly
 as the fleet does): `listTools()` returns the same 13 tools below and
 `call_graph` is absent; a variable-length query
 `MATCH p = (a)-[:CodeRelation*1..2 {type: "CALLS"}]->(b) WHERE ...
@@ -224,3 +224,13 @@ itself is a direct `impact` capability; `code_tests` composes it with the
   depth-bounded `cypher` traversals over `CALLS` edges (callers + callees) --
   see the "RESOLVED (yashr-5t9)" section above. A regression test asserting
   every invoked child tool exists in the child surface now guards the bug class.
+
+## Symbol id resolution check
+
+The gitnexus provider verifies that an id returned by the child resolves to the
+symbol that was asked about. Ids carry decorations that must be stripped before
+comparing: a `#<arity>` tag is only a tag when it sits in the last path segment,
+at the end of the id or just before `~`/`$` (a directory named like `#12` is a
+real path, not a tag), and a `name@row:col` suffix on the symbol part is
+dropped. `@scope` directories are left intact. Genuine mismatches must still be
+flagged; the tests pin real id shapes from the pinned gitnexus release.

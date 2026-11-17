@@ -1,5 +1,6 @@
-<!-- Landing page draft for apra-fleet. Source of truth for claims: Apra-Labs/apra-fleet origin/main @ v0.4.0.
-     Local source: C:\Users\akhil\.claude\scratchpad\fleet-site\template.html (built to apra-fleet-landing-v2.html) -->
+<!-- Landing page for apra-fleet, deployed by .github/workflows/pages.yml.
+     Source of truth for every claim on this page: the Apra-Labs/apra-fleet
+     repository itself -- README.md, ROADMAP.md, docs/, and src/. -->
 <title>apra-fleet -- run a fleet of AI agents across your machines</title>
 <style>
   @font-face {
@@ -331,7 +332,7 @@
   <div class="links">
     <a href="https://github.com/Apra-Labs/apra-fleet">GitHub</a>
     <a href="https://www.npmjs.com/package/@apralabs/apra-fleet">npm</a>
-    <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/fleet-sprint-getting-started.md">Getting started</a>
+    <a href="fleet-sprint-getting-started.html">Getting started</a>
     <a href="https://deepwiki.com/Apra-Labs/apra-fleet">Ask the codebase</a>
     <a href="https://github.com/Apra-Labs/apra-fleet/discussions">Discussions</a>
   </div>
@@ -339,7 +340,7 @@
 
 <div class="hero" id="top">
   <div>
-    <p class="eyebrow">Open source -- Apache-2.0 -- v0.4.0</p>
+    <p class="eyebrow">Open source -- Apache-2.0</p>
     <h1>Run a fleet of AI agents across <em>your</em> machines</h1>
     <p class="sub">What Kubernetes did for containers, apra-fleet does for AI
     agents: scheduling, credentials, isolation, and observability for an
@@ -348,7 +349,7 @@
     <div class="install"><span class="ps1">$</span><span>npm install -g @apralabs/apra-fleet</span></div>
     <div class="chips">
       <span>Windows / macOS / Linux</span>
-      <span>Node.js 22+</span>
+      <span>Node.js 22.16+</span>
       <span>MCP-compatible</span>
       <span>No paid tier -- bring your own LLM keys</span>
     </div>
@@ -417,7 +418,7 @@ another called reviewer. Pair them."</span></pre>
   <p class="eyebrow">What it is</p>
   <h2>One control plane. Any device. Any model.</h2>
   <p class="lede">apra-fleet is an MCP server + CLI. Any MCP-capable agent --
-  Claude Code, Gemini, Codex, Copilot, OpenCode, Antigravity -- becomes the
+  Claude Code, Codex, Copilot, OpenCode, Antigravity -- becomes the
   orchestrator of a fleet: it registers machines as members, dispatches
   commands and prompts to them, moves files, and brokers credentials. You
   drive it in plain language: <em>"Register a local member called doer.
@@ -454,7 +455,7 @@ another called reviewer. Pair them."</span></pre>
   <div class="diff">
     <article>
       <h3>Across machines and vendors</h3>
-      <p>Agent frameworks compose agents inside one process. apra-fleet's unit of execution is a <strong>member</strong>: a machine plus a provider CLI, swappable at registration. Every provider sits behind one strategy interface, which is what makes mixing Claude, Gemini, Codex, Copilot, Antigravity, and local models genuinely work.</p>
+      <p>Agent frameworks compose agents inside one process. apra-fleet's unit of execution is a <strong>member</strong>: a machine plus a provider CLI, swappable at registration. Every provider sits behind one strategy interface, which is what makes mixing Claude, Codex, Copilot, Antigravity, and local models genuinely work.</p>
       <span class="ref">src/providers/ -- AgentStrategy</span>
     </article>
     <article>
@@ -521,7 +522,7 @@ another called reviewer. Pair them."</span></pre>
     issues either -- only reports a verdict.</p></div>
     <div class="role"><p class="tag">Integ-Test-Runner</p><p>Runs the integration playbook, closes features and verify-set beads against real evidence, and files bugs for what fails.</p></div>
     <div class="role"><p class="tag">Harvester</p><p>Extracts durable
-    knowledge into docs, updates the README and changelog, and defers
+    knowledge into docs, updates the README, and defers
     what's still low priority.</p></div>
   </div>
   <p class="role-note">Each role is a separate dispatch, and each dispatch
@@ -540,9 +541,9 @@ another called reviewer. Pair them."</span></pre>
     them. Captions are burned into the recording.</figcaption>
   </figure>
   <div class="stats">
-    <div class="stat"><div class="n">2,300+</div><div class="l">unit tests in the codebase the fleet maintains</div></div>
-    <div class="stat"><div class="n">81</div><div class="l">files in the integration suite run against real backends</div></div>
-    <div class="stat"><div class="n">6</div><div class="l">provider CLIs: Claude, Gemini, Codex, Copilot, Antigravity, OpenCode (local models)</div></div>
+    <div class="stat"><div class="n">6,000+</div><div class="l">test cases in the codebase the fleet maintains</div></div>
+    <div class="stat"><div class="n">200+</div><div class="l">files in the sprint-engine suite run against a real issue-tracker backend</div></div>
+    <div class="stat"><div class="n">5</div><div class="l">provider CLIs: Claude, Codex, Copilot, Antigravity, OpenCode (local models)</div></div>
   </div>
 </div>
 </section>
@@ -554,11 +555,19 @@ another called reviewer. Pair them."</span></pre>
   <div class="steps">
     <div class="step"><div>
       <h3>Install</h3>
-      <p>Via npm (Node.js 22+), or grab the standalone installer for your
+      <p>Via npm (Node.js 22.16+ and npm), or grab the standalone installer for your
       platform from <a href="https://github.com/Apra-Labs/apra-fleet/releases">Releases</a>.</p>
       <pre class="term">npm install -g @apralabs/apra-fleet
-apra-fleet
-cd ~/.apra-fleet/bin && apra-fleet start</pre>
+apra-fleet install
+apra-fleet start</pre>
+      <p>npm install registers no OS service, so <code>apra-fleet start</code>
+      starts the server (again after a reboot). The standalone installer
+      registers and starts a user-level service instead, and does not add
+      anything to PATH: the binary is <code>~/.apra-fleet/bin/apra-fleet</code>
+      (Windows PowerShell: <code>&amp; "$HOME\.apra-fleet\bin\apra-fleet.exe" status</code>).
+      The default install includes fleet-sprint, which needs a system Node.js
+      22.16+ and npm on PATH. Per-OS download commands:
+      <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/install.md#quick-install">docs/install.md</a>.</p>
     </div></div>
     <div class="step"><div>
       <h3>Connect your agent</h3>
@@ -580,9 +589,10 @@ cd ~/.apra-fleet/bin && apra-fleet start</pre>
 apra-fleet workflow fleet-sprint \
   --issue my-project-epic --members doer \
   --branch fleet-sprint/first-run --base main</pre>
-      <p>Open the dashboard and watch the fleet plan, build, review, test,
+      <p>(Standalone installer: run <code>~/.apra-fleet/bin/apra-fleet</code>, or add that directory to PATH.)
+      Open the dashboard and watch the fleet plan, build, review, test,
       and ship in a loop. New to fleet-sprint? Start with the
-      <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/fleet-sprint-getting-started.md">plain-English
+      <a href="fleet-sprint-getting-started.html">plain-English
       getting-started guide</a>.</p>
     </div></div>
   </div>
@@ -591,7 +601,7 @@ apra-fleet workflow fleet-sprint \
   commands work with any supported provider. For Antigravity/AGY:
   <code>apra-fleet --llm agy</code>, then restart Antigravity to load the
   fleet MCP server. For OpenCode: <code>apra-fleet --llm opencode</code>.
-  Codex, Copilot, and Gemini are also supported -- see
+  Codex and Copilot are also supported -- see
   <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/install.md">docs/install.md</a>
   for the full provider list.</p>
 </div>
@@ -599,17 +609,18 @@ apra-fleet workflow fleet-sprint \
 
 <section>
 <div class="wrap">
-  <p class="eyebrow">Current state -- v0.4.0</p>
+  <p class="eyebrow">Current state</p>
   <h2>What works today, and what's still rough</h2>
   <p class="lede">An honest status page beats a surprised user. This list
-  comes from the v0.4.0 release notes, unedited in substance.</p>
+  comes from the project's own release notes and roadmap, unedited in
+  substance.</p>
   <div class="state">
     <div class="works">
       <h3>Daily-driver solid</h3>
       <ul>
         <li>Registering and operating a mixed-provider fleet, local and over SSH, on Windows / macOS / Linux</li>
         <li>Single autonomous fleet-sprint runs -- multi-hour, unattended, with stall detection and crash recovery; this is how the project builds itself</li>
-        <li>Out-of-band credentials, {{secure.NAME}} substitution, composed per-member permissions</li>
+        <li>Out-of-band credentials, {{secret.NAME}} substitution, composed per-member permissions</li>
         <li>npm install works end to end; standalone installer binaries for each platform</li>
         <li>Tier-based cost routing and cross-provider review</li>
       </ul>
@@ -619,7 +630,6 @@ apra-fleet workflow fleet-sprint \
       <ul>
         <li>Multi-sprint supervisor dashboard <span class="tagchip">preview</span> -- runs concurrent sprints with reservations, but its end-to-end smoke test has not yet passed cleanly</li>
         <li>Hub-spoke cloud mode (<code>apra-fleet join</code> / <code>spoke</code>) <span class="tagchip">groundwork</span> -- API contract and identity model landed; not yet usable end-to-end</li>
-        <li>Default install expects the <code>claude</code> CLI to be on PATH -- install Claude Code first, or pass <code>--llm</code> / <code>--transport http</code></li>
       </ul>
     </div>
   </div>
@@ -691,7 +701,7 @@ apra-fleet workflow fleet-sprint \
     </div>
   </div>
   <p class="trace">Every claim on this page traces to the repository's
-  <code>main</code> branch at v0.4.0 -- README, release notes, docs, and
+  <code>main</code> branch -- README, release notes, docs, and
   source. The dashboard imagery is from real runs; the cost figures are a
   single measured example, not a benchmark; and the preview labels above are
   the project's own.</p>

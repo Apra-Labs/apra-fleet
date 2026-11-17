@@ -1,0 +1,22 @@
+{
+  "tool": "kb_capture",
+  "case": "setup-for-demote",
+  "kind": "happy",
+  "request": {
+    "type": "knowledge",
+    "title": "Entry walked up to CONFIRMED so it can be demoted",
+    "summary": "Set up to demonstrate the kb_demote happy path and its E-DEMOTE-NOT-CONFIRMED refusal.",
+    "content": "This entry cites src/demote-basis.ts and is promoted twice so kb_demote has a legal CONFIRMED target.",
+    "source_files": [
+      "src/demote-basis.ts"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"212a4796-bc68-497d-bdf9-b5aeeafa9970\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

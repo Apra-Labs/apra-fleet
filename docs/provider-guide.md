@@ -4,7 +4,7 @@
 
 # Choosing an LLM Provider
 
-Fleet supports Claude, Antigravity (agy), Codex, and Copilot. Members can run different providers and mix them freely within a single fleet.
+Fleet supports Claude, Antigravity (agy), Codex, Copilot, and OpenCode. Members can run different providers and mix them freely within a single fleet.
 
 ## Provider strengths
 
@@ -24,6 +24,7 @@ Fleet supports Claude, Antigravity (agy), Codex, and Copilot. Members can run di
 ## Gotchas worth knowing
 
 - **`max_turns` is Claude-only.** On Codex, Copilot, and Antigravity, use `timeout_s` instead to bound execution time.
+- **Antigravity members run headless and cannot prompt for approval.** Grant what they need with `compose_permissions`; an ungranted tool call comes back as `execute_prompt` reason `permission_denied` with suggested grants. See [Antigravity (agy) provider](agy-provider.md).
 - **Copilot needs a paid GitHub Copilot subscription** (Pro, Business, or Enterprise) and has the smallest context window (64K). It is best suited for smaller, focused tasks.
 
 ## Mixing providers in one fleet
@@ -47,7 +48,7 @@ endpoint (Ollama, vLLM, etc.), so it is the provider for self-hosted models.
 The model endpoint is the user's responsibility -- Fleet installs the CLI and
 agents but does not provision or manage the inference server. Configure the
 provider and base URL in `opencode.json`; see
-[opencode-exploration.md](opencode-exploration.md) for details.
+[opencode-getting-started.md](opencode-getting-started.md) for details.
 
 Because OpenCode members can run any model, model tiers (cheap / standard /
 premium) are set per member at registration via `model_tiers` in

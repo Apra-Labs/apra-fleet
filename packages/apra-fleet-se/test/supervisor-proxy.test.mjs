@@ -33,7 +33,7 @@ function getText(port, path) {
 /** POST (empty body) a supervisor path, resolving the full body once the response ends. */
 function postText(port, path) {
     return new Promise((resolve, reject) => {
-        const req = http.request({ host: '127.0.0.1', port, path, method: 'POST' }, (res) => {
+        const req = http.request({ host: '127.0.0.1', port, path, method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
             let body = '';
             res.setEncoding('utf-8');
             res.on('data', (c) => { body += c; });

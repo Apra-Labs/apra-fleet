@@ -1,0 +1,20 @@
+{
+  "tool": "kb_capture",
+  "case": "refusal-scope-key-removed",
+  "kind": "refusal",
+  "request": {
+    "type": "knowledge",
+    "title": "Never stored: carries a removed scope key",
+    "summary": "A capture naming another repository by a removed key is refused.",
+    "content": "Refused before any KB is resolved, so nothing is written anywhere.",
+    "source_files": [
+      "src/example.ts"
+    ],
+    "repo_remote_url": "https://example.test/some-other-repo.git"
+  },
+  "error": {
+    "message": "E-SCOPE-KEY-REMOVED: kb_capture no longer accepts 'repo_remote_url' (removed in the KB redesign); the call was not run and no KB was changed. Remediation: repo_remote_url: nothing -- drop it: a remote member's KB identity is its registered origin remote (record it with update_member git_repos) and is resolved from the calling member session.",
+    "thrown": true
+  },
+  "expected_error_code": "E-SCOPE-KEY-REMOVED"
+}

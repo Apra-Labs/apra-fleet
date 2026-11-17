@@ -51,6 +51,27 @@ your final `notes`, naming the bead id and the defect. This is a legitimate skip
 exception (see Step 3 and Rules); it lets the reviewer route the bead to re-planning in
 the same round.
 
+**Needs an operator decision**: when a bead cannot go on until a human chooses between
+real alternatives -- for example the criteria can only be met by upgrading a dependency,
+patching it, or accepting a weaker check, and nothing in the bead, its parent or the code
+says which -- do not guess and do not keep retrying. Leave the bead open and return
+`status: "NEEDS-DECISION"` with a `decision` object: `beadId` (that one open bead),
+`question` (self-contained: what you found, why it blocks the bead, what must be
+decided), `options` (at least two, each `{ "id": "a", "text": "..." }` with what it
+means and costs) and `recommendation` (the option id you recommend, and why). The
+orchestrator files the question for an operator verbatim, sets the bead aside for the
+rest of the run without re-dispatching it, and keeps working other beads; the answer
+reaches a later dispatch through the bead's notes. Use it instead of the
+criteria-defect escape hatch only when the fix is a choice an operator must make, not a
+criteria rewrite a planner can make. Use BLOCKED, not NEEDS-DECISION, for a missing
+secret, missing access, or an unmet prerequisite: those have one fix, not a choice. The
+same-lane stop rule (Step 1) applies to a NEEDS-DECISION bead exactly as to any other
+bead left open.
+
+**CI is not yours**: never trigger, wait for or poll a CI run. A criterion that can only
+be met by a CI run is a criteria defect: do the locally checkable work and report the CI
+part under "criteria defects" (see above).
+
 **Live-evidence beads are not yours to close**: some beads' acceptance requires evidence
 from a LIVE run of the project's integration-test playbook or deployed environment. In a
 development dispatch, do NOT manufacture that evidence: never run the playbook's Setup,
@@ -61,44 +82,95 @@ the bead open and return `status: "BLOCKED"` with `notes` stating it needs
 integration-phase evidence. Closing one is legitimate ONLY when your dispatch prompt
 explicitly names an already-collected evidence artifact to verify against.
 
-## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
-1. Run ToolSearch with query
-   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_feedback,mcp__apra-fleet__code_context,mcp__apra-fleet__code_graph,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query"`
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo you are
-   working in, and `hint_symbols`/`hint_modules` relevant to the files and symbols you are
-   about to touch. Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
-3. Retrieve first, then read source: before reading an unfamiliar file or function, run
-   `mcp__apra-fleet__kb_query({ query: "<name>" })`. Work from a CONFIRMED entry directly;
-   verify an INFERRED entry against source when correctness matters. Fall back to a full
-   source read only if the KB is cold, stale, or says "see source for details."
-4. When you discover something non-obvious and durable (hidden constraint, gotcha,
-   invariant), dedupe with `mcp__apra-fleet__kb_query`; if new, add it to your structured
-   output's `kb_captures` array (shape in `agents/schemas/doer-output.json`) -- the engine
-   makes the actual `kb_capture` call. Call `mcp__apra-fleet__kb_capture` directly only if
-   your dispatch context has no `kb_captures` output field.
-5. If a KB entry you retrieved proves wrong in practice, call `mcp__apra-fleet__kb_feedback`
-   with the entry id and what was wrong.
-6. You do not need to call `mcp__apra-fleet__kb_harvest` yourself -- the fleet auto-dispatches
-   it as a backstop after your session ends; it is not your job to invoke it.
-7. Before editing a symbol, use `code_context`/`code_graph` for its callers/callees and
-   `code_impact` for the blast radius of the file you are changing -- prefer them over
-   grep for symbol lookups, call-chain tracing, and impact analysis. If the repo is not
-   indexed, fall back to grep; do not try to build an index yourself.
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
+tool-discovery step is needed, and they always act on your own work folder, so never
+pass a repository path or other scope argument to them. Otherwise, read the injected
+"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
+the orchestrator fetched for the beads you were assigned.
+If a KB or code tool call fails, use that block if your prompt has one; otherwise
+continue without KB. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From whichever source you have,
+trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
+your tool-loading tool first, before concluding they are unavailable.
+
+If a `code_*` call fails with `E-CODE-INDEX-NOT-READY`, wait ONCE for the
+`retry_after_ms` its error result carries (skip the wait when it is 0: retrying will
+not help), retry that call ONCE, and if it still fails fall back to text search and
+record the fallback. Never poll `code_status` in a loop waiting for the index.
+
+The `kb_query` and `code_impact` calls below are EXPECTED, not optional, whenever the
+tools are present. If a tool is genuinely not present (or the KB or code index is not set
+up for this repo), record that in `toolUse` (Output schema) and continue -- never skip
+silently.
+
+1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
+   relevant to the files and symbols you are about to touch.
+2. Retrieve first, then read source: for EACH assigned bead, call `kb_query` at least
+   once, with a query drawn from the bead's title and criteria, BEFORE reading its
+   source; also query an unfamiliar file or function before reading it. Work from a
+   CONFIRMED entry directly; verify an INFERRED entry against source when correctness
+   matters. Fall back to a full source read when the KB is cold, stale, or says "see
+   source for details." Rely on the injected block alone only when `kb_query` is absent.
+3. When you discover something non-obvious and durable (hidden constraint, gotcha,
+   invariant), dedupe it against the KB (`kb_query` when present, otherwise the block); if
+   new, add it to your structured output's `kb_captures` array (shape in
+   `agents/schemas/doer-output.json`) -- the engine records it. Do not write to the KB
+   yourself. If a KB entry you relied on proves wrong in practice, say so in your final
+   `notes`, naming the entry and what was wrong.
+4. BEFORE editing a symbol or file, call `code_impact` on it (or
+   `code_context`/`code_graph` for its callers/callees) once per changed file or symbol,
+   not per edit, and use the result to scope the change and its tests; test, doc and
+   fixture-only files are exempt. Prefer these over grep for symbol lookups, call-chain
+   tracing, and impact analysis. If they are absent, fail, or report the repo is not
+   indexed, fall back to grep and record it in `toolUse`; do not try to build an index
+   yourself. On `E-CODE-INDEX-NOT-READY`, wait once for its `retry_after_ms`, retry
+   once, then fall back to grep -- never poll `code_status` in a loop.
+5. Report in `toolUse`: `kb` and `code` are each `used`, `unavailable` or `not_needed`;
+   `note` says why for anything not `used`. `used` means the expected call was made
+   (`kb_query` for kb -- `kb_session_prime` alone is not `used`; `code_impact`/
+   `code_context`/`code_graph` for code). `not_needed` only when no assigned bead or
+   changed file called for a lookup (e.g. docs-only, or every bead skipped). If your
+   output schema has no `toolUse` field, put the same statement in `notes`.
+
+### Persistent Memories (operational rules)
+
+Before starting task execution, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +doer+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+doer+`.
 
 ## Step 1 -- Work only your assigned bead ids
 
 Do NOT run bare `bd ready` to discover work -- it returns ready beads from the entire
 database, including other concurrent sprints/tracks. Work exactly the bead ids listed in
 your dispatch prompt's "Assigned bead ids," in the order given if any depend on each
-other, and no others. If an assigned id turns out to HAVE OPEN CHILDREN
-(`bd list --parent <id> --json` -- no `--all` -- returns any bead; `bd show <id> --json`'s
-`dependent_count` is NOT this check, it counts closed children too), it is a decomposed
-container assigned to you in error: skip it, note why in your final report, and do not
-claim or close it. **`issue_type` has no bearing on this** -- per the graph-semantics
-section, only the presence of OPEN children makes a bead non-leaf.
+other, and no others.
+
+**Same-lane stop rule**: before starting Step 2's per-id loop, read `metadata.streak` for
+every assigned id up front with `bd show <id> --json` (a cheap read, not a claim). If you
+later leave an earlier assigned bead OPEN (a legitimate skip or a failure), check that map
+for a later assigned bead sharing its `streak` value -- tasks in the same lane were planned
+as one dependent increment. If one shares it, do NOT claim that later bead: stop, and
+return VERIFY listing what you closed and why you stopped (this is a legal early VERIFY,
+see Step 3). A later assigned bead in a DIFFERENT lane, or with no `streak` shared with the
+skipped one, is unaffected -- keep working it normally; your assignment may bundle several
+independent lanes into one session.
+
+If an assigned id turns out to HAVE OPEN CHILDREN (`bd list --parent <id> --json` -- no
+`--all` -- returns any bead; `bd show <id> --json`'s `dependent_count` is NOT this check,
+it counts closed children too), it is a decomposed container assigned to you in error:
+skip it, note why in your final report, and do not claim or close it. **`issue_type` has
+no bearing on this** -- per the graph-semantics section, only the presence of OPEN
+children makes a bead non-leaf.
 
 A bead whose children are ALL closed is NOT this case -- see Step 2.2's wrap-up handling
 below; do not skip it on that basis alone.
@@ -200,14 +272,30 @@ killed mid-work. Instead:
 **STOP RULE:** the instant `bd close` returns for your last assigned bead id (or your last remaining id is disposed of via an explicit skip exception), your ONLY next action is emitting the VERIFY JSON below. No advisor/reviewer call, extra sanity check, or one more check -- no re-read, re-run of build or tests, unrelated investigation, or tidying either -- the last close IS the end of your work. Burning turns after its last close risks exhausting your budget before VERIFY and having a genuine success recorded as a FAILURE.
 
 When every assigned bead id has been closed (or explicitly skipped per Step 1's
-has-open-children case, Step 2.2's ambiguous-wrap-up case, the scope/criteria-defect
-escape hatch, or the missing-input behavior above), you MUST stop and return:
+has-open-children case, Step 1's same-lane stop rule, Step 2.2's ambiguous-wrap-up case,
+the scope/criteria-defect escape hatch, or the missing-input behavior above), you MUST
+stop and return:
+
 ```json
-{ "status": "VERIFY", "closedIds": ["<id>", "..."], "notes": "string" }
+{ "status": "VERIFY", "closedIds": ["<id>", "..."], "notes": "string",
+  "toolUse": { "kb": "used", "code": "used" } }
 ```
+`toolUse` follows Step 0 item 5.
 `closedIds` lists every bead id you closed this run via `bd close` in Step 2, so the
 orchestrator can verify your closes against beads instead of trusting the summary alone.
 Do NOT continue past VERIFY.
+
+Whenever you return `status: "BLOCKED"`, also return `blockedIds`: the assigned bead ids
+you left open BECAUSE of the block. Leave out ids you merely did not reach (for example
+lane-mates skipped under the same-lane stop rule) -- the orchestrator sets each
+`blockedIds` bead and everything depending on it aside for the rest of the run, and
+re-dispatches the unreached ones. Example:
+`{ "status": "BLOCKED", "closedIds": ["<id-1>"], "blockedIds": ["<id-2>"], "notes": "..." }`.
+
+When a bead needs an operator decision (see "Needs an operator decision" above), stop
+there and return `status: "NEEDS-DECISION"` with its `decision` object, listing in
+`closedIds` whatever you closed before it. Example:
+`{ "status": "NEEDS-DECISION", "closedIds": ["<id-1>"], "notes": "...", "decision": { "beadId": "<id-2>", "question": "...", "options": [{ "id": "a", "text": "..." }, { "id": "b", "text": "..." }], "recommendation": "a, because ..." } }`.
 
 
 ## Branch and secrets rules
@@ -215,7 +303,7 @@ Do NOT continue past VERIFY.
 - NEVER push to the base branch -- always work on the sprint feature branch
 - If a task needs a secret or token you do not have, close the task with
   `bd close <id> --reason="blocked: missing secret <name>"`, then STOP and return
-  `{ "status": "BLOCKED", "closedIds": [...closed so far...], "notes": "blocked: missing secret <name>" }`
+  `{ "status": "BLOCKED", "closedIds": [...closed so far...], "notes": "blocked: missing secret <name>", "toolUse": { "kb": "used", "code": "not_needed", "note": "no source edit before the block" } }`
 
 ## Output schema
 
@@ -226,7 +314,8 @@ The canonical machine-readable contract for this output lives in the sibling fil
 {
   "status": "VERIFY",
   "closedIds": ["BD-10", "BD-11"],
-  "notes": "Implemented password reset endpoint and its integration test; both tasks closed."
+  "notes": "Implemented password reset endpoint and its integration test; both tasks closed.",
+  "toolUse": { "kb": "used", "code": "unavailable", "note": "code_impact reported the repo is not indexed; used grep" }
 }
 ```
 
@@ -247,12 +336,17 @@ or as prose if you are answering a human directly.
   returns any bead); `issue_type` has no bearing. All-children-closed is not this case --
   see Step 2.2.
 - NEVER skip an assigned bead id for convenience -- work them in dependency order. The
-  only skip exceptions: has open children, an unresolved wrap-up ambiguity, missing
-  acceptance criteria/context, or a recorded criteria defect (escape hatch above). A
-  missing secret is NOT a skip -- close with a blocked reason per Branch and secrets
-  rules.
+  only skip exceptions: has open children, the same-lane stop rule (Step 1) after an
+  earlier lane-mate was left open, an unresolved wrap-up ambiguity, missing acceptance
+  criteria/context, a recorded criteria defect (escape hatch above), or a bead that needs
+  an operator decision (returned as NEEDS-DECISION). A missing secret
+  is NOT a skip -- close with a blocked reason per Branch and secrets rules.
 - Tests for the changed area must pass before each commit (Step 2.5)
 - No PLAN.md, no progress.json -- beads is the only work tracker
 - If the target repo replays `bd` from recorded fixtures in its tests, record any NEW
   bd-shelling test's fixture at authoring time and commit it with the test -- do not
   defer it. Follow the fixture directory's own README for the record command.
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.

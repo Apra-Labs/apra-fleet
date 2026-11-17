@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { runUpdate } from '../src/cli/update.js';
+import { fleetSeGuardEnabled, currentFleetSeProbes } from '../src/cli/install.js';
 import { serverVersion } from '../src/version.js';
 
 // Simulate SEA mode so the existing update tests exercise the binary-download path.
@@ -12,6 +13,8 @@ vi.mock('../src/cli/install.js', () => ({
   isSea: vi.fn(() => true),
   isNpmGlobalInstall: vi.fn(() => false),
   _setSeaOverride: vi.fn(),
+  fleetSeGuardEnabled: vi.fn(() => false),
+  currentFleetSeProbes: vi.fn(),
 }));
 
 vi.mock('node:fs');
@@ -31,15 +34,21 @@ vi.mock('node:child_process', () => ({
     unref: vi.fn(),
   })),
 }));
+vi.mock('../src/services/service-notice.js', () => ({ showPendingServiceNotice: vi.fn() }));
+import { showPendingServiceNotice } from '../src/services/service-notice.js';
 
 describe('runUpdate (T6)', () => {
   const mockTmpDir = '/tmp';
+  // The asset is picked by platform AND arch; pin x64 so these linux-x64
+  // cases hold on an arm64 runner too.
+  const realArch = Object.getOwnPropertyDescriptor(process, 'arch')!;
   const mockConfigPath = '/mock/home/.apra-fleet/data/install-config.json';
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal('fetch', vi.fn());
     vi.mocked(os.tmpdir).mockReturnValue(mockTmpDir);
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
     vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -68,6 +77,7 @@ describe('runUpdate (T6)', () => {
   });
 
   afterEach(() => {
+    Object.defineProperty(process, 'arch', realArch);
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -127,6 +137,44 @@ describe('runUpdate (T6)', () => {
       expect.objectContaining({ detached: true })
     );
     expect(process.exit).toHaveBeenCalledWith(0);
+    // The detached installer has no console: point the user at status, and
+    // show any guidance the previous detached install left behind.
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Run 'apra-fleet status'"));
+    expect(showPendingServiceNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it('newer available but a fleet-sprint supervisor is running -- refuses in the console, spawns nothing', async () => {
+    const assetUrl = 'https://example.com/installer';
+    vi.mocked(fetch).mockImplementation(async (url: any) => {
+      if (url.toString().includes('releases/latest')) {
+        return { ok: true, json: async () => ({ tag_name: 'v99.9.9', assets: [{ name: 'apra-fleet-installer-linux-x64', browser_download_url: assetUrl }] }) } as any;
+      }
+      return { ok: true, body: { pipeTo: async () => {} } } as any;
+    });
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    vi.mocked(fleetSeGuardEnabled).mockReturnValue(true);
+    vi.mocked(currentFleetSeProbes).mockReturnValue({
+      lockDir: () => '/tmp/locks',
+      supervisorLogPath: () => '/nope/supervisor.log',
+      readDir: () => { throw Object.assign(new Error('x'), { code: 'ENOENT' }); },
+      readFile: () => { throw Object.assign(new Error('x'), { code: 'ENOENT' }); },
+      isPidAlive: () => true,
+      commandLine: () => null,
+      getJson: async (url: string) => url.endsWith('/api/health') ? { status: 'ok', seams: {}, pid: 4242 } : { sprints: [] },
+    });
+    const prevExitCode = process.exitCode;
+    try {
+      await runUpdate();
+      expect(spawn).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      const err = vi.mocked(console.error).mock.calls.map(c => String(c[0])).join('\n');
+      expect(err).toContain('E-FLEET-SE-RUNNING');
+      expect(err).toContain('pid 4242');
+      expect(err).toContain('--ignore-running-sprints');
+    } finally {
+      process.exitCode = prevExitCode;
+      vi.mocked(fleetSeGuardEnabled).mockReturnValue(false);
+    }
   });
 
   it('missing install-config.json -- uses defaults with warning', async () => {
@@ -257,5 +305,62 @@ describe('runUpdate (T6)', () => {
       ['install', '--force', '--llm', 'gemini', '--skill', 'pm', '--workflows', 'all'],
       expect.anything()
     );
+  });
+
+  // The installer is chosen by OS AND CPU arch: an ARM64 Linux host must not
+  // get linux-x64, an Intel Mac must not get darwin-arm64.
+  describe('picks the installer by CPU arch', () => {
+    const ALL = [
+      'apra-fleet-installer-linux-x64', 'apra-fleet-installer-linux-arm64',
+      'apra-fleet-installer-darwin-arm64', 'apra-fleet-installer-darwin-x64',
+      'apra-fleet-installer-win-x64.exe',
+    ];
+    function releaseWithAllAssets() {
+      vi.mocked(fetch).mockImplementation(async (url: any) => {
+        if (url.toString().includes('releases/latest')) {
+          return {
+            ok: true,
+            json: async () => ({
+              tag_name: 'v99.9.9',
+              assets: ALL.map((name) => ({ name, browser_download_url: `https://example.com/${name}` })),
+            }),
+          } as any;
+        }
+        return { ok: true, body: { pipeTo: async () => {} } } as any;
+      });
+    }
+
+    it.each([
+      ['linux', 'x64', 'apra-fleet-installer-linux-x64'],
+      ['linux', 'arm64', 'apra-fleet-installer-linux-arm64'],
+      ['darwin', 'arm64', 'apra-fleet-installer-darwin-arm64'],
+      ['darwin', 'x64', 'apra-fleet-installer-darwin-x64'],
+      ['win32', 'x64', 'apra-fleet-installer-win-x64.exe'],
+    ])('%s/%s downloads %s', async (platform, arch, asset) => {
+      releaseWithAllAssets();
+      Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+      Object.defineProperty(process, 'arch', { value: arch, configurable: true });
+
+      await runUpdate();
+
+      expect(fetch).toHaveBeenCalledWith(`https://example.com/${asset}`);
+      expect(spawn).toHaveBeenCalledWith(expect.stringContaining(asset), expect.anything(), expect.anything());
+    });
+
+    it.each([
+      ['linux', 'ia32'],
+      ['win32', 'arm64'],
+      ['freebsd', 'x64'],
+    ])('%s/%s has no installer: a clear named error, no download', async (platform, arch) => {
+      releaseWithAllAssets();
+      Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+      Object.defineProperty(process, 'arch', { value: arch, configurable: true });
+
+      await runUpdate();
+
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining(`no apra-fleet installer is published for ${platform}/${arch}`));
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(spawn).not.toHaveBeenCalled();
+    });
   });
 });

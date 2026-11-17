@@ -1,0 +1,14 @@
+{
+  "tool": "kb_freshness_sweep",
+  "case": "happy",
+  "kind": "happy",
+  "request": {},
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"checked\":2,\"staled\":0,\"unstaled\":0}"
+      }
+    ]
+  }
+}

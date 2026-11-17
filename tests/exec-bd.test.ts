@@ -1,5 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { execBdSync, execBdAsync, resolveWindowsBdScript } from '../scripts/lib/exec-bd.mjs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  execBdSync,
+  execBdAsync,
+  resolveWindowsBdScript,
+  warnIfLargeBdOutput,
+  BD_MAX_BUFFER_BYTES,
+  BD_LARGE_OUTPUT_WARN_BYTES,
+} from '../scripts/lib/exec-bd.mjs';
+import { bdChildEnv } from './helpers/bd-child-env.js';
+
+// Real bd calls below run without the host's beads workspace variables.
+const BD_CHILD_ENV: NodeJS.ProcessEnv = bdChildEnv();
 
 // Tests for apra-fleet-2cc.1: scripts/lib/exec-bd.mjs -- the single shared
 // cross-platform 'bd' invocation helper used by scripts/sandbox-seed-beads.mjs
@@ -154,7 +168,7 @@ describe('execBdSync', () => {
     // equivalent must succeed on this platform (Windows via the resolved
     // bin/bd.js script, shell-less; POSIX via the real bd binary/symlink,
     // also shell-less).
-    const out = execBdSync(['--version'], { encoding: 'utf-8' });
+    const out = execBdSync(['--version'], { encoding: 'utf-8', env: BD_CHILD_ENV });
     expect(String(out)).toMatch(/bd version/);
   });
 
@@ -163,13 +177,18 @@ describe('execBdSync', () => {
     // results, or nothing at all, for a nonexistent parent) -- what this
     // asserts is the ABSENCE of the injected echo's output, proving no shell
     // ever interpreted the '&'.
+    // Run from an empty temp dir with BEADS_DIR stripped so bd never resolves
+    // this repo's own tracker (it then just reports no beads workspace).
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'exec-bd-inject-'));
     let out = '';
     try {
-      out = String(execBdSync(['list', '--parent', 'a & echo INJECTED-BY-TEST', '--json', '--limit', '0'], { encoding: 'utf-8' }));
+      out = String(execBdSync(['list', '--parent', 'a & echo INJECTED-BY-TEST', '--json', '--limit', '0'], { encoding: 'utf-8', cwd, env: BD_CHILD_ENV, windowsHide: true }));
     } catch (err) {
       // bd itself rejecting the bogus id is also an acceptable outcome here
       // -- what matters is that no shell ever ran the injected echo.
       out = err instanceof Error ? String((err as { stdout?: unknown }).stdout ?? err.message) : String(err);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
     }
     expect(out).not.toMatch(/INJECTED-BY-TEST/);
     // Real `bd` subprocess spawn on a shared CI runner has been observed to
@@ -244,7 +263,91 @@ describe('execBdAsync', () => {
   });
 
   it('defaults to the real node:child_process execFile when no implementation is injected, and can run a real "bd --version"', async () => {
-    const out = await execBdAsync(['--version'], { encoding: 'utf-8' });
+    const out = await execBdAsync(['--version'], { encoding: 'utf-8', env: BD_CHILD_ENV });
     expect(String(out.stdout)).toMatch(/bd version/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// maxBuffer (dolt sync budget review round 2, item 1)
+// ---------------------------------------------------------------------------
+//
+// Node's execFile/execFileSync default maxBuffer is 1MiB, and overflowing it
+// KILLS the child (ERR_CHILD_PROCESS_STDIO_MAXBUFFER) rather than truncating.
+// Measured on the apra-fleet tracker: `bd list --all --limit 0 --json` emitted
+// ~2.96MB at 766 issues -- every POST /api/sprints launch-overlap guard call
+// (and every dashboard progress tick) failed. The ceiling is therefore set
+// centrally here, so no call site can inherit the 1MiB default by omission.
+describe('exec-bd maxBuffer', () => {
+  it('exposes a 64MB ceiling and an 8MB warn threshold', () => {
+    expect(BD_MAX_BUFFER_BYTES).toBe(64 * 1024 * 1024);
+    expect(BD_LARGE_OUTPUT_WARN_BYTES).toBe(8 * 1024 * 1024);
+    expect(BD_MAX_BUFFER_BYTES).toBeGreaterThan(BD_LARGE_OUTPUT_WARN_BYTES);
+  });
+
+  it('execBdAsync passes the 64MB maxBuffer even when the caller supplies no options', async () => {
+    const calls: Array<{ opts: Record<string, unknown> }> = [];
+    const fakeExecFileAsync = async (_cmd: string, _args: string[], opts: Record<string, unknown>) => {
+      calls.push({ opts });
+      return { stdout: '', stderr: '' };
+    };
+    await execBdAsync(['list', '--all', '--limit', '0', '--json'], {}, fakeExecFileAsync as never);
+    expect(calls[0].opts.maxBuffer).toBe(BD_MAX_BUFFER_BYTES);
+  });
+
+  it('execBdAsync lets an explicit caller maxBuffer win, but never silently falls back to Node 1MiB', async () => {
+    const calls: Array<{ opts: Record<string, unknown> }> = [];
+    const fakeExecFileAsync = async (_cmd: string, _args: string[], opts: Record<string, unknown>) => {
+      calls.push({ opts });
+      return { stdout: '', stderr: '' };
+    };
+    await execBdAsync(['--version'], { maxBuffer: 123 } as never, fakeExecFileAsync as never);
+    expect(calls[0].opts.maxBuffer).toBe(123);
+    await execBdAsync(['--version'], { cwd: '/x' } as never, fakeExecFileAsync as never);
+    expect(calls[1].opts.maxBuffer).toBe(BD_MAX_BUFFER_BYTES);
+  });
+
+  it('execBdSync passes the 64MB maxBuffer on BOTH the win32 script path and the fallback path', () => {
+    const calls: Array<{ opts: Record<string, unknown> }> = [];
+    const fakeExecFileSync = (_cmd: string, _args: string[], opts: Record<string, unknown>) => {
+      calls.push({ opts });
+      return '';
+    };
+    execBdSync(['--version'], {}, fakeExecFileSync as never, () => 'C:\\fake\\bd.js');
+    expect(calls[0].opts.maxBuffer).toBe(BD_MAX_BUFFER_BYTES);
+    execBdSync(['--version'], {}, fakeExecFileSync as never, () => null);
+    expect(calls[1].opts.maxBuffer).toBe(BD_MAX_BUFFER_BYTES);
+    execBdSync(['--version'], { maxBuffer: 7 } as never, fakeExecFileSync as never, () => null);
+    expect(calls[2].opts.maxBuffer).toBe(7);
+  });
+
+  it('an output over the 1MiB Node default is returned intact instead of killing the child', async () => {
+    // The exact size class that crashed the launch guard in production.
+    const big = 'x'.repeat(3 * 1024 * 1024);
+    const fakeExecFileAsync = async () => ({ stdout: big, stderr: '' });
+    const res = await execBdAsync(['list', '--all', '--limit', '0', '--json'], {}, fakeExecFileAsync as never);
+    expect(String(res.stdout).length).toBe(3 * 1024 * 1024);
+  });
+
+  it('warns once an output crosses the 8MB threshold, and stays silent below it', async () => {
+    const warnings: string[] = [];
+    const warn = (msg: string) => { warnings.push(msg); };
+    const small = async () => ({ stdout: 'x'.repeat(1024), stderr: '' });
+    await execBdAsync(['list', '--json'], {}, small as never, warn as never);
+    expect(warnings.length).toBe(0);
+
+    const huge = async () => ({ stdout: 'x'.repeat(BD_LARGE_OUTPUT_WARN_BYTES + 1), stderr: '' });
+    await execBdAsync(['list', '--all', '--limit', '0', '--json'], {}, huge as never, warn as never);
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toMatch(/bd list --all --limit 0 --json/);
+    expect(warnings[0]).toMatch(/8\.0MB/);
+  });
+
+  it('warnIfLargeBdOutput measures Buffers and strings alike, and never throws on a broken logger', () => {
+    expect(warnIfLargeBdOutput(['list'], null)).toBe(0);
+    expect(warnIfLargeBdOutput(['list'], 'abc')).toBe(3);
+    expect(warnIfLargeBdOutput(['list'], Buffer.alloc(10))).toBe(10);
+    const broken = () => { throw new Error('logger exploded'); };
+    expect(() => warnIfLargeBdOutput(['list'], Buffer.alloc(BD_LARGE_OUTPUT_WARN_BYTES + 1), broken)).not.toThrow();
   });
 });

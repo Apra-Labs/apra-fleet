@@ -16,6 +16,7 @@ const args = process.argv.slice(2);
 const result = spawnSync(process.execPath, [distIndex, "install", ...args], {
   stdio: "inherit",
   cwd: process.cwd(),
+  windowsHide: true,
 });
 
 process.exit(result.status ?? 0);

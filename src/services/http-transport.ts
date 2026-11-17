@@ -5,11 +5,14 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { fleetEvents, FleetEventMap } from './event-bus.js';
 import { getOrCreateKey, type JwtClaims } from './jwt.js';
 import { getTokenIssuer, localWorkspaceId } from './token-issuer.js';
-import { sessionRegistry } from './session-registry.js';
+import { sessionRegistry, ORCHESTRATOR_SESSION_ID } from './session-registry.js';
+import { FULL_TOOL_SCOPE, memberToolScope, type ToolScope } from './tool-scope.js';
 import { getAgent, findAgentByName } from './registry.js';
-import { DEFAULT_PORT, DEFAULT_HOST } from '../paths.js';
+import { DEFAULT_HOST, resolveServerPort } from '../paths.js';
 import { serverVersion } from '../version.js';
-import { logLine } from '../utils/log-helpers.js';
+import { logLine, shortSid } from '../utils/log-helpers.js';
+import { recordShutdown } from './server-lifecycle.js';
+import { getOrCreateMemberAccessSecret, memberAccessSecretMatches, memberAccessSecretPath, readMemberAccessSecret, MEMBER_SECRET_HEADER } from './member-access-secret.js';
 
 interface Session {
   server: McpServer;
@@ -18,11 +21,103 @@ interface Session {
    *  else the local workspace (127.0.0.1-only trust boundary). Event broadcast
    *  is scoped by this -- events never cross a workspace wall. */
   workspaceId: string;
+  /** Identity that opened this session (see SessionOwner). Every later
+   *  GET/DELETE/POST on the session id must come from the same identity. */
+  owner: SessionOwner;
+  /** Client name from initialize, for log lines. */
+  client: string;
+  /** Last time a request on this session started or ended (ms, `now()`). */
+  lastActivity: number;
+  /** Requests on this session whose response is still open: an SSE GET
+   *  stream, or a POST whose response streams a long tool call. A session
+   *  with any open request is never idle-evicted. */
+  openRequests: number;
+  /** Releases everything the session holds (map entry, McpServer, session
+   *  registry entry). Idempotent; shared by DELETE and idle eviction. */
+  release: (reason: 'closed' | 'idle') => void;
+}
+
+/** Idle bound after which a session with no open request is evicted. */
+export const DEFAULT_SESSION_IDLE_MS = 30 * 60 * 1000;
+const DEFAULT_IDLE_SWEEP_INTERVAL_MS = 60 * 1000;
+/** Open-session count that triggers a one-time WARNING log line. */
+export const DEFAULT_SESSION_COUNT_WARN = 500;
+
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  logLine('session', `WARNING: ignoring ${name}=${JSON.stringify(raw)} (not a positive number); using ${fallback}`);
+  return fallback;
+}
+
+/**
+ * The identity a /mcp request carries, derived the same way at initialize and
+ * on every later request on that session:
+ *  - `jwt`: a VERIFIED member JWT (Authorization: Bearer); bound by its
+ *    member_id + workspace_id claims.
+ *  - `secret`: no bearer, so the pre-route gate already required this
+ *    install's access secret (X-Apra-Fleet-Member-Secret). `member` is the
+ *    resolved ?member= id at initialize (null for a FULL-scope session).
+ *
+ * Binding rule (apra-fleet-b4g.138.6): a JWT caller may address only a
+ * session opened with a JWT for the same member and workspace; an access-secret
+ * caller may address only a session opened with the access secret. Within the
+ * secret kind any secret-opened session is addressable, whatever ?member= the
+ * opener used: the secret holder can open a FULL-scope session (a superset of
+ * every member session) at will, and ?member= is an unauthenticated label, so
+ * binding on it would add no security boundary while breaking clients whose
+ * later requests do not repeat the initialize URL's query string.
+ */
+export type SessionOwner =
+  | { kind: 'jwt'; memberId: string; workspaceId: string }
+  | { kind: 'secret'; member: string | null; engineOrigin: boolean; kbMaintainer: boolean };
+
+/** Why `caller` may not address a session owned by `owner`, or null when it may. */
+export function sessionOwnerMismatch(owner: SessionOwner, caller: SessionOwner): string | null {
+  if (owner.kind === 'jwt') {
+    if (caller.kind !== 'jwt') return 'session was opened with a member JWT; the caller presented the access secret';
+    if (caller.memberId !== owner.memberId || caller.workspaceId !== owner.workspaceId) {
+      return 'session was opened by a different member JWT';
+    }
+    return null;
+  }
+  if (caller.kind !== 'secret') return 'session was opened with the access secret; the caller presented a member JWT';
+  return null;
 }
 
 export interface HttpTransportOptions {
-  registerTools: (server: McpServer) => void | Promise<void>;
+  /** Registers the tool surface for ONE session. `scope` is derived from the
+   *  session's identity at initialize (see the initialize branch): MEMBER for
+   *  a valid member JWT or a registered ?member=, FULL otherwise. An
+   *  implementation that ignores it registers whatever it always did. */
+  registerTools: (server: McpServer, scope: ToolScope) => void | Promise<void>;
   preferredPort?: number;
+  /** The member access secret file a `?member=` request is checked against
+   *  (default: <data dir>/member-access.key; created when missing). */
+  memberSecretPath?: string;
+  /** A session with no open request and no request for this long is evicted
+   *  (default APRA_FLEET_SESSION_IDLE_MS, else 30 min). A client that drops
+   *  its session without an HTTP DELETE would otherwise hold its McpServer
+   *  forever. */
+  sessionIdleMs?: number;
+  /** How often the idle sweep runs (default 60 s). */
+  idleSweepIntervalMs?: number;
+  /** Open-session count that logs a WARNING (default
+   *  APRA_FLEET_SESSION_COUNT_WARN, else 500). */
+  sessionCountWarn?: number;
+  /** Clock, injectable for tests (default Date.now). */
+  now?: () => number;
+}
+
+/** Thrown by createHttpTransport when the configured (non-zero) port is already bound. */
+export class PortInUseError extends Error {
+  readonly code = 'EADDRINUSE';
+  constructor(readonly port: number, readonly host: string) {
+    super(`port ${port} on ${host} is already in use`);
+    this.name = 'PortInUseError';
+  }
 }
 
 export interface HttpTransportHandle {
@@ -30,6 +125,8 @@ export interface HttpTransportHandle {
   port: number;
   url: string;
   sessions: Map<string, Session>;
+  /** Runs one idle-eviction pass now; returns how many sessions it evicted. */
+  sweepIdleSessions(): number;
   close(): Promise<void>;
 }
 
@@ -49,7 +146,36 @@ function parseBody(req: http.IncomingMessage): Promise<unknown> {
   });
 }
 
-function listenOnPort(server: http.Server, port: number, host: string): Promise<number> {
+// The WHATWG fetch spec refuses to connect to a fixed list of ports
+// associated with other protocols (SMTP, IRC, etc.) -- see
+// https://fetch.spec.whatwg.org/#block-bad-port. Node's built-in `fetch`
+// (undici) enforces this, so StreamableHTTPClientTransport's `fetch()` call
+// throws "TypeError: fetch failed" / "Error: bad port" if our server ever
+// happens to be listening on one of these. This is normally impossible for
+// an OS-assigned ephemeral port, since the ephemeral range is well above
+// this list's highest entry (10080) -- EXCEPT on a host whose TCP dynamic
+// port range has been widened/lowered to start below it (e.g. the legacy
+// Windows default of starting at 1024), where `server.listen(0, ...)` can
+// occasionally hand back one of these exact ports under load (more sockets
+// open -> more of the range gets cycled through). See
+// node_modules/undici/lib/web/fetch/constants.js `badPorts` for the
+// upstream list this mirrors.
+const FETCH_BLOCKED_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
+  87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137,
+  139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532,
+  540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723,
+  2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669,
+  6679, 6697, 10080,
+]);
+
+export function isFetchBlockedPort(port: number): boolean {
+  return FETCH_BLOCKED_PORTS.has(port);
+}
+
+const MAX_BLOCKED_PORT_RETRIES = 20;
+
+function listenOncePort(server: http.Server, port: number, host: string): Promise<number> {
   return new Promise((resolve, reject) => {
     server.listen(port, host, () => {
       const addr = server.address() as { port: number };
@@ -57,6 +183,28 @@ function listenOnPort(server: http.Server, port: number, host: string): Promise<
     });
     server.once('error', reject);
   });
+}
+
+/**
+ * Like listenOncePort, but when the caller asked for an OS-assigned port
+ * (port === 0) and the OS handed back one of fetch's blocked ports, close
+ * and retry rather than handing a dead-on-arrival port to callers that will
+ * `fetch()` it (apra-fleet-my-beads-db-27m.17). A caller-specified fixed
+ * port is returned as-is even if blocked -- that's a caller configuration
+ * choice, not something we can route around by retrying.
+ */
+async function listenOnPort(server: http.Server, port: number, host: string): Promise<number> {
+  if (port !== 0) {
+    return listenOncePort(server, port, host);
+  }
+  let bound = await listenOncePort(server, 0, host);
+  for (let attempt = 0; isFetchBlockedPort(bound) && attempt < MAX_BLOCKED_PORT_RETRIES; attempt++) {
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+    bound = await listenOncePort(server, 0, host);
+  }
+  return bound;
 }
 
 function isInitializeRequest(body: unknown): boolean {
@@ -76,10 +224,71 @@ function extractBearer(req: http.IncomingMessage): string | null {
 export async function createHttpTransport(options: HttpTransportOptions): Promise<HttpTransportHandle> {
   const { registerTools, preferredPort } = options;
   const sessions = new Map<string, Session>();
+  const now = options.now ?? Date.now;
+  const sessionIdleMs = options.sessionIdleMs ?? positiveIntFromEnv('APRA_FLEET_SESSION_IDLE_MS', DEFAULT_SESSION_IDLE_MS);
+  const sessionCountWarn = options.sessionCountWarn ?? positiveIntFromEnv('APRA_FLEET_SESSION_COUNT_WARN', DEFAULT_SESSION_COUNT_WARN);
+  let sessionsEvicted = 0;
+  let sessionCountWarned = false;
+  // Every install has its member access secret from the first server start
+  // (install creates it too): a `?member=` request must present it.
+  const memberSecretPath = options.memberSecretPath ?? memberAccessSecretPath();
+  getOrCreateMemberAccessSecret(memberSecretPath);
   const startedAt = Date.now();
+  // Open channel-capable FULL-scope sessions (the operator's own orchestrating
+  // sessions), oldest first. The newest holds ORCHESTRATOR_SESSION_ID in the
+  // session registry; when it closes, the id moves to the newest still open.
+  const orchestratorSessions: Array<{ sid: string; workspaceId: string; server: McpServer }> = [];
+  function registerOrchestrator(entry: { sid: string; workspaceId: string; server: McpServer }): void {
+    sessionRegistry.register({
+      member_id: ORCHESTRATOR_SESSION_ID,
+      workspace_id: entry.workspaceId,
+      role: 'orchestrator',
+      work_folder: '',
+      server: entry.server,
+      sessionId: entry.sid,
+      status: 'online',
+      channelCapable: true,
+    });
+    logLine('session', `registered orchestrator session as member_id=${ORCHESTRATOR_SESSION_ID} workspace_id=${entry.workspaceId} sid=${shortSid(entry.sid)}`);
+  }
 
   // LOW-1: Track event listener references for cleanup in close()
   const eventCleanups: Array<() => void> = [];
+
+  /** Counts `res` as an open request on `session` until its response closes. */
+  function trackRequest(session: Session, res: http.ServerResponse): void {
+    session.openRequests += 1;
+    session.lastActivity = now();
+    res.once('close', () => {
+      session.openRequests = Math.max(0, session.openRequests - 1);
+      session.lastActivity = now();
+    });
+  }
+
+  /**
+   * Evicts every session that has had no open request for longer than
+   * sessionIdleMs. Such a session belongs to a client that went away without
+   * an HTTP DELETE (a crash, or a transport stopped without close()): nothing
+   * can reach it again, and it would otherwise keep its McpServer forever.
+   * A client that comes back gets 404 and opens a new session, as the MCP
+   * spec requires.
+   */
+  function sweepIdleSessions(): number {
+    const t = now();
+    let evicted = 0;
+    for (const [sid, s] of [...sessions]) {
+      if (s.openRequests > 0 || t - s.lastActivity <= sessionIdleMs) continue;
+      logLine('session', `evicted idle sid=${shortSid(sid)} client=${s.client} idle_s=${Math.round((t - s.lastActivity) / 1000)} (no open request; the client never closed it)`);
+      s.release('idle');
+      s.transport.close().catch(() => {});
+      evicted += 1;
+    }
+    sessionsEvicted += evicted;
+    if (sessionCountWarned && sessions.size < sessionCountWarn) sessionCountWarned = false;
+    return evicted;
+  }
+  const idleSweepTimer = setInterval(sweepIdleSessions, options.idleSweepIntervalMs ?? DEFAULT_IDLE_SWEEP_INTERVAL_MS);
+  idleSweepTimer.unref?.();
 
   async function handleSessionRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
@@ -94,7 +303,41 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       res.end('Session not found');
       return;
     }
+    if (refuseForeignCaller(req, res, sessionId, session)) return;
+    trackRequest(session, res);
     await session.transport.handleRequest(req, res);
+  }
+
+  /** The identity this request carries. Called only past the pre-route gate,
+   *  so a bearer here has already verified (re-verified to read its claims). */
+  function callerIdentity(req: http.IncomingMessage): SessionOwner | null {
+    const bearer = extractBearer(req);
+    if (bearer !== null) {
+      const claims = getTokenIssuer().verify(bearer);
+      return claims ? { kind: 'jwt', memberId: claims.member_id, workspaceId: claims.workspace_id } : null;
+    }
+    const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+    return {
+      kind: 'secret',
+      member: params.get('member'),
+      engineOrigin: params.get('origin') === 'engine',
+      kbMaintainer: params.get('kb_maintainer') === '1',
+    };
+  }
+
+  /** 403 (and true) when the caller is not the identity that opened `session`;
+   *  the session is left untouched and no session detail is returned. */
+  function refuseForeignCaller(req: http.IncomingMessage, res: http.ServerResponse, sessionId: string, session: Session): boolean {
+    const caller = callerIdentity(req);
+    const why = caller ? sessionOwnerMismatch(session.owner, caller) : 'caller identity could not be verified';
+    if (why === null) return false;
+    logLine('session', `rejected ${req.method} on sid=${shortSid(sessionId)}: caller=${caller?.kind ?? 'unverified'} owner=${session.owner.kind} (${why})`);
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'session identity mismatch',
+      detail: `This MCP session belongs to a different caller identity (${why}). A session can be used only with the credential that opened it; open a new session instead.`,
+    }));
+    return true;
   }
 
   const httpServer = http.createServer(async (req, res) => {
@@ -107,6 +350,8 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         pid: process.pid,
         uptime: Math.floor((Date.now() - startedAt) / 1000),
         sessions: sessions.size,
+        sessionsEvicted,
+        sessionIdleMs,
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(body);
@@ -126,6 +371,8 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         return;
       }
       const body = JSON.stringify({ status: 'shutting-down' });
+      // GitHub #585: name the real cause before re-entering the SIGINT path.
+      recordShutdown('http_shutdown');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(body);
       setTimeout(() => {
@@ -140,11 +387,59 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       return;
     }
 
+    // Every /mcp request without a member JWT must present this install's
+    // member access secret (an owner-only file in its data dir). The server
+    // binds loopback, where every local user can connect; the secret is what
+    // keeps another user's session -- or one configured for another install --
+    // out. That covers the ?member= route (a session acting as that member)
+    // AND the no-member route (a FULL-scope session, which includes command
+    // execution on this install's local members). Read per request so a
+    // replaced secret takes effect at once; a missing one refuses (never fails
+    // open). A member JWT (Authorization: Bearer) is its own credential, but
+    // only a VERIFIED one replaces the secret: any bearer that fails JWT
+    // verification is refused here for every method, so `Bearer x` cannot
+    // carry a GET (SSE stream) or DELETE (session teardown) past this gate.
+    {
+      const memberRouteParam = new URL(url, 'http://localhost').searchParams.get('member');
+      const gateBearer = extractBearer(req);
+      if (gateBearer !== null) {
+        if (!getTokenIssuer().verify(gateBearer)) {
+          logLine('session', `rejected ${req.method}: jwt verify failed member_param=${memberRouteParam ?? 'none'}`);
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid token' }));
+          return;
+        }
+      } else {
+        const expected = readMemberAccessSecret(memberSecretPath);
+        if (!memberAccessSecretMatches(req.headers[MEMBER_SECRET_HEADER.toLowerCase()], expected)) {
+          const why = req.headers[MEMBER_SECRET_HEADER.toLowerCase()] === undefined ? 'missing' : 'wrong';
+          const route = memberRouteParam !== null ? 'member route' : 'full-scope route';
+          logLine('session', `rejected ${req.method} on ${route}: access secret ${why} member_param=${memberRouteParam ?? 'none'}`);
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: memberRouteParam !== null ? 'member secret required' : 'access secret required',
+            detail: `An /mcp session must present this apra-fleet install's access secret in the ${MEMBER_SECRET_HEADER} header (the secret was ${why}). It is in member-access.key in the install's data dir, readable only by the install's user; a session configured for another install or another user is refused. Re-run 'apra-fleet install' to rewrite this machine's user-scope MCP registration (a project-scope .mcp.json cannot carry the secret: remove its apra-fleet URL entry or add the header from member-access.key in a git-ignored local config)${memberRouteParam !== null ? ', or compose_permissions / update_member with fleet_install "auto" to rewrite the member MCP config' : ''}.`,
+          }));
+          return;
+        }
+      }
+    }
+
     if (req.method === 'POST') {
       // JWT auth: verify Bearer token if present; unauthenticated (PM/tool) connections pass through
       const rawToken = extractBearer(req);
       const parsedUrl = new URL(req.url ?? '/', 'http://localhost');
       const memberParam = parsedUrl.searchParams.get('member');
+      // origin=engine: set ONLY by the engine's own member-session paths
+      // (client connectFleetMember with { origin: 'engine' }, used by memberCall
+      // and the `apra-fleet call` verb). Recorded on the session's tool scope so
+      // its kb_/code_ calls are not counted against the member.
+      const engineOrigin = parsedUrl.searchParams.get('origin') === 'engine';
+      // kb_maintainer=1: the engine's kb_maintainer grant (client
+      // connectFleetMember with { origin: 'engine', kbMaintainer: true }, used
+      // by memberCall for the member it chose as a repository's kb_maintainer).
+      // Honoured only with origin=engine; see memberToolScope.
+      const kbMaintainerParam = parsedUrl.searchParams.get('kb_maintainer') === '1';
       let postClaims: JwtClaims | null = null;
       if (rawToken !== null) {
         postClaims = getTokenIssuer().verify(rawToken);
@@ -169,7 +464,10 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       }
 
       if (isInitializeRequest(parsedBody)) {
-        logLine('session', `initialize jwt=${rawToken !== null} jwt_valid=${postClaims !== null} member_param=${memberParam ?? 'none'}`);
+        logLine('session', `initialize jwt=${rawToken !== null} jwt_valid=${postClaims !== null} member_param=${memberParam ?? 'none'} engine_origin=${engineOrigin} kb_maintainer=${kbMaintainerParam}`);
+        if (kbMaintainerParam && !engineOrigin) {
+          logLine('session', 'kb_maintainer=1 without origin=engine ignored: the grant is engine-only');
+        }
         const body = parsedBody as {
           params?: {
             clientInfo?: { name?: string; version?: string };
@@ -196,13 +494,23 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         // (unauthenticated local fallback) historically carried the friendly
         // name; new URLs carry the UUID, and legacy friendly names are resolved
         // to the UUID via the agent registry here.
+        //
+        // The param must name a REGISTERED member: an id that resolves through
+        // neither getAgent nor findAgentByName is refused with 403 rather than
+        // conjuring a member identity (and a member session) from a raw string.
         let fallbackMemberId: string | null = null;
         let fallbackWorkFolder = '';
         if (postClaims === null && memberParam !== null) {
           const agent = getAgent(memberParam) ?? findAgentByName(memberParam);
-          fallbackMemberId = agent?.id ?? memberParam;
-          fallbackWorkFolder = agent?.workFolder ?? '';
-          if (agent && agent.id !== memberParam) {
+          if (!agent) {
+            logLine('session', `rejected initialize: unknown member_param=${memberParam}`);
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'unknown member' }));
+            return;
+          }
+          fallbackMemberId = agent.id;
+          fallbackWorkFolder = agent.workFolder ?? '';
+          if (agent.id !== memberParam) {
             logLine('session', `resolved URL member param '${memberParam}' to member_id=${agent.id}`);
           }
         }
@@ -211,16 +519,93 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         // local workspace. Authenticated sessions use the JWT's workspace_id.
         const sessionWorkspaceId = postClaims?.workspace_id ?? localWorkspaceId();
 
+        // Tool scope from the identity resolved above. A valid member JWT (a
+        // doer subprocess connect-back or an interactive member) or a
+        // registered ?member= makes this a MEMBER session: the base member
+        // allowlist, plus the channel tools (respond_to_message) only when the
+        // client declared claude/channel. No member identity at all is the
+        // local orchestrator/PM/tool session and keeps the FULL set.
+        const sessionMemberId = postClaims?.member_id ?? fallbackMemberId;
+        const toolScope: ToolScope = sessionMemberId
+          ? memberToolScope(sessionMemberId, channelCapable, engineOrigin, kbMaintainerParam)
+          : FULL_TOOL_SCOPE;
+
+        const sessionOwner: SessionOwner = postClaims
+          ? { kind: 'jwt', memberId: postClaims.member_id, workspaceId: postClaims.workspace_id }
+          : { kind: 'secret', member: fallbackMemberId, engineOrigin, kbMaintainer: kbMaintainerParam };
+
         const sessionServer = new McpServer(
           { name: `apra fleet server ${serverVersion}`, version: serverVersion },
           { capabilities: { logging: {}, experimental: { 'claude/channel': {} } } }
         );
+        // Everything this session holds, released exactly once: by an HTTP
+        // DELETE (onsessionclosed) or by idle eviction (sweepIdleSessions).
+        let released = false;
+        const releaseSession = (sid: string, reason: 'closed' | 'idle'): void => {
+          if (released) return;
+          released = true;
+          if (reason === 'closed') logLine('session', `closed sid=${shortSid(sid)}`);
+          // LOW-2: Close the McpServer when its session closes
+          (sessionServer as any).server?.close().catch(() => {});
+          sessions.delete(sid);
+          // Unregister interactive member session -- but only if the registry
+          // entry still points at THIS session. If the member reconnected
+          // (new sid) before this stale session's close event fired, the
+          // registry now holds the NEW session's sessionId and must not be
+          // clobbered by the old one closing late (apra-fleet-2xs.10).
+          if (postClaims) {
+            const current = sessionRegistry.get(postClaims.workspace_id, postClaims.member_id);
+            if (current?.sessionId === sid) {
+              sessionRegistry.unregister(postClaims.workspace_id, postClaims.member_id);
+              logLine('session', `unregistered member member_id=${postClaims.member_id} sid=${shortSid(sid)}`);
+            } else {
+              logLine('session', `skipped stale unregister member_id=${postClaims.member_id} sid=${shortSid(sid)} (superseded by sid=${shortSid(current?.sessionId)})`);
+            }
+          } else if (fallbackMemberId && channelCapable) {
+            // A tool-only ?member= session never registered (see
+            // onsessioninitialized), so it never unregisters either.
+            const current = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
+            if (current?.sessionId === sid) {
+              sessionRegistry.unregister(sessionWorkspaceId, fallbackMemberId);
+              logLine('session', `unregistered member member_id=${fallbackMemberId} sid=${shortSid(sid)}`);
+            } else {
+              logLine('session', `skipped stale unregister member_id=${fallbackMemberId} sid=${shortSid(sid)} (superseded by sid=${shortSid(current?.sessionId)})`);
+            }
+          } else if (channelCapable) {
+            const idx = orchestratorSessions.findIndex((o) => o.sid === sid);
+            if (idx !== -1) orchestratorSessions.splice(idx, 1);
+            const current = sessionRegistry.get(sessionWorkspaceId, ORCHESTRATOR_SESSION_ID);
+            if (current?.sessionId === sid) {
+              // Hand the id to the newest orchestrating session still open
+              // in this workspace, else drop it.
+              const next = [...orchestratorSessions].reverse().find((o) => o.workspaceId === sessionWorkspaceId);
+              if (next) registerOrchestrator(next);
+              else {
+                sessionRegistry.unregister(sessionWorkspaceId, ORCHESTRATOR_SESSION_ID);
+                logLine('session', `unregistered orchestrator session sid=${shortSid(sid)}`);
+              }
+            }
+          }
+        };
         const sessionTransport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => crypto.randomUUID(),
           onsessioninitialized: (sid) => {
-            sessions.set(sid, { server: sessionServer, transport: sessionTransport, workspaceId: sessionWorkspaceId });
+            sessions.set(sid, {
+              server: sessionServer,
+              transport: sessionTransport,
+              workspaceId: sessionWorkspaceId,
+              owner: sessionOwner,
+              client: `${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'}`,
+              lastActivity: now(),
+              openRequests: 0,
+              release: (reason) => releaseSession(sid, reason),
+            });
+            if (!sessionCountWarned && sessions.size >= sessionCountWarn) {
+              sessionCountWarned = true;
+              logLine('session', `WARNING: ${sessions.size} open MCP sessions (threshold ${sessionCountWarn}). A client is likely opening sessions without closing them (HTTP DELETE); sessions idle over ${Math.round(sessionIdleMs / 1000)}s are evicted. GET /health shows sessions and sessionsEvicted.`);
+            }
             const hasMember = !!(postClaims || fallbackMemberId);
-            logLine('session', `new sid=${sid} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} member=${hasMember}`);
+            logLine('session', `new sid=${shortSid(sid)} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} member=${hasMember} scope=${toolScope.kind}`);
             // Register interactive member session when JWT claims are present.
             //
             // apra-fleet-eft.28.5: carry forward the launch-time pid captured
@@ -249,12 +634,27 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 pid: (postClaims as any).pid ?? priorPid,
                 channelCapable,
               });
-              logLine('session', `registered member member_id=${postClaims.member_id} workspace_id=${postClaims.workspace_id} via JWT sid=${sid} channelCapable=${channelCapable}`);
+              logLine('session', `registered member member_id=${postClaims.member_id} workspace_id=${postClaims.workspace_id} via JWT sid=${shortSid(sid)} channelCapable=${channelCapable}`);
             } else if (fallbackMemberId) {
               // apra-fleet-eft.50.1: same durable launch-pid fallback as the
               // JWT branch above, so a URL-param reconnect on a retry keeps a
               // pid for the interactive liveness check to test.
-              const priorPid = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId)?.pid
+              if (!channelCapable) {
+                // A tool-only member session (apra-fleet call, memberCall, a
+                // non-interactive agent's per-folder MCP entry) never touches
+                // the session registry. The registry entry is the member's
+                // interactive routing target: send_message pushes channel
+                // notifications to its server, and execute_prompt reads its
+                // launch-time pid. Registering here would replace a launch
+                // placeholder (server:null, pid set) or a missing entry with a
+                // session that cannot receive those pushes; onsessionclosed
+                // skips it for the same reason.
+                const existing = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
+                logLine('session', `tool-only member session member_id=${fallbackMemberId} sid=${shortSid(sid)} not registered (registry entry ${existing ? 'sid=' + shortSid(existing.sessionId) : 'absent'} left as is)`);
+                return;
+              }
+              const existing = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
+              const priorPid = existing?.pid
                 ?? sessionRegistry.lastKnownPid(sessionWorkspaceId, fallbackMemberId);
               sessionRegistry.register({
                 member_id: fallbackMemberId,
@@ -267,42 +667,20 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 pid: priorPid,
                 channelCapable,
               });
-              logLine('session', `registered member member_id=${fallbackMemberId} workspace_id=${sessionWorkspaceId} via URL param sid=${sid} channelCapable=${channelCapable}`);
+              logLine('session', `registered member member_id=${fallbackMemberId} workspace_id=${sessionWorkspaceId} via URL param sid=${shortSid(sid)} channelCapable=${channelCapable}`);
+            } else if (channelCapable) {
+              // No member identity + claude/channel declared: the operator's
+              // own orchestrating session. Make it addressable by send_message
+              // under the stable ORCHESTRATOR_SESSION_ID (newest wins), so a
+              // sprint's needs-decision message can reach it.
+              const entry = { sid, workspaceId: sessionWorkspaceId, server: sessionServer };
+              orchestratorSessions.push(entry);
+              registerOrchestrator(entry);
             }
           },
-          onsessionclosed: (sid) => {
-            logLine('session', `closed sid=${sid}`);
-            // LOW-2: Close the McpServer when its session closes
-            const s = sessions.get(sid);
-            if (s) {
-              (s.server as any).server?.close().catch(() => {});
-            }
-            sessions.delete(sid);
-            // Unregister interactive member session -- but only if the registry
-            // entry still points at THIS session. If the member reconnected
-            // (new sid) before this stale session's close event fired, the
-            // registry now holds the NEW session's sessionId and must not be
-            // clobbered by the old one closing late (apra-fleet-2xs.10).
-            if (postClaims) {
-              const current = sessionRegistry.get(postClaims.workspace_id, postClaims.member_id);
-              if (current?.sessionId === sid) {
-                sessionRegistry.unregister(postClaims.workspace_id, postClaims.member_id);
-                logLine('session', `unregistered member member_id=${postClaims.member_id} sid=${sid}`);
-              } else {
-                logLine('session', `skipped stale unregister member_id=${postClaims.member_id} sid=${sid} (superseded by sid=${current?.sessionId ?? 'none'})`);
-              }
-            } else if (fallbackMemberId) {
-              const current = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
-              if (current?.sessionId === sid) {
-                sessionRegistry.unregister(sessionWorkspaceId, fallbackMemberId);
-                logLine('session', `unregistered member member_id=${fallbackMemberId} sid=${sid}`);
-              } else {
-                logLine('session', `skipped stale unregister member_id=${fallbackMemberId} sid=${sid} (superseded by sid=${current?.sessionId ?? 'none'})`);
-              }
-            }
-          },
+          onsessionclosed: (sid) => releaseSession(sid, 'closed'),
         });
-        await registerTools(sessionServer);
+        await registerTools(sessionServer, toolScope);
         await sessionServer.connect(sessionTransport);
         await sessionTransport.handleRequest(req, res, parsedBody);
         return;
@@ -320,6 +698,8 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         res.end('Session not found');
         return;
       }
+      if (refuseForeignCaller(req, res, sessionId, session)) return;
+      trackRequest(session, res);
       await session.transport.handleRequest(req, res, parsedBody);
       return;
     }
@@ -363,26 +743,31 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
     eventCleanups.push(() => fleetEvents.off(eventType, handler));
   }
 
-  // Start listening: try preferred port, fall back to OS-assigned port.
+  // Start listening on the preferred port (no fallback, see below).
   // Bind host is configurable (APRA_FLEET_HOST, default 127.0.0.1) --
   // apra-fleet-fnz.4/us9.6. Binding beyond loopback is an explicit,
   // logged opt-in: several unauthenticated code paths in this file (the
   // ?member= URL-param fallback, /shutdown's admin-key check) were
   // written assuming only same-machine callers can reach this server.
-  const targetPort = preferredPort ?? DEFAULT_PORT;
+  const targetPort = preferredPort ?? resolveServerPort();
   const bindHost = DEFAULT_HOST;
   if (bindHost !== '127.0.0.1') {
     logLine('session', `WARNING: binding to ${bindHost} (not loopback-only) -- unauthenticated requests (the ?member= URL-param fallback, /shutdown) are now reachable from any host that can route to this address, not just this machine. Set APRA_FLEET_HOST=127.0.0.1 (or unset it) to restore the loopback-only default.`);
   }
+  // A busy configured port is a hard error (GitHub #584): there is no
+  // fallback to an OS-assigned port, because every configured MCP client only
+  // knows the configured port -- a silently re-homed server is unreachable and
+  // splits the fleet in two on one data dir. An explicit port 0 (callers that
+  // ask for an ephemeral port) is unaffected.
   let port: number;
   try {
     port = await listenOnPort(httpServer, targetPort, bindHost);
   } catch (err: unknown) {
+    for (const cleanup of eventCleanups) cleanup();
     if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-      port = await listenOnPort(httpServer, 0, bindHost);
-    } else {
-      throw err;
+      throw new PortInUseError(targetPort, bindHost);
     }
+    throw err;
   }
 
   // Same-machine callers (register_member's own local MCP connection) always
@@ -397,7 +782,9 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
     port,
     url,
     sessions,
+    sweepIdleSessions,
     close(): Promise<void> {
+      clearInterval(idleSweepTimer);
       // LOW-1: Unsubscribe all fleet event listeners
       for (const cleanup of eventCleanups) cleanup();
       // LOW-2: Close all active session McpServers before shutting down
@@ -405,6 +792,13 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         (session.server as any).server?.close().catch(() => {});
       }
       sessions.clear();
+      // Drop an orchestrator registry entry that points at one of this
+      // transport's sessions: its server is closed and can never answer.
+      for (const o of orchestratorSessions.splice(0)) {
+        if (sessionRegistry.get(o.workspaceId, ORCHESTRATOR_SESSION_ID)?.sessionId === o.sid) {
+          sessionRegistry.unregister(o.workspaceId, ORCHESTRATOR_SESSION_ID);
+        }
+      }
       return new Promise((resolve, reject) => {
         httpServer.close((err) => (err ? reject(err) : resolve()));
       });

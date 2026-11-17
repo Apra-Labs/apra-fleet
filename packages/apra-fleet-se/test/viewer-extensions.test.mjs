@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { beadsExtension, renderBeadsHtml, renderResultExtrasHtml, renderProgressBarHtml } from '../fleet-sprint/viewer-extensions.mjs';
+import { beadsExtension, renderBeadsHtml, renderResultExtrasHtml, renderProgressBarHtml, renderBeadsIdentityHtml } from '../fleet-sprint/viewer-extensions.mjs';
 import { computeSprintProgress } from '../fleet-sprint/sprint-progress.mjs';
 
 // apra-fleet-x8r.1: closed/required progress-bar widget. computeSprintProgress
@@ -135,8 +135,77 @@ describe('renderProgressBarHtml', () => {
     });
 
     test('is embedded into the browser-side beadsExtension.js script', () => {
-        assert.ok(beadsExtension.js.includes('computeSprintProgress'));
         assert.ok(beadsExtension.js.includes('renderProgressBarHtml'));
+        assert.ok(beadsExtension.js.includes('renderBeadsSummaryProgressHtml'));
+        // The live view renders the server-side summary; it no longer
+        // recomputes progress in the browser.
+        assert.ok(!beadsExtension.js.includes('computeSprintProgress'));
+    });
+});
+
+// The "Beads database" block: which .beads every member's bd resolved to at
+// sprint start, published by the runner's beads identity precondition under
+// the `beadsIdentity` state namespace.
+describe('renderBeadsIdentityHtml', () => {
+    const IDENTITY = {
+        expected: { beadsDir: '/w/.beads', prefix: 'proj', syncRemote: 'https://example.com/o/r.git', repoRemote: 'https://example.com/o/r.git' },
+        expectedFrom: 'backlog',
+        members: {
+            orch: { beadsDir: '/w/.beads', prefix: 'proj', syncRemote: 'https://example.com/o/r.git', repoRemote: 'https://example.com/o/r.git' },
+            m2: { beadsDir: '/m2/.beads', prefix: 'proj', syncRemote: '', repoRemote: 'https://example.com/o/r.git' },
+        },
+    };
+
+    test('renders one row per member plus the expectation row (dir | prefix | remote)', () => {
+        const html = renderBeadsIdentityHtml(IDENTITY);
+        assert.ok(html.includes('Beads database'));
+        assert.ok(html.includes('expected (from backlog)'));
+        assert.ok(html.includes('>orch<') && html.includes('>m2<'));
+        assert.ok(html.includes('/m2/.beads') && html.includes('>proj<'));
+        assert.ok(html.includes('(unset)'), 'an empty sync.remote renders as (unset)');
+        assert.strictEqual((html.match(/<tr>/g) || []).length, 4, 'header + expected + 2 members');
+    });
+
+    test('returns an empty string when nothing has been published yet', () => {
+        assert.strictEqual(renderBeadsIdentityHtml(null), '');
+        assert.strictEqual(renderBeadsIdentityHtml(undefined), '');
+        assert.strictEqual(renderBeadsIdentityHtml({}), '');
+        assert.strictEqual(renderBeadsIdentityHtml({ members: {} }), '');
+    });
+
+    test('escapes member names and identity values', () => {
+        const html = renderBeadsIdentityHtml({ members: { '<script>x</script>': { beadsDir: '/w/.beads"><img src=x onerror=alert(1)>', prefix: '<b>', syncRemote: '' } } });
+        assert.ok(!html.includes('<script>'));
+        assert.ok(!html.includes('<img'));
+        assert.ok(html.includes('&lt;script&gt;'));
+        assert.ok(html.includes('&lt;b&gt;'));
+    });
+
+    test('an unresolved field renders as an amber "?" cell, and every published warning as an amber row', () => {
+        const html = renderBeadsIdentityHtml({
+            ...IDENTITY,
+            members: { ...IDENTITY.members, m2: { ...IDENTITY.members.m2, unresolved: ['syncRemote', 'prefix'] } },
+            warnings: ["member 'm2' could not report syncRemote ('bd config get sync.remote --json' -> sync.remote is unset); not compared. To fix: set it on that member with 'bd config set sync.remote <url>' in its workFolder."],
+        });
+        assert.strictEqual((html.match(/data-unresolved="true"/g) || []).length, 2, 'two "?" cells for m2');
+        assert.ok(html.includes('color: #f59e0b; white-space: nowrap;">?</td>'));
+        assert.ok(!html.includes('(unset)'), 'an unresolved sync.remote shows "?" rather than (unset)');
+        const warnRows = html.match(/data-beads-identity-warning="true"[^>]*>WARNING: [^<]*/g) || [];
+        assert.strictEqual(warnRows.length, 1);
+        assert.ok(warnRows[0].includes('member &#039;m2&#039; could not report syncRemote'), warnRows[0]);
+        assert.ok(warnRows[0].includes('To fix: set it on that member with &#039;bd config set sync.remote &lt;url&gt;&#039; in its workFolder.'), `guidance escaped and present: ${warnRows[0]}`);
+        assert.ok(!html.includes('<url>'), 'warning text is HTML-escaped');
+    });
+
+    test('warnings alone (no members, no expectation) still render the block', () => {
+        const html = renderBeadsIdentityHtml({ expected: null, expectedFrom: 'none', members: {}, warnings: ['no expected beads identity was supplied'] });
+        assert.ok(html.includes('data-beads-identity="true"'));
+        assert.ok(html.includes('WARNING: no expected beads identity was supplied'));
+    });
+
+    test('is embedded into the browser-side beadsExtension.js script and wired to its state namespace', () => {
+        assert.ok(beadsExtension.js.includes('renderBeadsIdentityHtml'));
+        assert.ok(beadsExtension.js.includes("'workflow:state:beadsIdentity'"));
     });
 });
 
@@ -696,6 +765,50 @@ describe('renderBeadsHtml: collapsible/expandable tree nodes and sections (apra-
         assert.ok(expandedHtml.includes(childPrefix + '#BL-2</td>'), 'BL-2 renders normally when nothing is collapsed');
     });
 
+    // apra-fleet: a bead reachable ONLY via a parent-child dependency edge
+    // (no `blocks` edge to anything) used to render as a flat root sibling
+    // of its own epic in the Backlog section -- the tree builder nested
+    // Backlog exclusively by `blocks` edges, never by `parent` containment,
+    // even though Sprint's tree (built from `map`/`childrenOf`) always has.
+    // Regression coverage for the dashboard-side half of the fix (the other
+    // half stamps `parent` onto each row in backlog.mjs's buildBacklogTasks).
+    test('a Backlog bead reachable only via a parent-child edge (no blocks edge) nests under its parent, not as a flat root', () => {
+        const backlogTasks = [
+            { id: 'EPIC-1', title: '[epic] the epic', status: 'open' },
+            { id: 'CHILD-1', title: '[impl] a plain parent-child child', status: 'open', parent: 'EPIC-1', dependencies: [{ depends_on_id: 'EPIC-1', type: 'parent-child' }] },
+        ];
+        const html = renderBeadsHtml([], backlogTasks);
+        assert.ok(html.includes(childPrefix + '#CHILD-1</td>'), 'CHILD-1 must nest under EPIC-1 via the parent-child edge, not render as a flat root');
+    });
+
+    test('a Backlog bead with BOTH a parent-child edge and a blocks edge nests by containment (parent wins over the blocks-edge fallback)', () => {
+        const backlogTasks = [
+            { id: 'EPIC-1', title: '[epic] the epic', status: 'open' },
+            { id: 'OTHER-1', title: '[impl] an unrelated blocker', status: 'open' },
+            {
+                id: 'CHILD-1', title: '[impl] child of the epic, also blocked by OTHER-1', status: 'open', parent: 'EPIC-1',
+                dependencies: [{ depends_on_id: 'EPIC-1', type: 'parent-child' }, { depends_on_id: 'OTHER-1', type: 'blocks' }],
+            },
+        ];
+        const html = renderBeadsHtml([], backlogTasks);
+        const epicIdx = html.indexOf('>#EPIC-1</td>');
+        const childIdx = html.indexOf(childPrefix + '#CHILD-1</td>');
+        assert.ok(epicIdx !== -1 && childIdx !== -1 && childIdx > epicIdx, 'CHILD-1 must nest directly under EPIC-1, not under OTHER-1');
+        assert.ok(html.includes('blocked by: #OTHER-1'), 'the blocks edge is still surfaced as an inline annotation even though it did not decide nesting');
+    });
+
+    test('a Backlog bead with a parent OUTSIDE the dataset falls back to its blocks edge for nesting', () => {
+        const backlogTasks = [
+            { id: 'BLOCKER-1', title: '[impl] the blocker', status: 'open' },
+            {
+                id: 'CHILD-1', title: '[impl] child of an epic not in this dataset', status: 'open', parent: 'EPIC-NOT-HERE',
+                dependencies: [{ depends_on_id: 'EPIC-NOT-HERE', type: 'parent-child' }, { depends_on_id: 'BLOCKER-1', type: 'blocks' }],
+            },
+        ];
+        const html = renderBeadsHtml([], backlogTasks);
+        assert.ok(html.includes(childPrefix + '#CHILD-1</td>'), 'CHILD-1 must still nest under its in-dataset blocker when its parent is out of scope');
+    });
+
     test('the Sprint and Backlog section headers each carry their own toggle, collapsible via synthetic ids', () => {
         const html = renderBeadsHtml([{ id: 'S1', title: 'a sprint task', status: 'open' }], [{ id: 'B1', title: 'a backlog task', status: 'open' }]);
         assert.ok(html.includes('data-toggle-id="section:sprint"'));
@@ -1096,6 +1209,150 @@ describe('beadsExtension.js: embedded browser-side collapse/expand click handlin
 
         assert.doesNotThrow(() => listeners['click'][0]({ target: { closest: () => null } }));
         assert.strictEqual(containers['extension-beads'].innerHTML, before);
+    });
+
+    // apra-fleet-vk0a.2: DOM-level assertion that the progress bar is pinned
+    // into the FIXED panel-header hook (#panel-header-beads-extra), a
+    // sibling of the scrollable #extension-beads container -- NOT rendered
+    // inline at the top of #extension-beads, where it would scroll out of
+    // view alongside a long task list.
+    test('the progress widget mounts into panel-header-beads-extra, not into the scrollable extension-beads container', () => {
+        const { doc, listeners, containers } = createMockDocument();
+        new Function('document', beadsExtension.js)(doc);
+
+        listeners['workflow:summary:beads'][0]({ detail: { closed: 1, required: 2, fraction: 0.5, computed_at: null } });
+        listeners['workflow:state:beads'][0]({
+            detail: {
+                sprintTasks: [
+                    { id: '1', title: 'one', status: 'closed' },
+                    { id: '2', title: 'two', status: 'open' },
+                ],
+                backlogTasks: []
+            }
+        });
+
+        const headerExtra = containers['panel-header-beads-extra'];
+        const beadsContainer = containers['extension-beads'];
+
+        assert.ok(headerExtra, 'panel-header-beads-extra hook must be looked up');
+        assert.ok(headerExtra.innerHTML.includes('sprint-progress'), 'the progress widget must render into panel-header-beads-extra');
+        assert.ok(headerExtra.innerHTML.includes('Required: 1/2'), 'panel-header-beads-extra must carry the closed/required text');
+
+        assert.ok(!beadsContainer.innerHTML.includes('sprint-progress'), 'the progress widget must NOT be duplicated inside the scrollable extension-beads container');
+        assert.ok(!beadsContainer.innerHTML.includes('Required:'), 'extension-beads must not carry the closed/required text once it is pinned in the header');
+    });
+
+    // apra-fleet-vk0a.4: the fixed header's 'Required: M/N' progress bar
+    // (goal+decomposedParentIds-filtered, sprintTasks only) and the
+    // scrollable tree's OWN 'All tasks (incl. backlog)' item count
+    // (unfiltered, sprintTasks + backlogTasks combined) are two different
+    // definitions of "how many beads" rendered side by side on the same
+    // Tasks tab. Both must carry their own explicit label -- reconciled as
+    // two intentionally different, both-useful numbers rather than
+    // disagreeing duplicates of the same-looking 'M/N' shape.
+    test('apra-fleet-vk0a.4: the progress bar and the beads-tree item count each carry their own distinct label', () => {
+        const { doc, listeners, containers } = createMockDocument();
+        new Function('document', beadsExtension.js)(doc);
+
+        listeners['workflow:summary:beads'][0]({ detail: { closed: 1, required: 2, fraction: 0.5, computed_at: null } });
+        listeners['workflow:state:beads'][0]({
+            detail: {
+                sprintTasks: [
+                    { id: '1', title: 'one', status: 'closed' },
+                    { id: '2', title: 'two', status: 'open' },
+                ],
+                backlogTasks: [
+                    { id: '3', title: 'three', status: 'open' },
+                ],
+            }
+        });
+
+        const headerExtra = containers['panel-header-beads-extra'];
+        const beadsContainer = containers['extension-beads'];
+
+        // Progress bar: goal+decomposedParentIds-filtered closed/required
+        // count over sprintTasks only.
+        assert.ok(headerExtra.innerHTML.includes('Required: 1/2'), `expected the labeled progress-bar text in: ${headerExtra.innerHTML}`);
+        // Beads-tree count: unfiltered open/total across BOTH sprint AND
+        // backlog -- a DIFFERENT count (2 open of 3 total here, vs. the
+        // progress bar's 1/2), with its own explicit label distinguishing
+        // it from the progress bar's number.
+        assert.ok(
+            beadsContainer.innerHTML.includes('All tasks (incl. backlog): 2 open / 3 total'),
+            `expected the labeled beads-tree count text in: ${beadsContainer.innerHTML}`,
+        );
+    });
+});
+
+describe('beadsExtension: server-side summarize() and summary-driven live view progress', () => {
+    function createMockDocument() {
+        const listeners = {};
+        const containers = {};
+        const doc = {
+            addEventListener(type, handler) {
+                (listeners[type] = listeners[type] || []).push(handler);
+            },
+            getElementById(id) {
+                if (!containers[id]) containers[id] = { innerHTML: '' };
+                return containers[id];
+            }
+        };
+        return { doc, listeners, containers };
+    }
+
+    const fixture = {
+        sprintTasks: [
+            { id: 'T', title: 'target', status: 'open', priority: 1 },
+            { id: 'T.1', parent: 'T', title: 'a', status: 'closed', priority: 1 },
+            { id: 'T.2', parent: 'T', title: 'b', status: 'open', priority: 2 },
+            { id: 'T.3', parent: 'T', title: 'below goal', status: 'open', priority: 4 },
+        ],
+        goalMax: 2,
+        decomposedParentIds: ['T'],
+        fetchedAt: '2026-01-02T03:04:05.000Z',
+    };
+
+    test('summarize() returns exactly the computeSprintProgress fields plus computed_at = fetchedAt', () => {
+        const expected = computeSprintProgress(fixture.sprintTasks, { goalMax: fixture.goalMax, decomposedParentIds: fixture.decomposedParentIds });
+        const out = beadsExtension.summarize(fixture);
+        assert.deepStrictEqual(out, { ...expected, computed_at: fixture.fetchedAt });
+        assert.deepStrictEqual(Object.keys(out).sort(), ['closed', 'computed_at', 'fraction', 'required']);
+        // Sanity on the fixture: the below-goal bead and decomposed parent are excluded.
+        assert.strictEqual(out.required, 2);
+        assert.strictEqual(out.closed, 1);
+    });
+
+    test('summarize() tolerates a missing payload and missing fetchedAt (computed_at null)', () => {
+        assert.deepStrictEqual(beadsExtension.summarize({ sprintTasks: [] }), { closed: 0, required: 0, fraction: 0, computed_at: null });
+        assert.doesNotThrow(() => beadsExtension.summarize(undefined));
+        assert.strictEqual(beadsExtension.summarize(undefined).computed_at, null);
+    });
+
+    test('the live view progress text renders the published summary, not a recompute of sprintTasks', () => {
+        const { doc, listeners, containers } = createMockDocument();
+        new Function('document', beadsExtension.js)(doc);
+        // Deliberately inconsistent with the fixture: a naive recompute
+        // would give Required: 1/2.
+        listeners['workflow:summary:beads'][0]({ detail: { publishedAt: 'x', closed: 7, required: 9, fraction: 7 / 9, computed_at: fixture.fetchedAt } });
+        listeners['workflow:state:beads'][0]({ detail: fixture });
+        const header = containers['panel-header-beads-extra'].innerHTML;
+        assert.ok(header.includes('Required: 7/9'), `expected the summary values in: ${header}`);
+        assert.ok(!header.includes('Required: 1/2'), 'must not render a browser-side recompute');
+    });
+
+    test('with no beads summary, the progress area shows a placeholder, never 0/N', () => {
+        const { doc, listeners, containers } = createMockDocument();
+        new Function('document', beadsExtension.js)(doc);
+        listeners['workflow:state:beads'][0]({ detail: fixture });
+        let header = containers['panel-header-beads-extra'].innerHTML;
+        assert.ok(header.includes('no summary yet'), `expected a placeholder in: ${header}`);
+        assert.ok(!/Required: \d+\/\d+/.test(header), `placeholder must not show M/N: ${header}`);
+        // An explicit null summary (core's "no summary yet" detail) also
+        // yields the placeholder.
+        listeners['workflow:summary:beads'][0]({ detail: null });
+        listeners['workflow:state:beads'][0]({ detail: fixture });
+        header = containers['panel-header-beads-extra'].innerHTML;
+        assert.ok(header.includes('no summary yet'));
     });
 });
 

@@ -10,10 +10,21 @@ import {
     syncMemberAfter,
     syncMemberAfterOrdered,
     parseUnmergedPaths,
+    isMissingRemoteRefError,
 } from '../fleet-sprint/runner.js';
-import { GitDivergedError, GitSyncError } from '../fleet-sprint/errors.mjs';
+import { GitDivergedError, GitSyncError, PostDispatchSyncError, isPostDispatchSyncFailure } from '../fleet-sprint/errors.mjs';
+import { isPermissionScopePostDispatchSyncFailure } from '../fleet-sprint/dispatch-failure.mjs';
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 import { runCmd, sleep, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { balancedCallRange } from './helpers/balanced-call-scanner.mjs';
+import { ROLE_POLICIES, allDispatchPolicies } from '../fleet-sprint/role-policies.mjs';
+import {
+    loadVcsStderrCorpus,
+    stderrSamples,
+    stderrText,
+    recordedKinds,
+    provenance,
+} from './helpers/vcs-stderr-corpus.mjs';
 
 // =============================================================================
 // apra-fleet-eft.8.7 -- Orchestrator-bracketed git sync: consolidated
@@ -51,10 +62,45 @@ const check = (cond, msg) => assert.ok(cond, msg);
 const OK = { ok: true, output: '', error: null };
 const fail = (error) => ({ ok: false, output: '', error });
 
+// -----------------------------------------------------------------------------
+// apra-fleet-j918.6.2 -- the failure texts driven into command() mocks below
+// are RECORDED from real git, not typed from memory. They used to read
+// `fatal: unable to access ... Could not resolve host: github.com`, whose
+// `...` is a human's elision -- git has never printed it, so nothing in this
+// file was ever exercising the classifier against output git actually emits.
+// See test/fixtures/vcs-stderr/README.md for the recorder and re-record steps.
+// -----------------------------------------------------------------------------
+const REAL_TRANSIENT_DNS = stderrText('git/transient/dns-could-not-resolve-host');
+const REAL_TRANSIENT_REFUSED = stderrText('git/transient/connection-refused');
+const REAL_TRANSIENT_LOCK_REF = stderrText('git/transient/cannot-lock-ref');
+const REAL_DIVERGED_FF_ONLY = stderrText('git/diverged/merge-ff-only-refused');
+const REAL_DIVERGED_PUSH_NON_FF = stderrText('git/diverged/push-rejected-non-fast-forward');
+const REAL_DIVERGED_UNMERGED = stderrText('git/diverged/pull-with-unmerged-files');
+const REAL_DIVERGED_CONFLICT = stderrText('git/diverged/merge-conflict');
+const REAL_AUTH_NO_USERNAME = stderrText('git/auth/could-not-read-username-prompts-disabled');
+const REAL_UNKNOWN_BAD_OBJECT = stderrText('git/unknown/not-a-valid-object-name');
+
+// -----------------------------------------------------------------------------
+// apra-fleet-2wdc.5 -- the GitHub workflow-file permission refusal
+// (vcs-providers/github.mjs's WORKFLOW_PERMISSION_REFUSAL / `permissionScope`
+// hook, added by apra-fleet-2wdc.3). Not part of the recorded corpus above (it
+// is a documented, synthesized shape rather than a captured real-git sample --
+// see this file's own header comment on WORKFLOW_PERMISSION_REFUSAL for the
+// exact two-line git stderr shape this reproduces): GitHub's "refusing to
+// allow a <principal> to create or update workflow <path>" rejection wrapped
+// in git's universal "error: failed to push some refs" tail. Two wordings --
+// GitHub App (fleet-minted installation tokens) and Personal Access Token (an
+// operator-supplied PAT) -- are the two the fleet can actually produce.
+const GITHUB_APP_WORKFLOW_REFUSAL =
+    '! [remote rejected]        feat/x -> feat/x (refusing to allow a GitHub App to create or update workflow .github/workflows/ci.yml without workflows permission)\n' +
+    "error: failed to push some refs to 'https://github.com/Apra-Labs/apra-fleet.git'";
+const PAT_WORKFLOW_REFUSAL =
+    '! [remote rejected]        feat/x -> feat/x (refusing to allow a Personal Access Token to create or update workflow .github/workflows/ci.yml without workflow scope)\n' +
+    "error: failed to push some refs to 'https://github.com/Apra-Labs/apra-fleet.git'";
+
 // A tiny scripted command() mock: pass a map from cmd-substring -> a sequence
 // of results (each { ok } or { ok:false, error }). Records every call with its
-// opts so tests can assert explicit member threading (Plan 3.2). Matches the
-// shim shape used in mock-sprint-git-sync-brackets.test.mjs.
+// opts so tests can assert explicit member threading (Plan 3.2).
 function makeCommandMock(script) {
     const calls = [];
     const queues = new Map(Object.entries(script).map(([k, v]) => [k, [...v]]));
@@ -71,37 +117,10 @@ function makeCommandMock(script) {
     return { command, calls };
 }
 
-// ---------------------------------------------------------------------------
-// Balanced-paren scanner (same technique as
-// dispatch-sync-bracket-coverage.test.mjs): given the index of an opening
-// '(' return [start, end] of its matching ')', skipping string/template
-// contents so a multi-line call with nested parens is never mis-parsed.
-// ---------------------------------------------------------------------------
-function skipStringLiteral(src, start, quoteChar) {
-    let i = start + 1;
-    for (; i < src.length; i++) {
-        const ch = src[i];
-        if (ch === '\\') { i++; continue; }
-        if (ch === quoteChar) return i;
-    }
-    return i;
-}
-
-function balancedCallRange(src, openParenIdx) {
-    let depth = 0;
-    for (let i = openParenIdx; i < src.length; i++) {
-        const ch = src[i];
-        if (ch === '(') {
-            depth++;
-        } else if (ch === ')') {
-            depth--;
-            if (depth === 0) return [openParenIdx, i];
-        } else if (ch === '"' || ch === "'" || ch === '`') {
-            i = skipStringLiteral(src, i, ch);
-        }
-    }
-    return [openParenIdx, src.length - 1];
-}
+// Balanced-paren scanner primitives (skipStringLiteral/balancedCallRange) are
+// shared with dispatch-sync-bracket-coverage.test.mjs via
+// ./helpers/balanced-call-scanner.mjs (apra-fleet-7h6n.3) -- both files used
+// to hand-roll their own near-identical copy.
 
 // Return every withGitSync(...) call's balanced [start, end] range (skipping
 // the `async function withGitSync(...)` declaration itself).
@@ -129,7 +148,17 @@ function withGitSyncRanges(src) {
 // any single bracket drops that role's marker out of every range and fails
 // here.
 // =============================================================================
-const SEVEN_DISPATCH_MARKERS = {
+// apra-fleet-3swo.5.3: this census covers the dispatches that are still
+// hand-written IN runner.js. A role whose ladder has moved onto the
+// dispatchRole engine (role-policies.mjs marks it `migrated`) has no runner.js
+// call site left to find, and the engine's bracket is opened through the
+// injected `ctx.withGitSync(...)` -- deliberately invisible to a runner.js
+// text scan. Those roles' brackets are asserted BEHAVIOURALLY instead, by
+// test/planning-role-dispatch-pins.test.mjs and test/role-policies-table
+// .test.mjs, which run the real engine and observe the bracket it opens.
+// The filter is driven off the policy table rather than by deleting entries,
+// so the next migration needs no edit here and an UN-migration is caught.
+const ALL_DISPATCH_MARKERS = {
     planner: /member_name:\s*getMemberForRole\('planner'\)/g,
     'plan-reviewer': /member_name:\s*getMemberForRole\('plan-reviewer'\)/g,
     doer: /agentType:\s*'doer'/g,
@@ -138,23 +167,42 @@ const SEVEN_DISPATCH_MARKERS = {
     'integ-test-runner': /member_name:\s*getMemberForRole\('integ-test-runner'\)/g,
     harvester: /member_name:\s*getMemberForRole\('harvester'\)/g,
 };
+const SEVEN_DISPATCH_MARKERS = Object.fromEntries(
+    Object.entries(ALL_DISPATCH_MARKERS).filter(([role]) => ROLE_POLICIES[role].migrated !== true)
+);
 
 test('(a) every one of the seven dispatch types is wrapped in a withGitSync(...) bracket', () => {
-    const src = fs.readFileSync(RUNNER_PATH, 'utf8');
-    const ranges = withGitSyncRanges(src);
-    check(ranges.length >= 7, `expected at least seven withGitSync(...) call sites, found ${ranges.length}`);
-
-    const inSomeRange = (idx) => ranges.some(([s, e]) => idx > s && idx < e);
-
-    for (const [role, re] of Object.entries(SEVEN_DISPATCH_MARKERS)) {
-        re.lastIndex = 0;
-        const markerIdxs = [];
-        let m;
-        while ((m = re.exec(src)) !== null) markerIdxs.push(m.index);
-        check(markerIdxs.length > 0, `no dispatch marker found for role '${role}' -- the 3.3 table role marker was renamed?`);
-        check(
-            markerIdxs.some((idx) => inSomeRange(idx)),
-            `dispatch for role '${role}' is NOT inside any withGitSync(...) bracket -- the 3.3 sync bracket was removed or un-nested`,
+    // apra-fleet-3swo.5.7: this census has now RETIRED ITSELF exactly as its
+    // own escape hatch said it must. Every dispatch ladder has migrated onto
+    // fleet-sprint/dispatch-role.mjs, so SEVEN_DISPATCH_MARKERS is empty and a
+    // runner.js text scan for role markers inside withGitSync ranges would
+    // pass vacuously forever.
+    //
+    // The FACT it pinned -- that every role-identified dispatch is bracketed --
+    // is unchanged and moves to the policy table plus the engine: the table
+    // says which dispatches are bracketed, and the two dispatch-pin files run
+    // the real engine and observe the bracket it really opens around each one.
+    assert.equal(
+        Object.keys(SEVEN_DISPATCH_MARKERS).length,
+        0,
+        'a role has an INLINE ladder again -- restore the runner.js marker census below for it, or migrate it',
+    );
+    const bracketed = allDispatchPolicies().filter((p) => p.bracket.wrapped);
+    const unbracketed = allDispatchPolicies().filter((p) => !p.bracket.wrapped);
+    assert.equal(
+        bracketed.length + unbracketed.length,
+        allDispatchPolicies().length,
+        'every dispatch must record whether it is bracketed',
+    );
+    assert.deepEqual(
+        [...new Set(unbracketed.map((p) => p.role))],
+        ['streak-assignment'],
+        'only the pure-compute grouping call runs outside a bracket; every role-identified dispatch is bracketed',
+    );
+    for (const role of Object.keys(ALL_DISPATCH_MARKERS)) {
+        assert.ok(
+            bracketed.some((p) => p.ladder === role),
+            `dispatch for role '${role}' must still have at least one bracketed dispatch in the policy table`,
         );
     }
 });
@@ -178,8 +226,23 @@ test('(a) pushCode:true is reserved for the two code-writing roles (doer, harves
             falseCount++;
         }
     }
-    check(trueCount >= 2, `expected at least two pushCode:true (code-writing) brackets, found ${trueCount}`);
-    check(falseCount >= 5, `expected the read-only roles to pass pushCode:false, found ${falseCount}`);
+    // apra-fleet-3swo.5.7: both counts are DERIVED from the policy table's
+    // still-inline dispatches rather than being bare literals, because each
+    // execution-role migration moves a bracket off runner.js onto the engine's
+    // one generic (expression-argument) withGitSync call. The migrated ones are
+    // asserted behaviourally by the two dispatch-pin files instead.
+    const inlineBrackets = allDispatchPolicies()
+        .filter((p) => p.bracket.wrapped && ROLE_POLICIES[p.ladder].migrated !== true);
+    const expectedTrue = inlineBrackets.filter((p) => p.bracket.pushCode === true).length;
+    const expectedFalse = inlineBrackets.length - expectedTrue;
+    check(
+        trueCount === expectedTrue,
+        `expected ${expectedTrue} pushCode:true (code-writing) brackets still inline, found ${trueCount}`
+    );
+    check(
+        falseCount === expectedFalse,
+        `expected ${expectedFalse} read-only pushCode:false brackets still inline, found ${falseCount}`
+    );
 });
 
 // =============================================================================
@@ -239,7 +302,7 @@ test('(b) doer streaks on two DIFFERENT members never overlap (global sequencing
 // =============================================================================
 test('(c) a non-FF pull raises a typed GitDivergedError (fail-fast, operation=pull)', async () => {
     const { command } = makeCommandMock({
-        'git merge --ff-only': [fail('fatal: Not possible to fast-forward, aborting.')],
+        'git merge --ff-only': [fail(REAL_DIVERGED_FF_ONLY)],
     });
     let err = null;
     try { await syncMemberBefore('m1', { command }); } catch (e) { err = e; }
@@ -252,7 +315,7 @@ test('(c) a non-FF pull raises a typed GitDivergedError (fail-fast, operation=pu
 
 test('(c) an out-of-turn write during a doer streak (non-FF push, still rejected after one rebase) is a typed fail-fast error', async () => {
     const { command, calls } = makeCommandMock({
-        'git push': [fail(' ! [rejected] (non-fast-forward)')], // always rejected
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF)], // always rejected
         'git pull --rebase': [OK],
     });
     let err = null;
@@ -271,8 +334,8 @@ test('(c) an out-of-turn write during a doer streak (non-FF push, still rejected
 // =============================================================================
 test('(d) a G-push failure skips D-push (zero bd dolt push) and rethrows the typed error', async () => {
     const { command, calls } = makeCommandMock({
-        'git push': [fail(' ! [rejected] (non-fast-forward)')],
-        'git pull --rebase': [fail(' ! [rejected] (non-fast-forward), still diverged')],
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF)],
+        'git pull --rebase': [fail(`${REAL_DIVERGED_PUSH_NON_FF}\n(second attempt: still diverged after the rebase)`)],
         'git status --porcelain': [{ ok: true, output: '', error: null }],
     });
     const logs = [];
@@ -362,8 +425,8 @@ test('(f) parseUnmergedPaths picks only unmerged XY codes', () => {
 
 test('(f) a rebase conflict is porcelain-detected, rebase --abort restores a clean tree, and the typed error carries the unmerged paths', async () => {
     const { command, calls } = makeCommandMock({
-        'git push': [fail(' ! [rejected] (non-fast-forward)')],
-        'git pull --rebase': [fail('CONFLICT (content): Merge conflict in a.txt')],
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF)],
+        'git pull --rebase': [fail(REAL_DIVERGED_CONFLICT)],
         'git status --porcelain': [
             { ok: true, output: 'UU a.txt\n', error: null }, // conflict-detection check
             { ok: true, output: '', error: null },           // post-abort clean check
@@ -391,18 +454,106 @@ test('(f) a rebase conflict is porcelain-detected, rebase --abort restores a cle
 // (g) The retry classifier distinguishes transient (retried) from divergence
 // (never retried). Assert BOTH paths, and that they surface as DISTINCT types.
 // =============================================================================
-test('(g) classifyGitFailure: divergence vs transient vs unknown', () => {
-    check(classifyGitFailure('fatal: Not possible to fast-forward, aborting.') === 'diverged', 'non-FF is diverged');
-    check(classifyGitFailure(' ! [rejected] main -> main (non-fast-forward)') === 'diverged', 'rejected push is diverged');
-    check(classifyGitFailure('Could not resolve host: github.com') === 'transient', 'dns is transient');
-    check(classifyGitFailure('fatal: Unable to create /repo/.git/index.lock: File exists.') === 'transient', 'index.lock is transient');
+// -----------------------------------------------------------------------------
+// apra-fleet-j918.6.2 -- classification is asserted against RECORDED real git
+// stderr (test/fixtures/vcs-stderr/), not hand-typed approximations.
+//
+// NON-OBVIOUS RISK this guards, and why the assertions below are written by
+// DIRECTION rather than as a bag of equalities: the realistic defect is not
+// "someone deletes a rule", it is "git rewords a message" (or someone
+// loosens/tightens a regex) so an existing failure lands in a DIFFERENT
+// bucket. Two directions actually hurt:
+//
+//   diverged -> unknown    fail-fast is disabled. syncMemberBefore/After stop
+//                          raising GitDivergedError and fall into the bounded
+//                          self-heal + single retry path instead, so an
+//                          out-of-turn write is papered over, not surfaced.
+//   diverged -> transient  worse: runGitStep RETRIES a divergence, turning a
+//                          hard stop into a retry loop against a remote that
+//                          will refuse it identically every time.
+//
+// The reverse (transient -> diverged) is also asserted: it would abort a
+// sprint on a DNS blip.
+//
+// REAL-CAPTURE FINDING worth keeping: on git 2.50.1 a push that has not yet
+// fetched the diverging tip says "(fetch first)", NOT "(non-fast-forward)".
+// That sample's diverged verdict rides entirely on "failed to push some refs"
+// / "Updates were rejected" -- so those two rules are load-bearing in a way
+// the old hand-typed " ! [rejected] main -> main (non-fast-forward)" fixture
+// hid completely.
+// -----------------------------------------------------------------------------
+test('(g) classifyGitFailure assigns every RECORDED real-git sample to its recorded bucket', () => {
+    const corpus = loadVcsStderrCorpus();
+    const samples = stderrSamples('git');
+    check(samples.length > 0, 'the recorded git corpus must not be empty');
+    check(
+        typeof corpus.tools.git === 'string' && /^git version /.test(corpus.tools.git),
+        `the corpus must record the git version its samples came from, got ${JSON.stringify(corpus.tools.git)}`,
+    );
+    for (const s of samples) {
+        check(
+            !s.stderr.includes('...') || /\.\.\.$/m.test(s.stderr) || /Pulling\.\.\./.test(s.stderr),
+            `${provenance(s)}: a recorded sample must not carry an elided placeholder`,
+        );
+        const got = classifyGitFailure(s.stderr);
+        check(got === s.expect, `${provenance(s)}: expected ${s.expect}, got ${got}`);
+    }
+});
+
+test('(g) the recorded git corpus covers every bucket classifyGitFailure can return', () => {
+    // If a bucket is ever added to the git verdict taxonomy, this fails until
+    // a recipe that provokes it for real is added to record-vcs-stderr.mjs --
+    // a new bucket must not be able to arrive with only hand-typed coverage.
+    assert.deepEqual(
+        recordedKinds('git'),
+        ['auth', 'diverged', 'transient', 'unknown'],
+        'every classifyGitFailure verdict needs at least one recorded real-git sample',
+    );
+});
+
+test('(g) classifyGitFailure: divergence vs transient vs unknown, asserted by MISCLASSIFICATION DIRECTION', () => {
+    // Diverged must never soften into unknown (fail-fast disabled) or into
+    // transient (divergence retried in a loop).
+    for (const s of stderrSamples('git').filter((x) => x.expect === 'diverged')) {
+        const got = classifyGitFailure(s.stderr);
+        check(got !== 'unknown', `${provenance(s)}: diverged read as unknown DISABLES fail-fast`);
+        check(got !== 'transient', `${provenance(s)}: diverged read as transient turns a hard stop into a RETRY LOOP`);
+        check(got !== 'auth', `${provenance(s)}: diverged read as auth would fire a pointless credential self-heal`);
+        check(got === 'diverged', `${provenance(s)}: expected diverged, got ${got}`);
+    }
+    // Transient must never harden into diverged (a DNS blip would abort the
+    // sprint) and must never silently become unknown (no retry at all).
+    for (const s of stderrSamples('git').filter((x) => x.expect === 'transient')) {
+        const got = classifyGitFailure(s.stderr);
+        check(got !== 'diverged', `${provenance(s)}: transient read as diverged would ABORT the sprint on a blip`);
+        check(got === 'transient', `${provenance(s)}: expected transient, got ${got}`);
+    }
+    // Unrecognized output must stay unknown, never be silently swept into
+    // transient (which would retry a permanently fatal command).
+    for (const s of stderrSamples('git').filter((x) => x.expect === 'unknown')) {
+        const got = classifyGitFailure(s.stderr);
+        check(got !== 'transient', `${provenance(s)}: unrecognized output must NOT be silently retried as transient`);
+        check(got === 'unknown', `${provenance(s)}: expected unknown, got ${got}`);
+    }
+    // Ported from the retired mock-sprint-git-sync-brackets.test.mjs
+    // (apra-fleet-7h6n.2): the behind-tip diverged variant and the empty-input
+    // edge case have no recorded sample of their own -- git only prints the
+    // behind-tip hint in the same output as the recorded non-fast-forward push
+    // (asserted above), and no invocation produces empty output.
+    check(classifyGitFailure('') === 'unknown', 'empty is unknown');
     check(classifyGitFailure('some totally novel git failure') === 'unknown', 'novel is unknown (not silently transient)');
+    check(/Updates were rejected because the tip of your current branch is behind/.test(REAL_DIVERGED_PUSH_NON_FF),
+        'the recorded non-FF push sample is also the behind-tip sample');
+    check(/CONFLICT \(content\): Merge conflict in/.test(REAL_DIVERGED_CONFLICT), 'the conflict sample is a real content conflict');
+    check(/unmerged files/i.test(REAL_DIVERGED_UNMERGED), 'the unmerged sample is a real unmerged-paths pull refusal');
+    check(/cannot lock ref/i.test(REAL_TRANSIENT_LOCK_REF), 'the lock-ref sample is a real ref-lock collision');
+    check(/Not a valid object name/i.test(REAL_UNKNOWN_BAD_OBJECT), 'the unknown sample is a real git error, not invented text');
 });
 
 test('(g) a TRANSIENT fetch failure is retried to success; a DIVERGENCE is never retried', async () => {
     // Transient path: fetch fails once (transient), then succeeds -> retried.
     const transient = makeCommandMock({
-        'git fetch': [fail('fatal: unable to access ... Could not resolve host: github.com'), OK],
+        'git fetch': [fail(REAL_TRANSIENT_DNS), OK],
     });
     const res = await syncMemberBefore('m1', { command: transient.command });
     check(res.ok, 'transient fetch failure should be retried to success');
@@ -410,7 +561,7 @@ test('(g) a TRANSIENT fetch failure is retried to success; a DIVERGENCE is never
 
     // Divergence path: merge --ff-only is non-FF twice; must NOT retry.
     const diverged = makeCommandMock({
-        'git merge --ff-only': [fail('fatal: Not possible to fast-forward, aborting.'), OK],
+        'git merge --ff-only': [fail(REAL_DIVERGED_FF_ONLY), OK],
     });
     await assert.rejects(() => syncMemberBefore('m1', { command: diverged.command }), GitDivergedError);
     check(diverged.calls.filter((c) => /git merge --ff-only/.test(c.cmd)).length === 1, 'divergence must NOT be retried');
@@ -418,7 +569,7 @@ test('(g) a TRANSIENT fetch failure is retried to success; a DIVERGENCE is never
 
 test('(g) a transient failure that exhausts its retries raises GitSyncError, NOT GitDivergedError', async () => {
     const { command } = makeCommandMock({
-        'git push': [fail('fatal: unable to access ... Connection timed out')], // never recovers
+        'git push': [fail(REAL_TRANSIENT_REFUSED)], // never recovers
     });
     let err = null;
     try { await syncMemberAfter('m1', { command, maxTransientRetries: 1 }); } catch (e) { err = e; }
@@ -447,7 +598,7 @@ test('(fmu) classifyGitFailure recognizes the live-observed credential failure (
     check(classifyGitFailure('Permission denied (publickey).') === 'auth', 'publickey denial is auth');
     check(classifyGitFailure('remote: Invalid username or token.') === 'auth', 'invalid token is auth');
     check(classifyGitFailure('remote: Invalid username or password.') === 'auth', 'invalid password is auth');
-    check(classifyGitFailure('fatal: could not read Username for ...: terminal prompts disabled') === 'auth', 'terminal prompts disabled is auth');
+    check(classifyGitFailure(REAL_AUTH_NO_USERNAME) === 'auth', 'the RECORDED terminal-prompts-disabled credential failure is auth');
     check(classifyGitFailure('remote: Support for password authentication was removed') === 'auth', 'password-auth-removed is auth');
     check(classifyGitFailure('remote: Bad credentials') === 'auth', 'bad credentials is auth');
 
@@ -596,7 +747,7 @@ test('(647.1.3.3) omitting onAuthFailure preserves pre-existing behavior on an u
 
 test('(647.1.3.3) DIVERGED is still excluded from self-heal/retry even when onAuthFailure is provided -- never retried', async () => {
     const { command, calls } = makeCommandMock({
-        'git merge --ff-only': [fail('fatal: Not possible to fast-forward, aborting.')],
+        'git merge --ff-only': [fail(REAL_DIVERGED_FF_ONLY)],
     });
     let healCalls = 0;
     const onAuthFailure = async () => { healCalls += 1; };
@@ -651,4 +802,415 @@ test('(h) the vendored agent markdown tree contains NO orchestrator-side sync co
         `Vendored agent markdown must not carry orchestrator-side sync-bracket commands (sync stays in runner.js per Plan 3.2). ` +
         `Offending file(s)/token(s): ${offenders.join(' | ')}`,
     );
+});
+
+// =============================================================================
+// (ported, apra-fleet-7h6n.2) -- mock-sprint-git-sync-brackets.test.mjs was a
+// near-total duplicate of this file's (a)-(h) coverage above and was deleted;
+// these eleven cases were the assertions it carried that had NO equivalent
+// here (happy paths, pushCode:false/pushBeads:false no-ops, the SUCCESSFUL
+// rebase-recovery and transient-retry-to-success variants, the clean-porcelain
+// no-abort case, and syncMemberAfterOrdered's non-failure branches) -- ported
+// verbatim rather than dropped, so deleting the duplicate file loses no
+// assertion coverage.
+// =============================================================================
+test('(ported) syncMemberBefore: happy path runs fetch then merge --ff-only, each with explicit member_name', async () => {
+    const { command, calls } = makeCommandMock({});
+    const res = await syncMemberBefore('m1', { command });
+    check(res.ok && res.member === 'm1', `expected ok result, got ${JSON.stringify(res)}`);
+    check(calls.length === 2, `expected exactly fetch + merge, got ${calls.map((c) => c.cmd).join(' | ')}`);
+    check(/git fetch/.test(calls[0].cmd), `first command must be a fetch, got ${calls[0].cmd}`);
+    check(/git merge --ff-only/.test(calls[1].cmd), `second command must be ff-only merge, got ${calls[1].cmd}`);
+    check(calls.every((c) => c.opts.member_name === 'm1'), 'every git command must carry an explicit member_name');
+});
+
+test('(ported) syncMemberAfter: clean push succeeds with no rebase, explicit member_name', async () => {
+    const { command, calls } = makeCommandMock({});
+    const res = await syncMemberAfter('m1', { command });
+    check(res.ok && res.pushed && !res.rebased, `expected clean push, got ${JSON.stringify(res)}`);
+    check(calls.length === 1 && /git push/.test(calls[0].cmd), 'single push expected');
+    check(calls[0].opts.member_name === 'm1', 'push must carry explicit member_name');
+});
+
+test('(ported) syncMemberAfter: pushCode:false is a no-op (nothing published)', async () => {
+    const { command, calls } = makeCommandMock({});
+    const res = await syncMemberAfter('m1', { command, pushCode: false });
+    check(res.ok && !res.pushed, 'pushCode:false must not push');
+    check(calls.length === 0, 'no git command should be issued when pushCode is false');
+});
+
+test('(ported) syncMemberAfter: non-FF push triggers EXACTLY ONE pull --rebase then a successful re-push', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF), OK], // first push rejected, second ok
+        'git pull --rebase': [OK],
+    });
+    const res = await syncMemberAfter('m1', { command });
+    check(res.ok && res.pushed && res.rebased, `expected rebased re-push success, got ${JSON.stringify(res)}`);
+    const rebaseCalls = calls.filter((c) => /git pull --rebase/.test(c.cmd));
+    const pushCalls = calls.filter((c) => /git push/.test(c.cmd));
+    check(rebaseCalls.length === 1, `exactly one rebase expected, saw ${rebaseCalls.length}`);
+    check(pushCalls.length === 2, `push should be retried exactly once after rebase, saw ${pushCalls.length}`);
+});
+
+test('(ported) syncMemberAfter: a transient push failure is retried (not treated as divergence), then succeeds', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(REAL_TRANSIENT_REFUSED), OK],
+    });
+    const res = await syncMemberAfter('m1', { command });
+    check(res.ok && res.pushed && !res.rebased, 'transient push failure retried without a rebase');
+    const rebaseCalls = calls.filter((c) => /git pull --rebase/.test(c.cmd));
+    check(rebaseCalls.length === 0, 'transient failure must not trigger a pull --rebase');
+});
+
+test('(ported) parseUnmergedPaths: clean/empty porcelain yields no unmerged paths', () => {
+    check(parseUnmergedPaths('').length === 0, 'empty porcelain has no unmerged paths');
+    check(parseUnmergedPaths('M  some-file.txt\n?? new.txt').length === 0, 'no unmerged codes present');
+});
+
+test('(ported) syncMemberAfter: a pull --rebase failure with a CLEAN porcelain (no unmerged paths) does not run rebase --abort but still raises GitDivergedError when classified as diverged', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF)],
+        'git pull --rebase': [fail(REAL_DIVERGED_CONFLICT)],
+        'git status --porcelain': [{ ok: true, output: '', error: null }],
+    });
+    let err = null;
+    try { await syncMemberAfter('m1', { command }); } catch (e) { err = e; }
+    check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
+    check(Array.isArray(err.details.unmergedPaths) && err.details.unmergedPaths.length === 0, 'no unmerged paths were found');
+    const abortCalls = calls.filter((c) => /git rebase --abort/.test(c.cmd));
+    check(abortCalls.length === 0, 'rebase --abort must not run when porcelain reports nothing unmerged');
+});
+
+// =============================================================================
+// apra-fleet-ta3.4 -- unit coverage for apra-fleet-ta3.3's missing-remote-ref
+// guard in syncMemberAfter: on a fresh sprint branch the initial G-push can be
+// classified 'diverged' even though the remote has no such branch at all
+// (git's non-fast-forward rejection trailers are generic); the ONLY place that
+// becomes observable is the resulting `git pull --rebase`, which fails with
+// git's exact "couldn't find remote ref <branch>" message when there is
+// nothing there to rebase against. The guard (isMissingRemoteRefError(),
+// member-sync.mjs) skips the Tier 1/Tier 2 conflict-ladder machinery entirely
+// in that case and retries the push directly to create the branch.
+// =============================================================================
+test('(ta3.4-1) missing-remote-ref guard: push diverged, then rebase fails with "couldn\'t find remote ref feat/x" -- skips rebase --abort and Tier 2 entirely, retries the push directly, and resolves { ok: true, pushed: true }', async () => {
+    const { command, calls } = makeCommandMock({
+        // Initial push classified 'diverged' (generic non-FF trailer -- the
+        // root cause this guard exists for: this text is ALSO what a brand-
+        // new, never-pushed branch produces). The retry create-push below
+        // succeeds, creating the branch on the remote.
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF), OK],
+        // The resulting pull --rebase fails with git's exact, unambiguous
+        // "branch does not exist on the remote" message.
+        'git pull --rebase': [fail("fatal: couldn't find remote ref feat/x")],
+    });
+    let agentCalls = 0;
+    const agent = async () => { agentCalls++; return { status: 'RESOLVED' }; };
+
+    const res = await syncMemberAfter('m1', { command, branch: 'feat/x', remote: 'origin', agent });
+
+    check(res.ok === true && res.pushed === true, `expected { ok: true, pushed: true }, got: ${JSON.stringify(res)}`);
+    check(res.rebased === false, 'the missing-remote-ref path never actually rebased anything');
+
+    const pushCalls = calls.filter((c) => /^git push/.test(c.cmd));
+    check(pushCalls.length === 2, `expected the initial push plus one create-push retry, saw ${pushCalls.length}: ${JSON.stringify(calls.map((c) => c.cmd))}`);
+    const rebaseCalls = calls.filter((c) => /git pull --rebase/.test(c.cmd));
+    check(rebaseCalls.length === 1, `expected the pull --rebase probed exactly once (never blindly repeated), saw ${rebaseCalls.length}`);
+    const abortCalls = calls.filter((c) => /git rebase --abort/.test(c.cmd));
+    check(abortCalls.length === 0, `expected NO 'git rebase --abort' -- there is nothing to abort when there was never a real rebase attempt, saw ${abortCalls.length}`);
+    check(agentCalls === 0, `expected NO Tier 2 agent dispatch -- a missing remote ref is not a real conflict, saw ${agentCalls} agent call(s)`);
+});
+
+test('(ta3.4-2) missing-remote-ref guard: if the create-push retry is itself rejected as diverged, a concurrent writer published the branch first -- raises the typed GitDivergedError', async () => {
+    const { command, calls } = makeCommandMock({
+        // Single-entry queue: the same divergence rejection on BOTH the
+        // initial push and the create-push retry (see makeCommandMock's doc
+        // comment) -- simulating another writer publishing the branch in the
+        // narrow window between the failed rebase probe and this retry.
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF)],
+        'git pull --rebase': [fail("fatal: couldn't find remote ref feat/x")],
+    });
+
+    let err = null;
+    try { await syncMemberAfter('m1', { command, branch: 'feat/x', remote: 'origin' }); } catch (e) { err = e; }
+
+    check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
+    check(err.member === 'm1', 'the typed error must carry the member');
+    check(err.operation === 'push', `expected operation 'push', got ${err.operation}`);
+
+    const pushCalls = calls.filter((c) => /^git push/.test(c.cmd));
+    check(pushCalls.length === 2, `expected the initial push plus exactly one create-push retry (never retried further), saw ${pushCalls.length}`);
+    const rebaseCalls = calls.filter((c) => /git pull --rebase/.test(c.cmd));
+    check(rebaseCalls.length === 1, `expected the pull --rebase probed exactly once, saw ${rebaseCalls.length}`);
+});
+
+test('(ta3.4-3) regression guard: a genuine rebase CONFLICT (not a missing-remote-ref) still runs the Tier 1 abort and, with an injected agent, the Tier 2 path -- unaffected by the missing-remote-ref guard', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF), OK], // initial reject, then Tier 2 re-push
+        'git pull --rebase': [fail(REAL_DIVERGED_CONFLICT)],
+        'git status --porcelain': [
+            { ok: true, output: 'UU a.txt\n', error: null }, // Tier 1 conflict-detection check
+            { ok: true, output: '', error: null },           // Tier 1 post-abort clean-state check
+            { ok: true, output: '', error: null },           // Tier 2 post-resolution clean-state check
+        ],
+        'git rebase --abort': [OK],
+    });
+    let agentCalls = 0;
+    const agent = async () => { agentCalls++; return { status: 'RESOLVED' }; };
+
+    const res = await syncMemberAfter('m1', { command, branch: 'feat/x', remote: 'origin', agent });
+
+    check(res.ok === true && res.pushed === true && res.tier2Resolved === true, `expected a Tier-2-resolved success, got: ${JSON.stringify(res)}`);
+    check(agentCalls === 1, `expected exactly one Tier 2 agent dispatch for a genuine conflict, saw ${agentCalls}`);
+    const abortCalls = calls.filter((c) => /git rebase --abort/.test(c.cmd));
+    check(abortCalls.length === 1, `expected the Tier 1 rebase --abort to still run for a genuine conflict, saw ${abortCalls.length}`);
+    check(!isMissingRemoteRefError(REAL_DIVERGED_CONFLICT), 'sanity: the recorded genuine-conflict sample must not match the missing-remote-ref predicate');
+});
+
+test('(ta3.4-4) isMissingRemoteRefError: matches git\'s exact wording case-insensitively; does not match unrelated fatal texts, empty, or undefined input', () => {
+    check(isMissingRemoteRefError("fatal: couldn't find remote ref feat/x") === true, 'must match the exact live wording');
+    check(isMissingRemoteRefError("FATAL: COULDN'T FIND REMOTE REF refs/heads/mybranch") === true, 'must match case-insensitively');
+    check(isMissingRemoteRefError("something couldn't find remote ref buried mid-sentence") === true, 'must match anywhere in the text, not just at the start');
+    check(isMissingRemoteRefError('fatal: Not possible to fast-forward, aborting.') === false, 'a plain ff-only refusal must not match');
+    check(isMissingRemoteRefError(REAL_DIVERGED_CONFLICT) === false, 'a genuine recorded content-conflict sample must not match');
+    check(isMissingRemoteRefError(REAL_DIVERGED_PUSH_NON_FF) === false, 'a genuine recorded non-FF push rejection must not match');
+    check(isMissingRemoteRefError('') === false, 'empty string must not match');
+    check(isMissingRemoteRefError(undefined) === false, 'undefined input must not match (defaults to empty string, never throws)');
+});
+
+// apra-fleet-ta3 (G-pull half): a G-pull fetch of a sprint branch not yet on
+// origin fails with "couldn't find remote ref", which classifies 'unknown';
+// runGitStep used to route it into the auth self-heal (provision_vcs_auth +
+// retry) before syncMemberBefore's own missing-ref no-op could run.
+test('(ta3-gpull-1) G-pull: sprint branch absent on origin -> pull skipped as a no-op, NO auth self-heal, fetch issued once, no merge', async () => {
+    const { command, calls } = makeCommandMock({
+        'git fetch': [fail("Exit code: 128\n[stderr]\nfatal: couldn't find remote ref feat/x")],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+    const logs = [];
+    const res = await syncMemberBefore('m1', { command, branch: 'feat/x', remote: 'origin', onAuthFailure, log: (l) => logs.push(l) });
+
+    check(res.ok === true, `expected ok:true no-op, got ${JSON.stringify(res)}`);
+    check(healCalls === 0, `a missing remote ref must never invoke the auth self-heal, saw ${healCalls} call(s)`);
+    check(calls.filter((c) => /git fetch/.test(c.cmd)).length === 1, `expected exactly one fetch (no post-heal retry), saw ${JSON.stringify(calls.map((c) => c.cmd))}`);
+    check(!calls.some((c) => /git merge|git reset/.test(c.cmd)), 'no merge/reset may run when there is nothing on the remote to pull');
+    check(!logs.some((l) => /self-heal|unknown git failure|auth/i.test(l)), `no auth/self-heal log line expected, got ${JSON.stringify(logs)}`);
+    check(logs.some((l) => /does not exist on 'origin' yet/.test(l)), `expected the clear "not pushed yet" skip log line, got ${JSON.stringify(logs)}`);
+});
+
+test('(ta3-gpull-2) G-pull: sprint branch present on origin -> fetch + ff-only merge run as before', async () => {
+    const { command, calls } = makeCommandMock({});
+    let healCalls = 0;
+    const res = await syncMemberBefore('m1', { command, branch: 'feat/x', remote: 'origin', onAuthFailure: async () => { healCalls += 1; } });
+
+    check(res.ok === true, `expected ok:true, got ${JSON.stringify(res)}`);
+    check(healCalls === 0, 'no self-heal on a clean pull');
+    const cmds = calls.map((c) => c.cmd);
+    check(cmds[0] === 'git fetch origin feat/x', `expected the fetch first, got ${JSON.stringify(cmds)}`);
+    check(cmds.includes('git merge --ff-only origin/feat/x'), `expected the ff-only merge to run, got ${JSON.stringify(cmds)}`);
+});
+
+test('(ta3-gpull-3) G-pull: a non-missing-ref unknown fetch failure still gets the one-shot self-heal (guard is narrow)', async () => {
+    const { command, calls } = makeCommandMock({
+        'git fetch': [fail('fatal: some novel provider failure text'), OK],
+    });
+    let healCalls = 0;
+    const res = await syncMemberBefore('m1', { command, branch: 'feat/x', remote: 'origin', onAuthFailure: async () => { healCalls += 1; } });
+
+    check(res.ok === true, `expected success after the healed retry, got ${JSON.stringify(res)}`);
+    check(healCalls === 1, `expected exactly one self-heal for an unknown non-missing-ref failure, saw ${healCalls}`);
+    check(calls.filter((c) => /git fetch/.test(c.cmd)).length === 2, 'fetch retried once after the self-heal');
+});
+
+test('(ported) syncMemberAfterOrdered: clean G-push publishes, then D-push runs (both succeed)', async () => {
+    const { command, calls } = makeCommandMock({});
+    const res = await syncMemberAfterOrdered('m1', { command, pushCode: true, pushBeads: true });
+    check(res.ok === true, 'expected ok:true result');
+    check(res.gPush && res.gPush.pushed === true, 'G-push must have run and pushed');
+    check(res.dPush && res.dPush.pushed === true, 'D-push must have run and pushed');
+    const pushCalls = calls.filter((c) => /^git push/.test(c.cmd));
+    const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
+    check(pushCalls.length === 1, `expected exactly one git push, saw ${pushCalls.length}`);
+    check(doltPushCalls.length === 1, `expected exactly one bd dolt push, saw ${doltPushCalls.length}`);
+    // Ordering: the git push call must precede the bd dolt push call.
+    const gIdx = calls.findIndex((c) => /^git push/.test(c.cmd));
+    const dIdx = calls.findIndex((c) => c.cmd.includes('bd dolt push'));
+    check(gIdx !== -1 && dIdx !== -1 && gIdx < dIdx, 'G-push must be issued before D-push');
+});
+
+test('(ported) syncMemberAfterOrdered: a transient-exhausted G-push failure (GitSyncError, not diverged) also skips D-push', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(REAL_TRANSIENT_REFUSED)], // never recovers
+    });
+    let err = null;
+    try {
+        await syncMemberAfterOrdered('m1', { command, pushCode: true, pushBeads: true, maxTransientRetries: 0 });
+    } catch (e) {
+        err = e;
+    }
+    check(err instanceof GitSyncError, `expected GitSyncError, got ${err && err.constructor.name}`);
+    const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
+    check(doltPushCalls.length === 0, `D-push must never be invoked when G-push fails (transient-exhausted), saw ${doltPushCalls.length}`);
+});
+
+test('(ported) syncMemberAfterOrdered: non-code-writing roles (pushCode:false) are unaffected -- G-push is a documented no-op and D-push always still runs', async () => {
+    const { command, calls } = makeCommandMock({});
+    const res = await syncMemberAfterOrdered('m1', { command, pushCode: false, pushBeads: true });
+    check(res.ok === true, 'expected ok:true result');
+    check(res.gPush && res.gPush.pushed === false, 'G-push must be a no-op for pushCode:false');
+    const gitPushCalls = calls.filter((c) => /^git push/.test(c.cmd));
+    check(gitPushCalls.length === 0, 'no git push should be issued for pushCode:false');
+    const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
+    check(doltPushCalls.length === 1, `D-push must still run for a non-code-writing role, saw ${doltPushCalls.length}`);
+});
+
+test('(ported) syncMemberAfterOrdered: pushBeads:false (read-only bracket) with a G-push failure still skips D-push (nothing to push anyway) and rethrows', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF)],
+        'git pull --rebase': [fail(`${REAL_DIVERGED_PUSH_NON_FF}\n(second attempt: still diverged after the rebase)`)],
+        'git status --porcelain': [{ ok: true, output: '', error: null }],
+    });
+    let err = null;
+    try {
+        await syncMemberAfterOrdered('m1', { command, pushCode: true, pushBeads: false });
+    } catch (e) {
+        err = e;
+    }
+    check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
+    const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
+    check(doltPushCalls.length === 0, `D-push must not be invoked, saw ${doltPushCalls.length}`);
+});
+
+// =============================================================================
+// apra-fleet-2wdc.5 -- end-to-end coverage for the workflow-permission
+// refusal's syncMemberAfter/dispatch-outcome behavior (apra-fleet-2wdc.3/.4's
+// fixes). classifyFailure()'s own AUTH_DENIED/permissionScope/operatorReferral
+// verdict is pinned separately in test/vcs-classify-failure.test.mjs; this
+// suite pins what a caller (syncMemberAfter, and the dispatch-outcome
+// classifier dispatch-failure.mjs consumes) DOES with that verdict: no
+// rebase, no self-heal, no retry, and a thrown error that names the member,
+// the refused workflow path and the missing permission -- plus a regression
+// guard that the new permission-scope gate in runGitStep does not disturb the
+// pre-existing transient-retry or diverged-rebase-once paths.
+// =============================================================================
+for (const [label, refusalText] of [
+    ['GitHub App', GITHUB_APP_WORKFLOW_REFUSAL],
+    ['Personal Access Token', PAT_WORKFLOW_REFUSAL],
+]) {
+    test(`(2wdc.5) syncMemberAfter: a ${label} workflow-permission refusal is NOT rebased/self-healed/retried, and the thrown error names the member, the refused workflow path and the missing permission`, async () => {
+        const { command, calls } = makeCommandMock({
+            'git push': [fail(refusalText)],
+        });
+        let healCalls = 0;
+        const onAuthFailure = async () => { healCalls += 1; };
+        let err = null;
+        try {
+            await syncMemberAfter('doer-1', { command, branch: 'feat/x', onAuthFailure });
+        } catch (e) {
+            err = e;
+        }
+        check(err instanceof GitSyncError, `expected a typed GitSyncError, got ${err && err.constructor.name}`);
+        check(!(err instanceof GitDivergedError), 'a permission-scope refusal must never be classified as a divergence (the DIVERGED trap this bug fixes)');
+        check(
+            calls.filter((c) => /git pull --rebase/.test(c.cmd)).length === 0,
+            `no pull --rebase may ever be attempted for a permission-scope refusal, saw ${JSON.stringify(calls.map((c) => c.cmd))}`,
+        );
+        check(
+            calls.filter((c) => /^git push/.test(c.cmd)).length === 1,
+            `no second push may be attempted (no retry), saw ${calls.filter((c) => /^git push/.test(c.cmd)).length}`,
+        );
+        check(healCalls === 0, 'the injected onAuthFailure self-heal must never be invoked for a permission-scope refusal');
+        check(err.message.includes('doer-1'), `expected the thrown error to name the member 'doer-1', got: ${err.message}`);
+        check(err.message.includes('.github/workflows/ci.yml'), `expected the thrown error to name the refused workflow path, got: ${err.message}`);
+        check(/workflows.{0,30}permission/is.test(err.message), `expected the thrown error to name the missing 'workflows' permission, got: ${err.message}`);
+    });
+}
+
+test('(2wdc.5) regression guard: a transient G-push failure still retries to success -- the new permission-scope gate does not disturb the transient path', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(REAL_TRANSIENT_DNS), OK],
+    });
+    const res = await syncMemberAfter('m1', { command, maxTransientRetries: 1 });
+    check(res.ok === true, `expected the retried push to succeed, got ${JSON.stringify(res)}`);
+    check(
+        calls.filter((c) => /^git push/.test(c.cmd)).length === 2,
+        `expected exactly one retry (2 total push attempts), saw ${calls.filter((c) => /^git push/.test(c.cmd)).length}`,
+    );
+});
+
+test('(2wdc.5) regression guard: a genuine divergence still rebases exactly once then re-pushes -- the new permission-scope gate does not disturb the diverged path', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(REAL_DIVERGED_PUSH_NON_FF), OK],
+        'git pull --rebase': [OK],
+    });
+    const res = await syncMemberAfter('m1', { command, branch: 'feat/x' });
+    check(res.ok === true && res.rebased === true, `expected the rebase-then-repush to succeed, got ${JSON.stringify(res)}`);
+    check(
+        calls.filter((c) => /git pull --rebase/.test(c.cmd)).length === 1,
+        `expected exactly one rebase attempt, saw ${calls.filter((c) => /git pull --rebase/.test(c.cmd)).length}`,
+    );
+    check(
+        calls.filter((c) => /^git push/.test(c.cmd)).length === 2,
+        `expected the initial push plus one re-push after rebase, saw ${calls.filter((c) => /^git push/.test(c.cmd)).length}`,
+    );
+});
+
+test('(2wdc.5) unit: isPermissionScopePostDispatchSyncFailure recognizes the REAL error chain a permission-scope G-push produces, and only that chain', async () => {
+    // Drive the REAL syncMemberAfter failure path (rather than hand-typing a
+    // marker string) so this test fails if github.mjs's permissionScope hook,
+    // vcs-module.mjs's precedence-skip, git-topology.mjs's runGitStep gate, or
+    // dispatch-failure.mjs's marker regex is reverted.
+    const { command: permCommand } = makeCommandMock({
+        'git push': [fail(GITHUB_APP_WORKFLOW_REFUSAL)],
+    });
+    let permissionScopeGitErr = null;
+    try {
+        await syncMemberAfter('doer-1', { command: permCommand, branch: 'feat/x' });
+    } catch (e) {
+        permissionScopeGitErr = e;
+    }
+    check(permissionScopeGitErr instanceof GitSyncError, 'precondition: syncMemberAfter must throw the typed GitSyncError for a permission-scope refusal');
+
+    // Wrapped the same way git-sync.mjs's post-dispatch teardown wraps a
+    // failed syncMemberAfterOrdered call, interpolating the sync error's
+    // message and carrying it as `cause`.
+    const permissionScopePostDispatchErr = new PostDispatchSyncError(
+        `Post-dispatch sync (G-push/D-push) failed for member 'doer-1' AFTER the dispatch completed successfully: ${permissionScopeGitErr.message}. The dispatch's work is already committed locally -- it must NOT be re-dispatched; fix the sync (credentials/remote) and re-run.`,
+        { member: 'doer-1', cause: permissionScopeGitErr },
+    );
+    check(
+        isPermissionScopePostDispatchSyncFailure(permissionScopePostDispatchErr) === true,
+        'the real permission-scope G-push chain must be recognized as a permission-scope post-dispatch sync failure',
+    );
+    check(
+        isPostDispatchSyncFailure(permissionScopePostDispatchErr) === true,
+        'it must still satisfy the broader isPostDispatchSyncFailure() predicate too (regression: the general classifier is unaffected)',
+    );
+
+    // A DIFFERENT (transient-exhausted) G-push failure, wrapped the SAME way,
+    // must never be misread as a permission-scope refusal -- the marker text
+    // is specific to the permission-scope referral, not to "any G-push
+    // failure that became a PostDispatchSyncError".
+    const { command: transientCommand } = makeCommandMock({
+        'git push': [fail(REAL_TRANSIENT_DNS)],
+    });
+    let transientGitErr = null;
+    try {
+        await syncMemberAfter('m1', { command: transientCommand, maxTransientRetries: 0 });
+    } catch (e) {
+        transientGitErr = e;
+    }
+    check(transientGitErr instanceof GitSyncError, 'precondition: an exhausted-transient G-push failure must also throw a typed GitSyncError');
+    const transientPostDispatchErr = new PostDispatchSyncError(
+        `Post-dispatch sync (G-push/D-push) failed for member 'm1' AFTER the dispatch completed successfully: ${transientGitErr.message}.`,
+        { member: 'm1', cause: transientGitErr },
+    );
+    check(
+        isPermissionScopePostDispatchSyncFailure(transientPostDispatchErr) === false,
+        'a transient G-push failure must never be misread as permission-scope',
+    );
+    check(isPostDispatchSyncFailure(transientPostDispatchErr) === true, 'a transient failure is still a generic post-dispatch sync failure');
+
+    check(isPermissionScopePostDispatchSyncFailure(new Error('plain error, not even a PostDispatchSyncError')) === false, 'a non-PostDispatchSyncError is never permission-scope');
+    check(isPermissionScopePostDispatchSyncFailure(undefined) === false, 'undefined input must not throw and must not be permission-scope');
 });

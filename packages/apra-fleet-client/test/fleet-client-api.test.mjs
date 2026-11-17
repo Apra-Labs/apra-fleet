@@ -3,6 +3,26 @@ import assert from 'node:assert';
 import { ApraFleet } from '../src/client/api.mjs';
 
 describe('ApraFleet', () => {
+    test('sendMessage forwards to the send_message tool', async () => {
+        let calledName, calledArgs;
+        const mockClient = { async callTool(name, args) { calledName = name; calledArgs = args; return { ok: true }; } };
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_id: 'm-1', content: 'hello', reply_to: 'r-1' };
+        const result = await fleet.sendMessage(options);
+        assert.strictEqual(calledName, 'send_message');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { ok: true });
+    });
+
+    test('probeMessageTarget calls send_message in probe mode with no content', async () => {
+        let calledName, calledArgs;
+        const mockClient = { async callTool(name, args) { calledName = name; calledArgs = args; return { ok: true }; } };
+        const fleet = new ApraFleet(mockClient);
+        await fleet.probeMessageTarget('orchestrator');
+        assert.strictEqual(calledName, 'send_message');
+        assert.deepStrictEqual(calledArgs, { member_id: 'orchestrator', content: '', probe: true });
+    });
+
     test('executePrompt', async () => {
         let calledName, calledArgs;
         const mockClient = {
@@ -89,6 +109,18 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'success' });
     });
 
+    test('executeCommand passes a multi-line heredoc command through byte-for-byte', async () => {
+        // The server hands the command to its POSIX wrapper as data, so the
+        // client must not trim, join or re-quote it (a trailing heredoc
+        // terminator, CRLF or trailing `&` must all arrive intact).
+        let calledArgs;
+        const mockClient = { async callTool(_name, args) { calledArgs = args; return {}; } };
+        const command = "cat <<'EOF'\r\nit's $HOME\r\nEOF\r\nsleep 1 &";
+        await new ApraFleet(mockClient).executeCommand({ command, timeoutMs: 5000 });
+        assert.strictEqual(calledArgs.command, command);
+        assert.strictEqual('timeoutMs' in calledArgs, false);
+    });
+
     test('listMembers', async () => {
         let calledName, calledArgs;
         const mockClient = {
@@ -142,6 +174,24 @@ describe('ApraFleet', () => {
         assert.strictEqual(calledName, 'fleet_status');
         assert.deepStrictEqual(calledArgs, options);
         assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
+    test('fleetSnapshot', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { members: [] };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const result = await fleet.fleetSnapshot();
+
+        assert.strictEqual(calledName, 'fleet_snapshot');
+        assert.deepStrictEqual(calledArgs, {});
+        assert.deepStrictEqual(result, { members: [] });
     });
 
     test('memberDetail', async () => {
@@ -212,7 +262,7 @@ describe('ApraFleet', () => {
         };
 
         const fleet = new ApraFleet(mockClient);
-        const options = { member_name: 'alice' };
+        const options = { member_name: 'alice', force_oauth_copy: true };
         const result = await fleet.provisionLlmAuth(options);
 
         assert.strictEqual(calledName, 'provision_llm_auth');
@@ -237,6 +287,43 @@ describe('ApraFleet', () => {
         assert.strictEqual(calledName, 'provision_vcs_auth');
         assert.deepStrictEqual(calledArgs, options);
         assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
+    // apra-fleet-e7qd split: provision_vcs_auth's structuredContent now
+    // carries a `message` field with the human-readable failure cause (e.g.
+    // "No repos specified and none on agent config.") alongside `reason` --
+    // this is a plain passthrough wrapper, so the client needs no code
+    // change to forward it, but this test pins that the field survives the
+    // round trip and is not stripped or renamed anywhere in the wrapper.
+    test('provisionVcsAuth surfaces structuredContent.message on a failure result', async () => {
+        const mockClient = {
+            async callTool() {
+                return {
+                    text: '[FAIL] No repos specified and none on agent config.',
+                    structuredContent: {
+                        ok: false,
+                        reason: 'deploy_failed',
+                        provider: 'github',
+                        credentialLabel: 'github',
+                        scopeUrl: 'https://github.com',
+                        expiresAt: null,
+                        verified: false,
+                        verificationSkipped: false,
+                        metadata: null,
+                        expiryWarning: null,
+                        memberId: 'member-1',
+                        memberName: 'alice',
+                        message: 'No repos specified and none on agent config.',
+                    },
+                };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const result = await fleet.provisionVcsAuth({ member_name: 'alice', provider: 'github' });
+
+        assert.strictEqual(result.structuredContent.reason, 'deploy_failed');
+        assert.strictEqual(result.structuredContent.message, 'No repos specified and none on agent config.');
     });
 
     test('composePermissions', async () => {
@@ -354,5 +441,16 @@ describe('ApraFleet', () => {
         await fleet.shutdownServer({ timeoutMs: 2000 });
 
         assert.deepStrictEqual(calledOpts, { timeoutMs: 2000 });
+    });
+
+    test('exports code_reindex and code_status wrappers that call the tools with no arguments', async () => {
+        const calls = [];
+        const mockClient = { async callTool(name, args) { calls.push([name, args]); return { ok: true }; } };
+        const fleet = new ApraFleet(mockClient);
+        assert.strictEqual(typeof fleet.codeReindex, 'function');
+        assert.strictEqual(typeof fleet.codeStatus, 'function');
+        await fleet.codeReindex();
+        await fleet.codeStatus();
+        assert.deepStrictEqual(calls, [['code_reindex', {}], ['code_status', {}]]);
     });
 });

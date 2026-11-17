@@ -37,7 +37,9 @@ export function parseKbImportArgs(args: string[]): KbImportArgs {
 // Structural type for the injected import function -- kept narrow (input in,
 // JSON string out) so tests can pass either the real kbImport or a stub without
 // importing the full tool module graph.
-export type KbImportFn = (input: { repo?: string; path?: string }) => Promise<string>;
+// The second argument is the explicit KB anchor (--repo); omitted, kbImport
+// resolves the caller's own folder (this process's working directory).
+export type KbImportFn = (input: { path?: string }, anchor?: { folder: string }) => Promise<string>;
 
 export const KB_IMPORT_USAGE =
   'Usage: apra-fleet kb import [--repo <path>] [--path <file>]\n' +
@@ -50,7 +52,7 @@ export const KB_IMPORT_USAGE =
 export async function kbImportCmd(importFn: KbImportFn, args: string[]): Promise<number> {
   const { repo, path: filePath } = parseKbImportArgs(args);
   try {
-    const raw = await importFn({ repo, path: filePath });
+    const raw = await importFn({ path: filePath }, repo ? { folder: repo } : undefined);
     const r = JSON.parse(raw) as KbImportReport;
     console.log(
       'Imported ' + r.imported + ', skipped ' + r.skipped +

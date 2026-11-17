@@ -10,14 +10,14 @@ When to use: Org repos where you have admin access to install a GitHub App.
 
 Setup:
 1. Create GitHub App at `https://github.com/organizations/{org}/settings/apps`
-2. Grant permissions (Contents, Pull Requests, Actions, etc.)
+2. Grant the Repository permissions every `git_access` level you will use needs -- exact table in `docs/github-app-setup.md` (fleet-sprint minimum = `push+pr`: Metadata R, Contents RW, Workflows RW, Pull requests RW, Actions RW). Missing any -> mint fails (no downgrade); after changing them an org owner must accept the new permissions on the installation.
 3. Install on your organization
 4. Download private key (.pem file)
 5. Run `setup_git_app` with App ID, private key path, installation ID
 
 Deploy:
 ```
-provision_vcs_auth(member_id, provider: 'github')
+provision_vcs_auth(member_id, provider: 'github')   # needs git_access + git_repos on the member
 provision_vcs_auth(member_id, provider: 'github', git_access: 'push', repos: ['Org/Repo'])
 ```
 
@@ -59,7 +59,7 @@ gh api /user
 
 ## Storing tokens for reuse
 
-After provisioning VCS auth, you can also store the token in the credential store so members can use it directly in `execute_command` calls — for example, when calling the GitHub REST API or authenticating git operations that bypass the configured remote URL.
+After provisioning VCS auth, you can also store the token in the credential store so members can use it directly in `execute_command` calls - for example, when calling the GitHub REST API or authenticating git operations that bypass the configured remote URL.
 
 **Store a GitHub PAT for reuse:**
 
@@ -70,17 +70,18 @@ credential_store_set  name=github_pat
 **Use it in a command on a member:**
 
 ```
-execute_command  command="curl -H 'Authorization: Bearer {{secure.github_pat}}' https://api.github.com/user"
-execute_command  command="git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"
+execute_command  command="curl -H 'Authorization: Bearer {{secret.github_pat}}' https://api.github.com/user"
+execute_command  command="git remote set-url origin https://token:{{secret.github_pat}}@github.com/Org/Repo.git"
 ```
 
-The token is resolved server-side and redacted in output (`[REDACTED:github_pat]`) — it never appears in the LLM conversation or command logs.
+The token is resolved server-side and redacted in output (`[REDACTED:github_pat]`) - it never appears in the LLM conversation or command logs.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
 | 401 Bad credentials | Re-mint via `provision_vcs_auth` |
+| `is not granted one or more of the requested permissions` | App lacks a permission for that level; re-minting won't fix it. Add it + accept on the installation -- see `docs/github-app-setup.md` |
 | 403 Resource not accessible | Check App permissions or PAT scopes |
 | Repository not found | Add repo to GitHub App installation |
 | gh: command not found | Install via `brew install gh` or `apt install gh` |

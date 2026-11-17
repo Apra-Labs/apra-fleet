@@ -58,7 +58,7 @@ if (!connectFleet || !parseToolJson) {
   process.exit(1);
 }
 
-const { fleetApi } = await connectFleet({ env: process.env }).catch(e => {
+const { fleetApi, transport } = await connectFleet({ env: process.env }).catch(e => {
   console.error(`[FAIL] Could not connect to fleet server: ${e.message}`);
   process.exit(1);
   return {};
@@ -112,6 +112,10 @@ if (config.provider === 'smtp') {
 
 const sendResult = await fleetApi.sendEmail(sendArgs);
 const result = parseToolJson(sendResult);
+
+// Release the server session before exiting: process.exit() alone would
+// leave it open on the fleet server.
+await transport.close().catch(() => {});
 
 if (result.ok) {
   console.log(`[OK] Email sent. messageId=${result.messageId}`);

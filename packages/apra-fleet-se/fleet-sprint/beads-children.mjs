@@ -1,0 +1,667 @@
+// Child-bead allocation and batched-claim surface for fleet-sprint
+// (apra-fleet-3swo.6.13). Extracted out of runner.js; runner.js re-exports
+// every symbol it previously exported from this region, so existing importers
+// of fleet-sprint/runner.js resolve unchanged.
+//
+// This module owns the bd COMMAND SITES that create/claim/verify child beads:
+//   - computeChildFloor: best-effort read of a parent's existing direct
+//     children, used to seed the id allocator's floor.
+//   - createChildBeadWithAllocatedId: the single bead-creation seam every
+//     proposed newTask flows through (allocate -> bd create -> bd update
+//     --parent -> confirm/release).
+//   - verifyDoerStreakClosed: the orchestrator's post-streak D-pull + `bd
+//     show` verification read.
+//   - claimBeadsBatched: the batched `bd update ... --claim --json` streak
+//     work-claiming call.
+//
+// Deliberately kept OUT of coordination.mjs: coordination.mjs owns the
+// TRANSPORT clients for the child-id allocator and the dolt push mutex
+// (createHttpChildIdAllocatorClient, createMcpChildIdAllocatorClient and
+// friends) -- this module's four functions are the CALLERS that issue bd
+// commands on top of that transport. Mixing them would put a bd command
+// surface inside a module whose whole point is transport.
+//
+// resolveSettleShell did NOT move -- it is module-private composition-root
+// wiring that test/sprint-state.test.mjs anchors to runner.js by symbol, and
+// six of its seven call sites are runner.js's own orchestrator-side settle
+// brackets -- so this module imports it back from runner.js, the same
+// back-import pattern member-sync.mjs already uses.
+
+import { parseBdJson } from './beads-scope.mjs';
+import { stageCommandBodyMemberSide } from './member-provisioning.mjs';
+import { DoltSync } from './dolt-sync.mjs';
+import { buildSettleCallback } from './dolt-settle.mjs';
+import { resolveSettleShell } from './runner.js';
+
+/**
+ * The count of children a parent ALREADY has, i.e. the highest trailing `.N`
+ * segment across its direct children. Passed to the allocator as `floor` so
+ * that on its FIRST allocation under a parent it never mints an id colliding
+ * with a child created before the allocator's persisted state was seeded.
+ * Best-effort: a failed or unparseable list yields 0 (the allocator's own
+ * persisted high-water still guards against re-minting after that).
+ *
+ * MUST include closed children (documented `--all` flag): `bd list --parent`
+ * excludes closed issues by default, so once every existing child under a
+ * parent is closed an unfiltered list would return [], the floor would
+ * compute to 0, and the allocator would re-mint already-used ids (`.1`/`.2`,
+ * ...) -- the trigger for the id-collision bug (apra-fleet-btj9).
+ * `--all` ("Show all issues including closed") is `bd list`'s documented
+ * spelling for this, per `bd list --help` -- `--status
+ * all` is undocumented there (it is a documented value for `bd search`'s `-s`
+ * flag, not `bd list`'s).
+ *
+ * SILENT FAILURE, apra-fleet-btj9.3: every failure mode here -- `bd` exiting
+ * non-zero on a rejected flag, a dispatch timeout, unparseable JSON --
+ * collapses to "this parent has no children", re-seeding the floor to 0 and
+ * letting the allocator re-mint an already-used id. The best-effort RETURN
+ * VALUE (0) is deliberate and stays; the optional `log` callback below makes
+ * the failure itself visible to sprint output instead of vanishing into a
+ * bare catch, matching the injected-log convention this module's other
+ * functions already use (see createChildBeadWithAllocatedId's/
+ * claimBeadsBatched's `log = () => {}` default).
+ *
+ * SUCCESS-PATH LOG, apra-fleet-btj9.3: a non-zero result is ALSO logged (a
+ * zero floor -- the common "parent has no children yet" case -- is not, to
+ * stay non-noisy). This is the only externally observable signal that the
+ * `--all` closed-children read actually found and counted a prior child,
+ * which is what lets a replayed mock-sprint scenario prove end to end that
+ * this read reaches a genuine non-zero floor rather than only being covered
+ * by the direct unit tests in child-floor-includes-closed-children.test.mjs.
+ *
+ * @param {{ command: Function, member: string, parentId: string, log?: Function }} opts
+ * @returns {Promise<number>}
+ */
+export async function computeChildFloor({ command, member, parentId, log = () => {} }) {
+    try {
+        const label = `bd list --parent ${parentId} --json --all`;
+        const raw = await command(label, { member_name: member, silent: true });
+        const beads = parseBdJson(raw, label);
+        let max = 0;
+        const prefix = `${parentId}.`;
+        for (const b of beads) {
+            if (!b || typeof b.id !== 'string' || !b.id.startsWith(prefix)) continue;
+            const tail = b.id.slice(prefix.length);
+            // Only a DIRECT child (single trailing numeric segment) counts.
+            if (!/^\d+$/.test(tail)) continue;
+            const n = Number(tail);
+            if (Number.isInteger(n) && n > max) max = n;
+        }
+        if (max > 0) {
+            log(`[id-allocator] computeChildFloor: parent ${parentId} closed-children read found floor ${max}`);
+        }
+        return max;
+    } catch (err) {
+        log(`[id-allocator] computeChildFloor: bd list --parent ${parentId} --json --all failed or was unparseable (${err.message}); falling back to floor 0`);
+        return 0;
+    }
+}
+
+/**
+ * Classifies a `bd show <id> --json` probe failure (apra-fleet-btj9.6) into
+ * one of two outcomes, so the collision guard above can tell a genuine "the
+ * id is free" result apart from "the probe itself could not be evaluated":
+ *
+ *   - 'absent': the thrown error's payload positively matches bd's documented
+ *     no-such-issue shape (`{"error": "no issues found matching the provided
+ *     IDs", ...}`). This is the ordinary,
+ *     expected outcome of probing a genuinely free id.
+ *   - 'unknown': anything else -- unparseable output, a differently-shaped
+ *     error payload, a transport/dispatch fault. The caller MUST fail closed
+ *     on this outcome rather than assume the id is free.
+ *
+ * Reads `probeErr.details.text` first (the raw stdout a typed CommandError
+ * carries, see packages/apra-fleet-workflow/src/workflow/errors.mjs) and
+ * falls back to `probeErr.message` (which production's FleetWorkflow.command()
+ * also embeds the same raw stdout into, e.g. `Exit code 1: {...}`) for
+ * callers/fakes that only ever throw a plain Error.
+ *
+ * @param {Error} probeErr
+ * @returns {'absent'|'unknown'}
+ */
+export function classifyBdShowProbeError(probeErr) {
+    const text = (probeErr && probeErr.details && typeof probeErr.details.text === 'string')
+        ? probeErr.details.text
+        : (probeErr && typeof probeErr.message === 'string' ? probeErr.message : '');
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) {
+        try {
+            const parsed = JSON.parse(match[0]);
+            if (parsed && typeof parsed.error === 'string' && /no issues found/i.test(parsed.error)) {
+                return 'absent';
+            }
+        } catch {
+            // Not JSON, or not the expected shape -- fall through to unknown.
+        }
+    }
+    return 'unknown';
+}
+
+/**
+ * The probe-and-refuse half of the explicit-id collision guard, extracted
+ * (apra-fleet-btj9.7) out of createChildBeadWithAllocatedId's inline block so
+ * it is a single reusable, exported seam rather than logic private to that one
+ * function. bd refuses a `bd create --id <id>` whose id is already held by a
+ * bead (open OR closed); this probe is an early, explicit check that names
+ * the occupying bead's status before any create is dispatched. It probes for
+ * an existing bead at `childId` and throws (tagging the error's
+ * `probeOutcome`) rather than let the caller dispatch a create that cannot
+ * succeed:
+ *
+ *   - ABSENT (the common, expected case): resolves normally, no throw.
+ *   - PRESENT: throws, naming the existing bead's status.
+ *   - UNKNOWN (the probe itself could not be evaluated -- unparseable output,
+ *     an unrecognized error payload, a transport/dispatch fault): throws,
+ *     FAILING CLOSED rather than assuming the id is free (apra-fleet-btj9.6).
+ *
+ * Does NOT touch the allocator reservation itself (release/confirm) -- that
+ * stays the caller's responsibility, exactly as it was before extraction, so
+ * a future caller with a different reservation lifecycle can reuse this probe
+ * without inheriting allocator-specific side effects.
+ *
+ * @param {{ command: Function, member: string, childId: string, parentId: string }} opts
+ * @returns {Promise<void>}
+ */
+export async function assertChildIdFree({ command, member, childId, parentId }) {
+    const probeLabel = `bd show ${childId} --json`;
+    let existing = null;
+    try {
+        const raw = await command(probeLabel, { member_name: member, silent: true });
+        const beads = parseBdJson(raw, probeLabel);
+        const list = Array.isArray(beads) ? beads : (beads ? [beads] : []);
+        existing = list.find((b) => b && b.id === childId) || null;
+    } catch (probeErr) {
+        // `bd show <missing-id> --json` does NOT yield `[]` -- it exits non-zero and
+        // prints `{"error": "no issues found matching the provided IDs",
+        // "schema_version": 1}`. So the free-id case (the common, expected
+        // outcome of this probe) always lands here, indistinguishable at
+        // the throw site alone from a genuine dispatch fault. Classify the
+        // catch into ABSENT (bd positively reported no such issue -- proceed)
+        // vs UNKNOWN (anything else -- the probe could not be evaluated).
+        //
+        // FleetWorkflow.command() (packages/apra-fleet-workflow/src/workflow
+        // /index.mjs _commandDispatch) DOES surface the child process's raw
+        // stdout on a non-zero exit: a typed CommandError carries it on
+        // `.details.text`, and its `.message` also embeds it (`Exit code N:
+        // ${outText}`). That makes option 1 (parse the error payload)
+        // implementable, so it is used here rather than the parent-listing
+        // probe alternative.
+        const outcome = classifyBdShowProbeError(probeErr);
+        if (outcome === 'absent') {
+            // The id is free -- the common path. Stay fast and non-noisy:
+            // no log line, proceed to create exactly as before.
+            existing = null;
+        } else {
+            // UNKNOWN: the probe itself could not be evaluated (unparseable
+            // or unrecognized error payload, e.g. a transient dispatch
+            // fault). FAIL CLOSED rather than assume the id is free.
+            const err = new Error(
+                `[id-allocator] refusing to create child bead at id '${childId}': the collision probe could not be ` +
+                `evaluated (${probeErr.message}) -- treating as UNKNOWN, not a confirmed-free id; not creating at an id ` +
+                'that may be occupied.',
+            );
+            err.probeOutcome = 'unknown';
+            throw err;
+        }
+    }
+    if (existing) {
+        const err = new Error(
+            `[id-allocator] refusing to create child bead at id '${childId}': a bead with that id already exists ` +
+            `(status: ${existing.status ?? 'unknown'}); a 'bd create --id' on that id cannot succeed.`,
+        );
+        err.probeOutcome = 'present';
+        throw err;
+    }
+}
+
+/**
+ * Create a child bead under `parentId` using an allocator-minted,
+ * collision-free explicit id. This is the single bead-creation seam every
+ * proposed newTask flows through, so that two concurrent sprints never mint
+ * the same child id.
+ *
+ * Sequence (mirrors the allocator's reserve -> confirm/release contract):
+ *   1. allocate() reserves the next distinct child id under the shared parent.
+ *   1a. Explicit-id path only: probe (`bd show <childId> --json`) that no bead
+ *      already holds that id (bd itself refuses a duplicate --id; the probe
+ *      just names the occupant before dispatching). An occupied id -- or one the
+ *      probe cannot evaluate -- is CONSUMED (confirm()ed, never re-pooled: a
+ *      re-pooled occupied id is re-minted every round, GitHub #615) and the
+ *      sequence retries with a freshly allocated id.
+ *   2. `bd create` runs with `--id <childId>` (or, under the null client where
+ *      childId is null, lets bd derive the id from `--parent`).
+ *   3. confirm() as soon as `bd create` lands (the id is now durably used --
+ *      release() from here on would hand out an id that is genuinely
+ *      occupied, apra-fleet-btj9.2). release() only fires for a failure
+ *      BEFORE `bd create` is dispatched (staging the description), when the
+ *      id is certainly still free. Once the create was dispatched, a failure
+ *      (e.g. bd refusing a duplicate --id, or a transport fault that may hide
+ *      a create that landed) leaves the id CONSUMED -- confirm()ed, never
+ *      re-pooled -- and the whole sequence retries with a freshly allocated
+ *      id, up to CHILD_CREATE_MAX_ATTEMPTS dispatches (GitHub #615). confirm()
+ *      ITSELF can fail (allocator transport fault, apra-fleet-btj9.5); that
+ *      failure is caught (never released -- the bead already exists) and
+ *      reported via a distinct orphan-naming error after step 4 runs.
+ *   4. On the explicit-id path only, a follow-up `bd update <childId> --parent
+ *      <parentId>` establishes the real parent edge, attempted regardless of
+ *      whether confirm() in step 3 failed. A failure here does NOT release
+ *      the reservation (the bead already exists) -- it throws a distinct
+ *      "created but UNLINKED" error naming the orphan id so an operator can
+ *      re-link it, rather than leaving the id allocator's next probe hit a
+ *      confusing already-exists refusal. If step 3's confirm() ALSO failed,
+ *      that failure is reported instead (with the link outcome folded in),
+ *      never masked by this one.
+ *
+ * `bd create` REJECTS `--id` and `--parent` together, so on the explicit-id
+ * path `--parent` must be dropped: the allocator's `${parentId}.${seq}` id
+ * shape already encodes the hierarchy. A dotted id alone does NOT record the
+ * explicit parent edge, which is what the separate `bd update --parent`
+ * supplies; that link step is deliberately NOT best-effort -- a failure
+ * throws and degrades loudly rather than leaving an edgeless child, but
+ * (unlike the create step) it does NOT release the reservation, because by
+ * that point the bead genuinely exists at the allocated id.
+ *
+ * @param {{
+ *   command: Function, allocator: { allocate: Function, confirm: Function, release: Function },
+ *   member: string, title: string, description: string, priority: string,
+ *   parentId: string, sprintId?: string, floor?: number, label?: string,
+ *   log?: Function,
+ * }} opts
+ * @returns {Promise<{ childId: string|null }>}
+ */
+export async function createChildBeadWithAllocatedId(opts) {
+    const { maxAttempts = CHILD_CREATE_MAX_ATTEMPTS } = opts;
+    const attempts = Number.isInteger(maxAttempts) && maxAttempts >= 1 ? maxAttempts : CHILD_CREATE_MAX_ATTEMPTS;
+    const shared = { descriptionFile: null };
+    const consumedIds = [];
+    for (let attempt = 1; ; attempt += 1) {
+        const outcome = await createChildBeadAttempt(opts, shared, attempt, attempts);
+        if (outcome.created) return outcome.result;
+        // The attempt's id is consumed (occupied, unprobeable, or its create
+        // was dispatched and failed -- see createChildBeadAttempt). A failed
+        // create may still have LANDED behind the error (a transport fault
+        // after bd wrote the row): if the id now holds a bead with this very
+        // title, adopt it rather than create a duplicate under a fresh id.
+        if (outcome.phase === 'create' && outcome.childId) {
+            const adopted = await adoptLandedChild(opts, outcome.childId);
+            if (adopted) return adopted;
+        }
+        // Retry with a freshly allocated id while attempts remain; the
+        // null-allocator path (bd-derived id) never retries, since a fresh
+        // "allocation" there is the same request.
+        consumedIds.push(outcome.childId);
+        if (outcome.childId && attempt < attempts) continue;
+        if (attempt === 1) {
+            if (outcome.childId) outcome.error.consumedIds = [...consumedIds];
+            throw outcome.error;
+        }
+        const err = new Error(
+            `[id-allocator] creating a child under parent '${opts.parentId}' failed on all ${attempt} attempts ` +
+            `(consumed ids, never re-pooled: ${consumedIds.join(', ')}); last error: ${outcome.error.message}`,
+        );
+        err.consumedIds = [...consumedIds];
+        throw err;
+    }
+}
+
+/**
+ * A description as compared for adoption: line endings unified, trailing
+ * whitespace per line and surrounding blank space dropped, so bd's own
+ * whitespace handling of the staged body never defeats the match.
+ * @param {unknown} text
+ * @returns {string}
+ */
+function normalizeBodyForCompare(text) {
+    return String(text ?? '')
+        .replace(/\r\n?/g, '\n')
+        .split('\n')
+        .map((l) => l.replace(/[ \t]+$/, ''))
+        .join('\n')
+        .trim();
+}
+
+/**
+ * After a dispatched `bd create --id <childId>` reported failure: if the bead
+ * nevertheless exists at that id with the same title AND description, the create landed --
+ * link it under the parent and return it, so the retry does not mint a
+ * duplicate. Any probe failure means "not landed" (retry as normal).
+ * @returns {Promise<{ childId: string }|null>}
+ */
+async function adoptLandedChild(opts, childId) {
+    const { command, member, title, parentId, log = () => {} } = opts;
+    const probeLabel = `bd show ${childId} --json`;
+    let existing = null;
+    try {
+        const raw = await command(probeLabel, { member_name: member, silent: true });
+        const beads = parseBdJson(raw, probeLabel);
+        const list = Array.isArray(beads) ? beads : (beads ? [beads] : []);
+        existing = list.find((b) => b && b.id === childId) || null;
+    } catch {
+        return null;
+    }
+    if (!existing || existing.title !== title) return null;
+    // Title alone is not proof it is OUR create (a reviewer can repeat a
+    // title across findings): the body must match too.
+    if (normalizeBodyForCompare(existing.description) !== normalizeBodyForCompare(opts.description)) {
+        log(`[id-allocator] '${childId}' holds a bead with this title but a different description; not adopting it -- the id stays consumed and a fresh id is tried`);
+        return null;
+    }
+    log(`[id-allocator] bd create for '${childId}' reported failure but the bead landed with this title and description; adopting it instead of creating a duplicate`);
+    try {
+        await command(
+            `bd update ${childId} --parent ${parentId}`,
+            { member_name: member, silent: true, label: `Link follow-up task ${childId} under ${parentId}` }
+        );
+    } catch (err) {
+        throw new Error(
+            `[id-allocator] child bead '${childId}' was created but is UNLINKED under parent '${parentId}': ` +
+            `the follow-up 'bd update ${childId} --parent ${parentId}' failed (${err.message}). The id is ` +
+            'genuinely in use -- re-link it manually rather than retrying newTask under this parent.',
+        );
+    }
+    return { childId };
+}
+
+/**
+ * How many `bd create` dispatches createChildBeadWithAllocatedId makes for one
+ * newTask before giving up -- each with a freshly allocated id (GitHub #615).
+ */
+/**
+ * Files an operator DECISION bead (decisions.mjs recordPendingDecision):
+ * a top-level bead -- no parent, no `--id`, so bd mints the id and there is
+ * no allocator id to probe -- of type `decision`, labelled for `bd human`,
+ * created `deferred` so it is never sprint work, and linked to the work bead
+ * by a `discovered-from` edge (never a blocks edge). The body is a
+ * member-local file staged by the caller; only the bead id and the fixed
+ * title shape are inline. Lives here because this module is the single
+ * permitted bead-creation surface (explicit-id-create-guard.mjs).
+ *
+ * @param {{ command: Function, member: string, workBeadId: string, title: string, bodyFile: string, priority: number, label: string, labelName?: string }} opts
+ * @returns {Promise<string>} bd's raw output (the new id, from --silent)
+ */
+export async function createDecisionBead({ command, member, workBeadId, title, bodyFile, priority, label, labelName = 'human' }) {
+    return command(
+        `bd create "${title}" --body-file "${bodyFile}" -p ${priority} -t decision ` +
+        `-l ${labelName} -s deferred --deps "discovered-from:${workBeadId}" --silent`,
+        { member_name: member, silent: true, label },
+    );
+}
+
+export const CHILD_CREATE_MAX_ATTEMPTS = 3;
+
+/**
+ * One allocate -> probe -> stage -> create -> confirm/link attempt.
+ * Resolves `{ created: true, result }` on success or `{ created: false,
+ * childId, error, phase }` when the id proved unusable (phase 'probe') or the
+ * `bd create` dispatch failed (phase 'create'); the caller may retry. Every
+ * other failure throws.
+ */
+async function createChildBeadAttempt(opts, shared, attempt, attempts) {
+    const { command, allocator, member, title, description, priority, parentId, sprintId, floor, label, log = () => {} } = opts;
+    const grant = await allocator.allocate(parentId, { pid: process.pid, sprintId, floor });
+    // The explicit-id path relies on the allocator's `${parentId}.${seq}` id
+    // shape to carry the hierarchy that `--parent` can no longer carry
+    // alongside `--id` (see the doc comment above). Fail loudly rather than
+    // create a child whose id does not place it under this parent at all.
+    if (grant.childId && !String(grant.childId).startsWith(`${parentId}.`)) {
+        await allocator.release(grant.token);
+        throw new Error(
+            `[id-allocator] allocated child id '${grant.childId}' is not a child of parent '${parentId}' ` +
+            '(expected the `<parentId>.<seq>` shape); released the reservation rather than creating an unparented bead',
+        );
+    }
+    // Collision guard: bd refuses `bd create --id <childId>` when a bead (open
+    // OR closed) already holds that id, so the probe below is an early,
+    // explicit refusal naming the occupant rather than the only guard.
+    // The allocator should never hand back an in-use id, but a crashed/partial
+    // prior run, a stale persisted high-water, or a manually-created bead can
+    // leave one occupied. So on the explicit-id path only, probe for an existing
+    // bead at that id FIRST via the shared assertChildIdFree() seam (apra-fleet-
+    // btj9.7). A PRESENT or UNKNOWN probe consumes the id (never re-pooled --
+    // computeChildFloor can miss unlinked children or fall back to floor 0, so
+    // a released occupied id would be re-minted every round) and the caller
+    // retries with a fresh id; a gap in the sequence costs nothing. The null-allocator path (`bd create --parent`) lets bd mint a
+    // fresh id natively and never collides, so it needs no probe.
+    if (grant.childId) {
+        try {
+            await assertChildIdFree({ command, member, childId: grant.childId, parentId });
+        } catch (probeErr) {
+            try {
+                await allocator.confirm(grant.token);
+            } catch (confirmErr) {
+                log(`[id-allocator] could not mark '${grant.childId}' consumed after its collision probe (${confirmErr.message}); its lease will lapse instead`);
+            }
+            const willRetry = attempt < attempts;
+            log(
+                `[id-allocator] '${grant.childId}' is not usable (probe: ${probeErr.probeOutcome || 'unknown'}, attempt ${attempt}/${attempts}); ` +
+                `id consumed (never re-pooled)${willRetry ? '; retrying with a freshly allocated id' : ''}: ${probeErr.message}`,
+            );
+            return { created: false, childId: grant.childId, error: probeErr, phase: 'probe' };
+        }
+    }
+    // `bd create` refuses `--id` together with `--parent`: carry EITHER the
+    // allocator-minted explicit id (hierarchy encoded in the id, parent edge
+    // linked immediately after the create) OR `--parent` and let bd derive the
+    // id (null-allocator path).
+    const parentageFlags = grant.childId ? `--id ${grant.childId}` : `--parent ${parentId}`;
+    // The description is LLM-authored free text: stage it to a member-local
+    // temp file (see stageCommandBodyMemberSide) and hand THAT path to `bd
+    // create --body-file` rather than interpolating it into the shell command
+    // string. Only `title` (short, allowlist-validated by validateNewTask)
+    // remains inline.
+    // Staged once and reused by every retry attempt.
+    if (shared.descriptionFile === null) {
+        try {
+            shared.descriptionFile = await stageCommandBodyMemberSide({
+                command, member, content: description,
+                label: `Stage newTask description for '${title}'`,
+            });
+        } catch (err) {
+            // Nothing was sent to bd yet, so the id is certainly still free:
+            // return it to the pool (no permanent gap), then re-throw.
+            await allocator.release(grant.token);
+            log(`[id-allocator] staging the newTask description failed before bd create was dispatched for '${grant.childId ?? '(bd-derived)'}'; released reservation: ${err.message}`);
+            throw err;
+        }
+    }
+    try {
+        await command(
+            `bd create "${title}" --body-file "${shared.descriptionFile}" -p "${priority}" ${parentageFlags} --silent`,
+            { member_name: member, silent: true, label: label ?? `Create follow-up task: ${title}` }
+        );
+    } catch (err) {
+        // The create WAS dispatched. A failure here does not prove the id is
+        // free: bd refuses a duplicate --id (the id is then occupied by some
+        // other bead), and a transport fault can hide a create that landed.
+        // So never return this id to the pool -- re-pooling an occupied id is
+        // what made it re-minted every round and across sprints (GitHub
+        // #615). Consume it instead (confirm, so a lease-expiry reclaim
+        // cannot re-pool it either) and let the caller retry with a fresh id.
+        if (grant.childId) {
+            try {
+                await allocator.confirm(grant.token);
+            } catch (confirmErr) {
+                log(`[id-allocator] could not mark '${grant.childId}' consumed after its failed bd create (${confirmErr.message}); its lease will lapse instead`);
+            }
+        } else {
+            // Null-allocator path: bd derives the id, the allocator holds nothing.
+            await allocator.release(grant.token);
+        }
+        const willRetry = Boolean(grant.childId) && attempt < attempts;
+        log(
+            `[id-allocator] bd create failed for '${grant.childId ?? '(bd-derived)'}' (attempt ${attempt}/${attempts}); ` +
+            `${grant.childId ? 'id stays consumed (never re-pooled)' : 'no allocator id involved'}` +
+            `${willRetry ? '; retrying with a freshly allocated id' : ''}: ${err.message}`,
+        );
+        return { created: false, childId: grant.childId ?? null, error: err, phase: 'create' };
+    }
+    // The create landed locally -- durably commit the id BEFORE the D-push, so a
+    // crash after this point can never reclaim an id that now genuinely exists.
+    // From here on the reservation MUST stay confirmed: the bead already
+    // exists at grant.childId (or bd's own derived id), so releasing it back
+    // to the pool after this point would hand out an id that is genuinely
+    // occupied -- the exact collision assertChildIdFree exists to refuse
+    // (apra-fleet-btj9.2).
+    //
+    // confirm() itself can fail (an HTTP allocator route erroring, an MCP
+    // transport fault, a supervisor restart) -- apra-fleet-btj9.5. That
+    // failure sits OUTSIDE any release-on-failure try/catch, by design: the
+    // bead already exists at this id, so release() must NEVER fire here,
+    // exactly as for a link failure below. Capture the error instead of
+    // letting it propagate raw, so the caller gets an orphan-naming message
+    // rather than a bare transport-fault string with no indication that a
+    // child bead now exists, is possibly unlinked, and may not be durably
+    // confirmed in the allocator's own state.
+    let confirmError = null;
+    try {
+        await allocator.confirm(grant.token);
+    } catch (err) {
+        confirmError = err;
+        log(`[id-allocator] bd create landed for '${grant.childId ?? '(bd-derived)'}' but allocator.confirm() failed; reservation stays UNRELEASED (the id is genuinely in use) but may not be durably confirmed in the allocator's own state: ${err.message}`);
+    }
+    // Explicit-id path only: record the real parent edge that `--parent`
+    // would have recorded, had bd allowed it on the same create. Deliberately
+    // OUTSIDE the create's release-on-failure try/catch above: a failure here
+    // must not release grant.token (the id is already in use, not free) and
+    // must not be conflated with the create's own failure. Throw a distinct,
+    // orphan-naming error instead so an operator can re-link rather than hit
+    // an inexplicable id-already-exists refusal on the next newTask under
+    // this parent.
+    //
+    // DECISION (apra-fleet-btj9.5): the link is attempted even when confirm()
+    // above already failed. confirm() talks to the id-allocator's own
+    // bookkeeping (HTTP/MCP transport); the link is a separate `bd update`
+    // dispatch against bd itself, and a fault in the former says nothing
+    // about whether the latter would also fail -- attempting it anyway means
+    // a transient confirm blip does not ALSO cost the parent edge. If the
+    // link then also fails, the confirm failure is still reported (it is the
+    // more actionable signal: durable allocator state is what guards against
+    // a future re-mint) with the link outcome folded into the SAME message,
+    // rather than thrown separately, so the confirm failure is never masked
+    // by a later link error.
+    let linkError = null;
+    if (grant.childId) {
+        try {
+            await command(
+                `bd update ${grant.childId} --parent ${parentId}`,
+                { member_name: member, silent: true, label: `Link follow-up task ${grant.childId} under ${parentId}` }
+            );
+        } catch (err) {
+            linkError = err;
+            log(`[id-allocator] bd create landed for '${grant.childId}' but the follow-up bd update --parent link failed; reservation stays confirmed (the id is genuinely in use): ${err.message}`);
+        }
+    }
+    if (confirmError) {
+        const idLabel = grant.childId ?? '(bd-derived id, unknown to the allocator)';
+        throw new Error(
+            `[id-allocator] child bead '${idLabel}' was created but allocator.confirm() FAILED: ${confirmError.message}. ` +
+            `The bead exists at that id and is ${linkError ? 'also UNLINKED from' : 'linked under'} parent '${parentId}', ` +
+            "and the reservation may not be durably confirmed in the allocator's own state -- do NOT release this id; " +
+            'investigate the allocator directly rather than retrying newTask under this parent.' +
+            (linkError ? ` (the follow-up parent-link dispatch also failed: ${linkError.message})` : ''),
+        );
+    }
+    if (linkError) {
+        throw new Error(
+            `[id-allocator] child bead '${grant.childId}' was created but is UNLINKED under parent '${parentId}': ` +
+            `the follow-up 'bd update ${grant.childId} --parent ${parentId}' failed (${linkError.message}). The id is ` +
+            'genuinely in use -- re-link it manually rather than retrying newTask under this parent.',
+        );
+    }
+    return { created: true, result: { childId: grant.childId ?? null } };
+}
+
+/**
+ * The orchestrator's post-streak verification read, with its mandatory
+ * D-pull. A remote doer closes its assigned beads in its OWN clone and
+ * D-pushes them, so the orchestrator MUST D-pull its own clone BEFORE the `bd
+ * show` -- otherwise it reads stale (still-open) status and falsely reports
+ * every remote doer streak as FAILED.
+ *
+ * Returns the ids that are NOT closed after the D-pull-then-read. An empty
+ * array means the streak genuinely closed everything it was assigned.
+ *
+ * @param {{ command: Function, backlogMember: string, beadIds: string[], log?: Function, args?: { callTool?: Function }, sprintState?: object }} opts
+ * @returns {Promise<string[]>} the still-unclosed bead ids
+ */
+export async function verifyDoerStreakClosed({ command, backlogMember, beadIds, log = () => {}, args, sprintState }) {
+    // D-pull FIRST so the orchestrator's clone observes the doer's just-pushed
+    // closes. Routed through the single dolt-sync module's purpose-based BEFORE
+    // bracket (apra-fleet-417.2.1); behavior is identical to the previous
+    // direct doltPullBefore() call.
+    // Thread the backlog member's REGISTERED shell into dolt-settle,
+    // guarded on args.callTool the same way the pre-dispatch bracket is
+    // (apra-fleet-7dir.24).
+    const shell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
+    await DoltSync.syncBefore(backlogMember, { command, log, fatal: true, settle: buildSettleCallback(backlogMember, { command, log, shell }) });
+    const label = `bd show ${beadIds.join(' ')} --json`;
+    const showRes = await command(label, { member_name: backlogMember, silent: true });
+    const showBeads = parseBdJson(showRes, label);
+    const statusById = new Map(showBeads.map((b) => [b.id, b.status]));
+    return beadIds.filter((id) => statusById.get(id) !== 'closed');
+}
+
+/**
+ * Batched per-streak work-claiming (apra-fleet-7h6n.7, audit R6): claims
+ * every id in `beadIds` with ONE `bd update <id...> --claim --json`
+ * invocation instead of one `bd update <id> --claim` call per bead.
+ *
+ * RESEARCH FINDING this batching relies on (verified against real `bd`,
+ * both by reading `bd update --help`'s `Usage: bd update [id...]`
+ * and by exercising a scratch sandbox DB): `bd update` DOES accept a
+ * variadic id list, and `--claim --json` on a MULTI-id invocation returns a
+ * JSON array containing ONLY the issues that were successfully claimed --
+ * an id that fails to resolve, or is already claimed by a DIFFERENT
+ * assignee, is silently dropped from the array (its error goes to stderr,
+ * not stdout) rather than aborting the whole call. Two non-obvious
+ * consequences, both load-bearing for this function's design:
+ *   1. This is NOT atomic in the transactional sense -- ids before a
+ *      failing one are still committed, there is no all-or-nothing
+ *      rollback. It IS enough to cut the streak's claim step from N
+ *      subprocess spawns to 1, which is this bead's actual goal.
+ *   2. The process exit code stays 0 even when SOME ids in the batch
+ *      failed to claim (verified: a lone failing id exits 1, but the exact
+ *      same failure mixed into a multi-id batch with a succeeding id exits
+ *      0) -- so, unlike the old single-id-per-call loop, success can NEVER
+ *      be inferred from "command() did not throw". The returned JSON array
+ *      is the only reliable signal, which is why this function always
+ *      diffs `beadIds` against the parsed array rather than relying on a
+ *      catch block.
+ *
+ * A total call failure (command() itself throws -- e.g. a transient
+ * dispatch/network fault reaching the member) is treated the same way the
+ * old loop treated "every id failed": every id is reported skipped, never
+ * thrown, so one bad batch degrades the streak (all its beads stay
+ * unclaimed, caller decides whether to skip the streak) rather than
+ * crashing the sprint.
+ *
+ * @param {{ command: Function, backlogMember: string, beadIds: string[], log?: Function }} opts
+ * @returns {Promise<{ claimedBeadIds: string[], skippedBeadIds: string[] }>}
+ */
+export async function claimBeadsBatched({ command, backlogMember, beadIds, log = () => {} }) {
+    if (!Array.isArray(beadIds) || beadIds.length === 0) {
+        return { claimedBeadIds: [], skippedBeadIds: [] };
+    }
+    const label = `bd update ${beadIds.join(' ')} --claim --json`;
+    let raw;
+    try {
+        raw = await command(label, { member_name: backlogMember, silent: true });
+    } catch (err) {
+        // A dispatch/exec-level failure (member unreachable, transient
+        // network fault) degrades gracefully -- every id in this batch
+        // stays unclaimed, same as the old per-id loop's catch-and-skip.
+        // This is DISTINCT from a malformed-JSON parse failure below, which
+        // stays fatal (per parseBdJson's own doc comment: a parse failure
+        // must be LOUD, never silently swallowed as "everything skipped").
+        log(`Batched claim failed for [${beadIds.join(', ')}]: ${err.message}`);
+        return { claimedBeadIds: [], skippedBeadIds: [...beadIds] };
+    }
+    const claimed = parseBdJson(raw, label);
+    const claimedIds = new Set((Array.isArray(claimed) ? claimed : []).map((b) => b && b.id).filter(Boolean));
+    const claimedBeadIds = beadIds.filter((id) => claimedIds.has(id));
+    const skippedBeadIds = beadIds.filter((id) => !claimedIds.has(id));
+    if (skippedBeadIds.length > 0) {
+        log(`Batched claim: claimed ${claimedBeadIds.length} bead(s) [${claimedBeadIds.join(', ')}]; skipped ${skippedBeadIds.length} already-claimed/unresolvable bead(s) [${skippedBeadIds.join(', ')}].`);
+    }
+    return { claimedBeadIds, skippedBeadIds };
+}

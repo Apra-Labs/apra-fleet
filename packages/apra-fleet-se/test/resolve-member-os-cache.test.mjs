@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 
-import { resolveMemberOs, clearMemberOsCache, buildCredentialReadCommand } from '../fleet-sprint/runner.js';
+import { resolveMemberOs, resolveMemberTarget, clearMemberOsCache, buildCredentialReadCommand } from '../fleet-sprint/runner.js';
 
 // apra-fleet-ot2z.13: resolveMemberOs must cache ONLY a successful
 // member_detail-derived OS, never the 'linux' fallback path. A transient
@@ -43,6 +43,40 @@ describe('resolveMemberOs cache (apra-fleet-ot2z.13)', () => {
         // credential-read form (not the POSIX $HOME string).
         const { command } = buildCredentialReadCommand(second, 'github-push-pr');
         assert.match(command, /^powershell -EncodedCommand [A-Za-z0-9+/=]+$/, `expected a Windows -EncodedCommand form, got: ${command}`);
+        clearMemberOsCache();
+    });
+
+    // apra-fleet-3swo.2.5: member-target.mjs owns the per-member cache after
+    // extraction from runner.js; this pins the cache's cross-member contract
+    // so a future refactor cannot accidentally share one member's resolved
+    // { os, shell } with another (or re-probe a member needlessly).
+    test('member_detail is dispatched at most once per member across two consecutive resolutions of the same member, and at least once per distinct member', async () => {
+        clearMemberOsCache();
+        const calls = [];
+        const fleetApi = {
+            memberDetail: async ({ member_name }) => {
+                calls.push(member_name);
+                return { content: [{ text: JSON.stringify({ os: 'linux', shell: '' }) }] };
+            },
+        };
+        const log = () => {};
+
+        await resolveMemberTarget({ fleetApi, member: 'member-a', log });
+        await resolveMemberTarget({ fleetApi, member: 'member-a', log });
+        assert.equal(
+            calls.filter((m) => m === 'member-a').length,
+            1,
+            'resolving the same member twice must dispatch member_detail only once (cached on the second call)',
+        );
+
+        await resolveMemberTarget({ fleetApi, member: 'member-b', log });
+        assert.equal(
+            calls.filter((m) => m === 'member-b').length,
+            1,
+            'a distinct member must get its own member_detail dispatch, not served from member-a\'s cache entry',
+        );
+        assert.deepEqual(calls, ['member-a', 'member-b']);
+
         clearMemberOsCache();
     });
 });

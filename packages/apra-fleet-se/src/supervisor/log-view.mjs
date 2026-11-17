@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- raw per-sprint log serving (apra-fleet-ou7.2)
+// fleet-sprint supervisor -- raw per-sprint log serving (apra-fleet-ou7.2)
 // =============================================================================
 //
 // Serves `GET /sprints/:id/log`: the raw stdout/stderr file the spawner tees

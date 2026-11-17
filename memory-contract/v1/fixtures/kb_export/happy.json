@@ -1,0 +1,15 @@
+{
+  "tool": "kb_export",
+  "case": "happy",
+  "kind": "happy",
+  "request": {},
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"exported\":1,\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"scope\":\"project\",\"committed\":true}"
+      }
+    ]
+  },
+  "session": "FULL_A"
+}

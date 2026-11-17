@@ -5,6 +5,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 import { calculateCost } from './pricing.mjs';
 import { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 import { hashText, computeActivityKey } from './journal.mjs';
+import { fleetToolFailureOf, commandFailureOf } from '@apralabs/apra-fleet-client';
 
 export { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 
@@ -325,6 +326,9 @@ function buildRepairPrompt(errorsText, initialPrompt) {
  *   legitimate 15+ minute reviewer dispatch was client-timed-out at 930s while the remote
  *   session kept running.
  * @property {number} [max_turns] - Max turns for conversational tools
+ * @property {boolean} [fail_on_permission_denial] - Passed to execute_prompt: a tool call the
+ *   member CLI refused fails the dispatch (reason 'permission_denied') instead of riding on a
+ *   successful reply as permissionWarning. fleet-sprint sets it on every role dispatch.
  * @property {'low'|'medium'|'high'|'xhigh'|'max'} [effort] - Effort parameter for fleet routing
  * @property {string} [agentType] - Agent persona to activate on the member
  * @property {boolean|string} [resume] - Resume the previous session on the member if one exists.
@@ -410,6 +414,15 @@ function buildRepairPrompt(errorsText, initialPrompt) {
  *   return type. `CancelledError` (cooperative `requestStop()`) is never
  *   soft-caught -- it always throws, regardless of this option.
  *   (apra-fleet-unw.17)
+ * @property {boolean} [pauseExempt] - When true, the call skips the
+ *   cooperative pause gate: it runs even while the run is paused, and it is
+ *   not counted as an in-flight activity, so it neither blocks behind a pause
+ *   nor holds one back from engaging. It is not journaled for replay either
+ *   (no sequence number is consumed), so a resumed run's replay order does
+ *   not depend on how many such calls ran. Meant for short, read-only probes
+ *   a paused script issues while it waits on an external condition. A
+ *   requestStop() still cancels it (the run's stop signal is passed through
+ *   as for any command).
  */
 
 export class FleetWorkflow extends EventEmitter {
@@ -657,12 +670,37 @@ export class FleetWorkflow extends EventEmitter {
      * guard is set, that guard returning truthy. Calling it while already
      * paused or pause-requested is a no-op.
      *
+     * (apra-fleet-hzeb.3) Also exposed on the script context (see
+     * _bindPrimitives), so a running workflow script can initiate a pause
+     * for a condition only IT can detect (e.g. a provider usage/rate limit
+     * signal) -- not just the dashboard/operator via requestStop()'s sibling
+     * instance-level API. A script-initiated pause is indistinguishable from
+     * an operator-initiated one downstream: it fires the exact same
+     * 'pause:requested'/'paused'/'resumed' events, so any existing listener
+     * (the dashboard viewer's state.pause wiring, fleet-sprint's
+     * cli.mjs `on('paused', releaseForPause)` /
+     * `setPreResumeHook(reReserveForResume)`) engages for it unchanged.
+     *
      * @param {string} [reason]
+     * @param {{ resumeAt?: string, source?: string }} [opts] - Optional
+     *   metadata carried on the 'pause:requested' payload (apra-fleet-hzeb.3):
+     *   `resumeAt` is an ISO-8601 timestamp (or any caller-defined string) the
+     *   caller expects the condition to clear by -- e.g. a provider's
+     *   usage-limit reset time -- surfaced by the dashboard viewer in the
+     *   paused banner. `source` identifies what requested the pause (e.g.
+     *   `'usage_limit'`) for the same display purpose. Both are purely
+     *   informational to the engine, which does not interpret or act on
+     *   them. Omitting `opts` is fully backwards compatible with existing
+     *   single-arg callers.
      */
-    requestPause(reason = 'Workflow run paused via requestPause()') {
+    requestPause(reason = 'Workflow run paused via requestPause()', opts = {}) {
         if (this._paused || this._pauseRequested) return;
         this._pauseRequested = true;
-        this.emit('pause:requested', this._pauseEventPayload({ reason }));
+        this.emit('pause:requested', this._pauseEventPayload({
+            reason,
+            resumeAt: opts.resumeAt ?? null,
+            source: opts.source ?? null
+        }));
         // If we're already quiescent (nothing in flight, guard permits), the
         // pause engages right now; otherwise it engages later as in-flight
         // work drains (_exitActivity) or the guard opens (setPauseGuard).
@@ -882,7 +920,17 @@ export class FleetWorkflow extends EventEmitter {
     // tier. Increments budget._pricedReal/_pricedFallback so
     // buildCostAnalysis() (runner.js) can honestly report which source
     // priced a run's total.
+    //
+    // A usage block that carries the provider's own per-dispatch cost
+    // (usage.cost_usd: the Claude CLI's list-price figure, already reduced
+    // to this dispatch's share by the server) is charged exactly that -- no
+    // recompute. Token pricing is only the fallback for a provider or result
+    // that reports no cost.
     async _resolveCost(opts, usage, budget) {
+        if (usage && typeof usage.cost_usd === 'number' && Number.isFinite(usage.cost_usd)) {
+            budget._pricedReal++;
+            return usage.cost_usd;
+        }
         const tier = opts.model;
         if (tier === 'cheap' || tier === 'standard' || tier === 'premium') {
             const memberKey = opts.member_id || opts.member_name;
@@ -892,7 +940,18 @@ export class FleetWorkflow extends EventEmitter {
                 if (entry && typeof entry.promptPrice === 'number' && typeof entry.completionPrice === 'number') {
                     const pTokens = usage.input_tokens || 0;
                     const cTokens = usage.output_tokens || 0;
-                    const cost = (pTokens / 1_000_000) * entry.promptPrice + (cTokens / 1_000_000) * entry.completionPrice;
+                    // Prompt-cache tokens are billed separately from (not inside)
+                    // input_tokens and must be priced too, or a cache-heavy run
+                    // is undercounted several-fold. An older server whose
+                    // pricing entry has no cache rates prices them at the plain
+                    // prompt rate: an over- rather than under-estimate, so a
+                    // budget ceiling still holds.
+                    const crTokens = usage.cache_read_input_tokens || 0;
+                    const cwTokens = usage.cache_creation_input_tokens || 0;
+                    const cacheReadPrice = typeof entry.cacheReadPrice === 'number' ? entry.cacheReadPrice : entry.promptPrice;
+                    const cacheWritePrice = typeof entry.cacheWritePrice === 'number' ? entry.cacheWritePrice : entry.promptPrice;
+                    const cost = (pTokens / 1_000_000) * entry.promptPrice + (cTokens / 1_000_000) * entry.completionPrice
+                        + (crTokens / 1_000_000) * cacheReadPrice + (cwTokens / 1_000_000) * cacheWritePrice;
                     budget._pricedReal++;
                     return cost;
                 }
@@ -1147,6 +1206,8 @@ export class FleetWorkflow extends EventEmitter {
                 timeout_s: opts.timeout_s,
                 max_total_s: opts.max_total_s,
                 max_turns: opts.max_turns,
+                // Opt-in strict permission handling (see AgentOptions).
+                fail_on_permission_denial: opts.fail_on_permission_denial,
                 effort: opts.effort,
                 agent: opts.agentType,
                 // apra-fleet-eft.29.1: pass-through opt-in, see AgentOptions.sprint_id above.
@@ -1224,6 +1285,12 @@ export class FleetWorkflow extends EventEmitter {
                 // predate this field.
                 const structured = result && result.structuredContent;
                 const reportedUsage = (structured && structured.usage) || result.usage;
+                // A successful dispatch whose session refused tool calls that
+                // must never be granted (Claude auto mode: classifier or deny
+                // rule). The reply is complete; this is a warning only.
+                if (structured && !structured.isError && structured.permissionWarning && typeof structured.permissionWarning.hint === 'string') {
+                    console.error(`[Agent Permission Warning] member '${opts.member_name || opts.member_id}': ${structured.permissionWarning.hint}`);
+                }
 
                 // apra-fleet-unw.4: never fabricate usage. If the fleet result
                 // didn't report real token usage, both usage and cost are
@@ -1268,8 +1335,41 @@ export class FleetWorkflow extends EventEmitter {
                     // result.usage is null and cost is null -- the viewer then
                     // tallies it as an unknown-cost activity rather than fiction.
                     this.emit('activity:end', { ...activityMeta, error: text, duration, usage: result.usage, cost, success: false });
+                    // apra-fleet-hzeb.2: pure pass-through, no policy decisions here --
+                    // when execute_prompt relayed a provider usage-limit signal
+                    // (reason: 'usage_limit'), forward its usageLimit block and the
+                    // in-flight sessionId onto AgentDispatchError.details unchanged, so
+                    // the fleet-sprint pause/resume policy can read
+                    // err.details.usageLimit.resumeAt / err.details.sessionId directly
+                    // instead of re-parsing the failure text. A permission_denied
+                    // result forwards its permissionDenied block the same way, and
+                    // dispatched:false (nothing was sent to the member) is kept so a
+                    // caller can tell a setup-time failure from one where the agent ran.
                     activityEndEmitted = true;
-                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id } });
+                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } });
+                }
+
+                // A fleet TOOL/TRANSPORT failure that carries no
+                // structuredContent classification: the MCP server turns a
+                // tool handler that THREW (e.g. an SSH channel that could not
+                // be opened) into `{content:[{text: err.message}], isError:
+                // true}`, so the text is the bare transport error, never the
+                // LLM's answer. Classify it as a dispatch failure HERE, before
+                // any schema extraction, so it is never fed to the bounded
+                // schema-repair loop (which can only re-ask the model and
+                // cannot fix a broken channel). The caller's own retry ladder
+                // decides whether to re-dispatch. Structured `result.isError`
+                // first; an anchored text shape only as a fallback (see
+                // fleetToolFailureOf in the fleet client).
+                const toolFailure = fleetToolFailureOf(result);
+                if (toolFailure) {
+                    const memberLabel = opts.member_name || opts.member_id;
+                    const text = toolFailure.text || 'no error text reported';
+                    const transportMsg = `transport failure dispatching to member '${memberLabel}': ${text}`;
+                    console.error(`[Agent API Error]`, transportMsg);
+                    this.emit('activity:end', { ...activityMeta, error: transportMsg, duration, usage: result.usage, cost, success: false });
+                    activityEndEmitted = true;
+                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (transport_failure): ${transportMsg}`, { details: { text, reason: 'transport_failure', signal: toolFailure.source, member: memberLabel } });
                 }
 
                 // apra-fleet-eft.78.3: surface the resumable session id
@@ -1507,6 +1607,18 @@ export class FleetWorkflow extends EventEmitter {
         if (!opts.member_name && !opts.member_id) {
             throw new Error(`[Workflow Error] command() requires either member_name or member_id`);
         }
+        // opts.pauseExempt (see CommandOptions): no gate, no in-flight
+        // bookkeeping -- a read-only probe a paused script issues while it
+        // waits. A stop still cancels it through the run's stop signal.
+        if (opts.pauseExempt) {
+            const signal = opts.signal ?? this._currentSignal();
+            if (signal && signal.aborted) {
+                throw signal.reason instanceof CancelledError
+                    ? signal.reason
+                    : new CancelledError('[Workflow Error] command() not started: the run was stopped');
+            }
+            return this._commandDispatch(cmd, opts);
+        }
         await this._pauseGate();
         this._enterActivity();
         try {
@@ -1564,7 +1676,9 @@ export class FleetWorkflow extends EventEmitter {
         const store = this._store();
         let sequence = null;
         let replayKey = null;
-        if (store && store.activitySeq) {
+        // A pause-exempt call is never journaled for replay (see
+        // CommandOptions.pauseExempt): it takes no sequence number.
+        if (store && store.activitySeq && !opts.pauseExempt) {
             // (apra-fleet-unw2.14, N6) See agent()/_nextSequence(): numeric at
             // the top level, hierarchical/order-independent inside parallel().
             sequence = this._nextSequence(store);
@@ -1692,8 +1806,17 @@ export class FleetWorkflow extends EventEmitter {
                 throw new MemberNotFoundError(`[Workflow Error] ${outText}`, { details: { text: outText, member: opts.member_name || opts.member_id } });
             }
 
-            if (result.isError) {
-                const err = new CommandError(`[Command Failed] ${outText}`, { details: { text: outText, command: finalCmd } });
+            // A command that never produced an exit code -- the exec timed
+            // out, the transport failed, the member could not be started --
+            // is a failure, never a success. The server flags it with
+            // structuredContent.isError + reason (exitCode -1); older servers
+            // sent only the bare "Failed to execute command on ..." text, which
+            // commandFailureOf() also recognizes. The MCP-level result.isError
+            // flag is covered by the same helper. The reason rides on
+            // err.details so callers can tell a timeout from a transport error.
+            const failure = commandFailureOf(result);
+            if (failure) {
+                const err = new CommandError(`[Command Failed] ${failure.message}`, { details: { text: outText, command: finalCmd, reason: failure.reason } });
                 this.emit('activity:end', { ...activityMeta, error: err.message, duration, success: false });
                 activityEndEmitted = true;
                 throw err;
@@ -2043,10 +2166,28 @@ export class FleetWorkflow extends EventEmitter {
             endGroup: this.endGroup.bind(this),
             // (apra-fleet-p2to.1) Script-facing: lets the workflow declare
             // where a clean-state boundary is so a deferred pause engages
-            // there. requestPause()/requestResume()/requestStop() stay
-            // instance-only (driven by the viewer/orchestrator, like
-            // requestStop() already is), not part of the script context.
-            setPauseGuard: this.setPauseGuard.bind(this)
+            // there.
+            setPauseGuard: this.setPauseGuard.bind(this),
+            // (apra-fleet-hzeb.3) Script-facing pause/resume: a running
+            // script may PARK ITSELF on a condition only it can detect (a
+            // provider usage/rate limit, an external gate) by calling these
+            // directly -- they are the exact same requestPause()/
+            // requestResume() the dashboard/operator use, so a
+            // script-initiated pause fires the identical 'pause:requested'/
+            // 'paused'/'resumed' lifecycle events as an operator-initiated
+            // one. requestStop() remains instance-only/operator-only -- a
+            // script has no business tearing down its own run.
+            requestPause: this.requestPause.bind(this),
+            requestResume: this.requestResume.bind(this),
+            // Script-facing, read-only view of the active run's cooperative
+            // cancellation: the AbortSignal requestStop() aborts (its reason
+            // is the CancelledError), or undefined outside a runWithContext()
+            // run. Lets a script that waits on a timer -- with no
+            // agent()/command() blocked at the pause gate -- still see an
+            // operator stop at once, and avoid re-pausing after one (a pause
+            // requested after requestStop() would block the next dispatch at
+            // the gate with nothing left to release it).
+            stopSignal: () => this._currentSignal()
         };
     }
 

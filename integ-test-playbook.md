@@ -5,13 +5,32 @@ Test group. Its job is to close out this cycle's new feature work: for each
 feature the orchestrator hands the runner, verify its acceptance criteria
 against the sprint branch working tree and close it, or file a bug.
 
-This playbook does NOT do sandbox lifecycle (`## Setup` / `## Reset` /
-`## Teardown`), the toy-sprint smoke test, or the full real-`bd`
-functional suite -- those live in `regression-test-playbook.md`, run ONCE
-PER SPRINT by `regression-test-runner` in the Finalization group. If a
-step here would need a throwaway install/server/toy-repo sandbox, it
-belongs there, not here. (`deployer` deploys via `deploy.md`; it does not
+This playbook does NOT do the install smoke sandbox (`## Setup` /
+`## Teardown` of `regression-test-playbook.md`, run ONCE PER SPRINT by
+`regression-test-runner` in the Finalization group), the toy-sprint smoke
+test, or the full real-`bd` functional suite (both moved to CI; the latter
+runs in `.github/workflows/regression-nightly.yml`). If a step here would
+need a throwaway install/server sandbox, it belongs there, not here. (`deployer` deploys via `deploy.md`; it does not
 run this file.)
+
+**The deploy this playbook's tests run against is a SANDBOX deploy, and
+this playbook owns its teardown.** `deployer` followed `deploy.md`'s
+`## Sandbox Deploy (for integration/regression testing)` section: an
+isolated fleet MCP server + supervisor pair on OS-assigned ports and their
+own data dirs, coexisting with production, left RUNNING for this phase. It
+is keyed on the sprintId your dispatch prompt states (`Your dispatching
+sprint's own supervisor reservation id (sprintId): <id>`):
+
+```bash
+node scripts/sandbox-deploy.mjs env --sprint-id "<that id>"        # locate: ports, data dirs, pids
+node scripts/sandbox-deploy.mjs teardown --sprint-id "<that id>"   # LAST step, pass or fail
+```
+
+Use the printed `APRA_FLEET_PORT` / `SUPERVISOR_PORT` / `APRA_FLEET_DATA_DIR`
+whenever a step talks to the deployed instance -- never `7523`/`8787`, never
+`~/.apra-fleet`. `env` exiting 1 means no sandbox exists for this id (report
+it; do not test against production). See `deploy.md`'s Teardown for what
+`teardown` checks before it deletes anything.
 
 ## Permissions
 
@@ -20,6 +39,8 @@ Commands below require the ability to run these command families:
 - `npm run ...` (e.g. `Bash(npm run *)`)
 - `npx vitest ...` (e.g. `Bash(npx vitest *)`)
 - `bd ...` (e.g. `Bash(bd *)`)
+- `node scripts/sandbox-deploy.mjs ...` (e.g. `Bash(node scripts/sandbox-deploy.mjs *)`)
+  -- locating and tearing down the sandbox deploy; `Bash(node:*)` covers it.
 
 Before running anything, verify each family is covered by SOME entry in
 `permissions.allow` of EITHER `.claude/settings.json` OR
@@ -98,6 +119,27 @@ For each feature id handed to the runner:
      bd update <feature-id> --append-notes="integ-test-runner: inconclusive -- <reason>"
      ```
 
+## Agy-dedicated sprints: toy sprint on agy
+
+Exception to the no-toy-sprint rule above. When the sprint's target issue is
+about the agy/Antigravity provider (deployed with `install --llm agy`, see
+`deploy.md`), its end-to-end proof is a toy sprint run by an agy member:
+inside THIS sprint's sandbox (`env` values above), register the toy member
+with `--llm agy` instead of `--llm claude`, then seed and launch the toy
+sprint the way the former regression toy-sprint smoke did -- its seed step
+and `## Test scenario` in `git show 3ba248f9:regression-test-playbook.md`
+(`maxCycles: 1`, via the sandbox `SUPERVISOR_PORT`). Record the installed
+commit, the provider, and the toy sprint's verdict.
+
+## Sandbox teardown (always, last)
+
+After every feature has been recorded -- pass, fail, or inconclusive -- run
+`node scripts/sandbox-deploy.mjs teardown --sprint-id "<your sprintId>"`.
+Exit 1 means something it launched is still alive or a port is still bound;
+put its stderr in your summary rather than retrying blindly. Never `kill` by
+name, never `node dist/index.js stop` (that stops PRODUCTION when its
+service is registered -- `deploy.md` Non-goals).
+
 ## Waiting on a long-running test run
 
 Feature tests can legitimately take several minutes. Never wait for one
@@ -140,5 +182,5 @@ INCONCLUSIVE evidence, never a pass. Omit it when no SHA was supplied.
 This playbook covers repo-local, per-feature test execution only. For
 anything sandbox- or environment-level -- a new required member role, a
 new pre-sprint gate, a new CLI subcommand, a toy-sprint scenario step --
-extend `regression-test-playbook.md` instead; that is where install/server/
-sandbox lifecycle coverage lives.
+add it to CI (`.github/workflows/`, `tests/integration/fresh-install/`)
+instead; see `regression-test-playbook.md`'s "Adding new features".

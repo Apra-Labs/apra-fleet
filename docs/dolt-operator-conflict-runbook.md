@@ -2,8 +2,8 @@
 
 This is the procedure a HUMAN OPERATOR follows when their own local clone's
 `bd dolt pull` reports a merge conflict against `origin/main`, and they have
-direct shell/`dolt` CLI access to that clone. It is the exact procedure used
-live on 2026-07-30 (verified safe twice, no data loss).
+direct shell/`dolt` CLI access to that clone. It has been exercised live and
+verified safe with no data loss.
 
 ## When to use this runbook (and when NOT to)
 
@@ -13,12 +13,12 @@ message, and you have direct terminal/`dolt` CLI access to resolve it by
 hand.
 
 Do NOT use it on a fleet MEMBER's clone during an automated sprint. Members
-now SELF-HEAL: both sync brackets run `settleDoltConflicts()`
+SELF-HEAL: both sync brackets run `settleDoltConflicts()`
 (`packages/apra-fleet-se/fleet-sprint/dolt-settle.mjs`), a single
 deterministic settlement step that is total over every row-level conflict
 shape and tears its ephemeral server down in a real `finally`. There is no
-LLM escalation and no multi-tier ladder any more -- the Path A / Path B /
-Tier 2 modules and the Tier 2 runbook were retired and deleted. See
+LLM escalation and no multi-tier ladder in the Dolt sync path -- settlement
+is the whole mechanism. See
 [`dolt-sync-redesign.md`](../packages/apra-fleet-se/fleet-sprint/docs/dolt-sync-redesign.md)
 for the design and
 [`dolt-manual-recovery-verified.md`](../packages/apra-fleet-se/fleet-sprint/docs/dolt-manual-recovery-verified.md)

@@ -57,6 +57,23 @@ describe('recordUsage()', () => {
     expect(new Date(record.ts).toISOString()).toBe(record.ts);
   });
 
+  it('writes member id and session id for a member-session call', async () => {
+    recordUsage('code_query', 'q', '/repo', { memberId: 'member-uuid-1', sessionId: 'sess-1' });
+    await vi.waitFor(() => expect(mockAppendFile).toHaveBeenCalledTimes(1));
+    const record = JSON.parse((mockAppendFile.mock.calls[0][1] as string).trimEnd());
+    expect(record).toMatchObject({ tool: 'code_query', target: 'q', repo: '/repo', memberId: 'member-uuid-1', sessionId: 'sess-1' });
+  });
+
+  it('non-member calls keep today\'s shape: attribution fields omitted, not null-filled', async () => {
+    recordUsage('code_query', 'q', '/repo', { sessionId: 'sess-only' });
+    recordUsage('code_query', 'q', '/repo', {});
+    await vi.waitFor(() => expect(mockAppendFile).toHaveBeenCalledTimes(2));
+    for (const call of mockAppendFile.mock.calls) {
+      const record = JSON.parse((call[1] as string).trimEnd());
+      expect(Object.keys(record).sort()).toEqual(['repo', 'target', 'tool', 'ts']);
+    }
+  });
+
   it('records the repo path when provided', async () => {
     recordUsage('code_impact', 'someTarget', '/repo/path');
 

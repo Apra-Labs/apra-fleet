@@ -67,6 +67,18 @@ When `execute_prompt` output contains a permission denial, call `compose_permiss
 
 > "Grant Bash(docker:*) to build-server, reason: integration tests, project folder ./my-project"
 
+For an agy member the failure is structured: `reason: "permission_denied"` with
+`permissionDenied.suggestedGrants` (primary grant first) - review them and pass them as `grant`.
+
+Claude denials carry `permissionMode` and `healable`:
+- `healable: true` (acceptEdits session): a missing allow rule - grant from `suggestedGrants` as above.
+- `healable: false` (auto or bypass session): the safety classifier or a deny rule refused the call. `suggestedGrants` is empty on purpose - do NOT grant it. Review the refused call; grant by hand only if the action is really intended.
+- `cause: "policy_deny"` (any session): a fleet tool outside the member allowlist was refused by the member's own deny rules. Always `healable: false` - never grant it; the member must do the work without that tool.
+
+By default a complete Claude reply is a success carrying its refusals in `permissionWarning` - check it. Pass `fail_on_permission_denial: true` to execute_prompt to make any refusal fail `permission_denied` instead (fleet-sprint does; a `healable: false` refusal on a complete reply stays a warning). A max_turns / auth / server result keeps its own reason, with the refusals attached.
+
+`compose_permissions` with `dry_run: true` returns the composed allow list (JSON, nothing written) - check a grant against it before granting.
+
 The tool validates (wildcard-matched denylist -- blocks sudo/env, `bash -c`, catch-alls and shell chaining; see [Never auto-granted](#never-auto-granted)), expands co-occurrences (docker -> docker-compose), delivers the updated config, and appends to the project ledger for future use.
 
 ## Role switch
@@ -142,11 +154,12 @@ same channel `compose_permissions` already uses, so it works uniformly for local
 remote (SSH) members. It logs distinctly whether it just seeded trust or found it
 already present. Other providers no-op: OpenCode has its own trust gate
 but already bypasses it per-dispatch (`--dangerously-skip-permissions`);
-AGY has no per-project trust concept (machine-global config); Codex/Copilot have no
+AGY needs no trust seeding (its grants bind through the member's own agy project,
+`--project` on every dispatch); Codex/Copilot have no
 known equivalent gate.
 
 If `execute_prompt` fails with a `workspace_not_trusted` structured error, the CLI's own
 stderr will contain a `"...this workspace has not been trusted"` message - seed trust
-via `ensureWorkspaceTrusted(workFolder)` (invoked automatically at
-register_member/update_member, and on every `compose_permissions` call once that
-wiring lands), then retry.
+via `ensureWorkspaceTrusted(workFolder)` -- invoked automatically at
+`register_member`/`update_member`, on every `compose_permissions` call, and as a
+one-shot self-heal inside `execute_prompt` itself -- then retry.

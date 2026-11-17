@@ -1,0 +1,11 @@
+{
+  "tool": "kb_query",
+  "case": "refusal-no-selector",
+  "kind": "refusal",
+  "request": {},
+  "error": {
+    "message": "Provide query (free-text search), tag (exact-match tag listing), or flagged_only: true (list contradictions)",
+    "thrown": true
+  },
+  "expected_error_code": "E-QUERY-NO-SELECTOR"
+}

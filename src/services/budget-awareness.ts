@@ -1,5 +1,5 @@
 import type { Agent } from '../types.js';
-import type { ProviderAdapter } from '../providers/provider.js';
+import type { ProviderAdapter, TokenUsage } from '../providers/provider.js';
 import { getMemberModelPricing } from './model-pricing.js';
 
 /**
@@ -134,8 +134,14 @@ export function _resetBudgetState(): void {
 
 /**
  * Spend that a single dispatch's token usage represents, in the budget's unit.
- * For a token budget this is just input+output tokens. For a dollar budget it
- * is priced via getMemberModelPricing() for the resolved tier; an unpriceable
+ * A token budget counts input + output only -- the meaning it had before
+ * cache tokens were parsed. Cache reads re-count the whole cached prefix on
+ * every turn (one real session: 58,653 input+output tokens vs 17,966,362 with
+ * cache), so adding them would make an existing token budget bind hundreds of
+ * times sooner for an upgrading user. Cache cost is carried by dollar budgets.
+ * For a dollar budget the provider's own reported cost (usage.cost_usd) is
+ * used as-is when present; otherwise each count is priced at its own rate via
+ * getMemberModelPricing() for the resolved tier; an unpriceable
  * tier (unknown model, subscription-plan member with no meter) contributes 0
  * rather than a fabricated cost -- the same "never invent a price" discipline
  * model-pricing.ts already follows.
@@ -144,15 +150,20 @@ export function estimateDispatchCost(
   agent: Agent,
   provider: ProviderAdapter,
   tier: 'cheap' | 'standard' | 'premium' | undefined,
-  usage: { input_tokens: number; output_tokens: number },
+  usage: TokenUsage,
   unit: BudgetUnit,
 ): number {
   if (unit === 'tokens') return usage.input_tokens + usage.output_tokens;
+  if (typeof usage.cost_usd === 'number' && Number.isFinite(usage.cost_usd)) return usage.cost_usd;
+  const cacheRead = usage.cache_read_input_tokens ?? 0;
+  const cacheWrite = usage.cache_creation_input_tokens ?? 0;
   const pricing = getMemberModelPricing(agent, provider);
   const price = pricing[tier ?? 'standard'];
   if (!price) return 0;
   return (usage.input_tokens / 1_000_000) * price.promptPrice
-    + (usage.output_tokens / 1_000_000) * price.completionPrice;
+    + (usage.output_tokens / 1_000_000) * price.completionPrice
+    + (cacheRead / 1_000_000) * price.cacheReadPrice
+    + (cacheWrite / 1_000_000) * price.cacheWritePrice;
 }
 
 /**
@@ -216,7 +227,7 @@ export async function recordAndEvaluate(opts: {
   agent: Agent;
   provider: ProviderAdapter;
   tier: 'cheap' | 'standard' | 'premium' | undefined;
-  usage: { input_tokens: number; output_tokens: number };
+  usage: TokenUsage;
 }): Promise<BudgetState | undefined> {
   const cfg = budgets.get(opts.scope);
   if (!cfg) return undefined;

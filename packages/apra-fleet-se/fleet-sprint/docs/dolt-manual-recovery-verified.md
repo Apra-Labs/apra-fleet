@@ -42,14 +42,16 @@ The embedded `bd` binary does NOT ship enough of the Dolt CLI to drive a
 merge-conflict resolution over SQL -- that requires the real `dolt` binary and
 a real `dolt sql-server` process, temporarily, against the SAME data directory.
 
-CORRECTED 2026-08-13 (`dolt-sync-redesign.md` Part 5, Precondition V2). This
-step previously said `winget install --id DoltHub.Dolt` on Windows, plus
-`apt`/`brew` on POSIX. That was a genuine mistake and must not be repeated:
-winget delivered a STALE 1.86.3 build while this repo carries its own version
-pin, so an OS package manager is a second, unpinned version channel -- banned
-from every code path and runbook this design owns. It also created a PATH
-problem of its own: a winget-installed binary is invisible to processes that
-started before the install, which is every SSH-dispatched session.
+**Never install it with an OS package manager** (`winget`, `apt`, `brew`).
+Two independent reasons, both load-bearing (see `dolt-sync-redesign.md`
+Part 5, Precondition V2):
+
+- A package manager is a second, unpinned version channel. It will happily
+  deliver a build older than this repo's own version pin, and the landmines
+  this procedure works around are version-specific.
+- A freshly package-manager-installed binary is invisible to processes that
+  started before the install -- which is every SSH-dispatched session, so the
+  install appears to succeed and the binary still cannot be found.
 
 The fleet's ONE pinned channel is the same GitHub release asset
 `src/cli/dolt-install.ts` uses (`DOLT_VERSION`, currently `v2.2.0`), landed at

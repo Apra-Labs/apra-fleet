@@ -1,4 +1,4 @@
-<!-- llm-context: This guide covers apra-fleet's AWS EC2 integration — auto start/stop, GPU-aware idle detection, long-running tasks, cost tracking, and custom workload detection. Consult when a user asks about cloud instances, GPU workloads, cost management, or task monitoring. -->
+<!-- llm-context: This guide covers apra-fleet's AWS EC2 integration -- auto start/stop, GPU-aware idle detection, long-running tasks, cost tracking, and custom workload detection. Consult when a user asks about cloud instances, GPU workloads, cost management, or task monitoring. -->
 <!-- keywords: AWS, EC2, cloud, GPU, nvidia-smi, idle detection, auto stop, cost tracking, long-running task, monitor_task, cloud_control -->
 <!-- see-also: ../README.md (general setup), architecture.md (how fleet manages members) -->
 
@@ -92,7 +92,7 @@ register_member(
 | Parameter | Required | Notes |
 |---|---|---|
 | `cloud_provider` | yes | Only `"aws"` supported |
-| `cloud_instance_id` | yes | EC2 instance ID, e.g. `i-0abc…` |
+| `cloud_instance_id` | yes | EC2 instance ID, e.g. `i-0abc...` |
 | `cloud_region` | no | Default: `us-east-1` |
 | `cloud_profile` | no | AWS CLI named profile |
 | `key_path` | yes | Path to SSH private key on this machine; also sets the SSH `key_path` for the member |
@@ -107,16 +107,16 @@ The instance does **not** need to be running at registration time. The server wi
 When `execute_command`, `execute_prompt`, or `send_files` is called on a cloud member, `ensureCloudReady()` runs first:
 
 1. Calls `aws ec2 describe-instances` to get current state
-2. **stopped** → calls `aws ec2 start-instances`, waits for `running` state
-3. **stopping** → waits for `stopped`, then starts
-4. **pending** → waits for `running`
-5. **running** → verifies public IP is current, updates registry if changed
-6. **terminated / shutting-down** → throws error (cannot be used)
+2. **stopped** -> calls `aws ec2 start-instances`, waits for `running` state
+3. **stopping** -> waits for `stopped`, then starts
+4. **pending** -> waits for `running`
+5. **running** -> verifies public IP is current, updates registry if changed
+6. **terminated / shutting-down** -> throws error (cannot be used)
 
 After the instance is running:
 - Polls SSH port (TCP connect) every 2 seconds, up to 60 seconds
-- Re-provisions Claude OAuth credentials (`provision_llm_auth`) — F5
-- Re-mints GitHub App tokens if the member has git repos configured — F5
+- Re-provisions Claude OAuth credentials (`provision_llm_auth`) -- F5
+- Re-mints GitHub App tokens if the member has git repos configured -- F5
 
 The returned agent object has the fresh public IP. All subsequent SSH calls use it.
 
@@ -158,13 +158,13 @@ execute_command(
 
 1. A bash wrapper script is generated and base64-encoded
 2. The wrapper is decoded and written to `~/.fleet-tasks/<task_id>/run.sh` on the member
-3. Launched with `nohup bash run.sh &` — survives SSH disconnect
+3. Launched with `nohup bash run.sh &` -- survives SSH disconnect
 4. Returns immediately: `Task launched: task_id=task-<id>`
 
 **Wrapper behavior:**
 
 - Writes PID to `task.pid`, JSON status to `status.json`
-- Background loop touches `~/.fleet-tasks/<task_id>/activity` every 5 minutes while running — this prevents the idle manager from stopping the instance during active work (F3)
+- Background loop touches `~/.fleet-tasks/<task_id>/activity` every 5 minutes while running -- this prevents the idle manager from stopping the instance during active work (F3)
 - On non-zero exit: retries up to `max_retries` times using `restart_command` (F1)
   - `restart_command` is designed for checkpoint resume (different flags on retry)
   - Falls back to `command` if `restart_command` not provided
@@ -212,9 +212,9 @@ cloud_control(member_id="<id>", action="status")  # show current state + cost
 
 | Action | Behaviour |
 |---|---|
-| `start` | Calls `ensureCloudReady` — starts the instance, waits for SSH, re-provisions auth |
-| `stop` | Calls `aws ec2 stop-instances` directly — immediate, no idle check |
-| `status` | Calls `getInstanceDetails` — returns state, IP, instance type, uptime, estimated cost |
+| `start` | Calls `ensureCloudReady` -- starts the instance, waits for SSH, re-provisions auth |
+| `stop` | Calls `aws ec2 stop-instances` directly -- immediate, no idle check |
+| `status` | Calls `getInstanceDetails` -- returns state, IP, instance type, uptime, estimated cost |
 
 **`stop` vs idle auto-stop:** `cloud_control stop` bypasses all activity checks. Use it to forcefully stop an instance regardless of what's running. The idle manager's stop goes through GPU + process checks first.
 
@@ -233,7 +233,7 @@ cloud_control(member_id="<id>", action="status")  # show current state + cost
 **Limitations:**
 - Rates are hard-coded approximations. Actual AWS charges may differ due to spot pricing, savings plans, data transfer, EBS, etc.
 - Instance types not in the table show `?` for cost.
-- The lookup table is in `src/services/cloud/cost.ts` — edit `HOURLY_RATES` to add custom types or update prices.
+- The lookup table is in `src/services/cloud/cost.ts` -- edit `HOURLY_RATES` to add custom types or update prices.
 
 ---
 
@@ -243,11 +243,11 @@ Cloud compute features are designed and tested for **Linux** EC2 instances (Ubun
 
 | Feature | Linux | macOS | Windows |
 |---|---|---|---|
-| GPU detection (`nvidia-smi`) | ✅ Full | ❌ Not supported | ❌ Not supported |
-| Long-running task wrapper | ✅ Full | ⚠ Untested | ❌ Not supported |
-| Idle activity monitoring | ✅ Full | ⚠ Partial | ❌ Not supported |
-| Auto-start / auto-stop | ✅ Full | ✅ Full | ✅ Full |
-| SSH connectivity | ✅ Full | ✅ Full | ⚠ Requires OpenSSH |
+| GPU detection (`nvidia-smi`) | [OK] Full | [x] Not supported | [x] Not supported |
+| Long-running task wrapper | [OK] Full | [!] Untested | [x] Not supported |
+| Idle activity monitoring | [OK] Full | [!] Partial | [x] Not supported |
+| Auto-start / auto-stop | [OK] Full | [OK] Full | [OK] Full |
+| SSH connectivity | [OK] Full | [OK] Full | [!] Requires OpenSSH |
 
 **Notes:**
 - Registering a cloud member with a non-Linux OS will succeed but show a warning about unsupported features.

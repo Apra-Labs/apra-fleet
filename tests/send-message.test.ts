@@ -109,4 +109,41 @@ describe('sendMessage', () => {
     const withExplicit = await sendMessage({ member_id: 'm-explicit-ws', content: 'hi' }, 'ws-explicit');
     expect(JSON.parse(withExplicit).ok).toBe(true);
   });
+
+  describe('probe', () => {
+    it('no session: reports not connected and sends nothing', async () => {
+      const result = JSON.parse(await sendMessage({ member_id: 'orchestrator', content: '', probe: true }));
+      expect(result).toEqual({ probe: true, member_id: 'orchestrator', connected: false, channel_capable: false });
+    });
+
+    it('a session without the channel capability: connected but not channel-capable; no notification, status unchanged', async () => {
+      const notification = vi.fn().mockResolvedValue(undefined);
+      register(makeSession({ member_id: 'm-plain', server: { server: { notification } } as any, channelCapable: false }));
+      const result = JSON.parse(await sendMessage({ member_id: 'm-plain', content: 'ignored', probe: true }));
+      expect(result).toEqual({ probe: true, member_id: 'm-plain', connected: true, channel_capable: false });
+      expect(notification).not.toHaveBeenCalled();
+      expect(sessionRegistry.get(FAKE_WORKSPACE, 'm-plain')?.status).toBe('online');
+    });
+
+    it('a channel-capable session: connected and channel-capable; no notification, status unchanged', async () => {
+      const notification = vi.fn().mockResolvedValue(undefined);
+      register(makeSession({ member_id: 'orchestrator', server: { server: { notification } } as any, channelCapable: true }));
+      const result = JSON.parse(await sendMessage({ member_id: 'orchestrator', content: '', probe: true }));
+      expect(result).toEqual({ probe: true, member_id: 'orchestrator', connected: true, channel_capable: true });
+      expect(notification).not.toHaveBeenCalled();
+      expect(sessionRegistry.get(FAKE_WORKSPACE, 'orchestrator')?.status).toBe('online');
+    });
+
+    it('a channel-capable registration with no live server yet is not connected', async () => {
+      register(makeSession({ member_id: 'm-pending', server: null, channelCapable: true }));
+      const result = JSON.parse(await sendMessage({ member_id: 'm-pending', content: '', probe: true }));
+      expect(result).toEqual({ probe: true, member_id: 'm-pending', connected: false, channel_capable: false });
+    });
+
+    it('a channel-capable session in another workspace is invisible', async () => {
+      register(makeSession({ member_id: 'm-other-ws', workspace_id: 'ws-someone-else', channelCapable: true }));
+      const result = JSON.parse(await sendMessage({ member_id: 'm-other-ws', content: '', probe: true }));
+      expect(result).toEqual({ probe: true, member_id: 'm-other-ws', connected: false, channel_capable: false });
+    });
+  });
 });

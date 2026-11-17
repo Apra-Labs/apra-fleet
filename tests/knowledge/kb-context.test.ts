@@ -12,6 +12,7 @@ vi.mock('node:child_process', () => ({
 
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
+import { gitExecutable } from '../../src/os/git-executable.js';
 
 function gitBlobHash(data: Buffer): string {
   const header = Buffer.from(`blob ${data.length}\0`);
@@ -130,7 +131,7 @@ describe('kb_context', () => {
 
     expect(mockExecFile).toHaveBeenCalledTimes(1);
     const callArgs = mockExecFile.mock.calls[0] as unknown[];
-    expect(callArgs[0]).toBe('git');
+    expect(callArgs[0]).toBe(gitExecutable());
     expect((callArgs[1] as string[])[0]).toBe('hash-object');
   });
 });

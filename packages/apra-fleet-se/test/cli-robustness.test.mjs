@@ -4,15 +4,20 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import {
     parseCliArgs,
     resolveMemberValidation,
     resolveRoleMap,
+    resolveRoleMapWithWarnings,
     buildRunnerArgs,
     checkIssuesExistOnMember,
     formatViewerListenError,
     attachViewerErrorHandler,
+    resolveExpectBeads,
+    probeBeadsIdentityOnMember,
 } from '../bin/cli.mjs';
 import { validateArgs } from '../fleet-sprint/runner.js';
 
@@ -20,7 +25,7 @@ import { validateArgs } from '../fleet-sprint/runner.js';
 //
 // (a) strict flag parsing; (b) missing-member abort/allow-list; (c)
 // --requirements-file/--role-map reach the runner's validated args; (d) the
-// `bd show` issue precondition targets the orchestrator MEMBER via the fleet
+// `bd show` issue precondition targets the backlog MEMBER via the fleet
 // transport, not the local machine; (e) --viewer-port + a clean port-
 // collision error instead of an unhandled crash.
 
@@ -191,13 +196,13 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
     // N15 (apra-fleet-unw2.11): resolveRoleMap() normalizes keys via
     // contracts.normalizeRole() -- this is where roleMap keys first enter
     // the system from a user-supplied --role-map value, so downstream
-    // consumers (this CLI's own orchestratorMember lookup, and
+    // consumers (this CLI's own backlogMember lookup, and
     // runner.js's validateArgs()) can rely on canonical lowercase keys.
     // -------------------------------------------------------------------
 
     test('normalizes mixed-case/whitespace-variant --role-map keys to canonical lowercase', async () => {
         const roleMap = await resolveRoleMap('{"  Doer  ":["m1"],"REVIEWER":["m2"],"Orchestrator":["m3"]}');
-        assert.deepStrictEqual(roleMap, { doer: ['m1'], reviewer: ['m2'], orchestrator: ['m3'] });
+        assert.deepStrictEqual(roleMap, { doer: ['m1'], reviewer: ['m2'], backlog: ['m3'] });
         // The normalized roleMap must reach validateArgs() unchanged (it's
         // already canonical) and must not throw.
         const args = buildRunnerArgs({
@@ -205,7 +210,30 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
             goal: 'P1', maxCycles: 1, requirementsFile: undefined, roleMap,
         });
         const validated = validateArgs(args);
-        assert.deepStrictEqual(validated.roleMap, { doer: ['m1'], reviewer: ['m2'], orchestrator: ['m3'] });
+        assert.deepStrictEqual(validated.roleMap, { doer: ['m1'], reviewer: ['m2'], backlog: ['m3'] });
+    });
+
+    test('--role-map {"orchestrator":[...]} resolves to the backlog key (deprecated alias) and carries the warning', async () => {
+        const { roleMap, warnings } = await resolveRoleMapWithWarnings('{"orchestrator":["m"],"doer":["d"]}');
+        assert.deepStrictEqual(roleMap, { backlog: ['m'], doer: ['d'] });
+        assert.equal(warnings.length, 1);
+        assert.match(warnings[0], /v0.5/);
+        assert.deepStrictEqual(await resolveRoleMap('{"orchestrator":["m"]}'), { backlog: ['m'] });
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['m', 'd'], branch: 'b', baseBranch: 'main',
+            goal: 'P1', maxCycles: 1, requirementsFile: undefined, roleMap, roleMapWarnings: warnings,
+        });
+        const validated = validateArgs(args);
+        assert.deepStrictEqual(validated.roleMap, { backlog: ['m'], doer: ['d'] });
+        assert.deepStrictEqual(validated.roleMapWarnings, warnings);
+    });
+
+    test('--role-map with backlog and orchestrator holding different members is rejected (equal members are accepted)', async () => {
+        await assert.rejects(
+            () => resolveRoleMap('{"backlog":["a"],"orchestrator":["b"]}'),
+            /"backlog".*"orchestrator"/
+        );
+        assert.deepStrictEqual(await resolveRoleMap('{"backlog":["a"],"orchestrator":["a"]}'), { backlog: ['a'] });
     });
 
     test('rejects a --role-map whose keys collide once normalized', async () => {
@@ -217,7 +245,7 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
 });
 
 // ---------------------------------------------------------------------------
-// (d) bd show precondition targets the orchestrator MEMBER via the fleet
+// (d) bd show precondition targets the backlog MEMBER via the fleet
 // transport, not the local machine
 // ---------------------------------------------------------------------------
 
@@ -412,6 +440,89 @@ describe('--run-id flag (apra-fleet-k7b.1)', () => {
     });
 });
 
+describe('--expect-beads flag (beads identity precondition)', () => {
+    const EXPECT_JSON = JSON.stringify({ beadsDir: '/w/.beads', prefix: 'proj', syncRemote: 'https://example.com/o/r.git', repoRemote: 'https://example.com/o/r.git' });
+
+    test('parseCliArgs accepts --expect-beads <json>', () => {
+        const { values } = parseCliArgs([...BASE_ARGV, '--expect-beads', EXPECT_JSON]);
+        assert.strictEqual(values['expect-beads'], EXPECT_JSON);
+    });
+
+    test('resolveExpectBeads: the flag wins, else FLEET_SPRINT_EXPECT_BEADS, else undefined', () => {
+        assert.strictEqual(resolveExpectBeads(EXPECT_JSON, { FLEET_SPRINT_EXPECT_BEADS: '{"prefix":"env"}' }), EXPECT_JSON);
+        assert.strictEqual(resolveExpectBeads(undefined, { FLEET_SPRINT_EXPECT_BEADS: '{"prefix":"env"}' }), '{"prefix":"env"}');
+        assert.strictEqual(resolveExpectBeads('   ', {}), undefined);
+        assert.strictEqual(resolveExpectBeads(undefined, {}), undefined);
+    });
+
+    test('buildRunnerArgs forwards the raw JSON as expect_beads and validateArgs parses it', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, expectBeads: EXPECT_JSON,
+        });
+        assert.strictEqual(args.expect_beads, EXPECT_JSON);
+        const validated = validateArgs(args);
+        assert.strictEqual(validated.expectBeads.prefix, 'proj');
+        assert.strictEqual(validated.expectBeads.syncRemote, 'https://example.com/o/r.git');
+    });
+
+    test('buildRunnerArgs omits expect_beads when not supplied', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5,
+        });
+        assert.ok(!('expect_beads' in args));
+        assert.strictEqual(validateArgs(args).expectBeads, undefined);
+    });
+
+    test('invalid --expect-beads JSON is a hard arg error at the runner contract', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, expectBeads: '{oops',
+        });
+        assert.throws(() => validateArgs(args), /Invalid expect_beads: not valid JSON/);
+    });
+
+    test('probeBeadsIdentityOnMember: a member with no beads database reports it plainly as a WARNING with the fix (never an error)', async () => {
+        const res = await probeBeadsIdentityOnMember({
+            member: 'orch',
+            runCommand: async (cmd) => {
+                if (cmd.startsWith('bd where')) throw new Error('Error: no beads database found');
+                return '';
+            },
+        });
+        assert.strictEqual(res.ok, false);
+        assert.strictEqual(res.identity, null);
+        assert.match(res.message, /^Warning: no beads database found at member 'orch'/);
+        assert.match(res.message, /'bd where --json' failed: Error: no beads database found/);
+        assert.match(res.message, /not verified for this member/);
+        assert.match(res.message, /To fix: run 'bd where' in the member's workFolder; ensure bd is installed there and the folder contains the project's \.beads\./);
+        assert.doesNotMatch(res.message, /^Error/);
+    });
+
+    test('probeBeadsIdentityOnMember: bd where answering without a database path is the same WARNING', async () => {
+        const res = await probeBeadsIdentityOnMember({ member: 'orch', runCommand: async () => 'nothing useful' });
+        assert.strictEqual(res.ok, false);
+        assert.match(res.message, /^Warning: no beads database found at member 'orch'/);
+        assert.match(res.message, /returned no database path: nothing useful/);
+        assert.match(res.message, /To fix: run 'bd where'/);
+    });
+
+    test('probeBeadsIdentityOnMember: a healthy member yields a formatted banner line', async () => {
+        const res = await probeBeadsIdentityOnMember({
+            member: 'orch',
+            runCommand: async (cmd) => {
+                if (cmd.startsWith('bd where')) return JSON.stringify({ database_path: '/w/.beads/dolt', path: '/w/.beads', prefix: 'proj', schema_version: 1 });
+                if (cmd.startsWith('bd config get')) return JSON.stringify({ key: 'sync.remote', value: 'https://example.com/o/r.git' });
+                return 'https://example.com/o/r.git\n';
+            },
+        });
+        assert.strictEqual(res.ok, true);
+        assert.strictEqual(res.identity.prefix, 'proj');
+        assert.match(res.message, /member 'orch' beads: \/w\/\.beads \| prefix=proj \| remote=https:\/\/example\.com\/o\/r\.git/);
+    });
+});
+
 describe('formatViewerListenError / attachViewerErrorHandler (e: viewer port)', () => {
     test('formats an actionable message for EADDRINUSE', () => {
         const err = Object.assign(new Error('listen EADDRINUSE'), { code: 'EADDRINUSE' });
@@ -448,5 +559,21 @@ describe('formatViewerListenError / attachViewerErrorHandler (e: viewer port)', 
         } finally {
             await new Promise((resolve) => blocker.close(resolve));
         }
+    });
+});
+
+// GitHub #613: the CLI refuses branch == base before any fleet connection or
+// dispatch (exit 1, the shared [Arg Contract] message naming both values).
+describe('CLI branch/base pair', () => {
+    test('--branch equal to --base (origin/ spelling) exits 1 before connecting to anything', () => {
+        const cliPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'cli.mjs');
+        // Inherits the per-run test sandbox env from the test runner; only
+        // NODE_TEST_CONTEXT is dropped, since cli.mjs refuses to self-execute
+        // when it sees it.
+        const env = { ...process.env };
+        delete env.NODE_TEST_CONTEXT;
+        const r = spawnSync(process.execPath, [cliPath, '--issue', 'bd-1', '--members', 'local', '--branch', 'main', '--base', 'origin/main'], { env, encoding: 'utf8', timeout: 60000 });
+        assert.equal(r.status, 1, `stdout=${r.stdout} stderr=${r.stderr}`);
+        assert.ok(r.stderr.includes('[Arg Contract] Invalid branch "main": must differ from base_branch "origin/main"'), r.stderr);
     });
 });

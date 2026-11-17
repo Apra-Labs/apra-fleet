@@ -1,29 +1,25 @@
 import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getKbProviders } from '../services/knowledge/kb-providers.js';
+import { getSelfReadKb, getMemberSplitRead, mergeSplitById, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { HttpKbProvider } from '../services/knowledge/http-provider.js';
+import { extractBibleDemotions, tombstonedIds } from '../services/knowledge/bible-import.js';
 import { getProvider } from './code-intelligence.js';
-import type { KBEntry } from '../services/knowledge/types.js';
+import type { KBEntry, MemoryProvider } from '../services/knowledge/types.js';
+import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import { FLEET_DIR } from '../paths.js';
 
 export const kbSessionPrimeSchema = z.object({
-  ...kbScopeFields,
+  confidence: z.array(z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED'])).min(1).optional()
+    .describe('Only surface entries whose confidence tier is in this list. Default when omitted: ["CONFIRMED"] (undisputed) -- INFERRED and UNVERIFIED entries are surfaced only when listed explicitly.'),
   session_files: z.array(z.string()).optional().describe('Files the agent expects to touch this session'),
   hint_symbols: z.array(z.string()).optional().describe('Symbols likely to be relevant'),
   hint_modules: z.array(z.string()).optional().describe('Module names likely to be relevant'),
-  // F4 (T1.6): repo path resolution precedence for the canonical-bible
-  // cold-seed below -- (1) this explicit repo_path input, validated (must
-  // exist and be a directory); (2) validated session context -- this
-  // process's own working directory, used ONLY when repo_path is omitted,
-  // put through the exact same existence + isDirectory check, never trusted
-  // blindly; (3) neither validates -- the cold-seed block is skipped
-  // silently (the existing non-fatal hard-skip contract: prime must never
-  // fail because the repo root could not be validated). There is no bare
-  // process.cwd() fallback: the fallback tier is validated the same way
-  // explicit input is.
-  repo_path: z.string().optional().describe('Repo root for the canonical-bible cold-seed (.fleet/kb-canonical.json). Precedence: this explicit input, when given and valid, wins; otherwise falls back to the validated session working directory; if neither validates, the cold-seed merge is skipped silently.'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbSessionPrimeInput = z.infer<typeof kbSessionPrimeSchema>;
@@ -101,16 +97,13 @@ function canonicalMatchesHints(
   return false;
 }
 
-// F4 (T1.6): shared validation for both precedence tiers -- an explicit
-// repo_path (tier 1) and the session working directory fallback (tier 2, used
-// only when repo_path is omitted) go through the identical existence +
-// isDirectory check. Neither tier is ever trusted without it. Returns null
-// (rather than throwing) when nothing validates, so the caller can hard-skip
-// per the existing non-fatal cold-seed contract.
-function resolveRepoPath(explicit?: string): string | null {
-  const candidate = explicit || process.cwd();
-  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) return null;
-  return candidate;
+// The cold-seed below reads <folder>/.fleet/kb-canonical.json, so it needs the
+// anchor folder to be a readable directory on THIS host. Returns null (rather
+// than throwing) when it is not -- a remote member's folder -- so the caller
+// can hard-skip per the existing non-fatal cold-seed contract.
+function localDirOrNull(folder: string): string | null {
+  if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) return null;
+  return folder;
 }
 
 // T3.5 (F9c, D8): `via` param added, defaulting to 'canonical-bible' so the
@@ -178,30 +171,118 @@ function parseContextNeighbors(result: unknown): string[] {
   }
 }
 
-export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string> {
+export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnchor): Promise<string> {
   if (input.session_files?.length) validateFilePaths(input.session_files);
 
-  // Prime the KB belonging to the repo being primed, not the server's cwd.
+  // Prime the calling session's own KB (kb-self.ts): a member session's work
+  // folder, else the server's folder. A remote member's folder is carried
+  // verbatim even though this host cannot see it -- SqliteProvider.
+  // anchorIsMissing() then declines to produce a freshness verdict rather
+  // than re-hashing against an unrelated tree.
+  // A MEMBER session primes from its checkout bible view unless it explicitly
+  // asks for INFERRED/UNVERIFIED (kb-self.ts getSelfReadKb).
+  // That explicit request is answered from the per-repo DB with only the
+  // caller's own captures (ownerTag): every block below honours it, and the
+  // bible cold-seeds are skipped (bible entries are nobody's own capture).
   //
-  // apra-fleet-b4g.4: an explicitly supplied repo_path is passed through
-  // VERBATIM, even when it does not exist on this host (a remote member's
-  // Windows work folder). Routing it through resolveRepoPath() here turned
-  // such a path into null and then, via `?? undefined`, into getKbProviders'
-  // `cwd ?? process.cwd()` -- so the provider serving that member ended up
-  // anchored at the FLEET SERVER'S OWN working directory while repo_remote_url
-  // pointed it at the real shared project KB, and prime re-hashed every
-  // candidate entry's basis against a tree that does not describe it. Keeping
-  // the caller's path means the anchor is honestly "a path this host cannot
-  // see", which SqliteProvider.anchorIsMissing() handles by declining to
-  // produce a freshness verdict at all. resolveRepoPath still guards the
-  // omitted-repo_path fallback (never a bare process.cwd()) and the cold-seed
-  // block below, which does need a readable directory.
-  const providers = await getKbProviders(
-    input.repo_path ?? resolveRepoPath() ?? undefined,
-    input.repo_remote_url,
-  );
+  // A MEMBER request naming CONFIRMED plus another tier is split (kb-self.ts
+  // getMemberSplitRead): each half is primed by primeFrom below, the CONFIRMED
+  // half exactly as a CONFIRMED-only request (bible view, cold-seeds included,
+  // decided on that half's own entries), every requested tier from the
+  // per-repo DB owner-tagged (no cold-seed). The two results are then merged.
+  // Under an http project provider both halves are primed by
+  // the KB server: the CONFIRMED half unfiltered, the own half owner-tagged.
+  const split = await getMemberSplitRead(anchor, input.confidence, 'kb_session_prime');
+  if (split) {
+    const fromBible = await primeFrom(
+      { project: split.bible.project, global: split.bible.global, folder: split.anchor.folder },
+      input, split.bible.tiers, false,
+    );
+    const fromOwn = await primeFrom(
+      { project: split.own.project, global: split.own.global, folder: split.anchor.folder, ownerTag: split.own.ownerTag },
+      input, split.own.tiers, false,
+    );
+    return JSON.stringify(mergePrimed(fromBible, fromOwn, input));
+  }
+
+  // Under an http project provider a MEMBER prime of any tier
+  // is answered by the server; ownerTag is enforced the same way, fleet-side.
+  const { providers, anchor: resolved, ownerTag } = await getSelfReadKb(anchor, input.confidence);
+
+  // Default-trusted reads: CONFIRMED + undisputed unless the caller lists tiers.
+  const confidence = input.confidence?.length ? input.confidence : (['CONFIRMED'] as Tier[]);
+  const exclude_disputed = !input.confidence?.length;
+
+  return JSON.stringify(await primeFrom(
+    { project: providers.project, global: providers.global, folder: resolved.folder, ownerTag },
+    input, confidence, exclude_disputed,
+  ));
+}
+
+type Tier = NonNullable<KbSessionPrimeInput['confidence']>[number];
+type Primed = Awaited<ReturnType<MemoryProvider['prime']>>;
+
+/** One KB source a prime runs against. `ownerTag` set = own captures only, no bible cold-seed. */
+interface PrimeSource {
+  project: MemoryProvider;
+  global: SqliteProvider;
+  /** Repo root whose .fleet/kb-canonical.json the project-bible cold-seed reads. */
+  folder: string;
+  ownerTag?: string;
+}
+
+/**
+ * Merge the two halves of a MEMBER split prime. top_entries: every bible-half
+ * entry, then own-half entries the bible half did not already return (bible
+ * copy wins), with graph-neighbor additions capped at ADDED_ENTRY_CAP across
+ * the merged list (bible half first, so the CONFIRMED-only result survives
+ * intact). Files: a file fresh in either half is fresh (bible summary first);
+ * stale_files is the union minus those fresh files. session_warm and
+ * token_estimate are recomputed the way prime() computes them.
+ */
+function mergePrimed(bible: Primed, own: Primed, input: KbSessionPrimeInput): Primed {
+  let neighbors = 0;
+  const top_entries = mergeSplitById(bible.top_entries ?? [], own.top_entries ?? []).filter((e) => {
+    if ((e as { via?: string }).via !== 'graph-neighbor') return true;
+    neighbors += 1;
+    return neighbors <= ADDED_ENTRY_CAP;
+  });
+  const fresh_summaries = [...(bible.fresh_summaries ?? [])];
+  const freshFiles = new Set(fresh_summaries.map(r => r.file));
+  for (const r of own.fresh_summaries ?? []) {
+    if (freshFiles.has(r.file)) continue;
+    freshFiles.add(r.file);
+    fresh_summaries.push(r);
+  }
+  const stale_files = [...new Set([...(bible.stale_files ?? []), ...(own.stale_files ?? [])])]
+    .filter(f => !freshFiles.has(f));
+  let token_estimate = 0;
+  for (const e of top_entries) token_estimate += Math.ceil((e.summary?.length || 0) / 4);
+  for (const r of fresh_summaries) token_estimate += Math.ceil((r.summary?.length || 0) / 4);
+  return {
+    ...bible,
+    session_warm: input.session_files?.length ? stale_files.length === 0 : true,
+    stale_files,
+    top_entries,
+    fresh_summaries,
+    token_estimate,
+  };
+}
+
+async function primeFrom(
+  source: PrimeSource,
+  input: KbSessionPrimeInput,
+  confidence: Tier[],
+  exclude_disputed: boolean,
+): Promise<Primed> {
+  const providers = source;
+  const { ownerTag } = source;
+  const resolved = { folder: source.folder };
 
   const result = await providers.project.prime({
+    confidence,
+    exclude_disputed,
+    owner_tag: ownerTag,
     session_files: input.session_files,
     hint_symbols: input.hint_symbols,
     hint_modules: input.hint_modules,
@@ -222,6 +303,9 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
         l1_only: true,
         limit: 10,
         include_stale: false,
+        confidence,
+        exclude_disputed,
+        owner_tag: ownerTag,
       });
       const globalEntries = globalResult.results
         .filter(e => e.type === 'knowledge')
@@ -277,6 +361,9 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
           l1_only: true,
           limit: 10,
           include_stale: false,
+          confidence,
+          exclude_disputed,
+          owner_tag: ownerTag,
         });
 
         // Merge below direct hits: skip ids already present (direct + global),
@@ -307,22 +394,41 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
   // live-KB hit gathered above. Non-fatal: the entire block is a hard skip --
   // missing file, unreadable/malformed JSON, or a bad shape leaves `result`
   // exactly as built above (same contract as the neighbor block).
-  if ((result.top_entries ?? []).length < COLD_KB_MAX) {
+  // Never under an http project provider: the KB server is the source of
+  // truth there, and the checkout bible is not read.
+  if (ownerTag === undefined && !(providers.project instanceof HttpKbProvider) && (result.top_entries ?? []).length < COLD_KB_MAX) {
     try {
-      const repoRoot = resolveRepoPath(input.repo_path);
+      const repoRoot = localDirOrNull(resolved.folder);
       const canonicalPath = repoRoot ? path.join(repoRoot, '.fleet', 'kb-canonical.json') : null;
       if (canonicalPath && fs.existsSync(canonicalPath)) {
         const raw = fs.readFileSync(canonicalPath, 'utf-8');
-        const entries = bibleEntries(JSON.parse(raw) as unknown);
+        const parsedBible = JSON.parse(raw) as unknown;
+        const entries = bibleEntries(parsedBible);
+        // The bible's EXPLICIT demotion tombstones, via the one shared reader.
+        const dropped = tombstonedIds(extractBibleDemotions(parsedBible));
 
         if (entries.length > 0) {
           const existingIds = new Set((result.top_entries ?? []).map(e => e.id));
           const hintSymbols = input.hint_symbols ?? [];
           const hintModules = input.hint_modules ?? [];
 
-          const valid = entries
+          const shaped = entries
             .filter(isCanonicalBibleEntry)
-            .filter(e => !existingIds.has(e.id));
+            .filter(e => !existingIds.has(e.id))
+            // A tombstoned id is demoted knowledge: never seed it, whatever the
+            // local row says (including when there is none).
+            .filter(e => !dropped.has(e.id));
+
+          // ONE skip predicate for the rest: seed a bible id only when this
+          // clone has NO row for it, or holds a LIVE CONFIRMED one. A row that
+          // exists but is INFERRED, stale, superseded or flagged_for_review is
+          // knowledge this clone has already stopped trusting, and re-seeding
+          // the bible's CONFIRMED copy of it would quietly undo that. Note what
+          // this deliberately is NOT: a demoted_at special case. Demotion is
+          // only one of the four ways a row stops being live CONFIRMED, and the
+          // single predicate covers it with no extra branch.
+          const liveness = providers.project.getLiveConfirmedState(shaped.map(e => e.id));
+          const valid = shaped.filter(e => liveness.get(e.id) !== false);
 
           let ordered = valid;
           if (hintSymbols.length > 0 || hintModules.length > 0) {
@@ -374,7 +480,7 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
   // project-bible block: missing file, unreadable/malformed JSON, or a bad
   // shape leaves `result` exactly as built above -- warm sessions (>=
   // COLD_KB_MAX) never reach this block at all.
-  if ((result.top_entries ?? []).length < COLD_KB_MAX) {
+  if (ownerTag === undefined && (result.top_entries ?? []).length < COLD_KB_MAX) {
     try {
       const globalBiblePath = path.join(FLEET_DIR, 'knowledge', 'global', 'kb-canonical-global.json');
       if (fs.existsSync(globalBiblePath)) {
@@ -423,5 +529,5 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
     }
   }
 
-  return JSON.stringify(result);
+  return result;
 }

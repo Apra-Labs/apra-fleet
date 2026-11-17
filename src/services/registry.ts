@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { Agent, FleetRegistry } from '../types.js';
+import type { Agent, FleetMcpStatus, FleetRegistry } from '../types.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { enforceOwnerOnly } from '../utils/file-permissions.js';
 import { FLEET_DIR } from '../paths.js';
@@ -117,6 +117,22 @@ export function updateAgent(id: string, updates: Partial<Agent>): Agent | undefi
   return registry.agents[idx];
 }
 
+/** Record the latest fleetMcp observation for a member (overwrites; never sticky),
+ *  except that the CURRENT fleetInstalledAt stamp is carried forward unless the
+ *  new status sets its own -- it is the only signal this fleet installed the
+ *  member, and observation-only writers (compose errors) must not drop it. */
+export function recordFleetMcpStatus(id: string, status: FleetMcpStatus): Agent | undefined {
+  const stamp = status.fleetInstalledAt ?? getAgent(id)?.fleetMcp?.fleetInstalledAt;
+  const fleetMcp = stamp ? { ...status, fleetInstalledAt: stamp } : status;
+  // The member's MCP port is persisted only from a probe that resolved it: a
+  // probe that failed before reading the member's install keeps the recorded
+  // port (falling back to the default there would point sessions at whatever
+  // else listens on it).
+  if (status.portSource === 'marker' && status.port !== undefined) return updateAgent(id, { fleetMcp, memberMcpPort: status.port });
+  if (status.portSource === 'default') return updateAgent(id, { fleetMcp, memberMcpPort: undefined });
+  return updateAgent(id, { fleetMcp });
+}
+
 export function removeAgent(id: string): boolean {
   const registry = loadRegistry();
   const before = registry.agents.length;
@@ -153,6 +169,12 @@ function normalizeFolderPath(folder: string): string {
  * - Relay agents: no check -- the folder is a path on the RELAYED machine,
  *   not this machine's own filesystem, so there's no local duplicate-folder
  *   concept to enforce here (apra-fleet-jfn).
+ * - When `llmProvider` is given, a folder may hold at most one LLM member and
+ *   at most one LLM-less (llm_provider 'none') member: only members of the
+ *   SAME kind clash. The rule exists so two agents never edit one checkout;
+ *   an LLM-less command executor (e.g. a supervisor's backlog member running
+ *   bd) is not an agent. Omitting `llmProvider` keeps the strict any-member
+ *   check.
  * Returns true if a duplicate exists.
  */
 export function hasDuplicateFolder(
@@ -161,15 +183,18 @@ export function hasDuplicateFolder(
   host?: string,
   port?: number,
   excludeId?: string,
+  llmProvider?: string,
 ): boolean {
   const agents = getAllAgents();
   const normalizedFolder = normalizeFolderPath(folder);
+  const isLlmLess = (p: string | undefined) => (p ?? 'claude') === 'none';
 
   for (const agent of agents) {
     if (excludeId && agent.id === excludeId) continue;
 
     const agentFolder = normalizeFolderPath(agent.workFolder);
     if (agentFolder !== normalizedFolder) continue;
+    if (llmProvider !== undefined && isLlmLess(llmProvider) !== isLlmLess(agent.llmProvider)) continue;
 
     if (agentType === 'local' && agent.agentType === 'local') {
       return true;

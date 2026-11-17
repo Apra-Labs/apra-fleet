@@ -127,6 +127,10 @@ src/providers/
   index.ts       - getProvider() singleton factory
 ```
 
+### Optional Capability Methods
+
+Not every provider CLI can do everything -- some capabilities (e.g. session forking) only exist on a subset of providers. Rather than making every `ProviderAdapter` implement a capability it may not be able to honor, or maintaining a separate out-of-band capability registry, the interface declares such capabilities as an **optional method pair**: a `supportsX?(): boolean` check plus the flag/command builder it gates (e.g. `forkFlag?(sourceSessionId): string`). A provider that has not implemented the pair is capability-incapable by default -- there is no third state and no fallback that fakes the capability through some other mechanism. Callers must always check the support method (`provider.supportsX?.() ?? false`) before calling the builder; calling the builder without checking support first is a caller bug, not a case the interface guards against for you. This keeps capability detection colocated with the capability itself (same file, same provider), avoids a growing "which providers support what" table that drifts from the actual adapter code, and lets a capability request against an unsupporting provider fail loudly and specifically (a dedicated terminal error) instead of degrading silently into different, unexpected behavior.
+
 ### Mix-and-Match Fleet
 
 A fleet can have members on different providers simultaneously. The PM dispatches work to members by name  -- it doesn't need to know which LLM backend each member uses. The fleet server resolves the correct CLI commands per member at runtime.
@@ -161,6 +165,7 @@ These invariants apply across all providers that can terminate a dispatch withou
 - **A busy-lock rejection is verified against process liveness before being honored.** `execute_prompt`'s in-flight lock (`inFlightAgents`, `src/tools/execute-prompt.ts`) can outlive the process it was guarding (a child reaped without its exit handler firing, or an interactive session's underlying CLI process dying after registration). Before returning a `busy` rejection, the dispatch path probes the locked session's pid for liveness -- locally via a direct signal-0 check, remotely via a fresh independent liveness round trip (never the possibly-wedged channel that produced the stale lock), and via the session registry's last-known pid for interactive sessions -- and self-heals (releases the lock, warns, and proceeds with the new dispatch) only on a **definitive** dead-pid reading. Ambiguity (no pid captured at all, e.g. a dispatch that hasn't reached its pid-capture step yet) is always treated as still-busy, never as staleness evidence, so a self-heal attempt can never race a dispatch that is still starting up. This keeps `fleet_status`'s independently-computed busy/idle view and the dispatch gate's busy/idle view from ever disagreeing for longer than one dead-lock detection cycle.
 - **A confirmed stall cancels the in-flight dispatch, not just the remote process.** Killing the remote pid a stalled dispatch was running is necessary but not sufficient -- the MCP `tools/call` that dispatched it can still be sitting on a pending `execCommand()` promise with no way to reject it, so the client falls back to waiting out its own hard deadline even though the server-side work died minutes earlier. The stall path now threads an `AbortController` through `onStall` that is wired into the same strategy-level `execCommand()` abort signal remote strategies already accept, so a confirmed stall settles the pending call immediately with a typed `stalled` dispatch error instead of silently degrading into a multi-thousand-second client-side timeout wait.
 - **The client's dispatch deadline must cover every server-side retry the request can trigger, not just the first attempt.** When the server's own inactivity-timeout handling retries a dispatch once with a fresh session (same `timeout_s`/`max_total_s`), the total server-side worst case is a multiple of the value the client's deadline was derived from. A client deadline sized for only the first attempt can fire before the server's own retry-and-report-cleanly path gets a chance to run, which surfaces a raw transport timeout to the caller instead of a clean typed error. The fix is a single shared retry-budget helper that both sides size their deadlines from, so "the client waits at least as long as the server's own worst-case retry sequence" is a property of one function, not something every dispatch call site has to remember to compute correctly.
+- **A provider usage/quota limit is a terminal signal in its own right, distinct from `overloaded`.** Every `ProviderAdapter` exposes `detectUsageLimit(result, parsed)` (`src/providers/provider.ts`), which recognizes a plan/quota exhaustion (e.g. Claude's 429) and returns a `UsageLimitSignal { resumeAt, resumeAtSource: 'parsed' | 'guessed', message }` -- never `null` for a genuine limit, since even an unreadable reset time still yields a guessed resume window. `execute_prompt` (`src/tools/execute-prompt.ts`) runs this check immediately after every `provider.parseResponse()` call in the dispatch path (initial dispatch, stale-session retry, server-overloaded retry, orphan recovery, and the workspace-trust self-heal retry), regardless of exit code -- a 0-exit result event whose text carries the limit message is a limit, not a success. A detected signal short-circuits the stale-session and server-overloaded retries below it: a fresh session cannot cure a plan limit, so retrying would only burn the shared retry budget waiting out a window that is already known. The dispatch returns a structured `reason: 'usage_limit'` result carrying the signal verbatim (`structuredContent.usageLimit`) plus the session id when present, so a caller can resume the *same* session once `resumeAt` passes instead of losing context to a fresh one. `packages/apra-fleet-workflow` passes `usageLimit` and `sessionId` through onto `AgentDispatchError.details` unchanged (no policy decisions in that layer), and the fleet-sprint engine's pause/resume policy (`packages/apra-fleet-se/fleet-sprint/usage-limit-controller.mjs`) is the sole consumer that decides how long to pause and when to re-probe.
 
 See `docs/provider-matrix.md` for the full comparison table.
 
@@ -170,15 +175,19 @@ The `apra-fleet-se` fleet-sprint runner (`packages/apra-fleet-se/fleet-sprint/ru
 
 Two topology modes are supported, selected explicitly when a sprint starts:
 
-- **`legacy` mode** -- no cross-member sync layer. Every `bd` command the orchestrator issues runs against the orchestrator member's beads DB, while each doer's own `bd close` runs against **its** member's DB; the sprint git branch is only meaningful if all members operate on the same working state. This coheres in exactly two topologies: **single-member** (one member does everything) or a **verified shared-workspace fleet** (every configured member resolves to the same checkout/beads DB). Independent per-member checkouts are **not supported** in this mode -- non-orchestrator members would silently work against a beads DB and git branch the orchestrator never sees.
+- **`legacy` mode** -- no cross-member sync layer. Every `bd` command the orchestrator issues runs against the backlog member's beads DB, while each doer's own `bd close` runs against **its** member's DB; the sprint git branch is only meaningful if all members operate on the same working state. This coheres in exactly two topologies: **single-member** (one member does everything) or a **verified shared-workspace fleet** (every configured member resolves to the same checkout/beads DB). Independent per-member checkouts are **not supported** in this mode -- non-backlog members would silently work against a beads DB and git branch the backlog member never sees.
 - **`synced` mode** -- an orchestrator-bracketed git+Dolt sync layer wraps every dispatch that reads or writes git-tracked or beads state, reconciling each member's state explicitly instead of assuming it is already shared. This is what makes genuinely independent per-member checkouts safe. The sync layer includes a scripted-first escalation ladder for both git and Dolt conflicts (mechanical detection and resolution first, an agent dispatched with an explicit conflict runbook only as a documented last resort), plus supervisor-owned global coordination (a Dolt push mutex and a child-id allocator) so concurrent cross-member Dolt writes never silently corrupt each other's beads clone.
 
 Guards enforcing whichever mode is selected:
 
-1. **Branch-ensure everywhere** (both modes): before the first doer round, the runner git-ensures the sprint branch (`fetch` + `checkout -B`) on **every** member in the union of the orchestrator/doer/reviewer pools -- not just the orchestrator -- and non-destructively re-checks-out the branch on each member at the start of later cycles (it never resets to base once work is committed).
-2. **Topology precondition**: `bin/cli.mjs` calls `checkMemberTopology()` before starting a multi-member sprint. In `legacy` mode it compares an identity signal (`git rev-parse HEAD`) across the configured members and **refuses to start with a clear error** if they disagree (or if a member's signal can't be obtained); in `synced` mode HEADs are allowed to differ, but every member must share the same git remote origin and pass a live beads-Dolt-pull probe. Single-member sprints trivially pass either check.
+1. **Branch-ensure everywhere** (both modes): before the first doer round, the runner git-ensures the sprint branch (`fetch` + `checkout -B`) on **every** member in the union of the backlog/doer/reviewer pools -- not just the backlog member -- and non-destructively re-checks-out the branch on each member at the start of later cycles (it never resets to base once work is committed).
+2. **Topology precondition**: `bin/cli.mjs` calls `checkMemberTopology()` before starting a multi-member sprint. In `legacy` mode it first **aligns every member to the sprint base** (`packages/apra-fleet-se/fleet-sprint/member-align.mjs`): it checks every member's preconditions (same origin URL, base fetchable, sprint branch not diverged, member reachable) and refuses before moving any member if one fails, then preserves uncommitted work in a named `fleet-sprint[<branch>]` stash and checks out the sprint branch (`origin/<branch>` if it exists, else cut from `origin/<base>`), logging one `[Align]` line per member. It then compares an identity signal (`git rev-parse HEAD`) across the aligned members and **refuses to start with a clear error** if they still disagree (a member keeping local-only sprint-branch commits) or if a member's signal can't be obtained; in `synced` mode HEADs are allowed to differ, but every member must share the same git remote origin and pass a live beads-Dolt-pull probe. Single-member sprints trivially pass either check.
 
 See `packages/apra-fleet-se/docs/architecture.md` for the full internals of both modes, including the escalation ladders and the always-on supervisor service that launches and tracks sprints.
+
+**Beads identity is verified, not overridden.** The supervisor discovers its own `.beads` by walking up from its cwd (exactly like `bd`) and passes that identity to every sprint it launches (`--expect-beads`, env `FLEET_SPRINT_EXPECT_BEADS`); the engine then probes each member's own `bd where`/`sync.remote`/git origin and aborts before any `bd` mutation on a mismatch. Severity is deliberate: a **mismatch** (a field that resolved on both sides and differs) is fatal, because mutating the wrong tracker is data corruption; a **probe failure** (no `.beads` found, `bd` not installed, `sync.remote` unset, no git origin) is a visible warning that names the fix -- the supervisor still starts (health `beads: null` + `beadsWarning`, amber dashboard line, no `--expect-beads` handed down until `GET /api/health?refresh=1` recovers it; a nonexistent `--beads-dir` is still a startup error), and the engine leaves the unresolved field out of the comparison and proceeds (the first real `bd` on a broken member surfaces it). `BEADS_DIR` is deliberately never set on a member: `bd` ignores an invalid `BEADS_DIR` silently and falls back to cwd discovery, so setting it would look authoritative while doing nothing -- verification against the member's real, independently-discovered identity is the only way to catch a member pointed at the wrong project.
+
+**Permission refusals during a dispatch.** A member CLI that refuses tool calls for lack of a grant makes `execute_prompt` fail with reason `permission_denied` and a `permissionDenied` block (`actions`, `denials` with per-call `suggestedGrants`, `suggestedGrants`, `hint`, `signals`, and for Claude `permissionMode` and `healable`). AGY reports refusals in its JSON envelope/stderr/transcript (`detectAgyPermissionDenial`). An AGY refusal of a fleet tool outside the member allowlist (a transcript target matching `agyMemberDenyRules()`) is marked `healable: false`, `cause: 'policy_deny'` with no suggested grants, like Claude's. Claude reports them as a non-empty `permission_denials` on its result event while `is_error` stays false (`detectClaudePermissionDenial`, `src/providers/claude-permission-denial.ts`). For a Claude session the permission mode decides what a refusal means (`claudePermissionMode` in `src/providers/claude.ts`, the one function both the CLI flag and the denial handling read): `unattended: 'auto'` runs `--permission-mode auto` only on a model that supports it, and falls back to `acceptEdits` on Haiku and pre-4.6 Sonnet/Opus, which would otherwise start in the stricter Manual mode. In auto or bypass mode a refusal is the safety classifier or a deny rule, never a missing grant: it is marked `healable: false`, and a complete reply comes back as a success carrying the denials in `permissionWarning` (logged) instead of a failure; an incomplete one fails `permission_denied` with `healable: false` only when the caller passed `fail_on_permission_denial: true` (or the member is AGY); otherwise it keeps its ordinary classification (e.g. `empty_response`) with the refusals attached as `permissionDenied`. In any mode, a refusal of a fleet tool outside the member allowlist (one of the `claudeMemberDenyRules()` deny rules compose writes into the member's `.claude/settings.local.json` on purpose) is the member tool policy, not a missing grant: the whole denial is marked `healable: false` with `cause: 'policy_deny'` and no suggested grants, so it is handled exactly like an auto-mode refusal (a warning on a complete reply, `not_healable` in the heal) and the denied admin tool is never granted. Conversely, compose adds an allow rule for every member-allowlisted fleet tool (`memberMcpAllowRules()`), so a kb_*/code_* call in an acceptEdits session (Haiku, pre-4.6 models) is never refused for lack of one. For AGY, and for a Claude caller that passes `fail_on_permission_denial: true` (fleet-sprint does), a refusal is a `permission_denied` failure even when the reply looks complete: the reply was produced without the refused tool's real output, so no role may treat it as its result. Any partial reply is kept in `response`, and the session, usage, budget and PID bookkeeping of a completed dispatch still runs. Without the flag a complete Claude reply stands (v0.4.3 semantics) and carries the refusals in `permissionWarning`. Classification order: a max_turns, auth, server, overloaded or workspace_not_trusted result keeps its own reason, with the refusals attached as `permissionDenied`. In fleet-sprint the dispatch engine (`dispatchRole`, `packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs`) treats this reason as a missing-permission failure for every role. It is never degraded into a verdict, so a plan-reviewer refusal can no longer charge a plan-review round. It is healed progressively through `createPermissionDenialHeal` (`member-provisioning.mjs`): each refusal gets the missing grant, checked against the member's composed allow list (`compose_permissions` `dry_run` for the compose role of all its sprint roles, so stack commands such as npm count), and the attempt is re-run without being charged to the ladder; a different tool refused next is healed the same way. Only the member's first heal re-composes its config from the role profile; later heals only add grants, since a proactive compose rewrites the allow list. Grants are recorded in a per-member ledger folder (`project_folder`, under the fleet data dir) that every proactive compose of the member passes, so the next sprint keeps them. The heal stops with `MemberPermissionDeniedError` (naming the member, the denied actions and the fix) when no progress is possible: `not_healable` (auto/bypass refusal, or a member tool policy deny), `no_progress` (refused again after a grant that covers it, a grant outside the composed policy or refused as NEVER_AUTO_GRANT, or a call no grant maps to), `cap` (3 heals per member per sprint, 2 per dispatch), or `heal` (compose_permissions failed, or no heal is wired).
 
 ## Endpoint Transport (memberless FleetApi over HTTP)
 
@@ -220,14 +229,14 @@ one resolution order used identically by `src/cli/workflow.ts` and
 
 1. `APRA_FLEET_TRANSPORT` forced override (`http` fails loud with no
    singleton rather than silently falling back to a private server; `stdio`
-   or a set `APRA_FLEET_SERVER_CMD`/`_BIN` goes straight to self-spawn).
+   or a set `APRA_FLEET_SERVER_CMD`/`_BIN` goes straight to a private stdio server).
 2. Probe for a healthy HTTP singleton (`checkRunningInstance()` -- the same
    pid + `/health` check the installed service already uses for
    startup-dedup) and attach with zero spawned processes. This is the
    default, steady-state path.
-3. Fall back to stdio self-spawn (the four-tier command resolution
-   `resolveFleetServerCommand()` already had) only when no healthy
-   singleton is found.
+3. If the singleton is verifiably gone, start the shared HTTP server by
+   running `apra-fleet start` (detached, lock-guarded, loop-guarded) and
+   attach over HTTP. Stdio is only the explicit `stdio` / CMD / BIN path.
 
 The rationale for one shared helper over two copies: a launcher that merely
 mirrored the old stdio-only `resolveFleetServerCommand()` would always
@@ -258,8 +267,7 @@ manifest is not a trusted-by-construction input.
 dynamic `import()` of on-disk ESM works from inside a SEA main script on
 all three target OSes.
 
-**Install/uninstall/update lifecycle (Phases 1-3, closed this sprint,
-`apra-fleet-7pm`):** `install.ts`'s workflow-install step and its extraction
+**Install/uninstall/update lifecycle:** `install.ts`'s workflow-install step and its extraction
 logic (extract-to-temp-then-rename, with Windows EBUSY retry/backoff) were
 factored out into `src/cli/workflow-assets.ts` so more than one caller can
 share the exact same code path instead of re-implementing it:
@@ -279,12 +287,16 @@ share the exact same code path instead of re-implementing it:
   directories are left in place; `workflows/` itself is only removed if
   nothing user-authored remains, and the command prints which user
   workflows it kept.
+- A full `apra-fleet uninstall` also stops and removes the OS-level supervisor
+  service registration (systemd user unit, launchd agent, or Windows
+  scheduled task) when it points at the installed tree, before the workflows
+  runtime is deleted. See [docs/features/uninstall.md](features/uninstall.md).
 - `apra-fleet update` reads back the previously-persisted `--workflows` mode
   and threads it into the re-invoked install, so an update refreshes
   built-in workflow assets to the new version while preserving any
   user-authored workflows already on disk.
 
-**CI coverage (Phase 4, closed this sprint):** `build:binary` smoke tests
+**CI coverage:** `build:binary` smoke tests
 exercise the packaged SEA binary's `workflow` subcommand and the
 fleet-sprint-as-built-in-workflow path end-to-end (not just the source
 `.ts`/`.mjs` files), and a regression-guard test suite
@@ -293,10 +305,8 @@ command surface (`install --help`, `uninstall --dry-run`, `--version`,
 stdio handshake) against golden fixtures so future workflow-subsystem work
 can't silently change unrelated command output.
 
-The workflow subsystem is now installable, self-healing, uninstallable, and
-update-safe end-to-end; remaining gaps for this feature are tracked as
-individual open issues under `apra-fleet-7pm`, not as a phase-level
-placeholder.
+The workflow subsystem is installable, self-healing, uninstallable, and
+update-safe end-to-end.
 
 **Cooperative pause/resume** is a generic engine primitive available to any
 workflow run (`requestPause()`/`requestResume()`/`setPauseGuard()`), separate
@@ -311,6 +321,14 @@ resyncing git/beads state across a pause). See
 for the full design and
 [packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](../packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md)
 section 4.7 for the engine-level contract.
+
+**The multi-sprint supervisor dashboard's live-refresh** deliberately reuses
+the per-run viewer's own incremental-refresh architecture (a lean JSON state
+endpoint plus a change-signal stream driving a debounced client poll) instead
+of a second, divergent mechanism -- see
+[docs/features/supervisor-dashboard-live-refresh.md](features/supervisor-dashboard-live-refresh.md)
+for the full design, including the in-memory scope-expansion fix that removed
+a per-graph-node subprocess spawn from every dashboard render.
 
 **Dev-mode manifest bundling is a transitive-dependency, not a top-level-only,
 contract.** The dev-mode install path bundles `@apralabs/apra-fleet-client`'s
@@ -331,6 +349,8 @@ The PM skill and its role agent definitions (planner, plan-reviewer, doer, revie
 
 Remote fleet members do not share the operator's home directory, so `register_member`, `update_member`, and (starting with the first dispatch after an orchestrator upgrade) `execute_prompt` each independently hash-diff the canonical agent set against the remote box and push anything missing or stale. See [docs/mcp-tools.md](mcp-tools.md) for per-tool behavior details.
 
+The sprint engine (`packages/apra-fleet-se/fleet-sprint/`) and these role prompts are generic: they drive a sprint against any target repo, and apra-fleet building itself with them is only one target. A mechanical guard keeps apra-fleet-specific assumptions out of their LLM-facing text -- see [docs/generic-engine-boundary.md](generic-engine-boundary.md).
+
 ## Key Design Decisions
 
 ### Strategy Pattern for Member Types
@@ -346,6 +366,63 @@ SSH passwords are encrypted with AES-256-GCM before being written to the registr
 SSH connections are expensive to establish (TCP + key exchange + auth). The server pools them in memory and reuses connections across tool calls, with a 5-minute idle timeout that auto-closes unused connections. Timers are `unref()`'d so they don't prevent Node from exiting.
 
 The idle timer is reset by normal pool activity (`execCommand`/`getConnection`), but a stall-detector entry that is still `provisional` (created before it has a log file to poll) does not generate that activity itself -- it only benefits from the stall poller's own incidental probes. The pool's cleanup path therefore never tears down an entry purely on the idle timer firing: it re-checks for an active channel immediately before ending the connection, and only actually closes it when genuinely idle. This closes off a class of latent bug where a long-running dispatch with a provisional-shaped stall entry could otherwise have a live channel reaped out from under it. Separately, pooled SSH connections have keepalive configured (interval + a bounded probe count) so a silently dropped network connection is detected and torn down rather than sitting as a phantom pool entry indefinitely.
+
+### SFTP Transfers Are Session-Scoped and Inactivity-Bounded
+
+Every SFTP transfer (`send_files`, `receive_files`, internal home-file writes) runs on its own SFTP session -- one channel on the member's pooled connection -- that is always ended afterwards (`withSftpSession`, `src/services/sftp.ts`). Each operation on it (session open, `mkdir`, `writeFile`, `fastPut`, `fastGet`) runs under an inactivity timeout, `SFTP_INACTIVITY_TIMEOUT_MS` (120s). It is inactivity-based, not a wall-clock ceiling: `fastPut`/`fastGet` progress callbacks re-arm it, so a large transfer that keeps moving is never cut. On expiry the session is ended, its pooled-channel lease released, and the whole transfer rejects with `SftpTimeoutError` naming the member, the path and the budget (never folded into a per-file failure). A session channel ssh2 leaves open after the member refuses the `sftp` subsystem request is closed too (`openSftp`), so a member without an SFTP subsystem cannot use up sshd's `MaxSessions` one attempt at a time.
+
+### Command Timeouts: Explicit Kill (FLEET_PID) vs Cut on Timeout
+
+`execCommand` (`src/services/ssh.ts`, and its `LocalStrategy` twin in `src/services/strategy.ts`) takes a rolling inactivity timeout and an optional hard ceiling. What a timeout does to the REMOTE command depends on whether the command reports its PID:
+
+- **FLEET_PID** -- the command runs under the member dialect's `wrapPidCapture` (POSIX subshell or PowerShell prefix, `src/os/*.ts`), or is a provider launch that emits the marker itself. On timeout, `execCommand` kills the remote process tree on a fresh leased channel (`killRemoteTree`) and rejects with `Command timed out ...` / `Command exceeded max total time ...`. The kill is explicit and the caller reports it.
+- **Cut** -- no PID is known, so all a timeout does is close the channel (it is always closed, so it never leaks a `MaxSessions` slot). The remote command loses its stdout/stderr and normally dies on its next write. One that never writes may keep running. This is acceptable only for the commands below: short probes, small writes that are idempotent or retried, and kills. Cutting them loses nothing a re-run does not restore.
+
+Every `execCommand` call site, checkable against `grep -rn "execCommand(" src`:
+
+| Caller (file -> function) | Command | Timeout | On timeout | Why acceptable |
+|---|---|---|---|---|
+| tools/execute-command.ts -> executeCommand (sync path) | user command | `timeout_s` | FLEET_PID | arbitrary user work: must be killed, not orphaned |
+| tools/execute-command.ts -> executeCommand (long_running launch) | detached-task launcher | `timeout_s` | Cut | only cuts the launcher. The detached task uses its own marker on purpose, so a launch timeout never kills it |
+| tools/execute-prompt.ts -> dispatchAttempt | provider CLI dispatch | per-provider inactivity + `max_total_s` | FLEET_PID | provider launch commands emit the marker themselves |
+| tools/update-agent-cli.ts -> runCliStep (install/update) | CLI install / update | 600s / 600s inactivity, 15 min ceiling | FLEET_PID | result says "killed on timeout after running Ns" plus the PID. Never a silent mid-install cut |
+| tools/vcs-credential-exec.ts -> vcsCredentialExec (dispatch) | user command with credential | `timeout_s` (120s) | FLEET_PID | git push/clone must be killed explicitly, like execute_command |
+| services/relay-executor.ts | relayed command | caller's | as relayed | runs the originating caller's command unchanged, so the original caller's wrapper choice applies |
+| tools/vcs-credential-exec.ts -> vcsCredentialExec (read) | read credential helper file | 15s | Cut | read-only |
+| tools/update-agent-cli.ts -> updateSingleAgent | `--version` before/after | 15s | Cut | read-only probe |
+| tools/register-member.ts | OS detect (`uname`/`ver`/`$env:OS`), CLI version (15s/60s), mkdir work folder, git remote | 10-60s | Cut | probes and an idempotent mkdir. Registration reports the failure |
+| tools/member-detail.ts -> memberDetail | version, credential/API-key checks, busy check, cpu/mem/disk/gpu, git branch | 10s | Cut | read-only probes. A missing field is reported as unknown |
+| tools/check-status.ts -> checkAgent | process check, GPU, busy check | 10s | Cut | read-only probes |
+| tools/list-members.ts -> getAuthStatus | credential file / API key check | 5s | Cut | read-only probes |
+| tools/monitor-task.ts -> monitorTask | task status, pid, gpu, log tail | 10s | Cut | read-only probes |
+| tools/cloud-control.ts, services/cloud/activity.ts | GPU / activity command / process check | 10s / ACTIVITY_TIMEOUT_MS | Cut | read-only probes. Timeout means "unknown" and blocks auto-stop |
+| tools/provision-auth.ts -> verifyWithClaudePrompt / verifyWithVersion | `claude -p hello` / `--version` | 60s / 30s | Cut | verification only. Timeout means "deployed, unverified" |
+| tools/provision-auth.ts -> provisionOAuthCopy / provisionApiKey | credential write, JSON deep-merge, env set/unset, API key check | 10-15s | Cut | small idempotent writes, re-run by re-provisioning. Failures are reported |
+| tools/provision-vcs-auth.ts, tools/revoke-vcs-auth.ts, services/credential-cleanup.ts | credential helper write/remove | 15s | Cut | small idempotent writes/removes |
+| tools/remove-member.ts | credential/key/project cleanup | 10-15s | Cut | best-effort idempotent removes |
+| tools/setup-ssh-key.ts -> setupSSHKey | install public key | 10s | Cut | small idempotent append, verified afterwards |
+| tools/compose-permissions.ts -> detectStacks / deliverConfigFile / provider delivery | `ls` markers, mkdir, read, write, verify settings | 10s / LOCAL_FS_OP_TIMEOUT_MS | Cut | small file ops. Delivery reads back and verifies |
+| tools/execute-prompt.ts -> writePromptFile / deletePromptFile | write/delete prompt file | 30s default | Cut | small write; a failed write fails the dispatch before launch |
+| tools/execute-prompt.ts -> retryBudget | credential file checks | 10s | Cut | read-only probes |
+| providers/claude.ts -> ensureWorkspaceTrusted / deliverWorkspaceTrustFile | read/move/write `~/.claude.json` | 10s | Cut | small writes via temp file + move, cleanup on failure |
+| utils/workspace-trust.ts -> seedWorkspaceTrust | exec seam handed to the provider's `ensureWorkspaceTrusted` (the claude.ts row) | provider's (10s) | Cut | same commands as the providers/claude.ts row; failure is logged as non-fatal |
+| providers/agy.ts -> checkAgyMemberSkills | skills probe | 5s | Cut | read-only probe |
+| services/agy-project.ts -> probeAgyProject / removeAgyProject | node script: project file probe / delete | 30s | Cut | read-only probe and a best-effort idempotent delete |
+| services/agy-project.ts -> provisionAgyProject | node script that spawns `agy --new-project` | 240s | Cut | the member-side node script bounds the `agy` child itself (`spawnSync` timeout 180s, below the 240s exec budget), so the child is killed on the member before the channel is ever cut |
+| services/preflight-check.ts -> preflightCheck | OAuth file / API key check | 10s | Cut | read-only probes |
+| services/member-home.ts -> probeHomeDir | home dir probe | PROBE_TIMEOUT_MS | Cut | read-only probe |
+| services/agent-shadow.ts -> checkProjectAgentShadows | shadow probe, quarantine move | PROBE_TIMEOUT_MS | Cut | probe plus a small move whose output is parsed and checked |
+| services/agent-provisioner.ts -> probeRemoteAgentHashes | hash agent files | 15s | Cut | read-only probe |
+| services/orphan-recovery.ts | liveness probe, durable output read, kill | PROBE_TIMEOUT_MS | Cut | probes, plus a kill command (cutting a kill is harmless) |
+| services/stall/* (stall-poller, read-log-tail, find-log-file) | mtime / tail / find | 5-10s | Cut | read-only polls, re-run on the next tick |
+| services/strategy.ts -> deleteFiles, services/relay-strategy.ts ping | `rm -f` / echo | 10s | Cut | best-effort idempotent |
+| utils/pid-helpers.ts -> tryKillPid | kill | 5s | Cut | a kill command itself |
+| utils/opencode-model-validation.ts | `opencode models` | 15s | Cut | read-only probe |
+| cli/watch.ts -> ensureRemoteTail | newest transcript probe | 8s | Cut | read-only probe |
+
+A new `execCommand` caller whose command does real work that is not idempotent must run under `wrapPidCapture`, as the FLEET_PID rows do, and must be added to this table.
+
+Host-key changes: when a member's host key changes, `connectWithTOFU` re-accepts it once (TOFU heal) and logs a `[fleet:warn] ssh Host key for host:port changed ...` line to the fleet log and stderr, on every path (exec, SFTP, test connection). It also still returns the `Host key updated ...` warning that `execCommand` prepends to stderr.
 
 ### Base64 Prompt Encoding
 
@@ -370,8 +447,8 @@ The tools break into natural groups in **[mcp-tools.md](mcp-tools.md)**:
 **[Lifecycle](mcp-tools.md#1-lifecycle-tools)**  -- `register_member`, `list_members`, `update_member`, `remove_member`, `shutdown_server`
 Manage the fleet roster and server lifecycle. Registration validates connectivity, detects the OS, and checks that Claude CLI is available. Removal includes best-effort cleanup of auth credentials on the member.
 
-**[Work](mcp-tools.md#2-work-tools)**  -- `send_files`, `execute_prompt`, `execute_command`, `reset_session`
-The core workflow. Push files to a member, run prompts against it, run shell commands directly, manage conversation sessions.
+**[Work](mcp-tools.md#2-work-tools)**  -- `send_files`, `receive_files`, `execute_prompt`, `execute_command`, `stop_prompt`, `monitor_task`
+The core workflow. Push and pull files, run prompts against a member, run shell commands directly, and stop a running prompt.
 
 **[Infrastructure](mcp-tools.md#3-infrastructure-tools)**  -- `provision_llm_auth`, `setup_ssh_key`, `update_llm_cli`
 One-time setup and maintenance. Provision auth (copy OAuth credentials or deploy API key for any provider), migrate from password to key auth, update the LLM CLI on members.
@@ -381,4 +458,4 @@ Two-layer monitoring. `fleet_status` gives a quick summary table across all memb
 
 ## Cross-Platform Support
 
-Members can run Windows, macOS, or Linux. The `platform.ts` utility generates the right shell commands for each OS  -- different commands for checking processes, reading memory, setting environment variables. The OS is auto-detected during registration (`uname -s` on Unix, `cmd /c ver` on Windows) and stored in the member record so subsequent tool calls don't need to re-detect.
+Members can run Windows, macOS, or Linux. The `os/*` command builders generate the right shell commands for each OS -- different commands for checking processes, reading memory, and setting environment variables -- while `src/utils/platform.ts` handles OS detection and path resolution. The OS is auto-detected during registration (`uname -s` on Unix, `cmd /c ver` on Windows) and stored in the member record so subsequent tool calls don't need to re-detect.

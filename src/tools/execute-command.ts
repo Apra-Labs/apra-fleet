@@ -2,20 +2,21 @@ import os from 'node:os';
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, isPosixShell, touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { buildAuthEnvPrefix } from '../utils/auth-env.js';
-import { writeStatusline } from '../services/statusline.js';
+import { stageAuthEnv, removeMemberSecretFile, SecretDeliveryError, type StagedAuthEnv } from '../services/member-secret-env.js';
+import { markBusy } from '../services/member-busy.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper, generateTaskWrapperWindows } from '../services/cloud/task-wrapper.js';
 import { escapeShellArg, escapePowerShellArg, escapeWindowsArg } from '../utils/shell-escape.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
 import { credentialResolve, registerTaskCredentials } from '../services/credential-store.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
-import { LogScope, maskSecrets, truncateForLog, logLine } from '../utils/log-helpers.js';
+import { LogScope, maskSecrets, truncateForLog, logLine, logWarn } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
 import { preflightCheck } from '../services/preflight-check.js';
+import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import type { Agent } from '../types.js';
 
 export function resolveTilde(p: string): string {
@@ -60,32 +61,31 @@ interface ResolvedCredential {
 }
 
 /**
- * Scan a command string for {{secure.NAME}} tokens, resolve each from the
- * credential store, and return the substituted command plus metadata for
+ * Scan a command string for {{secret.NAME}} tokens (the legacy {{secure.NAME}}
+ * spelling is also accepted, with a deprecation warning), resolve each from
+ * the credential store, and return the substituted command plus metadata for
  * output redaction and egress checks.
  *
  * Returns an error string if any token cannot be resolved or is blocked.
  */
-async function resolveSecureTokens(
+async function resolveSecretTokens(
   command: string,
   agentOs: 'windows' | 'macos' | 'linux',
   callingMember: string,
-): Promise<{ resolved: string; credentials: ResolvedCredential[] } | { error: string }> {
+  agentShell: ReturnType<typeof getAgentShell>,
+): Promise<{ resolved: string; credentials: ResolvedCredential[]; legacyWarning?: string } | { error: string }> {
   // Refuse if raw sec:// handles appear (these should not be passed to commands)
   if (/sec:\/\/[a-zA-Z0-9_]+/.test(command)) {
-    return { error: 'Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.' };
+    return { error: 'Credentials cannot be passed to LLM sessions — use {{secret.NAME}} tokens instead of sec:// handles.' };
   }
 
-  const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
+  const tokens = findSecretTokens(command);
   const credentials: ResolvedCredential[] = [];
   let resolved = command;
-  let match: RegExpExecArray | null;
 
   // Collect all unique token names first
-  const tokenNames = new Set<string>();
-  while ((match = TOKEN_RE.exec(command)) !== null) {
-    tokenNames.add(match[1]);
-  }
+  const tokenNames = new Set(tokens.map((t) => t.name));
+  const legacyNames = tokens.filter((t) => t.legacy).map((t) => t.name);
 
   for (const name of tokenNames) {
     const entry = credentialResolve(name, callingMember);
@@ -97,18 +97,25 @@ async function resolveSecureTokens(
     credentials.push({ name, plaintext: entry.plaintext, network_policy: entry.meta.network_policy });
   }
 
-  // Substitute tokens with shell-escaped values.
-  // Windows members run under PowerShell (confirmed by WindowsCommands.cleanExec),
-  // so use single-quote escaping — internal single quotes are doubled ('').
-  // This is safer than cmd.exe double-quote + ^ escaping which is unreliable in PS.
+  // Substitute tokens with shell-escaped values, chosen by the member's actual
+  // shell rather than its OS alone. A Windows member with no shell recorded
+  // (or pwsh7/powershell5) still runs under PowerShell, so single-quote
+  // escaping applies (internal single quotes doubled ''), which is safer than
+  // cmd.exe double-quote + ^ escaping that PowerShell handles unreliably. But
+  // after the shell probe, a Windows member with Git for Windows records
+  // shell=gitbash and cleanExec routes the command through bash.exe — a
+  // PowerShell-quoted credential handed to bash arrives corrupt, so that case
+  // must use POSIX escaping instead (apra-fleet-7dir.5.1).
   for (const cred of credentials) {
-    const escaped = agentOs === 'windows'
-      ? escapePowerShellArg(cred.plaintext)
-      : escapeShellArg(cred.plaintext);
-    resolved = resolved.replaceAll(`{{secure.${cred.name}}}`, escaped);
+    const escaped = isPosixShell(agentOs, agentShell)
+      ? escapeShellArg(cred.plaintext)
+      : escapePowerShellArg(cred.plaintext);
+    resolved = resolved.replaceAll(`{{secret.${cred.name}}}`, escaped);
+    resolved = resolved.replaceAll(`{{secure.${cred.name}}}`, escaped); // legacy spelling
   }
 
-  return { resolved, credentials };
+  const legacyWarning = legacyNames.length > 0 ? legacyTokenWarning(legacyNames) : undefined;
+  return { resolved, credentials, legacyWarning };
 }
 
 /**
@@ -130,12 +137,44 @@ export interface ExecuteCommandStructured {
   stderr: string;
   isError?: boolean;
   reason?: string;
+  /** The member's stored credential env vars could not be delivered safely, so the command ran without them. */
+  storedEnvNotDelivered?: 'secret_delivery_unavailable';
   [key: string]: unknown;
 }
 
 export interface ExecuteCommandResult {
   text: string;
   structuredContent?: ExecuteCommandStructured;
+}
+
+/**
+ * Machine-readable reasons an execute_command call failed before it could
+ * report a real exit code. 'timeout' is the inactivity timeout, 'max_total_time'
+ * the hard total-time cap, 'transport_error' any other rejection from the
+ * strategy (connection refused/reset, ssh channel failure, ...).
+ */
+export type ExecuteCommandFailureReason = 'timeout' | 'max_total_time' | 'transport_error';
+
+/** Classify a rejection from strategy.execCommand into a failure reason. */
+export function classifyExecFailure(err: unknown): ExecuteCommandFailureReason {
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  if (/exceeded max total time/i.test(message)) return 'max_total_time';
+  if (/\btimed out\b/i.test(message)) return 'timeout';
+  return 'transport_error';
+}
+
+/**
+ * Build the failure result for a command that never produced an exit code.
+ * The text keeps the human-readable "Failed to ..." wording; the structured
+ * channel carries isError + reason so a programmatic caller (e.g.
+ * FleetWorkflow.command()) cannot mistake it for success. exitCode is -1, never
+ * a fake 0.
+ */
+function execFailureResult(text: string, reason: ExecuteCommandFailureReason | 'cloud_start_failed', detail: string): ExecuteCommandResult {
+  return {
+    text,
+    structuredContent: { isError: true, reason, exitCode: -1, stdout: '', stderr: detail },
+  };
 }
 
 export async function executeCommand(input: ExecuteCommandInput, extra?: any): Promise<string | ExecuteCommandResult> {
@@ -145,7 +184,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   try {
     agent = await ensureCloudReady(agentOrError as Agent); // auto-start if stopped
   } catch (err: any) {
-    return `Failed to execute command on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
+    return execFailureResult(`Failed to execute command on "${(agentOrError as Agent).friendlyName}": ${err.message}`, 'cloud_start_failed', err.message);
   }
 
   // Pre-dispatch connectivity check (apra-fleet preflight-check): verify the
@@ -180,8 +219,9 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     const scope = new LogScope('execute_command', truncateForLog(maskSecrets(input.command), getLogPreviewChars()), agent);
     const onPidCaptured = (pid: number) => scope.info(`pid=${pid}`);
 
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const agentOs = getAgentOS(agent);
+  const agentShell = getAgentShell(agent);
     const abortHandler = () => {
       scope.abort('cancelled by MCP client');
       tryKillPid(agent, strategy, cmds).catch(() => {});
@@ -192,30 +232,37 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
 
   // -- Block sec:// handles in run_from and restart_command --
   if (input.run_from && SEC_RE.test(input.run_from)) {
-    return '❌ Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.';
+    return '❌ Credentials cannot be passed to LLM sessions — use {{secret.NAME}} tokens instead of sec:// handles.';
   }
   if (input.restart_command && SEC_RE.test(input.restart_command)) {
-    return '❌ Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.';
+    return '❌ Credentials cannot be passed to LLM sessions — use {{secret.NAME}} tokens instead of sec:// handles.';
   }
 
-  // -- Resolve {{secure.NAME}} tokens --
-  const tokenResult = await resolveSecureTokens(input.command, agentOs, agent.friendlyName);
+  // -- Resolve {{secret.NAME}} / legacy {{secure.NAME}} tokens --
+  const tokenResult = await resolveSecretTokens(input.command, agentOs, agent.friendlyName, agentShell);
   if ('error' in tokenResult) return `❌ ${tokenResult.error}`;
 
   const { resolved: resolvedCommand, credentials } = tokenResult;
+  const legacyWarnings: string[] = [];
+  if (tokenResult.legacyWarning) legacyWarnings.push(tokenResult.legacyWarning);
 
   // Also resolve tokens in restart_command (H1)
   let resolvedRestartCommand: string | undefined;
   if (input.restart_command) {
-    const restartTokenResult = await resolveSecureTokens(input.restart_command, agentOs, agent.friendlyName);
+    const restartTokenResult = await resolveSecretTokens(input.restart_command, agentOs, agent.friendlyName, agentShell);
     if ('error' in restartTokenResult) return `❌ ${restartTokenResult.error}`;
     resolvedRestartCommand = restartTokenResult.resolved;
+    if (restartTokenResult.legacyWarning) legacyWarnings.push(restartTokenResult.legacyWarning);
     // Merge any additional credentials from restart_command (de-dup by name)
     for (const cred of restartTokenResult.credentials) {
       if (!credentials.find(c => c.name === cred.name)) {
         credentials.push(cred);
       }
     }
+  }
+
+  if (legacyWarnings.length > 0) {
+    logWarn('execute_command', legacyWarnings.join('; '), agent);
   }
 
   // -- Network egress check for credentials with confirm/deny policy --
@@ -258,6 +305,16 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       // (session 0), independent of the SSH session's job object -- a plain
       // background launch dies with the SSH channel on Windows (verified
       // live), so `nohup ... &`'s POSIX equivalent does not exist here.
+      //
+      // Intentionally PowerShell regardless of the member's registered shell
+      // (gitbash included): wrapPowerShellEncoded base64-encodes the whole
+      // script and returns a literal `powershell -EncodedCommand <blob>`
+      // invocation string, so it is shell-agnostic AS A STRING -- whatever
+      // outer shell runs it (bash.exe or powershell.exe) just execs the
+      // powershell.exe binary with an opaque argument, with nothing left for
+      // that outer shell to re-tokenize or corrupt. Win32_Process.Create has
+      // no bash equivalent, so this site stays PowerShell by design; do not
+      // branch it on isPosixShell (apra-fleet-7dir.5.1).
       const wrapperScript = generateTaskWrapperWindows({
         taskId,
         command: resolvedCommand,
@@ -302,44 +359,85 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       // Create task dir, decode + write wrapper script, chmod, launch with nohup
       launchCmd = cmds.wrapInWorkFolder(
         folder,
-        `mkdir -p ~/.fleet-tasks/${taskId} && ` +
+        // umask 077: run.sh embeds the resolved command (credentials included).
+        `umask 077 && mkdir -p ~/.fleet-tasks/${taskId} && ` +
         `printf '%s' '${scriptB64}' | base64 -d > ~/.fleet-tasks/${taskId}/run.sh && ` +
         `chmod +x ~/.fleet-tasks/${taskId}/run.sh && ` +
         `nohup bash ~/.fleet-tasks/${taskId}/run.sh > /dev/null 2>&1 & echo $!`,
       );
     }
 
-    writeStatusline(new Map([[agent.id, 'busy']]));
+    // Busy only while launching: the detached task's own progress is
+    // monitor_task's to report, not the statusline's.
+    const releaseBusy = markBusy(agent.id);
     try {
-      const launchResult = await strategy.execCommand(launchCmd, input.timeout_s * 1000, undefined, onPidCaptured);
+      const timeoutMs = (input.timeout_s ?? 120) * 1000;
+      const launchResult = await strategy.execCommand(launchCmd, timeoutMs, undefined, onPidCaptured);
       touchAgent(agent.id);
-      writeStatusline();
+      releaseBusy();
       // Redact credential values from any output returned by the launch command (H2)
       const launchOutput = credentials.length > 0
         ? redactOutput(launchResult.stdout + launchResult.stderr, credentials)
         : '';
       void launchOutput; // output not surfaced to caller; redaction is a safety measure
-      return `${longRunningOsWarning}Task launched: task_id=${taskId}\nUse monitor_task to track progress.`;
+      const legacySuffix = legacyWarnings.length > 0 ? `\n${legacyWarnings.join('\n')}` : '';
+      return `${longRunningOsWarning}Task launched: task_id=${taskId}\nUse monitor_task to track progress.${legacySuffix}`;
     } catch (err: any) {
-      writeStatusline(new Map([[agent.id, 'offline']]));
-      return `Failed to launch task on "${agent.friendlyName}": ${err.message}`;
+      const isOffline = agent.agentType !== 'local' && !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
+      releaseBusy(isOffline ? 'offline' : 'idle');
+      return execFailureResult(`Failed to launch task on "${agent.friendlyName}": ${err.message}`, classifyExecFailure(err), err.message);
+    } finally {
+      releaseBusy();
     }
   }
 
   // -- Regular (synchronous) command path --
-  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
   // wrapPidCapture lets a timed-out ssh.ts/strategy.ts execCommand recover a
   // PID to tree-kill (apra-fleet-kwx precedent) -- without it, a command with
   // no PID protocol of its own (unlike a provider launch) leaves the remote
   // process running forever past the timeout, since ssh has no local child
   // handle to fall back on the way LocalStrategy does.
-  const wrapped = authPrefix + cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, resolvedCommand));
+  //
+  // POSIX members: the user command is passed to the wrapper as DATA
+  // (`eval '<single-quoted command>'`), never spliced in as raw syntax.
+  // Splicing it into `{ cd ... && CMD; } & ...` broke any command whose
+  // last token cannot be followed by `; }` on the same line -- a heredoc
+  // at the end (its terminator line became `EOF; } & ...`), a trailing
+  // `&`, `;`, `|`, `&&`, `#` comment, or an empty command -- and made `cd`
+  // cover only the first `&`-separated list. eval is a builtin, so it adds
+  // no process layer: FLEET_PID is still the parent of the user's
+  // processes. PowerShell members are unchanged.
+  const payload = isPosixShell(agentOs, agentShell)
+    ? 'eval ' + escapeShellArg(resolvedCommand)
+    : resolvedCommand;
+  const wrapped = cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, payload));
 
-  // Mark agent as busy in statusline
-  writeStatusline(new Map([[agent.id, 'busy']]));
+  // Mark agent as busy in statusline; released on every exit path below.
+  const releaseBusy = markBusy(agent.id);
 
+  // Stored auth env vars travel in an owner-only file the command loads and
+  // deletes -- never as inline values on the member's command line.
+  let stagedEnvPath: string | null = null;
+  let stagedEnvConsumed = false;
+  let storedEnvNotDelivered = false;
   try {
-    const result = await strategy.execCommand(wrapped, input.timeout_s * 1000, undefined, onPidCaptured);
+    // The stored env vars are AMBIENT for execute_command (the command did not
+    // ask for them, unlike {{secret.NAME}}), so a member that cannot receive
+    // them safely (relay, SFTP disabled) still runs the command -- without
+    // them, never inline -- and the result says so with the remedy.
+    let staged: StagedAuthEnv = { prefix: '', path: null };
+    try {
+      staged = await stageAuthEnv(agent);
+    } catch (err) {
+      if (!(err instanceof SecretDeliveryError)) throw err;
+      storedEnvNotDelivered = true;
+      legacyWarnings.push(`[WARN] Ran WITHOUT the member's stored credential env vars: ${err.message}`);
+      logWarn('execute_command', 'stored env vars not delivered (secret_delivery_unavailable)', agent);
+    }
+    stagedEnvPath = staged.path;
+    const timeoutMs = (input.timeout_s ?? 120) * 1000;
+    const result = await strategy.execCommand(staged.prefix + wrapped, timeoutMs, undefined, onPidCaptured);
+    stagedEnvConsumed = result.code === 0;
     touchAgent(agent.id); // T7: idle manager resets its timer via touchAgent
 
     const parts: string[] = [];
@@ -355,7 +453,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     const redactedStdout = credentials.length > 0 ? redactOutput(result.stdout ?? '', credentials) : (result.stdout ?? '');
     const redactedStderr = credentials.length > 0 ? redactOutput(result.stderr ?? '', credentials) : (result.stderr ?? '');
 
-    writeStatusline();
+    releaseBusy();
 
     // Log command output under a dedicated tag so `watch` can surface it (the
     // fleet log is watch's source; short-command stdout is otherwise not
@@ -373,14 +471,21 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     // an ADDITIVE machine-readable channel alongside it, not a replacement.
     // Programmatic callers (e.g. FleetWorkflow.command()) should prefer
     // structuredContent.stdout over scraping/stripping the text prefix.
+    const legacySuffix = legacyWarnings.length > 0 ? `\n${legacyWarnings.join('\n')}` : '';
     return {
-      text: result.code === 0 ? `Exit code: 0\n${output}` : `Exit code: ${result.code}\n${output}`,
-      structuredContent: { exitCode: result.code, stdout: redactedStdout, stderr: redactedStderr },
+      text: (result.code === 0 ? `Exit code: 0\n${output}` : `Exit code: ${result.code}\n${output}`) + legacySuffix,
+      structuredContent: { exitCode: result.code, stdout: redactedStdout, stderr: redactedStderr, ...(storedEnvNotDelivered ? { storedEnvNotDelivered: 'secret_delivery_unavailable' as const } : {}) },
     };
   } catch (err: any) {
-    writeStatusline(new Map([[agent.id, 'offline']]));
+    const isOffline = agent.agentType !== 'local' && !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
+    releaseBusy(isOffline ? 'offline' : 'idle');
     scope.abort(err.message);
-    return `Failed to execute command on "${agent.friendlyName}": ${err.message}`;
+    return execFailureResult(`Failed to execute command on "${agent.friendlyName}": ${err.message}`, classifyExecFailure(err), err.message);
+  } finally {
+    releaseBusy();
+    // The prefix deletes the file once loaded; a failed/aborted run may not
+    // have reached it.
+    if (stagedEnvPath && !stagedEnvConsumed) await removeMemberSecretFile(agent, stagedEnvPath);
   }
 } finally { extra?.signal?.removeEventListener('abort', abortHandler); }
 }

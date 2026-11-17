@@ -1,0 +1,14 @@
+{
+  "tool": "kb_import",
+  "case": "refusal-kb-maintainer-required",
+  "kind": "refusal",
+  "request": {
+    "path": "<SCRATCH_REPO_A>/.fleet/kb-canonical.json"
+  },
+  "error": {
+    "message": "E-KB-MAINTAINER-REQUIRED: kb_import with an explicit path ('<SCRATCH_REPO_A>/.fleet/kb-canonical.json') keeps the bible's confidence, which is equivalent to kb_promote, so it needs the kb_maintainer grant; this member session does not carry it and nothing was imported. Remediation: Call kb_import without path to import your own checkout bible (.fleet/kb-canonical.json), or run the import from the kb_maintainer session or a FULL session.",
+    "thrown": true
+  },
+  "expected_error_code": "E-KB-MAINTAINER-REQUIRED",
+  "session": "PLAIN_B"
+}

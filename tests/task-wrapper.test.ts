@@ -67,16 +67,19 @@ describe('generateTaskWrapper - restart_command (F1)', () => {
     expect(mainMatch![1]).not.toBe(restartMatch![1]);
   });
 
-  it('first run uses MAIN_CMD', () => {
+  it('first run uses MAIN_CMD from an owner-only file, never `bash -c "<cmd>"`', () => {
     const script = generateTaskWrapper(baseConfig);
-    // First bash -c invocation should use MAIN_CMD
-    expect(script).toContain('bash -c "$MAIN_CMD"');
+    expect(script).toContain('umask 077');
+    expect(script).toContain('printf \'%s\\n\' "$MAIN_CMD" > "$TASK_DIR/main.cmd"');
+    expect(script).toContain('bash "$TASK_DIR/main.cmd"');
+    // A resolved secret in the command text must never become a bash argv.
+    expect(script).not.toContain('bash -c');
   });
 
-  it('retry loop uses RESTART_CMD', () => {
+  it('retry loop uses RESTART_CMD from its file; both files are removed at the end', () => {
     const script = generateTaskWrapper(baseConfig);
-    // Inside the while loop: bash -c "$RESTART_CMD"
-    expect(script).toContain('bash -c "$RESTART_CMD"');
+    expect(script).toContain('bash "$TASK_DIR/restart.cmd"');
+    expect(script).toContain('rm -f "$TASK_DIR/task.pid" "$TASK_DIR/main.cmd" "$TASK_DIR/restart.cmd"');
   });
 });
 
@@ -308,7 +311,15 @@ describe.runIf(hasPowerShell)('generateTaskWrapperWindows - live PowerShell exit
     const result = runScenario('wt-stderr-ok-' + Date.now(), 'cmd /c "echo warn 1>&2"');
     expect(result.status).toBe('completed');
     expect(result.exitCode).toBe(0);
-  }, 20000);
+  // my-beads-db-27m.24: this scenario measured 583ms in isolation, but timed
+  // out at the old 20000ms budget under full-suite host load ('Test timed out
+  // in 20000ms', 60.7s wall for the file) even with the beforeAll Start-Job
+  // warm-up above -- the same load-sensitivity class already fixed for
+  // register-member.test.ts (3d9ac402) and kb-remote-member-e2e.test.ts
+  // (a9e85a13). 60000ms leaves >2x margin over the observed failure
+  // threshold rather than the ~34x-isolation margin a tighter number would
+  // give, since the failure was host-load-driven, not isolation-cost-driven.
+  }, 60000);
 
   it('a command using -ErrorAction SilentlyContinue is reported as completed', () => {
     // The user explicitly downgraded this cmdlet's error handling; that

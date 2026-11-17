@@ -59,6 +59,7 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
             exitCode: null,
             signal: null,
             exitedAt: null,
+            beads: null,
             // apra-fleet-ou7.1: null unless claim() is given a logPath.
             logPath: null,
         });
@@ -554,6 +555,17 @@ describe('ledger -- server reservation client (apra-fleet-eft.10.3)', () => {
 // deps.renameRetry -- same fake-fs/fake-sleep pattern as
 // supervisor-id-allocator.test.mjs's apra-fleet-cvb.5 coverage, proving THIS
 // call site (not just the helper in isolation) is wired up.
+//
+// apra-fleet-j918.7.5: reduced from a three-test EPERM/EBUSY ladder RE-PROOF
+// (exact attempt counts, exact backoff-sleep counts for both error codes) to
+// a WIRING proof. The backoff-ladder algorithm itself -- attempt/backoff
+// arithmetic, EPERM vs EBUSY classification, exhaustion behaviour -- is owned
+// exclusively by test/supervisor-rename-with-retry.test.mjs, which already
+// covers both codes with the exact "fails then succeeds" shapes this file
+// used to re-derive. What's left here is call-site-specific: does persist()
+// actually delegate to the REAL shared renameWithRetry() (not a local
+// reimplementation), and does a rejection from it surface correctly through
+// claim()?
 describe('ledger -- persist() rename retries transient EPERM/EBUSY (apra-fleet-ed4.1)', () => {
     /** A fake fs.rename() that fails N times with `code`, then delegates to the real rename. */
     function flakyRenameFs(realFs, code, failCount) {
@@ -575,20 +587,26 @@ describe('ledger -- persist() rename retries transient EPERM/EBUSY (apra-fleet-e
         };
     }
 
-    test('retry-then-succeed: a transient EPERM on rename() does not drop the claimed reservation', async () => {
+    test('wiring: a transient EPERM on rename() is retried through the shared helper, and the reservation still commits durably', async () => {
         const dir = await tmpDir();
         const filePath = path.join(dir, LEDGER_FILENAME);
-        const fakeFs = flakyRenameFs(fsp, 'EPERM', 2);
-        const sleeps = [];
+        const fakeFs = flakyRenameFs(fsp, 'EPERM', 1);
+        let sleepCalls = 0;
         const ledger = createLedger({
-            filePath, fs: fakeFs, renameRetry: { sleep: async (ms) => { sleeps.push(ms); } },
+            filePath, fs: fakeFs, renameRetry: { sleep: async () => { sleepCalls += 1; } },
         });
         await ledger.start();
 
         const r = await ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] });
         assert.deepEqual(r.members, ['alice']);
-        assert.equal(fakeFs.renameCalls, 3, 'rename must be retried until it succeeds (1 + 2 retries)');
-        assert.equal(sleeps.length, 2, 'a bounded backoff sleep is injected between retries, never a real wall-clock wait');
+        // WIRING ONLY: the exact attempt/backoff arithmetic is
+        // supervisor-rename-with-retry.test.mjs's property, proved once
+        // there. Here we only need to know persist() actually retries AT ALL
+        // through the shared helper's injected sleep, rather than surfacing
+        // the first transient failure immediately (which would mean it isn't
+        // delegating to renameWithRetry, or is bypassing it).
+        assert.ok(fakeFs.renameCalls > 1, 'a transient rename failure must be retried, not surfaced immediately');
+        assert.ok(sleepCalls > 0, 'the shared helper\'s injected sleep must fire during the retry -- proves persist() delegates to renameWithRetry rather than a local retry loop');
 
         // The reservation is actually durable on disk, not just in memory.
         const onDisk = JSON.parse(await fsp.readFile(filePath, 'utf-8'));
@@ -597,15 +615,33 @@ describe('ledger -- persist() rename retries transient EPERM/EBUSY (apra-fleet-e
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
-    test('retry-then-succeed: a transient EBUSY on rename() does not drop the claimed reservation', async () => {
+    test('wiring: a custom renameRetry.maxAttempts is honored by the REAL shared helper, not a local reimplementation', async () => {
         const dir = await tmpDir();
         const filePath = path.join(dir, LEDGER_FILENAME);
-        const fakeFs = flakyRenameFs(fsp, 'EBUSY', 1);
-        const ledger = createLedger({ filePath, fs: fakeFs, renameRetry: { sleep: async () => {} } });
+        const fakeFs = flakyRenameFs(fsp, 'EPERM', 99); // always fails
+        const ledger = createLedger({
+            filePath, fs: fakeFs, renameRetry: { maxAttempts: 2, sleep: async () => {} },
+        });
         await ledger.start();
 
-        await ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] });
-        assert.equal(fakeFs.renameCalls, 2, 'rename must be retried after a single transient EBUSY');
+        // FALSIFIABILITY: a call site that reimplemented its own retry loop
+        // instead of calling the real, shared renameWithRetry() would have
+        // no reason to honor this call-site-supplied maxAttempts the same
+        // way -- confirmed by hand (apra-fleet-j918.7.5), against a /tmp
+        // copy of this package so the mutation never touched the tracked
+        // tree: temporarily replacing this call site's `renameWithRetry(fs,
+        // tmpPath, filePath, renameRetryOpts)` with a hardcoded 5-attempt
+        // local loop that ignores renameRetryOpts.maxAttempts (and never
+        // calls the injected sleep) made BOTH wiring tests in this describe
+        // block fail -- this one (fakeFs.renameCalls was 5, not 2) and the
+        // one above (sleepCalls stayed 0, since the local loop never called
+        // the injected sleep either).
+        await assert.rejects(
+            () => ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] }),
+            (err) => err.code === 'EPERM',
+        );
+        assert.equal(fakeFs.renameCalls, 2, 'the custom maxAttempts option must be forwarded to and honored by the real shared helper');
+        assert.equal(ledger.get('sprint-a'), undefined, 'no half-claim on exhausted retry');
 
         await fsp.rm(dir, { recursive: true, force: true });
     });

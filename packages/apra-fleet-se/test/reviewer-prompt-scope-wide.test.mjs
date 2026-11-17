@@ -24,7 +24,7 @@ import { buildReviewerPrompt } from '../fleet-sprint/runner.js';
 
 const BASE_ARGS = {
     acceptanceCriteriaJson: '[{"id":"apra-fleet-s6d","title":"a bead"}]',
-    baseBranch: 'main',
+    baseBranch: 'main', mergeBaseSha: 'abcdef0123456789abcdef0123456789abcdef01',
     branch: 'feat/thing',
     goal: 'P1',
 };

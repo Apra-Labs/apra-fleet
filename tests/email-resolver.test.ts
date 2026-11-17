@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockCredentialResolve, MockSendGridProvider, MockSmtpProvider, mockFindBySessionId, mockGetAgentOrFail } = vi.hoisted(() => ({
+const { mockLogLine, mockCredentialResolve, MockSendGridProvider, MockSmtpProvider, mockFindBySessionId, mockGetAgentOrFail } = vi.hoisted(() => ({
+  mockLogLine: vi.fn(),
   mockCredentialResolve: vi.fn(),
   MockSendGridProvider: vi.fn(),
   MockSmtpProvider: vi.fn(),
@@ -20,6 +21,11 @@ vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOrFail: mockGetAgentOrFail,
 }));
 
+vi.mock('../src/utils/log-helpers.js', async (orig) => ({
+  ...(await orig<typeof import('../src/utils/log-helpers.js')>()),
+  logLine: mockLogLine,
+}));
+
 vi.mock('../src/providers/email/sendgrid.js', () => ({
   SendGridProvider: MockSendGridProvider,
 }));
@@ -37,6 +43,7 @@ beforeEach(() => {
   MockSmtpProvider.mockReset();
   mockFindBySessionId.mockReset();
   mockGetAgentOrFail.mockReset();
+  mockLogLine.mockReset();
 });
 
 describe('sendEmail provider resolution', () => {
@@ -221,11 +228,35 @@ describe('sendEmail credential scoping', () => {
     expect(result.error).toMatch(/not accessible/);
   });
 
+  it('a denied send from an unregistered HTTP session logs no full session uuid', async () => {
+    const fullSid = '3f2b8c1e-5a47-4d9e-9b1c-7e6a0d4f2c88';
+    mockFindBySessionId.mockReturnValue(undefined);
+    // Like the real credentialResolve, the denial names the caller identity.
+    mockCredentialResolve.mockImplementation((name: string, caller: string) => ({
+      denied: `Credential '${name}' is not accessible to member '${caller}'. Allowed: ops-bot`,
+    }));
+
+    const result = JSON.parse(await sendEmail({
+      provider: 'sendgrid',
+      from: 'noreply@example.com',
+      to: 'user@example.com',
+      subject: 'Test',
+      body: 'Hello',
+    }, { sessionId: fullSid }));
+
+    expect(result.ok).toBe(false);
+    expect(mockLogLine).toHaveBeenCalled();
+    const logged = mockLogLine.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(logged).toContain('session:3f2b8c1e');
+    expect(logged).not.toContain(fullSid);
+    expect(result.error).not.toContain(fullSid);
+  });
+
   it('uses a synthetic session identity when the session exists but the agent is gone', async () => {
     mockFindBySessionId.mockReturnValue({ member_id: 'uuid-gone' });
     mockGetAgentOrFail.mockReturnValue('Member "uuid-gone" not found.');
     mockCredentialResolve.mockReturnValue({
-      denied: "Credential 'sendgrid_api_key' is not accessible to member 'session:sess-stale'. Allowed: ops-bot",
+      denied: "Credential 'sendgrid_api_key' is not accessible to member 'session:sess-sta...'. Allowed: ops-bot",
     });
 
     const result = JSON.parse(await sendEmail({
@@ -237,7 +268,7 @@ describe('sendEmail credential scoping', () => {
     }, { sessionId: 'sess-stale' }));
 
     expect(result.ok).toBe(false);
-    expect(mockCredentialResolve).toHaveBeenCalledWith('sendgrid_api_key', 'session:sess-stale');
+    expect(mockCredentialResolve).toHaveBeenCalledWith('sendgrid_api_key', 'session:sess-sta...');
     expect(mockCredentialResolve).not.toHaveBeenCalledWith('sendgrid_api_key', 'uuid-gone');
     expect(result.error).toMatch(/not accessible/);
   });

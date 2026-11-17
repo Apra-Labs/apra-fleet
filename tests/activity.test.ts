@@ -27,6 +27,7 @@ vi.mock('../src/os/index.js', () => ({
 // member-helpers only used for getAgentOS — stub it
 vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOS: () => 'linux',
+  getAgentShell: () => undefined,
   setIdleTouchHook: vi.fn(),
   touchAgent: vi.fn(),
 }));

@@ -31,7 +31,7 @@ export const childIdAllocatorSchema = z.object({
   token: z.string().min(1).optional().describe('Reservation token returned by "allocate". Required for "confirm" and "release".'),
   sprint_id: z.string().min(1).optional().describe('Opaque sprint identity, for introspection/logging.'),
   pid: z.number().int().optional().describe('Caller process id, so an abandoned reservation is reclaimed via a dead-pid probe instead of waiting out the full lease.'),
-  floor: z.number().int().min(0).optional().describe('Count of children the parent ALREADY has. On first touch of a parent the counter is seeded above this, so a pre-existing child id is never re-minted.'),
+  floor: z.number().int().min(0).optional().describe('Highest EXISTING child seq under the parent (e.g. 7 when .7 exists). The counter is never below this, and pooled (released) ids at or below it are discarded on every allocate, so a pre-existing child id is never re-minted.'),
 });
 
 export type ChildIdAllocatorInput = z.infer<typeof childIdAllocatorSchema>;

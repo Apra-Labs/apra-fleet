@@ -1,8 +1,12 @@
 # Workflow Subsystem Plan: `apra-fleet workflow <name>` from the SEA binary
 
-Status: PROPOSED (architecture plan for the next sprint; input to the planner agent)
+Status: IMPLEMENTED. `apra-fleet workflow <name>` ships, and the install
+layout this plan specifies (`~/.apra-fleet/workflows/`,
+`~/.apra-fleet/node_modules/`, `~/.apra-fleet/schemas/`) is what `install`
+writes today. Retained as the architecture record for that subsystem and as
+the source the CI risk gates (`.github/workflows/spike-sea-import.yml`,
+`scripts/spike-sea-import.mjs`) cite.
 Date: 2026-07-13
-Branch context: feat/fleet-reorg
 
 ## 0. Existing beads overlap (sanity pass, `bd list` run 2026-07-13)
 

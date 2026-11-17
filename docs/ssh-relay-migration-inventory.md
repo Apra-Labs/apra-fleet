@@ -8,6 +8,13 @@
 
 # SSH-to-Relay Migration Inventory
 
+> Historical inventory. Its premise (that SSH would eventually be deprecated in
+> favour of the hub relay) was later overturned: SSH is NOT deprecated -- see
+> [adr-tier3-ownership.md](adr-tier3-ownership.md). The inventory of what the
+> SSH stack consists of remains accurate and is cited from
+> `src/services/file-transfer-relay.ts` as the reason the relay path does not
+> reuse `ssh.ts`, which is why this file is retained.
+
 Status: inventory only, 2026-07-05. Nothing listed here has been deleted.
 Answers apra-fleet-us9.7's second half ("SSH deprecation inventory"); the
 first half (proving the hub-relayed execution path) is covered by
@@ -46,7 +53,7 @@ optional ceremony:
    integration test, proving the relay path handles what the SSH path
    handles today: all 6 providers, all 3 OSes, long-running tasks,
    output-spill-to-file for oversized output, and credential/network-egress
-   policy enforcement (execute-command.ts's `resolveSecureTokens`/
+   policy enforcement (execute-command.ts's `resolveSecretTokens`/
    `redactOutput`/network-tool regex, none of which relay-executor.ts
    currently applies -- it is a thinner wrapper than the full
    execute-command.ts tool, matching only its LocalStrategy.execCommand

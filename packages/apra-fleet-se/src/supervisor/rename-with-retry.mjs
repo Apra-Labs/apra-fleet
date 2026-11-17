@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- bounded EPERM/EBUSY retry around an atomic
+// fleet-sprint supervisor -- bounded EPERM/EBUSY retry around an atomic
 // tmp-write-then-rename replace (apra-fleet-ed4.1)
 // =============================================================================
 //

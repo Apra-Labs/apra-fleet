@@ -171,19 +171,19 @@ describe('buildAgentPromptCommand: AGY auto/default share baseline accept-edits,
   const agy = new AgyProvider();
 
   it('unattended=false adds --mode accept-edits (doers cannot edit/write without it)', () => {
-    const out = windows.buildAgentPromptCommand(agy, { ...baseOpts, unattended: false });
+    const out = windows.buildAgentPromptCommand(agy, { ...baseOpts, projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204', unattended: false });
     expect(out).toContain('--mode accept-edits');
     expect(out).not.toContain('--dangerously-skip-permissions');
   });
 
   it('unattended=auto adds --mode accept-edits, not a full bypass', () => {
-    const out = windows.buildAgentPromptCommand(agy, { ...baseOpts, unattended: 'auto' });
+    const out = windows.buildAgentPromptCommand(agy, { ...baseOpts, projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204', unattended: 'auto' });
     expect(out).toContain('--mode accept-edits');
     expect(out).not.toContain('--dangerously-skip-permissions');
   });
 
   it('unattended=dangerous adds --dangerously-skip-permissions (the only real bypass)', () => {
-    const out = windows.buildAgentPromptCommand(agy, { ...baseOpts, unattended: 'dangerous' });
+    const out = windows.buildAgentPromptCommand(agy, { ...baseOpts, projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204', unattended: 'dangerous' });
     expect(out).toContain('--dangerously-skip-permissions');
   });
 });

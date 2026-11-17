@@ -7,8 +7,8 @@ Status: design -- not yet implemented. Last updated: 2026-08-10.
 auto-repair, then resume) or a cleanly dead one (abort with a diagnosis report and, where needed,
 a specific human referral) -- never leave it wedged, silently burning tokens, or ambiguous.
 
-> **Supersedes `coach-role-design.md`** (the 2026-07-20 "coach role: just-in-time error
-> resolution" design note, now reduced to a pointer here). sprint-doctor is the same core idea --
+> **Supersedes the earlier "coach role" design note** ("coach role: just-in-time error
+> resolution"), which this doc replaces in full. sprint-doctor is the same core idea --
 > an in-workflow LLM layer for failures the deterministic engine did not foresee, positioned
 > strictly AFTER typed handlers/ladders, failing loudly when it cannot fix -- carried further.
 > Ideas incorporated directly from coach, credited inline where they appear: the three-layer
@@ -703,7 +703,7 @@ ENGINE's maintainers without silent uploads -- and its flow is adopted whole:
 
 - **Sanitize FIRST, locally, always** -- before the report is even written to disk: absolute
   paths -> stable placeholders (`<work-folder>/...`, `<home>/...`); hostnames/usernames/IPs/
-  emails -> redacted tokens; anything matching secret patterns (keys, tokens, `{{secure.*}}`
+  emails -> redacted tokens; anything matching secret patterns (keys, tokens, `{{secret.*}}`
   values, env dumps) -> stripped outright, never placeholdered; target-repo identifiers (repo
   name, branch names, bead titles) -> anonymized to `<target-repo>`/`<sprint-branch>` by
   default, with an opt-in tier for internal users to keep them; code snippets excluded by

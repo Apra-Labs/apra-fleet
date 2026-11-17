@@ -1,0 +1,103 @@
+{
+  "description": "Known chronic real-bd suite failures, quarantined with an expiry. fingerprint = test file name as keyed in integ-suite-status.json results (slow-lane entries are prefixed slow/). expires must be <= 30 days after addedAt; an expired entry counts as a NEW failure. Each entry must point at an open bead. Read by scripts/check-integ-suite-budget.mjs --quarantine.",
+  "entries": [
+    {
+      "fingerprint": "golden-transcript.test.mjs",
+      "bead": "apra-fleet-zekq",
+      "reason": "golden transcript diverged from the committed snapshot and is non-deterministic against real bd",
+      "addedAt": "2026-10-02",
+      "expires": "2026-11-01"
+    },
+    {
+      "fingerprint": "phase0-seams-facade.test.mjs",
+      "bead": "apra-fleet-zekq",
+      "reason": "nested golden-transcript cascade (Windows symlink EPERM part fixed in this change)",
+      "addedAt": "2026-10-02",
+      "expires": "2026-11-01"
+    },
+    {
+      "fingerprint": "phase1-leaf-facade-completeness.test.mjs",
+      "bead": "apra-fleet-zekq",
+      "reason": "nested golden-transcript cascade plus nested-suite budget overrun (Windows symlink EPERM part fixed in this change)",
+      "addedAt": "2026-10-02",
+      "expires": "2026-11-01"
+    },
+    {
+      "fingerprint": "phase3-dispatch-engine-completeness.test.mjs",
+      "bead": "apra-fleet-zekq",
+      "reason": "nested golden-transcript cascade",
+      "addedAt": "2026-10-02",
+      "expires": "2026-11-01"
+    },
+    {
+      "fingerprint": "vcs-auth-extraction-facade.test.mjs",
+      "bead": "apra-fleet-zekq",
+      "reason": "nested golden-transcript cascade",
+      "addedAt": "2026-10-02",
+      "expires": "2026-11-01"
+    },
+    {
+      "fingerprint": "mock-sprint-beads-identity.test.mjs",
+      "bead": "apra-fleet-vwa2",
+      "reason": "--expect-beads mismatch reports the bd-init template prefix instead of the configured one; not yet root-caused",
+      "addedAt": "2026-10-02",
+      "expires": "2026-11-01"
+    },
+    {
+      "fingerprint": "mock-sprint-parent-child-blocks-cycle-repair.test.mjs",
+      "bead": "apra-fleet-0aer",
+      "reason": "real bd now refuses bd dep add of a parent blocked by its descendant, so the fixture cannot build the cycle; kept because the runner pre-sprint auto-repair still handles that shape in existing DBs",
+      "addedAt": "2026-10-02",
+      "expires": "2026-11-01"
+    },
+    {
+      "fingerprint": "mock-sprint-beads-health-gate-empty-remote.test.mjs",
+      "bead": "apra-fleet-zl0u",
+      "reason": "180000ms timeout under suite load",
+      "addedAt": "2026-10-02",
+      "expires": "2026-11-01"
+    },
+    {
+      "fingerprint": "mock-sprint-regression-failure-never-gates.test.mjs",
+      "bead": "apra-fleet-o4vi",
+      "reason": "300000ms timeout under suite load",
+      "addedAt": "2026-10-02",
+      "expires": "2026-11-01"
+    },
+    {
+      "fingerprint": "mock-sprint-sprint-state-client-hoist.test.mjs",
+      "bead": "apra-fleet-9cok",
+      "reason": "180000ms timeout under suite load",
+      "addedAt": "2026-10-02",
+      "expires": "2026-11-01"
+    },
+    {
+      "fingerprint": "serve-wiring-integration.test.mjs",
+      "bead": "apra-fleet-ryk",
+      "reason": "GET / dashboard render times out under suite load",
+      "addedAt": "2026-10-02",
+      "expires": "2026-11-01"
+    },
+    {
+      "fingerprint": "supervisor-guard-e2e.test.mjs",
+      "bead": "apra-fleet-3dk4",
+      "reason": "GET / timeout under suite load",
+      "addedAt": "2026-10-02",
+      "expires": "2026-11-01"
+    },
+    {
+      "fingerprint": "supervisor-lifecycle.test.mjs",
+      "bead": "apra-fleet-p8gg",
+      "reason": "supervisor /api/health wait times out under suite load",
+      "addedAt": "2026-10-02",
+      "expires": "2026-11-01"
+    },
+    {
+      "fingerprint": "slow/mock-sprint-planner-dispatch-stalled-session.test.mjs",
+      "bead": "apra-fleet-44il",
+      "reason": "bd-replay recording drift at setup; needs a real-bd re-record of the fixture",
+      "addedAt": "2026-10-02",
+      "expires": "2026-11-01"
+    }
+  ]
+}

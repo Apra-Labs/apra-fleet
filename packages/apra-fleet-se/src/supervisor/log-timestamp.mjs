@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- shared ISO-timestamp log prefix (apra-fleet-k7b.2)
+// fleet-sprint supervisor -- shared ISO-timestamp log prefix (apra-fleet-k7b.2)
 // =============================================================================
 //
 // The 2026-07-30 incident forensics had to recover crash times from

@@ -105,6 +105,24 @@ const ROWS = [
         isNoMutation: false,
     },
     {
+        label: 'AgentDispatchError, reason max_total_time (the agent ran until its max_total_s ceiling)',
+        build: () => new AgentDispatchError('max_total_s exceeded', { details: { reason: 'max_total_time' } }),
+        isAbort: false,
+        isNoMutation: false,
+    },
+    {
+        label: 'AgentDispatchError, reason max_total_time with dispatched:false (budget ran out during setup -- nothing was sent)',
+        build: () => new AgentDispatchError('max_total_s exceeded during setup', { details: { reason: 'max_total_time', dispatched: false } }),
+        isAbort: false,
+        isNoMutation: true,
+    },
+    {
+        label: 'AgentDispatchError, reason agent_never_started (the member session never appeared)',
+        build: () => new AgentDispatchError('never started', { details: { reason: 'agent_never_started' } }),
+        isAbort: false,
+        isNoMutation: true,
+    },
+    {
         label: 'FleetTransportError',
         build: () => new FleetTransportError('transport down'),
         isAbort: false,

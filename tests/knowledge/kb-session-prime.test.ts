@@ -3,10 +3,14 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 
 const mockExecFile = vi.hoisted(() => vi.fn());
 
-vi.mock('node:child_process', () => ({
+// Only execFile (the async hasher) is mocked; execFileSync stays real so the
+// kb (self) git checks and makeSelfRepo() below run against real repos.
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:child_process')>()),
   execFile: mockExecFile,
 }));
 
@@ -140,6 +144,12 @@ const mockGetProvider = vi.hoisted(() => vi.fn());
 const mockGetKbProviders = vi.hoisted(() => vi.fn());
 const mockValidateFilePaths = vi.hoisted(() => vi.fn());
 const mockTouch = vi.hoisted(() => vi.fn());
+// The cold seed asks the project provider which bible ids this clone already
+// holds as a NON-live-CONFIRMED row, so those are not re-seeded. Part of the
+// MemoryProvider interface, so the mocked provider must answer it; the default
+// below is an empty map = "no local row for any of these", which is the state
+// every pre-existing cold-seed test here was written against.
+const mockLiveConfirmedState = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/knowledge/kb-providers.js', () => ({
   getKbProviders: mockGetKbProviders,
@@ -202,6 +212,15 @@ function primedContext(top: KBEntry[]) {
   };
 }
 
+// kb (self): with no explicit anchor, kb_session_prime resolves the server's
+// working folder (process.cwd(), spied below), which must be a git repository
+// with an origin remote or the call refuses with a typed E-SELF error.
+function makeSelfRepo(dir: string): string {
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  execFileSync('git', ['remote', 'add', 'origin', 'https://example.test/kb-session-prime-self.git'], { cwd: dir });
+  return dir;
+}
+
 describe('kb_session_prime graph-neighbor expansion', () => {
   // ISOLATION (F1/D1, KB c5a129ed): the canonical-bible cold-seed resolves the
   // repo root via resolveRepoPath() -> process.cwd() when no repo_path is given
@@ -225,16 +244,21 @@ describe('kb_session_prime graph-neighbor expansion', () => {
     mockValidateFilePaths.mockReset();
     mockTouch.mockReset();
     mockTouch.mockResolvedValue(0);
+    mockLiveConfirmedState.mockReset();
+    mockLiveConfirmedState.mockReturnValue(new Map<string, boolean>());
 
     mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
     mockGetKbProviders.mockResolvedValue({
-      project: { prime: mockPrime, query: mockProjectQuery, touch: mockTouch },
+      project: {
+        prime: mockPrime, query: mockProjectQuery, touch: mockTouch,
+        getLiveConfirmedState: mockLiveConfirmedState,
+      },
       global: { query: mockGlobalQuery },
       projectSlug: 'test',
     });
     mockGetProvider.mockResolvedValue({ context: mockContext });
 
-    emptyCwdDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-prime-neighbor-cwd-'));
+    emptyCwdDir = makeSelfRepo(fs.mkdtempSync(path.join(os.tmpdir(), 'kb-prime-neighbor-cwd-')));
     cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(emptyCwdDir);
   });
 
@@ -469,10 +493,15 @@ describe('kb_session_prime canonical-bible cold-seed', () => {
     mockValidateFilePaths.mockReset();
     mockTouch.mockReset();
     mockTouch.mockResolvedValue(0);
+    mockLiveConfirmedState.mockReset();
+    mockLiveConfirmedState.mockReturnValue(new Map<string, boolean>());
 
     mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
     mockGetKbProviders.mockResolvedValue({
-      project: { prime: mockPrime, query: mockProjectQuery, touch: mockTouch },
+      project: {
+        prime: mockPrime, query: mockProjectQuery, touch: mockTouch,
+        getLiveConfirmedState: mockLiveConfirmedState,
+      },
       global: { query: mockGlobalQuery },
       projectSlug: 'test',
     });
@@ -480,7 +509,7 @@ describe('kb_session_prime canonical-bible cold-seed', () => {
     mockContext.mockResolvedValue(contextResult([]));
     mockProjectQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
 
-    bibleTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-canonical-test-'));
+    bibleTmpDir = makeSelfRepo(fs.mkdtempSync(path.join(os.tmpdir(), 'kb-canonical-test-')));
     cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(bibleTmpDir);
   });
 
@@ -681,23 +710,22 @@ describe('kb_session_prime canonical-bible cold-seed', () => {
     expect(parsed.top_entries[0].id).toBe('matchB');
   });
 
-  // F4 (T1.6): repo path resolution precedence -- explicit repo_path input >
-  // validated session context (process.cwd(), validated) > skip silently.
-  // No bare process.cwd() fallback: the session-context tier is validated
-  // the same way explicit input is, and an invalid explicit input does NOT
-  // fall through to cwd.
-  describe('repo path precedence (F4, T1.6)', () => {
-    it('explicit repo_path takes precedence over the session working directory', async () => {
+  // Anchor resolution for the cold-seed: an explicit in-process anchor wins
+  // over the session's own folder; an anchor folder this host cannot see skips
+  // the cold-seed silently; with no anchor the session folder (here the server
+  // working folder) is used, and one that cannot carry a KB identity refuses.
+  describe('cold-seed anchor resolution (kb self)', () => {
+    it('an explicit anchor takes precedence over the session working directory', async () => {
       mockPrime.mockResolvedValue(primedContext([entry('a')]));
       writeCanonicalFile([canonicalEntry('c1')]);
 
-      // cwd points somewhere with NO canonical file; explicit repo_path
+      // cwd points somewhere with NO canonical file; the explicit anchor
       // points at bibleTmpDir, which HAS one.
       const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-prime-empty-'));
       cwdSpy.mockReturnValue(emptyDir);
       try {
         const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
-        const parsed = JSON.parse(await kbSessionPrime({ repo_path: bibleTmpDir }));
+        const parsed = JSON.parse(await kbSessionPrime({}, { folder: bibleTmpDir }));
 
         expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'c1']);
       } finally {
@@ -705,23 +733,21 @@ describe('kb_session_prime canonical-bible cold-seed', () => {
       }
     });
 
-    it('invalid explicit repo_path skips silently -- no fallback to the session working directory', async () => {
+    it('an anchor folder this host cannot see skips silently -- no fallback to the session working directory', async () => {
       mockPrime.mockResolvedValue(primedContext([entry('a')]));
-      // cwd (bibleTmpDir) DOES have a valid canonical file, but the explicit
-      // repo_path below does not exist -- it must not silently fall back to
-      // the cwd tier.
+      // cwd (bibleTmpDir) DOES have a valid canonical file, but the anchor
+      // folder below does not exist -- it must not silently fall back to the
+      // cwd tier.
       writeCanonicalFile([canonicalEntry('c1')]);
 
       const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
-      const parsed = JSON.parse(await kbSessionPrime({
-        repo_path: path.join(bibleTmpDir, 'does-not-exist'),
-      }));
+      const parsed = JSON.parse(await kbSessionPrime({}, { folder: path.join(bibleTmpDir, 'does-not-exist') }));
 
       expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
       expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
     });
 
-    it('omitted repo_path falls back to the validated session working directory', async () => {
+    it('with no anchor, the session working directory (a git repo with an origin) is used', async () => {
       mockPrime.mockResolvedValue(primedContext([entry('a')]));
       writeCanonicalFile([canonicalEntry('c1')]);
 
@@ -731,21 +757,16 @@ describe('kb_session_prime canonical-bible cold-seed', () => {
       expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'c1']);
     });
 
-    it('neither explicit repo_path nor the session working directory validate -- skips silently', async () => {
+    it('with no anchor, a session working directory that is missing refuses with E-SELF-NO-WORKFOLDER', async () => {
       mockPrime.mockResolvedValue(primedContext([entry('a')]));
       writeCanonicalFile([canonicalEntry('c1')]);
 
-      // cwd is valid AND has a canonical file, but that must not matter once
-      // an explicit (invalid) repo_path is given -- and separately, an
-      // invalid cwd with no explicit repo_path must also skip silently.
       const missingCwd = path.join(bibleTmpDir, 'does-not-exist-cwd');
       cwdSpy.mockReturnValue(missingCwd);
 
       const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
-      const parsed = JSON.parse(await kbSessionPrime({}));
-
-      expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
-      expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+      await expect(kbSessionPrime({})).rejects.toThrow(/E-SELF-NO-WORKFOLDER.*Remediation:/);
+      expect(mockPrime).not.toHaveBeenCalled();
     });
   });
 });
@@ -801,10 +822,15 @@ describe('kb_session_prime global-bible cold-seed (T3.5, F9c, D8)', () => {
     mockValidateFilePaths.mockReset();
     mockTouch.mockReset();
     mockTouch.mockResolvedValue(0);
+    mockLiveConfirmedState.mockReset();
+    mockLiveConfirmedState.mockReturnValue(new Map<string, boolean>());
 
     mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
     mockGetKbProviders.mockResolvedValue({
-      project: { prime: mockPrime, query: mockProjectQuery, touch: mockTouch },
+      project: {
+        prime: mockPrime, query: mockProjectQuery, touch: mockTouch,
+        getLiveConfirmedState: mockLiveConfirmedState,
+      },
       global: { query: mockGlobalQuery },
       projectSlug: 'test',
     });
@@ -815,7 +841,7 @@ describe('kb_session_prime global-bible cold-seed (T3.5, F9c, D8)', () => {
     // Point the PROJECT-bible cold-seed's cwd tier at a fresh dir with no
     // .fleet/kb-canonical.json, so only the global-bible block is exercised
     // unless a test explicitly writes a project bible file too.
-    emptyCwdDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-prime-global-cwd-'));
+    emptyCwdDir = makeSelfRepo(fs.mkdtempSync(path.join(os.tmpdir(), 'kb-prime-global-cwd-')));
     cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(emptyCwdDir);
 
     // Clean slate in case a prior run left the real global bible file behind.

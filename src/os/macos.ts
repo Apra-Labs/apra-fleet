@@ -17,16 +17,8 @@ export class MacOSCommands extends LinuxCommands {
     return 'vm_stat && echo "---" && sysctl -n hw.memsize';
   }
 
-  override setEnv(name: string, value: string): string[] {
-    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
-    const escaped = escapeDoubleQuoted(value);
-    return [
-      `echo 'export ${name}="${escaped}"' >> ~/.bashrc`,
-      `echo 'export ${name}="${escaped}"' >> ~/.zshrc`,
-      `echo 'export ${name}="${escaped}"' >> ~/.zshenv`,
-      `echo 'export ${name}="${escaped}"' >> ~/.profile`,
-      `export ${name}="${escaped}"`,
-    ];
+  protected override envProfileFiles(): string[] {
+    return ['~/.bashrc', '~/.zshrc', '~/.zshenv', '~/.profile'];
   }
 
   override unsetEnv(name: string): string[] {

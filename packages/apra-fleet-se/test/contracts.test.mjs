@@ -151,15 +151,13 @@ const FIXTURES = {
     regressionReport: {
         valid: {
             passed: false,
-            suitePassed: true,
-            smokePassed: false,
+            sections: [{ name: 'Unit suite', passed: true }, { name: 'Scenario', passed: false, detail: 'canary failed' }],
             bugsFiled: ['BD-42'],
-            summary: 'Suite passed; smoke test canary assertion failed, filed BD-42 as a carry-over bug.',
+            summary: 'Unit suite passed; scenario canary assertion failed, filed BD-42 as a carry-over bug.',
         },
         invalid: {
             passed: false,
-            suitePassed: 'true', // wrong type
-            smokePassed: false,
+            sections: [{ name: 'Unit suite', passed: 'true' }], // wrong type
             bugsFiled: ['BD-42'],
             summary: 'x',
         },
@@ -216,6 +214,33 @@ describe('verdict schemas', () => {
         });
     }
 
+    test('regressionReport still accepts the deprecated two-part fields (older runners)', () => {
+        const legacy = { passed: false, suitePassed: true, smokePassed: false, bugsFiled: [], summary: 'x' };
+        assert.strictEqual(validateVerdict('regressionReport', legacy).valid, true);
+        const bad = { ...legacy, suitePassed: 'true' };
+        assert.strictEqual(validateVerdict('regressionReport', bad).valid, false);
+    });
+
+    test('regressionReport accepts the optional verdict fields and rejects a bad enum or sha', () => {
+        const base = { passed: false, bugsFiled: [], summary: 'x' };
+        const withVerdict = {
+            ...base,
+            verdict: 'INCONCLUSIVE',
+            testedSha: 'a'.repeat(40),
+            evidence: { verdictRef: 'out/verdict.json', runUrl: 'https://ci.example/run/1', newFailures: [], inventoryMissing: ['INV-1'], extra: 1 },
+        };
+        assert.strictEqual(validateVerdict('regressionReport', withVerdict).valid, true);
+        assert.strictEqual(validateVerdict('regressionReport', base).valid, true, 'verdict fields stay optional');
+        for (const bad of [
+            { ...withVerdict, verdict: 'PASSED' },
+            { ...withVerdict, testedSha: 'abc1234' },
+            { ...withVerdict, testedSha: 'A'.repeat(40) },
+            { ...withVerdict, evidence: { newFailures: 'x' } },
+        ]) {
+            assert.strictEqual(validateVerdict('regressionReport', bad).valid, false, JSON.stringify(bad));
+        }
+    });
+
     test('validateVerdict throws on an unknown schema name', () => {
         assert.throws(() => validateVerdict('notARealSchema', {}), /Unknown verdict schema/);
     });
@@ -239,37 +264,53 @@ describe('wrapUntrustedBlock', () => {
         assert.throws(() => wrapUntrustedBlock('label', 42));
     });
 
-    // The same pattern src/tools/execute-prompt.ts uses to reject a dispatch
+    // The same pattern src/services/secret-token.ts uses to reject a dispatch
     // outright. Kept as a literal copy rather than an import: contracts.mjs
     // deliberately has no dependency on the fleet server sources, and this
-    // test's whole point is that the two stay compatible.
-    const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
+    // test's whole point is that the two stay compatible. Both the canonical
+    // {{secret.NAME}} spelling and the deprecated {{secure.NAME}} one match.
+    const SECRET_TOKEN_RE = /\{\{(secret|secure)\.[a-zA-Z0-9_-]{1,64}\}\}/;
 
-    test('redacts braced secure tokens so injected content can never trip the execute_prompt guard', () => {
-        const entry = 'execute_command replaces each {{secure.NAME}} token, e.g. {{secure.github_pat}}, '
+    test('redacts braced secret tokens so injected content can never trip the execute_prompt guard', () => {
+        const entry = 'execute_command replaces each {{secret.NAME}} token, e.g. {{secret.github_pat}}, '
             + 'with an already-escaped value.';
         const wrapped = wrapUntrustedBlock('kb_session_prime --top_entries', entry);
 
         // execute_prompt rejects the WHOLE prompt on a single match, without
         // calling the LLM, so no wrapped block may ever contain one.
-        assert.doesNotMatch(wrapped, SECURE_TOKEN_RE);
+        assert.doesNotMatch(wrapped, SECRET_TOKEN_RE);
     });
 
-    test('redaction preserves the token name so the entry stays readable', () => {
-        const wrapped = wrapUntrustedBlock('kb', 'reference {{secure.github_pat}} bare');
+    test('redacts braced legacy {{secure.NAME}} tokens the same way', () => {
+        const entry = 'legacy reference {{secure.github_pat}} still resolves.';
+        const wrapped = wrapUntrustedBlock('kb_session_prime --top_entries', entry);
+        assert.doesNotMatch(wrapped, SECRET_TOKEN_RE);
         assert.match(wrapped, /secure\.github_pat/);
     });
 
+    test('redacts a mix of {{secret.NAME}} and {{secure.NAME}} tokens in the same content', () => {
+        const entry = 'use {{secret.new_token}} and {{secure.old_token}} together';
+        const wrapped = wrapUntrustedBlock('kb', entry);
+        assert.doesNotMatch(wrapped, SECRET_TOKEN_RE);
+        assert.match(wrapped, /secret\.new_token/);
+        assert.match(wrapped, /secure\.old_token/);
+    });
+
+    test('redaction preserves the token name so the entry stays readable', () => {
+        const wrapped = wrapUntrustedBlock('kb', 'reference {{secret.github_pat}} bare');
+        assert.match(wrapped, /secret\.github_pat/);
+    });
+
     test('redacts to a fixed point, so surrounding braces cannot re-form a token', () => {
-        // A single replace pass turns {{{{secure.A}}}} into {{secure.A}} --
+        // A single replace pass turns {{{{secret.A}}}} into {{secret.A}} --
         // the outer braces close over the redacted name and rebuild exactly
         // the pattern execute_prompt rejects. Untrusted agent free-text is
         // attacker-influenced, so one pass is not enough.
-        const wrapped = wrapUntrustedBlock('reviewer.notes', 'x {{{{secure.github_pat}}}} y');
-        assert.doesNotMatch(wrapped, SECURE_TOKEN_RE);
+        const wrapped = wrapUntrustedBlock('reviewer.notes', 'x {{{{secret.github_pat}}}} y');
+        assert.doesNotMatch(wrapped, SECRET_TOKEN_RE);
     });
 
-    test('leaves ordinary braces and non-secure templating untouched', () => {
+    test('leaves ordinary braces and non-secret templating untouched', () => {
         const wrapped = wrapUntrustedBlock('doer', 'use {{branch}} and {"json": true}');
         assert.match(wrapped, /\{\{branch\}\}/);
         assert.match(wrapped, /\{"json": true\}/);

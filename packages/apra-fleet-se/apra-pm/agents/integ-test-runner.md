@@ -61,18 +61,47 @@ any more -- that is `regression-test-runner`'s job, via
 `regression-test-playbook.md`, once per sprint, and its result is separate
 from and does not gate yours.
 
-## Step 0c -- Knowledge Bank (required -- do this BEFORE working any feature)
+## Step 0c -- Knowledge Bank (do this BEFORE working any feature)
 
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under test, and
-   `hint_symbols`/`hint_modules` relevant to the features you were handed. Trust CONFIRMED
-   entries fully. Use INFERRED entries as hints, not facts. An entry recording that a test
-   is environment-sensitive changes how you read a single red run.
-3. When a test turns out to be flaky or environment-sensitive, or the sandbox needs a step
-   the playbook does not record, call `mcp__apra-fleet__kb_capture` with type "knowledge" or
-   "learning".
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
+tool-discovery step is needed, and they always act on your own work folder, so never
+pass a repository path or other scope argument to them. Otherwise, read the injected
+"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
+the orchestrator fetched for the features you were handed.
+If a KB or code tool call fails, use that block if your prompt has one; otherwise
+continue without KB. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From whichever source you have,
+trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
+your tool-loading tool first, before concluding they are unavailable.
+
+If a `code_*` call fails with `E-CODE-INDEX-NOT-READY`, wait ONCE for the
+`retry_after_ms` its error result carries (skip the wait when it is 0: retrying will
+not help), retry that call ONCE, and if it still fails fall back to text search and
+record the fallback. Never poll `code_status` in a loop waiting for the index.
+
+1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
+   relevant to the features you were handed.
+2. Any judgment that depends on what the KB does or does not record (e.g. whether a test
+   is known to be environment-sensitive) is made from the live result or the injected
+   block, never inferred from a tool failure. An entry recording that a test is
+   environment-sensitive changes how you read a single red run.
+3. This role has no KB-capture channel: when a test turns out to be flaky or
+   environment-sensitive, or the sandbox needs a step the playbook does not record, note
+   the finding in your own report.
+
+### Persistent Memories (operational rules)
+
+Before working any feature, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +integ-test-runner+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+integ-test-runner+`.
 
 ## Step 1 -- Work the features you were handed
 
@@ -298,3 +327,7 @@ or as prose if you are answering a human directly.
   children, not a leaf task. Never close a leaf task bead regardless of type.
 - NEVER modify integ-test-playbook.md
 - Tag every new issue title with `[integ]` so they are searchable and distinguishable from planned work
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.

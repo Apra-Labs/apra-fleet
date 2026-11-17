@@ -9,7 +9,7 @@ import { buildCostAnalysis } from '../fleet-sprint/runner.js';
 // integ-test-runner line, so that phase's spend -- often the single longest
 // and most expensive part of a cycle (a full playbook run against a real
 // sandbox) -- was silently bucketed into "overhead" and invisible to anyone
-// reading the CHANGELOG. apra-fleet-nwh.1 added an explicit
+// reading the cost block. apra-fleet-nwh.1 added an explicit
 // "Integ-test-runner spend: ..." line, distinct from the totals above it.
 // These tests fail against the pre-fix buildCostAnalysis() (no such line
 // exists at all, regardless of what integTestRunnerStats is passed) and pass

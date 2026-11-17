@@ -2,6 +2,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import os from 'os';
+import crypto from 'node:crypto';
 import { runCmd as bdRunCmd } from './bd-replay.mjs';
 import { FleetWorkflow, AgentDispatchError, FleetTransportError } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
@@ -31,6 +32,9 @@ export const DELAY_MS = Number(process.env.MOCK_SPRINT_DELAY_MS || 0);
 // wrapper's fill-in-the-gap merge, so this reaches the workflow as a
 // genuine `sessionId: null`.
 export const NO_SESSION_ID_MARKER = null;
+
+/** The commit SHA the mock answers `git merge-base origin/<base> <branch>` with (the review diff base). */
+export const MOCK_REVIEW_MERGE_BASE_SHA = 'c0ffee0000000000000000000000000000c0ffee';
 
 // apra-fleet-1cb.1 AUDIT NOTE: grepped runner.js for every read of
 // `result.isError` / `.isError` on an execute_command (bd/git/node shell)
@@ -105,6 +109,154 @@ export function isSpawnFailure(err) {
     return err.code === undefined || err.code === 'ENOENT';
 }
 
+// apra-fleet-5co8.16: any curl/network-shaped command must be intercepted by
+// a dedicated handler ABOVE the generic runCmd() fallback in executeCommand
+// below -- this mock exists precisely so a sprint under test never touches
+// the real network. A command matching this shape that reaches the fallback
+// is therefore a harness bug (a missing/incomplete mock), not something to
+// silently forward to runCmd(): that is exactly how the C4 regression
+// manifested as a real `curl (6) Could not resolve host` error instead of a
+// loud, clear "this is unmocked" failure. Mirrors vcs-module.mjs's
+// `logSafeCommand` convention (see its module doc comment): the raw command
+// is never surfaced, only a redacted copy.
+//
+// apra-fleet-5co8.32: the original anchored regex `/^(curl|wget)(?:\.exe)?\s/i`
+// only ever matched curl/wget as the literal FIRST token of the whole command
+// string, so any composed shape -- `cd /tmp && curl ...`, a `curl` wrapped
+// inside `bash -c "..."`, or an `env VAR=1 curl ...` prefix -- slipped
+// straight through to the real runCmd() fallback below undetected. A first
+// replacement (isNetworkShapedTokens gated on an "at command start" cursor
+// plus a wrapper allowlist for env-assignment/bash/sh) still missed further
+// wrapper shapes it did not special-case (`env curl ...` with no assignment,
+// `timeout 30 curl ...`, `nohup curl ... &`, `bash -lc "..."`) because it
+// enumerated by WRAPPER, which just fails again on the next wrapper. This is
+// inverted: isNetworkShapedTokens now matches an UNQUOTED curl/wget token at
+// ANY position (dropping the position/wrapper allowlist entirely), plus a
+// generalized recursion into a `bash`/`sh` invocation's script-flag argument
+// (any flag token containing `c`, e.g. `-c`, `-lc`, so `bash -lc "curl ..."`
+// is caught, not just the exact `-c` token). For a test-harness guard whose
+// job is to keep sprint tests off the real network, a false positive costs a
+// clear one-line error a developer fixes in a minute; a false negative costs
+// a real network call, so the risk is deliberately pointed toward matching
+// too much rather than too little. It still does not treat "curl" as
+// network-shaped merely because the substring appears inside a QUOTED token
+// (e.g. a `-d`/`-m` payload/message that just happens to mention "curl") --
+// only an unquoted token counts, so a literal 'curl' mentioned inside
+// another command's quoted payload/message text does not false-positive.
+const CURL_WGET_TOKEN_RE = /^(curl|wget)(\.exe)?$/i;
+
+// apra-fleet-5co8.40: CURL_WGET_TOKEN_RE above anchors the WHOLE token, so a
+// path-prefixed invocation (`/usr/bin/curl`, `./curl`, a Windows
+// `C:\...\curl.exe` path) never matches and walks past this guard to the
+// real runCmd() fallback. Match on the command BASENAME instead: strip
+// everything up to and including the last `/` or `\` before testing.
+function isCurlOrWgetToken(text) {
+    const lastSep = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'));
+    const basename = lastSep === -1 ? text : text.slice(lastSep + 1);
+    return CURL_WGET_TOKEN_RE.test(basename);
+}
+
+// Minimal shell-like tokenizer: quoted substrings ('...'/"...") become a
+// single token with quotes stripped (quoted: true); &&, ||, ;, |, (, ) become
+// operator tokens; everything else splits on whitespace. Good enough for
+// scanning composed shell command STRINGS the way this harness receives them
+// (opts.command) -- not a full shell grammar/parser.
+export function tokenizeShellLikeCommand(command) {
+    const str = String(command);
+    const tokens = [];
+    let i = 0;
+    const n = str.length;
+    while (i < n) {
+        const c = str[i];
+        if (/\s/.test(c)) { i += 1; continue; }
+        if (c === '"' || c === "'") {
+            const close = str.indexOf(c, i + 1);
+            // apra-fleet-5co8.32: an UNBALANCED quote (no matching close, e.g.
+            // the apostrophe in `echo it's fine && curl ...`) used to swallow
+            // the rest of the command string into one quoted token, hiding
+            // any curl/wget that followed. Treat an unclosed quote mark as a
+            // single literal, unquoted character instead of a quote-open, so
+            // scanning continues normally and a later curl/wget is still seen.
+            if (close === -1) {
+                tokens.push({ text: c, quoted: false, op: false });
+                i += 1;
+                continue;
+            }
+            tokens.push({ text: str.slice(i + 1, close), quoted: true, op: false });
+            i = close + 1;
+            continue;
+        }
+        const rest = str.slice(i);
+        const opMatch = rest.match(/^(&&|\|\||;|\||\(|\))/);
+        if (opMatch) {
+            tokens.push({ text: opMatch[0], quoted: false, op: true });
+            i += opMatch[0].length;
+            continue;
+        }
+        let j = i;
+        while (j < n && !/\s/.test(str[j]) && str[j] !== '"' && str[j] !== "'" && !str.slice(j).match(/^(&&|\|\||;|\|)/)) {
+            j += 1;
+        }
+        tokens.push({ text: str.slice(i, j), quoted: false, op: false });
+        i = j;
+    }
+    return tokens;
+}
+
+function isNetworkShapedTokens(tokens) {
+    for (let idx = 0; idx < tokens.length; idx += 1) {
+        const tok = tokens[idx];
+        if (tok.op || tok.quoted) continue;
+        if (isCurlOrWgetToken(tok.text)) return true;
+        if (/^(bash|sh)(\.exe)?$/i.test(tok.text)) {
+            for (let k = idx + 1; k < tokens.length && !tokens[k].op; k += 1) {
+                const flag = tokens[k];
+                // Accept any script-flag shape containing `c` (-c, -lc, -cx,
+                // ...), not just the exact `-c` token, so `bash -lc "..."`
+                // is recursed into the same as `bash -c "..."`.
+                if (!flag.quoted && /^-\w*c\w*$/i.test(flag.text) && tokens[k + 1] && !tokens[k + 1].op) {
+                    if (isNetworkShapedTokens(tokenizeShellLikeCommand(tokens[k + 1].text))) return true;
+                    break;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+export function isNetworkShapedCommand(command) {
+    return isNetworkShapedTokens(tokenizeShellLikeCommand(command));
+}
+
+// Same redaction marker vcs-providers/*.mjs uses for logSafeCommand, so a
+// redacted command here reads the same way a production log line would.
+const CREDENTIAL_REDACTION_MARKER = '***REDACTED***';
+
+// Strips known credential shapes out of a command string for safe inclusion
+// in an error message: HTTP Basic auth via `-u user:token` (Azure DevOps'
+// `-u :PAT` form), `Authorization: Bearer <token>` / `Authorization: Basic
+// <token>` headers (GitHub), userinfo embedded directly in a URL
+// (`https://user:token@host/...`), a `token=`/`access_token=` query/body
+// param, any OTHER `-H`/`--header '<name>: <value>'` whose header name looks
+// credential-shaped (token/auth/key/secret -- e.g. GitLab's `PRIVATE-TOKEN`,
+// a generic `X-Api-Key`, or a bespoke `X-...-Token` header a new provider's
+// mock never anticipated), and a `"token"`/`"password"` JSON field carried
+// in a `-d`/`--data` body. Defense-in-depth, not an allowlist: any of these
+// shapes anywhere in the command text is redacted regardless of quoting
+// style (apra-fleet-5co8.31 widened the last two shapes -- the guard fires
+// precisely when an UNKNOWN provider/endpoint was added without a mock, so
+// its credential shape is, by definition, exactly the kind not already on
+// this list).
+export function redactNetworkCommandForLog(command) {
+    return String(command)
+        .replace(/(-u\s+['"]?)([^\s'":]*):([^\s'"]+)/gi, `$1$2:${CREDENTIAL_REDACTION_MARKER}`)
+        .replace(/(Authorization:\s*(?:Bearer|Basic)\s+)([^\s'"]+)/gi, `$1${CREDENTIAL_REDACTION_MARKER}`)
+        .replace(/(:\/\/[^\s'"@/]+:)([^\s'"@/]+)(@)/gi, `$1${CREDENTIAL_REDACTION_MARKER}$3`)
+        .replace(/((?:access_)?token=)([^\s&'"]+)/gi, `$1${CREDENTIAL_REDACTION_MARKER}`)
+        .replace(/((?:-H|--header)\s+['"][^'":]*(?:token|auth|key|secret)[^'":]*:\s*)([^'"]+)(['"])/gi, `$1${CREDENTIAL_REDACTION_MARKER}$3`)
+        .replace(/("(?:token|password)"\s*:\s*")([^"]+)(")/gi, `$1${CREDENTIAL_REDACTION_MARKER}$3`);
+}
+
 // apra-fleet-tfx.8: the Publish PR / finalizeAbort PR-raising call sites now
 // mint a just-in-time push+pr credential via `args.callTool('provision_vcs_auth',
 // ...)` (ApraFleet.provisionVcsAuth) immediately before building/dispatching
@@ -112,9 +264,14 @@ export function isSpawnFailure(err) {
 // that reaches PR creation needs a working `callTool`, not just the small
 // subset that opted in for self-heal/preflight coverage (apra-fleet-eft.75.3).
 // This default answers 'provision_vcs_auth' with the same shape the real
-// production tool returns on success (a leading check-mark line plus an
-// 'expiresAt:' metadata line, see src/tools/provision-vcs-auth.ts and
-// runner.js's parseExpiresAtFromProvisionText()) and, for any other tool
+// production tool returns on success (a leading '[OK]' line plus an
+// 'expiresAt:' metadata line, AND the structuredContent half the orchestrator
+// actually reads the expiry from -- see src/tools/provision-vcs-auth.ts and
+// vcs-auth.mjs's provisionVcsAuthForMember(), which reads
+// `structuredContent.expiresAt` inline (deliberately not extracted into its
+// own named helper, since test/vcs-auth-extraction-facade.test.mjs pins
+// vcs-auth.mjs's top-level declarations symbol-for-symbol and would fail on
+// an added name) and, for any other tool
 // name, a generic success -- so it never masks a genuinely-unexpected tool
 // call as a failure. A scenario that needs to observe a provisioning
 // failure, or assert on the exact provision_vcs_auth call args, still passes
@@ -128,7 +285,7 @@ export function isSpawnFailure(err) {
 // mutex -- BOTH of those, unlike provision_vcs_auth/member_reservation/
 // stop_prompt, are read through parseCoordinationToolResult(), which
 // JSON.parse()s the tool's text and THROWS on anything that isn't valid JSON
-// (see runner.js). The old generic `✅ mock <name>` text is plain prose, not
+// (see runner.js). The old generic `[OK] mock <name>` text is plain prose, not
 // JSON, so any scenario that reaches one of these two tools (e.g. a reviewer
 // newTasks response gets id-allocated via `bd create`) would fail every
 // allocate/acquire call with "returned a non-JSON response" -- a real
@@ -137,7 +294,222 @@ export function isSpawnFailure(err) {
 // null-childId fallback paths take over exactly as they did when callTool was
 // unwired (id derivation still falls back to `bd create --parent` locally;
 // the mutex is effectively a no-op grant).
-export function defaultMockCallTool() {
+//
+// apra-fleet-3swo.7.18: `vcs_credential_exec` (src/tools/vcs-credential-
+// exec.ts) is server-side-only -- grep across packages/apra-fleet-se/test,
+// /src and /fleet-sprint turns up zero hits -- so before this bead every mock
+// sprint that reaches it (once apra-fleet-3swo.7.6 lands and starts
+// dispatching it for the create-PR call) fell through to the generic
+// `[OK] mock <name>` branch below with NO structuredContent, and every
+// PR-raising scenario that depends on it would report a dispatch failure.
+// Rather than hand-write a second, parallel canned PR response here,
+// mockVcsCredentialExec() SUBSTITUTES the caller's placeholder(s) with the
+// same two hard-coded mock tokens the credential-helper-read intercepts in
+// buildMockFleetApi's executeCommand already answer with (the
+// `$HOME/.fleet-git-credential-github`/`-azure-devops` branches around
+// :932-936 -- MOCK_VCS_CREDENTIAL_TOKENS below is the single source of truth
+// both sides read from) and then DISPATCHES the substituted command through
+// that SAME executeCommand path. That is what lets the curl-interception,
+// commandLog/commandLogDetailed recording and prCurlResponseQueue/
+// gitGhFailurePattern/prExistsState simulation already built for the
+// create-PR curl call keep working completely unchanged for a
+// vcs_credential_exec-routed dispatch too, instead of forcing an edit to
+// every one of the roughly fifty harness-default scenarios that reach that
+// call. `executeCommand`, when supplied, must be the SAME mock fleet api's
+// executeCommand a scenario's engine.executeFile() call is about to use --
+// see the two defaultMockCallTool() call sites below, both of which now
+// thread `buildMockFleetApi(...).executeCommand` through. Called with no
+// argument (the pre-existing zero-arg signature every other caller in this
+// file relies on), `executeCommand` is simply undefined and a
+// vcs_credential_exec call throws loudly instead of silently no-op'ing, since
+// nothing in this file's production code dispatches that tool yet (this bead
+// is deliberately additive and inert).
+
+// Mirrors the two credential-helper-read intercepts in executeCommand above
+// (around :932-936) label-for-label -- kept as one map so the two can never
+// drift apart. An unrecognised label intentionally has NO entry here: the
+// real tool fails hard on a missing/unreadable credential helper rather than
+// substituting an empty token, and this mock must fail the same way (that is
+// exactly the label-mismatch bug those two exact-match executeCommand
+// branches exist to catch).
+// Reads the POSIX-quoted `-d '<json>'` payload back out of a VCSModule curl
+// command (the mock member is POSIX). Returns null when absent/unparseable.
+function extractMockCurlJson(cmd) {
+    const m = /-d '((?:[^']|'\\'')*)' -w/.exec(cmd);
+    if (!m) return null;
+    try {
+        return JSON.parse(m[1].replace(/'\\''/g, "'"));
+    } catch {
+        return null;
+    }
+}
+
+const MOCK_VCS_CREDENTIAL_TOKENS = {
+    github: 'mock-vcs-module-token',
+    'azure-devops': 'mock-azure-devops-pat',
+    bitbucket: 'mock-bitbucket-api-token',
+};
+
+// apra-fleet-qeq1.6.1: the basic-auth USERNAME half of a label's credential,
+// mirroring the `username=` line src/tools/vcs-credential-exec.ts reads from
+// the same credential-helper stdout the token comes from. Only a label whose
+// builder actually references {{vcs_username}}/{{vcs_username_inline}} needs
+// an entry here -- github/azure-devops never do (see mockVcsCredentialExec's
+// needsUsername check below), so they intentionally have none.
+const MOCK_VCS_CREDENTIAL_USERNAMES = {
+    bitbucket: 'mock-bitbucket-username',
+};
+
+// Minimal reimplementation of src/utils/shell-escape.ts's
+// escapeShellArgInner/escapeShellArg for this mock only. Not imported from
+// src directly: this file runs under plain `node --test`, not a TS/vitest
+// loader (see the mock-sprint harness's own kb note on how a missing export
+// degrades very differently under vitest's SSR transform vs. Node ESM's
+// link-time failure), and the mock only ever substitutes the two fixed,
+// plain-ASCII tokens in MOCK_VCS_CREDENTIAL_TOKENS above, so there is no
+// byte-identical-escaping requirement to keep this in lockstep with the
+// production escaper the way vcs-credential-exec.ts itself must be.
+function mockEscapeShellArgInner(s) {
+    return s.replace(/'/g, "'\\''");
+}
+function mockEscapeShellArg(s) {
+    return `'${mockEscapeShellArgInner(s)}'`;
+}
+
+const VCS_CREDENTIAL_EXEC_REDACTION = '[REDACTED:vcs_token]';
+// Distinct marker for the username half, mirroring
+// src/tools/vcs-credential-exec.ts's USERNAME_REDACTION -- a reader of a
+// redacted stream needs to know WHICH half of the basic-auth pair was
+// scrubbed out of it.
+const VCS_USERNAME_EXEC_REDACTION = '[REDACTED:vcs_username]';
+
+/** Replace every occurrence of `secret` in `output`, and report how many. */
+function redactVcsCredentialToken(output, secret) {
+    if (!secret) return { text: output, count: 0 };
+    const parts = output.split(secret);
+    return { text: parts.join(VCS_CREDENTIAL_EXEC_REDACTION), count: parts.length - 1 };
+}
+
+/** Same shape as redactVcsCredentialToken, under the username's own marker. */
+function redactVcsCredentialUsername(output, secret) {
+    if (!secret) return { text: output, count: 0 };
+    const parts = output.split(secret);
+    return { text: parts.join(VCS_USERNAME_EXEC_REDACTION), count: parts.length - 1 };
+}
+
+/**
+ * Builds a vcs_credential_exec result with EXACTLY the nine
+ * structuredContent fields execResult() emits in
+ * src/tools/vcs-credential-exec.ts (ok, reason, exitCode, stdout, stderr,
+ * tokenRedactions, credentialLabel, memberId, memberName) -- field for
+ * field, so a scenario asserting on this mock's shape is asserting on the
+ * real tool's contract.
+ */
+function vcsCredentialExecResult(text, fields) {
+    return {
+        content: [{ text }],
+        structuredContent: {
+            ok: fields.ok ?? fields.reason === 'ok',
+            reason: fields.reason,
+            exitCode: fields.exitCode ?? null,
+            stdout: fields.stdout ?? '',
+            stderr: fields.stderr ?? '',
+            tokenRedactions: fields.tokenRedactions ?? 0,
+            credentialLabel: fields.credentialLabel ?? null,
+            memberId: fields.memberId ?? null,
+            memberName: fields.memberName ?? null,
+        },
+    };
+}
+
+const VCS_TOKEN_PLACEHOLDER = '{{vcs_token}}';
+const VCS_TOKEN_INLINE_PLACEHOLDER = '{{vcs_token_inline}}';
+// apra-fleet-qeq1.6.1: the basic-auth username pair (see MOCK_VCS_CREDENTIAL_
+// USERNAMES above and src/tools/vcs-credential-exec.ts's
+// VCS_USERNAME_PLACEHOLDER/VCS_USERNAME_INLINE_PLACEHOLDER doc comments).
+const VCS_USERNAME_PLACEHOLDER = '{{vcs_username}}';
+const VCS_USERNAME_INLINE_PLACEHOLDER = '{{vcs_username_inline}}';
+
+async function mockVcsCredentialExec(toolArgs, executeCommand) {
+    const label = toolArgs && toolArgs.label;
+    const memberId = (toolArgs && toolArgs.member_id) ?? null;
+    const memberName = (toolArgs && toolArgs.member_name) ?? null;
+    const who = { credentialLabel: label ?? null, memberId, memberName };
+    const command = (toolArgs && toolArgs.command) || '';
+
+    const hasBare = command.includes(VCS_TOKEN_PLACEHOLDER);
+    const hasInline = command.includes(VCS_TOKEN_INLINE_PLACEHOLDER);
+    if (!hasBare && !hasInline) {
+        return vcsCredentialExecResult(
+            `[FAIL] command must contain ${VCS_TOKEN_PLACEHOLDER} or ${VCS_TOKEN_INLINE_PLACEHOLDER} -- use execute_command for a command that needs no credential.`,
+            { ...who, reason: 'placeholder_missing' },
+        );
+    }
+
+    const token = MOCK_VCS_CREDENTIAL_TOKENS[label];
+    if (!token) {
+        return vcsCredentialExecResult(
+            `[FAIL] Cannot read a VCS credential for label "${label}" (no mock credential-helper file registered for this label in the mock-sprint harness).`,
+            { ...who, reason: 'credential_read_failed' },
+        );
+    }
+
+    // Only a command that actually references a username placeholder needs
+    // one -- mirrors vcs-credential-exec.ts's needsUsername check so a
+    // token-only label (github, azure-devops) is completely unaffected.
+    const needsUsername = command.includes(VCS_USERNAME_PLACEHOLDER) || command.includes(VCS_USERNAME_INLINE_PLACEHOLDER);
+    const username = needsUsername ? (MOCK_VCS_CREDENTIAL_USERNAMES[label] || '') : '';
+    if (needsUsername && !username) {
+        return vcsCredentialExecResult(
+            `[FAIL] Cannot read a VCS username for label "${label}" (no mock credential-helper username registered for this label in the mock-sprint harness), but the command references ${VCS_USERNAME_PLACEHOLDER}.`,
+            { ...who, reason: 'username_empty' },
+        );
+    }
+
+    if (!executeCommand) {
+        throw new Error(
+            'mock-sprint-harness: vcs_credential_exec was called but no `executeCommand` was threaded into ' +
+                'defaultMockCallTool({ executeCommand }) -- wire it from the same buildMockFleetApi(...).executeCommand ' +
+                "the scenario's engine.executeFile() call uses (see the two call sites below).",
+        );
+    }
+
+    const finalCommand = command
+        .replaceAll(VCS_TOKEN_PLACEHOLDER, mockEscapeShellArg(token))
+        .replaceAll(VCS_TOKEN_INLINE_PLACEHOLDER, mockEscapeShellArgInner(token))
+        .replaceAll(VCS_USERNAME_PLACEHOLDER, mockEscapeShellArg(username))
+        .replaceAll(VCS_USERNAME_INLINE_PLACEHOLDER, mockEscapeShellArgInner(username));
+
+    const res = await executeCommand({ command: finalCommand, member_id: toolArgs && toolArgs.member_id, member_name: memberName });
+    const structured = res.structuredContent || {};
+    const exitCode = typeof structured.exitCode === 'number' ? structured.exitCode : null;
+    let outRedacted = redactVcsCredentialToken(structured.stdout ?? '', token);
+    let errRedacted = redactVcsCredentialToken(structured.stderr ?? '', token);
+    // The username is only scrubbed when this command actually substituted
+    // one -- a token-only command must not start redacting an unrelated
+    // string out of its own output (mirrors vcs-credential-exec.ts's
+    // redactCredentials()).
+    if (needsUsername) {
+        const outU = redactVcsCredentialUsername(outRedacted.text, username);
+        const errU = redactVcsCredentialUsername(errRedacted.text, username);
+        outRedacted = { text: outU.text, count: outRedacted.count + outU.count };
+        errRedacted = { text: errU.text, count: errRedacted.count + errU.count };
+    }
+
+    return vcsCredentialExecResult(
+        `[OK] Ran credential-requiring command on "${memberName ?? memberId ?? '(unknown)'}" (exit ${exitCode}).`,
+        {
+            ...who,
+            reason: 'ok',
+            exitCode,
+            stdout: outRedacted.text,
+            stderr: errRedacted.text,
+            tokenRedactions: outRedacted.count + errRedacted.count,
+        },
+    );
+}
+
+export function defaultMockCallTool({ executeCommand } = {}) {
     return async (name, toolArgs) => {
         // apra-fleet-647.1.2.1: provisionVcsAuthForMember now resolves the
         // member's provider via VCSModule.resolveProvider() -- a
@@ -152,7 +524,17 @@ export function defaultMockCallTool() {
         }
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-            return { content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
+            // apra-fleet-3swo.7.5: the orchestrator reads the credential expiry
+            // from structuredContent.expiresAt now, not from the prose's
+            // 'expiresAt:' metadata line, so this default must carry the
+            // STRUCTURED half too or every mock-sprint scenario's preflight
+            // cache would silently start seeing "no expiry tracked". Both
+            // halves are kept, exactly as the real tool emits them
+            // (src/tools/provision-vcs-auth.ts).
+            return {
+                content: [{ text: `[OK] Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }],
+                structuredContent: { ok: true, reason: 'ok', expiresAt },
+            };
         }
         if (name === 'child_id_allocator') {
             const action = toolArgs && toolArgs.action;
@@ -168,7 +550,48 @@ export function defaultMockCallTool() {
             }
             return { content: [{ text: JSON.stringify({ released: true }) }] };
         }
-        return { content: [{ text: `✅ mock ${name}` }] };
+        if (name === 'vcs_credential_exec') {
+            return mockVcsCredentialExec(toolArgs, executeCommand);
+        }
+        // The launch-time decision-notify check (send_message probe mode):
+        // answer as a working setup -- a channel-capable session holds the
+        // target -- so a mock sprint's launch log carries no warning.
+        if (name === 'send_message' && toolArgs && toolArgs.probe) {
+            return { content: [{ text: JSON.stringify({ probe: true, member_id: toolArgs.member_id, connected: true, channel_capable: true }) }] };
+        }
+        return { content: [{ text: `[OK] mock ${name}` }] };
+    };
+}
+
+// apra-fleet-3swo.7.19: several standalone finalizeAbort()-level test files
+// (mock-sprint-abort-pr.test.mjs, mock-sprint-azure-devops-vcs-publish.
+// test.mjs, and similar) predate buildMockFleetApi() entirely -- they drive
+// finalizeAbort() directly against a hand-rolled `command(cmd, opts) =>
+// Promise<{ ok, output, error } | string>` mock, never an executeCommand from
+// this file. Adapts that legacy shape into the `executeCommand({ command,
+// member_id, member_name }) => Promise<{ structuredContent: { exitCode,
+// stdout, stderr } }>` shape defaultMockCallTool()'s vcs_credential_exec
+// branch expects, so those files can delegate to the SAME shared simulator
+// (reusing its placeholder substitution and redaction) instead of
+// re-implementing it locally. Always dispatches with `failSoft: true` (every
+// production vcs_credential_exec-eligible call site already does, and this
+// mirrors it), so `command` never throws here.
+export function legacyCommandExecuteCommandAdapter(command) {
+    return async ({ command: cmd, member_id, member_name }) => {
+        const res = await command(cmd, {
+            member_id,
+            member_name,
+            silent: true,
+            failSoft: true,
+            label: 'vcs_credential_exec dispatch (legacy command mock)',
+        });
+        return {
+            structuredContent: {
+                exitCode: res && res.ok ? 0 : 1,
+                stdout: (res && res.output) || '',
+                stderr: res && !res.ok ? (res.error || '') : '',
+            },
+        };
     };
 }
 
@@ -181,11 +604,168 @@ export const runCmd = (cmd, cwd) => bdRunCmd(cmd, cwd);
 
 export const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
 
-export async function setup(tempDirSuffix) {
+// ---------------------------------------------------------------------------
+// shared scenario-clone bootstrap (apra-fleet-38o8)
+// ---------------------------------------------------------------------------
+// Diagnosis behind these three helpers: the recurring real-bd-lane failure
+// "[advanced-mock-runner-test] setupMinimal(<scenario>): bd create --silent
+// did not return an epic id" was never a `bd create` defect, and it is not a
+// transient. It is the DOWNSTREAM symptom of the preceding `bd init` having
+// FAILED -- a non-zero exit that both setup() and setupMinimal() issued and
+// then discarded, carrying on to create beads in a directory that has no
+// beads database at all.
+//
+// Captured against the real bd CLI (bd version 1.1.0, 8e4e59d39), the two
+// halves of that chain:
+//
+//   $ bd init                      # into a dir an earlier init already claimed
+//     exit=1  stdout=""  stderr="Error:\n  Found existing Dolt database:
+//              <dir>/.beads/embeddeddolt/<db>\n\nThis workspace is already
+//              initialized. ... Aborting."
+//   $ bd create -t epic "Epic: x" -d "probe" --silent   # in that same dir
+//     exit=1  stdout="" (0 bytes)  stderr="Error: no beads database found
+//              Hint: run 'bd where' ... or 'bd init' to create a new database"
+//
+// which rules out every competing explanation for the empty id:
+//   - the id is NOT misrouted to stderr or prefixed: stderr carries no id at
+//     all, and stdout is 0 bytes, not "prefix + id";
+//   - it is NOT a transient Dolt lock/timeout: exit=1 is immediate and
+//     deterministic, and the failing file's reported wall clock was ~1s;
+//   - `--silent` IS honoured by this bd (`bd create --help`: "--silent
+//     Output only the issue ID (for scripting)"), and a healthy clone answers
+//     with exactly "<id>\n" -- 13 bytes for a 12-char id;
+//   - the create genuinely failed, for the stated reason: no database.
+//
+// So the remedy is to fail AT the real failure (`bd init`) with `bd init`'s
+// own evidence, never to retry a create that cannot succeed -- a retry loop
+// here would just spend N attempts re-deriving "no beads database found" and
+// would risk masking a genuine create failure, which is exactly what the bug
+// asks not to happen. Both setup() and setupMinimal() (and every bead either
+// of them creates, not just the epic) now route through the same helpers, so
+// the two guards can no longer diverge.
+
+// Every bd result the harness reports on, rendered uniformly: exit code +
+// error message + verbatim stdout/stderr. Strictly richer than the ad-hoc
+// describe() this replaces, which omitted the exit code.
+export const describeBdResult = (label, res) => {
+    if (!res) return `${label}: (not run)`;
+    const exitCode = res.err ? (typeof res.err.code === 'number' ? res.err.code : 'unknown') : 0;
+    return (
+        `${label}: exit=${exitCode} err=${res.err ? JSON.stringify(res.err.message) : 'null'} ` +
+        `stdout=${JSON.stringify(res.stdout)} stderr=${JSON.stringify(res.stderr)}`
+    );
+};
+
+/**
+ * `bd init` for a scenario's scratch clone, with its exit status actually
+ * checked. Returns the init result so later failures can still quote it.
+ *
+ * `runCmdFn` (apra-fleet-38o8.2) is the injection seam this guard's own test
+ * suite uses to simulate a failing/malformed `bd init` or `bd create` without
+ * requiring a contended real-bd run: it defaults to the real `runCmd` above,
+ * so every production call site (setup()/setupMinimal()) is unaffected.
+ */
+/**
+ * The `bd init` command for a scenario's scratch clone. By default this is the
+ * bare `bd init`, whose recorded form every existing fixture already carries.
+ *
+ * A scenario's Dolt database name is derived from its tempdir basename
+ * (hyphens -> underscores). Dolt (MySQL-compatible) caps identifier length at
+ * 64 chars, so a scenario with a long tag whose tempdir also carries a wide
+ * (7-digit) process id can push that derived name past the limit, making a
+ * bare `bd init` fail with "produces an invalid database name" -- a
+ * host-dependent flake that has nothing to do with the scenario under test.
+ * When the derived name would exceed the limit, we pass an explicit short
+ * `--database` (Dolt db name only -- the issue-id prefix still comes from the
+ * directory, so recorded ids are unchanged). The short name is derived from
+ * the STABLE scenario key (basename minus the trailing -<timestamp>-<pid>), so
+ * the recorded command string is deterministic and matches on replay.
+ */
+export function bdInitCommandForClone(tempDir) {
+    const base = path.basename(tempDir);
+    // Decide from the STABLE scenario key ONLY (basename minus the trailing
+    // -<timestamp>-<pid>), never the volatile suffix: the recorded command must
+    // be byte-identical at record and replay time, and it must not depend on
+    // whether this host's pids are 6 or 7 digits. Worst case a tempdir suffix
+    // adds `_<13-digit ms timestamp>_<up to 7-digit pid>` = 22 chars; if the
+    // stable db name plus that worst case still fits Dolt's 64-char identifier
+    // cap, a bare `bd init` is always safe on any host.
+    const stableKey = base.replace(/-\d+-\d+$/, '');
+    const stableDbName = stableKey.replace(/[^A-Za-z0-9]/g, '_');
+    const WORST_CASE_SUFFIX = 22;
+    if (stableDbName.length + WORST_CASE_SUFFIX <= 64) return 'bd init';
+    const shortHash = crypto.createHash('sha1').update(stableKey).digest('hex').slice(0, 16);
+    return `bd init --database md${shortHash}`;
+}
+
+export async function initScenarioClone(label, tempDir, runCmdFn = runCmd) {
+    let initRes;
+    try {
+        initRes = await runCmdFn(bdInitCommandForClone(tempDir), tempDir);
+    } catch (err) {
+        // Real mode serves `bd init` from the shared template copy in
+        // bd-replay.mjs rather than spawning bd, so this path can also throw a
+        // raw fs error (a template that vanished mid-copy). Label it instead of
+        // letting an opaque ENOENT surface with no scenario attached.
+        throw new Error(
+            `[advanced-mock-runner-test] ${label}: 'bd init' threw before producing a result ` +
+                `(real mode serves it from the shared bd-init template -- see test/helpers/bd-replay.mjs). ` +
+                `tempDir=${tempDir}\n  ${err && err.stack ? err.stack : String(err)}`,
+        );
+    }
+    if (initRes.err) {
+        throw new Error(
+            `[advanced-mock-runner-test] ${label}: 'bd init' FAILED, so this clone has no beads database. ` +
+                `Every later bd command in this scenario would fail downstream -- classically as an empty ` +
+                `'bd create --silent' id ("Error: no beads database found"), which is the SYMPTOM, not the cause. ` +
+                `tempDir=${tempDir}\n  ${describeBdResult('bd init', initRes)}`,
+        );
+    }
+    return initRes;
+}
+
+// `bd create --silent` prints exactly the new bead's id and nothing else, so a
+// well-formed answer is a single whitespace-free token. Empty is the reported
+// failure; multi-token output means bd printed prose (an error, a warning, a
+// hint) where an id belongs, which would otherwise be fed into the next
+// command as if it were an id. Verified against all 351 recorded `--silent`
+// creates under test/fixtures/bd-recordings: every successful one is a single
+// token, so this cannot false-reject a real id.
+const isBeadId = (value) => value.length > 0 && !/\s/.test(value);
+
+/**
+ * Issue one `bd create ... --silent` and return the created id, or throw with
+ * the full evidence chain (the clone's `bd init` result plus this create's own
+ * exit code / stdout / stderr).
+ *
+ * `runCmdFn` (apra-fleet-38o8.2): same injection seam as initScenarioClone()
+ * above, defaulting to the real `runCmd`.
+ */
+export async function createBeadOrThrow(label, tempDir, createCmd, initRes, runCmdFn = runCmd) {
+    const res = await runCmdFn(createCmd, tempDir);
+    const id = (res.stdout ?? '').trim();
+    if (!res.err && isBeadId(id)) return id;
+    throw new Error(
+        `[advanced-mock-runner-test] ${label}: ${JSON.stringify(createCmd)} did not return a bead id ` +
+            `(parsed ${JSON.stringify(id)}). tempDir=${tempDir}\n` +
+            `  ${describeBdResult('bd init', initRes)}\n` +
+            `  ${describeBdResult('bd create', res)}`,
+    );
+}
+
+/**
+ * `runCmdFn` (apra-fleet-38o8.2): optional injection seam threaded through to
+ * initScenarioClone()/createBeadOrThrow() below, defaulting to the real
+ * `runCmd`. Every production call site omits it and is unaffected; the
+ * guard's own test suite uses it to simulate a failing `bd init`/`bd create`
+ * without a contended real-bd run.
+ */
+export async function setup(tempDirSuffix, runCmdFn = runCmd) {
     const tempDir = path.join(os.tmpdir(), `apra-fleet-mock-sprint-${tempDirSuffix}-${Date.now()}-${process.pid}`);
     await fs.mkdir(tempDir, { recursive: true });
 
-    const initRes = await runCmd('bd init', tempDir);
+    const label = `setup(${tempDirSuffix})`;
+    const initRes = await initScenarioClone(label, tempDir, runCmdFn);
 
     // `--silent` returns the created id directly on stdout, from the exact
     // write just performed -- unlike a separate `bd list --json` + title
@@ -195,28 +775,14 @@ export async function setup(tempDirSuffix) {
     // Dolt state hits this every time, even though sequential `bd create`
     // calls each fully complete -- exec()'s callback only fires on process
     // exit -- before the next command starts).
-    const epicRes = await runCmd('bd create -t epic "Epic: Fleet Member Management APIs" -d "This epic covers the implementation of member management APIs for apra-fleet-client. It includes registerMember, listMembers, and ensuring they integrate securely using fetch across the MCP JSON-RPC boundary." --silent', tempDir);
-    const task1Res = await runCmd('bd create "Task: Implement registerMember in client.js" -d "Implement a registerMember(config) function in the ApraFleet API class. It should accept an object with name, prompt, url, token, etc., and map to the register_member tool." --silent', tempDir);
-    const task2Res = await runCmd('bd create "Task: Implement listMembers in client.js" -d "Implement a listMembers() function in the ApraFleet API class. It should call the list_members tool and return the parsed JSON array of active fleet members." --silent', tempDir);
-    const epicId = epicRes.stdout.trim();
-    const task1Id = task1Res.stdout.trim();
-    const task2Id = task2Res.stdout.trim();
+    const epicId = await createBeadOrThrow(label, tempDir, 'bd create -t epic "Epic: Fleet Member Management APIs" -d "This epic covers the implementation of member management APIs for apra-fleet-client. It includes registerMember, listMembers, and ensuring they integrate securely using fetch across the MCP JSON-RPC boundary." --silent', initRes, runCmdFn);
+    const task1Id = await createBeadOrThrow(label, tempDir, 'bd create "Task: Implement registerMember in client.js" -d "Implement a registerMember(config) function in the ApraFleet API class. It should accept an object with name, prompt, url, token, etc., and map to the register_member tool." --silent', initRes, runCmdFn);
+    const task2Id = await createBeadOrThrow(label, tempDir, 'bd create "Task: Implement listMembers in client.js" -d "Implement a listMembers() function in the ApraFleet API class. It should call the list_members tool and return the parsed JSON array of active fleet members." --silent', initRes, runCmdFn);
 
-    if (!epicId || !task1Id || !task2Id) {
-        const describe = (label, res) => `${label}: err=${res.err ? JSON.stringify(res.err.message) : 'null'} stdout=${JSON.stringify(res.stdout)} stderr=${JSON.stringify(res.stderr)}`;
-        throw new Error(
-            `[advanced-mock-runner-test] setup(${tempDirSuffix}): bd create --silent did not return an id for one or more beads. tempDir=${tempDir}\n` +
-                `  ${describe('bd init', initRes)}\n` +
-                `  ${describe('epic create', epicRes)}\n` +
-                `  ${describe('task1 create', task1Res)}\n` +
-                `  ${describe('task2 create', task2Res)}`,
-        );
-    }
+    await runCmdFn(`bd update ${task1Id} --parent ${epicId}`, tempDir);
+    await runCmdFn(`bd update ${task2Id} --parent ${epicId}`, tempDir);
 
-    await runCmd(`bd update ${task1Id} --parent ${epicId}`, tempDir);
-    await runCmd(`bd update ${task2Id} --parent ${epicId}`, tempDir);
-
-    const finalList = JSON.parse((await runCmd('bd list --json', tempDir)).stdout || '[]');
+    const finalList = JSON.parse((await runCmdFn('bd list --json', tempDir)).stdout || '[]');
     const epicBead = finalList.find((b) => b.id === epicId);
     const task1 = finalList.find((b) => b.id === task1Id);
     const task2 = finalList.find((b) => b.id === task2Id);
@@ -241,24 +807,20 @@ export async function setup(tempDirSuffix) {
  * creation order so scenario code can address them by id without re-parsing
  * `bd list` output itself.
  */
-export async function setupMinimal(tempDirSuffix, taskSpecs) {
+/**
+ * `runCmdFn` (apra-fleet-38o8.2): same injection seam as setup() above.
+ */
+export async function setupMinimal(tempDirSuffix, taskSpecs, runCmdFn = runCmd) {
     const tempDir = path.join(os.tmpdir(), `apra-fleet-mock-sprint-${tempDirSuffix}-${Date.now()}-${process.pid}`);
     await fs.mkdir(tempDir, { recursive: true });
 
-    const initRes = await runCmd('bd init', tempDir);
+    const label = `setupMinimal(${tempDirSuffix})`;
+    const initRes = await initScenarioClone(label, tempDir, runCmdFn);
     // `--silent` returns the created id directly, from the write just
     // performed -- avoids a separate `bd list --json` + title match, which
     // reads back through bd's embedded Dolt store and can lag behind a
     // just-completed write on a cold/fresh environment (see setup() above).
-    const epicRes = await runCmd(`bd create -t epic "Epic: ${tempDirSuffix}" -d "Scenario epic for apra-fleet-unw.16 mock test." --silent`, tempDir);
-    const epicId = epicRes.stdout.trim();
-    if (!epicId) {
-        throw new Error(
-            `[advanced-mock-runner-test] setupMinimal(${tempDirSuffix}): bd create --silent did not return an epic id. tempDir=${tempDir}\n` +
-                `  bd init: err=${initRes.err ? JSON.stringify(initRes.err.message) : 'null'} stdout=${JSON.stringify(initRes.stdout)} stderr=${JSON.stringify(initRes.stderr)}\n` +
-                `  epic create: err=${epicRes.err ? JSON.stringify(epicRes.err.message) : 'null'} stdout=${JSON.stringify(epicRes.stdout)} stderr=${JSON.stringify(epicRes.stderr)}`,
-        );
-    }
+    const epicId = await createBeadOrThrow(label, tempDir, `bd create -t epic "Epic: ${tempDirSuffix}" -d "Scenario epic for apra-fleet-unw.16 mock test." --silent`, initRes, runCmdFn);
     const epicBead = { id: epicId };
 
     const tasks = [];
@@ -267,9 +829,10 @@ export async function setupMinimal(tempDirSuffix, taskSpecs) {
         // create a task below the sprint's goal priority, for the A5
         // goal-priority exit-condition scenarios below.
         const priorityFlag = spec.priority ? ` -p ${spec.priority}` : '';
-        const createRes = await runCmd(`bd create "${spec.title}" -d "${spec.description || 'Scenario task.'}"${priorityFlag} --silent`, tempDir);
-        const id = createRes.stdout.trim();
-        await runCmd(`bd update ${id} --parent ${epicBead.id}`, tempDir);
+        // Same guard as the epic above (it used to have none here, so a failed
+        // task create silently produced `bd update  --parent <epic>`).
+        const id = await createBeadOrThrow(label, tempDir, `bd create "${spec.title}" -d "${spec.description || 'Scenario task.'}"${priorityFlag} --silent`, initRes, runCmdFn);
+        await runCmdFn(`bd update ${id} --parent ${epicBead.id}`, tempDir);
         tasks.push({ id, title: spec.title });
     }
 
@@ -329,14 +892,14 @@ export async function setupMinimal(tempDirSuffix, taskSpecs) {
  */
 // apra-fleet-unw2.22 (N12 follow-up): the harvester contract check must
 // genuinely validate that runner.js supplied real, non-trivial CONTENT for
-// analysisText/costAnalysis -- not merely that the prompt contains the
+// analysisText -- not merely that the prompt contains the
 // static instructional label text buildHarvesterPrompt() always emits
 // regardless of the underlying value. It previously used
 // `/analysisText \(pre-computed by the orchestrator/.test(p)` etc., which
 // is proven to still pass even when runner.js's buildAnalysisText()/
 // buildCostAnalysis() silently return an empty string (see this bead's
 // description). This helper extracts the actual fenced VALUE for
-// analysisText/costAnalysis (the fence chars are a variable-length run of
+// analysisText (the fence chars are a variable-length run of
 // backticks per buildHarvesterPrompt's collision-safe `fence()`, so the
 // regex captures whatever fence length was actually used) and requires it
 // to be non-trivially long once trimmed.
@@ -364,16 +927,41 @@ export function checkHarvesterContract(prompt) {
         missing.push('analysisText');
     }
 
-    const costAnalysisMatch = /costAnalysis \(pre-computed by the orchestrator[^\n]*\):\n(`{3,})\n([\s\S]*?)\n\1/.exec(prompt);
-    if (!costAnalysisMatch || costAnalysisMatch[2].trim().length < MIN_NONTRIVIAL_LEN) {
-        missing.push('costAnalysis');
-    }
-
     if (!/Branch:\s*\S+\s*\(base:\s*\S+\)/.test(prompt)) {
         missing.push('base-branch/branch');
     }
 
     return missing;
+}
+
+// The three beads identity probes (fleet-sprint/beads-identity.mjs's
+// BEADS_IDENTITY_PROBES), keyed by the override field a scenario names.
+const BEADS_IDENTITY_PROBE_KEYS = [
+    ['where', /^bd where( --json)?$/],
+    ['syncRemote', /^bd config get sync\.remote( --json)?$/],
+    ['repoRemote', /^git remote get-url origin$/],
+];
+
+/**
+ * Answers one beads identity probe from a per-member override map (the
+ * `beadsIdentity` option of buildMockFleetApi), or returns null when the
+ * member/probe has no override so the caller falls through to its default.
+ * Exported so a scenario with its own executeCommand can reuse it.
+ */
+export function answerBeadsIdentityProbe(overrides, member, command) {
+    if (!overrides || !member) return null;
+    const perMember = overrides[member];
+    if (!perMember) return null;
+    const cmd = String(command || '').trim();
+    for (const [key, re] of BEADS_IDENTITY_PROBE_KEYS) {
+        if (!re.test(cmd) || perMember[key] === undefined) continue;
+        const value = perMember[key];
+        if (value && typeof value === 'object' && value.fail !== undefined) {
+            return mockCmdResult(1, '', String(value.fail));
+        }
+        return mockCmdResult(0, String(value), '');
+    }
+    return null;
 }
 
 export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = {}) {
@@ -444,6 +1032,14 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // tests are unaffected.
         commandLogDetailed = null,
         memberGitState = null,
+        // Optional ({ command, member_name }) => result|undefined hook, called
+        // for every executeCommand() before anything else. A test uses it to
+        // observe the ORDER of member commands (e.g. a G-pull's `git fetch`)
+        // relative to its own callTool events, to answer one member's
+        // commands (e.g. a member beads set-up sequence), and to fail one
+        // member's command: a returned non-undefined value is the command's
+        // result.
+        onCommand = null,
         // apra-fleet-unw2.9 (N11): injectable git/gh failure. Optional
         // (cmd: string) => boolean predicate, tested ONLY against `git `/
         // `gh ` commands (the ones this mock otherwise short-circuits to a
@@ -498,12 +1094,45 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // default simulation when provided; omitted (the default), the
         // existing 201/already-exists-422 behavior is completely unchanged.
         prCurlResponseQueue = null,
+        // Existing-PR update path (find + PATCH on the already-exists
+        // path): a Map branch -> { number, title, body } that the GitHub
+        // create-PR mock records into and the find (GET .../pulls?head=) /
+        // update (PATCH .../pulls/<n>) mocks read and rewrite. Share one Map
+        // across scenarios (like prExistsState) to simulate a relaunch.
+        prRecordState = new Map(),
+        // Per-member beads identity overrides for the runner's beads identity
+        // precondition (fleet-sprint/beads-identity-check.mjs), which probes
+        // every member with `bd where --json`, `bd config get sync.remote
+        // --json` and `git remote get-url origin` before the first mutating
+        // bd command. DEFAULT (omitted): every member answers consistently --
+        // `bd where` is synthesized from the shared tempDir by bd-replay.mjs,
+        // sync.remote is unset, and origin is `originUrl` above -- so the
+        // check passes. Shape: `{ [member]: { where?, syncRemote?,
+        // repoRemote? } }`, each value either the raw stdout to answer with or
+        // `{ fail: '<stderr>' }` for a nonzero exit. Only the members/probes
+        // named are intercepted; everything else keeps the default answer.
+        beadsIdentity = null,
+        // Seeded beads memories for the sprint-start memory sweep
+        // (fleet-sprint/beads-memory-hygiene.mjs). DEFAULT (omitted):
+        // bd-replay.mjs answers `bd memories --json` with `{}`. Shape:
+        // `{ [key]: value }`; when given, this mock answers the list from a
+        // live copy, and each `bd forget <key>` deletes from it and appends
+        // the key to `forgottenMemories` (an array the caller owns).
+        beadsMemories = null,
+        forgottenMemories = null,
+        // Caller-owned object; receives `.live` (the live memory Map) so a
+        // test can assert what is still stored after the sprint.
+        memoriesSink = null,
     } = options;
     const prCurlResponseQueueLocal = prCurlResponseQueue ? [...prCurlResponseQueue] : null;
+    const liveMemories = beadsMemories ? new Map(Object.entries(beadsMemories)) : null;
+    if (memoriesSink && liveMemories) memoriesSink.live = liveMemories;
 
     let planRound = 0;
     let reviewRound = 0;
     let extraTaskAdded = false;
+    /** member name -> the branch the engine last put it on (`git checkout [-B] <b>`), for `git rev-parse --abbrev-ref HEAD`. */
+    const mockCheckedOut = new Map();
     // apra-fleet-02s.3: a schema-repair re-ask RESUMES the session that just
     // failed and sends a lean reminder prompt (no longer a self-contained
     // echo of the original prompt) -- so opts.prompt.startsWith('Final review
@@ -579,7 +1208,20 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
 
     const api = {
         executeCommand: async (opts) => {
+            // Same as the real fleet client (McpClient.request): a request
+            // whose signal is already aborted -- the run was stopped with
+            // requestStop() -- is rejected with code 'ABORTED' before it is
+            // sent, which the workflow turns into a CancelledError.
+            if (opts && opts.signal && opts.signal.aborted) {
+                const aborted = new Error(`Request "execute_command" aborted before a response was received.`);
+                aborted.code = 'ABORTED';
+                throw aborted;
+            }
             commandLog.push(opts.command);
+            if (onCommand) {
+                const injected = await onCommand({ command: opts.command, member_name: opts.member_name });
+                if (injected !== undefined) return injected;
+            }
 
             // apra-fleet-unw2.4 (N4): per-member command log + simulated
             // per-member git checkout state (see the option comments above).
@@ -597,6 +1239,43 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 } else {
                     const coMatch = opts.command.match(/^git checkout (\S+)\s*$/);
                     if (coMatch) st.checkedOut = coMatch[1];
+                }
+            }
+
+            // The KB write path reads the maintainer's checked-out branch before
+            // every git command it runs there. Answer with the branch the member
+            // was last put on (`git checkout -B/<b>`), independent of the
+            // optional memberGitState model; unknown falls through below.
+            {
+                const mName = opts.member_name || '(none)';
+                const co = opts.command.match(/git checkout (?:-B )?([^\s-]\S*)/);
+                if (co) mockCheckedOut.set(mName, co[1]);
+                if (/^git rev-parse --abbrev-ref HEAD\s*$/.test(opts.command) && mockCheckedOut.has(mName)) {
+                    return mockCmdResult(0, mockCheckedOut.get(mName), '');
+                }
+            }
+
+            // Beads identity probe overrides (see the `beadsIdentity` option
+            // comment above). Checked first so a scenario can make ONE member
+            // answer differently (or fail) while every other member keeps
+            // the consistent default.
+            if (beadsIdentity) {
+                const override = answerBeadsIdentityProbe(beadsIdentity, opts.member_name, opts.command);
+                if (override) return override;
+            }
+
+            // Seeded memories for the sprint-start memory sweep (see the
+            // `beadsMemories` option comment above).
+            if (liveMemories) {
+                if (/^bd memories --json$/.test(opts.command)) {
+                    return mockCmdResult(0, JSON.stringify(Object.fromEntries(liveMemories)), '');
+                }
+                const forgetMatch = /^bd forget (\S+)$/.exec(opts.command);
+                if (forgetMatch) {
+                    if (!liveMemories.has(forgetMatch[1])) return mockCmdResult(1, '', `Error: no memory with key "${forgetMatch[1]}"`);
+                    liveMemories.delete(forgetMatch[1]);
+                    if (forgottenMemories) forgottenMemories.push(forgetMatch[1]);
+                    return mockCmdResult(0, `Forgot ${forgetMatch[1]}`, '');
                 }
             }
 
@@ -636,15 +1315,63 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             //      provision_vcs_auth deployed -- answered with a fixed mock
             //      'password=' line, mirroring the real script's protocol/
             //      host/username/password output.
-            //   2. VCSModule's `curl -sS -X POST ... /pulls` REST call itself
-            //      -- answered with a fake JSON body + trailing HTTP status
-            //      line (mirroring buildCreatePrCommand's `-w '\n%{http_code}'`),
-            //      reusing the SAME prExistsState idempotency simulation the
-            //      old `gh pr create` mock used to provide.
-            if (/^\$HOME\/\.fleet-git-credential-/.test(opts.command)) {
+            //   2. VCSModule's `curl -sS -X POST ... /pulls` (GitHub) or
+            //      `curl -sS -X POST .../pullrequests?api-version=...` (Azure
+            //      DevOps) REST call itself -- answered with a fake JSON body
+            //      + trailing HTTP status line (mirroring buildCreatePrCommand's
+            //      `-w '\n%{http_code}'`), reusing the SAME prExistsState
+            //      idempotency simulation the old `gh pr create` mock used to
+            //      provide.
+            //      apra-fleet-5co8.14.1: the ADO branch here only has to be
+            //      hermetic BY DEFAULT for scenarios that supply no canned
+            //      prCurlResponseQueueLocal at all (e.g. the preflight suite).
+            //      The canned 201/409-TF401179 response queue and the
+            //      already-exists response-mapping assertions for Azure
+            //      DevOps belong to apra-fleet-lzfv.6 (same mutex file) -- do
+            //      not build those out further here.
+            //      The match is an EXACT per-provider file -- the label
+            //      provision_vcs_auth deploys under is the provider name
+            //      ('github' from defaultMockCallTool(), 'azure-devops' for
+            //      the scenarios that override callTool with an Azure DevOps
+            //      member) -- never a bare `.fleet-git-credential-` prefix:
+            //      a prefix match hid a real label mismatch in runner.js
+            //      (the PR-raise reading the github file for an Azure DevOps
+            //      member). A read of any OTHER label falls through to the
+            //      real exec() and fails like the missing file it is.
+            if (/^\$HOME\/\.fleet-git-credential-github$/.test(opts.command)) {
                 return mockCmdResult(0, 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n', '');
             }
-            if (/^curl(?:\.exe)? -sS -X POST\b/.test(opts.command) && /\/pulls\b/.test(opts.command)) {
+            if (/^\$HOME\/\.fleet-git-credential-azure-devops$/.test(opts.command)) {
+                return mockCmdResult(0, 'protocol=https\nhost=dev.azure.com\nusername=\npassword=mock-azure-devops-pat\n', '');
+            }
+            // Existing-PR update path: find (GET) and update (PATCH). Always
+            // intercepted so these never fall through to a real exec().
+            if (/^curl(?:\.exe)? -sS -X (?:GET|PATCH)\b/.test(opts.command) && /\/(?:pulls|pullrequests)\b/.test(opts.command)) {
+                if (/\/pullrequests\b/.test(opts.command)) {
+                    // Azure DevOps: hermetic default -- no recorded PRs.
+                    return mockCmdResult(0, `${JSON.stringify(/-X GET/.test(opts.command) ? { value: [] } : {})}\n200`, '');
+                }
+                const findMatch = /[?&]head=([^&']+)/.exec(opts.command);
+                if (/-X GET/.test(opts.command) && findMatch) {
+                    const ownerBranch = decodeURIComponent(findMatch[1]);
+                    const branch = ownerBranch.slice(ownerBranch.indexOf(':') + 1);
+                    const rec = prRecordState.get(branch);
+                    const list = rec ? [{ number: rec.number, title: rec.title, body: rec.body, html_url: `https://github.com/mock-org/mock-repo/pull/${rec.number}` }] : [];
+                    return mockCmdResult(0, `${JSON.stringify(list)}\n200`, '');
+                }
+                const patchMatch = /\/pulls\/(\d+)$/.exec(opts.command.trim());
+                const payload = extractMockCurlJson(opts.command);
+                if (patchMatch && payload) {
+                    for (const [branch, rec] of prRecordState) {
+                        if (String(rec.number) !== patchMatch[1]) continue;
+                        prRecordState.set(branch, { ...rec, title: payload.title ?? rec.title, body: payload.body ?? rec.body });
+                        return mockCmdResult(0, `${JSON.stringify({ number: rec.number, html_url: `https://github.com/mock-org/mock-repo/pull/${rec.number}` })}\n200`, '');
+                    }
+                }
+                return mockCmdResult(0, `${JSON.stringify({ message: 'Not Found' })}\n404`, '');
+            }
+            const isAzureDevOpsCreatePr = /\/pullrequests\?/.test(opts.command);
+            if (/^curl(?:\.exe)? -sS -X POST\b/.test(opts.command) && (/\/pulls\b/.test(opts.command) || isAzureDevOpsCreatePr)) {
                 if (prCurlResponseQueueLocal && prCurlResponseQueueLocal.length > 0) {
                     const next = prCurlResponseQueueLocal.length > 1 ? prCurlResponseQueueLocal.shift() : prCurlResponseQueueLocal[0];
                     const resolved = typeof next === 'function' ? next() : next;
@@ -661,6 +1388,43 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     // so those scenarios should prefer a dedicated handler).
                     return mockCmdResult(1, '', gitGhFailureMessage || `mock curl failure (injected) for: ${opts.command}`);
                 }
+                if (isAzureDevOpsCreatePr) {
+                    // Azure DevOps' create-pull-request payload carries
+                    // sourceRefName/targetRefName (full 'refs/heads/...'
+                    // names), not GitHub's bare "head" field -- see
+                    // buildAzureDevOpsCreatePrCommand in
+                    // vcs-providers/azure-devops.mjs. No already-exists
+                    // simulation here (that's lzfv.6's canned-queue scope);
+                    // always answer with a hermetic default success.
+                    //
+                    // apra-fleet-j918.8.8: this body previously fabricated a
+                    // `_links.web.href` field. A real Azure DevOps response
+                    // carries no such field -- vcs-providers/azure-devops.mjs's
+                    // pullRequestResponse.map (mapPullRequestResponse) reads
+                    // ONLY `pullRequestId` from the body and constructs the
+                    // browsable URL itself from org/project/repo context
+                    // (webUrlField: null, "No web-URL field exists in the body
+                    // -- it is constructed"), confirmed against a real
+                    // node:http stub in test/vcs-http-stub.test.mjs's
+                    // AZURE_CREATE_PR_201 fixture. The old `_links` field was
+                    // silently ignored by every consumer (nothing in
+                    // fleet-sprint/ ever read it) rather than causing a wrong
+                    // result, but it was still a disagreement between this
+                    // harness's assumed shape and the real one -- corrected
+                    // here to match the fields the real API and the stub
+                    // fixture actually return.
+                    const body = JSON.stringify({
+                        repository: { id: 'e1a2b3c4', name: 'mock-repo', project: { name: 'mock-project' } },
+                        pullRequestId: 101,
+                        codeReviewId: 101,
+                        status: 'active',
+                        sourceRefName: 'refs/heads/auto-sprint/mock-sprint',
+                        targetRefName: 'refs/heads/main',
+                        title: 'Sprint PR',
+                        url: 'https://dev.azure.com/mock-org/_apis/git/repositories/e1a2b3c4/pullRequests/101',
+                    });
+                    return mockCmdResult(0, `${body}\n201`, '');
+                }
                 const headMatch = /"head":"([^"]*)"/.exec(opts.command);
                 const branch = headMatch ? headMatch[1] : null;
                 if (branch && prExistsState.has(branch)) {
@@ -671,8 +1435,21 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     return mockCmdResult(0, `${body}\n422`, '');
                 }
                 if (branch) prExistsState.add(branch);
+                const created = extractMockCurlJson(opts.command);
+                if (branch && created) prRecordState.set(branch, { number: 101, title: created.title, body: created.body });
                 const body = JSON.stringify({ number: 101, html_url: 'https://github.com/mock-org/mock-repo/pull/101' });
                 return mockCmdResult(0, `${body}\n201`, '');
+            }
+
+            // The engine's local git-exclude primitive (se-os-commands
+            // ensureGitExcluded, POSIX dialect -- the mock members resolve to
+            // POSIX) is a shell script, not a `git ...` command line, so the
+            // generic block below would not catch it and a real exec() would
+            // run it through the HOST shell (cmd.exe on Windows, where it is
+            // not valid syntax). Answer it as a hermetic success instead;
+            // its real-shell behaviour is covered by its own tests.
+            if (/^if excl=\$\(git rev-parse --git-path info\/exclude /.test(opts.command)) {
+                return mockCmdResult(0, '', '');
             }
 
             // git/gh commands (apra-fleet-unw.14's branch-ensure/push
@@ -696,6 +1473,13 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     return mockCmdResult(1, '', gitGhFailureMessage || `mock git/gh failure (injected) for: ${opts.command}`);
                 }
 
+                // Review diff base: before each reviewer / Final Review dispatch
+                // the engine runs `git merge-base origin/<base> <branch>` and
+                // requires a commit SHA back. Answer with a fixed one.
+                if (/^git merge-base origin\/\S+ \S+\s*$/.test(opts.command)) {
+                    return mockCmdResult(0, MOCK_REVIEW_MERGE_BASE_SHA, '');
+                }
+
                 // apra-fleet-eft.64.1: answer the Publish PR step's remote-
                 // classification probe with `originUrl` (a hosted GitHub URL
                 // by default -- see the option comment above) so this mock's
@@ -706,6 +1490,21 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 // non-hosted).
                 if (/^git remote get-url origin\b/.test(opts.command)) {
                     return mockCmdResult(0, originUrl, '');
+                }
+
+                // Retry salvage (GitHub #716): a retried doer's reset onto the
+                // remote tip first reads `git rev-parse HEAD <remote>/<branch>`
+                // and runs `git stash create`, parsing both outputs and failing
+                // closed on anything unparseable. This mock has no real
+                // checkout, so answer them as a clean, up-to-date one: HEAD
+                // equals the remote tip and there is no tracked WIP (empty
+                // stash output), i.e. nothing to salvage.
+                if (/^git rev-parse HEAD \S+\s*$/.test(opts.command)) {
+                    const sha = '0'.repeat(40);
+                    return mockCmdResult(0, `${sha}\n${sha}\n`, '');
+                }
+                if (/^git (?:-c \S+ )*stash create\s*$/.test(opts.command)) {
+                    return mockCmdResult(0, '', '');
                 }
 
                 return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
@@ -721,6 +1520,22 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 // src/tools/execute-command.ts and return normal nonzero-exit
                 // data instead of isError.
                 return mockCmdResult(1, '', `mock command failure (injected) for: ${opts.command}`);
+            }
+
+            // apra-fleet-5co8.16: fail loudly instead of falling through to
+            // runCmd() (which would exec this for real against tempDir --
+            // there is no live network here, so this is exactly the shape of
+            // the C4 regression: a `curl (6) Could not resolve host` error
+            // instead of a clear unmocked-command failure). Every currently
+            // known curl shape (GitHub /pulls, Azure DevOps /pullrequests,
+            // the git-credential-helper script read) is intercepted by a
+            // dedicated handler ABOVE this point, so reaching here with a
+            // network-shaped command means either a new endpoint/provider
+            // was added without a mock, or an existing mock's match regex
+            // stopped matching -- both are harness bugs to fix, not commands
+            // to run for real.
+            if (isNetworkShapedCommand(opts.command)) {
+                throw new Error(`mock-sprint-harness: unmocked network command reached the runCmd() fallback -- refusing to execute it against the real network. command=${redactNetworkCommandForLog(opts.command)}`);
             }
 
             // No stale intercepts here otherwise: runner.js's Deploy/Integ
@@ -1064,10 +1879,9 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     content: [{
                         text: JSON.stringify({
                             passed: true,
-                            suitePassed: true,
-                            smokePassed: true,
+                            sections: [{ name: 'Mock suite', passed: true }],
                             bugsFiled: [],
-                            summary: 'Mock regression pass: full suite and sandbox smoke test both green.',
+                            summary: 'Mock regression pass: every playbook part green.',
                         })
                     }]
                 };
@@ -1077,8 +1891,7 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             //     apra-fleet-unw2.10, N12: contract enforcement) ---
             //
             // The vendored harvester-input.json requires
-            // analysisArtifactFile/analysisText/costAnalysis/base-branch/
-            // branch (see agents/harvester.md's own "Missing-input
+            // analysisArtifactFile/analysisText/base-branch/branch (see agents/harvester.md's own "Missing-input
             // behavior": a contract-obeying harvester returns FAILED, never
             // fabricates a substitute, if any of these is absent from its
             // dispatch). This mock now enforces that for real -- it is NOT
@@ -1224,7 +2037,12 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
             base_branch: 'main',
             goal: 'P1/P2',
             max_cycles: 5,
-            callTool: defaultMockCallTool(),
+            // apra-fleet-3swo.7.18: thread this scenario's own executeCommand
+            // through so a vcs_credential_exec call (once apra-fleet-3swo.7.6
+            // lands) delegates its create-PR dispatch to the SAME curl
+            // interception this mock fleet api already provides -- see the
+            // header comment above defaultMockCallTool().
+            callTool: defaultMockCallTool({ executeCommand: mockFleetApi.executeCommand }),
         }, true);
 
         // bd list hides closed issues by default -- pass --all so the final
@@ -1340,6 +2158,11 @@ export async function runDevelopLoopScenario(tag, {
     // by plain taskSpecs (e.g. a permanently-blocked bead for the A5
     // goal-priority exit-condition scenarios below).
     beforeSprint,
+    // Optional hook invoked with (workflow, {tempDir, runCmd, epicBead, tasks})
+    // once the scenario's FleetWorkflow exists and BEFORE the sprint runs, so a
+    // scenario can react to its lifecycle events ('pause:requested', 'paused',
+    // 'resumed') -- e.g. answer a pending decision, or requestStop() mid-pause.
+    onWorkflow,
     // deploy.md / integ-test-playbook.md are NOT written by setupMinimal();
     // set true to write them (enabling the Deploy/Integ phases).
     withRunbooks = false,
@@ -1355,6 +2178,9 @@ export async function runDevelopLoopScenario(tag, {
     // separate scenario runs against the exact SAME branch to simulate a
     // re-run of finalization.
     gitGhFailurePattern, gitGhFailureMessage, prExistsState, branchOverride,
+    // Existing-PR update path record store -- see buildMockFleetApi's
+    // `prRecordState` option comment.
+    prRecordState,
     // apra-fleet-647.1.1.3: see buildMockFleetApi's `prCurlResponseQueue`
     // option comment above.
     prCurlResponseQueue,
@@ -1378,6 +2204,19 @@ export async function runDevelopLoopScenario(tag, {
     // createMemberSessionGuard()'s `stop_prompt` call end-to-end, rather than
     // only unit-testing the guard helper in isolation.
     callTool,
+    // apra-fleet-3swo.7.19: optional `(executeCommand) => callTool` factory,
+    // for a scenario whose own callTool needs to delegate vcs_credential_exec
+    // to the SAME shared simulator (defaultMockCallTool's executeCommand
+    // branch) this function's own internal `mockFleetApi` uses -- that
+    // instance does not exist yet at the point a caller builds a plain
+    // `callTool` value (it is constructed below, inside this function), so a
+    // caller that needs it supplies this factory instead and receives
+    // `mockFleetApi.executeCommand` once it exists. Takes priority over a
+    // plain `callTool` when both are supplied.
+    callToolFactory,
+    // Optional `args.decision_notify` (decision-notify.mjs): where the operator
+    // is told about a pending decision.
+    decisionNotify,
     // apra-fleet-eft.79: optional passthroughs for the multi-streak worklist
     // args (validateArgs: doer_worklist_mode 'resume'|'batch',
     // resume_model_switch boolean, worklist_effort_budget positive number) --
@@ -1391,6 +2230,28 @@ export async function runDevelopLoopScenario(tag, {
     // pushCode gating) against a member that provably never receives a
     // code-writing dispatch.
     roleMap,
+    // Backlog-alias warnings the CLI forwards as `args.roleMapWarnings`
+    // (bin/cli.mjs resolveRoleMapWithWarnings -> buildRunnerArgs).
+    roleMapWarnings,
+    // Beads identity precondition passthroughs: `beadsIdentity` is
+    // buildMockFleetApi's per-member probe override map (see its option
+    // comment); `expectBeads` is the raw `args.expect_beads` value (a JSON
+    // string or record) the supervisor would pass as `--expect-beads`.
+    beadsIdentity, expectBeads,
+    // Optional passthrough for args.skip_regression (the --skip-regression
+    // launch option), so a scenario can prove the regression phase is skipped.
+    skipRegression,
+    // Seeded beads memories for the sprint-start memory sweep -- see
+    // buildMockFleetApi's `beadsMemories` option comment. The keys the
+    // sweep forgot come back as `forgottenMemories` on the result.
+    beadsMemories,
+    // Optional executeCommand observer/override -- see buildMockFleetApi's
+    // `onCommand` option comment.
+    onCommand,
+    // Optional caller-owned array that receives every workflow
+    // `activity:end` record (command and agent activities, with `success`
+    // and `error`), so a scenario can assert how an activity was recorded.
+    activityEnds,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -1403,12 +2264,24 @@ export async function runDevelopLoopScenario(tag, {
     if (beforeSprint) {
         await beforeSprint({ tempDir, runCmd, epicBead, tasks });
     }
+    // The issue-id prefix of the DB this scenario actually created: the fixed
+    // 'mock' under replay, a template/dir-derived name under real bd. Resolved
+    // via the same `bd where --json` probe the sprint runs, so a scenario can
+    // assert on it in both modes. `expectBeads` may be a function of
+    // `{ prefix }` for scenarios that need to build the expectation from it.
+    let dbPrefix;
+    try {
+        dbPrefix = JSON.parse((await runCmd('bd where --json', tempDir)).stdout || '{}').prefix;
+    } catch { /* leave undefined */ }
+    if (typeof expectBeads === 'function') expectBeads = expectBeads({ prefix: dbPrefix });
     const dispatched = [];
     const commandLog = [];
     const commandLogDetailed = [];
     const memberGitState = new Map();
     const logs = [];
     const states = [];
+    const forgottenMemories = [];
+    const memoriesSink = {};
     // apra-fleet-eft.60.3: opt this hermetic run into the runner's zero-wait
     // Planner-dispatch retry backoff. The ~110s of real PLANNER_DISPATCH_RETRY_
     // DELAYS_MS backoff only models a real fleet member's execute_prompt
@@ -1457,13 +2330,18 @@ export async function runDevelopLoopScenario(tag, {
             gitGhFailurePattern,
             gitGhFailureMessage,
             prExistsState,
+            ...(prRecordState !== undefined ? { prRecordState } : {}),
             ...(originUrl !== undefined ? { originUrl } : {}),
             ...(prCurlResponseQueue !== undefined ? { prCurlResponseQueue } : {}),
+            ...(beadsIdentity !== undefined ? { beadsIdentity } : {}),
+            ...(beadsMemories !== undefined ? { beadsMemories, forgottenMemories, memoriesSink } : {}),
+            ...(onCommand !== undefined ? { onCommand } : {}),
         });
         // apra-fleet-20i.1.2: see runOnce() above -- same tag-as-logPrefix
         // threading, real single-sprint CLI path unaffected.
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir }, `[${tag}] `);
         workflow.on('log', (e) => logs.push(e.msg));
+        if (Array.isArray(activityEnds)) workflow.on('activity:end', (meta) => activityEnds.push(meta));
         // apra-fleet-eft.28.2: publishState() (runner.js's sprint-state
         // persistence, e.g. the main() typed-abort catch's
         // publishState('terminal', ...)) emits a 'state' event on the
@@ -1471,6 +2349,7 @@ export async function runDevelopLoopScenario(tag, {
         // a terminal error was actually PERSISTED to sprint state, not just
         // logged.
         workflow.on('state', (e) => states.push(e));
+        if (onWorkflow) await onWorkflow(workflow, { tempDir, runCmd, epicBead, tasks });
         const engine = new WorkflowEngine(workflow);
         const scriptPath = path.join(__dirname, '../../fleet-sprint/runner.js');
 
@@ -1486,11 +2365,20 @@ export async function runDevelopLoopScenario(tag, {
                 goal,
                 max_cycles: maxCycles,
                 ...(dispatchTimeoutS !== undefined ? { dispatch_timeout_s: dispatchTimeoutS } : {}),
-                callTool: callTool !== undefined ? callTool : defaultMockCallTool(),
+                // apra-fleet-3swo.7.18: same executeCommand-threading as
+                // runOnce() above, for the default (no per-scenario callTool
+                // override) case.
+                callTool: callToolFactory
+                    ? callToolFactory(mockFleetApi.executeCommand)
+                    : (callTool !== undefined ? callTool : defaultMockCallTool({ executeCommand: mockFleetApi.executeCommand })),
                 ...(doerWorklistMode !== undefined ? { doer_worklist_mode: doerWorklistMode } : {}),
                 ...(resumeModelSwitch !== undefined ? { resume_model_switch: resumeModelSwitch } : {}),
                 ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
                 ...(roleMap !== undefined ? { roleMap } : {}),
+                ...(roleMapWarnings !== undefined ? { roleMapWarnings } : {}),
+                ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
+                ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
+                ...(decisionNotify !== undefined ? { decision_notify: decisionNotify } : {}),
             }, true);
         } catch (err) {
             error = err;
@@ -1529,7 +2417,8 @@ export async function runDevelopLoopScenario(tag, {
         // as intended by callers that deliberately induce one (e.g. a doer
         // throw or a typed sprint-abort) to verify error handling.
         passed = (error === null);
-        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch, tempDir };
+        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch, tempDir, dbPrefix, forgottenMemories,
+            remainingMemories: memoriesSink.live ? Object.fromEntries(memoriesSink.live) : undefined };
     } finally {
         // apra-fleet-20i.1.2: see runOnce() above.
         console.log(`=== END scenario: ${tag} (${passed ? 'PASS' : 'FAIL'}) ===`);
@@ -1578,11 +2467,13 @@ export async function runDevelopLoopScenario(tag, {
 // created the whole DAG). In both cases this harness's own post-run bead-state
 // read still needs to reflect real state -- the same exclusion set runner.js's
 // own isNoMutationDispatchFailure makes.
-const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout']);
+// 'max_total_time' too, unless the server marked it dispatched:false (the
+// budget ran out during setup, before anything was sent) -- mirrors runner.js.
+const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout', 'max_total_time']);
 
 export function isNoMutationTerminalDispatchError(err) {
     if (!err) return false;
-    if (err instanceof AgentDispatchError && err.details && AGENT_RAN_DISPATCH_REASONS.has(err.details.reason)) {
+    if (err instanceof AgentDispatchError && err.details && AGENT_RAN_DISPATCH_REASONS.has(err.details.reason) && err.details.dispatched !== false) {
         return false;
     }
     return err instanceof AgentDispatchError || err instanceof FleetTransportError;

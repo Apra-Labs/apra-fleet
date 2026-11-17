@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_list.request.json#",
+  "x-invariant": [
+    "INV-05"
+  ],
+  "$ref": "#/$defs/v1-kb_list-request",
+  "$defs": {
+    "v1-kb_list-request": {
+      "type": "object",
+      "properties": {
+        "confidence": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "CONFIRMED",
+                "INFERRED",
+                "UNVERIFIED"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "CONFIRMED",
+                  "INFERRED",
+                  "UNVERIFIED"
+                ]
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "Only return entries whose confidence tier is in this list (e.g. [\"INFERRED\",\"UNVERIFIED\"]); a single tier string (e.g. \"INFERRED\") is accepted as a one-element list. Default when omitted: [\"CONFIRMED\"] -- INFERRED and UNVERIFIED entries are returned only when listed explicitly."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "context-cache",
+            "learning",
+            "knowledge",
+            "runbook",
+            "user-directive"
+          ],
+          "description": "Filter by content type"
+        },
+        "module": {
+          "type": "string",
+          "description": "Filter by exact module name"
+        },
+        "symbol": {
+          "type": "string",
+          "description": "Filter to entries whose symbols array contains this value"
+        },
+        "tag": {
+          "type": "string",
+          "description": "Filter to entries whose tags array contains this value (exact match)"
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max entries to return (default: no limit)"
+        },
+        "repo_path": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo_remote_url": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

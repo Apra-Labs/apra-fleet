@@ -258,6 +258,15 @@ describe('history -- isDeterministicTerminalReason() (apra-fleet-gey.2)', () => 
 // deps.renameRetry -- same fake-fs/fake-sleep pattern as
 // supervisor-id-allocator.test.mjs's apra-fleet-cvb.5 coverage, proving THIS
 // call site (not just the helper in isolation) is wired up.
+//
+// apra-fleet-j918.7.5: reduced from a three-test EPERM/EBUSY ladder RE-PROOF
+// to a WIRING proof -- see test/supervisor-ledger.test.mjs's identical
+// describe block for the full rationale and the falsification record (this
+// file's call site has the exact same shape: a static import of
+// renameWithRetry, called as renameWithRetry(fs, tmpPath, filePath,
+// renameRetryOpts) from src/supervisor/history.mjs). The backoff-ladder
+// algorithm itself stays owned exclusively by
+// test/supervisor-rename-with-retry.test.mjs.
 describe('history -- persist() rename retries transient EPERM/EBUSY (apra-fleet-ed4.1)', () => {
     /** A fake fs.rename() that fails N times with `code`, then delegates to the real rename. */
     function flakyRenameFs(realFs, code, failCount) {
@@ -279,20 +288,23 @@ describe('history -- persist() rename retries transient EPERM/EBUSY (apra-fleet-
         };
     }
 
-    test('retry-then-succeed: a transient EPERM on rename() does not drop the recorded audit event', async () => {
+    test('wiring: a transient EPERM on rename() is retried through the shared helper, and the recorded audit event still commits durably', async () => {
         const dir = await tmpDir();
         const filePath = path.join(dir, HISTORY_FILENAME);
-        const fakeFs = flakyRenameFs(fsp, 'EPERM', 2);
-        const sleeps = [];
+        const fakeFs = flakyRenameFs(fsp, 'EPERM', 1);
+        let sleepCalls = 0;
         const history = createHistory({
-            filePath, fs: fakeFs, renameRetry: { sleep: async (ms) => { sleeps.push(ms); } },
+            filePath, fs: fakeFs, renameRetry: { sleep: async () => { sleepCalls += 1; } },
         });
         await history.start();
 
         const stored = await history.record({ sprintId: 's1', event: HISTORY_EVENTS.AUTO_RELEASED, reason: 'watchdog' });
         assert.equal(stored.sprintId, 's1');
-        assert.equal(fakeFs.renameCalls, 3, 'rename must be retried until it succeeds (1 + 2 retries)');
-        assert.equal(sleeps.length, 2, 'a bounded backoff sleep is injected between retries, never a real wall-clock wait');
+        // WIRING ONLY -- see the ledger.test.mjs sibling block for why the
+        // exact attempt/backoff arithmetic is deliberately not re-asserted
+        // here.
+        assert.ok(fakeFs.renameCalls > 1, 'a transient rename failure must be retried, not surfaced immediately');
+        assert.ok(sleepCalls > 0, 'the shared helper\'s injected sleep must fire during the retry -- proves persist() delegates to renameWithRetry rather than a local retry loop');
 
         // The audit event is actually durable on disk, not just in memory.
         const onDisk = JSON.parse(await fsp.readFile(filePath, 'utf-8'));
@@ -302,15 +314,24 @@ describe('history -- persist() rename retries transient EPERM/EBUSY (apra-fleet-
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
-    test('retry-then-succeed: a transient EBUSY on rename() does not drop the recorded audit event', async () => {
+    test('wiring: a custom renameRetry.maxAttempts is honored by the REAL shared helper, not a local reimplementation', async () => {
         const dir = await tmpDir();
         const filePath = path.join(dir, HISTORY_FILENAME);
-        const fakeFs = flakyRenameFs(fsp, 'EBUSY', 1);
-        const history = createHistory({ filePath, fs: fakeFs, renameRetry: { sleep: async () => {} } });
+        const fakeFs = flakyRenameFs(fsp, 'EPERM', 99); // always fails
+        const history = createHistory({
+            filePath, fs: fakeFs, renameRetry: { maxAttempts: 2, sleep: async () => {} },
+        });
         await history.start();
 
-        await history.record({ sprintId: 's1', event: HISTORY_EVENTS.AUTO_RELEASED, reason: 'watchdog' });
-        assert.equal(fakeFs.renameCalls, 2, 'rename must be retried after a single transient EBUSY');
+        // FALSIFIABILITY: see test/supervisor-ledger.test.mjs's identical
+        // check for the by-hand falsification record (same call-site shape,
+        // confirmed against a /tmp copy of the package so the mutation never
+        // touched the tracked tree).
+        await assert.rejects(
+            () => history.record({ sprintId: 's1', event: HISTORY_EVENTS.AUTO_RELEASED, reason: 'watchdog' }),
+            (err) => err.code === 'EPERM',
+        );
+        assert.equal(fakeFs.renameCalls, 2, 'the custom maxAttempts option must be forwarded to and honored by the real shared helper');
 
         await fsp.rm(dir, { recursive: true, force: true });
     });

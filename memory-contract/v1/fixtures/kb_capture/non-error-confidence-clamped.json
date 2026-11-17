@@ -1,0 +1,24 @@
+{
+  "tool": "kb_capture",
+  "case": "non-error-confidence-clamped",
+  "kind": "non_error_outcome",
+  "request": {
+    "type": "knowledge",
+    "title": "A capture that asks for CONFIRMED directly",
+    "summary": "kb_capture always clamps an incoming CONFIRMED down to INFERRED; CONFIRMED is only minted by kb_promote.",
+    "content": "This entry requests confidence: CONFIRMED at capture time.",
+    "source_files": [
+      "src/example.ts"
+    ],
+    "confidence": "CONFIRMED"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"9d880141-fa5d-4ea4-9eea-fc598c1c653a\",\"audn_decision\":\"add\",\"confidence_clamped\":true}"
+      }
+    ]
+  },
+  "note": "authority group, non_error_outcomes: the silent clamp branch gets no taxonomy code by design (taxonomy.json _meta.group_definitions.authority). Observable via confidence_clamped:true in the response, not via a thrown/response-field error code."
+}

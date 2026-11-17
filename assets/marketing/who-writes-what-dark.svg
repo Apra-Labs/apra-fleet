@@ -167,7 +167,7 @@
     <circle cx="678" cy="618" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
     <text x="678" y="618" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">G</text>
     <text x="700" y="614" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Harvest + PR</text>
-    <text x="700" y="632" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">docs, changelog, pull request</text>
+    <text x="700" y="632" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">docs, analysis, pull request</text>
   </g>
 
   <!-- Connectors: left artifacts -> right phases (left to right); right-side landing points
@@ -203,7 +203,7 @@
   <polygon points="1124,216 1134,211 1134,221" fill="#F59E0B"/>
   <polygon points="1124,654 1134,649 1134,659" fill="#F59E0B"/>
   <circle cx="1156" cy="435" r="4" fill="#F59E0B"/>
-  <text transform="translate(1170, 435) rotate(90)" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="16.5" font-weight="700" fill="#FBBF24">all roles, via the bd prime session hook</text>
+  <text transform="translate(1170, 435) rotate(90)" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="16.5" font-weight="700" fill="#FBBF24">each role, via role-scoped bd memories</text>
 
   <!-- Bottom annotation strip -->
   <rect x="50" y="690" width="1166" height="48" rx="12" fill="#F59E0B" fill-opacity="0.12" stroke="#F59E0B" stroke-width="1.2"/>

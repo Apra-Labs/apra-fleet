@@ -219,13 +219,85 @@ describe('budget-awareness: estimateDispatchCost pricing', () => {
   });
 
   it('a dollar budget prices tokens via getMemberModelPricing for the resolved tier', () => {
-    // claude premium = opus: promptPrice 15/M, completionPrice 75/M.
+    // claude premium = opus (Opus 5.5 list price): promptPrice 4/M, completionPrice 20/M.
     const cost = estimateDispatchCost(
       agent, providerWithoutUsage(), 'premium',
       { input_tokens: 1_000_000, output_tokens: 1_000_000 }, 'dollars',
     );
-    expect(cost).toBeCloseTo(15 + 75);
+    expect(cost).toBeCloseTo(4 + 20);
   });
+
+  // A recorded cache-heavy Claude dispatch: cache reads dwarf fresh input.
+  const CACHE_USAGE = {
+    input_tokens: 2_000,
+    output_tokens: 10_000,
+    cache_read_input_tokens: 400_000,
+    cache_creation_input_tokens: 20_000,
+  };
+
+  it('a dollar budget prices cache-read and cache-write tokens at their own rates', () => {
+    // claude premium = opus (Opus 5.5). Anthropic list prices ($/1M):
+    // prompt 4, completion 20, cache read 0.20 (Opus 5.5's own 0.05x),
+    // cache write 8 (the 1-hour TTL the CLI uses, 2x).
+    //   input        2_000 * 4    / 1e6 = 0.008
+    //   output      10_000 * 20   / 1e6 = 0.2
+    //   cache read 400_000 * 0.20 / 1e6 = 0.08
+    //   cache write 20_000 * 8    / 1e6 = 0.16
+    //   total                            = 0.448
+    const cost = estimateDispatchCost(agent, providerWithoutUsage(), 'premium', CACHE_USAGE, 'dollars');
+    expect(cost).toBeCloseTo(0.448, 10);
+    // The old input+output-only figure (0.208) would undercount it.
+    expect(cost).toBeGreaterThan(0.208 + 0.2);
+  });
+
+  it('a dollar budget uses the provider-reported cost_usd as-is, never recomputing it', () => {
+    const cost = estimateDispatchCost(agent, providerWithoutUsage(), 'premium', { ...CACHE_USAGE, cost_usd: 0.1380048 }, 'dollars');
+    expect(cost).toBe(0.1380048);
+    // ... even for an unpriceable tier.
+    const noneAgent = makeTestAgent({ id: 'm-none-cost', llmProvider: 'none' });
+    expect(estimateDispatchCost(noneAgent, providerWithoutUsage(), 'standard', { input_tokens: 1, output_tokens: 1, cost_usd: 0.5 }, 'dollars')).toBe(0.5);
+  });
+
+  // Upgrade safety: a token budget keeps meaning input+output. Cache reads
+  // re-count the cached prefix every turn (one real session: 58,653 in+out
+  // vs 17,966,362 with cache), so counting them would make an existing
+  // token budget bind hundreds of times sooner.
+  it('a token budget counts input+output only -- never the cache counts or a reported cost', () => {
+    const cost = estimateDispatchCost(agent, providerWithoutUsage(), 'standard', { ...CACHE_USAGE, cost_usd: 9 }, 'tokens');
+    expect(cost).toBe(2_000 + 10_000);
+  });
+
+  it('recordAndEvaluate accumulates the cache-inclusive estimate against a dollar budget', async () => {
+    setBudget(SCOPE, { limit: 10, unit: 'dollars' });
+    await recordAndEvaluate({ scope: SCOPE, agent, provider: providerWithoutUsage(), tier: 'premium', usage: CACHE_USAGE });
+    expect(estimatedSpendFor(SCOPE)).toBeCloseTo(0.448, 10);
+  });
+
+  it('recordAndEvaluate accumulates a reported cost_usd against a dollar budget', async () => {
+    setBudget(SCOPE, { limit: 10, unit: 'dollars' });
+    await recordAndEvaluate({ scope: SCOPE, agent, provider: providerWithoutUsage(), tier: 'premium', usage: { ...CACHE_USAGE, cost_usd: 0.25 } });
+    await recordAndEvaluate({ scope: SCOPE, agent, provider: providerWithoutUsage(), tier: 'premium', usage: { ...CACHE_USAGE, cost_usd: 0.5 } });
+    expect(estimatedSpendFor(SCOPE)).toBeCloseTo(0.75, 10);
+  });
+
+  // Non-Claude providers report no cache fields (agy and opencode parse
+  // input/output only; codex/copilot report no usage at all). Absent cache
+  // fields must count as 0: a finite figure, the same as pricing in+out.
+  for (const provider of ['agy', 'opencode', 'codex', 'copilot'] as const) {
+    it(`non-Claude (${provider}) usage without cache fields prices input+output only, no NaN`, () => {
+      const m = makeTestAgent({ id: `m-${provider}`, llmProvider: provider });
+      const tiers = { agy: 'gemini-3.8-flash-low', opencode: 'opencode/north-mini-code-free', codex: 'gpt-5.4', copilot: 'claude-sonnet-4-5' };
+      const p = { modelTiers: () => ({ cheap: tiers[provider], standard: tiers[provider], premium: tiers[provider] }) } as unknown as ProviderAdapter;
+      const usage = { input_tokens: 1_000_000, output_tokens: 1_000_000 };
+      const cost = estimateDispatchCost(m, p, 'standard', usage, 'dollars');
+      expect(Number.isFinite(cost)).toBe(true);
+      const withZeroCache = estimateDispatchCost(m, p, 'standard', { ...usage, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, 'dollars');
+      expect(cost).toBe(withZeroCache);
+      const expected = { agy: 0.10 + 0.40, opencode: 0, codex: 5 + 15, copilot: 3 + 15 }[provider];
+      expect(cost).toBeCloseTo(expected, 10);
+      expect(estimateDispatchCost(m, p, 'standard', usage, 'tokens')).toBe(2_000_000);
+    });
+  }
 
   it('an unpriceable tier contributes 0 rather than a fabricated cost', () => {
     const noneAgent = makeTestAgent({ id: 'm-none', llmProvider: 'none' });

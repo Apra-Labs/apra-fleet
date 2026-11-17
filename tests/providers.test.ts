@@ -4,9 +4,10 @@ import { CodexProvider } from '../src/providers/codex.js';
 import { CopilotProvider } from '../src/providers/copilot.js';
 import { AgyProvider } from '../src/providers/agy.js';
 import { getProvider } from '../src/providers/index.js';
-import { buildResumeFlag, buildSessionIdFlag, isMaxTurnsResponse } from '../src/providers/provider.js';
-import { isMaxTurnsSignal } from '../src/providers/claude.js';
+import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, isMaxTurnsResponse } from '../src/providers/provider.js';
+import { isMaxTurnsSignal, parseClaudeResetTime } from '../src/providers/claude.js';
 import type { SSHExecResult } from '../src/types.js';
+import { MEMBER_DENIED_TOOLS } from '../src/services/member-tool-allowlist.js';
 
 // --- Helpers -----------------------------------------------------------------
 
@@ -140,7 +141,34 @@ describe('ClaudeProvider', () => {
   it('extracts usage tokens when present in JSON response', () => {
     const payload = JSON.stringify({ result: 'done', session_id: 'sid-1', usage: { input_tokens: 123, output_tokens: 456 } });
     const resp = p.parseResponse(makeResult(payload));
-    expect(resp.usage).toEqual({ input_tokens: 123, output_tokens: 456 });
+    expect(resp.usage).toEqual({ input_tokens: 123, output_tokens: 456, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+  });
+
+  it('extracts cache-read and cache-write tokens from a recorded Claude result event', () => {
+    // Shape of a real `claude -p --output-format json` result event's usage
+    // (cache counts are reported separately from, not inside, input_tokens).
+    const payload = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: 'done',
+      session_id: 'sid-cache',
+      usage: {
+        input_tokens: 42,
+        cache_creation_input_tokens: 18_311,
+        cache_read_input_tokens: 512_904,
+        output_tokens: 3_187,
+        server_tool_use: { web_search_requests: 0 },
+        service_tier: 'standard',
+      },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({
+      input_tokens: 42,
+      output_tokens: 3_187,
+      cache_read_input_tokens: 512_904,
+      cache_creation_input_tokens: 18_311,
+    });
   });
 
   it('returns undefined usage when usage field is absent', () => {
@@ -265,7 +293,7 @@ describe('ClaudeProvider', () => {
     expect(resp.result).toBe('Here is the full answer.');
     expect(resp.sessionId).toBe('sid-recover');
     expect(resp.isError).toBe(false);
-    expect(resp.usage).toEqual({ input_tokens: 5, output_tokens: 7 });
+    expect(resp.usage).toEqual({ input_tokens: 5, output_tokens: 7, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
   });
 
   it('recovers assistant text from a JSON-array stream when the result event text is blank', () => {
@@ -315,6 +343,36 @@ describe('ClaudeProvider', () => {
     expect(p.resumeFlag()).toBe('');
   });
 
+  // --- apra-fleet-lmtg.1: fork-mode dispatch capability ---------------------
+
+  it('reports fork capability (supportsFork)', () => {
+    expect(p.supportsFork?.()).toBe(true);
+  });
+
+  it('forkFlag seeds from the source session id via --resume + --fork-session and pre-mints the forked output id via --session-id', () => {
+    expect(p.forkFlag?.('source-ses-1', 'new-ses-1')).toBe('--session-id "new-ses-1" --resume "source-ses-1" --fork-session');
+  });
+
+  it('forkFlag explicitly pre-mints --session-id for the forked output -- the caller controls the forked id, not the CLI', () => {
+    const flag = p.forkFlag?.('source-ses-1', 'new-ses-1') ?? '';
+    expect(flag).toContain('--session-id "new-ses-1"');
+  });
+
+  it('forkFlag is structurally distinct from a plain in-place resume of the same source id -- --fork-session is what guarantees a NEW, distinct output session id (Claude never reuses the source id under fork)', () => {
+    const forked = p.forkFlag?.('source-ses-1', 'new-ses-1') ?? '';
+    const resumed = p.resumeFlag('source-ses-1', true);
+    expect(forked).not.toBe(resumed);
+    expect(forked).toContain(resumed); // fork extends plain resume with --fork-session
+    expect(forked).toContain('--fork-session');
+  });
+
+  it('resumeFlag/resume behavior is unchanged by fork support (regression)', () => {
+    expect(p.resumeFlag('ses-1', true)).toBe('--resume "ses-1"');
+    expect(p.resumeFlag('ses-1', false)).toBe('--session-id "ses-1"');
+    expect(p.resumeFlag()).toBe('');
+    expect(p.supportsResume()).toBe(true);
+  });
+
   it('maps model tiers', () => {
     expect(p.modelForTier('cheap')).toBe('haiku');
     expect(p.modelForTier('standard')).toBe('sonnet');
@@ -353,16 +411,140 @@ describe('ClaudeProvider', () => {
     expect(p.supportsApiKey()).toBe(true);
   });
 
-  it('composePermissionConfig disables fleet-mcp for doer (#151)', () => {
-    const [settings] = p.composePermissionConfig('doer') as [Record<string, unknown>];
-    const mcpServers = settings.mcpServers as Record<string, unknown>;
-    expect(mcpServers?.['apra-fleet']).toMatchObject({ disabled: true });
+  it('composePermissionConfig no longer writes the blanket apra-fleet {disabled:true} switch', () => {
+    for (const role of ['doer', 'reviewer'] as const) {
+      const [settings] = p.composePermissionConfig(role) as [Record<string, unknown>];
+      expect(settings.mcpServers).toBeUndefined();
+      expect(JSON.stringify(settings)).not.toContain('"disabled"');
+    }
   });
 
-  it('composePermissionConfig disables fleet-mcp for reviewer (#151)', () => {
-    const [settings] = p.composePermissionConfig('reviewer') as [Record<string, unknown>];
-    const mcpServers = settings.mcpServers as Record<string, unknown>;
-    expect(mcpServers?.['apra-fleet']).toMatchObject({ disabled: true });
+  it('composePermissionConfig denies exactly the complement of the member allowlist on apra-fleet', () => {
+    const [settings] = p.composePermissionConfig('doer', ['Read']) as [{ permissions: { allow: string[]; deny: string[] } }];
+    expect(settings.permissions.allow).toEqual(['Read']);
+    expect(settings.permissions.deny).toEqual(MEMBER_DENIED_TOOLS.map(t => `mcp__apra-fleet__${t}`));
+    expect(settings.permissions.deny.some(r => r.includes('deepwiki'))).toBe(false);
+    expect(settings.permissions.deny).not.toContain('mcp__apra-fleet__kb_query');
+  });
+});
+
+// --- apra-fleet-hzeb.7: parseClaudeResetTime pinning suite --------------------
+//
+// hzeb.1.4.1 re-implemented parseClaudeResetTime and wired resumeAtSource
+// parsed/guessed into ClaudeProvider.detectUsageLimit, but this surface had
+// zero test coverage -- the discarded commits from an earlier attempt were
+// lost when the branch was force-rolled-back. `now` is always injected so the
+// suite is deterministic across the DST calendar.
+describe('parseClaudeResetTime', () => {
+  it('resolves the next occurrence of a wall-clock reset time (08:20 America/New_York) when now is earlier the same day', () => {
+    const now = new Date('2024-01-15T07:00:00Z'); // 02:00 EST -- before 08:20
+    const result = parseClaudeResetTime('resets 8:20am (America/New_York)', now);
+    expect(result?.toISOString()).toBe('2024-01-15T13:20:00.000Z');
+  });
+
+  it('advances to the next calendar day when the wall-clock time has already passed today', () => {
+    const now = new Date('2024-06-01T10:00:00Z'); // 06:00 EDT -- before 20:00
+    const result = parseClaudeResetTime('resets at 8pm (America/New_York)', now);
+    expect(result?.toISOString()).toBe('2024-06-02T00:00:00.000Z');
+  });
+
+  // DST spring-forward boundary: 2024-03-10 02:00 EST -> 03:00 EDT. `now` sits
+  // before the transition; the requested 3:00am wall clock lands AFTER it, so
+  // the correct offset is EDT (-4), not the EST (-5) offset in effect at `now`
+  // -- this is exactly the case claudeZonedWallClockToUtc's double-offset
+  // re-check exists to catch.
+  it('resolves a reset time across the DST spring-forward boundary using the post-transition offset', () => {
+    const now = new Date('2024-03-10T05:00:00Z'); // 00:00 EST, before the 2am->3am jump
+    const result = parseClaudeResetTime('resets 3:00am (America/New_York)', now);
+    expect(result?.toISOString()).toBe('2024-03-10T07:00:00.000Z'); // 3:00am EDT
+  });
+
+  // DST fall-back boundary: 2024-11-03 02:00 EDT -> 01:00 EST. `now` sits
+  // before the transition (still EDT); the requested 3:00am wall clock lands
+  // AFTER it, so the correct offset is EST (-5), not the EDT (-4) offset in
+  // effect at `now`.
+  it('resolves a reset time across the DST fall-back boundary using the post-transition offset', () => {
+    const now = new Date('2024-11-03T05:00:00Z'); // 01:00 EDT, before the 2am->1am fallback
+    const result = parseClaudeResetTime('resets 3:00am (America/New_York)', now);
+    expect(result?.toISOString()).toBe('2024-11-03T08:00:00.000Z'); // 3:00am EST
+  });
+
+  it('parses a relative "resets in N minutes" message', () => {
+    const now = new Date('2024-01-15T07:00:00Z');
+    const result = parseClaudeResetTime('resets in 45 minutes', now);
+    expect(result?.toISOString()).toBe('2024-01-15T07:45:00.000Z');
+  });
+
+  it('parses a relative "resets in N hours" message', () => {
+    const now = new Date('2024-01-15T07:00:00Z');
+    const result = parseClaudeResetTime('resets in 2 hours', now);
+    expect(result?.toISOString()).toBe('2024-01-15T09:00:00.000Z');
+  });
+
+  it('returns null for an unparseable message with no recognizable reset shape', () => {
+    const result = parseClaudeResetTime('Something went wrong, please try again later.', new Date());
+    expect(result).toBeNull();
+  });
+
+  it('returns null for an unrecognized IANA time zone rather than throwing', () => {
+    const result = parseClaudeResetTime('resets 8:20am (Not/AZone)', new Date());
+    expect(result).toBeNull();
+  });
+
+  it('returns null for empty text', () => {
+    expect(parseClaudeResetTime('', new Date())).toBeNull();
+  });
+});
+
+// --- apra-fleet-hzeb.7: ClaudeProvider.detectUsageLimit pinning suite ---------
+describe('ClaudeProvider.detectUsageLimit', () => {
+  const p = new ClaudeProvider();
+
+  it('returns a "parsed" usage-limit signal for a 429 session-limit fixture with a readable reset time', () => {
+    const payload = JSON.stringify({
+      type: 'result',
+      is_error: true,
+      api_error_status: 429,
+      result: "You've hit your session limit — resets 8:20am (America/New_York)",
+      session_id: 'sid-429-parsed',
+    });
+    const parsed = p.parseResponse(makeResult(payload, 1));
+    const signal = p.detectUsageLimit(makeResult(payload, 1), parsed);
+    expect(signal).not.toBeNull();
+    expect(signal?.type).toBe('usage_limit');
+    expect(signal?.resumeAtSource).toBe('parsed');
+    expect(signal?.message).toContain('hit your session limit');
+  });
+
+  it('returns a "guessed" usage-limit signal for a bare 429 with no limit message or reset time', () => {
+    const payload = JSON.stringify({
+      type: 'result',
+      is_error: true,
+      api_error_status: 429,
+      result: 'Rate limited',
+      session_id: 'sid-429-guessed',
+    });
+    const parsed = p.parseResponse(makeResult(payload, 1));
+    const signal = p.detectUsageLimit(makeResult(payload, 1), parsed);
+    expect(signal).not.toBeNull();
+    expect(signal?.resumeAtSource).toBe('guessed');
+  });
+
+  // apra-fleet-hzeb.1.2 classifier-ordering pin: 529 (transient overload) must
+  // NEVER be classified as a usage limit, even though it is also a >=500-ish
+  // upstream error code -- it is retryable after a short backoff, not a
+  // quota/usage limit requiring a wall-clock wait.
+  it('returns null for a 529 overloaded response (529-exclusion regression pin)', () => {
+    const payload = JSON.stringify({
+      type: 'result',
+      is_error: true,
+      api_error_status: 529,
+      result: 'Overloaded',
+      session_id: 'sid-529',
+    });
+    const parsed = p.parseResponse(makeResult(payload, 1));
+    const signal = p.detectUsageLimit(makeResult(payload, 1), parsed);
+    expect(signal).toBeNull();
   });
 });
 
@@ -699,6 +881,32 @@ describe('buildSessionIdFlag', () => {
   });
 });
 
+// --- buildForkFlag shared helper (apra-fleet-lmtg.1) -------------------------
+
+describe('buildForkFlag', () => {
+  it('returns empty string when no sourceSessionId and no fallback', () => {
+    expect(buildForkFlag(undefined, undefined)).toBe('');
+  });
+
+  it('returns fallback when no sourceSessionId', () => {
+    expect(buildForkFlag(undefined, undefined, '--fork-fallback')).toBe('--fork-fallback');
+  });
+
+  it('sanitizes and quotes the source session ID, appending --fork-session (no newSessionId)', () => {
+    expect(buildForkFlag('sess-abc-123', undefined)).toBe('--resume "sess-abc-123" --fork-session');
+  });
+
+  it('pre-mints the forked output id via --session-id when newSessionId is supplied', () => {
+    expect(buildForkFlag('sess-abc-123', 'new-sess-456')).toBe('--session-id "new-sess-456" --resume "sess-abc-123" --fork-session');
+  });
+
+  it('rejects malicious session IDs', () => {
+    expect(() => buildForkFlag('$(whoami)', undefined)).toThrow('Invalid session ID');
+    expect(() => buildForkFlag('id;rm -rf /', undefined)).toThrow('Invalid session ID');
+    expect(() => buildForkFlag('sess-abc-123', '$(whoami)')).toThrow('Invalid session ID');
+  });
+});
+
 // --- Cross-OS consistency (Linux buildPromptCommand vs Windows resumeFlag) --
 
 describe('cross-OS session flag consistency', () => {
@@ -785,8 +993,8 @@ describe('AgyProvider', () => {
   });
 
   it('builds prompt command with defaults and --output-format json', () => {
-    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md' });
-    expect(cmd).toContain('agy --model');
+    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' });
+    expect(cmd).toContain('agy --add-dir "/home/user/project" --project "1afd6dbb-498f-4918-a9d9-6da64b75a204" --model');
     expect(cmd).toContain('--output-format json');
     expect(cmd).toContain('-p');
     expect(cmd).not.toContain('--conversation');
@@ -794,18 +1002,18 @@ describe('AgyProvider', () => {
   });
 
   it('builds prompt command with resume flag', () => {
-    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', sessionId: 'sess-abc', resuming: true });
+    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204', sessionId: 'sess-abc', resuming: true });
     expect(cmd).toContain('--conversation "sess-abc"');
     expect(cmd).toContain('--output-format json');
   });
 
   it('builds prompt command with unattended=dangerous', () => {
-    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', unattended: 'dangerous' });
+    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204', unattended: 'dangerous' });
     expect(cmd).toContain('--dangerously-skip-permissions');
   });
 
   it('builds prompt command with unattended=auto (baseline accept-edits, not a full bypass)', () => {
-    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', unattended: 'auto' });
+    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', projectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204', unattended: 'auto' });
     expect(cmd).toContain('--mode accept-edits');
     expect(cmd).not.toContain('--dangerously-skip-permissions');
     expect(p.permissionModeAutoFlag()).toBe('--mode accept-edits');
@@ -859,30 +1067,78 @@ describe('AgyProvider', () => {
   });
 
   it('modelTiers and modelForTier return correct mappings', () => {
-    expect(p.modelForTier('cheap')).toBe('gemini-3.5-flash-lite');
-    expect(p.modelForTier('standard')).toBe('gemini-3.5-flash');
-    expect(p.modelForTier('premium')).toBe('claude-sonnet-4.6');
+    // Pinned against `agy models` (1.2.8): AGY rejects an unknown --model
+    // outright, so a stale slug here fails the dispatch, it does not degrade.
+    expect(p.modelForTier('cheap')).toBe('gemini-3.8-flash-low');
+    expect(p.modelForTier('standard')).toBe('gemini-3.8-flash-high');
+    expect(p.modelForTier('premium')).toBe('gemini-3.1-pro-high');
   });
 
-  it('permissionConfigPaths returns .gemini/antigravity-cli/settings.json', () => {
-    expect(p.permissionConfigPaths()).toEqual(['.gemini/antigravity-cli/settings.json']);
+  it("permissionConfigPaths is the member's own HOME-anchored agy project file", () => {
+    const mockAgent = { id: 'agent-456', workFolder: '/tmp/work', agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' } as any;
+    expect(p.permissionConfigPaths(mockAgent)).toEqual(['~/.gemini/config/projects/1afd6dbb-498f-4918-a9d9-6da64b75a204.json']);
+    expect(() => p.permissionConfigPaths()).toThrow();
+    expect(() => p.permissionConfigPaths({ id: 'agent-456', workFolder: '/tmp/work' } as any)).toThrow();
   });
 
-  it('composePermissionConfig produces AGY native permission rule objects', () => {
+  it('composePermissionConfig produces only the nested grants block, as permission rule STRINGS', () => {
     const claudeAllow = ['Read', 'Write', 'Edit', 'Bash(git:*)', 'Bash(npm:*)', 'Bash(bd:*)', 'Agent'];
-    const configs = p.composePermissionConfig('doer', claudeAllow);
+    const mockAgent = { id: 'agent-456', workFolder: '/tmp/work', agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' } as any;
+    const configs = p.composePermissionConfig('doer', claudeAllow, mockAgent);
     expect(configs).toHaveLength(1);
     const cfg = configs[0] as Record<string, any>;
-    expect(cfg.permissions).toBeDefined();
-    expect(cfg.permissions.allow).toEqual([
-      { action: 'read_file', target: '*' },
-      { action: 'write_file', target: '*' },
-      { action: 'command', target: 'git' },
-      { action: 'command', target: 'npm' },
-      { action: 'command', target: 'bd' },
-      { action: 'invoke_subagent', target: '*' },
-      { action: 'send_message', target: '*' },
+    // id/name/projectResources are agy's own (kept by deliverConfigFile's merge).
+    expect(Object.keys(cfg)).toEqual(['permissionGrants']);
+    // `Agent` maps to invoke_subagent/send_message, which are AGY tool names,
+    // not permission actions -- they are dropped rather than written as entries
+    // AGY's settings parser rejects.
+    expect((cfg.permissionGrants as any).permissionGrants.allow).toEqual([
+      'read_file(*)',
+      'write_file(*)',
+      'command(git)',
+      'command(regex:git .*)',
+      'command(npm)',
+      'command(regex:npm .*)',
+      'command(bd)',
+      'command(regex:bd .*)',
     ]);
+  });
+
+  describe('detectUsageLimit', () => {
+    it('returns null when result.code === 0 and !parsed.isError, even if stdout contains "output_tokens": 429', () => {
+      const stdout = JSON.stringify({
+        conversation_id: 'conv-123',
+        status: 'SUCCESS',
+        response: 'All planned tasks created successfully',
+        usage: { input_tokens: 5000, output_tokens: 429 },
+      });
+      const result = { stdout, stderr: '', code: 0 };
+      const parsed = p.parseResponse(result);
+      expect(p.detectUsageLimit(result, parsed)).toBeNull();
+    });
+
+    it('returns a guessed usage-limit signal when result.code !== 0 and stderr contains "rate limit"', () => {
+      const result = { stdout: '', stderr: 'Error: Rate limit exceeded (429)', code: 1 };
+      const parsed = p.parseResponse(result);
+      const signal = p.detectUsageLimit(result, parsed);
+      expect(signal).not.toBeNull();
+      expect(signal?.type).toBe('usage_limit');
+      expect(signal?.resumeAtSource).toBe('guessed');
+    });
+
+    it('returns a guessed usage-limit signal when parsed.isError is true and response mentions quota exceeded', () => {
+      const stdout = JSON.stringify({
+        conversation_id: 'conv-123',
+        status: 'ERROR',
+        error: 'Resource has been exhausted (e.g. check quota)',
+      });
+      const result = { stdout, stderr: '', code: 1 };
+      const parsed = p.parseResponse(result);
+      const signal = p.detectUsageLimit(result, parsed);
+      expect(signal).not.toBeNull();
+      expect(signal?.type).toBe('usage_limit');
+      expect(signal?.resumeAtSource).toBe('guessed');
+    });
   });
 });
 
@@ -904,5 +1160,22 @@ describe('SessionIdStrategy & Log Path Resolution', () => {
     expect(getProvider('codex').resolveSessionLogPath('sid', '/path')).toBe('');
     expect(getProvider('copilot').resolveSessionLogPath('sid', '/path')).toBe('');
     expect(getProvider('none').resolveSessionLogPath('sid', '/path')).toBe('');
+  });
+});
+
+// --- apra-fleet-lmtg.1: fork capability across providers ----------------------
+
+describe('Fork capability (supportsFork / forkFlag)', () => {
+  it('claude is the only fork-capable provider today', () => {
+    expect(getProvider('claude').supportsFork?.()).toBe(true);
+  });
+
+  it('providers that do not implement fork are NOT fork-capable -- callers must fall back via ?? false, never crash', () => {
+    for (const name of ['agy', 'opencode', 'codex', 'copilot', 'none'] as const) {
+      const provider = getProvider(name);
+      expect(() => provider.supportsFork?.() ?? false).not.toThrow();
+      expect(provider.supportsFork?.() ?? false).toBe(false);
+      expect(provider.forkFlag).toBeUndefined();
+    }
   });
 });

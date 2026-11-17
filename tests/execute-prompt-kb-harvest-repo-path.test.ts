@@ -1,11 +1,12 @@
 /**
  * apra-fleet-tm7.2: execute_prompt's auto-harvest must pass the member's
- * resolvedWorkFolder as repo_path -- for BOTH local and remote members --
- * so kb_harvest never falls back to getKbProviders(undefined), which would
- * route the harvest into the fleet server's own repo KB (apra-fleet-tm7).
+ * resolvedWorkFolder as the explicit KB anchor folder (kbHarvest's second
+ * argument) -- for BOTH local and remote members -- so the harvest never
+ * falls back to the calling session's own folder, which would route it into
+ * the fleet server's own repo KB (apra-fleet-tm7).
  *
  * This spies on the real kb-harvest module (rather than grepping source
- * text) so it fails if the wiring regresses to omitting repo_path for
+ * text) so it fails if the wiring regresses to omitting the anchor for
  * remote members, or to a second/independent computation of the work
  * folder.
  */
@@ -54,7 +55,7 @@ async function flushMicrotasks(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 10));
 }
 
-describe('execute_prompt auto-harvest repo_path wiring (apra-fleet-tm7.2)', () => {
+describe('execute_prompt auto-harvest anchor folder wiring (apra-fleet-tm7.2)', () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -69,7 +70,7 @@ describe('execute_prompt auto-harvest repo_path wiring (apra-fleet-tm7.2)', () =
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('passes the local member resolvedWorkFolder as repo_path', async () => {
+  it('passes the local member resolvedWorkFolder as the anchor folder', async () => {
     const member = makeTestLocalAgent({
       friendlyName: 'kb-harvest-local',
       workFolder: tmpDir,
@@ -82,13 +83,11 @@ describe('execute_prompt auto-harvest repo_path wiring (apra-fleet-tm7.2)', () =
     await flushMicrotasks();
 
     expect(mockKbHarvest).toHaveBeenCalledTimes(1);
-    expect(mockKbHarvest.mock.calls[0][0]).toMatchObject({
-      repo_path: tmpDir,
-      session_id: 'sess-harvest',
-    });
+    expect(mockKbHarvest.mock.calls[0][0]).toMatchObject({ session_id: 'sess-harvest' });
+    expect(mockKbHarvest.mock.calls[0][1]).toMatchObject({ folder: tmpDir });
   });
 
-  it('passes the remote member workFolder as repo_path (not undefined)', async () => {
+  it('passes the remote member workFolder as the anchor folder (not undefined)', async () => {
     const member = makeTestAgent({
       friendlyName: 'kb-harvest-remote',
       workFolder: '/home/remoteuser/project',
@@ -100,14 +99,14 @@ describe('execute_prompt auto-harvest repo_path wiring (apra-fleet-tm7.2)', () =
     await flushMicrotasks();
 
     expect(mockKbHarvest).toHaveBeenCalledTimes(1);
-    expect(mockKbHarvest.mock.calls[0][0]).toMatchObject({
-      repo_path: '/home/remoteuser/project',
-      session_id: 'sess-harvest',
-    });
-    // The defect this guards against: omitting repo_path for remote members
-    // makes getKbProviders(undefined) fall back to the fleet server's own
-    // cwd, silently routing the harvest into the server's own repo KB.
-    expect(mockKbHarvest.mock.calls[0][0].repo_path).not.toBeUndefined();
+    expect(mockKbHarvest.mock.calls[0][0]).toMatchObject({ session_id: 'sess-harvest' });
+    expect(mockKbHarvest.mock.calls[0][1]).toMatchObject({ folder: '/home/remoteuser/project' });
+    // The defect this guards against: omitting the anchor for remote members
+    // makes kb_harvest resolve the calling session's own folder -- the fleet
+    // server's -- silently routing the harvest into the server's own repo KB.
+    expect(mockKbHarvest.mock.calls[0][1]).not.toBeUndefined();
+    // The anchor never leaks into the tool input as a scope field.
+    expect(mockKbHarvest.mock.calls[0][0].repo_path).toBeUndefined();
   });
 });
 
@@ -145,7 +144,7 @@ describe('auto-harvest reports its counters (apra-fleet-4wz.8)', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
     mockKbHarvest.mockResolvedValue(JSON.stringify({
-      entries_captured: 1, entries_updated: 0, entries_skipped: 0, entries_rejected: 7,
+      entries_captured: 1, entries_updated: 0, entries_skipped: 0, entries_rejected: 7, entries_failed: 2,
     }));
 
     await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
@@ -153,6 +152,7 @@ describe('auto-harvest reports its counters (apra-fleet-4wz.8)', () => {
 
     expect(logged()).toContain('rejected=7');
     expect(logged()).toContain('captured=1');
+    expect(logged()).toContain('failed=2');
   });
 
   it('stays quiet when the harvest produced nothing at all', async () => {
@@ -160,7 +160,7 @@ describe('auto-harvest reports its counters (apra-fleet-4wz.8)', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
     mockKbHarvest.mockResolvedValue(JSON.stringify({
-      entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0,
+      entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0, entries_failed: 0,
     }));
 
     await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });

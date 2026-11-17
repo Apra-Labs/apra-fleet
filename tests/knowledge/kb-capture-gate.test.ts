@@ -101,6 +101,48 @@ describe('kb_capture CONFIRMED gate (D1)', () => {
     const entry = await fetchEntry(out.id);
     expect(entry.confidence).toBe('CONFIRMED');
   });
+
+  it('CONFIRMED user-directive stores UNVERIFIED with no clamp note (my-beads-db-0cd.19.1)', async () => {
+    // Test that a user-directive captured with confidence CONFIRMED is stored
+    // as UNVERIFIED, flagged for review, and does NOT carry the misleading clamp note.
+    const out = JSON.parse(await kbCapture({
+      type: 'user-directive',
+      title: 'Test directive',
+      summary: 'A directive captured with CONFIRMED',
+      content: 'This is a user directive that should not have a clamp note.',
+      source_files: ['src/fixture.ts'],
+      confidence: 'CONFIRMED',
+    }));
+
+    // my-beads-db-0d3.2: stored UNVERIFIED differs from the requested CONFIRMED,
+    // so the handler reports the downgrade even though it adds no clamp note.
+    expect(out.confidence_clamped).toBe(true);
+
+    const entry = await fetchEntry(out.id);
+    expect(entry.confidence).toBe('UNVERIFIED');
+    expect(entry.flagged_for_review).toBe(true);
+    expect(entry.tags).toContain('directive:pending');
+    // Key assertion: directive content should NOT contain the clamp note
+    expect(entry.content).not.toContain('[confidence clamped:');
+  });
+
+  it('CONFIRMED non-directive still gets clamp note (control for directive test)', async () => {
+    // Control test: ensure non-directive entries still get the clamp note
+    const out = JSON.parse(await kbCapture({
+      type: 'knowledge',
+      title: 'Control knowledge',
+      summary: 'A knowledge entry captured with CONFIRMED',
+      content: 'This knowledge should have a clamp note.',
+      source_files: ['src/fixture.ts'],
+      confidence: 'CONFIRMED',
+    }));
+
+    expect(out.confidence_clamped).toBe(true);
+    const entry = await fetchEntry(out.id);
+    expect(entry.confidence).toBe('INFERRED');
+    // Key assertion: non-directive content SHOULD contain the clamp note
+    expect(entry.content).toContain('[confidence clamped: CONFIRMED requires kb_promote]');
+  });
 });
 
 // T1.2 (F3, R3, KB 9462ab04): the ENFORCEMENT clamp now lives in

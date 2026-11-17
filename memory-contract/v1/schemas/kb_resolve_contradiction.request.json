@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_resolve_contradiction.request.json#",
+  "x-invariant": [
+    "INV-05"
+  ],
+  "$ref": "#/$defs/v1-kb_resolve_contradiction-request",
+  "$defs": {
+    "v1-kb_resolve_contradiction-request": {
+      "type": "object",
+      "properties": {
+        "winnerId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ID of the KB entry the merged code (or trust tier) supports. Ends confidence=CONFIRMED with flags cleared; stale is cleared only if the D2 un-stale predicate holds post-flag-clear."
+        },
+        "loserId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ID of the KB entry the merged code contradicts. Ends superseded_at=now, stale=1, flagged_for_review cleared. Never deleted."
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Evidence note appended to the winner content, e.g. a file+symbol citation or the trust-tier rule applied. Verbatim \"hash-basis match on merged worktree\" when called by kb_reconcile_prefilter."
+        },
+        "repo_path": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo_remote_url": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        }
+      },
+      "required": [
+        "winnerId",
+        "loserId",
+        "evidence"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

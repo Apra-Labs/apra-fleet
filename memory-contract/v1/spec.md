@@ -1,0 +1,1491 @@
+# memory-contract/v1 -- Specification
+
+Status: skeleton created by T1.3.1 (provider-method section authored by T1.3.1);
+section 4 ("Invariants") authored by T2.
+This file has exactly two writers by design for sections 1-3 (see README.md's
+ownership note in `tests/GENERATOR-DECISION.md`): T1.3.1 owns "Envelope" and
+"Provider methods" below; T1.3.2 owns "Error model". Both live in lane
+`t1-contract-docs` so no third writer is ever added to those sections without
+a re-plan. The RESERVED section 5 is a placeholder for a later task (T3) and
+must not be filled in from this lane.
+
+Trust-relevant behavior is POINTED AT here, not restated: each pointer below
+names the invariant and where the enforcing code lives, and defers the full
+rule text to the "Invariants" subsections that own it, or to
+`methods.json`/`INVENTORY.md` where the mechanism is already documented in
+full. Do not copy invariant prose between this file, `methods.json`, and
+`INVENTORY.md` -- one sentence, one home.
+
+## 1. Envelope
+
+Every one of the 25 tools (16 `kb_*`, 9 `code_*`) is registered through the
+shared `wrapTool` helper (`src/services/tool-registry.ts`), so every response is
+wrapped in the same minimal text-content envelope, current fields only:
+
+```
+ToolTextResponse = { content: [ { type: "text", text: string } ] }
+```
+
+- `content` is always a single-element array; `text` is the JSON-stringified
+  handler payload -- so every response is JSON-parseable in practice even
+  though no tool declares a response zod schema (`INVENTORY.md` section 3).
+- No tool in this surface returns `structuredContent` on a SUCCESS result;
+  that channel is unused there (`wrapTool` only forwards it when the handler
+  returns `{text, structuredContent}`, and all 23 handlers return a bare
+  `string`). The one use is on an ERROR result: an `E-CODE-INDEX-NOT-READY`
+  refusal is returned as `{ content: [ { type: "text", text: <the unchanged
+  one-line message> } ], isError: true, structuredContent: <detail> }` -- see
+  section 2.7. Every other refusal is a thrown error the MCP server turns into
+  an `isError` text result with no `structuredContent`.
+- **The published schemas are deliberately WIDER than the reachable shape, and
+  that is not a contradiction of the two statements above.** Every
+  `schemas/*.response.json` permits `content` to hold 1-3 items, allows an
+  optional `annotations` object on each item, and allows an optional
+  `structuredContent` -- because the schema documents `wrapTool`'s general
+  contract, not the subset these 23 handlers happen to reach. The narrower
+  claims above are REACHABILITY findings about this surface: all 23 handlers
+  return a bare `string`, so `wrapTool` emits exactly one text item and never
+  populates `structuredContent`. A consumer MUST validate against the schema,
+  which accepts everything `wrapTool` can emit; a consumer that hard-codes the
+  single-element shape from this prose alone would be stricter than the
+  contract and would break if a handler later returned
+  `{text, structuredContent}`. If that ever happens it is an envelope
+  extension, not a schema change -- see section 5.
+- On top of the envelope, a response body is either:
+  - **Body known** -- the text envelope plus a documented `parsed` object, for
+    all 16 `kb_*` tools (`schemas/kb_*.response.json`).
+  - **Body opaque** -- the text envelope only, with `parsed` typed as
+    unconstrained JSON, for all 7 `code_*` tools (`schemas/code_*.response.json`).
+    This is a deliberate permissive schema (see `methods.json`'s
+    `code_intelligence_methods`), not a gap to be filled by guessing the
+    provider payload.
+
+Extensions to this envelope (e.g. `structuredContent` becoming used, or a
+provider-agnostic error envelope) are out of scope here -- see "Envelope
+extensions (T3, RESERVED)" below.
+
+## 2. Provider methods
+
+Rendered from, and checked against, `methods.json` in this directory.
+`methods.json` is the source of truth for purpose, request/response schema
+refs, side-effect class, idempotency and error codes; this section names every
+method it contains and nothing else, so the two never drift silently out of
+sync.
+
+### 2.1 `MemoryProvider` interface methods (`methods.json` ids P-1..P-13)
+
+`init`, `capture`, `query`, `context`, `invalidate`, `getLinked`, `prime`,
+`promote`, `demote`, `sync`, `stats`, `touch`, `relatedClaims`.
+
+Side-effect classes used across this set: `append` (`init`, `query`, `sync`,
+`touch`), `trust-mutating` (`capture`, `invalidate`, `promote`), `pure read`
+(`context`, `getLinked`, `prime`, `stats`, `relatedClaims`). See
+`methods.json`'s `side_effect_class_definitions` for what each class means; no
+method in this surface is classified `consent-gated` on its own (the
+consent-gated CLI-only surface -- `approveDirective`, `rejectDirective`,
+`addDirective` -- is not tool-reachable; see `methods.json`'s `not_in_scope`).
+
+### 2.2 Undeclared members reached by tools but absent from `MemoryProvider` (`methods.json` ids X-1..X-6 and X-8, plus the X-7 property)
+
+`list`, `feedback`, `freshnessSweep`, `resolveContradiction`,
+`reconcilePrefilter`, `hasEntry` (methods), and `repoPath` (property, not a
+method -- listed in `methods.json`'s `properties` array, not its `methods`
+array, and not counted against "every method has an entry").
+
+A binding generated only against the declared `MemoryProvider` interface is
+INCOMPLETE without this set (`INVENTORY.md` section 4.2).
+
+`feedback` (X-2) is the one member of this set that both providers serve: it
+is not reached through `requireSqliteProject`. Over a remote KB,
+`HttpKbProvider.feedback` POSTs the `kb_feedback` request body
+`{id, reason, role}` to `/api/kb/feedback` and `kb_feedback` returns the
+server's response as is; while the server is unreachable the tool fails with
+`E-KB-HTTP-UNREACHABLE` and nothing is queued. Either way the client never writes or invents `confidence`
+(`methods.json` X-2 `providers_note`).
+
+### 2.3 `CodeIntelligenceProvider` interface methods (`methods.json` ids C-1..C-9)
+
+`graph`, `impact`, `query`, `context`, `map`, `flow`, `tests`. All seven are
+pure proxies to the active provider (`codebase-memory`, `gitnexus`, or `none`)
+and are classified `pure read` here at the fleet boundary; the ACTIVE PROVIDER
+owns the real effect and idempotency of its own payload (`INVENTORY.md`
+section 4.3).
+
+C-8 `reindex` (`code_reindex`) and C-9 `status` (`code_status`) are fleet-level index
+maintenance tools, not provider proxies, and are gated on the calling member's
+code-intelligence provider. Provider `none` is refused (`E-CODE-INTEL-DISABLED`, never an
+ok "disabled" payload). Any provider other than `gitnexus` (e.g. `codebase-memory`, which
+manages its own index) returns the normal typed result
+`{ outcome: 'not-started', reason: 'provider-not-supported', provider, indexedCommit: null, detail }`
+without spawning anything. Only `gitnexus` runs the tool: `code_reindex` starts a detached
+`gitnexus analyze` for the calling session's own folder (output captured to
+`<data>/code-index/<slug>/analyze.log`, state in `status.json`) and returns
+after the first tick; `code_status` reads that state plus live readiness and
+the indexed commit.
+
+### 2.4 Every kb_* call is scoped to the calling session (KB constraint)
+
+No `kb_*` tool takes a repo/scope argument. The KB a call reads/writes is the
+calling session's own: a member session resolves its registered work folder.
+Any other (FULL) session resolves from the MCP client's roots (`roots/list`):
+the first offered root inside a git repository with an origin remote wins, and
+stands for that repository's top level. The fleet server's working folder is
+used only when the client offers no roots (no `roots` capability or an empty
+list). Offered roots that cannot be used, including any that do not name a
+folder on the server's host, and a failed `roots/list`, refuse the call: it
+never falls back to the server's folder. Roots are fetched once per session, on its first
+`kb_*`/`code_*` call, and refetched after `notifications/roots/list_changed`;
+a member session never reads roots. A folder that cannot
+carry a KB identity is refused before the provider is reached
+(`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`). A remote
+member's folder lives on another host: the read tools carry it verbatim and
+tolerate the missing anchor, while the writing tools (`kb_export`,
+`kb_bible_commit`, `kb_import`) refuse with `E-REPO-PATH-INVALID` (for
+`kb_export` that path is defence in depth: no member session is served it, see
+section 2.5a). This is recorded in
+`methods.json`'s `_meta.kb_self_resolution` and per tool in each method
+entry's `tools[].anchor_validation` field.
+
+The pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are
+REMOVED, not ignored. Every `kb_*` request schema still declares them (each
+described as removed) so that an MCP server, which strips undeclared keys,
+cannot silently re-point an old caller at a different KB; a request carrying
+any of them (any value other than absent/undefined) MUST be refused with
+`E-SCOPE-KEY-REMOVED` before any KB is resolved, and the error message names
+every removed key present and what replaces it. A FULL session's self is never
+the client's working directory (an HTTP server cannot see it), only an offered
+root or the server's folder. Its self-resolution errors name the missing piece:
+asking for the roots failed or none is a folder on this host
+(`E-SELF-NO-WORKFOLDER`, and a failed fetch is asked again on the next call),
+roots were offered but none is in a git repository (`E-SELF-NOT-A-REPO`), roots
+were offered but none has an origin remote (`E-SELF-NO-REMOTE`), or the client
+offered no roots and the server folder is not a repository / has no origin
+(`E-SELF-NOT-A-REPO` / `E-SELF-NO-REMOTE`, naming that no roots were offered).
+The remediation names every fix: open the client in the intended repository,
+start the server from it, or call from a member session registered on it.
+
+Two read-tool input forms exist for compatibility: `kb_list` accepts
+`confidence` either as a list of tiers or as one tier string (the
+pre-redesign form, read as a one-element list). `kb_context` defaults to
+`["CONFIRMED","INFERRED"]`, undisputed (not CONFIRMED-only like `kb_query` and
+`kb_list`): a context-cache entry is verified mechanically by its content
+hash, and captures are stored at most INFERRED.
+
+### 2.5 MEMBER-session behaviour (bible view and own-scope writes)
+
+In a MEMBER session the default reads (`kb_query`, `kb_session_prime`,
+`kb_list`, `kb_context`, `kb_stats`) are answered from an in-memory view of the
+member's own checkout bible (`.fleet/kb-canonical.json`), rebuilt when the file
+changes. An explicit confidence list is split: CONFIRMED is read from the
+member checkout bible and INFERRED/UNVERIFIED only from the member's own
+captures in the per-repo DB (tagged `member:<caller uuid>`), merged for a
+mixed request. The own half of a mixed request asks for every listed tier, so
+the member's own captures promoted to CONFIRMED in the per-repo DB are returned
+before they reach the bible (the bible copy wins on a shared id); a
+`[CONFIRMED, INFERRED]` read is a superset of the CONFIRMED-only result
+(except `kb_list` with a `limit`, which applies the limit after merging) and
+never exposes another member's captures. The bible view and this split apply
+to a SQLite project KB: under the http project provider the bible is not used
+at all (section 2.9), and every MEMBER read (`kb_query`, `kb_session_prime`,
+`kb_context`, `kb_list`, `kb_stats`) of any tier, CONFIRMED included, goes to
+the server; a MEMBER `kb_query` `flagged_only` read is refused there with
+`E-KB-HTTP-UNSUPPORTED` (a flagged listing carries no owner tag). A mixed request is split the same
+way there: the server's CONFIRMED set, plus every listed tier from the
+server restricted to the caller's own captures, merged by id. Own-scope holds
+there too, enforced by fleet on the entry tags the server returns: a read
+naming INFERRED/UNVERIFIED returns only entries tagged `member:<caller uuid>`
+(an entry returned without tags counts as not the caller's), and the default
+`kb_context` read merges every CONFIRMED summary with the caller's own
+CONFIRMED/INFERRED ones. Filtering happens after the server's `limit`, so such a
+read can return fewer entries than asked for. `kb_capture` tags the
+stored entry `member:<caller uuid>`; `kb_promote`, `kb_demote` and
+`kb_invalidate` act only on entries carrying that tag and report any other id as not found, changing
+nothing. Under the http project provider `kb_promote` is sent by id with no
+lookup first, and fleet does not check the member tag: the KB server decides
+which ids the caller may promote and refuses an unknown, superseded or
+out-of-scope id itself. A server answers an unknown id with 404 and body
+`code` `ENTRY_NOT_FOUND` (the code an optional id route such as `demote` needs,
+section 2.9.1). Promote is a required route, so fleet reports any 404 from it,
+whatever its code, as `E-ENTRY-NOT-FOUND`, thrown as `Entry not found: <id>` followed by the server's answer; any other refusal is
+thrown with its HTTP status and the server's title/code/detail. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
+the entries (sets `superseded_at`, never deletes) and returns
+`{discarded, not_found, already_discarded}`. In a member session without the
+kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the
+response then also carries `refused`; the same holds for `kb_capture` with
+`supersedes`. `kb_feedback` is refused with
+`E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
+unchanged.
+
+A row imported from the bible (`kb_import`) carries NO `member:<uuid>` tag at
+all -- bible entries are not stamped with any one member's identity. The
+consequence for `kb_demote` follows directly from the own-scope rule above,
+but is easy to miss: inside a MEMBER session, only the entries that member
+itself captured and later promoted to CONFIRMED are demotable; a CONFIRMED
+entry the member's checkout holds only because it was imported from the bible
+is reported not found, same as an unknown id, and is left unchanged. A FULL
+session carries no ownerTag at all and may demote any CONFIRMED row,
+bible-imported or not.
+
+Because the default CONFIRMED read is answered from the bible view, and every
+bible-view row is imported with `tags: []`, a MEMBER session has no way to
+read back its OWN promoted CONFIRMED rows from a default `kb_query`/`kb_list`
+call -- a `tag: "member:<id>"` filter can never match a bible-view row. `kb_query`
+accepts an opt-in `own_scope: true` to escape the bible view for exactly this
+case: it routes to the per-repo DB with the caller's own `ownerTag` applied,
+same as an explicit INFERRED/UNVERIFIED request, so the caller sees only its
+own rows regardless of which tier they are in. `own_scope` is ignored when
+`flagged_only` is set (that branch already reads the view unconditionally),
+has no effect for a FULL session or an in-process caller passing an explicit
+anchor (both already read the per-repo DB), and defaults to false/omitted so
+every other caller's routing and result shape is unchanged.
+
+`own_scope` is the OWN HALF of the member split read on its own. A member
+request naming CONFIRMED together with another tier is answered by the split
+read: the bible half (CONFIRMED, checkout bible view, untagged) merged by id
+with the own half (every requested tier, CONFIRMED included, per-repo DB,
+caller's `ownerTag`), the bible copy winning on a shared id. With
+`own_scope: true` the same request skips the bible half: it returns the own
+half alone, so a member's own promoted CONFIRMED row appears exactly once and
+as the per-repo copy `kb_demote` acts on, and no untagged bible row is ever
+offered to a caller that can only demote its own entries.
+
+`own_scope` changes WHICH STORE answers and nothing else -- it moves no other
+default. That matters to the caller building a demotion candidate list,
+because `demote()` refuses an unknown or un-owned id, a superseded entry, a
+user-directive, a non-CONFIRMED entry and a too-thin reason, but it has NO
+stale refusal and no disputed refusal: staleness is a freshness verdict while
+trust is a separate axis, and a row the sweep has already staled, or that
+something now contradicts, is exactly the kind most worth demoting. The
+default read path drops both -- stale rows unless `include_stale` is set, and
+disputed rows while `exclude_disputed` is on (its default whenever no explicit
+`confidence` list is given). So an own-scope read that must span everything
+`kb_demote` will accept asks for all three together:
+`{ own_scope: true, confidence: ["CONFIRMED"], include_stale: true }` -- the
+explicit `confidence` list is what turns `exclude_disputed` off.
+
+That widened read also returns SUPERSEDED rows, because `include_stale`
+admits superseded entries alongside stale ones. `kb_demote` refuses those
+(`E-DEMOTE-SUPERSEDED`), and this read path deliberately does not filter them
+out: dropping a superseded row is the CALLER's job, stated here so it is not
+left implicit.
+
+### 2.5a MEMBER-session tool exposure (KB write policy)
+
+A MEMBER session is served an explicit tool list
+(`src/services/member-tool-allowlist.ts`), not every `kb_*` tool:
+
+- `kb_setup` (writes the machine-wide provider config and stores credentials)
+  and `kb_export` (auto-commits into the work tree) are NEVER served to a
+  member session. Calling one is an unknown-tool error; they are available to
+  a FULL session.
+- `kb_promote`, `kb_resolve_contradiction` and `kb_reconcile_prefilter` (which
+  resolves pairs through the `kb_resolve_contradiction` write path) mint
+  CONFIRMED. They are served only to a member session carrying the
+  kb_maintainer grant: an engine-opened
+  member session (`origin=engine`) with `kb_maintainer=1` on its URL, which the
+  engine opens only for the member it chose as a repository's kb_maintainer
+  (client `connectFleetMember(id, { origin: 'engine', kbMaintainer: true })`,
+  `apra-fleet call --kb-maintainer`). `kb_maintainer=1` without
+  `origin=engine` is ignored. Every other member session -- including an agent
+  session on the maintainer member, which connects through the plain
+  `?member=<uuid>` entry -- gets an unknown-tool error.
+- `kb_demote` withdraws CONFIRMED (CONFIRMED -> INFERRED) and is served on the
+  same terms as `kb_promote`: only to a member session carrying the
+  kb_maintainer grant. The engine applies every reviewer demotion through that
+  session; no other member session needs it.
+- Every other `kb_*` tool (including `kb_bible_commit` and `kb_import`) and
+  every `code_*` tool is served to every member session.
+- `kb_import` with an explicit `path` keeps the named bible's confidence (and a
+  v3 bible's carried hashes), which is equivalent in power to `kb_promote`. In
+  a member session WITHOUT the grant an explicit path is refused with
+  `E-KB-MAINTAINER-REQUIRED` before any KB is opened, and nothing is imported
+  (a refusal, not a clamp). A path naming the session's own
+  `.fleet/kb-canonical.json`, and a call without `path` (the engine's priming
+  import of the checkout bible), import that bible AS COMMITTED: the handler
+  reads the blob at `HEAD:./.fleet/kb-canonical.json` (git, no shell), never
+  the work-tree file, which the member's agent can edit (CONFIRMED entries
+  with v3 hashes matching HEAD would otherwise land CONFIRMED and pass
+  `kb_bible_commit` admission). The response then also carries
+  `bible_source: "HEAD"` and `worktree_ignored` (true when the work-tree file
+  differs from, or is missing versus, the committed copy, so its uncommitted
+  content was not imported). A clean tree or fresh clone yields the same bytes,
+  so priming is unchanged. When a work-tree bible exists but has no committed
+  copy (unborn HEAD, untracked bible, git unavailable) the call fails with
+  `E-KB-MAINTAINER-REQUIRED` and nothing is imported; with no bible at all it
+  fails with the plain bible-not-found error. Committed is not trusted on its
+  own: the member controls its own `.git`, so it could commit a hand-made
+  bible locally, import it, and reset the commit away with nothing ever
+  pushed. The import is therefore gated on a trust anchor OUTSIDE the
+  checkout: the hub-side per-repo KB records the git blob id of every bible
+  the maintainer side wrote or imported (`kb_bible_commit`, and `kb_import`
+  from a FULL session or the kb_maintainer session; a member session without
+  the grant never records). When the committed bible's blob id is not
+  recorded the call fails with `E-KB-MAINTAINER-REQUIRED` (the message names
+  the unrecorded blob id) and nothing is imported -- a refusal, not a clamp,
+  so no row is written that could later shadow the genuine entry's id. The
+  object store is member-writable too (replace refs, alternates, overwritten
+  loose objects, crafted packs), so the blob is read with
+  `--no-replace-objects` and its bytes are hashed in-process (git object
+  format: `blob <len>\0<bytes>`, sha1 for a 40-hex id, sha256 for a 64-hex id)
+  and refused unless they equal the id checked; recorded ids are likewise
+  computed in-process from the exact bytes written or parsed (never
+  `git hash-object` with the checkout's clean filters). Optional `ref` (a
+  plain git ref name; no rev expressions) reads the bible as committed at that
+  ref instead of the file system, in any session, with the same in-process
+  verification; `bible_source` then reports the ref, a ref that does not hold
+  the bible fails with `E-BIBLE-NOT-FOUND`, a no-grant session still needs a
+  recorded blob, and a FULL or kb_maintainer session records the verified
+  blob. Bootstrap: a clone whose bible was published by `kb_bible_commit` on
+  this hub imports normally; a bible this hub never saw (fresh hub, bible
+  merged from elsewhere) is seeded by the engine's sprint-start priming,
+  which imports through the kb_maintainer session with
+  `ref: "refs/remotes/origin/<base branch>"`. Priming runs before anything
+  cleans the maintainer's checkout (launch alignment runs only for
+  multi-member legacy launches, branch-ensure runs after priming, and a
+  reused local branch keeps local-only commits), so it never reads the work
+  tree or HEAD; with no base branch it makes no grant import. Residual: the
+  remote-tracking ref is as fresh as the member's last fetch and lives in the
+  member-writable `.git` (the grant is a routing guard, not a security
+  boundary against a process on the member's host). FULL sessions and the
+  kb_maintainer session without `ref` are otherwise unchanged (they read the
+  named or work-tree file).
+- Under an http project KB, `kb_invalidate {ids}` (id-level discard) is refused
+  with `E-KB-HTTP-UNSUPPORTED` (thrown): the http provider has no discard
+  operation, and nothing is discarded, on the remote or in the local fallback
+  store. In a MEMBER session `kb_invalidate {files}` is refused the same way
+  (the KB server has no own-scope invalidate; nothing is sent or changed);
+  outside a MEMBER session `kb_invalidate {files}` is unaffected.
+- Under an http project KB, every request carries the project slug
+  (`X-KB-Project`). Fleet's `kb-server` serves one project and answers a
+  request for another project (or naming none) with 409 naming both slugs,
+  surfaced by every provider call (capture, query, context, invalidate, prime,
+  promote) as `E-KB-HTTP-PROJECT-MISMATCH` (thrown); nothing is read or written
+  and no local store is used. When the server is unreachable every call fails
+  with `E-KB-HTTP-UNREACHABLE` (section 2.9); no read is answered from the
+  checkout bible or the per-repo database.
+- `kb_invalidate` retires entries (`ids` discards them; `files` marks
+  context-cache entries invalidated), and `kb_bible_commit` removes retired
+  entries from the bible, so in a member session WITHOUT the grant neither
+  form retires a CONFIRMED entry: each such live CONFIRMED entry the call would
+  have retired is left untouched and its id is listed in `refused`
+  (`E-RETIRE-NEEDS-KB-MAINTAINER`, a response-field refusal); the rest of the
+  call proceeds unchanged (INFERRED/UNVERIFIED own entries are still retired).
+  The response carries `refused` exactly when the call came from such a
+  session (possibly empty), on both forms. The engine's own discards run in
+  the kb_maintainer session and are unaffected.
+- `kb_capture` with `supersedes` retires the matched entry, and AUDN matches
+  candidates across the whole per-repo DB (not only the caller's own
+  entries), so in a member session WITHOUT the grant a CONFIRMED target is
+  never retired: the capture takes the implicit path instead (the new entry
+  is stored and linked to the target with `refines`, both stay live) and the
+  target id is listed in `refused` (`E-RETIRE-NEEDS-KB-MAINTAINER`). A
+  non-CONFIRMED target is still retired. Over a remote (HTTP) KB provider the
+  grant cannot be conveyed, so such a session's `supersedes` is dropped
+  entirely and its id listed in `refused` (fail closed). The response carries
+  `refused` exactly when such a session passed `supersedes` (possibly empty);
+  the kb_maintainer session and FULL sessions are unchanged.
+- A tool handler sees the grant through the per-call context
+  (`getSessionKbMaintainer()` next to `getSessionMemberId()` in
+  `src/services/tool-scope.ts`).
+
+The grant is an unauthenticated loopback URL parameter, like `?member=` and
+`origin=engine`: it keeps agent sessions off the CONFIRMED-minting tools, it is
+not a security boundary against a local process (which can open a FULL
+session). The round-trip harness runs session A as the kb_maintainer session
+and records `kb_setup` and `kb_export` in `FULL_A`.
+
+### 2.6 Bible provenance (target base branch) and entry-level commits
+
+The bible (`.fleet/kb-canonical.json`, format v3, section 2.8) records `provenance.branch` and
+`provenance.commit`. `provenance.branch` is the TARGET BASE branch -- the
+branch the bible's entries merge into -- and `provenance.commit` the base
+commit those entries were verified against. Neither is the HEAD of the
+working folder, which is typically a feature branch.
+
+- `kb_export` accepts optional `baseBranch` and `baseCommit` and writes them
+  into provenance. When omitted, provenance falls back to the export folder's
+  HEAD branch and commit (the pre-existing behaviour). It regenerates the whole
+  bible from the KB. Its project-scope admission is the basis rule described
+  for `kb_bible_commit` below (cited files compared at HEAD); a folder that is
+  not a git work tree is refused with `E-BIBLE-BASIS-NOT-GIT` and no bible is
+  written.
+- `kb_bible_commit` takes `ids`, `baseBranch` and `baseCommit` (all required)
+  and merges at ENTRY level: only the given ids are added or replaced, and
+  every entry already in the bible is kept unless the KB holds it as
+  superseded or invalidated. Those are REMOVED at every call (also with no
+  ids) and listed in the response's `removed` as `{id, reason}` (reason
+  `superseded` or `invalidated`) and in the commit message. An entry in the
+  file but absent from the KB, one the KB holds as CONFIRMED and current, and
+  a merely stale one (freshness sweep) are never dropped. `kb_export` stays
+  additive-only: it never removes an entry. Ids that are not live CONFIRMED entries are skipped
+  and reported in `skipped` with reason `not_confirmed_or_unknown` (never an
+  error). A live CONFIRMED id is admitted only if it passes the same basis rule
+  as `kb_export` (scope=project): every cited source file has a recorded hash
+  matching that file's content at the repo's HEAD commit (uncommitted edits
+  never change the verdict; a file absent at HEAD is a mismatch; a folder that
+  is not a git work tree -- e.g. a bare repository, which still passes (self)
+  resolution -- is refused with `E-BIBLE-BASIS-NOT-GIT`, never hashed from
+  disk, and nothing is written); otherwise it is skipped with reason
+  `basis_mismatch` and any existing bible entry for it is left unchanged. A
+  live CONFIRMED id that cites no source file has no checkable basis and is
+  skipped with its own reason `no_source_files` (never `basis_mismatch`),
+  likewise leaving any existing bible entry unchanged. It makes a local commit scoped to
+  the bible path (identity `pm-kb`) and never pushes. Nothing merged and
+  nothing removed, or an unchanged entry set, makes no write and no commit. Re-running with
+  the same ids after resetting to a newer HEAD re-merges at entry level, so a
+  rejected push can be retried with no manual merge. An existing bible that
+  cannot be parsed is refused (thrown), never overwritten. Under a non-SQLite
+  (http) project KB there is no local store to build a bible from, so the call
+  is skipped before any KB read, write or git commit (the bible file itself may be read, leniently: an
+  unparseable one is logged and counted as 0, never thrown over): it returns `bible_skipped:
+  true` with a `reason`, nothing merged, skipped, removed or committed
+  (`committed` false, `entry_count` the number of entries in the existing parseable
+  bible, 0 when it is absent or unparseable); it is an answer, not an error, and has
+  no code.
+
+The v3 envelope also carries an OPTIONAL top-level `demotions` array of
+`{id, at, reason}` tombstones, sorted by id: the id left the bible at `at` for
+`reason`. Only a v3 envelope may carry it; a reader ignores `demotions` on a v2
+envelope or a legacy bare array. It is absent when the bible holds none, so a
+reader that does not know the field -- and every bible written before it
+existed -- keeps working. Readers keep tombstones whose `reason` they do not
+know. `provenance.entry_count` counts ENTRIES only: a tombstone is not an
+entry. Tombstones are never compacted: one stays until a re-promotion clears it.
+
+A demotion is NEVER inferred from an entry being absent from the bible. A clone
+legitimately holds CONFIRMED rows that were never exported (local-only
+promotions, `basis_mismatch` refusals), and those must not be demoted by an
+import, so withdrawal of trust is only ever carried by an explicit tombstone.
+
+ONE RE-PROMOTION RULE governs both directions. A row's bible trust time is when
+its trust dates from as a bible records it: its `promoted_at` when it was
+promoted on this clone, else the `updated_at` the bible carried when the row
+was imported. It is never the local import time. A row imported before that
+value was kept has no trust time and counts as withdrawn: its trust came from a
+bible, and a later bible withdrew it. Against a tombstone, a row whose trust
+time is strictly after `at` is RE-PROMOTED; at or before `at` it is WITHDRAWN;
+either timestamp failing to parse decides nothing. Bible writers record that
+same trust time as the entry's `updated_at`, so every clone compares the same
+value.
+
+- `kb_bible_commit` takes an optional `demoted_ids`. An id is admitted only when
+  the LOCAL row exists, carries a `demoted_at` and is now below CONFIRMED;
+  anything else is skipped with reason `not_demoted_or_unknown` and the file is
+  unchanged for that id. Independently, on EVERY call each entry already in the
+  bible that the local KB holds as demoted is admitted the same way, unless the
+  bible entry is RE-PROMOTED against the local `demoted_at` under the rule
+  above (its `updated_at` is strictly later, and not later than now -- a
+  future-dated `updated_at` is never a re-promotion): another clone
+  re-promoted it, and tombstoning it again would undo that. An admitted
+  id is REMOVED from `entries` and its tombstone upserted as
+  `{id, at: <local demoted_at>, reason: "demoted"}`. Tombstones already in the
+  file are preserved when a later commit carries unrelated ids, and an id
+  re-admitted through `ids` (a re-promotion) has its tombstone CLEARED.
+- `kb_export` (scope=project) honours tombstones: it does not re-add a tombstoned
+  id unless the local row is RE-PROMOTED under the rule above, in which case it
+  re-adds the entry and clears the tombstone in the same write.
+- `kb_import` applies `reason: "demoted"` tombstones on the READ side, to a local
+  row -- the counterpart of the write-side rules above, and the only place a
+  bible import can lower an already-CONFIRMED row's own confidence. The local
+  row is lowered from CONFIRMED to INFERRED ONLY when it still exists, is
+  CONFIRMED, is not superseded, is not a `user-directive`, and is WITHDRAWN under
+  the rule above; a RE-PROMOTED row is left untouched (it is newer evidence than
+  the tombstone), and a tombstoned id with no local row creates none. The demoted
+  row gets the same single-line content note as a local `kb_demote`
+  (`BIBLE_DEMOTION_REASON`, "demoted in the project bible", standing in for the
+  caller-supplied reason), and `promoted_at`/`source` stay untouched, exactly as
+  a local demotion. A tombstone with any other reason only keeps its entry out
+  of the member bible view and the cold seed. A bible-carried `updated_at` is
+  clamped to the import time when stored, so a future-dated entry cannot
+  outrank every later tombstone. Likewise a tombstone's `at` is clamped to now
+  wherever a bible is read, so a future-dated tombstone never becomes a future
+  `demoted_at` that every later re-promotion would count as withdrawn against.
+- A re-promotion does NOT reach a clone that already applied the tombstone.
+  Import skips an id that already has a local row, so that clone keeps its
+  INFERRED row until it is promoted there again; the every-call exception above
+  only stops it from tombstoning the re-promoted entry again.
+
+MIXED VERSIONS. A writer that predates tombstones (0.4.4 and earlier `kb_export`
+/ `kb_bible_commit`) rewrites the bible WITHOUT `demotions`, and its
+`kb_export` re-adds a demoted id from any clone still holding it CONFIRMED.
+Upgrade every clone that exports to the same repository together. If an older
+writer has already run, the next `kb_bible_commit` from a clone holding the
+entry as demoted removes the entry and restores its tombstone (the every-call
+rule above) -- but only when the re-added entry's `updated_at` is at or before
+the local `demoted_at`. An older writer exports `updated_at = promoted_at ||
+created_at`, which for an imported row is that clone's local import time; if
+it imported the entry AFTER the demotion (before the tombstone reached its
+branch), the re-added entry reads as re-promoted and the tombstone is NOT
+restored -- demote it again once every exporting clone is upgraded. A clone
+that imported the rewritten bible in between does not lose its own demotion,
+because import never raises confidence on an existing row.
+
+### 2.7 Every code_* call is scoped to the calling session (code constraint)
+
+No `code_*` tool takes a repo/scope argument either. The repo a call is about
+is resolved exactly as for `kb_*` (section 2.4): a member session's registered
+work folder; any other session the first MCP client root that is a git
+repository with an origin remote, else the fleet server's working folder when
+the client offers no roots. Explicit extension of that rule for `code_*` only:
+when roots are offered and none has an origin remote, the first offered root
+that is a git repository is used (a code index needs no KB identity). `kb_*`
+calls in that same session fail with `E-SELF-NO-REMOTE`, so `kb_*` and
+`code_*` never resolve to two different repositories. A local
+folder that is missing or is not a git repository is refused before the
+provider is reached (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`); unlike
+`kb_*`, no origin remote is required, because a code index is keyed by folder,
+not by KB identity. A member session never falls back to the server folder.
+A remote member's folder lives on another host and is passed to the provider
+verbatim. The resolved folder is what the provider receives as its repo, what
+usage telemetry records, and (for `code_context`) whose KB enriches the result.
+Owned by `resolveCodeSelf()` in `src/tools/code-intelligence.ts`, over the
+shared `resolveSelfSession()` / `validateSelfRepoFolder()` in
+`src/services/knowledge/kb-self.ts`. Past resolution, a folder with no ready
+code index (none yet, one marked incomplete with no analyze running, one
+whose metadata disagrees with itself -- the gitnexus registry or the fleet
+record of its last build naming a different commit than meta.json -- or one
+still being built, including an existing index an analyze is rewriting) is
+refused with `E-CODE-INDEX-NOT-READY`, as is an answer during which the index
+changed (readiness is re-checked after the child answers); for a missing,
+interrupted or inconsistent index on this host the gitnexus pre-flight first requests a
+background build and the message says so (retry shortly) -- after an automatic
+build that ends without a ready index, automatic builds for that folder pause
+until `code_reindex` and the message says so -- and provider `none` with `E-CODE-INTEL-DISABLED` --
+an error result, never an ok payload that says "disabled". Fixtures
+`code_query/refusal-self-no-workfolder` and `code_map/refusal-self-not-a-repo`
+pin the two (self) refusals; every `code_*` tool has a
+`refusal-index-not-ready` fixture run as the `CODE` member session (provider
+pinned to `gitnexus`, no index), and `code_query/refusal-intel-disabled` runs as
+the `CODE_OFF` member session (provider `none`).
+
+Every `E-CODE-INDEX-NOT-READY` error result carries machine-readable detail
+as the result's `structuredContent` (the error object's `structuredContent`,
+mapped by `wrapTool`; it survives the MCP boundary, where a plain thrown error
+keeps only its message). The same detail is repeated in the result's one-line
+text, after the `CODE: problem Remediation: ...` message, as
+`[retry_after_ms=N retry_will_help=B build=X state=Y ...]`, because an MCP
+client may pass its model only the text of an error result:
+
+- `retry_after_ms` (number, every state): how long to wait before ONE retry --
+  while an analyze is live or was just requested for this call, what should
+  remain of the folder's last build time (15000 to 600000), or 180000 with no
+  earlier build; 60000 after the scheduler's cooldown, 5000 when the index changed under the call,
+  and `0` when no build is running and none could be requested (no automatic
+  build, builds paused or disabled, the server cannot build, a remote
+  member's folder, provider `codebase-memory`).
+- `retry_will_help` (boolean): `false` exactly when `retry_after_ms` is `0` --
+  waiting will not help; follow the remediation or fall back.
+- `code`, `provider`, `state` (`missing` | `building` | `interrupted` |
+  `inconsistent` | `changed`), `build` (`running` | `requested` | `none`), and
+  `heal` (`started` or the not-started reason) when an automatic build was
+  attempted.
+- `progress` (gitnexus, when an analyze is recorded for the folder and not
+  finished): `{ phase, elapsed_ms, last_line, line_count }`, the same data
+  `code_status` reports under `analyze`.
+
+The intended caller behaviour is: wait once for `retry_after_ms`, retry once,
+then fall back (e.g. to text search) -- never poll `code_status` in a loop.
+The `refusal-index-not-ready` fixtures record this detail under
+`error.structured` (minus the time-varying `progress`), and the round-trip
+harness compares it key for key.
+
+### 2.8 Bible file format (v3) and its hash basis
+
+The bible file is described by `bible/kb-canonical.schema.json`; example files
+for every accepted shape live in `bible/examples/`.
+
+- Format v3 (written by `kb_export` and `kb_bible_commit`) is the envelope
+  `{version: 3, provenance: {commit, branch, entry_count}, entries: [...]}`.
+  Each entry has the stable field set `{id, type, title, summary, symbols,
+  source_files, confidence, updated_at}` plus, in v3, an optional
+  `source_file_hashes`: a map from repo-relative path to file hash. A writer
+  copies it verbatim (keys sorted) from the exporting KB's STORED basis --
+  the basis the bible predicate admitted the entry against -- and never
+  re-hashes files at write time. An entry carried over from an older bible has
+  no `source_file_hashes`; a writer keeps it as it is and never invents one.
+  The one exception is `kb_bible_commit`'s legacy backfill: when its KB holds
+  the same id, citing the same `source_files`, with a stored basis that passes
+  the bible admission predicate at HEAD, that STORED basis is attached as the
+  entry's `source_file_hashes` (copied, not re-hashed; every other field is
+  unchanged; an entry that does not qualify is kept as it is, never dropped).
+  A backfill is a change: the bible is rewritten at the current format version
+  and committed, and the response's `backfilled` counts the entries. A local
+  freshness-only basis (below) never backfills.
+- Every writer refuses (throws, file untouched) to write a bible holding two
+  entries with the same `id`.
+- Readers (`kb_import`, the member bible view) accept v1 (a bare JSON array of
+  entries), v2 (the same envelope with `version: 2` and no per-entry hashes)
+  and v3. A v3 entry whose `source_file_hashes` is a non-empty map with
+  repo-relative keys covering every `source_files` entry is stored with
+  EXACTLY that basis: the importing clone's files are never hashed for it, so
+  an entry whose cited file differs on the importing clone is not admitted to
+  that clone's bible and the post-import sweep stales it. An entry without a
+  valid carried map (every v1/v2 entry) gets a LOCAL freshness-only basis
+  hashed from the importing clone's files. Freshness checks use it, so the
+  entry goes stale when a cited file changes. It is never a verified basis:
+  it is never written to a bible, the bible admission predicate (kb_export,
+  kb_bible_commit) reads it as no basis, and the reconcile prefilter never
+  resolves a pair on it. The entry is therefore not re-exported until it is
+  recaptured (kb_promote and kb_resolve_contradiction do not give it a
+  verified basis).
+- No tool request shape changes with v3. The only response change is
+  `kb_bible_commit`'s `backfilled` count (above); otherwise the format change is
+  confined to the bible file.
+
+### 2.9 Remote (HTTP) KB: the server is the source of truth
+
+When the KB config selects the http project provider, the KB server answers
+every project KB call and fleet keeps no second copy:
+
+- The bible (`.fleet/kb-canonical.json`) is not used. No read is answered
+  from it, `kb_session_prime` does not cold-seed from it, `kb_import` imports
+  nothing (it answers `bible_skipped: true` with a `reason` before reading the
+  bible, so a sprint start imports nothing), and `kb_bible_commit` answers
+  `bible_skipped: true` (section 2.6).
+- The per-repo SQLite database is not used either: nothing is read from it
+  when the server is down, and delivery telemetry (`touch`) is not written
+  to it. `getLinked` and `relatedClaims` have no remote route and answer
+  empty (`related_claims` is then empty, as for any graph miss).
+- A server that cannot be reached is `E-KB-HTTP-UNREACHABLE`, and a token the
+  server refuses is `E-KB-HTTP-AUTH` (section 3.3a). Both are thrown; neither
+  is ever answered from a local store.
+
+#### 2.9.1 Routes and capabilities
+
+A KB server serves these routes, each behind the same bearer-token auth and
+the same `X-KB-Project` check (409 `PROJECT_MISMATCH` naming both projects for
+another project or none):
+
+| Route name | Request | Required |
+|---|---|---|
+| `capture` | `POST /api/kb/capture` | yes |
+| `query` | `GET /api/kb/query` | yes |
+| `promote` | `POST /api/kb/promote` | yes |
+| `context` | `GET /api/kb/context` | no |
+| `prime` | `POST /api/kb/prime` | no |
+| `invalidate` | `POST /api/kb/invalidate` | no |
+| `feedback` | `POST /api/kb/feedback` | no |
+| `list` | `GET /api/kb/list` | no |
+| `demote` | `POST /api/kb/demote` | no |
+
+`GET /api/kb/capabilities` (same auth and project check) answers
+`{contract, routes, branch_aware}`: `contract` is the contract version
+(`"v1"`), `routes` the route names it serves, `branch_aware` whether it keeps
+entries per branch (section 2.9.2). Fleet's client:
+
+- reads it once per connection, and again after a connection error or a
+  failed read of it (a 5xx or 429 answer to another request does not trigger
+  a re-read). It is not re-read between two successful calls: a
+  server upgraded (or downgraded) in place without dropping the connection
+  keeps the route set the client read before, until the next connection
+  error or a fleet server restart;
+- never calls a route the answer does not list: the tool fails with
+  `E-KB-HTTP-UNSUPPORTED` naming the route and nothing is sent;
+- assumes a server that has no capabilities route (it answers 404 or 501, or a
+  body with none of the three fields) serves the route set from before this
+  route existed: every route above except `demote`, `branch_aware` false;
+- refuses a capabilities body that carries some of the fields but not all,
+  well typed, with `E-KB-HTTP-UNSUPPORTED`;
+- treats any other failed capabilities read as the server's state, never as
+  a raw HTTP error: a 5xx or 429 (a restarting or rate-limiting server, a
+  gateway with no backend) is `E-KB-HTTP-UNREACHABLE` naming the status (the
+  caller's own request was never sent); any other status but 401 and a 409
+  `PROJECT_MISMATCH` (e.g. 403/405 from a gateway) is
+  `E-KB-HTTP-UNSUPPORTED` naming the capabilities read. A failed read is not
+  kept: the next call reads the capabilities again;
+- turns a 429 or 503 answering a request itself, a write or a read, into
+  `E-KB-HTTP-UNREACHABLE` naming the request and the status: both refuse a
+  request before handling it (rate limiting, a restarting server, a gateway
+  with no backend), so the identical request is safe to repeat. Fleet's own
+  `kb serve` answers 429 above its per-IP request rate;
+- turns any other 5xx answering a write itself (capture, invalidate with
+  files, feedback, promote, demote) into `E-KB-HTTP-SERVER-ERROR` naming the
+  request and the status, never a raw HTTP error. The request reached the
+  server, so whether the write took effect is unknown: it is not retried;
+- turns any other 5xx answering a read (query, context, prime, list) into
+  `E-KB-HTTP-SERVER-ERROR` naming the request and the status, never a raw
+  HTTP error; nothing is answered from a local store or the bible instead;
+- queues no write. A write that fails for any reason is thrown to the
+  caller, who owns the retry (section 3.3a);
+- turns a 404 or 501 from any optional route into `E-KB-HTTP-UNSUPPORTED`
+  naming the route, never a raw HTTP error. On an id route a 404 whose body
+  `code` is `ENTRY_NOT_FOUND` or `E-ENTRY-NOT-FOUND` means the entry is
+  unknown, not that the route is missing;
+- turns a 404 from `promote` (a required route) whose body `code` is not
+  `ENTRY_NOT_FOUND` / `E-ENTRY-NOT-FOUND` into `E-KB-HTTP-UNSUPPORTED` naming
+  the promote route, with the remediation to upgrade the KB server: a server
+  from before the capabilities route may not serve promote at all, and its
+  catch-all 404 must not read as "Entry not found".
+
+A server answers an id route (`promote`, `demote`, `feedback`) naming an
+entry it does not hold, or one outside the caller's scope, with 404 and body
+`code` `ENTRY_NOT_FOUND`. That body code is required: it is the only thing
+that tells an unknown entry from a missing route.
+
+Fleet's `kb-server` always serves a local SQLite KB: it serves, and its
+capabilities list, every route above, `demote` included, and it reports
+`branch_aware: false`. It is the reference implementation of these routes;
+the http fixtures under `fixtures/` are recorded against it.
+
+`demote` is `POST /api/kb/demote` `{id, reason, evidence_files}`, answered
+`{id, previous_confidence, new_confidence}`; like `promote` it is sent by id
+and the server enforces which ids the caller may demote. `kb_demote` is sent
+only when the capabilities list `demote`. Without it, `kb_demote` and a MEMBER
+`kb_query` `own_scope` read (which exists to find what the caller may demote)
+fail with `E-KB-HTTP-UNSUPPORTED`, and the sprint engine's reviewer demotion
+loop offers no candidates.
+
+The server validates `evidence_files`. They are untrusted input: paths
+relative to the root of the repository the caller names in `X-Repository`,
+as of the branch it names in `X-Repository-Branch` (section 2.9.2). A server
+refuses an absolute path or one with a `..` segment, and resolves the rest
+only inside its own view of that repository and branch, never elsewhere on
+its filesystem. Fleet checks first that each path is repo-relative with no
+`..` segment (either separator, any drive-letter or UNC form counts as
+absolute) and otherwise refuses with `E-DEMOTE-EVIDENCE-UNRESOLVED` before
+sending anything. The server's refusals:
+
+- 404 with body `code` `ENTRY_NOT_FOUND`: the id is unknown, or outside the
+  caller's scope (the two are not told apart);
+- 422 for a demote refusal, with body `code` the taxonomy code:
+  `E-DEMOTE-NOT-CONFIRMED`, `E-DEMOTE-SUPERSEDED`, `E-DEMOTE-REFUSED-DIRECTIVE`,
+  `E-DEMOTE-REASON-REQUIRED` or `E-DEMOTE-EVIDENCE-UNRESOLVED` (an evidence
+  path that is absolute, has a `..` segment, or does not resolve to a file).
+
+#### 2.9.2 Project and repository headers
+
+Every request carries headers that fleet fills only from the calling
+session's resolved KB anchor (section 2.4), never from tool input:
+
+| Header | Value |
+|---|---|
+| `X-KB-Project` | the project slug |
+| `X-Repository` | the normalised origin remote, `host/path` (no scheme, credentials, port or `.git`) |
+| `X-Repository-Branch` | the checked-out branch of a local folder, percent-encoded UTF-8; absent when HEAD is detached or unknown |
+| `X-Repository-Commit` | the HEAD sha of a local folder; absent when unknown |
+
+A server uses them as follows:
+
+- **They are context, not identity.** They say which repository and branch a
+  request is about. They never authenticate or authorise the caller: who the
+  caller is, and what it may read or write, comes from the bearer token and
+  the server's own scope rules.
+- **Entries are kept per project and repository.** `X-KB-Project` selects the
+  KB; within it, `X-Repository` keeps repositories apart, so one server can
+  hold several repositories without mixing their entries. A server that
+  serves one project refuses any other `X-KB-Project` (409, section 2.9.1).
+- **The branch decides what is true.** A server that keeps entries per branch
+  answers a read with what is true on `X-Repository-Branch` and records a
+  write against it. Such a server reports `branch_aware: true` in its
+  capabilities; a server that keeps one truth per repository reports
+  `branch_aware: false` and ignores the branch.
+- **The commit is only a hint.** `X-Repository-Commit` is the caller's local
+  HEAD, which can trail the branch tip (unpushed, or not yet fetched). A
+  server must not treat it as the branch tip or reject a request because the
+  commit is behind; it may use it, for example, to judge how fresh the
+  caller's view of a file is.
+- **The branch is percent-decoded before matching.** Fleet sends the branch
+  percent-encoded (UTF-8), so a server decodes it before comparing it with
+  branch names it holds; a value that is not valid percent-encoding is
+  treated as absent.
+- `branch_aware` is reported in `GET /api/kb/capabilities` (section 2.9.1).
+
+## 3. Error model
+
+`taxonomy.json` in this directory is the source of truth: a CLOSED set of
+machine codes, each carrying a code string, a meaning, its raising methods and
+a `retryable` flag. This section explains the shape of that set and points at
+it; it deliberately does not restate any individual code's meaning, and it adds
+no code that is not in `taxonomy.json`.
+
+### 3.1 Groups
+
+Codes are partitioned into seven groups -- exactly one group per code:
+`validation`, `admission`, `authority`, `governance`, `conflict`, `not_found`,
+`provider_internal`. See `taxonomy.json`'s `_meta.group_definitions` for what
+each group admits. Two boundaries are worth naming because they are easy to get
+backwards:
+
+- `validation` vs `provider_internal`: a refusal decided from the caller's
+  input alone before any provider exists is validation, even when it is raised
+  by a tool that is about to talk to a provider. This is the recorded decision
+  for `E-REPO-PATH-INVALID` (see its `group_decision` field). The self-resolution (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`)
+  codes are the converse: no request field is wrong (there is no scope field),
+  the session's resolved KB configuration cannot serve the call, so they are
+  `provider_internal` (see their `group_decision` fields).
+- `authority` vs `governance`: authority refuses an attempt to write trust
+  above the INFERRED ceiling; governance refuses an attempt to retire,
+  override, or activate an entry regardless of tier.
+
+### 3.2 Not every documented outcome is an error
+
+`taxonomy.json`'s `non_error_outcomes` array lists paths that a throw-site scan
+or a naive reading of `INVENTORY.md` section 5 would mistake for errors and that
+deliberately get NO code, each with its reason. They fall into three kinds:
+
+- **The requested call succeeded with a documented adjustment** -- the
+  confidence clamp, the AUDN `none` (dedup) decision, and the AUDN `flagged`
+  (contradiction) decision. Each is reported in a named response field, so a
+  caller can already see exactly what happened.
+- **A read tolerated a missing anchor** -- a remote member session's folder,
+  carried verbatim. The writing branch of that same one policy does refuse, and
+  that branch is the one with a code.
+- **A failure was degraded into an answer** -- the `code_*` adapters' offline
+  result, the swallowed bible read, the emptied
+  `related_claims`, the unknown author role, a provider reporting stats as
+  unsupported, and `kb_bible_commit` returning `bible_skipped: true` under an
+  http project KB.
+
+### 3.3 One code in v1 is retryable
+
+Every entry but `E-KB-HTTP-UNREACHABLE` carries `retryable: false`. This is a
+finding, not a default: apart from that one code, the transient-failure paths
+in this surface never propagate to the caller as errors -- they are converted
+into structured results at the provider boundary (third kind in 3.2). `retryable` means
+"retrying the identical request unchanged can succeed"; fixing a path or
+supplying a missing reason is a new request, not a retry.
+
+`E-KB-HTTP-AUTH` (remote KB whose token is a named fleet secret) is the one
+code that clears once something outside the request changes -- the operator
+updates the secret, and the identical request then succeeds. It is still
+`retryable: false`: retrying it unchanged before that update fails the same
+way, and the provider has already done its one retry (re-read the secret, send
+once more) before raising it.
+
+`E-KB-HTTP-UNREACHABLE` (the KB server cannot be reached, its capabilities
+read answered a 5xx or 429 so the request was never sent, or it answered the
+request itself with 429 or 503, which refuse a request before handling it) is
+the one transient
+failure in this surface that reaches the caller, and it is `retryable: true`:
+the identical request succeeds once the server answers again. It is thrown
+rather than degraded because under http the KB server is the only source of
+truth, and answering from a local store or the checkout bible would hide the
+outage (section 2.9). The provider queues nothing behind it, so the caller
+owns the retry (3.3a).
+
+`E-KB-HTTP-SERVER-ERROR` (the server answered a request itself with a 5xx
+other than 503) is `retryable: false`: a write may already have been applied,
+so repeating the identical request could apply it twice.
+
+### 3.3a Remote KB auth and outage failures are thrown; the caller owns the retry
+
+`E-KB-HTTP-AUTH`, `E-KB-HTTP-UNREACHABLE` and `E-KB-HTTP-SERVER-ERROR` are
+`surfaced: thrown` on every tool that reaches the remote provider. The
+provider queues nothing: a write (`kb_capture`, `kb_invalidate`,
+`kb_feedback`, `kb_promote`, `kb_demote`) that fails is thrown, and a read
+(`kb_query`, `kb_context`, `kb_session_prime`, `kb_list`) is thrown with no
+local fallback: a silently degraded answer would hide the failure. One owner
+retries, the caller: the sprint engine keeps its own KB write queued on
+`E-KB-HTTP-UNREACHABLE` and on `E-KB-HTTP-AUTH` (the server never handled
+the write, and the identical write succeeds once the server answers or the
+secret is fixed) and repeats it on its next flush; an interactive or agent
+caller decides for itself. `kb_harvest` captures many learnings in one
+call, so a failed capture does not stop it: it attempts every learning, logs
+each failure, and reports how many captures failed (`entries_failed`); when
+none landed and at least one failed, the response also carries the first
+failure's message (`first_error`); it raises none of these codes itself. Over a SQLite project KB a MEMBER session's CONFIRMED read is answered
+from its checkout bible (2.5) and never reaches the provider; under the http
+project provider member reads go to the server (2.5, 2.9) and are thrown like
+any other read. No message or log line ever
+contains the secret's value.
+
+### 3.4 Silent refusals are named but not projectable
+
+Each code also carries `surfaced`: `thrown`, `response-field`, or `silent`. The
+`silent` ones are real refusals with no distinguishable signal today -- the
+requested effect did not happen and the response looks like an ordinary
+success. They are named in the taxonomy precisely because they are the easiest
+refusals in the surface to miss. Per `_meta.projection_rule`, a `silent` code
+must NOT be projected into a wire error enum: the server never emits it, so a
+consumer branching on it would branch on something unreachable.
+
+### 3.5 Directive activation is absent, not refused
+
+Activating a captured `user-directive` is CLI-only, and no server code path for
+it may exist. The quarantine is therefore expressed by ABSENCE: no consumer of
+this contract may emit a path, an operation, a code, or a schema shape for
+approving, rejecting or activating a directive -- not even one that always
+refuses, because a documented-but-forbidden route is still a route. The codes
+belonging to those CLI-only operations are held in `taxonomy.json`'s
+`excluded_from_closed_set` block, outside every group, with the reason.
+
+What IS published is the `governance` group's refusals of activation ATTEMPTS
+made through routes that genuinely exist (capture quarantine, promote,
+contradiction resolution). Those are answers this server really gives, and
+hiding them would misdescribe live behavior. The invariant rule text for the
+quarantine itself lives in "Directive quarantine" below (T2).
+
+## 4. Invariants
+
+Six subsections, each the spec.md home that an `x-invariant` id in
+`schemas/*.json` (see `tests/GENERATOR-DECISION.md` section 4) or a
+`see_also` pointer in `methods.json` resolves to -- per the hand-off list in
+`tests/GENERATOR-DECISION.md` section 4 ("no invariant points anywhere
+else").
+
+### 4.1 Scope resolution and repo aliasing
+
+**THE RULE.** No `kb_*` request carries a scope field: a binding MUST NOT
+declare `repo`, `repo_path` or `repo_remote_url` on any `kb_*` request. A
+provider MUST resolve the KB from the CALLING SESSION -- a member session's
+registered work folder, otherwise the server's own working folder -- and MUST
+refuse a folder that cannot carry a KB identity with the matching typed code
+(`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`), each with a
+one-line remediation, rather than degrading to a directory-name or `default`
+KB. `kb_import`'s `path` names a bible file and MUST NOT select which KB is
+written. `kb_setup` installs its hook into the session's folder and writes one
+global config; when the folder cannot carry a KB identity it skips the hook
+and reports the typed reason rather than refusing. (INV-05, INV-06)
+
+`kb_setup` MAY also set the install-wide KB tool profile (`tool_profile`:
+`full`, `developer` or `custom` with `tool_profile_tools`) in that global
+config. The profile decides which `kb_*` tools a FULL (non-member) session is
+served when it registers its tools; it MUST NOT change a MEMBER session's tool
+list, and an unknown `custom` tool name MUST be refused with nothing written.
+It is a usability control, not a security boundary.
+
+**THE PROOF.** `src/services/knowledge/kb-self.ts` owns the resolution:
+`resolveSelfAnchor()` reads the session member id (`getSessionMemberId()`,
+`src/services/tool-scope.ts`), looks the member up in the registry and
+validates its folder (`validateSelfFolder()`: exists, `git rev-parse` succeeds,
+`git remote get-url origin` succeeds); with no member identity it validates
+`process.cwd()`. Every `kb_*` handler calls it (`getSelfKbProviders()` or
+`resolveKbAnchor()`), and none of `src/tools/kb-*.ts` declares a scope field.
+A remote member (agentType not local) cannot be checked on this host, so its
+KB identity is its single known origin remote (`knownRepoRemoteUrl`) and the
+folder is passed verbatim; `kb_session_prime` and `kb_stats` tolerate that
+missing anchor (`taxonomy.json` non_error_outcomes
+`N-ANCHOR-VERBATIM-MISSING`), while `kb_export`, `kb_bible_commit` and
+`kb_import` refuse with `E-REPO-PATH-INVALID` (`requireLocalFolder`; a member
+session is never served `kb_export`, section 2.5a, so for it this is defence in
+depth). In-process callers that already
+know the repo (the post-dispatch harvest in `src/tools/execute-prompt.ts`, the
+`kb commit` / `kb import` CLIs) pass an explicit anchor as the handler's second
+argument, which no MCP request can carry.
+`src/services/knowledge/kb-providers.ts` caches provider instances by
+`providerKey(slug, repoPath)`, NUL-joined -- deliberately NOT slug alone, so
+two anchors resolving to the same project slug but different folders get
+distinct basis-hash roots rather than sharing the first caller's.
+
+**THE OBLIGATION.** A generated binding MUST NOT reintroduce a live scope field
+on any `kb_*` request; scope is a property of the session, not of the call. The
+removed keys (`repo_path`, `repo`, `repo_remote_url`) appear only as REMOVED
+markers, and every value of one is refused with `E-SCOPE-KEY-REMOVED`. An
+implementation MUST derive KB identity from the resolved folder's origin
+remote and MUST surface the three self-resolution (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`) codes rather than guessing. Any
+provider-instance cache MUST key on the (slug, repoPath) pair, not slug
+alone. An implementation MUST preserve which tools refuse versus tolerate an
+unreachable remote folder -- read tools tolerate, writing tools refuse.
+
+**THE TEST HOOK.** The round-trip harness dispatches every fixture as the
+session it names (`tests/roundtrip-harness.mjs` `ENVIRONMENT.sessions`: a
+registered member session, or the FULL session `FULL_A` whose server working
+folder is repo A) and carries one refusal fixture per self-resolution (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`) code
+(`kb_query/refusal-self-no-workfolder`, `kb_stats/refusal-self-not-a-repo`,
+`kb_list/refusal-self-no-remote`) and one `E-SCOPE-KEY-REMOVED` refusal fixture
+per tool family (`kb_query`, `kb_capture`, `kb_export` and
+`kb_freshness_sweep`, each `refusal-scope-key-removed`); the request schemas'
+`additionalProperties: false` rejects any other undeclared field before
+dispatch. The (slug, repoPath)
+cache-keying invariant is `tests/DEGRADATION.md` D-2.
+
+### 4.2 Capture provenance and confidence clamp
+
+**THE RULE.** A provider MUST cap confidence at INFERRED on an ordinary
+capture: an incoming `confidence: CONFIRMED` MUST be downgraded to INFERRED,
+MUST set `confidence_clamped: true` in the `kb_capture` response, and MUST
+append a bracketed note to the stored content. More generally,
+`confidence_clamped` MUST be `true` exactly when the stored confidence differs
+from the requested one (absent means INFERRED) -- so a `user-directive`,
+quarantined to UNVERIFIED by 4.3, also reports `true`, while it does NOT get
+the bracketed note (the note names kb_promote, which is not its remedy). CONFIRMED MAY be minted by the
+promotion path (`kb_promote`) and MAY additionally survive on a dedicated
+bible-import path, because that path is a separately-trusted, human-reviewed
+channel -- but that exemption MUST be reachable only through an internal,
+non-serializable flag, never a field a caller can set on the request body. The
+inverse move, CONFIRMED -> INFERRED, MUST be available as a first-class
+operation (`kb_demote`) rather than as a re-capture: an entry whose grade
+outran its evidence has to be downgradable without destroying its id, its
+promotion history or its links. `kb_demote` MUST NOT be a ladder -- a target
+that is not CONFIRMED MUST be REFUSED (`E-DEMOTE-NOT-CONFIRMED`), never
+returned as an unchanged no-op -- MUST leave `promoted_at` and `source`
+untouched, and MUST record the basis it withdrew trust against by hashing the
+cited source files AS THEY ARE ON DISK AT DEMOTE TIME, never by copying the
+capture-time hash column (a capture-time copy cannot answer whether the tree
+has moved on since the demotion, which is the question the record exists for).
+Every refusal `kb_demote` can raise MUST be checked before the single write
+that lowers confidence, in this fixed order, so a partial demotion can never
+be observed: (1) the id does not exist, or -- in a MEMBER session -- exists but
+does not carry the caller's ownerTag, both reported as the identical "entry not
+found" (so a MEMBER session can never learn an entry it does not own exists by
+probing for a different refusal); (2) the entry is already superseded
+(`E-DEMOTE-SUPERSEDED`); (3) the entry is a `user-directive`, which is
+human-terminal in both directions (`E-DEMOTE-REFUSED-DIRECTIVE`); (4) the
+entry is not CONFIRMED (`E-DEMOTE-NOT-CONFIRMED`, the ladder refusal above);
+(5) the reason, with every newline collapsed to a space and the result
+trimmed, falls short of the demote reason floor (`E-DEMOTE-REASON-REQUIRED`);
+(6) no evidence file is cited (evidence is REQUIRED, like promote's
+resolvable basis), or a cited evidence file does not resolve anchor-relative to
+a regular file in this worktree (`E-DEMOTE-EVIDENCE-UNRESOLVED`). At the tool
+boundary an absent or empty `evidence_files` never reaches that check: the
+request schema's `minItems: 1` refuses it first, as an input-validation error.
+The provider still refuses an empty list with `E-DEMOTE-EVIDENCE-UNRESOLVED`
+for a direct caller. The eventual content note MUST
+use the one format shared with the bible tombstone path (2.6), so a demotion
+applied locally and one that crossed clones through an import read
+identically: exactly ONE leading newline (never two, which is the `kb_feedback`
+marker, so the two can never be mistaken for each other), then
+`[Demoted: <reason, newlines collapsed to spaces> -- <author>]`, with a
+` | evidence: <evidence files, comma-joined>` clause inserted before the
+closing bracket whenever evidence files are known (always, for a local
+`kb_demote`; a bible tombstone may carry none).
+
+The KB's confidence-lowering surface is a short, named ladder, and `kb_demote`
+is only one rung of it: an entry that is simply less certain than its tier
+claims -- still broadly right, but the evidence underneath it turned out
+thinner than the promotion implied -- is routed to `kb_demote`; an entry shown
+to be actively wrong is routed to `kb_feedback` (flags and stales it, but MUST
+NOT touch confidence) or, when it forms a genuine contradiction pair with
+another entry, `kb_resolve_contradiction`; discarding an UNVERIFIED/INFERRED
+capture that was never worth promoting in the first place is a `kb_discards`
+judgement, carried out through `kb_invalidate`. `kb_demote` is the only one of
+these four that can ever lower a CONFIRMED entry's stored confidence, and it
+can only ever lower it to INFERRED. A closed Author enum MUST gate `role` server-side even though the request
+schema leaves it open; any value outside it, including an absent hint, MUST
+be stamped as the literal `unknown`. `source` derivation is a handler-level
+guarantee, not a provider-level one: on the `kb_capture` tool path `source`
+MUST be derived from the validated role and type and MUST NOT be read from
+the request; at the provider choke point a caller-supplied `source` is
+otherwise persisted VERBATIM, except that the two privileged values
+`'import'` and `'promotion'` MUST be forced to `'unknown'` outside import
+mode, because those two mark a trusted-channel provenance and a forged one
+would let an audit keyed on `source='import'` trust a row it should not.
+Admission -- whether an entry cites a checkable basis at all -- is a distinct gate
+enforced at the same provider entry point, not part of this clamp, but this
+is the invariant 4.3 defers it to for the directive case: a directive citing
+zero files is exempt (4.3's basis exemption), but a directive citing files
+that do not resolve is refused the same as any other type
+(`E-BASIS-MISSING-FILES`; a non-directive citing zero files is refused under
+`E-NO-BASIS`, admission group). (INV-02, INV-07)
+
+**THE PROOF.** The request schema still accepts `CONFIRMED` as an input value
+(`src/tools/kb-capture.ts:39-40`) -- that is the trap: honoring it verbatim is
+schema-faithful but non-conforming. The clamp exists at two sites with
+DIFFERENT scopes. The tool handler, `src/tools/kb-capture.ts:99-107`,
+downgrades `confidence`, sets `confidence_clamped`, and appends
+`'\n\n[confidence clamped: CONFIRMED requires kb_promote]'` to content for
+every `type` except `user-directive` (whose quarantine to UNVERIFIED is
+applied next, in the same handler), then derives `confidence_clamped` from
+stored-vs-requested confidence, so both downgrades report it -- and only for
+calls that reach this handler (the `kb_capture` MCP tool; `kb_harvest`,
+`kb_import`, and the HTTP route never populate `confidence_clamped` at all).
+The provider choke point, `SqliteProvider.capture`'s confidence-clamp block
+(`src/services/knowledge/sqlite-provider.ts`), re-enforces the downgrade for
+every route that reaches `capture()` --
+`kb_capture`, `kb_harvest`, `kb_import`, and the HTTP `/api/kb/capture` route,
+which calls `provider.capture()` directly and bypasses the tool handler
+entirely (a comment on that same block names this explicitly) -- but its
+condition,
+`!opts?.importMode && input.type !== 'user-directive' && input.confidence ===
+'CONFIRMED'`, carries two exemptions the handler does not have.
+`type === 'user-directive'` is excluded because the directive gate earlier in
+`capture()` has already forced that entry's confidence to UNVERIFIED before
+this check runs, overriding whatever the handler set. `!opts?.importMode` is
+excluded because a bible import keeps its stored confidence, including
+CONFIRMED (a comment on the same clamp block): the bible is a git-reviewed, human-merged
+artifact, and re-clamping would demote a whole team's already-earned trust on
+every import. This clamp is the only route by which `capture()` itself could
+mint or preserve CONFIRMED; it never LOWERS an existing CONFIRMED row. A local
+CONFIRMED row IS still lowered on import, but through a separate path outside
+this clamp entirely (2.6): `kb_import` applies the bible's tombstones to
+already-stored rows, and only when the row is WITHDRAWN under 2.6's
+re-promotion rule. `importMode` is the SECOND parameter of `capture()`, never a
+field of the deserialized request body, so no caller reaching `capture()`
+through a route can set it (same comment block). Provenance: `AUTHOR_VALUES`
+(`src/tools/kb-capture.ts:11`) and `validateAuthor`
+(`src/tools/kb-capture.ts:16-21`) gate `role` against the closed set `doer,
+reviewer, planner, plan-reviewer, kb-agent, kb-reconciler, harvest, pm, user`;
+anything else, or an absent hint, returns the literal `'unknown'`. `source` is
+computed at `src/tools/kb-capture.ts:117-122` from the validated `author` and
+`type` -- `'user-directive'` for a directive, `'review'` when `author ===
+'reviewer'`, else `'session'` -- and is never read from `input` ON THIS PATH.
+The provider choke point does not repeat that derivation: `SqliteProvider.insertEntry()`
+persists `input.source` VERBATIM (comment on that method, in
+`src/services/knowledge/sqlite-provider.ts`), and the only
+normalization is a separate step in `SqliteProvider.capture` -- a caller-supplied `source` of
+`'import'` or `'promotion'` is overwritten with `'unknown'` when
+`!opts?.importMode`, because those two values mark trusted-channel provenance
+(`'import'` from `kb_import`, `'promotion'` stamped only by `promote()`) and a
+forged one would let an audit keyed on `source='import'` trust a row it
+should not; every other caller-supplied value survives into storage
+unchanged. The HTTP `/api/kb/capture` route reaches this unguarded: it parses
+the request body straight into `KBEntryInput` and calls
+`provider.capture(input)` (`src/commands/kb-server.ts:138-142`), never
+touching the handler that derives `source`. Admission is
+a separate check at the same provider entry point (`SqliteProvider.assertCheckableBasis`,
+`src/services/knowledge/sqlite-provider.ts`): the
+zero-files half exempts `type === 'user-directive'` (returns
+early), but the unresolvable-files half has no type exemption
+and still refuses a directive whose cited files do not exist.
+
+**THE OBLIGATION.** A second implementation MUST enforce the clamp at its
+provider-level capture entry point, not only in a request handler: trusting a
+client-declared CONFIRMED does not conform, because any route that reaches
+storage without passing through the handler would otherwise mint CONFIRMED
+directly. Only two categories may keep an incoming CONFIRMED at that entry
+point: a value written by the promotion path itself, and a bible import
+running under an internal, non-forgeable import flag. `type='user-directive'`
+MUST NOT be coded as a third, independent exemption; it is unaffected only
+because the directive gate runs first and already forced it to UNVERIFIED, and
+an implementation MUST preserve that ordering rather than special-casing
+directives in the clamp condition itself. It MUST close the Author enum
+server-side despite the open schema field. It MUST derive `source` from
+validated role/type on the handler path, but MUST NOT assume a
+caller-supplied `source` is trustworthy on any route that reaches the
+provider directly -- that guarantee is handler-level, not provider-level, the
+same shape as `confidence_clamped` (handler-only) and `content_hash`
+(HTTP-caller-settable, 4.5). It MUST reproduce the privileged-value defense
+at the provider boundary itself, forcing a caller-supplied `'import'` or
+`'promotion'` to `'unknown'` outside import mode, rather than relying on a
+request schema to omit a `source` field. Rejecting an entry that cites no
+source files (`E-NO-BASIS`, non-directive only), or one whose cited files do not resolve
+in the worktree (`E-BASIS-MISSING-FILES`, every type including directives),
+is admission's rule, not this clamp's -- but a conforming implementation MUST
+still enforce both halves at this same entry point, since 4.3's directive
+exemption is only the zero-files half and depends on the unresolvable-files
+half still applying.
+
+**THE TEST HOOK.** `clamp` -- for `kb_capture`, assert a request carrying
+`confidence: CONFIRMED` returns `confidence_clamped: true`, including for a
+`user-directive`; for every
+non-import, non-directive route (`kb_capture`, `kb_harvest`, the HTTP capture
+route), assert the entry reads back at INFERRED regardless of what the
+response body reported; separately assert a bible import retains CONFIRMED
+untouched.
+
+### 4.3 Directive quarantine
+
+**THE RULE.** A provider MUST accept a `type='user-directive'` capture and
+MUST store it as a pending proposal rather than as requested: confidence
+forced to UNVERIFIED, `flagged_for_review` set, a `directive:pending` tag
+added, and `scope` forced to `project` whatever scope was asked for. A
+provider MUST NOT surface that transformation as a refusal, and MUST NOT
+offer any operation that activates a directive. Admission still applies
+independently: a directive citing files that do not resolve in the worktree
+is refused under `E-BASIS-MISSING-FILES`, which is 4.2's rule and not this
+one. (INV-03)
+
+**THE PROOF.** One block at the provider entry point
+(`SqliteProvider.capture`'s directive gate, `src/services/knowledge/sqlite-provider.ts`)
+does all four: sets `confidence:
+'UNVERIFIED'`, `flagged_for_review: true`, `scope:
+'project'`, and appends `directive:pending` when not already
+present. It rewrites `input` and falls through; it never throws,
+so the call returns an id, and the HTTP capture route reaching that same code
+answers `201` (`src/commands/kb-server.ts:136-143`, provider call at `:142`).
+The refusing siblings of this one policy are separate sites that DO throw:
+`SqliteProvider.promote`'s user-directive refusal and
+`SqliteProvider.resolveContradiction`'s directive-pair refusal (both in the same file)
+(`E-PROMOTE-REFUSED-DIRECTIVE`, `E-RESOLVE-DIRECTIVE-PAIR`). The basis
+exemption above is only the empty-basis half: `SqliteProvider.assertCheckableBasis`
+returns early for a directive, nested inside
+the zero-files branch, so the unresolvable-files throw still
+reaches it.
+
+**THE OBLIGATION.** A second implementation MUST enforce this at its
+provider-level capture entry point, NOT in a request handler. Three of this
+kernel's four capture call sites -- `src/tools/kb-harvest.ts:148`,
+`src/tools/kb-import.ts:224`, and the HTTP route above -- never pass through
+`src/tools/kb-capture.ts`, so a handler-level check is bypassed by most
+capture traffic; the scope force at `src/tools/kb-capture.ts:74` is redundant
+UX copy, not the enforcement point. It MUST NOT report the transformation as
+a failure. That is the trap: quarantine reads like a refusal and is not one,
+so projecting `E-DIRECTIVE-QUARANTINE` onto the wire yields a server that
+rejects a capture this kernel accepts.
+
+**THE POLICY.** Directive activation is human-only, permanently. No server
+route will ever activate a captured directive; activation lives only on the
+CLI (`methods.json`'s `not_in_scope` set), which is structurally a human-only
+surface. The guarantee is the ABSENCE of the capability, not a guarded
+version of it, and absence is strictly stronger than any authenticated route
+could be: a route that always refuses still has a handler to reach, a
+credential to steal and an authorization check to get wrong. There is nothing
+here to compromise because there is nothing here. An implementation MUST NOT
+add such a route, not even a refusing one (see 3.5).
+
+**THE TEST HOOK.** `directive-smuggling-impossible` -- capture a
+`user-directive` through every capture path, assert each call SUCCEEDS (an
+id, or the path's own success counter), then read the entry back and assert
+UNVERIFIED, flagged,
+`directive:pending`, project scope. The read-back is load-bearing: the
+capture response exposes none of the forced fields, so the effect is
+observable only through a later `kb_list` (`tests/DEGRADATION.md` D-8).
+
+### 4.4 Superseding and AUDN matching
+
+**THE RULE.** A `supersedes` id on a capture MUST retire the named entry ONLY
+IF AUDN independently matches that entry as a same-topic candidate for the
+new one -- same `type`, overlapping `symbols` AND overlapping `source_files`
+-- and MUST NOT retire it merely because the caller named it. When the named
+id fails that match, the request MUST be treated as if `supersedes` had not
+been given at all: the capture still proceeds to whatever ordinary AUDN
+outcome the candidate pool otherwise produces. A provider MUST NOT retire, or
+otherwise mutate via `supersedes`, a candidate that is an ACTIVE user-directive
+(`type='user-directive'` AND `confidence='CONFIRMED'`) -- this guard applies
+regardless of whether the caller named that entry explicitly or AUDN would
+have matched it implicitly. Neither refusal MUST be surfaced on the wire: both
+are `surfaced: "silent"` in the taxonomy, so the capture response reports only
+the ordinary `audn_decision` the fallthrough produced, never a distinguishing
+signal that a supersede was requested and ignored. (INV-04)
+
+**THE PROOF.** The explicit-supersede branch,
+`src/services/knowledge/audn.ts:145-157`, looks up `input.supersedes` among
+the candidates and requires ALL of: `c.id === input.supersedes`, `symbolsOverlap`
+(`:148`), `c.type === input.type` (`:150`), and `filesOverlap` (`:151`) -- an
+AND across every predicate, not an OR; the prompt describing this rule to
+that effect is confirmed by the code. The same line also excludes an ACTIVE
+directive from ever being `target` (`:149`,
+`!(c.type === 'user-directive' && c.confidence === 'CONFIRMED')`). When no
+candidate satisfies all four, `target` is `undefined` and the `if
+(input.supersedes)` block (`:145-157`) falls through with no side effect at
+all -- `input.supersedes` is never referenced again in the function, so
+execution continues into the exact-content pre-pass (`:159-183`) and the main
+candidate loop (`:185-239`) exactly as if the field had been absent. That
+fallthrough can itself resolve to `none`, `flagged`, an `update` against a
+DIFFERENT candidate, or `null` (a plain `add`) -- none of which reports that
+the named supersede was ignored. When a match IS found,
+`SqliteProvider.evaluateAudn`'s EXPLICIT
+branch (`src/services/knowledge/sqlite-provider.ts`) runs `UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?`
+against the matched id before inserting the new row; the sibling IMPLICIT
+branch immediately below it in the same method (same type, overlapping symbol and file,
+but `input.supersedes` absent or not the matched id), inserts the new row and
+links it to the old one with a `refines` edge instead -- both rows stay live.
+The ACTIVE-directive guard is enforced a second time, independently, in the
+main loop at `src/services/knowledge/audn.ts:224`
+(`if (candidate.type === 'user-directive' && candidate.confidence ===
+'CONFIRMED') continue;`), which skips the update/supersede path for that
+candidate whether or not it was named by `supersedes` -- the candidate
+degrades to `flagged` if a contradiction signal was present, or is skipped
+entirely. The only route to an ACTIVE (CONFIRMED) user-directive is
+`approveDirective`, a CLI-only method never reachable from `capture()`
+(4.3); no capture path can mint or promote one, which is why this guard can
+only ever fire against a directive that was activated by a human, out of
+band. Both refusals are recorded, `surfaced: "silent"`, in
+`taxonomy.json`'s governance group as `E-SUPERSEDE-CONSENT-MISSING`
+(`:215-226`) and `E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD` (`:227-239`).
+
+**THE OBLIGATION.** A second implementation MUST require independent,
+system-decided agreement -- same type, symbol overlap, AND file overlap --
+before retiring anything named by `supersedes`; it MUST NOT treat
+`supersedes` as a direct delete-by-id, no matter how plausible the caller's
+claim looks. It MUST NOT invent a response field, error code, or wire enum
+value to report either refusal -- not the general consent-missing case, and
+not the ACTIVE-directive case -- because doing so would make the
+implementation refuse or signal where this kernel silently proceeds, which is
+itself a non-conforming behavior change. A consumer MUST NOT infer that a
+requested supersession occurred from a successful response: `audn_decision`
+describes what AUDN actually decided for the NEW entry, not whether the named
+OLD entry was retired. This is a different surprise than 4.3's quarantine:
+quarantine is a capture that succeeds and stores a TRANSFORMED entry (the
+directive itself is rewritten before storage); a silent supersede refusal is
+a capture that succeeds, stores the new entry UNCHANGED, and simply drops the
+requested SIDE EFFECT of retiring another row. Both are "success with a
+surprise," but only quarantine changes what was stored -- this one changes
+what else did not happen.
+
+**THE TEST HOOK.** `supersession` -- for the general case: capture an entry,
+then a second capture naming it via `supersedes` with matching type/symbols/
+files, and read the FIRST entry back to assert `superseded_at` is now set (the
+capture response alone cannot show this); separately, capture with a
+`supersedes` id that fails the match (wrong type, or no file overlap), and
+read that named entry back to assert it is UNCHANGED regardless of what
+`audn_decision` reported. For the ACTIVE-directive branch specifically, no
+tool call can construct a CONFIRMED user-directive to supersede in the first
+place (activation is CLI-only, 4.3), so that half of the guard is a named,
+unreachable gap rather than a case the round-trip harness can exercise --
+`tests/DEGRADATION.md` D-9.
+
+### 4.5 Freshness and content hashing
+
+**THE RULE.** An implementation that computes a whole-file `content_hash` for
+a capture MUST do so only when `type = 'context-cache'` AND `source_file` is
+present; for every other type, or when `source_file` is absent, it MUST NOT
+raise an error -- it MUST silently store no hash. That whole-file
+`content_hash` is a DIFFERENT value
+from the per-entry freshness basis, `source_file_hashes`: a provider MUST
+compute that basis at its capture entry point for every entry that cites
+`source_files`, independent of `type`, because it is what the freshness sweep
+actually reads -- a sweep wired off `content_hash` instead does not conform.
+A provider exposing a freshness sweep MUST report `{checked, staled,
+unstaled}`, MUST both stale entries on a basis mismatch AND revive
+previously-staled entries on a full basis match (bidirectional, not
+stale-only), and MUST yield no verdict when an anchor it was explicitly given
+does not exist on the current host. An implementation with no anchor
+configured at all is not bound by that withholding rule -- it MAY resolve
+basis paths against its own working directory instead. (INV-01)
+
+**THE PROOF.** The hashing gate is `src/tools/kb-capture.ts:58` -- `if
+(input.type === 'context-cache' && input.source_file)` -- guarding
+`computeFileHash` at `:59-64`; when the condition is false, `content_hash`
+stays the initialized empty string (`:55`) and is persisted as-is
+(`SqliteProvider.insertEntry`, `src/services/knowledge/sqlite-provider.ts`, `input.content_hash ?? ''`),
+with no error path anywhere in between. `capture()` itself never computes
+`content_hash` -- it only persists whatever value `input` already carries.
+`kb_harvest` and `kb_import` both pass it explicitly as `''`
+(`src/tools/kb-harvest.ts:132`, `src/tools/kb-import.ts:206`), so neither ever
+sets a real hash. The HTTP `/api/kb/capture` route is the exception: it
+parses the request body straight into `KBEntryInput` and passes it to
+`provider.capture()` unfiltered (`src/commands/kb-server.ts:138-142`), so an
+HTTP caller supplying its own `content_hash` field has it persisted verbatim,
+bypassing the `kb-capture.ts:58` gate entirely -- the gate is a `kb_capture`-
+handler convenience, not an enforced invariant of `capture()` itself. The
+freshness basis is a different value, computed unconditionally by
+`SqliteProvider.capture` itself, via `SqliteProvider.computeSourceFileHashes`
+(`src/services/knowledge/sqlite-provider.ts`; a comment on that call: "capture() is the single
+choke point every caller ... goes through, so every entry gets a hash basis
+here regardless of type") -- this is what `SqliteProvider.freshnessSweep` reads, never
+`content_hash` (a comment nearby: "NOT content_hash, which is only ever set
+for context-cache entries"). `SqliteProvider.freshnessSweep` returns exactly
+`{checked, staled, unstaled}`, where `checked` counts entries with a
+non-empty, parseable stored basis. Staling and reviving share
+one predicate pair: `SqliteProvider.basisFullyMatches` (full-basis-only -- an
+empty basis or any single non-matching file never matches) decides the
+mismatch/match, and `SqliteProvider.freshnessRevivable` (excludes superseded,
+feedback-flagged, `content_hash='invalidated'`, or durable-downvote-marked
+entries) gates which matches are allowed to revive. The anchor check,
+`SqliteProvider.anchorIsMissing` (`anchor !== undefined && !fs.existsSync(anchor)`),
+only withholds a verdict when an anchor IS resolved (an explicit `root`
+argument, or the provider's own configured `repoPath`) and that path does not
+exist on disk; when no anchor is configured at all -- `root` omitted
+and the provider has no `repoPath`, the shared global KB's case --
+`anchorIsMissing` returns false and the sweep proceeds, resolving relative
+basis paths against the process's own working directory
+(`computeFileHashBatch([...fileSet], anchor ? { cwd: anchor } : undefined)`;
+a comment there names this the prior "implicit-cwd" behaviour, kept
+deliberately for that case). `src/tools/kb-invalidate.ts` drives explicit
+invalidation: the provider's `SqliteProvider.invalidate()` marks context-cache entries stale
+by setting `content_hash = 'invalidated'` for files named in a commit
+(`src/services/knowledge/sqlite-provider.ts`, in its SET clause); the git hook that calls it is installed by
+`installKbPostCommitHook` (`src/tools/kb-invalidate.ts:25-32`), which
+`kb-setup.ts` invokes for the calling session's own folder when it carries a
+KB identity and has a `.git` directory (see 4.1).
+
+**THE OBLIGATION.** A second implementation MUST reproduce the silence, on
+the route that computes `content_hash` at all (`kb_capture`):
+`type='context-cache'` without `source_file` is a valid, successful capture
+that stores no `content_hash`, not an error. This hashing gate MUST NOT be
+conflated with the freshness basis -- `source_file_hashes`
+MUST be computed for every entry that cites `source_files`, regardless of
+`type` and regardless of whether `content_hash` was ever set. Freshness MUST be
+genuinely bidirectional -- an implementation that only stales and never
+revives does not conform -- and revival MUST require a FULL match of the
+stored basis (every cited file, not a majority) AND that the entry is not
+separately retired (superseded, flagged, or invalidated). An implementation
+MUST withhold a verdict when a specifically-configured anchor does not exist
+on the current host, but MAY fall back to an implicit working directory when
+no anchor was configured at all; collapsing that distinction into "always
+withhold" or "always fall back" does not conform.
+
+**THE TEST HOOK.** `freshness` -- capture an entry with a resolvable basis,
+mutate a cited file to force a mismatch and assert `staled` includes it,
+restore the file and assert a later sweep's `unstaled` revives it, repeat
+against a superseded/flagged/invalidated entry and assert it stays retired
+despite a full basis match, then assert a sweep against a configured-but-
+nonexistent anchor returns `{0, 0, 0}` while an unconfigured anchor still
+proceeds.
+
+### 4.6 Query modes
+
+**THE RULE.** `kb_query` MUST return exactly one of two mutually exclusive
+response shapes, selected by the request: when `flagged_only: true`, the
+response MUST be `{flagged_entries, total, note}`; otherwise it MUST be
+`{l1_results, l2_expanded, related_claims?}`. At least one of `query`, `tag`,
+or `flagged_only` MUST be supplied; a provider MUST refuse a request carrying
+none of the three. A consumer MUST treat this section's response shapes, and
+every other `kb_*` response shape, as a DIFFERENT KIND of claim than the
+request shapes documented elsewhere in this spec: they are OBSERVED, not
+derived from an enforced schema, because no tool in this surface declares
+one. (INV-08, INV-09)
+
+**THE PROOF.** The selector guard is `src/tools/kb-query.ts:33-35`: `if
+(!input.query && !input.flagged_only && !input.tag) throw new Error(...)`.
+This is a documented, coded throw, not an undocumented one: `taxonomy.json`
+carries it as `E-QUERY-NO-SELECTOR` (groups.validation, source cited at
+`src/tools/kb-query.ts:34`, `surfaced: "thrown"`, raised pre-provider by
+`kb_query`/P-3). The `flagged_only` branch (`src/tools/kb-query.ts:39-66`)
+merges project and global flagged results and returns `{flagged_entries,
+total, note}` (`:59-65`); the default branch (`:68-126`) merges L1/L2
+project and global results and returns `{l1_results, l2_expanded,
+...(expand_related ? {related_claims} : {})}` (`:122-126`) -- `related_claims`
+is itself conditional on `expand_related`, so even the non-flagged shape is
+not fixed-key. `schemas/kb_query.response.json` models both branches as an
+`anyOf` of two object schemas under `parsed` (`:58-104`), tagged
+`x-invariant: ["INV-09", "INV-08"]` (`:4-7`) -- the schema faithfully carries
+both observed shapes, but nothing in `src/tools/kb-query.ts` or
+`src/services/tool-registry.ts` (`wrapTool`, which only ever wraps a bare
+returned `string` into the text envelope) checks the stringified body against
+that schema at runtime. `INVENTORY.md` section 3 states the meta-fact
+directly (`:102`, "NO tool in this surface declares a response zod schema").
+The discriminator loss is a separate, related finding: `tests/GENERATOR-
+DECISION.md`'s D1 row records that the generator emits `anyOf`, not `oneOf`,
+for a discriminated response union, because "an OpenAPI 3.1 `discriminator`
+requires `oneOf`, so the mapping from discriminant value to branch is not
+machine-readable in the emitted schema" (tagged `x-invariant: INV-09`) --
+`kb_query.response.json`'s own two-branch `parsed` union is exactly this
+shape: `anyOf`, no `discriminator` keyword, nothing to dispatch on
+mechanically besides re-deriving `flagged_only` from the request that
+produced the response.
+
+**THE OBLIGATION.** A second implementation MUST preserve the two-shape
+split keyed on `flagged_only` and MUST NOT merge them into one
+always-present superset response; each branch is closed
+(`additionalProperties: false` per branch, `schemas/kb_query.response.json:80`,
+`:101`). It MUST refuse when none of `query`/`tag`/`flagged_only` is present;
+the taxonomy already names this refusal (`E-QUERY-NO-SELECTOR`), so a
+conforming implementation has no discretion to silently default to "list
+everything" instead. A consumer or generated binding MUST NOT treat any
+response schema in this section, or elsewhere in this contract, as
+authoritative for what the server will keep returning: because no handler is
+checked against a declared response schema, a field can be added, renamed,
+or dropped from a `parsed` body with no generator or test failure at the
+layer that catches request drift. This is a strictly weaker guarantee than
+the request side, where drift against the zod the code actually runs is what
+the generator is built to catch -- and a consumer MUST dispatch on response
+shape using ITS OWN request (did it send `flagged_only`?), never by
+attempting discriminator-style dispatch against the emitted schema, since the
+emitted `anyOf` carries no machine-readable discriminant mapping.
+
+**TRUST FILTERS.** The default (non-`flagged_only`) branch accepts two
+optional filters: `confidence`, a non-empty allow-list of tiers
+(`CONFIRMED`/`INFERRED`/`UNVERIFIED`), and `exclude_disputed`, which drops any
+entry on either side of an unresolved contradiction (`flagged_for_review`
+true, or `contradiction_of` set). When supplied, an implementation MUST apply
+them to every entry the response carries -- `l1_results`, `l2_expanded` AND
+`related_claims` -- so a filtered caller is never handed an excluded entry
+through the graph expansion instead. When `confidence` is
+absent the default is `["CONFIRMED"]` with `exclude_disputed` true: INFERRED,
+UNVERIFIED and disputed entries are returned only when the caller lists the
+tiers explicitly (an explicit `confidence` defaults `exclude_disputed` to
+false). The same default applies to `kb_list` (whose `confidence` is an array
+of tiers), `kb_session_prime` and `kb_context` (both accept the same optional
+`confidence` array). The `flagged_only` branch ignores both
+(listing disputed entries is its purpose). An implementation backed by a
+store that cannot filter MUST filter the merged result itself before
+responding (`src/tools/kb-query.ts` `passesTrustFilter` does this on top of
+the sqlite provider's SQL filter). Test hook: the `kb_query`
+`happy-confirmed-only` fixture and `tests/knowledge/kb-query-trust-filter.test.ts`.
+
+**THE TEST HOOK.** The selector guard and both response shapes are checked
+by the round-trip harness at the request/happy-path level
+(`tests/roundtrip-harness.mjs`'s `kb_query` `happy` and
+`refusal-no-selector` cases). INV-09's epistemic-status claim itself -- that
+the response contract is observed rather than enforced -- is not
+mechanically checkable; see `tests/DEGRADATION.md` D-4, which records the
+same root fact (`parsed` is a consumer-side decode of `wrapTool`'s text
+envelope, never a schema-checked wire field) for the whole surface.
+
+## 5. Envelope extensions (T3, RESERVED)
+
+Placeholder. Extensions to the section 1 envelope (e.g. a provider-agnostic
+error envelope, `structuredContent` adoption) land here. Do not fill it in or
+restructure it from this lane task.

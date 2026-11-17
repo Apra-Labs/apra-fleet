@@ -18,18 +18,21 @@
 // =============================================================================
 
 import { parseArgs } from 'node:util';
-import { pathToFileURL } from 'node:url';
-import { createSupervisor, DEFAULT_SERVICE_PORT, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
+import path from 'node:path';
+import fs from 'node:fs';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { createSupervisor, DEFAULT_SERVICE_PORT, DEFAULT_SERVICE_HOST, SUPERVISOR_ALLOWED_HOSTS_ENV, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReconciler, registerReservationRoutes, killPid } from '../src/supervisor/reconcile.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
+import { createChildPortResolver } from '../src/supervisor/child-port.mjs';
 import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
 import { createLogView, registerLogViewRoutes } from '../src/supervisor/log-view.mjs';
 import { installSelfLogTee, createSelfLogView, registerSelfLogRoutes } from '../src/supervisor/self-log.mjs';
-import { createIdAllocator, registerIdAllocatorRoutes } from '../src/supervisor/id-allocator.mjs';
+import { createIdAllocator, registerIdAllocatorRoutes, defaultDataDir as defaultAllocatorDataDir } from '../src/supervisor/id-allocator.mjs';
 import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
 // eft.4.8.1: the operator-facing surface -- PID-liveness watchdog (eft.4.3),
 // dashboard/backlog/launch-form (eft.6.*), and the six sprint/member/backlog
@@ -46,20 +49,93 @@ import { createBacklog, registerBacklogRoutes } from '../src/supervisor/backlog.
 import { createDashboard, registerDashboardRoutes } from '../src/supervisor/dashboard.mjs';
 import { createSprintController, registerSprintRoutes, defaultMemberOverlapGuard, ApiError } from '../src/supervisor/api.mjs';
 import { createScopeGuard, formatScopeConflict } from '../src/supervisor/scope-overlap.mjs';
-import { listFleetMembers, executeFleetCommand } from '../src/supervisor/fleet-members.mjs';
-import { createDoltOrphanSweep } from '../src/supervisor/dolt-orphan-sweep.mjs';
+import { listFleetMembers, executeFleetCommand, registerFleetMember, updateFleetMember } from '../src/supervisor/fleet-members.mjs';
+import { ensureBacklogMember, BacklogMemberRefusedError } from '../src/supervisor/backlog-member.mjs';
+import { BeadsViewUnavailableError, createBeadsView, createBeadsViewCommand, createLaunchRowsFetcher, createSnapshotRowsReader } from '../src/supervisor/beads-view.mjs';
+import { createDoltOrphanSweep, normalizeMsysPathForPlatform } from '../src/supervisor/dolt-orphan-sweep.mjs';
 import { resolveFleetServerConnection } from './cli.mjs';
+import {
+    discoverBeadsDir, resolveBeadsDirArg, probeBeadsIdentity, createBeadsIdentityState,
+    formatNoBeadsWarning, formatProbeFailedWarning,
+} from '../src/supervisor/beads-identity.mjs';
+import { formatBeadsIdentity, serializeExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 
 const SERVE_USAGE = `
-Usage: fleet-se serve [options]
+Usage: node "${fileURLToPath(import.meta.url)}" [options]
 
 Starts the always-on fleet-sprint supervisor. Runs until POST /api/shutdown or a
 termination signal (Ctrl-C / SIGTERM).
 
 Options:
-      --port <port>   HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
-  -h, --help          Show this help message.
+      --port <port>         HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
+      --host <addr>         Interface the supervisor API binds. Default: ${DEFAULT_SERVICE_HOST}
+                            (loopback only). Pass 0.0.0.0 to expose it off-box;
+                            the API has no authentication, so that is an explicit
+                            opt-in.
+      --allowed-host <name> Extra Host header name the supervisor answers to
+                            (repeatable, or comma-separated). Loopback names, IP
+                            literals and --host are always accepted; any other
+                            name is refused (DNS-rebinding defence), so add the
+                            DNS name operators use for an off-box bind. Also
+                            read from FLEET_SUPERVISOR_ALLOWED_HOSTS.
+      --beads-dir <path>    Project folder (or its .beads dir) whose beads tracker
+                            this supervisor runs against. Default: discovered by
+                            walking up from the current directory, exactly like
+                            bd does. None found: the supervisor still starts,
+                            logs a WARNING and reports beads as unknown until
+                            GET /api/health?refresh=1 finds one. A path that
+                            does not exist is an error.
+  -h, --help                Show this help message.
+
+Environment:
+  FLEET_SE_DATA_DIR                 Service data dir (ledger/history/logs and
+                                    child-id-allocator.json).
+  FLEET_SE_SWEEP_OWNER_DATA_DIR     Scope the dolt-orphan-sweep to ephemeral
+                                    dolt sql-servers whose --data-dir is under
+                                    this path, so an isolated supervisor
+                                    instance never kills another instance's
+                                    server. Unset = machine-wide (default).
 `.trim();
+
+/**
+ * The production dashboard + backlog wiring: both read the cached beads view's
+ * snapshot (never spawn bd) and kick a non-blocking background refresh when the
+ * cache is stale. The dashboard keeps every row (--all); the backlog keeps
+ * today's default `bd list` set (closed beads excluded). Exported so the wiring
+ * itself is testable (test/supervisor-dashboard-beads-cache.test.mjs): dropping
+ * either `listAllBeads` injection here silently falls back to the seam's default
+ * bd fetcher (dashboard.mjs / backlog.mjs), one bd list per render or SSE tick.
+ *
+ * @param {{ ledger: object, watchdog: object, beadsIdentity?: object, beadsView: object, resolvePort?: Function }} deps
+ */
+export function createBeadsBackedViews({ ledger, watchdog, beadsIdentity, beadsView, resolvePort, ...extra }) {
+    const dashboardRows = createSnapshotRowsReader(beadsView);
+    const backlogRows = createSnapshotRowsReader(beadsView, { openOnly: true, emptyWhenNoRows: true });
+    const backlog = createBacklog({ ledger, watchdog, listAllBeads: backlogRows });
+    const dashboard = createDashboard({
+        ledger, watchdog, backlog, beadsIdentity,
+        listAllBeads: dashboardRows,
+        beadsView,
+        resolvePort,
+        ...extra,
+    });
+    return { backlog, dashboard };
+}
+
+/**
+ * The production launch overlap guard: createScopeGuard() whose one bulk fetch
+ * per checkLaunch() is the cached view's forced fresh check (tip check +
+ * re-list, busy-skip retried inside one wall-clock bound), made in that very
+ * call -- the guard NEVER decides on cached rows. Exported so the wiring itself
+ * is testable; reverting it to createScopeGuard({ ledger }) (the default
+ * `bd list` fetcher) makes the poisoned-cache assertions in
+ * test/supervisor-launch-fresh-beads.test.mjs fail.
+ *
+ * @param {{ ledger: object, beadsView: { freshForLaunch: Function }, launchFetchOpts?: object }} deps
+ */
+export function createLaunchScopeGuard({ ledger, beadsView, launchFetchOpts }) {
+    return createScopeGuard({ ledger, listAllBeads: createLaunchRowsFetcher(beadsView, launchFetchOpts) });
+}
 
 /**
  * apra-fleet-k06.1: compose BOTH launch-time overlap guards api.mjs's own
@@ -89,7 +165,19 @@ Options:
 export function composeBeforeLaunch({ memberOverlapGuard, scopeGuard }) {
     return async ({ members, issueRoots }) => {
         await memberOverlapGuard({ members, issueRoots });
-        const scopeResult = await scopeGuard.checkLaunch(issueRoots);
+        let scopeResult;
+        try {
+            scopeResult = await scopeGuard.checkLaunch(issueRoots);
+        } catch (err) {
+            // The forced fresh beads check failed (timeout, pull/list error,
+            // busy that outlasted its retries, degraded backlog member): the
+            // overlap guard cannot decide, so the launch is refused with 503
+            // naming the reason -- never a 409 (no conflict) or a 500.
+            if (err instanceof BeadsViewUnavailableError) {
+                throw new ApiError(503, `cannot verify issue-scope overlap: ${err.reason}`, 'issue');
+            }
+            throw err;
+        }
         if (!scopeResult.ok) {
             throw new ApiError(409, formatScopeConflict(scopeResult.conflicts), 'issue');
         }
@@ -102,6 +190,9 @@ export function parseServeArgs(argv) {
             args: argv,
             options: {
                 port: { type: 'string' },
+                host: { type: 'string' },
+                'allowed-host': { type: 'string', multiple: true },
+                'beads-dir': { type: 'string' },
                 help: { type: 'boolean', short: 'h' },
             },
             strict: true,
@@ -112,7 +203,28 @@ export function parseServeArgs(argv) {
     }
 }
 
-export async function serveMain(argv = process.argv.slice(2)) {
+/**
+ * The production ensureBacklogMember wiring: every fleet call uses the same
+ * short-lived-connection helpers as listFleetMembers (the supervisor holds no
+ * standing fleet transport). serveMain's `deps.ensureBacklogMember` replaces
+ * this whole function, so tests never need a live fleet server.
+ * @param {{ beadsDir: string|null }} opts
+ */
+export function defaultEnsureBacklogMember({ beadsDir }) {
+    const resolveConnection = resolveFleetServerConnection;
+    return ensureBacklogMember({
+        beadsDir,
+        listMembers: () => listFleetMembers({ resolveConnection }),
+        registerMember: (options) => registerFleetMember({ options, resolveConnection }),
+        updateMember: (options) => updateFleetMember({ options, resolveConnection }),
+    });
+}
+
+/**
+ * @param {string[]} [argv]
+ * @param {{ ensureBacklogMember?: (opts: { beadsDir: string|null }) => Promise<{ get: Function, stop?: Function }>, createBeadsView?: (deps: object) => { refreshIfStale: Function, stop: Function } }} [deps]
+ */
+export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     const { values } = parseServeArgs(argv);
 
     if (values.help) {
@@ -132,6 +244,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
     process.once('exit', () => selfLog.stop());
 
     let port = DEFAULT_SERVICE_PORT;
+    const host = values.host !== undefined && values.host !== '' ? values.host : DEFAULT_SERVICE_HOST;
     if (values.port !== undefined) {
         port = Number(values.port);
         if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -140,11 +253,104 @@ export async function serveMain(argv = process.argv.slice(2)) {
         }
     }
 
+    // Which .beads this supervisor runs against -- resolved ONCE, up front,
+    // BEFORE any seam is built or the port is bound, so a supervisor started
+    // from the wrong folder says so loudly instead of silently serving an
+    // empty backlog or dispatching sprints at an unrelated tracker. Every bd
+    // the supervisor itself runs (backlog/scope-overlap) resolves by walking
+    // up from process.cwd(), so `--beads-dir` is honored by chdir'ing there
+    // (nothing sets BEADS_DIR, nothing is persisted); the sprint children
+    // below then get repoRoot as their cwd and the resolved identity as
+    // --expect-beads.
+    //
+    // Severity: a `--beads-dir` that does not exist is an operator typo and
+    // still a startup ERROR. No .beads reachable from cwd, or a failing
+    // identity probe, is an environment condition: a WARNING (with the fix),
+    // the identity stays "unknown" (health `beads: null` + `beadsWarning`,
+    // amber dashboard header, no --expect-beads handed to sprints -- the
+    // engine then verifies members against the orchestrator's own beads),
+    // and GET /api/health?refresh=1 can recover it without a restart.
+    if (values['beads-dir'] !== undefined) {
+        let target;
+        try {
+            target = resolveBeadsDirArg(values['beads-dir']);
+            process.chdir(target);
+        } catch (err) {
+            console.error(`Error: ${err && err.message ? err.message : err}`);
+            return { exitCode: 1 };
+        }
+    }
+    const discovered = discoverBeadsDir({ cwd: process.cwd() });
+    const repoRoot = discovered ? discovered.repoRoot : process.cwd();
+    let beadsIdentityRecord = null;
+    let beadsWarning = null;
+    if (!discovered) {
+        beadsWarning = formatNoBeadsWarning(process.cwd());
+    } else {
+        try {
+            beadsIdentityRecord = await probeBeadsIdentity({ cwd: repoRoot });
+        } catch (err) {
+            beadsWarning = formatProbeFailedWarning(repoRoot, err);
+        }
+    }
+    const beadsIdentity = createBeadsIdentityState({ cwd: repoRoot, initial: beadsIdentityRecord, warning: beadsWarning });
+    if (beadsIdentityRecord) {
+        console.log(`[supervisor] ${formatBeadsIdentity(beadsIdentityRecord, { label: 'supervisor' })}`);
+    } else {
+        console.warn(`[supervisor] WARNING: ${beadsWarning}`);
+    }
+
+    // The supervisor's OWN backlog member (src/supervisor/backlog-member.mjs):
+    // an LLM-less, unreservable local member whose work folder is repoRoot.
+    // Ensured BEFORE any seam is built or the port is bound, so a
+    // refuse-to-start condition (a name clash, an unconvertible member) exits
+    // 1 without serving anything. An LLM member at repoRoot is not one: the
+    // LLM-less backlog member is registered next to it. Fleet unreachable is NOT a
+    // refusal: the supervisor starts degraded (launches answer 503 with the
+    // reason) and the handle retries in the background until ready. No
+    // .beads discovered -> degraded with a reason naming --beads-dir.
+    const ensureBacklog = deps.ensureBacklogMember ?? defaultEnsureBacklogMember;
+    let backlogMember;
+    try {
+        backlogMember = await ensureBacklog({ beadsDir: discovered ? repoRoot : null });
+    } catch (err) {
+        if (err instanceof BacklogMemberRefusedError) {
+            console.error(`Error: refusing to start: ${err.message}`);
+            selfLog.stop();
+            return { exitCode: 1 };
+        }
+        throw err;
+    }
+    {
+        const st = backlogMember.get();
+        if (st.status === 'ready') console.log(`[supervisor] backlog member: '${st.member.name}' (ready)`);
+        else console.warn(`[supervisor] WARNING: backlog member degraded -- ${st.reason}`);
+    }
+
     // The durable reservation ledger (eft.5.1) and its terminal-event history
     // (eft.5.4) are the restart-surviving source of truth. Wire them as real
     // collaborators so a restarted supervisor reconciles against on-disk state.
     const ledger = createLedger();
     const history = createHistory();
+
+    // The supervisor's cached beads view (src/supervisor/beads-view.mjs):
+    // raw `bd list --all` rows for repoRoot, refreshed through the backlog
+    // member's tip-checked D-pull. Constructed here, but its first refresh is
+    // only kicked AFTER supervisor.start() below has loaded the ledger from
+    // disk -- a scope-freshness write before that load would persist an
+    // empty ledger over the real one. A degraded/null backlog member is not
+    // fatal: the view records lastError with the reason instead of throwing.
+    const buildBeadsView = deps.createBeadsView ?? createBeadsView;
+    const beadsView = buildBeadsView({
+        backlogMember,
+        ledger,
+        repoRoot,
+        command: createBeadsViewCommand({ executeFleetCommand, resolveConnection: resolveFleetServerConnection }),
+    });
+    // Dashboard and backlog read the view's cached rows (never spawn bd) and
+    // kick a non-blocking background refresh when the cache is stale. The
+    // dashboard keeps every row (--all); the backlog keeps today's default
+    // `bd list` set (closed beads excluded).
     // apra-fleet-f34.1: pass this supervisor's OWN listening address so every
     // spawned sprint child's cli.mjs receives --service-url and threads it
     // into runner.js's HTTP-backed dolt-mutex/id-allocator clients (see
@@ -180,7 +386,20 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // see createSprintController's launch()), but history's own copy stays
     // discoverable even after the reservation is eventually released.
     const spawner = createSpawner({
-        serviceUrl: `http://localhost:${port}`,
+        serviceUrl: `http://${host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host}:${port}`,
+        // Sprint children run from the project root (the folder holding the
+        // discovered .beads, not whatever subfolder the operator started in)
+        // and carry the resolved identity so the engine can verify every
+        // member's own `bd where` against it (see beads-identity.mjs). Read
+        // at each spawn (not captured at startup) so an identity recovered
+        // by GET /api/health?refresh=1 reaches later sprints; while it is
+        // unknown, --expect-beads is omitted and the engine falls back to
+        // the backlog member's own identity.
+        cwd: repoRoot,
+        expectBeads: () => {
+            const id = beadsIdentity.get();
+            return id ? serializeExpectedIdentity(id) : undefined;
+        },
         onChildExit: async ({ runId, exitCode, signal, at, logPath }) => {
             if (!runId) return;
             try {
@@ -210,7 +429,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // (load persisted high-water marks + the abandoned-reservation sweep) is
     // driven by the seam machinery; its HTTP routes let detached sprint children
     // mint collision-free child ids under a shared parent (constraint C.4).
-    const idAllocator = createIdAllocator();
+    const idAllocator = createIdAllocator({ dataDir: defaultAllocatorDataDir() });
 
     // eft.9.2: the supervisor-owned global dolt push mutex -- a LOAD-BEARING v1
     // requirement (PoC constraints C.2/C.3). Every cross-sprint `bd dolt push`
@@ -245,13 +464,17 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // Backlog section (below) AND as GET /api/backlog's real listing (see the
     // sprint controller wiring below), so there is exactly one "what does the
     // tracker minus claimed scope look like right now" implementation.
-    const backlog = createBacklog({ ledger, watchdog });
 
     // eft.6.1/6.3: the single-page operator dashboard -- Sprint Stack, then
     // Backlog, then the Launch Sprint form (launch-form.mjs attaches itself
     // via dashboard.mjs's renderIndexPageHtml default; see the import comment
     // above for why no separate launch-form seam is constructed here).
-    const dashboard = createDashboard({ ledger, watchdog, backlog });
+    // Sprint rows pull each child's own GET /state?summary=1; the port comes
+    // from the shared ledger childPid -> spawner live-port resolver.
+    const { backlog, dashboard } = createBeadsBackedViews({
+        ledger, watchdog, beadsIdentity, beadsView,
+        resolvePort: createChildPortResolver({ ledger, spawner }),
+    });
 
     // docs/dolt-sync-redesign.md Part 3.3: kill any orphaned ephemeral
     // `dolt sql-server` a mid-settle orchestrator death left behind on a
@@ -259,12 +482,59 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // collaborators use the same short-lived-MCP-connection pattern as
     // listFleetMembers -- the supervisor never holds a standing fleet
     // transport.
+    // apra-fleet-5co8.33: `FLEET_SE_SWEEP_OWNER_DATA_DIR` is the deps-level
+    // scope seam for that sweep. Unset (production default) the probe/kill
+    // command stays machine-wide -- it must be, because the ephemeral server's
+    // `--data-dir` belongs to the MEMBER (dolt-settle.mjs reads it from
+    // `bd dolt status` there), so a remote member's data dir has no relation to
+    // this supervisor's own FLEET_SE_DATA_DIR and deriving a prefix from the
+    // latter would silently make the sweep a no-op everywhere. Set (an isolated
+    // instance -- e.g. regression-test-playbook.md's sandbox supervisor, whose
+    // HOME and members all live under one root) it constrains candidates to
+    // processes whose `--data-dir` is under that root, so this instance can
+    // never kill another live supervisor's ephemeral server.
+    const sweepOwnerDataDir = process.env.FLEET_SE_SWEEP_OWNER_DATA_DIR
+        ? path.resolve(normalizeMsysPathForPlatform(process.env.FLEET_SE_SWEEP_OWNER_DATA_DIR))
+        : null;
+    if (sweepOwnerDataDir) {
+        console.log(`[dolt-orphan-sweep] owner-scoped to data dirs under '${sweepOwnerDataDir}' (FLEET_SE_SWEEP_OWNER_DATA_DIR).`);
+        // apra-fleet-5co8.36: a confident scope claim above is worse than
+        // useless if the resolved prefix does not actually exist -- that is
+        // exactly what an un-normalized MSYS path used to produce. Warn
+        // loudly rather than let the sweep silently match nothing.
+        if (!fs.existsSync(sweepOwnerDataDir)) {
+            console.warn(`[dolt-orphan-sweep] WARNING: FLEET_SE_SWEEP_OWNER_DATA_DIR resolved to '${sweepOwnerDataDir}', which does not exist on disk -- the owner-scoped sweep will match no process and silently degrade to matching nothing.`);
+        }
+    }
     const doltOrphanSweep = createDoltOrphanSweep({
         listMembers: () => listFleetMembers({ resolveConnection: resolveFleetServerConnection }),
         execCommand: ({ member, command }) => executeFleetCommand({ member, command, resolveConnection: resolveFleetServerConnection }),
+        ownerDataDirPrefix: sweepOwnerDataDir,
     });
 
-    const supervisor = createSupervisor({ port, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex, doltOrphanSweep });
+    // Shutdown bounds (see server.mjs stop()): each seam's stop() is bounded and
+    // the process is force-exited FORCE_EXIT ms after shutdown starts, naming any
+    // hung seam. Test-only hook FLEET_SE_TEST_HANG_SEAM=<seam name> makes that
+    // seam's stop() never settle so the bound can be exercised end to end.
+    const envMs = (name, dflt) => {
+        const n = Number(process.env[name]);
+        return Number.isFinite(n) && n > 0 ? n : dflt;
+    };
+    const hangSeam = process.env.FLEET_SE_TEST_HANG_SEAM;
+    const hangable = { dashboard, watchdog, doltOrphanSweep };
+    if (hangSeam && hangable[hangSeam]) {
+        hangable[hangSeam] = { ...hangable[hangSeam], name: hangSeam, stop: () => new Promise(() => {}) };
+        console.warn(`[supervisor] TEST HOOK: seam '${hangSeam}' stop() will never settle`);
+    }
+    const supervisor = createSupervisor({
+        port, host,
+        // CLI names add to (not replace) the env var's list.
+        allowedHosts: [...(values['allowed-host'] ?? []), ...String(process.env[SUPERVISOR_ALLOWED_HOSTS_ENV] ?? '').split(/[\s,]+/).filter(Boolean)],
+        ledger, spawner, watchdog: hangable.watchdog, dashboard: hangable.dashboard, idAllocator, doltMutex,
+        doltOrphanSweep: hangable.doltOrphanSweep, beadsIdentity, backlogMember,
+        seamStopTimeoutMs: envMs('FLEET_SE_SHUTDOWN_SEAM_TIMEOUT_MS', 3000),
+        forcedExitMs: envMs('FLEET_SE_SHUTDOWN_FORCE_EXIT_MS', 10_000),
+    });
     registerIdAllocatorRoutes(supervisor, idAllocator, { readJsonBody, sendJson });
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
 
@@ -301,7 +571,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // error shape) -- extracted as its own export so the composition is
     // directly unit-testable without booting this whole process.
     const memberOverlapGuard = defaultMemberOverlapGuard(ledger, listMembersForLaunch);
-    const scopeGuard = createScopeGuard({ ledger });
+    const scopeGuard = createLaunchScopeGuard({ ledger, beadsView });
     const beforeLaunch = composeBeforeLaunch({ memberOverlapGuard, scopeGuard });
 
     const sprintController = createSprintController({
@@ -311,6 +581,8 @@ export async function serveMain(argv = process.argv.slice(2)) {
         listMembers: listMembersForLaunch,
         getBacklog: async () => ({ tree: await backlog.buildTree() }),
         beforeLaunch,
+        beadsIdentity,
+        backlogMember,
     });
     registerSprintRoutes(supervisor, sprintController);
 
@@ -373,9 +645,17 @@ export async function serveMain(argv = process.argv.slice(2)) {
     await history.start();
     await readopter.readopt();
 
+    // One non-blocking startup refresh of the cached beads view (never
+    // awaited, never rejects -- failures land in the view's lastError).
+    beadsView.refreshIfStale();
+
     // Keep the process alive until an explicit shutdown resolves. Awaiting this
     // is what makes `fleet-se serve` "always-on" -- nothing else drives exit.
     await supervisor.shutdownRequested;
+    try { beadsView.stop(); } catch (err) { console.error('[supervisor] beadsView stop failed:', err); }
+    try { if (typeof backlogMember.stop === 'function') backlogMember.stop(); } catch (err) { console.error('[supervisor] backlogMember stop failed:', err); }
+    const hung = supervisor.hungSeams;
+    console.log(`[supervisor] exiting (code 0)${hung.length ? `; seams that did not stop in time: ${hung.join(', ')}` : ''}`);
     return { exitCode: 0 };
 }
 

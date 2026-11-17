@@ -52,6 +52,12 @@ function buildGatedFleetApi({ onFirstCommand } = {}) {
                 fired = true;
                 if (onFirstCommand) await onFirstCommand();
             }
+            // The beads identity precondition's `bd where --json` probe
+            // (mirrored from runner-arg-contract.test.mjs's spy): answer a
+            // consistent database so the check passes.
+            if (/^bd where --json$/.test(opts.command)) {
+                return mockCmdResult(0, JSON.stringify({ database_path: '/spy/.beads/dolt', path: '/spy/.beads', prefix: 'bd', schema_version: 1 }));
+            }
             if (/^bd list --all --limit 0 --json$/.test(opts.command)) {
                 return mockCmdResult(0, ONE_BEAD_JSON);
             }
@@ -71,6 +77,10 @@ function buildGatedFleetApi({ onFirstCommand } = {}) {
             }
             if (/^git remote get-url origin\b/.test(opts.command)) {
                 return mockCmdResult(0, 'https://github.com/mock-org/mock-repo.git');
+            }
+            // Review diff base: the engine needs a commit SHA back.
+            if (/^git merge-base origin\/\S+ \S+\s*$/.test(opts.command)) {
+                return mockCmdResult(0, 'c0ffee0000000000000000000000000000c0ffee');
             }
             return mockCmdResult(0, '');
         },

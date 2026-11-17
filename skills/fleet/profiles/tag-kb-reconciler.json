@@ -3,18 +3,14 @@
     "mcp__apra-fleet__code_context",
     "mcp__apra-fleet__code_impact",
     "mcp__apra-fleet__code_query",
-    "mcp__apra-fleet__kb_resolve_contradiction",
     "mcp__apra-fleet__kb_query",
-    "mcp__apra-fleet__kb_list",
-    "mcp__apra-fleet__kb_export"
+    "mcp__apra-fleet__kb_list"
   ],
   "reviewer": [
     "mcp__apra-fleet__code_context",
     "mcp__apra-fleet__code_impact",
     "mcp__apra-fleet__code_query",
-    "mcp__apra-fleet__kb_resolve_contradiction",
     "mcp__apra-fleet__kb_query",
-    "mcp__apra-fleet__kb_list",
-    "mcp__apra-fleet__kb_export"
+    "mcp__apra-fleet__kb_list"
   ]
 }

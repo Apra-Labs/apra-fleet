@@ -27,7 +27,7 @@ import type { ProviderAdapter } from '../providers/index.js';
 import { getStrategy } from './strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { validateCredentials, type CredentialStatus } from '../utils/credential-validation.js';
 import { logLine } from '../utils/log-helpers.js';
 
@@ -171,7 +171,7 @@ export async function preflightCheck(
     return { ok: true, connectivity: true, authValid: true, latencyMs };
   }
 
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   let oauthFilePresent = false;
   let apiKeyPresent = false;
   let credentialStatus: CredentialStatus | undefined;
@@ -188,6 +188,7 @@ export async function preflightCheck(
     authEnvVarSet.add(provider.authEnvVarForToken('sk-ant-probe'));
     authEnvVarSet.add(provider.authEnvVarForToken('non-sk-ant-probe'));
   }
+  for (const name of provider.authEnvVarNames?.() ?? []) authEnvVarSet.add(name);
   // R3 regression fix: providers with no env-var-based auth (e.g. OpenCode,
   // whose authEnvVar/authEnvVarForToken always return '') would otherwise
   // populate authEnvVars with ''. getOsCommands(...).apiKeyCheck('') builds a

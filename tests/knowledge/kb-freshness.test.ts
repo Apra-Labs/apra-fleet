@@ -54,10 +54,17 @@ beforeEach(async () => {
 
 afterEach(() => {
   provider.close();
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  // maxRetries/retryDelay let Node's own rmSync retry through the Windows
+  // EBUSY window (antivirus/handle not yet released) instead of throwing --
+  // same pattern fe336c09 used for kb-bible-v2.test.ts.
+  fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 
 describe('SqliteProvider staleness at prime (T2.2 / F3, revised D3)', () => {
+  // Real fs writes + a real SqliteProvider prime/query round-trip blow past
+  // vitest's 5000ms default under full-suite Windows host contention (my-
+  // beads-db-27m.28/.32/.36 same defect class). 20000ms matches the budget
+  // tests/knowledge/kb-bible-v2.test.ts uses for the same kind of case.
   it('entry with a modified source file is marked stale=1 and dropped from prime', async () => {
     const filePath = path.join(tmpDir, 'tracked.ts');
     fs.writeFileSync(filePath, 'export const original = true;');
@@ -78,7 +85,7 @@ describe('SqliteProvider staleness at prime (T2.2 / F3, revised D3)', () => {
 
     const row = await provider.query({ ids: [id] });
     expect(row.results[0].stale).toBe(true);
-  });
+  }, 20000);
 
   it('hash batch throwing degrades prime to todays output (no crash, no false stale)', async () => {
     const filePath = path.join(tmpDir, 'tracked2.ts');

@@ -1,0 +1,14 @@
+{
+  "tool": "kb_query",
+  "case": "refusal-self-no-workfolder",
+  "kind": "refusal",
+  "request": {
+    "query": "exampleFn"
+  },
+  "error": {
+    "message": "E-SELF-NO-WORKFOLDER: The member 'contract-no-workfolder' work folder '<SCRATCH_ROOT>/no-such-work-folder' does not exist or is not a directory. Remediation: Create the folder or re-register the member with an existing work folder (register_member / update_member).",
+    "thrown": true
+  },
+  "expected_error_code": "E-SELF-NO-WORKFOLDER",
+  "session": "NO_WORKFOLDER"
+}

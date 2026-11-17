@@ -48,7 +48,7 @@ is an ordinary KB tool, so the PM invokes them like any other `kb_*` step.
               |
    4. reconciler agent     code-arbitrates the pairs hashes cannot settle
               |
-   5. kb_export            re-write + auto-commit the reconciled bible
+   5. kb_export            additively merge + auto-commit the bible
 ```
 
 ### 1. kb_import -- the trusted-channel write path
@@ -86,6 +86,21 @@ wrong-branch claims. It reports `{imported, skipped, linked, flagged}` plus
 the sweep's `{checked, staled, unstaled}`. It is exposed both as an MCP tool and
 as `apra-fleet kb import [--repo <path>] [--path <file>]` for post-merge use.
 
+**Tombstones ride the same import, as a separate pass.** A bible can also carry
+an explicit `demotions: [{id, at, reason}]` array (v3 only; written by
+`kb_bible_commit` when a CONFIRMED entry is demoted). `kb_import` applies each
+`reason: "demoted"` tombstone to the local row sharing its id, lowering
+CONFIRMED to INFERRED only when that row was promoted at or before the
+tombstone's `at` -- judged on when it was promoted as its bible recorded it,
+never on the local import time. A row independently re-promoted on newer
+evidence survives. This is a distinct
+mechanism from entry import and from the freshness sweep: absence of an entry
+from the bible is never read as a demotion (a clone may hold a CONFIRMED row
+that was simply never exported), only an explicit tombstone is. See
+[kb-trust-model.md](kb-trust-model.md#bible-tombstones-demotions-cross-clones-by-explicit-record-never-by-absence)
+for the full rule, including why the member bible view and cold-seed apply the
+same exclusion to a FRESH in-memory read that has no local row to demote.
+
 **Trust boundary (stated honestly):** `kb_import` reads a caller-named local
 file, so a local caller with tool access could import a hand-crafted bible.
 This is equivalent in power to the already-exposed `kb_promote` surface -- it
@@ -115,7 +130,10 @@ against the merged worktree:
 
 - **Exactly one side matches** -> that side wins mechanically. The prefilter
   calls `resolveContradiction(winnerId, loserId, "hash-basis match on merged
-  worktree")`. No agent needed.
+  worktree")`. No agent needed. **Exception:** if the would-be loser is
+  `CONFIRMED`, the pair is NOT resolved mechanically (a CONFIRMED entry is
+  never retired by hash basis alone); it goes to `left_for_agent` and both
+  entries stay unchanged.
 - **Both match, both mismatch, or either side has an empty/missing basis** ->
   the pair is left for the agent rung.
 - **Active user-directive in the pair** (`type='user-directive'` AND
@@ -156,11 +174,15 @@ reputation. NEVER delete. The agent reports
 
 ### 5. kb_export -- persist the reconciled bible
 
-The flow ends with `kb_export`, which re-writes `.fleet/kb-canonical.json` from
-the CONFIRMED, non-superseded, non-stale entries and auto-commits it (pm-kb
+The flow ends with `kb_export`, which additively merges the CONFIRMED,
+non-superseded, non-stale entries whose cited files match their recorded hash
+basis into `.fleet/kb-canonical.json` and auto-commits it (pm-kb
 identity, pathspec-only, content-gated, non-fatal -- see knowledge-layer.md).
 Reconcile winners are CONFIRMED and un-staled when the predicate allows, so they
-pass the export filter; superseded losers and pending directives do not appear.
+pass the export filter; superseded losers and pending directives are never
+added. Export never removes or rewrites an entry already in the bible, so a
+superseded loser or a directive smuggled in via a merged bible persists after
+re-export and must be removed by hand (curation).
 No post-prefilter sweep is needed: `resolveContradiction` sets the winner's
 final stale state itself.
 

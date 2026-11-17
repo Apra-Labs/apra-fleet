@@ -13,9 +13,12 @@ test suite because they depend on:
 ## Files
 
 - `e2e-runner.mjs` -- discovers online local members via `fleetStatus`,
-  then runs a small in-line workflow script (`command()` + `agent()`)
-  against up to two of them through `WorkflowEngine`, and serves a live
-  dashboard via `createDashboardViewer` for the duration of the run.
+  then runs `e2e-harness-script.mjs` against up to two of them through
+  `WorkflowEngine`, and serves a live dashboard via `createDashboardViewer`
+  for the duration of the run.
+- `e2e-harness-script.mjs` -- the workflow script `e2e-runner.mjs` loads
+  via `executeFile()`: a Discovery phase followed by a non-destructive
+  `command()` + `agent()` pass over each discovered target.
 - `test-engine-run.mjs` -- runs `test-workflow.js` (a fixture workflow
   exercising `agent()`, `parallel()`, and `sequential()`) against member
   `alpha` through `WorkflowEngine.executeFile()`.
@@ -33,26 +36,19 @@ node test/manual/test-engine-run.mjs
 node test/manual/test-real-member.mjs
 ```
 
-## Why these are quarantined here (apra-fleet-unw.1)
+## Why these live in `test/manual/` rather than `test/`
 
-These files previously lived at `test/e2e-runner.mjs` and
-`test/integration/*.mjs` and had bit-rotted: dead imports (pre-rename
-`./lib/fleet-client/*` paths, a nonexistent `startViewer` export) and an
-unconditional live-network dependency, which made them fail the moment
-anything tried to run them. They were moved here, had their imports
-repaired to match the current package layout
-(`@apralabs/apra-fleet-client`, `../../src/workflow/*`,
-`createDashboardViewer`), and are intentionally excluded from
-`package.json`'s `test` script (`node --test test/*.test.mjs`) because
-they require infrastructure the automated suite does not provide.
+`package.json`'s `test` script is `node --test test/*.test.mjs`, which
+picks up only files directly under `test/`. Keeping these one level down,
+without a `.test.mjs` suffix, is what excludes them from the automated
+suite -- they need infrastructure it does not provide. Anything added
+here must keep both properties, or it will start failing CI the moment a
+live server is unavailable (which is always).
 
-The in-process, mock-fleet-API coverage that replaces what these files
-*can* cover without a live server lives in `test/test-runner.test.mjs`
-and `test/apra-fleet-workflow.test.mjs`.
+The in-process, mock-fleet-API coverage of what these files *can* cover
+without a live server lives in `test/test-runner.test.mjs` and
+`test/apra-fleet-workflow.test.mjs`.
 
-**Gap note:** there is currently no beads issue that owns real,
-live-fleet-server E2E coverage for `apra-fleet-workflow` (checked
-2026-07-11; the closest related issue, `apra-fleet-1az`, is scoped to
-OpenCode E2E design in a different area of the repo). If/when that
-coverage is prioritized, a new issue should reference this directory as
+**Gap note:** nothing owns real, live-fleet-server E2E coverage for
+`apra-fleet-workflow`. If that coverage is prioritized, this directory is
 the starting point.

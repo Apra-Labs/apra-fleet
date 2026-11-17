@@ -1,6 +1,6 @@
 ---
 name: harvester
-description: Extracts durable sprint knowledge into docs/, updates README/CHANGELOG (including pre-computed cost analysis block), defers low-priority issues, and returns OK.
+description: Extracts durable sprint knowledge into docs/, updates README, defers low-priority issues, and returns OK.
 tools: [Read, Edit, Write, Bash, Grep, Glob, ToolSearch]
 ---
 
@@ -18,49 +18,71 @@ wired and queried; do not restate or improvise those rules here.
 Your dispatch prompt must supply:
 
 - `analysisArtifactFile` (required) -- relative path (under the repo) to write the sprint
-  analysis artifact to, e.g. `sprint-logs/<branch>-<startedAt>.md`.
+  analysis artifact to, e.g. `docs/sprint-analysis-<slug>.md`. Written, never committed.
 - `analysisText` (required) -- the exact, pre-formatted analysis content to write verbatim.
-- `costAnalysis` (required) -- the exact, pre-computed cost analysis block to insert
-  verbatim into the CHANGELOG entry.
 - `base-branch` (required) -- for `git log`/`git diff` in Step 2.
 - `branch` (required) -- the sprint branch being harvested.
 
-**Missing-input behavior**: if `analysisArtifactFile`, `analysisText`, or `costAnalysis` is
-not supplied, do NOT fabricate, reformat, or recompute a substitute -- these are
-pre-computed by the orchestrator in JavaScript and must be inserted byte-for-byte. Stop
+**Missing-input behavior**: if `analysisArtifactFile` or `analysisText` is not supplied,
+do NOT fabricate, reformat, or recompute a substitute -- these are pre-computed by the
+orchestrator in JavaScript and must be written byte-for-byte. Stop
 and return `status: "FAILED"` with `notes` naming exactly which input was missing. Same for
 a missing `base-branch`/`branch`: do not guess which branch to diff.
 
-## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_feedback"`
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being harvested,
-   and `hint_symbols`/`hint_modules` relevant to the modules touched during the sprint.
-   Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
-3. When you extract durable knowledge during harvest -- anything non-obvious that future
-   sprints should know -- add it to the `kb_captures` array of your structured output (type
-   "knowledge" or "learning"; dedup against the KB with `kb_query` first). The engine makes
-   the actual `kb_capture` call from that field. Calling `mcp__apra-fleet__kb_capture`
-   directly is a fallback only, for dispatch contexts with no `kb_captures` output field.
-4. If a retrieved KB entry proves wrong in practice, call `mcp__apra-fleet__kb_feedback`
-   with the entry id and what was wrong.
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
+tool-discovery step is needed, and they always act on your own work folder, so never
+pass a repository path or other scope argument to them. Otherwise, read the injected
+"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
+the orchestrator fetched for the modules touched during the sprint.
+If a KB or code tool call fails, use that block if your prompt has one; otherwise
+continue without KB. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From whichever source you have,
+trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
+If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
+your tool-loading tool first, before concluding they are unavailable.
+
+If a `code_*` call fails with `E-CODE-INDEX-NOT-READY`, wait ONCE for the
+`retry_after_ms` its error result carries (skip the wait when it is 0: retrying will
+not help), retry that call ONCE, and if it still fails fall back to text search and
+record the fallback. Never poll `code_status` in a loop waiting for the index.
+
+1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
+   relevant to the modules touched during the sprint.
+2. When you extract durable knowledge during harvest -- anything non-obvious that future
+   sprints should know -- add it to the `kb_captures` array of your structured output
+   (type "knowledge" or "learning"; dedupe against the KB first, with `kb_query` when
+   present, otherwise the block). The engine records it from that field; do not write to
+   the KB yourself.
+3. If a retrieved KB entry proves wrong in practice, say so in your `notes`, naming the
+   entry and what was wrong.
+
+### Persistent Memories (operational rules)
+
+Before beginning harvest operations, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +harvester+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+harvester+`.
 
 ## Step 1 -- Write sprint analysis artifact (FIRST, before anything else)
 
 Your task context includes an `analysisArtifactFile` path and an `analysisText` block.
 
-Write the `analysisText` verbatim to the file at `<repo>/<analysisArtifactFile>` (overwrite if it exists):
-
-```bash
-mkdir -p "<repo>/sprint-logs"
-# Write analysisText content to <repo>/<analysisArtifactFile>
-git -C "<repo>" add "<repo>/<analysisArtifactFile>"
-git -C "<repo>" -c user.name='pm' -c user.email='pm@pm.local' commit -m "chore: sprint-analysis <branch> <startedAt>"
-```
+Write the `analysisText` verbatim to the file at `<repo>/<analysisArtifactFile>` (overwrite
+if it exists; create its parent directory if missing).
 
 Do NOT reformat or modify the analysisText -- write it exactly as provided.
+
+**Do NOT `git add` or commit this file.** It is a local record that stays untracked in the
+working tree; the orchestrator keeps it out of `git status` and out of every commit. Never
+force-add it (`git add -f`), and do not stage it in any later step.
 
 ## Step 2 -- Read sprint context
 
@@ -90,7 +112,7 @@ Create or update files under `docs/` to capture long-term knowledge.
 - Code-line references ("see line 42 of foo.ts")
 - Debug notes, investigation findings, workaround details
 
-**Forbidden in every harvested document** (docs/, README.md, CHANGELOG.md, anywhere you
+**Forbidden in every harvested document** (docs/, README.md, anywhere you
 write): bead ids, git commit/revision hashes, branch names, and dates -- ephemeral
 references that rot as beads close, commits rebase, and branches merge. If you catch
 yourself writing "in BD-14 we added..." or "as of commit a1b2c3d...", rewrite the
@@ -99,13 +121,11 @@ commit produced it.
 
 Commit the docs/ changes with a descriptive message.
 
-## Step 4 -- Update README.md and CHANGELOG.md
+## Step 4 -- Update README.md
 
 - Update `README.md` to reflect new features, changed behaviour, or removed capabilities
-- Prepend a new entry to `CHANGELOG.md` (create it if it does not exist) summarising
-  what was implemented, the sprint goal, and any items carried forward
-- Your task context includes a `costAnalysis` block. Insert it verbatim into the CHANGELOG
-  entry, after the summary paragraph, exactly as provided -- do not reformat or recompute it
+- Do NOT write a CHANGELOG entry: the sprint summary and cost go in the PR body, which the
+  orchestrator writes
 
 Commit these changes.
 
@@ -148,7 +168,7 @@ placeholder):
 ```json
 {
   "status": "OK",
-  "notes": "Wrote sprint analysis artifact, extracted durable docs, updated README/CHANGELOG, confirmed 2 P3 issues remain open as backlog, pushed branch.",
+  "notes": "Wrote sprint analysis artifact, extracted durable docs, updated README, confirmed 2 P3 issues remain open as backlog, pushed branch.",
   "kb_captures": []
 }
 ```
@@ -169,8 +189,11 @@ or as prose if you are answering a human directly.
 - NEVER remove project files that predate the sprint
 - NEVER remove or modify files under `sprint-logs/` -- these are durable cost and audit logs
 - NEVER create PLAN.md, progress.json, or requirements.md
-- NEVER reformat or recompute the costAnalysis block -- insert it verbatim
 - NEVER close any beads issue, at any priority, for any reason (see Step 5)
 - Durable knowledge only in docs/ -- a reader a year from now should find it illuminating
 - NEVER write a bead id, commit hash, branch name, or date into any harvested document
   (see Step 3)
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.

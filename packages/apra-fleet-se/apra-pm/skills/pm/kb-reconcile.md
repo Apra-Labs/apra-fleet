@@ -4,7 +4,8 @@ Reconcile a warm local KB against a merged bible after two or more branches
 land -- absorb the incoming knowledge, revive entries whose basis matches
 the merged worktree again, mechanically settle contradictions a file hash
 can decide, and dispatch a reconciler agent for the rest. Ends with the
-canonical bible re-exported so the merged branch's KB reflects merged truth.
+canonical bible re-exported: confirmed entries whose cited files still match
+their hash basis are added, so the merged branch's bible gains the merged truth.
 
 ## When to run
 
@@ -28,19 +29,26 @@ already-exposed `kb_promote` surface (which can walk any entry
 way -- a bible can never smuggle an active directive; activation stays
 CLI-only (`apra-fleet kb approve-directive`).
 
+Run every step of this command from the operator's own session, not a fleet
+member session: a member session without the engine's kb_maintainer grant is
+refused an explicit `kb_import` path (`E-KB-MAINTAINER-REQUIRED`) and is not
+served `kb_reconcile_prefilter`, `kb_resolve_contradiction` or `kb_export`.
+
 ## Steps
 
 ### Step 1: Import the merged bible
 
 ```
-kb_import({ repo: "<merged worktree path>" })
+kb_import({ path: "<merged worktree path>/.fleet/kb-canonical.json" })
 ```
 
-or the CLI equivalent, `apra-fleet kb import --repo <path>`, for a human
-running this post-merge by hand. Omit `path` to resolve
-`<repo>/.fleet/kb-canonical.json` (the trusted channel); pass an explicit
-`path` only when importing a bible from somewhere else (caller-asserted
-trust, see above).
+or the CLI equivalent, `apra-fleet kb import --path <file>`, for a human
+running this post-merge by hand. `path` names the bible FILE only: kb tools
+take no repo/scope argument and always write the calling session's own KB (a
+member session uses its registered work folder; any other session the fleet
+server's working folder). Omitting `path` resolves
+`<own folder>/.fleet/kb-canonical.json` (the trusted channel); a bible from
+anywhere else is caller-asserted trust (see above).
 
 Report: `{ imported, skipped, linked, flagged, sweep }`. `kb_import`
 already runs a freshness sweep internally at the end of its own run, scoped
@@ -92,11 +100,13 @@ Report: `{ pairs, resolved, left_for_agent, skipped_directive }`.
 
 If `left_for_agent` is non-empty, dispatch the `kb-reconciler` agent
 (`agents/kb-reconciler.md`, model tier cheap/standard)
-with that array. It reads the MERGED code via `code_context`/`code_impact`/
+with that array, as a subagent of THIS session -- never on a fleet member: a
+member session is not served `kb_resolve_contradiction` or `kb_export`, so the
+agent would stop at its tool check. It reads the MERGED code via `code_context`/`code_impact`/
 `code_query` (never Glob/Grep) for each remaining pair, resolves what the
 code decides via `kb_resolve_contradiction`, falls back to a trust-tier
 tiebreak (`CONFIRMED > INFERRED > UNVERIFIED`) when the code is silent, and
-leaves genuinely undecidable pairs flagged for `/pm kb-review`. Active
+leaves genuinely undecidable pairs flagged for `/pm kb-review`. Any `kb_query`/`kb_list` lookup of a pair's entries must pass an explicit `confidence: ["CONFIRMED", "INFERRED", "UNVERIFIED"]` list: the read tools default to CONFIRMED undisputed entries only, and a disputed or unpromoted side would otherwise be invisible (`kb_query({ flagged_only: true })` is exempt). Active
 user-directives are NEVER auto-retired. See `agents/kb-reconciler.md` for the
 full process and the single-write-path rule.
 
@@ -108,11 +118,16 @@ If `left_for_agent` is empty, skip straight to Step 5.
 kb_export()
 ```
 
-Writes every live `CONFIRMED` project entry -- which now includes every
-mechanical and agent-resolved winner -- to `.fleet/kb-canonical.json` and
-auto-commits it (pathspec-only, identity `pm-kb`, non-fatal on any git
-failure). This is existing `kb_export` machinery; no new commit step is
-needed here. Push is not automatic; it rides the normal sprint push cadence.
+ADDS to `.fleet/kb-canonical.json` every live `CONFIRMED` project entry not
+already in it whose cited files still match its recorded hash basis -- which
+includes the mechanical and agent-resolved winners -- and auto-commits it
+(pathspec-only, identity `pm-kb`, non-fatal on any git failure). This is
+existing `kb_export` machinery; no new commit step is needed here. Push is
+not automatic; it rides the normal sprint push cadence.
+
+The export never removes or rewrites an entry already in the bible: a
+superseded loser, or an entry later retired, stays there after re-export and
+must be removed by hand.
 
 ## Report
 

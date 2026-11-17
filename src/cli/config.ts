@@ -22,20 +22,24 @@ export const WORKFLOWS_DIR = path.join(FLEET_BASE, 'workflows');
 // current generation automatically, so they never go stale as Anthropic
 // ships new models. Other providers' CLIs don't share this alias support,
 // so their entries stay pinned to literal model IDs.
-// gemini-3.5-flash(-lite) remain here because they are AGY's (Antigravity's)
-// own model ids, not the removed gemini provider's -- AGY is built on
-// Google's Gemini stack and inherits its model catalog. See agy.ts's
-// modelTiers()/modelForTier().
+// The gemini-*/claude-*-thinking entries are AGY's (Antigravity's) own model
+// ids, not the removed gemini provider's -- AGY is built on Google's Gemini
+// stack and inherits its model catalog. They are the STABLE slug ids `agy
+// models` prints, and must stay in step with AGY_MODEL_FOR_TIER in
+// src/providers/agy.ts: a slug AGY does not recognize is not a soft fallback,
+// it fails the dispatch outright with "invalid model selection".
 export const CURATED_CHEAP_MODELS = [
   'gpt-oss-120b',
   'gpt-120',
-  'gemini-3.5-flash-lite',
+  'gemini-3.8-flash-low',
   'haiku',
   'gpt-5.4-mini',
 ] as const;
 
 export const CURATED_STANDARD_MODELS = [
-  'gemini-3.5-flash',
+  'gemini-3.8-flash-high',
+  'gemini-3.8-flash-medium',
+  'gemini-3.1-pro-low',
   'gpt-oss-120b',
   'gpt-120',
   'sonnet',
@@ -45,6 +49,8 @@ export const CURATED_STANDARD_MODELS = [
 export const CURATED_PREMIUM_MODELS = [
   'sonnet',
   'opus',
+  'gemini-3.1-pro-high',
+  'claude-opus-4-6-thinking',
   'gpt-oss-120b',
 ] as const;
 
@@ -52,9 +58,14 @@ export const PROVIDER_STANDARD_MODELS: Record<string, string> = {
   claude: 'sonnet',
   codex: 'gpt-5.4',
   copilot: 'claude-sonnet-4-5',
-  agy: 'gemini-3.5-flash',
+  agy: 'gemini-3.8-flash-high',
   opencode: 'ollama/qwen3-coder:30b',
 };
+
+/** Supported install targets, in deterministic profile-discovery fallback order. */
+export const INSTALLABLE_LLM_PROVIDERS: readonly LlmProvider[] = [
+  'claude', 'codex', 'copilot', 'agy', 'opencode',
+];
 
 export interface ProviderInstallConfig {
   configDir: string;
@@ -75,52 +86,52 @@ export interface MultiProviderInstallConfig {
   }>;
 }
 
-export function getProviderInstallConfig(provider: LlmProvider): ProviderInstallConfig {
+export function getProviderInstallConfig(provider: LlmProvider, homeDir = home): ProviderInstallConfig {
   switch (provider) {
     case 'agy':
       return {
-        configDir: path.join(home, '.gemini', 'antigravity-cli'),
-        settingsFile: path.join(home, '.gemini', 'antigravity-cli', 'settings.json'),
-        skillsDir: path.join(home, '.gemini', 'antigravity-cli', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.gemini', 'antigravity-cli', 'skills', 'fleet'),
-        agentsDir: path.join(home, '.gemini', 'antigravity-cli', 'agents'),
+        configDir: path.join(homeDir, '.gemini', 'antigravity-cli'),
+        settingsFile: path.join(homeDir, '.gemini', 'antigravity-cli', 'settings.json'),
+        skillsDir: path.join(homeDir, '.gemini', 'antigravity-cli', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.gemini', 'antigravity-cli', 'skills', 'fleet'),
+        agentsDir: path.join(homeDir, '.gemini', 'antigravity-cli', 'agents'),
         name: 'Antigravity',
       };
     case 'codex':
       return {
-        configDir: path.join(home, '.codex'),
-        settingsFile: path.join(home, '.codex', 'config.toml'),
-        skillsDir: path.join(home, '.codex', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.codex', 'skills', 'fleet'),
+        configDir: path.join(homeDir, '.codex'),
+        settingsFile: path.join(homeDir, '.codex', 'config.toml'),
+        skillsDir: path.join(homeDir, '.codex', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.codex', 'skills', 'fleet'),
         agentsDir: undefined,
         name: 'Codex',
       };
     case 'copilot':
       return {
-        configDir: path.join(home, '.copilot'),
-        settingsFile: path.join(home, '.copilot', 'settings.json'),
-        skillsDir: path.join(home, '.copilot', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.copilot', 'skills', 'fleet'),
+        configDir: path.join(homeDir, '.copilot'),
+        settingsFile: path.join(homeDir, '.copilot', 'settings.json'),
+        skillsDir: path.join(homeDir, '.copilot', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.copilot', 'skills', 'fleet'),
         agentsDir: undefined,
         name: 'Copilot',
       };
     case 'opencode':
       return {
-        configDir: path.join(home, '.config', 'opencode'),
-        settingsFile: path.join(home, '.config', 'opencode', 'opencode.json'),
-        skillsDir: path.join(home, '.config', 'opencode', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.config', 'opencode', 'skills', 'fleet'),
-        agentsDir: path.join(home, '.config', 'opencode', 'agents'),
+        configDir: path.join(homeDir, '.config', 'opencode'),
+        settingsFile: path.join(homeDir, '.config', 'opencode', 'opencode.json'),
+        skillsDir: path.join(homeDir, '.config', 'opencode', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.config', 'opencode', 'skills', 'fleet'),
+        agentsDir: path.join(homeDir, '.config', 'opencode', 'agents'),
         name: 'OpenCode',
       };
     case 'claude':
     default:
       return {
-        configDir: path.join(home, '.claude'),
-        settingsFile: path.join(home, '.claude', 'settings.json'),
-        skillsDir: path.join(home, '.claude', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.claude', 'skills', 'fleet'),
-        agentsDir: path.join(home, '.claude', 'agents'),
+        configDir: path.join(homeDir, '.claude'),
+        settingsFile: path.join(homeDir, '.claude', 'settings.json'),
+        skillsDir: path.join(homeDir, '.claude', 'skills', 'pm'),
+        fleetSkillsDir: path.join(homeDir, '.claude', 'skills', 'fleet'),
+        agentsDir: path.join(homeDir, '.claude', 'agents'),
         name: 'Claude',
       };
   }
@@ -156,7 +167,59 @@ export function readConfig(paths: ProviderInstallConfig): any {
   }
 }
 
-export function writeConfig(paths: ProviderInstallConfig, config: any): void {
+/**
+ * Write a file that carries a credential: owner-only (0600), never briefly
+ * readable by others. writeFileSync's mode applies only when the file is
+ * created, so an existing file (a provider config the user already had, at
+ * 0644) is chmod-ed BEFORE the credential is written into it; a new file is
+ * created 0600. The final chmod pins exactly 0600 whatever the umask.
+ */
+export function writeOwnerOnlyFile(file: string, content: string): void {
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  fs.writeFileSync(file, content, { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
+}
+
+/**
+ * writeOwnerOnlyFile for a file another process saves concurrently (Claude
+ * Code's ~/.claude.json): the content goes to an owner-only temp file in the
+ * same directory, then replaces the target by rename, so a crash or a racing
+ * save never leaves it truncated. When the rename fails (e.g. the target is
+ * briefly locked on Windows) it falls back to the in-place owner-only write.
+ * A symlinked file keeps its link: the temp file is placed next to, and
+ * renamed over, the link's real target. On POSIX a file owned by another uid
+ * (e.g. install run under sudo) is written in place, since a rename would
+ * hand it to the current user. The temp file takes the existing file's
+ * owner permission bits (never group/other).
+ */
+export function writeOwnerOnlyFileAtomic(file: string, content: string): void {
+  let target = file;
+  try { const real = fs.realpathSync(file); if (typeof real === 'string' && real) target = real; } catch { /* missing: write at `file` */ }
+  let st: fs.Stats | undefined;
+  try { st = fs.statSync(target); } catch { /* new file */ }
+  const getuid = (process as { getuid?: () => number }).getuid;
+  if (st && typeof getuid === 'function' && typeof st.uid === 'number' && st.uid !== getuid()) {
+    writeOwnerOnlyFile(target, content);
+    return;
+  }
+  const mode = st && typeof st.mode === 'number' && (st.mode & 0o700) ? (st.mode & 0o700) | 0o600 : 0o600;
+  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(tmp, content, { mode, flag: 'wx' });
+    fs.chmodSync(tmp, mode);
+    fs.renameSync(tmp, target);
+    return;
+  } catch {
+    try { fs.unlinkSync(tmp); } catch { /* not created / already moved */ }
+  }
+  writeOwnerOnlyFile(target, content);
+}
+
+export function writeConfig(paths: ProviderInstallConfig, config: any, opts: { ownerOnly?: boolean } = {}): void {
   fs.mkdirSync(paths.configDir, { recursive: true });
   let content = '';
   if (paths.settingsFile.endsWith('.toml')) {
@@ -164,15 +227,16 @@ export function writeConfig(paths: ProviderInstallConfig, config: any): void {
   } else {
     content = JSON.stringify(config, null, 2) + '\n';
   }
-  fs.writeFileSync(paths.settingsFile, content);
+  if (opts.ownerOnly) writeOwnerOnlyFile(paths.settingsFile, content);
+  else fs.writeFileSync(paths.settingsFile, content);
 }
 
-export function readInstallConfig(): MultiProviderInstallConfig {
-  if (!fs.existsSync(INSTALL_CONFIG_PATH)) {
+export function readInstallConfig(installConfigPath = INSTALL_CONFIG_PATH): MultiProviderInstallConfig {
+  if (!fs.existsSync(installConfigPath)) {
     return { providers: {} };
   }
   try {
-    const data = JSON.parse(fs.readFileSync(INSTALL_CONFIG_PATH, 'utf-8'));
+    const data = JSON.parse(fs.readFileSync(installConfigPath, 'utf-8'));
     // Handle old format migration
     if (data.llm && data.skill) {
       return {

@@ -12,6 +12,7 @@ import {
     withScenarioMarkers,
 } from './helpers/mock-sprint-harness.mjs';
 import { DoltDivergedError } from '../fleet-sprint/errors.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
@@ -90,10 +91,17 @@ function buildDivergedGateFleetApi(tempDir, epicBead, dispatched, commandLog, op
     };
 }
 
+// scaledTimeout() budgets this against APRA_FLEET_TEST_CONCURRENCY (see
+// scripts/run-tests.mjs / test/helpers/scaled-timeout.mjs): this scenario
+// drives a full engine.executeFile(runner.js, ...) run whose wall-clock cost
+// is sensitive to CPU/IO contention from sibling test files under the
+// default 8-way concurrent suite, even though it never issues a real `bd`
+// spawn (apra-fleet-bkax.2).
 test(
     'apra-fleet-eft.58.2: a conflict-returning D-pull at the pre-flight beads-health gate aborts BEFORE any ' +
     'git branch/PR command, logs an actionable /beads DB diverged/ cause naming the remediation, and persists ' +
     'the same reason string to terminal run state',
+    { timeout: scaledTimeout(60000) },
     async () => {
         await withScenarioMarkers('beadshealthgatediverged', async () => {
             const { tempDir, epicBead } = await setupMinimal('healthgatediverged', [

@@ -1,0 +1,27 @@
+{
+  "tool": "kb_capture",
+  "case": "setup-for-http-demote",
+  "kind": "happy",
+  "request": {
+    "type": "knowledge",
+    "title": "Widget export is a constant",
+    "summary": "src/widget.ts exports widget as a numeric constant; set up for the http demote fixtures.",
+    "content": "widget in src/widget.ts is exported as the constant 1. Captured as a synthetic fixture for kb_demote over http.",
+    "source_files": [
+      "src/widget.ts"
+    ],
+    "symbols": [
+      "widget"
+    ],
+    "role": "doer"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"4593e2f8-a104-40cb-acf1-3dc41afa8f4b\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  },
+  "session": "HTTP_A"
+}

@@ -26,6 +26,14 @@
 // scripts/ specifically so the package's `test` script -- which globs only
 // test/*.test.mjs -- can never sweep it up. Do not add it to any CI pass.
 //
+// This exclusion was re-examined and re-affirmed on 2026-09-15 (apra-fleet-
+// j918.5.3, docs/dolt-sync-redesign.md Part 6.7) specifically against the
+// data-loss risk of CI's only other coverage of settleDoltConflicts() being
+// the hand-written SQL simulator in test/dolt-settle.test.mjs. Part 6.7 also
+// records the follow-up bead (apra-fleet-j918.9) for a narrower, local-only,
+// live-dolt CI test that does not require this script's live-fleet/SSH
+// dependency.
+//
 // SANDBOX, NOT PRODUCTION (Part 6.4). Mandatory. The script manufactures
 // wedging conflicts and then runs recovery code against them, so it must never
 // touch a member's real `.beads` clone or the shared production beads remote:
@@ -49,6 +57,7 @@
 import { parseArgs } from 'node:util';
 import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
+import { withFleetAccessSecret } from '@apralabs/apra-fleet-client/server-resolution';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resolveFleetServerConnection } from '../bin/cli.mjs';
 import { settleDoltConflicts, DOLT_VERSION } from '../fleet-sprint/dolt-settle.mjs';
@@ -112,7 +121,7 @@ async function connectFleet() {
     if (!connection || connection.mode !== 'http') {
         throw new Precondition(`no reachable apra-fleet HTTP singleton (${connection && connection.reason}). Start the fleet server and retry.`);
     }
-    const transport = new StreamableHttpTransport(connection.url);
+    const transport = new StreamableHttpTransport(connection.url, withFleetAccessSecret());
     await transport.start();
     const mcpClient = new McpClient(transport);
     return { transport, mcpClient, fleetApi: new ApraFleet(mcpClient) };
@@ -513,7 +522,7 @@ async function main() {
             }
         }
     } finally {
-        try { transport.stop(); } catch { /* best-effort */ }
+        try { await transport.close(); } catch { /* best-effort */ }
     }
 
     log('\n--- design doc Part 4 rows (paste verbatim) ---');

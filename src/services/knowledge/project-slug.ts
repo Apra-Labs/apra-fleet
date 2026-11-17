@@ -1,5 +1,6 @@
 import { execFileSync } from 'child_process';
 import path from 'path';
+import { gitExecutable } from '../../os/git-executable.js';
 
 export function resolveProjectSlug(cwd?: string, remoteUrl?: string): string {
   if (remoteUrl && remoteUrl.trim()) {
@@ -10,16 +11,16 @@ export function resolveProjectSlug(cwd?: string, remoteUrl?: string): string {
   const env = { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(dir) };
   // 1. git remote URL
   try {
-    const remote = execFileSync('git', ['remote', 'get-url', 'origin'], {
-      cwd: dir, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+    const remote = execFileSync(gitExecutable(), ['remote', 'get-url', 'origin'], {
+      cwd: dir, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
     const slug = slugify(remote);
     if (slug) return slug;
   } catch {}
   // 2. git repo root dir name
   try {
-    const root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd: dir, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+    const root = execFileSync(gitExecutable(), ['rev-parse', '--show-toplevel'], {
+      cwd: dir, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
     const slug = slugify(path.basename(root));
     if (slug) return slug;

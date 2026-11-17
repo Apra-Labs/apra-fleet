@@ -50,10 +50,30 @@ const EMPTY_REMOTE = [
     /no branches found in remote/i,
 ];
 
-/** Verbatim DOLT_REMOTE_UNREACHABLE_PATTERNS. */
+/** Verbatim DOLT_REMOTE_UNREACHABLE_PATTERNS.
+ *
+ *  The first two patterns are guarded with a leading `(?!.*fork\/exec)`
+ *  lookahead (checked against the WHOLE remaining string, hence `[\s\S]*`
+ *  rather than `.*`, so it also spans the multi-line raw output these
+ *  errors come as): Dolt wraps a git subprocess-spawn failure (the OS
+ *  refusing to even start git.exe, e.g. a transient Windows CreateProcess
+ *  resource error) in this SAME generic "could not be accessed"/"failed to
+ *  get remote db" wrapper text it uses for a genuinely dead/misconfigured
+ *  remote. Confirmed live: a `fork/exec ... git.exe: Not enough memory
+ *  resources` failure was misclassified as REMOTE_UNREACHABLE (permanent,
+ *  "retrying cannot succeed") purely from that wrapper phrasing, even
+ *  though the remote was correctly configured and reachable -- an
+ *  unmodified retry of the identical command succeeded outright, repeatedly.
+ *  A `fork/exec` line is Dolt's/Go's structural marker for "the OS refused
+ *  to start the child process", as opposed to git actually running and
+ *  reporting a real remote problem -- so its presence anywhere in the
+ *  output means this ISN'T evidence of a dead remote, and the classifier
+ *  must fall through to the TRANSIENT check below instead. A genuinely
+ *  dead/misconfigured remote (no fork/exec line present) is unaffected and
+ *  still classifies here exactly as before. */
 const REMOTE_UNREACHABLE = [
-    /could not be accessed/i,
-    /failed to get remote db/i,
+    /^(?![\s\S]*fork\/exec)[\s\S]*could not be accessed/i,
+    /^(?![\s\S]*fork\/exec)[\s\S]*failed to get remote db/i,
     /stat [^:]+: no such file or directory/i,
 ];
 
@@ -91,8 +111,17 @@ const DIVERGED = [
     /working set (is )?not clean/i,
 ];
 
-/** Verbatim DOLT_TRANSIENT_PATTERNS. */
+/** Verbatim DOLT_TRANSIENT_PATTERNS.
+ *
+ *  fork/exec: the OS refused to start git.exe itself (e.g. a transient
+ *  Windows CreateProcess resource error) -- see the REMOTE_UNREACHABLE
+ *  guard above, which this pattern is the other half of. Deliberately
+ *  broad (any fork/exec line, not just the "Not enough memory resources"
+ *  wording observed live) since any process-spawn-refusal is the same
+ *  class of transient, retry-worthy failure regardless of the OS's exact
+ *  phrasing for why it refused. */
 const TRANSIENT = [
+    /fork\/exec /i,
     /could not resolve host/i,
     /unable to (access|connect)/i,
     /connection (timed out|reset|refused)/i,

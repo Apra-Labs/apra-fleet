@@ -11,7 +11,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
-import { addAgent } from '../src/services/registry.js';
+import { addAgent, getAgent } from '../src/services/registry.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
 import { provisionAuth } from '../src/tools/provision-auth.js';
 import { updateAgentCli } from '../src/tools/update-agent-cli.js';
@@ -27,6 +27,8 @@ vi.mock('../src/services/strategy.js', () => ({
     execCommand: mockExecCommand,
     testConnection: mockTestConnection,
     transferFiles: vi.fn(),
+    writeSecretFile: vi.fn(async (name: string) => `/home/testuser/${name}`),
+    removeSecretFile: vi.fn(async () => {}),
     close: vi.fn(),
   }),
 }));
@@ -79,21 +81,50 @@ describe('executePrompt — provider routing', () => {
     expect(cmd).toContain('--output-format json');
   });
 
-  it('routes Agy member through agy CLI and parses response', async () => {
-    const member = makeTestAgent({ friendlyName: 'agy-member', llmProvider: 'agy' });
+  it('routes Agy member through agy CLI, bound to its own project, and parses response', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-member', llmProvider: 'agy', agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({
-      stdout: 'agy response',
-      stderr: '',
-      code: 0,
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('FLEET_AGY_PROBE_EOF')) return { stdout: 'FLEET_AGY_PROJECT:{"state":"ok"}', stderr: '', code: 0 };
+      return { stdout: 'agy response', stderr: '', code: 0 };
     });
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
     expect(resultText(result)).toContain('agy response');
 
-    // calls[0] = writePromptFile, calls[1] = main prompt command
-    const cmd = mockExecCommand.mock.calls[1][0] as string;
-    expect(cmd).toContain('agy --model');
+    // calls[0] = agy project probe, calls[1] = writePromptFile, calls[2] = main prompt command
+    expect(mockExecCommand.mock.calls[0][0]).toContain('FLEET_AGY_PROBE_EOF');
+    const cmd = mockExecCommand.mock.calls[2][0] as string;
+    expect(cmd).toContain('agy --add-dir "/home/testuser/project" --project "1afd6dbb-498f-4918-a9d9-6da64b75a204" --model');
+  });
+
+  it('upgrade path: an Agy member without a project gets one before its first dispatch', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-legacy', llmProvider: 'agy' });
+    addAgent(member);
+    const newId = 'd05acf31-20d9-4102-8642-347a062c8997';
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('FLEET_AGY_NEW_PROJECT_EOF')) {
+        return { stdout: `FLEET_AGY_NEW_PROJECT:${JSON.stringify({ created: [newId], logIds: [newId], status: 0 })}`, stderr: '', code: 0 };
+      }
+      return { stdout: 'agy response', stderr: '', code: 0 };
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('agy response');
+    expect(getAgent(member.id)?.agyProjectId).toBe(newId);
+    const promptCmd = mockExecCommand.mock.calls.map(c => c[0] as string).find(c => c.includes('agy --add-dir'))!;
+    expect(promptCmd).toContain(`--project "${newId}"`);
+  });
+
+  it('Agy dispatch fails closed (no LLM call) when no project can be provisioned', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-noproj', llmProvider: 'agy' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: 'node: not found', code: 127 });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('agy project could not be provisioned');
+    expect((result as any).structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed' });
+    expect(mockExecCommand.mock.calls.some(c => (c[0] as string).includes('agy --add-dir'))).toBe(false);
   });
 
   it('routes Codex member through codex CLI', async () => {
@@ -184,7 +215,7 @@ describe('provisionAuth — API key per provider', () => {
       mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
       const provider = providers.getProvider(llmProvider);
-      const result = await provisionAuth({ member_id: member.id, api_key: llmProvider === 'claude' ? 'sk-ant-12345' : 'test-key-12345' });
+      const { text: result } = await provisionAuth({ member_id: member.id, api_key: llmProvider === 'claude' ? 'sk-ant-12345' : 'test-key-12345' });
 
       expect(result).toContain('API key provisioned');
 
@@ -200,12 +231,14 @@ describe('provisionAuth — API key per provider', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionAuth({ member_id: member.id, api_key: 'cl-code-12345' });
-    expect(result).toContain('API key provisioned');
+    const { text: result } = await provisionAuth({ member_id: member.id, api_key: 'sk-ant-oat01-FAKE' });
+    expect(result).toContain('OAuth token provisioned');
 
     const cmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     expect(cmds.some(c => c.includes('CLAUDE_CODE_OAUTH_TOKEN'))).toBe(true);
-    expect(cmds.some(c => c.includes('ANTHROPIC_API_KEY'))).toBe(false);
+    // ANTHROPIC_API_KEY is only ever cleared (other credential kind), never set.
+    expect(cmds.some(c => c.includes('export ANTHROPIC_API_KEY=') && !c.startsWith('sed '))).toBe(false);
+    expect(cmds).toContain('unset ANTHROPIC_API_KEY');
   });
   it('uses OOB API key entry for non-Claude providers without api_key', async () => {
     const copilotProvider = providers.getProvider('copilot');
@@ -216,7 +249,7 @@ describe('provisionAuth — API key per provider', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockCollectOobApiKey.mockResolvedValue({ fallback: '🔐 Could not open terminal. Run manually.' });
 
-    const result = await provisionAuth({ member_id: member.id });
+    const { text: result } = await provisionAuth({ member_id: member.id });
     expect(mockCollectOobApiKey).toHaveBeenCalledWith('copilot-oauth', 'provision_llm_auth', expect.objectContaining({ prompt: expect.stringContaining('copilot') }));
     expect(result).toContain('Could not open terminal');
 
@@ -309,5 +342,12 @@ describe('fleetProcessCheck — processName per provider', () => {
   it('windows: defaults to claude when no processName given', () => {
     const cmd = windows.fleetProcessCheck('C:\\work');
     expect(cmd).toContain('claude');
+  });
+
+  it('handles empty processName (none provider) safely across platforms', () => {
+    const gitbash = getOsCommands('windows', 'gitbash');
+    expect(linux.fleetProcessCheck('/work', undefined, '')).toBe('echo "idle"');
+    expect(windows.fleetProcessCheck('C:\\work', undefined, '')).toBe("echo 'idle'");
+    expect(gitbash.fleetProcessCheck('C:\\work', undefined, '')).toBe("echo 'idle'");
   });
 });

@@ -42,11 +42,11 @@ describe('SqliteProvider.list (T3.3, F8a)', () => {
     const { id } = await provider.capture(makeInput({ confidence: 'INFERRED', title: 'B', symbols: ['symB'] }));
     await provider.promote(id, 'test fixture: verified against the seeded tree');
 
-    const confirmed = await provider.list({ confidence: 'CONFIRMED' });
+    const confirmed = await provider.list({ confidence: ['CONFIRMED'] });
     expect(confirmed.length).toBe(1);
     expect(confirmed.every(e => e.confidence === 'CONFIRMED')).toBe(true);
 
-    const unverified = await provider.list({ confidence: 'UNVERIFIED' });
+    const unverified = await provider.list({ confidence: ['UNVERIFIED'] });
     expect(unverified.length).toBe(1);
     expect(unverified.every(e => e.confidence === 'UNVERIFIED')).toBe(true);
   });
@@ -186,7 +186,7 @@ describe('kb_list tool', () => {
     const { id } = await provider.capture(makeInput({ title: 'ToPromote', confidence: 'INFERRED', symbols: ['symPromote'] }));
     await provider.promote(id, 'confirmed by test: basis verified');
 
-    const parsed = JSON.parse(await kbList({ confidence: 'CONFIRMED' }));
+    const parsed = JSON.parse(await kbList({ confidence: ['CONFIRMED'] }));
     expect(parsed.total).toBe(1);
     const entry = parsed.results[0];
     expect(Object.keys(entry).sort()).toEqual(
@@ -199,7 +199,7 @@ describe('kb_list tool', () => {
     await provider.capture(makeInput({ title: 'Tagged', symbols: ['symToolTagged'], tags: ['sprint:kb-inflight-capture', 'phase:1'] }));
     await provider.capture(makeInput({ title: 'Untagged', symbols: ['symToolUntagged'], tags: ['other'] }));
 
-    const parsed = JSON.parse(await kbList({ tag: 'sprint:kb-inflight-capture' }));
+    const parsed = JSON.parse(await kbList({ tag: 'sprint:kb-inflight-capture', confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }));
     expect(parsed.total).toBe(1);
     expect(parsed.results[0].title).toBe('Tagged');
   });
@@ -208,7 +208,7 @@ describe('kb_list tool', () => {
     await provider.capture(makeInput({ title: 'NoTagA', symbols: ['symToolNoTagA'] }));
     await provider.capture(makeInput({ title: 'NoTagB', symbols: ['symToolNoTagB'] }));
 
-    const parsed = JSON.parse(await kbList({}));
+    const parsed = JSON.parse(await kbList({ confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }));
     const titles = parsed.results.map((e: any) => e.title);
     expect(titles).toContain('NoTagA');
     expect(titles).toContain('NoTagB');
@@ -222,7 +222,7 @@ describe('kb_list tool', () => {
       title: 'ComposeToolNoMatch', symbols: ['symToolCompose2'], module: 'src/tools', tags: ['sprint:z'],
     }));
 
-    const parsed = JSON.parse(await kbList({ module: 'src/services', tag: 'sprint:z' }));
+    const parsed = JSON.parse(await kbList({ module: 'src/services', tag: 'sprint:z', confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] }));
     expect(parsed.total).toBe(1);
     expect(parsed.results[0].title).toBe('ComposeToolMatch');
   });

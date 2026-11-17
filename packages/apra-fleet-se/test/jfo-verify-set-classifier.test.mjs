@@ -184,7 +184,7 @@ describe('buildFinalVerdictPrompt unclosed-verify-beads evidence', () => {
     const baseArgs = {
         targetIssues: ['root'],
         branch: 'sprint-branch',
-        baseBranch: 'main',
+        baseBranch: 'main', mergeBaseSha: 'abcdef0123456789abcdef0123456789abcdef01',
         goal: 'P1/P2',
         cyclesRun: 5,
         closedCount: 3,
@@ -244,7 +244,7 @@ describe('buildReviewerPrompt beadIds contract (regression for the Re-Review emp
         const prompt = buildReviewerPrompt({
             beadIds: [],
             acceptanceCriteriaJson: '[]',
-            baseBranch: 'main',
+            baseBranch: 'main', mergeBaseSha: 'abcdef0123456789abcdef0123456789abcdef01',
             branch: 'sprint-branch',
             goal: 'P1/P2',
         });
@@ -256,7 +256,7 @@ describe('buildReviewerPrompt beadIds contract (regression for the Re-Review emp
         const prompt = buildReviewerPrompt({
             beadIds: ['apra-fleet-6a7', 'apra-fleet-y8q'],
             acceptanceCriteriaJson: '[]',
-            baseBranch: 'main',
+            baseBranch: 'main', mergeBaseSha: 'abcdef0123456789abcdef0123456789abcdef01',
             branch: 'sprint-branch',
             goal: 'P1/P2',
         });

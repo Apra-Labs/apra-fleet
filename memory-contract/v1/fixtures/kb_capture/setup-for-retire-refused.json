@@ -1,0 +1,26 @@
+{
+  "tool": "kb_capture",
+  "case": "setup-for-retire-refused",
+  "kind": "happy",
+  "request": {
+    "type": "knowledge",
+    "title": "Gate retire fixture entry",
+    "summary": "Set up to demonstrate E-RETIRE-NEEDS-KB-MAINTAINER.",
+    "content": "This entry is promoted to CONFIRMED, then a session without the kb_maintainer grant tries to retire it.",
+    "source_files": [
+      "src/example.ts"
+    ],
+    "symbols": [
+      "gateRetireFixture"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"d7152240-ecc5-453c-92e1-0002f3ebf944\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  },
+  "session": "PLAIN_A"
+}
